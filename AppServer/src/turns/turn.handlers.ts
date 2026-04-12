@@ -362,6 +362,10 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
           return;
         }
 
+        // Plan updates are intentionally live-only in this phase. We forward the
+        // latest provider event to loaded-thread subscribers, but do not fold
+        // plan state into active-turn snapshots until recovery/reattachment work
+        // gives the turns module a durable replay surface for them.
         await fanOutThreadNotification(notification.threadId, {
           method: "turn/plan/updated",
           params: {
@@ -380,6 +384,9 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
           return;
         }
 
+        // Diff updates follow the same live-only tradeoff as plan updates in
+        // this phase: they are streamed to active subscribers, but not stored
+        // in active-turn snapshots yet.
         await fanOutThreadNotification(notification.threadId, {
           method: "turn/diff/updated",
           params: {

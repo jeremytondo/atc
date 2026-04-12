@@ -300,6 +300,21 @@ const CodexTurnErrorSchema = Type.Object(
   { additionalProperties: true },
 );
 
+export const CodexTurnDetailSchema = Type.Object(
+  {
+    id: Type.String(),
+    status: Type.Union([
+      Type.Literal("completed"),
+      Type.Literal("interrupted"),
+      Type.Literal("failed"),
+      Type.Literal("inProgress"),
+    ]),
+    items: Type.Array(CodexThreadItemSchema),
+    error: Type.Union([CodexTurnErrorSchema, Type.Null()]),
+  },
+  { additionalProperties: true },
+);
+
 const CodexThreadSchema = Type.Object(
   {
     id: Type.String(),
@@ -309,7 +324,7 @@ const CodexThreadSchema = Type.Object(
     name: Type.Union([Type.String(), Type.Null()]),
     status: CodexThreadStatusSchema,
     cwd: Type.String(),
-    turns: Type.Optional(Type.Array(Type.Unknown())),
+    turns: Type.Optional(Type.Array(CodexTurnDetailSchema)),
   },
   { additionalProperties: true },
 );
@@ -350,21 +365,6 @@ const CodexTurnSchema = Type.Object(
       Type.Literal("inProgress"),
     ]),
     error: Type.Optional(Type.Union([CodexTurnErrorSchema, Type.Null()])),
-  },
-  { additionalProperties: true },
-);
-
-export const CodexTurnDetailSchema = Type.Object(
-  {
-    id: Type.String(),
-    status: Type.Union([
-      Type.Literal("completed"),
-      Type.Literal("interrupted"),
-      Type.Literal("failed"),
-      Type.Literal("inProgress"),
-    ]),
-    items: Type.Array(CodexThreadItemSchema),
-    error: Type.Union([CodexTurnErrorSchema, Type.Null()]),
   },
   { additionalProperties: true },
 );

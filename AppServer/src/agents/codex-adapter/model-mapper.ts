@@ -1,4 +1,3 @@
-import { Value } from "@sinclair/typebox/value";
 import type {
   CodexModel,
   CodexThread,
@@ -8,7 +7,6 @@ import type {
   CodexTurnDetail,
   CodexTurnError,
 } from "@/agents/codex-adapter/protocol";
-import { CodexTurnDetailSchema } from "@/agents/codex-adapter/protocol";
 import type {
   AgentModelSummary,
   AgentThread,
@@ -87,9 +85,8 @@ export const mapCodexThreadDetail = (
 ): AgentThreadDetail =>
   Object.freeze({
     ...mapCodexThread(thread, options),
-    turns: (thread.turns ?? []).map((turn, index) =>
-      mapCodexTurnDetail(assertCodexTurnDetail(turn, index)),
-    ),
+    // Codex omits `turns` on responses that do not carry history.
+    turns: (thread.turns ?? []).map((turn) => mapCodexTurnDetail(turn)),
   });
 
 export const mapCodexTurnStatus = (turn: CodexTurn): AgentTurnStatus => {
@@ -295,14 +292,6 @@ const mapCodexTurnError = (
         providerError: error.codexErrorInfo,
         additionalDetails: error.additionalDetails,
       });
-
-const assertCodexTurnDetail = (candidate: unknown, index: number): CodexTurnDetail => {
-  if (!Value.Check(CodexTurnDetailSchema, candidate)) {
-    throw new Error(`Invalid Codex thread turn history at turns[${index}].`);
-  }
-
-  return candidate;
-};
 
 const mapUnixTimestampToIso = (value: number, fieldName: "createdAt" | "updatedAt"): string => {
   if (!Number.isFinite(value) || value < 0) {

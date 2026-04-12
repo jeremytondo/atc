@@ -3597,25 +3597,26 @@ const createToolProgressNotification = (input: {
 const buildHarnessItem = (
   itemType: "agentMessage" | "reasoning" | "commandExecution" | "mcpToolCall",
   itemId: string,
-  phase: "started" | "completed",
+  lifecycle: "started" | "completed",
 ) => {
   switch (itemType) {
     case "agentMessage":
       return {
         id: itemId,
         type: "agentMessage" as const,
-        text: phase === "completed" ? "Working on it..." : "",
+        text: lifecycle === "completed" ? "Working on it..." : "",
         phase: null,
       };
     case "reasoning":
       return {
         id: itemId,
         type: "reasoning" as const,
-        summary: phase === "completed" ? ["Short summary"] : [],
-        content: phase === "completed" ? ["Thinking..."] : [],
+        summary: lifecycle === "completed" ? ["Short summary"] : [],
+        content: lifecycle === "completed" ? ["Thinking..."] : [],
       };
     case "commandExecution": {
-      const status: "completed" | "inProgress" = phase === "completed" ? "completed" : "inProgress";
+      const status: "completed" | "inProgress" =
+        lifecycle === "completed" ? "completed" : "inProgress";
       return {
         id: itemId,
         type: "commandExecution" as const,
@@ -3624,13 +3625,14 @@ const buildHarnessItem = (
         processId: null,
         status,
         commandActions: [],
-        aggregatedOutput: phase === "completed" ? "stdout line\n" : null,
-        exitCode: phase === "completed" ? 0 : null,
+        aggregatedOutput: lifecycle === "completed" ? "stdout line\n" : null,
+        exitCode: lifecycle === "completed" ? 0 : null,
         durationMs: null,
       };
     }
     case "mcpToolCall": {
-      const status: "completed" | "inProgress" = phase === "completed" ? "completed" : "inProgress";
+      const status: "completed" | "inProgress" =
+        lifecycle === "completed" ? "completed" : "inProgress";
       return {
         id: itemId,
         type: "mcpToolCall" as const,
