@@ -115,7 +115,9 @@ The current model and reasoning effort for a thread should be exposed through th
 ## Threads
 A **Thread** is the conversation container for agent work. Threads are started with `thread/start`, resumed for active interaction with `thread/resume`, forked with `thread/fork`, read with `thread/read`, and listed with `thread/list`.
 
-`thread/read` should remain distinct from `thread/resume`. `thread/read` returns stored thread data only. It does not load the thread for active interaction and does not establish a live notification stream.
+`thread/read` should remain distinct from `thread/resume`. `thread/read` returns stored thread detail only. It does not load the thread for active interaction and does not establish a live notification stream.
+
+Adapter-facing contracts should model `thread/read` as a thread-detail response rather than a summary shape. When turn history is requested, the response includes typed `Turn` detail records alongside the thread metadata.
 
 `thread/resume` loads the thread for active interaction. After resume, live execution updates should arrive through notifications rather than through repeated point-in-time reads.
 
@@ -152,6 +154,8 @@ At a minimum, the event stream should cover:
 * **Request resolution events** used to close the loop on approvals and other user-action requests.
 
 Notifications are the canonical surface for loaded-thread and in-progress turn execution.
+
+`turn/plan/updated` and `turn/diff/updated` are intentionally live-only in the current App Server phase. They should be streamed to active subscribers, but they are not yet part of `thread/read`, reconnect snapshots, or recovery replay state until the App Server has a durable active-turn recovery model for them.
 
 `thread/status/changed` should carry thread execution state for loaded threads. `turn/started` and `turn/completed` should mark turn lifecycle boundaries. `item/started` and `item/completed` should mark item lifecycle boundaries.
 
