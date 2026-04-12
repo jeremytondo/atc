@@ -1,6 +1,7 @@
 import {
   mapCodexModelSummary,
   mapCodexThread,
+  mapCodexThreadDetail,
   mapCodexTurnSummary,
 } from "@/agents/codex-adapter/model-mapper";
 import {
@@ -71,6 +72,7 @@ import type {
   AgentThreadForkParams,
   AgentThreadMutationResult,
   AgentThreadReadParams,
+  AgentThreadReadResult,
   AgentThreadResult,
   AgentThreadResumeParams,
   AgentThreadSetNameParams,
@@ -435,7 +437,7 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
   const readThread = async (
     requestId: AgentRequestId,
     params: AgentThreadReadParams,
-  ): Promise<AgentOperationResult<AgentThreadResult>> =>
+  ): Promise<AgentOperationResult<AgentThreadReadResult>> =>
     runOperation(requestId, async () => {
       const rawParams: CodexThreadReadParams = {
         threadId: params.threadId,
@@ -450,7 +452,7 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
       );
 
       return {
-        thread: mapCodexThread(response.thread, {
+        thread: mapCodexThreadDetail(response.thread, {
           archived: params.archived,
         }),
       };

@@ -1,5 +1,6 @@
 import { type Static, Type } from "@sinclair/typebox";
 import { ModelReasoningEffortSchema } from "@/agents/schemas";
+import { TurnDetailSchema } from "@/turns/schemas";
 
 export const ThreadExecutionStatusSchema = Type.Union([
   Type.Object(
@@ -47,6 +48,23 @@ export const ThreadSchema = Type.Object(
 );
 export type Thread = Static<typeof ThreadSchema>;
 
+export const ThreadDetailSchema = Type.Object(
+  {
+    id: Type.String({ minLength: 1 }),
+    preview: Type.String(),
+    createdAt: Type.String({ minLength: 1 }),
+    updatedAt: Type.String({ minLength: 1 }),
+    name: Type.Union([Type.String({ minLength: 1 }), Type.Null()]),
+    archived: Type.Boolean(),
+    model: Type.Union([Type.String({ minLength: 1 }), Type.Null()]),
+    reasoningEffort: Type.Union([ModelReasoningEffortSchema, Type.Null()]),
+    status: ThreadExecutionStatusSchema,
+    turns: Type.Array(TurnDetailSchema),
+  },
+  { additionalProperties: false },
+);
+export type ThreadDetail = Static<typeof ThreadDetailSchema>;
+
 export const ThreadListParamsSchema = Type.Object(
   {
     cursor: Type.Optional(Type.String({ minLength: 1 })),
@@ -86,14 +104,19 @@ export type ThreadStartParams = Static<typeof ThreadStartParamsSchema>;
 
 export const ThreadReadResultSchema = Type.Object(
   {
-    thread: ThreadSchema,
+    thread: ThreadDetailSchema,
   },
   { additionalProperties: false },
 );
 export type ThreadReadResult = Static<typeof ThreadReadResultSchema>;
 
-export const ThreadStartResultSchema = ThreadReadResultSchema;
-export type ThreadStartResult = ThreadReadResult;
+export const ThreadStartResultSchema = Type.Object(
+  {
+    thread: ThreadSchema,
+  },
+  { additionalProperties: false },
+);
+export type ThreadStartResult = Static<typeof ThreadStartResultSchema>;
 
 export const ThreadResumeParamsSchema = Type.Object(
   {
@@ -105,8 +128,8 @@ export const ThreadResumeParamsSchema = Type.Object(
 );
 export type ThreadResumeParams = Static<typeof ThreadResumeParamsSchema>;
 
-export const ThreadResumeResultSchema = ThreadReadResultSchema;
-export type ThreadResumeResult = ThreadReadResult;
+export const ThreadResumeResultSchema = ThreadStartResultSchema;
+export type ThreadResumeResult = ThreadStartResult;
 
 export const ThreadForkParamsSchema = Type.Object(
   {
@@ -117,8 +140,8 @@ export const ThreadForkParamsSchema = Type.Object(
 );
 export type ThreadForkParams = Static<typeof ThreadForkParamsSchema>;
 
-export const ThreadForkResultSchema = ThreadReadResultSchema;
-export type ThreadForkResult = ThreadReadResult;
+export const ThreadForkResultSchema = ThreadStartResultSchema;
+export type ThreadForkResult = ThreadStartResult;
 
 export const ThreadArchiveParamsSchema = Type.Object(
   {
@@ -139,8 +162,8 @@ export const ThreadUnarchiveParamsSchema = Type.Object(
 );
 export type ThreadUnarchiveParams = Static<typeof ThreadUnarchiveParamsSchema>;
 
-export const ThreadUnarchiveResultSchema = ThreadReadResultSchema;
-export type ThreadUnarchiveResult = ThreadReadResult;
+export const ThreadUnarchiveResultSchema = ThreadStartResultSchema;
+export type ThreadUnarchiveResult = ThreadStartResult;
 
 export const ThreadSetNameParamsSchema = Type.Object(
   {

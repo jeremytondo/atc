@@ -1,10 +1,7 @@
-import {
-  createThreadReadIncludeTurnsUnsupportedResult,
-  createThreadWorkspaceMismatchResult,
-} from "@/core/protocol/errors";
+import { createThreadWorkspaceMismatchResult } from "@/core/protocol/errors";
 import { assertNever, err, ok } from "@/core/shared";
 import type { ThreadMethodDependencies } from "@/threads/methods/method-dependencies";
-import { getThreadDefaults, mapPublicThread } from "@/threads/response-mapper";
+import { getThreadDefaults, mapPublicThreadDetail } from "@/threads/response-mapper";
 import type { ThreadsService } from "@/threads/service-types";
 import {
   createInvalidProviderPayloadServiceError,
@@ -14,10 +11,6 @@ import {
 export const createReadThreadMethod =
   (context: ThreadMethodDependencies): ThreadsService["readThread"] =>
   async (requestId, workspace, params) => {
-    if (params.includeTurns === true) {
-      return createThreadReadIncludeTurnsUnsupportedResult();
-    }
-
     const sessionResult = await context.registry.getSession();
 
     if (!sessionResult.ok) {
@@ -36,7 +29,7 @@ export const createReadThreadMethod =
     });
     const readResult = await sessionResult.data.readThread(requestId, {
       threadId: params.threadId,
-      includeTurns: false,
+      includeTurns: params.includeTurns ?? false,
     });
 
     if (!readResult.ok) {
@@ -79,6 +72,6 @@ export const createReadThreadMethod =
     });
 
     return ok({
-      thread: mapPublicThread(readResult.data.thread, getThreadDefaults(existingLink)),
+      thread: mapPublicThreadDetail(readResult.data.thread, getThreadDefaults(existingLink)),
     });
   };

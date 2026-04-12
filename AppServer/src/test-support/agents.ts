@@ -13,12 +13,16 @@ import type {
   AgentSessionState,
   AgentThread,
   AgentThreadArchiveParams,
+  AgentThreadDetail,
   AgentThreadForkParams,
   AgentThreadMutationResult,
   AgentThreadReadParams,
+  AgentThreadReadResult,
   AgentThreadResult,
   AgentThreadSetNameParams,
   AgentThreadUnarchiveParams,
+  AgentTurnDetail,
+  AgentTurnItem,
   AgentTurnResult,
 } from "@/agents/contracts";
 import type { AgentRegistry } from "@/agents/registry";
@@ -124,7 +128,7 @@ export type CreateFakeAgentSessionOptions = Readonly<{
   readThread?: (
     requestId: AgentRequestId,
     params: AgentThreadReadParams,
-  ) => Promise<AgentOperationResult<AgentThreadResult>>;
+  ) => Promise<AgentOperationResult<AgentThreadReadResult>>;
   forkThread?: (
     requestId: AgentRequestId,
     params: AgentThreadForkParams,
@@ -341,7 +345,7 @@ export const createFakeAgentSession = (
         (await options.readThread?.(requestId, params)) ?? {
           ok: true,
           data: {
-            thread: createTestAgentThread(),
+            thread: createTestAgentThreadDetail(),
           },
         }
       );
@@ -581,6 +585,26 @@ export const createTestAgentThread = (
     status: overrides.status ?? ({ type: "idle" } as const),
   });
 
+export const createTestAgentThreadDetail = (
+  overrides: Partial<
+    Readonly<{
+      id: string;
+      preview: string;
+      createdAt: string;
+      updatedAt: string;
+      workspacePath: string;
+      name: string | null;
+      archived: boolean;
+      status: AgentThread["status"];
+      turns: readonly AgentTurnDetail[];
+    }>
+  > = {},
+): AgentThreadDetail =>
+  Object.freeze({
+    ...createTestAgentThread(overrides),
+    turns: overrides.turns ?? [],
+  });
+
 export const createTestAgentTurn = (
   overrides: Partial<
     Readonly<{
@@ -592,4 +616,36 @@ export const createTestAgentTurn = (
   Object.freeze({
     id: overrides.id ?? "turn-1",
     status: overrides.status ?? ({ type: "inProgress" } as const),
+  });
+
+export const createTestAgentTurnDetail = (
+  overrides: Partial<
+    Readonly<{
+      id: string;
+      status: AgentTurnResult["turn"]["status"];
+      items: readonly AgentTurnItem[];
+      error: AgentTurnDetail["error"];
+    }>
+  > = {},
+): AgentTurnDetail =>
+  Object.freeze({
+    id: overrides.id ?? "turn-1",
+    status: overrides.status ?? ({ type: "completed" } as const),
+    items: overrides.items ?? [],
+    error: overrides.error ?? null,
+  });
+
+export const createTestAgentItem = (
+  overrides: Partial<
+    Readonly<{
+      id: string;
+      text: string;
+    }>
+  > = {},
+): AgentTurnItem =>
+  Object.freeze({
+    type: "agentMessage",
+    id: overrides.id ?? "item-1",
+    text: overrides.text ?? "",
+    phase: null,
   });

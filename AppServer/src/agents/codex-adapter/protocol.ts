@@ -80,6 +80,241 @@ const CodexThreadStatusSchema = Type.Union([
   ),
 ]);
 
+const CodexCommandExecutionStatusSchema = Type.Union([
+  Type.Literal("inProgress"),
+  Type.Literal("completed"),
+  Type.Literal("failed"),
+  Type.Literal("declined"),
+]);
+
+const CodexPatchApplyStatusSchema = Type.Union([
+  Type.Literal("inProgress"),
+  Type.Literal("completed"),
+  Type.Literal("failed"),
+  Type.Literal("declined"),
+]);
+
+const CodexToolCallStatusSchema = Type.Union([
+  Type.Literal("inProgress"),
+  Type.Literal("completed"),
+  Type.Literal("failed"),
+]);
+
+const CodexCollabAgentToolSchema = Type.Union([
+  Type.Literal("spawnAgent"),
+  Type.Literal("sendInput"),
+  Type.Literal("resumeAgent"),
+  Type.Literal("wait"),
+  Type.Literal("closeAgent"),
+]);
+
+const CodexWebSearchActionSchema = Type.Union([
+  Type.Object(
+    {
+      type: Type.Literal("search"),
+      query: Type.Union([Type.String(), Type.Null()]),
+      queries: Type.Union([Type.Array(Type.String()), Type.Null()]),
+    },
+    { additionalProperties: true },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("openPage"),
+      url: Type.Union([Type.String(), Type.Null()]),
+    },
+    { additionalProperties: true },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("findInPage"),
+      url: Type.Union([Type.String(), Type.Null()]),
+      pattern: Type.Union([Type.String(), Type.Null()]),
+    },
+    { additionalProperties: true },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("other"),
+    },
+    { additionalProperties: true },
+  ),
+]);
+
+export const CodexThreadItemSchema = Type.Union([
+  Type.Object(
+    {
+      type: Type.Literal("userMessage"),
+      id: Type.String(),
+      content: Type.Array(Type.Unknown()),
+    },
+    { additionalProperties: true },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("agentMessage"),
+      id: Type.String(),
+      text: Type.String(),
+      phase: Type.Union([Type.String(), Type.Null()]),
+    },
+    { additionalProperties: true },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("plan"),
+      id: Type.String(),
+      text: Type.String(),
+    },
+    { additionalProperties: true },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("reasoning"),
+      id: Type.String(),
+      summary: Type.Array(Type.String()),
+      content: Type.Array(Type.String()),
+    },
+    { additionalProperties: true },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("commandExecution"),
+      id: Type.String(),
+      command: Type.String(),
+      cwd: Type.String(),
+      processId: Type.Union([Type.String(), Type.Null()]),
+      status: CodexCommandExecutionStatusSchema,
+      commandActions: Type.Array(Type.Unknown()),
+      aggregatedOutput: Type.Union([Type.String(), Type.Null()]),
+      exitCode: Type.Union([Type.Number(), Type.Null()]),
+      durationMs: Type.Union([Type.Number(), Type.Null()]),
+    },
+    { additionalProperties: true },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("fileChange"),
+      id: Type.String(),
+      changes: Type.Array(Type.Unknown()),
+      status: CodexPatchApplyStatusSchema,
+    },
+    { additionalProperties: true },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("mcpToolCall"),
+      id: Type.String(),
+      server: Type.String(),
+      tool: Type.String(),
+      status: CodexToolCallStatusSchema,
+      arguments: Type.Unknown(),
+      result: Type.Union([Type.Unknown(), Type.Null()]),
+      error: Type.Union([Type.Unknown(), Type.Null()]),
+      durationMs: Type.Union([Type.Number(), Type.Null()]),
+    },
+    { additionalProperties: true },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("dynamicToolCall"),
+      id: Type.String(),
+      tool: Type.String(),
+      arguments: Type.Unknown(),
+      status: CodexToolCallStatusSchema,
+      contentItems: Type.Union([Type.Array(Type.Unknown()), Type.Null()]),
+      success: Type.Union([Type.Boolean(), Type.Null()]),
+      durationMs: Type.Union([Type.Number(), Type.Null()]),
+    },
+    { additionalProperties: true },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("collabAgentToolCall"),
+      id: Type.String(),
+      tool: CodexCollabAgentToolSchema,
+      status: CodexToolCallStatusSchema,
+      senderThreadId: Type.String(),
+      receiverThreadIds: Type.Array(Type.String()),
+      prompt: Type.Union([Type.String(), Type.Null()]),
+      agentsStates: Type.Record(Type.String(), Type.Unknown()),
+    },
+    { additionalProperties: true },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("webSearch"),
+      id: Type.String(),
+      query: Type.String(),
+      action: Type.Union([CodexWebSearchActionSchema, Type.Null()]),
+    },
+    { additionalProperties: true },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("imageView"),
+      id: Type.String(),
+      path: Type.String(),
+    },
+    { additionalProperties: true },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("imageGeneration"),
+      id: Type.String(),
+      status: Type.String(),
+      revisedPrompt: Type.Union([Type.String(), Type.Null()]),
+      result: Type.String(),
+    },
+    { additionalProperties: true },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("enteredReviewMode"),
+      id: Type.String(),
+      review: Type.String(),
+    },
+    { additionalProperties: true },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("exitedReviewMode"),
+      id: Type.String(),
+      review: Type.String(),
+    },
+    { additionalProperties: true },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("contextCompaction"),
+      id: Type.String(),
+    },
+    { additionalProperties: true },
+  ),
+]);
+
+const CodexTurnErrorSchema = Type.Object(
+  {
+    message: Type.String(),
+    codexErrorInfo: Type.Union([Type.Unknown(), Type.Null()]),
+    additionalDetails: Type.Union([Type.String(), Type.Null()]),
+  },
+  { additionalProperties: true },
+);
+
+export const CodexTurnDetailSchema = Type.Object(
+  {
+    id: Type.String(),
+    status: Type.Union([
+      Type.Literal("completed"),
+      Type.Literal("interrupted"),
+      Type.Literal("failed"),
+      Type.Literal("inProgress"),
+    ]),
+    items: Type.Array(CodexThreadItemSchema),
+    error: Type.Union([CodexTurnErrorSchema, Type.Null()]),
+  },
+  { additionalProperties: true },
+);
+
 const CodexThreadSchema = Type.Object(
   {
     id: Type.String(),
@@ -89,6 +324,7 @@ const CodexThreadSchema = Type.Object(
     name: Type.Union([Type.String(), Type.Null()]),
     status: CodexThreadStatusSchema,
     cwd: Type.String(),
+    turns: Type.Optional(Type.Array(CodexTurnDetailSchema)),
   },
   { additionalProperties: true },
 );
@@ -128,17 +364,7 @@ const CodexTurnSchema = Type.Object(
       Type.Literal("failed"),
       Type.Literal("inProgress"),
     ]),
-    error: Type.Optional(
-      Type.Union([
-        Type.Object(
-          {
-            message: Type.Optional(Type.String()),
-          },
-          { additionalProperties: true },
-        ),
-        Type.Null(),
-      ]),
-    ),
+    error: Type.Optional(Type.Union([CodexTurnErrorSchema, Type.Null()])),
   },
   { additionalProperties: true },
 );
@@ -262,9 +488,12 @@ export type CodexModel = Static<typeof CodexModelSchema>;
 export type CodexModelListResponse = Static<typeof CodexModelListResponseSchema>;
 export type CodexThreadStatus = Static<typeof CodexThreadStatusSchema>;
 export type CodexThread = Static<typeof CodexThreadSchema>;
+export type CodexThreadItem = Static<typeof CodexThreadItemSchema>;
 export type CodexThreadListResponse = Static<typeof CodexThreadListResponseSchema>;
 export type CodexConfiguredThreadResponse = Static<typeof CodexConfiguredThreadResponseSchema>;
 export type CodexTurn = Static<typeof CodexTurnSchema>;
+export type CodexTurnDetail = Static<typeof CodexTurnDetailSchema>;
+export type CodexTurnError = Static<typeof CodexTurnErrorSchema>;
 export type CodexInitializeResponse = Static<typeof CodexInitializeResponseSchema>;
 export type CodexTurnPlanUpdatedNotification = Static<
   typeof CodexTurnPlanUpdatedNotificationSchema

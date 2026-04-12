@@ -437,9 +437,205 @@ describe("createCodexAgentSession", () => {
           status: {
             type: "idle",
           },
+          turns: [],
         },
       },
     });
+  });
+
+  test("maps thread/read with includeTurns true into typed turn and item history", async () => {
+    const executablePath = createFakeExecutable();
+    const transport = new FakeTransport([
+      { userAgent: "Codex/Test" },
+      {
+        thread: {
+          id: "thread-1",
+          preview: "Read this thread",
+          ephemeral: false,
+          modelProvider: "openai",
+          createdAt: 1_744_280_000,
+          updatedAt: 1_744_283_600,
+          status: {
+            type: "idle",
+          },
+          path: null,
+          cwd: "/tmp/project",
+          cliVersion: "0.114.0",
+          source: "app-server",
+          agentNickname: null,
+          agentRole: null,
+          gitInfo: null,
+          name: "Readable thread",
+          turns: [
+            {
+              id: "turn-1",
+              status: "completed",
+              items: [
+                {
+                  id: "item-1",
+                  type: "agentMessage",
+                  text: "History item",
+                  phase: null,
+                },
+              ],
+              error: null,
+            },
+          ],
+        },
+      },
+    ]);
+    const sessionResult = await createCodexAgentSession({
+      agentId: "codex",
+      config: {
+        id: "codex",
+        provider: "codex",
+      },
+      logger: createSilentLogger(),
+      transport,
+      environmentResolver: new BaseEnvironmentResolver({
+        inheritedEnvironment: {
+          ATELIERCODE_CODEX_PATH: executablePath,
+          PATH: path.dirname(executablePath),
+          HOME: "/Users/tester",
+          SHELL: "/bin/zsh",
+        },
+      }),
+    });
+
+    expect(sessionResult.ok).toBe(true);
+    if (!sessionResult.ok) {
+      throw new Error("Expected the Codex session to be created.");
+    }
+
+    const readResult = await sessionResult.data.readThread("req-thread-read", {
+      threadId: "thread-1",
+      includeTurns: true,
+      archived: false,
+    });
+
+    expect(readResult).toEqual({
+      ok: true,
+      data: {
+        thread: {
+          id: "thread-1",
+          preview: "Read this thread",
+          createdAt: "2025-04-10T10:13:20.000Z",
+          updatedAt: "2025-04-10T11:13:20.000Z",
+          workspacePath: "/tmp/project",
+          name: "Readable thread",
+          archived: false,
+          status: {
+            type: "idle",
+          },
+          turns: [
+            {
+              id: "turn-1",
+              status: {
+                type: "completed",
+              },
+              items: [
+                {
+                  id: "item-1",
+                  type: "agentMessage",
+                  text: "History item",
+                  phase: null,
+                },
+              ],
+              error: null,
+            },
+          ],
+        },
+      },
+    });
+  });
+
+  test("rejects invalid turn history at the thread/read parse boundary", async () => {
+    const executablePath = createFakeExecutable();
+    const transport = new FakeTransport([
+      { userAgent: "Codex/Test" },
+      {
+        thread: {
+          id: "thread-1",
+          preview: "Read this thread",
+          ephemeral: false,
+          modelProvider: "openai",
+          createdAt: 1_744_280_000,
+          updatedAt: 1_744_283_600,
+          status: {
+            type: "idle",
+          },
+          path: null,
+          cwd: "/tmp/project",
+          cliVersion: "0.114.0",
+          source: "app-server",
+          agentNickname: null,
+          agentRole: null,
+          gitInfo: null,
+          name: "Readable thread",
+          turns: [
+            {
+              id: "turn-1",
+              status: "completed",
+              items: [
+                {
+                  id: "item-1",
+                  type: "agentMessage",
+                  phase: null,
+                },
+              ],
+              error: null,
+            },
+          ],
+        },
+      },
+    ]);
+    const sessionResult = await createCodexAgentSession({
+      agentId: "codex",
+      config: {
+        id: "codex",
+        provider: "codex",
+      },
+      logger: createSilentLogger(),
+      transport,
+      environmentResolver: new BaseEnvironmentResolver({
+        inheritedEnvironment: {
+          ATELIERCODE_CODEX_PATH: executablePath,
+          PATH: path.dirname(executablePath),
+          HOME: "/Users/tester",
+          SHELL: "/bin/zsh",
+        },
+      }),
+    });
+
+    expect(sessionResult.ok).toBe(true);
+    if (!sessionResult.ok) {
+      throw new Error("Expected the Codex session to be created.");
+    }
+
+    const readResult = await sessionResult.data.readThread("req-thread-read", {
+      threadId: "thread-1",
+      includeTurns: true,
+      archived: false,
+    });
+
+    expect(readResult.ok).toBe(false);
+    if (readResult.ok) {
+      throw new Error("Expected malformed turn history to be rejected.");
+    }
+
+    expect(readResult.error).toMatchObject({
+      type: "invalidProviderMessage",
+      agentId: "codex",
+      provider: "codex",
+      message: "Codex operation req-thread-read failed unexpectedly.",
+      detail: {
+        error: expect.stringContaining("Invalid Codex thread response."),
+      },
+    });
+    expect(readResult.error.type).toBe("invalidProviderMessage");
+    if (readResult.error.type !== "invalidProviderMessage") {
+      throw new Error("Expected an invalid provider payload error.");
+    }
   });
 
   test("maps thread mutations through the Codex transport contract", async () => {

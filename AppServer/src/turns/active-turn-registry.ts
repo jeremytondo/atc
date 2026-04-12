@@ -215,6 +215,7 @@ export const createActiveTurnRegistry = (): ActiveTurnRegistry => {
       }
 
       itemState.item = item;
+      reconcileCompletedItemState(itemState, item);
       return true;
     },
     appendMessageText: ({ threadId, turnId, itemId, delta }) => {
@@ -224,6 +225,12 @@ export const createActiveTurnRegistry = (): ActiveTurnRegistry => {
       }
 
       itemState.messageText += delta;
+      if (itemState.item?.type === "agentMessage") {
+        itemState.item = Object.freeze({
+          ...itemState.item,
+          text: itemState.messageText,
+        });
+      }
       return true;
     },
     appendReasoningText: ({ threadId, turnId, itemId, delta }) => {
@@ -233,6 +240,12 @@ export const createActiveTurnRegistry = (): ActiveTurnRegistry => {
       }
 
       itemState.reasoningText += delta;
+      if (itemState.item?.type === "reasoning") {
+        itemState.item = Object.freeze({
+          ...itemState.item,
+          content: [itemState.reasoningText],
+        });
+      }
       return true;
     },
     appendReasoningSummaryText: ({ threadId, turnId, itemId, delta }) => {
@@ -242,6 +255,12 @@ export const createActiveTurnRegistry = (): ActiveTurnRegistry => {
       }
 
       itemState.reasoningSummaryText += delta;
+      if (itemState.item?.type === "reasoning") {
+        itemState.item = Object.freeze({
+          ...itemState.item,
+          summary: [itemState.reasoningSummaryText],
+        });
+      }
       return true;
     },
     appendCommandOutput: ({ threadId, turnId, itemId, delta }) => {
@@ -251,6 +270,12 @@ export const createActiveTurnRegistry = (): ActiveTurnRegistry => {
       }
 
       itemState.commandOutput += delta;
+      if (itemState.item?.type === "commandExecution") {
+        itemState.item = Object.freeze({
+          ...itemState.item,
+          aggregatedOutput: itemState.commandOutput,
+        });
+      }
       return true;
     },
     appendToolProgress: ({ threadId, turnId, itemId, message }) => {
@@ -280,4 +305,24 @@ export const createActiveTurnRegistry = (): ActiveTurnRegistry => {
       statesByThreadId.clear();
     },
   });
+};
+
+const reconcileCompletedItemState = (
+  itemState: MutableActiveTurnItemState,
+  item: TurnItem,
+): void => {
+  switch (item.type) {
+    case "agentMessage":
+      itemState.messageText = item.text;
+      return;
+    case "reasoning":
+      itemState.reasoningText = item.content.join("");
+      itemState.reasoningSummaryText = item.summary.join("");
+      return;
+    case "commandExecution":
+      itemState.commandOutput = item.aggregatedOutput ?? "";
+      return;
+    default:
+      return;
+  }
 };

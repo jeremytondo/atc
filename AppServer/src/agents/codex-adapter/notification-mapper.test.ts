@@ -375,6 +375,73 @@ describe("mapCodexTransportNotification", () => {
       },
     ]);
   });
+
+  test("maps typed item lifecycle notifications", () => {
+    expect(
+      mapCodexTransportNotification(
+        {
+          method: "item/completed",
+          params: {
+            threadId: "thread-1",
+            turnId: "turn-1",
+            item: {
+              id: "item-1",
+              type: "commandExecution",
+              command: "echo hello",
+              cwd: "/tmp/project",
+              processId: null,
+              status: "completed",
+              commandActions: [],
+              aggregatedOutput: "hello\n",
+              exitCode: 0,
+              durationMs: null,
+            },
+          },
+        },
+        context,
+      ),
+    ).toEqual([
+      {
+        agentId: "codex",
+        provider: "codex",
+        receivedAt: "2026-04-10T12:00:00.000Z",
+        rawMethod: "item/completed",
+        rawPayload: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          item: {
+            id: "item-1",
+            type: "commandExecution",
+            command: "echo hello",
+            cwd: "/tmp/project",
+            processId: null,
+            status: "completed",
+            commandActions: [],
+            aggregatedOutput: "hello\n",
+            exitCode: 0,
+            durationMs: null,
+          },
+        },
+        type: "item",
+        event: "completed",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: "item-1",
+        item: {
+          id: "item-1",
+          type: "commandExecution",
+          command: "echo hello",
+          cwd: "/tmp/project",
+          processId: null,
+          status: "completed",
+          commandActions: [],
+          aggregatedOutput: "hello\n",
+          exitCode: 0,
+          durationMs: null,
+        },
+      },
+    ]);
+  });
 });
 
 describe("mapCodexServerRequest", () => {

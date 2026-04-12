@@ -6,7 +6,10 @@ import {
   type CreateFakeAgentSessionOptions,
   createFakeAgentRegistry,
   createFakeAgentSession,
+  createTestAgentItem,
   createTestAgentThread,
+  createTestAgentThreadDetail,
+  createTestAgentTurnDetail,
 } from "@/test-support/agents";
 import { createCapturingLogger, createSilentLogger } from "@/test-support/logger";
 import { createThreadsService } from "@/threads/service";
@@ -542,8 +545,23 @@ describe("createThreadsService", () => {
     }
   });
 
-  test("returns an explicit domain error when thread/read requests turns", async () => {
-    const session = createFakeAgentSession();
+  test("reads provider-authoritative turn history when thread/read requests turns", async () => {
+    const session = createFakeAgentSession({
+      readThread: async () => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThreadDetail({
+            id: "thread-1",
+            turns: [
+              createTestAgentTurnDetail({
+                id: "turn-1",
+                items: [createTestAgentItem({ id: "item-1", text: "Hello from history" })],
+              }),
+            ],
+          }),
+        },
+      }),
+    });
     const service = createThreadsService({
       logger: createSilentLogger("error"),
       registry: createFakeAgentRegistry(session),
@@ -555,17 +573,46 @@ describe("createThreadsService", () => {
       includeTurns: true,
     });
 
-    expect(result).toMatchObject({
-      ok: false,
-      error: {
-        code: -33007,
-        message: "Thread read with includeTurns=true is not supported yet",
-        data: {
-          code: "THREAD_READ_INCLUDE_TURNS_UNSUPPORTED",
+    expect(result).toEqual({
+      ok: true,
+      data: {
+        thread: {
+          id: "thread-1",
+          preview: "Thread preview",
+          createdAt: "2026-04-10T10:00:00.000Z",
+          updatedAt: "2026-04-10T11:00:00.000Z",
+          name: null,
+          archived: false,
+          model: null,
+          reasoningEffort: null,
+          status: { type: "idle" },
+          turns: [
+            {
+              id: "turn-1",
+              status: { type: "completed" },
+              items: [
+                {
+                  id: "item-1",
+                  type: "agentMessage",
+                  text: "Hello from history",
+                  phase: null,
+                },
+              ],
+              error: null,
+            },
+          ],
         },
       },
     });
-    expect(session.readThreadCalls).toEqual([]);
+    expect(session.readThreadCalls).toEqual([
+      {
+        requestId: "req-1",
+        params: {
+          threadId: "thread-1",
+          includeTurns: true,
+        },
+      },
+    ]);
   });
 
   test("thread/read returns provider-authoritative archived and does not pass cached archived back upstream", async () => {
@@ -586,7 +633,7 @@ describe("createThreadsService", () => {
       readThread: async () => ({
         ok: true,
         data: {
-          thread: createTestAgentThread({
+          thread: createTestAgentThreadDetail({
             id: "thread-1",
             workspacePath: "/tmp/project",
             archived: false,
@@ -619,6 +666,7 @@ describe("createThreadsService", () => {
           model: "gpt-5.4",
           reasoningEffort: null,
           status: { type: "idle" },
+          turns: [],
         },
       },
     });
@@ -638,7 +686,7 @@ describe("createThreadsService", () => {
       readThread: async (_requestId, params) => ({
         ok: true,
         data: {
-          thread: createTestAgentThread({
+          thread: createTestAgentThreadDetail({
             id: params.threadId,
             workspacePath: "/tmp/project",
             archived: true,
@@ -725,7 +773,7 @@ describe("createThreadsService", () => {
       readThread: async (_requestId, params) => ({
         ok: true,
         data: {
-          thread: createTestAgentThread({
+          thread: createTestAgentThreadDetail({
             id: params.threadId,
             workspacePath: "/tmp/other-project",
           }),
@@ -853,7 +901,7 @@ describe("createThreadsService", () => {
       readThread: async (_requestId, params) => ({
         ok: true,
         data: {
-          thread: createTestAgentThread({
+          thread: createTestAgentThreadDetail({
             id: params.threadId,
             workspacePath: "/tmp/project",
             name: "Old name",
@@ -985,7 +1033,7 @@ describe("createThreadsService", () => {
       readThread: async (_requestId, params) => ({
         ok: true,
         data: {
-          thread: createTestAgentThread({
+          thread: createTestAgentThreadDetail({
             id: params.threadId,
             workspacePath: "/tmp/project",
           }),

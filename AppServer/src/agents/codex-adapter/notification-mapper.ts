@@ -1,5 +1,6 @@
 import { Value } from "@sinclair/typebox/value";
 import {
+  mapCodexThreadItem,
   mapCodexThreadStatus,
   mapCodexThreadSummary,
   mapCodexTurnSummary,
@@ -10,6 +11,7 @@ import {
   CodexMcpToolCallProgressNotificationSchema,
   CodexReasoningSummaryTextDeltaNotificationSchema,
   CodexReasoningTextDeltaNotificationSchema,
+  CodexThreadItemSchema,
 } from "@/agents/codex-adapter/protocol";
 import type {
   CodexTransportDisconnectInfo,
@@ -182,9 +184,7 @@ export const mapCodexTransportNotification = (
       return params &&
         typeof params.threadId === "string" &&
         typeof params.turnId === "string" &&
-        isPlainObject(params.item) &&
-        typeof params.item.id === "string" &&
-        typeof params.item.type === "string"
+        Value.Check(CodexThreadItemSchema, params.item)
         ? [
             {
               ...base,
@@ -193,11 +193,7 @@ export const mapCodexTransportNotification = (
               threadId: params.threadId,
               turnId: params.turnId,
               itemId: params.item.id,
-              item: {
-                id: params.item.id,
-                kind: params.item.type,
-                rawItem: params.item,
-              },
+              item: mapCodexThreadItem(params.item),
             },
           ]
         : [buildMalformedMessage(base, notification.method)];

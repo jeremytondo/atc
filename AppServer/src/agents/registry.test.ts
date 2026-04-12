@@ -197,6 +197,7 @@ const createFakeSession = (
           name: null,
           archived: false,
           status: { type: "idle" },
+          turns: [],
         },
       },
     }),

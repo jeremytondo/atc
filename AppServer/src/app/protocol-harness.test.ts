@@ -17,9 +17,12 @@ import { type AppDatabase, createStoreBootstrap } from "@/core/store";
 import {
   createFakeAgentAdapter,
   createFakeAgentSession,
+  createTestAgentItem,
   createTestAgentModel,
   createTestAgentThread,
+  createTestAgentThreadDetail,
   createTestAgentTurn,
+  createTestAgentTurnDetail,
 } from "@/test-support/agents";
 import { getAvailablePort } from "@/test-support/network";
 import { createSqliteThreadsStore, createThreadsModule, type ThreadsStore } from "@/threads";
@@ -898,7 +901,7 @@ describe("App Server protocol harness", () => {
       readThread: async () => ({
         ok: true,
         data: {
-          thread: createTestAgentThread({
+          thread: createTestAgentThreadDetail({
             id: "thread-read-only",
             workspacePath: canonicalWorkspacePath,
           }),
@@ -948,7 +951,7 @@ describe("App Server protocol harness", () => {
       readThread: async (_requestId, params) => ({
         ok: true,
         data: {
-          thread: createTestAgentThread({
+          thread: createTestAgentThreadDetail({
             id: params.threadId,
             workspacePath: canonicalWorkspacePath,
           }),
@@ -1471,11 +1474,19 @@ describe("App Server protocol harness", () => {
           threadId: "thread-live",
           turnId: "turn-1",
         }),
+        createPlanUpdatedNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+        }),
+        createDiffUpdatedNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+        }),
         createItemStartedNotification({
           threadId: "thread-live",
           turnId: "turn-1",
           itemId: "item-message",
-          kind: "agent_message",
+          itemType: "agentMessage",
         }),
         createMessageDeltaNotification({
           threadId: "thread-live",
@@ -1487,19 +1498,13 @@ describe("App Server protocol harness", () => {
           threadId: "thread-live",
           turnId: "turn-1",
           itemId: "item-message",
-          kind: "agent_message",
-          rawItem: {
-            id: "item-message",
-            type: "agent_message",
-            status: "completed",
-            text: "Working on it...",
-          },
+          item: buildHarnessItem("agentMessage", "item-message", "completed"),
         }),
         createItemStartedNotification({
           threadId: "thread-live",
           turnId: "turn-1",
           itemId: "item-reasoning",
-          kind: "reasoning",
+          itemType: "reasoning",
         }),
         createReasoningTextDeltaNotification({
           threadId: "thread-live",
@@ -1517,18 +1522,13 @@ describe("App Server protocol harness", () => {
           threadId: "thread-live",
           turnId: "turn-1",
           itemId: "item-reasoning",
-          kind: "reasoning",
-          rawItem: {
-            id: "item-reasoning",
-            type: "reasoning",
-            status: "completed",
-          },
+          item: buildHarnessItem("reasoning", "item-reasoning", "completed"),
         }),
         createItemStartedNotification({
           threadId: "thread-live",
           turnId: "turn-1",
           itemId: "item-command",
-          kind: "command_execution",
+          itemType: "commandExecution",
         }),
         createCommandOutputDeltaNotification({
           threadId: "thread-live",
@@ -1540,18 +1540,13 @@ describe("App Server protocol harness", () => {
           threadId: "thread-live",
           turnId: "turn-1",
           itemId: "item-command",
-          kind: "command_execution",
-          rawItem: {
-            id: "item-command",
-            type: "command_execution",
-            status: "completed",
-          },
+          item: buildHarnessItem("commandExecution", "item-command", "completed"),
         }),
         createItemStartedNotification({
           threadId: "thread-live",
           turnId: "turn-1",
           itemId: "item-tool",
-          kind: "mcp_tool_call",
+          itemType: "mcpToolCall",
         }),
         createToolProgressNotification({
           threadId: "thread-live",
@@ -1563,12 +1558,7 @@ describe("App Server protocol harness", () => {
           threadId: "thread-live",
           turnId: "turn-1",
           itemId: "item-tool",
-          kind: "mcp_tool_call",
-          rawItem: {
-            id: "item-tool",
-            type: "mcp_tool_call",
-            status: "completed",
-          },
+          item: buildHarnessItem("mcpToolCall", "item-tool", "completed"),
         }),
         createTurnCompletedNotification({
           threadId: "thread-live",
@@ -1601,19 +1591,44 @@ describe("App Server protocol harness", () => {
           },
         },
         {
+          method: "turn/plan/updated",
+          params: {
+            threadId: "thread-live",
+            turnId: "turn-1",
+            explanation: "Ship it",
+            steps: [
+              {
+                step: "Inspect state",
+                status: "completed",
+              },
+              {
+                step: "Write patch",
+                status: "in_progress",
+              },
+            ],
+          },
+        },
+        {
+          method: "turn/diff/updated",
+          params: {
+            threadId: "thread-live",
+            turnId: "turn-1",
+            diff: ["diff --git a/src/example.ts b/src/example.ts", "+added"].join("\n"),
+            summary: [
+              {
+                path: "src/example.ts",
+                additions: 1,
+                deletions: 0,
+              },
+            ],
+          },
+        },
+        {
           method: "item/started",
           params: {
             threadId: "thread-live",
             turnId: "turn-1",
-            item: {
-              id: "item-message",
-              kind: "agent_message",
-              rawItem: {
-                id: "item-message",
-                type: "agent_message",
-                status: "in_progress",
-              },
-            },
+            item: buildHarnessItem("agentMessage", "item-message", "started"),
           },
         },
         {
@@ -1630,16 +1645,7 @@ describe("App Server protocol harness", () => {
           params: {
             threadId: "thread-live",
             turnId: "turn-1",
-            item: {
-              id: "item-message",
-              kind: "agent_message",
-              rawItem: {
-                id: "item-message",
-                type: "agent_message",
-                status: "completed",
-                text: "Working on it...",
-              },
-            },
+            item: buildHarnessItem("agentMessage", "item-message", "completed"),
           },
         },
         {
@@ -1647,15 +1653,7 @@ describe("App Server protocol harness", () => {
           params: {
             threadId: "thread-live",
             turnId: "turn-1",
-            item: {
-              id: "item-reasoning",
-              kind: "reasoning",
-              rawItem: {
-                id: "item-reasoning",
-                type: "reasoning",
-                status: "in_progress",
-              },
-            },
+            item: buildHarnessItem("reasoning", "item-reasoning", "started"),
           },
         },
         {
@@ -1681,15 +1679,7 @@ describe("App Server protocol harness", () => {
           params: {
             threadId: "thread-live",
             turnId: "turn-1",
-            item: {
-              id: "item-reasoning",
-              kind: "reasoning",
-              rawItem: {
-                id: "item-reasoning",
-                type: "reasoning",
-                status: "completed",
-              },
-            },
+            item: buildHarnessItem("reasoning", "item-reasoning", "completed"),
           },
         },
         {
@@ -1697,15 +1687,7 @@ describe("App Server protocol harness", () => {
           params: {
             threadId: "thread-live",
             turnId: "turn-1",
-            item: {
-              id: "item-command",
-              kind: "command_execution",
-              rawItem: {
-                id: "item-command",
-                type: "command_execution",
-                status: "in_progress",
-              },
-            },
+            item: buildHarnessItem("commandExecution", "item-command", "started"),
           },
         },
         {
@@ -1722,15 +1704,7 @@ describe("App Server protocol harness", () => {
           params: {
             threadId: "thread-live",
             turnId: "turn-1",
-            item: {
-              id: "item-command",
-              kind: "command_execution",
-              rawItem: {
-                id: "item-command",
-                type: "command_execution",
-                status: "completed",
-              },
-            },
+            item: buildHarnessItem("commandExecution", "item-command", "completed"),
           },
         },
         {
@@ -1738,15 +1712,7 @@ describe("App Server protocol harness", () => {
           params: {
             threadId: "thread-live",
             turnId: "turn-1",
-            item: {
-              id: "item-tool",
-              kind: "mcp_tool_call",
-              rawItem: {
-                id: "item-tool",
-                type: "mcp_tool_call",
-                status: "in_progress",
-              },
-            },
+            item: buildHarnessItem("mcpToolCall", "item-tool", "started"),
           },
         },
         {
@@ -1763,15 +1729,7 @@ describe("App Server protocol harness", () => {
           params: {
             threadId: "thread-live",
             turnId: "turn-1",
-            item: {
-              id: "item-tool",
-              kind: "mcp_tool_call",
-              rawItem: {
-                id: "item-tool",
-                type: "mcp_tool_call",
-                status: "completed",
-              },
-            },
+            item: buildHarnessItem("mcpToolCall", "item-tool", "completed"),
           },
         },
         {
@@ -1956,7 +1914,7 @@ describe("App Server protocol harness", () => {
             threadId: "thread-live",
             turnId: "turn-1",
             itemId: "item-message",
-            kind: "agent_message",
+            itemType: "agentMessage",
           }),
         );
         session.emitNotification(
@@ -2033,15 +1991,7 @@ describe("App Server protocol harness", () => {
         params: {
           threadId: "thread-live",
           turnId: "turn-1",
-          item: {
-            id: "item-message",
-            kind: "agent_message",
-            rawItem: {
-              id: "item-message",
-              type: "agent_message",
-              status: "in_progress",
-            },
-          },
+          item: buildHarnessItem("agentMessage", "item-message", "started"),
         },
       });
       expect(messages).toContainEqual({
@@ -2131,7 +2081,7 @@ describe("App Server protocol harness", () => {
       readThread: async (_requestId, params) => ({
         ok: true,
         data: {
-          thread: createTestAgentThread({
+          thread: createTestAgentThreadDetail({
             id: params.threadId,
             workspacePath: canonicalWorkspacePath,
             archived,
@@ -2211,6 +2161,7 @@ describe("App Server protocol harness", () => {
             status: {
               type: "idle",
             },
+            turns: [],
           },
         },
       });
@@ -2266,6 +2217,7 @@ describe("App Server protocol harness", () => {
             status: {
               type: "idle",
             },
+            turns: [],
           },
         },
       });
@@ -2558,7 +2510,7 @@ describe("App Server protocol harness", () => {
           readThreadResult: {
             ok: true,
             data: {
-              thread: createTestAgentThread({
+              thread: createTestAgentThreadDetail({
                 id: "thread-1",
                 preview: "Read me",
                 workspacePath: canonicalWorkspacePath,
@@ -2601,6 +2553,7 @@ describe("App Server protocol harness", () => {
               type: "systemError",
               message: "Provider disconnected",
             },
+            turns: [],
           },
         },
       });
@@ -2729,9 +2682,31 @@ describe("App Server protocol harness", () => {
     }
   });
 
-  test("returns an explicit error for thread/read includeTurns=true", async () => {
+  test("returns turn history for thread/read includeTurns=true", async () => {
     const workspacePath = await createWorkspaceDirectory();
-    const harness = await createProtocolHarness();
+    const canonicalWorkspacePath = await realpath(workspacePath);
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeProtocolAgentAdapter({
+          readThreadResult: {
+            ok: true,
+            data: {
+              thread: createTestAgentThreadDetail({
+                id: "thread-1",
+                preview: "Read me",
+                workspacePath: canonicalWorkspacePath,
+                turns: [
+                  createTestAgentTurnDetail({
+                    id: "turn-1",
+                    items: [createTestAgentItem({ id: "item-1", text: "History item" })],
+                  }),
+                ],
+              }),
+            },
+          },
+        }),
+      ],
+    });
     const client = await connectProtocolClient(harness.port);
 
     try {
@@ -2749,11 +2724,36 @@ describe("App Server protocol harness", () => {
 
       await expect(client.nextMessage()).resolves.toEqual({
         id: "req-thread-read",
-        error: {
-          code: -33007,
-          message: "Thread read with includeTurns=true is not supported yet",
-          data: {
-            code: "THREAD_READ_INCLUDE_TURNS_UNSUPPORTED",
+        result: {
+          thread: {
+            id: "thread-1",
+            preview: "Read me",
+            createdAt: "2026-04-10T10:00:00.000Z",
+            updatedAt: "2026-04-10T11:00:00.000Z",
+            name: null,
+            archived: false,
+            model: null,
+            reasoningEffort: null,
+            status: {
+              type: "idle",
+            },
+            turns: [
+              {
+                id: "turn-1",
+                status: {
+                  type: "completed",
+                },
+                items: [
+                  {
+                    id: "item-1",
+                    type: "agentMessage",
+                    text: "History item",
+                    phase: null,
+                  },
+                ],
+                error: null,
+              },
+            ],
           },
         },
       });
@@ -2871,7 +2871,7 @@ describe("App Server protocol harness", () => {
           readThreadResult: {
             ok: true,
             data: {
-              thread: createTestAgentThread({
+              thread: createTestAgentThreadDetail({
                 id: "thread-1",
                 workspacePath: "/tmp/other-project",
               }),
@@ -3277,7 +3277,7 @@ const createFakeProtocolAgentAdapter = (options: {
     | Readonly<{
         ok: true;
         data: {
-          thread: ReturnType<typeof createTestAgentThread>;
+          thread: ReturnType<typeof createTestAgentThreadDetail>;
         };
       }>
     | Readonly<{
@@ -3322,7 +3322,7 @@ const createFakeProtocolAgentAdapter = (options: {
         options.readThreadResult ?? {
           ok: true,
           data: {
-            thread: createTestAgentThread(),
+            thread: createTestAgentThreadDetail(),
           },
         },
     }),
@@ -3427,11 +3427,52 @@ const createTurnCompletedNotification = (input: {
   },
 });
 
+const createPlanUpdatedNotification = (input: { threadId: string; turnId: string }) => ({
+  agentId: "codex",
+  provider: "codex" as const,
+  receivedAt: "2026-04-10T12:00:00.000Z",
+  rawMethod: "turn/plan/updated",
+  threadId: input.threadId,
+  turnId: input.turnId,
+  type: "plan" as const,
+  event: "updated" as const,
+  explanation: "Ship it",
+  steps: [
+    {
+      step: "Inspect state",
+      status: "completed" as const,
+    },
+    {
+      step: "Write patch",
+      status: "in_progress" as const,
+    },
+  ],
+});
+
+const createDiffUpdatedNotification = (input: { threadId: string; turnId: string }) => ({
+  agentId: "codex",
+  provider: "codex" as const,
+  receivedAt: "2026-04-10T12:00:00.000Z",
+  rawMethod: "turn/diff/updated",
+  threadId: input.threadId,
+  turnId: input.turnId,
+  type: "diff" as const,
+  event: "updated" as const,
+  diff: ["diff --git a/src/example.ts b/src/example.ts", "+added"].join("\n"),
+  summary: [
+    {
+      path: "src/example.ts",
+      additions: 1,
+      deletions: 0,
+    },
+  ],
+});
+
 const createItemStartedNotification = (input: {
   threadId: string;
   turnId: string;
   itemId: string;
-  kind: string;
+  itemType: "agentMessage" | "reasoning" | "commandExecution" | "mcpToolCall";
 }) => ({
   agentId: "codex",
   provider: "codex" as const,
@@ -3442,23 +3483,14 @@ const createItemStartedNotification = (input: {
   itemId: input.itemId,
   type: "item" as const,
   event: "started" as const,
-  item: {
-    id: input.itemId,
-    kind: input.kind,
-    rawItem: {
-      id: input.itemId,
-      type: input.kind,
-      status: "in_progress",
-    },
-  },
+  item: buildHarnessItem(input.itemType, input.itemId, "started"),
 });
 
 const createItemCompletedNotification = (input: {
   threadId: string;
   turnId: string;
   itemId: string;
-  kind: string;
-  rawItem: Record<string, unknown>;
+  item: ReturnType<typeof buildHarnessItem>;
 }) => ({
   agentId: "codex",
   provider: "codex" as const,
@@ -3469,11 +3501,7 @@ const createItemCompletedNotification = (input: {
   itemId: input.itemId,
   type: "item" as const,
   event: "completed" as const,
-  item: {
-    id: input.itemId,
-    kind: input.kind,
-    rawItem: input.rawItem,
-  },
+  item: input.item,
 });
 
 const createMessageDeltaNotification = (input: {
@@ -3565,6 +3593,60 @@ const createToolProgressNotification = (input: {
   event: "progress" as const,
   message: input.message,
 });
+
+const buildHarnessItem = (
+  itemType: "agentMessage" | "reasoning" | "commandExecution" | "mcpToolCall",
+  itemId: string,
+  lifecycle: "started" | "completed",
+) => {
+  switch (itemType) {
+    case "agentMessage":
+      return {
+        id: itemId,
+        type: "agentMessage" as const,
+        text: lifecycle === "completed" ? "Working on it..." : "",
+        phase: null,
+      };
+    case "reasoning":
+      return {
+        id: itemId,
+        type: "reasoning" as const,
+        summary: lifecycle === "completed" ? ["Short summary"] : [],
+        content: lifecycle === "completed" ? ["Thinking..."] : [],
+      };
+    case "commandExecution": {
+      const status: "completed" | "inProgress" =
+        lifecycle === "completed" ? "completed" : "inProgress";
+      return {
+        id: itemId,
+        type: "commandExecution" as const,
+        command: "echo hello",
+        cwd: "/tmp/project",
+        processId: null,
+        status,
+        commandActions: [],
+        aggregatedOutput: lifecycle === "completed" ? "stdout line\n" : null,
+        exitCode: lifecycle === "completed" ? 0 : null,
+        durationMs: null,
+      };
+    }
+    case "mcpToolCall": {
+      const status: "completed" | "inProgress" =
+        lifecycle === "completed" ? "completed" : "inProgress";
+      return {
+        id: itemId,
+        type: "mcpToolCall" as const,
+        server: "filesystem",
+        tool: "read_file",
+        status,
+        arguments: {},
+        result: null,
+        error: null,
+        durationMs: null,
+      };
+    }
+  }
+};
 
 const toMessageText = (data: unknown): string => {
   if (typeof data === "string") {

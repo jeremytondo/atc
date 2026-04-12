@@ -78,6 +78,122 @@ export type AgentTurnStatus =
   | Readonly<{ type: "cancelled" }>
   | Readonly<{ type: "interrupted" }>;
 
+export type AgentTurnTerminalError = Readonly<{
+  message: string;
+  providerError: unknown | null;
+  additionalDetails: string | null;
+}>;
+
+export type AgentTurnItem =
+  | Readonly<{
+      type: "userMessage";
+      id: string;
+      content: unknown[];
+    }>
+  | Readonly<{
+      type: "agentMessage";
+      id: string;
+      text: string;
+      phase: string | null;
+    }>
+  | Readonly<{
+      type: "plan";
+      id: string;
+      text: string;
+    }>
+  | Readonly<{
+      type: "reasoning";
+      id: string;
+      summary: string[];
+      content: string[];
+    }>
+  | Readonly<{
+      type: "commandExecution";
+      id: string;
+      command: string;
+      cwd: string;
+      processId: string | null;
+      status: "inProgress" | "completed" | "failed" | "declined";
+      commandActions: unknown[];
+      aggregatedOutput: string | null;
+      exitCode: number | null;
+      durationMs: number | null;
+    }>
+  | Readonly<{
+      type: "fileChange";
+      id: string;
+      changes: unknown[];
+      status: "inProgress" | "completed" | "failed" | "declined";
+    }>
+  | Readonly<{
+      type: "mcpToolCall";
+      id: string;
+      server: string;
+      tool: string;
+      status: "inProgress" | "completed" | "failed";
+      arguments: unknown;
+      result: unknown | null;
+      error: unknown | null;
+      durationMs: number | null;
+    }>
+  | Readonly<{
+      type: "dynamicToolCall";
+      id: string;
+      tool: string;
+      arguments: unknown;
+      status: "inProgress" | "completed" | "failed";
+      contentItems: unknown[] | null;
+      success: boolean | null;
+      durationMs: number | null;
+    }>
+  | Readonly<{
+      type: "collabAgentToolCall";
+      id: string;
+      tool: "spawnAgent" | "sendInput" | "resumeAgent" | "wait" | "closeAgent";
+      status: "inProgress" | "completed" | "failed";
+      senderThreadId: string;
+      receiverThreadIds: string[];
+      prompt: string | null;
+      agentsStates: Record<string, unknown>;
+    }>
+  | Readonly<{
+      type: "webSearch";
+      id: string;
+      query: string;
+      action:
+        | Readonly<{ type: "search"; query: string | null; queries: string[] | null }>
+        | Readonly<{ type: "openPage"; url: string | null }>
+        | Readonly<{ type: "findInPage"; url: string | null; pattern: string | null }>
+        | Readonly<{ type: "other" }>
+        | null;
+    }>
+  | Readonly<{
+      type: "imageView";
+      id: string;
+      path: string;
+    }>
+  | Readonly<{
+      type: "imageGeneration";
+      id: string;
+      status: string;
+      revisedPrompt: string | null;
+      result: string;
+    }>
+  | Readonly<{
+      type: "enteredReviewMode";
+      id: string;
+      review: string;
+    }>
+  | Readonly<{
+      type: "exitedReviewMode";
+      id: string;
+      review: string;
+    }>
+  | Readonly<{
+      type: "contextCompaction";
+      id: string;
+    }>;
+
 export type AgentThreadSummary = Readonly<{
   id: string;
   preview: string;
@@ -91,6 +207,18 @@ export type AgentTurnSummary = Readonly<{
   id: string;
   status: AgentTurnStatus;
 }>;
+
+export type AgentTurnDetail = Readonly<{
+  id: string;
+  status: AgentTurnStatus;
+  items: readonly AgentTurnItem[];
+  error: AgentTurnTerminalError | null;
+}>;
+
+export type AgentThreadDetail = AgentThread &
+  Readonly<{
+    turns: readonly AgentTurnDetail[];
+  }>;
 
 export type AgentPlanStep = Readonly<{
   step: string;
@@ -151,11 +279,7 @@ export type AgentItemNotification = AgentNotificationBase &
   Readonly<{
     type: "item";
     event: "started" | "completed";
-    item: Readonly<{
-      id: string;
-      kind: string;
-      rawItem: unknown;
-    }>;
+    item: AgentTurnItem;
   }>;
 
 export type AgentMessageNotification = AgentNotificationBase &
@@ -359,6 +483,10 @@ export type AgentThreadResult = Readonly<{
   reasoningEffort?: AgentReasoningEffort | null;
 }>;
 
+export type AgentThreadReadResult = Readonly<{
+  thread: AgentThreadDetail;
+}>;
+
 export type AgentThreadMutationResult = Record<string, never>;
 
 export type AgentTurnStartParams = Readonly<{
@@ -418,7 +546,7 @@ export type AgentSession = Readonly<{
   readThread: (
     requestId: AgentRequestId,
     params: AgentThreadReadParams,
-  ) => Promise<AgentOperationResult<AgentThreadResult>>;
+  ) => Promise<AgentOperationResult<AgentThreadReadResult>>;
   forkThread: (
     requestId: AgentRequestId,
     params: AgentThreadForkParams,

@@ -19,12 +19,9 @@ describe("active turn registry", () => {
       turnId: "turn-1",
       item: {
         id: "item-1",
-        kind: "agent_message",
-        rawItem: {
-          id: "item-1",
-          type: "agent_message",
-          status: "in_progress",
-        },
+        type: "agentMessage",
+        text: "",
+        phase: null,
       },
     });
     registry.appendMessageText({
@@ -44,13 +41,9 @@ describe("active turn registry", () => {
       turnId: "turn-1",
       item: {
         id: "item-1",
-        kind: "agent_message",
-        rawItem: {
-          id: "item-1",
-          type: "agent_message",
-          status: "completed",
-          text: "Hello world",
-        },
+        type: "agentMessage",
+        text: "Hello world",
+        phase: null,
       },
     });
 
@@ -66,13 +59,9 @@ describe("active turn registry", () => {
         {
           item: {
             id: "item-1",
-            kind: "agent_message",
-            rawItem: {
-              id: "item-1",
-              type: "agent_message",
-              status: "completed",
-              text: "Hello world",
-            },
+            type: "agentMessage",
+            text: "Hello world",
+            phase: null,
           },
           messageText: "Hello world",
           reasoningText: "",
@@ -146,12 +135,9 @@ describe("active turn registry", () => {
       turnId: "turn-1",
       item: {
         id: "item-1",
-        kind: "agent_message",
-        rawItem: {
-          id: "item-1",
-          type: "agent_message",
-          status: "in_progress",
-        },
+        type: "agentMessage",
+        text: "",
+        phase: null,
       },
     });
 
@@ -169,12 +155,9 @@ describe("active turn registry", () => {
         turnId: "turn-2",
         item: {
           id: "item-2",
-          kind: "agent_message",
-          rawItem: {
-            id: "item-2",
-            type: "agent_message",
-            status: "completed",
-          },
+          type: "agentMessage",
+          text: "",
+          phase: null,
         },
       }),
     ).toBe(false);
@@ -191,12 +174,9 @@ describe("active turn registry", () => {
         {
           item: {
             id: "item-1",
-            kind: "agent_message",
-            rawItem: {
-              id: "item-1",
-              type: "agent_message",
-              status: "in_progress",
-            },
+            type: "agentMessage",
+            text: "",
+            phase: null,
           },
           messageText: "",
           reasoningText: "",
