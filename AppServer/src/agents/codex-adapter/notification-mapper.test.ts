@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  mapCodexResolvedApproval,
   mapCodexServerRequest,
   mapCodexTransportNotification,
 } from "@/agents/codex-adapter/notification-mapper";
@@ -507,5 +508,206 @@ describe("mapCodexServerRequest", () => {
         },
       },
     ]);
+  });
+
+  test("maps file change approval requests into provider-neutral approval notifications", () => {
+    const approvalFixture = {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "item-2",
+      reason: "Needs write access",
+      grantRoot: "/tmp/project",
+    };
+
+    expect(
+      mapCodexServerRequest(
+        {
+          id: "approval-2",
+          method: "item/fileChange/requestApproval",
+          params: approvalFixture,
+        },
+        context,
+      ),
+    ).toEqual([
+      {
+        agentId: "codex",
+        provider: "codex",
+        receivedAt: "2026-04-10T12:00:00.000Z",
+        rawMethod: "item/fileChange/requestApproval",
+        rawPayload: approvalFixture,
+        type: "approval",
+        event: "requested",
+        requestId: "approval-2",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: "item-2",
+        approval: {
+          requestId: "approval-2",
+          kind: "fileChange",
+          threadId: "thread-1",
+          turnId: "turn-1",
+          itemId: "item-2",
+          supportedResolutions: ["approved", "approvedForSession", "declined", "cancelled"],
+          reason: "Needs write access",
+          grantRoot: "/tmp/project",
+          rawRequest: {
+            id: "approval-2",
+            method: "item/fileChange/requestApproval",
+            params: approvalFixture,
+          },
+        },
+      },
+    ]);
+  });
+
+  test("maps MCP elicitation approval requests with form and url variants", () => {
+    const formFixture = {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "item-3",
+      serverName: "docs",
+      mode: "form",
+      message: "Need extra fields",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+          },
+        },
+      },
+      _meta: {
+        source: "mcp",
+      },
+    };
+    const urlFixture = {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "item-4",
+      serverName: "browser",
+      mode: "url",
+      message: "Open this link",
+      url: "https://example.com",
+      elicitationId: "elicit-1",
+    };
+
+    expect(
+      mapCodexServerRequest(
+        {
+          id: "approval-3",
+          method: "mcpServer/elicitation/request",
+          params: formFixture,
+        },
+        context,
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        requestId: "approval-3",
+        approval: {
+          requestId: "approval-3",
+          kind: "mcpElicitation",
+          threadId: "thread-1",
+          turnId: "turn-1",
+          itemId: "item-3",
+          supportedResolutions: ["approved", "declined", "cancelled"],
+          serverName: "docs",
+          mode: "form",
+          message: "Need extra fields",
+          requestedSchema: formFixture.requestedSchema,
+          url: null,
+          elicitationId: null,
+          metadata: {
+            source: "mcp",
+          },
+          rawRequest: {
+            id: "approval-3",
+            method: "mcpServer/elicitation/request",
+            params: formFixture,
+          },
+        },
+      }),
+    ]);
+    expect(
+      mapCodexServerRequest(
+        {
+          id: "approval-4",
+          method: "mcpServer/elicitation/request",
+          params: urlFixture,
+        },
+        context,
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        requestId: "approval-4",
+        approval: {
+          requestId: "approval-4",
+          kind: "mcpElicitation",
+          threadId: "thread-1",
+          turnId: "turn-1",
+          itemId: "item-4",
+          supportedResolutions: ["approved", "declined", "cancelled"],
+          serverName: "browser",
+          mode: "url",
+          message: "Open this link",
+          requestedSchema: null,
+          url: "https://example.com",
+          elicitationId: "elicit-1",
+          metadata: null,
+          rawRequest: {
+            id: "approval-4",
+            method: "mcpServer/elicitation/request",
+            params: urlFixture,
+          },
+        },
+      }),
+    ]);
+  });
+});
+
+describe("mapCodexResolvedApproval", () => {
+  test("maps resolved approvals with the recorded client resolution", () => {
+    expect(
+      mapCodexResolvedApproval(
+        "approval-1",
+        {
+          approval: {
+            requestId: "approval-1",
+            kind: "fileChange",
+            threadId: "thread-1",
+            turnId: "turn-1",
+            itemId: "item-1",
+            supportedResolutions: ["approved", "declined", "cancelled"],
+            reason: "Write files",
+            grantRoot: "/tmp/project",
+            rawRequest: {},
+          },
+          resolution: "declined",
+        },
+        context,
+      ),
+    ).toEqual({
+      agentId: "codex",
+      provider: "codex",
+      receivedAt: "2026-04-10T12:00:00.000Z",
+      rawMethod: "serverRequest/resolved",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "item-1",
+      type: "approval",
+      event: "resolved",
+      requestId: "approval-1",
+      approval: {
+        requestId: "approval-1",
+        kind: "fileChange",
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: "item-1",
+        supportedResolutions: ["approved", "declined", "cancelled"],
+        reason: "Write files",
+        grantRoot: "/tmp/project",
+        rawRequest: {},
+      },
+      resolution: "declined",
+    });
   });
 });

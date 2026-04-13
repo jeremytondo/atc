@@ -1,5 +1,6 @@
 import type { AgentRemoteError, AgentSessionUnavailableError } from "@/agents/contracts";
 import {
+  ATELIER_AGENT_NOT_FOUND_ERROR,
   ATELIER_AGENT_SESSION_UNAVAILABLE_ERROR,
   ATELIER_PROVIDER_ERROR,
   createProtocolMethodError,
@@ -31,5 +32,15 @@ export const createProviderError = (error: AgentRemoteError): ProtocolMethodErro
       provider: error.provider,
       providerCode: String(error.code),
       providerMessage: error.message,
+    }),
+  );
+
+export const createAgentNotFoundProtocolError = (agentId: string): ProtocolMethodError =>
+  createProtocolMethodError(
+    ATELIER_AGENT_NOT_FOUND_ERROR,
+    "Requested agent is not configured",
+    Object.freeze({
+      code: "AGENT_NOT_FOUND",
+      agentId,
     }),
   );

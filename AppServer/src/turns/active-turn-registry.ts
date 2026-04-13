@@ -28,6 +28,7 @@ export type ActiveTurnRegistry = Readonly<{
     threadId: string,
   ) => Result<Readonly<{ release: () => void }>, ActiveTurnConflictError>;
   startTurn: (input: Readonly<{ threadId: string; turn: Turn }>) => boolean;
+  updateTurn: (input: Readonly<{ threadId: string; turn: Turn }>) => boolean;
   recordTurnCompleted: (input: Readonly<{ threadId: string; turn: Turn }>) => boolean;
   recordItemStarted: (
     input: Readonly<{ threadId: string; turnId: string; item: TurnItem }>,
@@ -101,6 +102,19 @@ export const createActiveTurnRegistry = (): ActiveTurnRegistry => {
     }
 
     if (state.turn.id !== turnId) {
+      return undefined;
+    }
+
+    return state;
+  };
+
+  const getTrackedTurnState = (
+    threadId: string,
+    turnId: string,
+  ): MutableActiveTurnState | undefined => {
+    const state = statesByThreadId.get(threadId);
+
+    if (state?.turn === undefined || state.turn.id !== turnId) {
       return undefined;
     }
 
@@ -184,6 +198,15 @@ export const createActiveTurnRegistry = (): ActiveTurnRegistry => {
     startTurn: ({ threadId, turn }) => {
       const state = getOrCreateThreadState(threadId);
       if (state.turn !== undefined && state.turn.id !== turn.id) {
+        return false;
+      }
+
+      state.turn = turn;
+      return true;
+    },
+    updateTurn: ({ threadId, turn }) => {
+      const state = getTrackedTurnState(threadId, turn.id);
+      if (state === undefined) {
         return false;
       }
 

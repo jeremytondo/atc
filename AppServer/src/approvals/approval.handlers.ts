@@ -4,7 +4,11 @@ import type {
   AgentSession,
   AgentSessionLookupError,
 } from "@/agents/contracts";
-import { createAgentSessionUnavailableError, createProviderError } from "@/agents/protocol-errors";
+import {
+  createAgentNotFoundProtocolError,
+  createAgentSessionUnavailableError,
+  createProviderError,
+} from "@/agents/protocol-errors";
 import type { AgentRegistry } from "@/agents/registry";
 import type { Logger } from "@/app/logger";
 import { type ApprovalRegistryRecord, createApprovalRegistry } from "@/approvals/approval-registry";
@@ -148,7 +152,10 @@ export const createApprovalsModule = (options: CreateApprovalsModuleOptions): Ap
           return;
         }
 
-        const approval = mapAgentApprovalRequest(notification.approval);
+        const approval = mapAgentApprovalRequest({
+          ...notification.approval,
+          threadId: notification.approval.threadId,
+        });
         approvals.recordRequested(approval);
         await fanOutThreadNotification(approval.threadId, {
           method: "approval/requested",
@@ -224,7 +231,7 @@ export const createApprovalsModule = (options: CreateApprovalsModuleOptions): Ap
         return err(mapApprovalError(result.error));
       }
 
-      void emitResolvedNotification(result.data.approval, result.data.resolution);
+      await emitResolvedNotification(result.data.approval, result.data.resolution);
 
       const resolveResult: ApprovalResolveResult = {
         requestId: result.data.requestId,
@@ -261,10 +268,12 @@ export const createApprovalsModule = (options: CreateApprovalsModuleOptions): Ap
   });
 };
 
-const mapAgentApprovalRequest = (approval: AgentApprovalRequest): ApprovalRequest => {
+const mapAgentApprovalRequest = (
+  approval: AgentApprovalRequest & Readonly<{ threadId: string }>,
+): ApprovalRequest => {
   const base = {
     requestId: approval.requestId,
-    threadId: approval.threadId ?? "",
+    threadId: approval.threadId,
     turnId: approval.turnId ?? null,
     itemId: approval.itemId ?? null,
     supportedResolutions: [...approval.supportedResolutions],
@@ -333,7 +342,7 @@ const mapApprovalError = (
         error.supportedResolutions,
       );
     case "agentNotFound":
-      throw new Error(error.message);
+      return createAgentNotFoundProtocolError(error.agentId);
     default:
       return assertNever(error, "Unhandled approval protocol error");
   }

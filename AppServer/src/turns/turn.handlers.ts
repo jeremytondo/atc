@@ -4,7 +4,11 @@ import type {
   AgentSessionLookupError,
   AgentTurnNotification,
 } from "@/agents/contracts";
-import { createAgentSessionUnavailableError, createProviderError } from "@/agents/protocol-errors";
+import {
+  createAgentNotFoundProtocolError,
+  createAgentSessionUnavailableError,
+  createProviderError,
+} from "@/agents/protocol-errors";
 import type { AgentRegistry } from "@/agents/registry";
 import { createAgentRequestId } from "@/agents/request-id";
 import type { Logger } from "@/app/logger";
@@ -463,11 +467,11 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
           return;
         }
 
+        activeTurns.clearThread(notification.threadId);
         await options.onTurnCompleted?.({
           threadId: notification.threadId,
           turnId: turn.id,
         });
-        activeTurns.clearThread(notification.threadId);
         await fanOutThreadNotification(notification.threadId, {
           method: "turn/completed",
           params: {
@@ -654,6 +658,11 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
         return err(mapTurnError(bindResult.error));
       }
 
+      const approvalBindResult = await options.ensureApprovalNotificationBinding?.();
+      if (approvalBindResult !== undefined && !approvalBindResult.ok) {
+        return err(mapTurnError(approvalBindResult.error));
+      }
+
       const agentRequestId = createAgentRequestId({
         connectionId,
         method: "turn/interrupt",
@@ -727,7 +736,7 @@ const mapTurnError = (error: AgentSessionLookupError | TurnsServiceError): Proto
     case "activeTurnMismatch":
       return createActiveTurnMismatchProtocolError(error);
     case "agentNotFound":
-      throw new Error(error.message);
+      return createAgentNotFoundProtocolError(error.agentId);
     default:
       return assertNever(error, "Unhandled turn protocol error");
   }

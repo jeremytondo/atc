@@ -173,7 +173,11 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
   const listeners = new Set<(notification: AgentNotification) => void>();
   const approvalsByRequestId = new Map<
     string,
-    { approval: AgentApprovalRequest; resolution?: AgentApprovalResolveParams["resolution"] }
+    {
+      approval: AgentApprovalRequest;
+      resolution?: AgentApprovalResolveParams["resolution"];
+      responding: boolean;
+    }
   >();
   let state: AgentSession["getState"] extends () => infer T ? T : never = "idle";
   let initializePromise: Promise<Result<void, AgentOperationError>> | null = null;
@@ -243,6 +247,7 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
           if (notification.type === "approval" && notification.event === "requested") {
             approvalsByRequestId.set(requestIdKey(notification.requestId), {
               approval: notification.approval,
+              responding: false,
             });
           }
           emit(notification);
@@ -619,7 +624,21 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
       });
     }
 
-    pendingApproval.resolution = params.resolution;
+    if (pendingApproval.responding) {
+      return err({
+        type: "invalidProviderMessage",
+        agentId: options.agentId,
+        provider: "codex",
+        message: `Approval request ${String(params.requestId)} is already being resolved.`,
+        detail: { requestId: params.requestId },
+      });
+    }
+
+    approvalsByRequestId.set(requestIdKey(params.requestId), {
+      ...pendingApproval,
+      resolution: params.resolution,
+      responding: true,
+    });
 
     try {
       const response: CodexTransportResponse = {
@@ -632,6 +651,7 @@ const createConnectedSession = (options: ConnectedSessionOptions): AgentSession 
         resolution: params.resolution,
       });
     } catch (error) {
+      approvalsByRequestId.set(requestIdKey(params.requestId), pendingApproval);
       return err(
         normalizeOperationError(
           options.agentId,
@@ -752,7 +772,7 @@ const buildApprovalDecision = (
     case "mcpElicitation":
       return mapMcpElicitationResolution(params.resolution);
     case "unknown":
-      return mapFileChangeApprovalResolution(params.resolution);
+      return mapUnknownApprovalResolution(params.resolution);
   }
 };
 
@@ -798,6 +818,19 @@ const mapMcpElicitationResolution = (
   content: null,
   _meta: null,
 });
+
+const mapUnknownApprovalResolution = (
+  resolution: AgentApprovalResolveParams["resolution"],
+): CodexFileChangeApprovalDecision => {
+  switch (resolution) {
+    case "cancelled":
+      return "cancel";
+    case "approved":
+    case "approvedForSession":
+    case "declined":
+      throw new Error(`Unknown approval requests cannot be resolved as ${resolution}.`);
+  }
+};
 
 const applyCodexEnvironmentOverrides = (
   environment: Readonly<Record<string, string | undefined>>,

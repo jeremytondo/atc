@@ -12,6 +12,9 @@ import {
   CodexReasoningSummaryTextDeltaNotificationSchema,
   CodexReasoningTextDeltaNotificationSchema,
   CodexThreadItemSchema,
+  CodexThreadSchema,
+  CodexThreadStatusSchema,
+  CodexTurnSchema,
 } from "@/agents/codex-adapter/protocol";
 import type {
   CodexTransportDisconnectInfo,
@@ -55,19 +58,21 @@ export const mapCodexTransportNotification = (
 
   switch (notification.method) {
     case "thread/started":
-      return params && isPlainObject(params.thread)
+      return params && Value.Check(CodexThreadSchema, params.thread)
         ? [
             {
               ...base,
               type: "thread",
               event: "started",
               threadId: typeof params.thread.id === "string" ? params.thread.id : undefined,
-              thread: mapCodexThreadSummary(params.thread as never),
+              thread: mapCodexThreadSummary(params.thread),
             },
           ]
         : [buildMalformedMessage(base, "thread/started")];
     case "thread/status/changed":
-      return params && typeof params.threadId === "string" && isPlainObject(params.status)
+      return params &&
+        typeof params.threadId === "string" &&
+        Value.Check(CodexThreadStatusSchema, params.status)
         ? [
             {
               ...base,
@@ -78,7 +83,7 @@ export const mapCodexTransportNotification = (
                 params.threadId,
                 receivedAt,
                 false,
-                mapCodexThreadStatus(params.status as never),
+                mapCodexThreadStatus(params.status),
               ),
             },
           ]
@@ -151,8 +156,7 @@ export const mapCodexTransportNotification = (
     case "turn/started":
       return params &&
         typeof params.threadId === "string" &&
-        isPlainObject(params.turn) &&
-        typeof params.turn.id === "string"
+        Value.Check(CodexTurnSchema, params.turn)
         ? [
             {
               ...base,
@@ -160,15 +164,14 @@ export const mapCodexTransportNotification = (
               event: "started",
               threadId: params.threadId,
               turnId: params.turn.id,
-              turn: mapCodexTurnSummary(params.turn as never),
+              turn: mapCodexTurnSummary(params.turn),
             },
           ]
         : [buildMalformedMessage(base, "turn/started")];
     case "turn/completed":
       return params &&
         typeof params.threadId === "string" &&
-        isPlainObject(params.turn) &&
-        typeof params.turn.id === "string"
+        Value.Check(CodexTurnSchema, params.turn)
         ? [
             {
               ...base,
@@ -176,7 +179,7 @@ export const mapCodexTransportNotification = (
               event: "completed",
               threadId: params.threadId,
               turnId: params.turn.id,
-              turn: mapCodexTurnSummary(params.turn as never),
+              turn: mapCodexTurnSummary(params.turn),
             },
           ]
         : [buildMalformedMessage(base, "turn/completed")];

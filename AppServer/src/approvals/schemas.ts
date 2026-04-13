@@ -23,6 +23,15 @@ const ApprovalRequestBase = {
   supportedResolutions: Type.Array(ApprovalDecisionResolutionSchema),
 } as const;
 
+// Provider-defined command action entries are forwarded transparently until the
+// App Server adopts a stable provider-neutral action contract.
+const CommandActionSchema = Type.Unknown();
+
+// MCP elicitation payloads can carry arbitrary JSON Schema fragments and
+// provider metadata at this boundary, so they remain intentionally opaque.
+const ApprovalRequestedSchemaPayloadSchema = Type.Unknown();
+const ApprovalMetadataSchema = Type.Unknown();
+
 export const ApprovalCommandExecutionRequestSchema = Type.Object(
   {
     ...ApprovalRequestBase,
@@ -31,7 +40,7 @@ export const ApprovalCommandExecutionRequestSchema = Type.Object(
     reason: Type.Union([Type.String(), Type.Null()]),
     command: Type.Union([Type.String(), Type.Null()]),
     cwd: Type.Union([Type.String(), Type.Null()]),
-    commandActions: Type.Union([Type.Array(Type.Unknown()), Type.Null()]),
+    commandActions: Type.Union([Type.Array(CommandActionSchema), Type.Null()]),
   },
   { additionalProperties: false },
 );
@@ -55,10 +64,10 @@ export const ApprovalMcpElicitationRequestSchema = Type.Object(
     serverName: Type.String({ minLength: 1 }),
     mode: Type.Union([Type.Literal("form"), Type.Literal("url")]),
     message: Type.String(),
-    requestedSchema: Type.Union([Type.Unknown(), Type.Null()]),
+    requestedSchema: Type.Union([ApprovalRequestedSchemaPayloadSchema, Type.Null()]),
     url: Type.Union([Type.String(), Type.Null()]),
     elicitationId: Type.Union([Type.String(), Type.Null()]),
-    metadata: Type.Union([Type.Unknown(), Type.Null()]),
+    metadata: Type.Union([ApprovalMetadataSchema, Type.Null()]),
   },
   { additionalProperties: false },
 );

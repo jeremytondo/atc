@@ -1013,6 +1013,95 @@ describe("createCodexAgentSession", () => {
     );
   });
 
+  test("rejects duplicate approval resolves while a provider response is already in flight", async () => {
+    let releaseRespond = () => {};
+    const respondBlocked = new Promise<void>((resolve) => {
+      releaseRespond = resolve;
+    });
+    const executablePath = createFakeExecutable();
+    const transport = new FakeTransport([{ userAgent: "Codex/Test" }], {
+      onRespond: async () => {
+        await respondBlocked;
+      },
+    });
+    const sessionResult = await createCodexAgentSession({
+      agentId: "codex",
+      config: {
+        id: "codex",
+        provider: "codex",
+      },
+      logger: createSilentLogger(),
+      transport,
+      environmentResolver: new BaseEnvironmentResolver({
+        inheritedEnvironment: {
+          ATELIERCODE_CODEX_PATH: executablePath,
+          PATH: path.dirname(executablePath),
+          HOME: "/Users/tester",
+          SHELL: "/bin/zsh",
+        },
+      }),
+    });
+
+    expect(sessionResult.ok).toBe(true);
+    if (!sessionResult.ok) {
+      throw new Error("Expected the Codex session to be created.");
+    }
+
+    await sessionResult.data.listModels("req-init", {});
+
+    transport.emit({
+      type: "serverRequest",
+      request: {
+        id: "approval-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          itemId: "item-1",
+        },
+      },
+    });
+
+    const firstResolvePromise = sessionResult.data.resolveApproval({
+      requestId: "approval-1",
+      resolution: "approved",
+    });
+    await Promise.resolve();
+
+    await expect(
+      sessionResult.data.resolveApproval({
+        requestId: "approval-1",
+        resolution: "declined",
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        type: "invalidProviderMessage",
+        agentId: "codex",
+        provider: "codex",
+        message: "Approval request approval-1 is already being resolved.",
+        detail: {
+          requestId: "approval-1",
+        },
+      },
+    });
+
+    releaseRespond();
+    await expect(firstResolvePromise).resolves.toEqual({
+      ok: true,
+      data: {
+        requestId: "approval-1",
+        resolution: "approved",
+      },
+    });
+    expect(transport.responded).toEqual([
+      {
+        id: "approval-1",
+        result: "accept",
+      },
+    ]);
+  });
+
   test("does not mark the session ready when transport disconnects during initialized notification", async () => {
     const executablePath = createFakeExecutable();
     const transport = new FakeTransport([{ userAgent: "Codex/Test" }], {
@@ -1183,6 +1272,7 @@ describe("createCodexAgentSession", () => {
 
 type FakeTransportOptions = Readonly<{
   onNotify?: (notification: CodexTransportNotification, transport: FakeTransport) => void;
+  onRespond?: (response: CodexTransportResponse, transport: FakeTransport) => Promise<void> | void;
 }>;
 
 class FakeTransport implements CodexTransport {
@@ -1233,6 +1323,7 @@ class FakeTransport implements CodexTransport {
     }
 
     this.responded.push(response);
+    await this.options.onRespond?.(response, this);
   }
 
   subscribe(listener: (event: CodexTransportEvent) => void): () => void {

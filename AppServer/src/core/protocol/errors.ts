@@ -25,6 +25,7 @@ export const ATELIER_ACTIVE_TURN_NOT_FOUND_ERROR = -33012;
 export const ATELIER_ACTIVE_TURN_MISMATCH_ERROR = -33013;
 export const ATELIER_APPROVAL_NOT_PENDING_ERROR = -33014;
 export const ATELIER_UNSUPPORTED_APPROVAL_RESOLUTION_ERROR = -33015;
+export const ATELIER_AGENT_NOT_FOUND_ERROR = -33016;
 
 const PROTOCOL_METHOD_ERROR_BRAND = Symbol("ProtocolMethodError");
 
@@ -262,6 +263,16 @@ export const createUnsupportedApprovalResolutionError = (
       requestId,
       resolution,
       supportedResolutions: [...supportedResolutions],
+    }),
+  );
+
+export const createAgentNotFoundError = (agentId: string): ProtocolMethodError =>
+  createProtocolMethodError(
+    ATELIER_AGENT_NOT_FOUND_ERROR,
+    "Requested agent is not configured",
+    Object.freeze({
+      code: "AGENT_NOT_FOUND",
+      agentId,
     }),
   );
 

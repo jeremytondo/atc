@@ -117,12 +117,12 @@ export const createTurnsService = (options: CreateTurnsServiceOptions): TurnsSer
         id: steerTurnResult.data.turn.id,
         status: mapTurnStatus(steerTurnResult.data.turn.status),
       });
-      const wasRecorded = options.activeTurns.startTurn({
+      const wasRecorded = options.activeTurns.updateTurn({
         threadId: params.threadId,
         turn,
       });
       if (!wasRecorded) {
-        options.logger.warn("Ignored turn/steer response with mismatched active turn", {
+        options.logger.warn("Ignored turn/steer response for an untracked active turn", {
           threadId: params.threadId,
           turnId: turn.id,
           activeTurnId: options.activeTurns.getActiveTurn(params.threadId)?.turn?.id ?? null,

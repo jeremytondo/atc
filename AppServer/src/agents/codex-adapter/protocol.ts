@@ -42,7 +42,7 @@ const CodexModelListResponseSchema = Type.Object(
   { additionalProperties: true },
 );
 
-const CodexThreadStatusSchema = Type.Union([
+export const CodexThreadStatusSchema = Type.Union([
   Type.Object(
     {
       type: Type.Literal("notLoaded"),
@@ -114,7 +114,7 @@ export const CodexTurnDetailSchema = Type.Object(
   { additionalProperties: true },
 );
 
-const CodexThreadSchema = Type.Object(
+export const CodexThreadSchema = Type.Object(
   {
     id: Type.String(),
     preview: Type.String(),
@@ -154,7 +154,7 @@ const CodexConfiguredThreadResponseSchema = Type.Object(
   { additionalProperties: true },
 );
 
-const CodexTurnSchema = Type.Object(
+export const CodexTurnSchema = Type.Object(
   {
     id: Type.String(),
     status: Type.Union([

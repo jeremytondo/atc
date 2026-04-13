@@ -59,4 +59,88 @@ describe("createApprovalRegistry", () => {
       state: "pending",
     });
   });
+
+  test("clears a single request without disturbing others", () => {
+    const registry = createApprovalRegistry();
+    registry.recordRequested(createCommandApproval("approval-1"));
+    registry.recordRequested(createCommandApproval("approval-2"));
+
+    expect(registry.clearRequest("approval-1")).toEqual({
+      approval: createCommandApproval("approval-1"),
+      state: "pending",
+    });
+    expect(registry.getPending("approval-1")).toBeUndefined();
+    expect(registry.getPending("approval-2")).toEqual({
+      approval: createCommandApproval("approval-2"),
+      state: "pending",
+    });
+  });
+
+  test("clears approvals for an entire thread", () => {
+    const registry = createApprovalRegistry();
+    registry.recordRequested(createCommandApproval("approval-1"));
+    registry.recordRequested(
+      Object.freeze({
+        ...createCommandApproval("approval-2"),
+        threadId: "thread-2",
+      }),
+    );
+
+    expect(registry.clearThread("thread-1")).toEqual([
+      {
+        approval: createCommandApproval("approval-1"),
+        state: "pending",
+      },
+    ]);
+    expect(registry.getPending("approval-1")).toBeUndefined();
+    expect(registry.getPending("approval-2")).toEqual({
+      approval: Object.freeze({
+        ...createCommandApproval("approval-2"),
+        threadId: "thread-2",
+      }),
+      state: "pending",
+    });
+  });
+
+  test("clears all tracked approvals", () => {
+    const registry = createApprovalRegistry();
+    registry.recordRequested(createCommandApproval("approval-1"));
+    registry.recordRequested(createCommandApproval("approval-2"));
+
+    expect(registry.clearAll()).toEqual([
+      {
+        approval: createCommandApproval("approval-1"),
+        state: "pending",
+      },
+      {
+        approval: createCommandApproval("approval-2"),
+        state: "pending",
+      },
+    ]);
+    expect(registry.getPending("approval-1")).toBeUndefined();
+    expect(registry.getPending("approval-2")).toBeUndefined();
+  });
+
+  test("treats numeric and string request ids as distinct keys", () => {
+    const registry = createApprovalRegistry();
+    registry.recordRequested(
+      Object.freeze({
+        ...createCommandApproval("123"),
+        requestId: 123,
+      }),
+    );
+    registry.recordRequested(createCommandApproval("123"));
+
+    expect(registry.getPending(123)).toEqual({
+      approval: Object.freeze({
+        ...createCommandApproval("123"),
+        requestId: 123,
+      }),
+      state: "pending",
+    });
+    expect(registry.getPending("123")).toEqual({
+      approval: createCommandApproval("123"),
+      state: "pending",
+    });
+  });
 });

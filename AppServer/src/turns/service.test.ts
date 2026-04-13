@@ -188,6 +188,12 @@ describe("createTurnsService", () => {
         },
       },
     });
+    expect(activeTurns.getActiveTurn("thread-1")?.turn).toEqual({
+      id: "turn-1",
+      status: {
+        type: "awaitingInput",
+      },
+    });
     expect(session.steerTurnCalls).toEqual([
       {
         requestId: "req-steer",
@@ -252,5 +258,72 @@ describe("createTurnsService", () => {
         message: "Thread does not have an active turn.",
       },
     });
+  });
+
+  test("interrupts the active turn and records the completed state", async () => {
+    const activeTurns = createActiveTurnRegistry();
+    const session = createFakeAgentSession({
+      startTurn: async () => ({
+        ok: true,
+        data: {
+          turn: createTestAgentTurn({
+            id: "turn-1",
+          }),
+        },
+      }),
+      interruptTurn: async () => ({
+        ok: true,
+        data: {
+          turn: createTestAgentTurn({
+            id: "turn-1",
+            status: {
+              type: "interrupted",
+            },
+          }),
+        },
+      }),
+    });
+    const service = createTurnsService({
+      logger: createSilentLogger("error"),
+      registry: createFakeAgentRegistry(session),
+      activeTurns,
+    });
+
+    await service.startTurn("req-start", workspace, {
+      threadId: "thread-1",
+      prompt: "Start a turn",
+    });
+
+    await expect(
+      service.interruptTurn("req-interrupt", {
+        threadId: "thread-1",
+        turnId: "turn-1",
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      data: {
+        turn: {
+          id: "turn-1",
+          status: {
+            type: "interrupted",
+          },
+        },
+      },
+    });
+    expect(activeTurns.getActiveTurn("thread-1")?.turn).toEqual({
+      id: "turn-1",
+      status: {
+        type: "interrupted",
+      },
+    });
+    expect(session.interruptTurnCalls).toEqual([
+      {
+        requestId: "req-interrupt",
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+        },
+      },
+    ]);
   });
 });
