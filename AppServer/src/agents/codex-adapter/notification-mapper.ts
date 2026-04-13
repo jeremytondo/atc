@@ -19,6 +19,7 @@ import type {
   CodexTransportServerRequest,
 } from "@/agents/codex-adapter/transport";
 import type {
+  AgentApprovalDecisionResolution,
   AgentApprovalNotification,
   AgentApprovalRequest,
   AgentApprovalResolution,
@@ -379,10 +380,12 @@ export const mapCodexServerRequest = (
   switch (request.method) {
     case "item/commandExecution/requestApproval":
     case "item/fileChange/requestApproval":
-    case "mcpServer/elicitation/request":
+    case "mcpServer/elicitation/request": {
       if (params === null) {
         return [buildMalformedMessage(base, request.method)];
       }
+
+      const approval = mapApprovalRequest(request, params);
 
       return [
         {
@@ -390,19 +393,13 @@ export const mapCodexServerRequest = (
           type: "approval",
           event: "requested",
           requestId: request.id,
-          threadId: typeof params.threadId === "string" ? params.threadId : undefined,
-          turnId: typeof params.turnId === "string" ? params.turnId : undefined,
-          itemId: typeof params.itemId === "string" ? params.itemId : undefined,
-          approval: {
-            requestId: request.id,
-            kind: mapApprovalKind(request.method),
-            threadId: typeof params.threadId === "string" ? params.threadId : undefined,
-            turnId: typeof params.turnId === "string" ? params.turnId : undefined,
-            itemId: typeof params.itemId === "string" ? params.itemId : undefined,
-            rawRequest: request,
-          },
+          threadId: approval.threadId,
+          turnId: approval.turnId ?? undefined,
+          itemId: approval.itemId ?? undefined,
+          approval,
         },
       ];
+    }
     default:
       return [
         {
@@ -431,8 +428,8 @@ export const mapCodexResolvedApproval = (
     receivedAt: context.receivedAt ?? new Date().toISOString(),
     rawMethod: "serverRequest/resolved",
     threadId: pendingApproval.approval.threadId,
-    turnId: pendingApproval.approval.turnId,
-    itemId: pendingApproval.approval.itemId,
+    turnId: pendingApproval.approval.turnId ?? undefined,
+    itemId: pendingApproval.approval.itemId ?? undefined,
     type: "approval",
     event: "resolved",
     requestId,
@@ -492,17 +489,116 @@ const buildPartialThreadSummary = (
     status,
   });
 
-const mapApprovalKind = (method: string): AgentApprovalRequest["kind"] => {
-  switch (method) {
+const mapApprovalRequest = (
+  request: CodexTransportServerRequest,
+  params: Record<string, unknown>,
+): AgentApprovalRequest => {
+  switch (request.method) {
     case "item/commandExecution/requestApproval":
-      return "commandExecution";
+      return Object.freeze({
+        requestId: request.id,
+        kind: "commandExecution" as const,
+        threadId: typeof params.threadId === "string" ? params.threadId : undefined,
+        turnId: typeof params.turnId === "string" ? params.turnId : null,
+        itemId: typeof params.itemId === "string" ? params.itemId : null,
+        supportedResolutions: Object.freeze(
+          getSupportedCommandApprovalResolutions(params.availableDecisions),
+        ),
+        approvalId: typeof params.approvalId === "string" ? params.approvalId : null,
+        reason: typeof params.reason === "string" ? params.reason : null,
+        command: typeof params.command === "string" ? params.command : null,
+        cwd: typeof params.cwd === "string" ? params.cwd : null,
+        commandActions: Array.isArray(params.commandActions)
+          ? Object.freeze([...params.commandActions])
+          : null,
+        rawRequest: request,
+      });
     case "item/fileChange/requestApproval":
-      return "fileChange";
+      return Object.freeze({
+        requestId: request.id,
+        kind: "fileChange" as const,
+        threadId: typeof params.threadId === "string" ? params.threadId : undefined,
+        turnId: typeof params.turnId === "string" ? params.turnId : null,
+        itemId: typeof params.itemId === "string" ? params.itemId : null,
+        supportedResolutions: Object.freeze([
+          "approved",
+          "approvedForSession",
+          "declined",
+          "cancelled",
+        ] as const),
+        reason: typeof params.reason === "string" ? params.reason : null,
+        grantRoot: typeof params.grantRoot === "string" ? params.grantRoot : null,
+        rawRequest: request,
+      });
     case "mcpServer/elicitation/request":
-      return "mcpElicitation";
+      return Object.freeze({
+        requestId: request.id,
+        kind: "mcpElicitation" as const,
+        threadId: typeof params.threadId === "string" ? params.threadId : undefined,
+        turnId: typeof params.turnId === "string" ? params.turnId : null,
+        itemId: typeof params.itemId === "string" ? params.itemId : null,
+        supportedResolutions: Object.freeze(["approved", "declined", "cancelled"] as const),
+        serverName: typeof params.serverName === "string" ? params.serverName : "unknown",
+        mode: params.mode === "url" ? "url" : "form",
+        message: typeof params.message === "string" ? params.message : "",
+        requestedSchema:
+          params.mode === "form" && "requestedSchema" in params
+            ? (params.requestedSchema ?? null)
+            : null,
+        url: params.mode === "url" && typeof params.url === "string" ? params.url : null,
+        elicitationId:
+          params.mode === "url" && typeof params.elicitationId === "string"
+            ? params.elicitationId
+            : null,
+        metadata: "_meta" in params ? (params._meta ?? null) : null,
+        rawRequest: request,
+      });
     default:
-      return "unknown";
+      return Object.freeze({
+        requestId: request.id,
+        kind: "unknown" as const,
+        threadId: typeof params.threadId === "string" ? params.threadId : undefined,
+        turnId: typeof params.turnId === "string" ? params.turnId : null,
+        itemId: typeof params.itemId === "string" ? params.itemId : null,
+        supportedResolutions: Object.freeze(["cancelled"] as const),
+        rawRequest: request,
+      });
   }
+};
+
+const getSupportedCommandApprovalResolutions = (
+  availableDecisions: unknown,
+): readonly AgentApprovalDecisionResolution[] => {
+  if (!Array.isArray(availableDecisions)) {
+    return Object.freeze(["approved", "approvedForSession", "declined", "cancelled"] as const);
+  }
+
+  const resolutions = new Set<AgentApprovalDecisionResolution>();
+
+  for (const decision of availableDecisions) {
+    switch (decision) {
+      case "accept":
+        resolutions.add("approved");
+        break;
+      case "acceptForSession":
+        resolutions.add("approvedForSession");
+        break;
+      case "decline":
+        resolutions.add("declined");
+        break;
+      case "cancel":
+        resolutions.add("cancelled");
+        break;
+      default:
+        break;
+    }
+  }
+
+  if (resolutions.size === 0) {
+    return Object.freeze(["approved", "approvedForSession", "declined", "cancelled"] as const);
+  }
+
+  return Object.freeze([...resolutions]);
 };
 
 const summarizeDiff = (diff: string): readonly AgentDiffFileSummary[] => {

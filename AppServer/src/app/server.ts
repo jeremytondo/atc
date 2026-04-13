@@ -7,7 +7,7 @@ import {
 } from "@/app/config";
 import { createLogger, type Logger, type LogWriter } from "@/app/logger";
 import { createAppProtocolRuntime, createAppTransportComponent } from "@/app/protocol";
-import { createApprovalsModulePlaceholder } from "@/approvals";
+import { createApprovalsModule } from "@/approvals";
 import { getErrorMessage, type LifecycleComponent } from "@/core/shared";
 import { createStoreBootstrap } from "@/core/store";
 import { createSqliteThreadsStore, createThreadsModule } from "@/threads";
@@ -342,6 +342,14 @@ const createDefaultComponents = (
     ],
     registerMethod: appProtocolRuntime.registerMethod,
   });
+  let approvalsModule: ReturnType<typeof createApprovalsModule> | undefined;
+  const getApprovalsModule = (): ReturnType<typeof createApprovalsModule> => {
+    if (approvalsModule === undefined) {
+      throw new Error("Approvals module is not initialized.");
+    }
+
+    return approvalsModule;
+  };
   threadsModule = createThreadsModule({
     logger: logger.withContext({ component: "module.threads" }),
     registerMethod: appProtocolRuntime.registerMethod,
@@ -349,8 +357,24 @@ const createDefaultComponents = (
     registry: agentsModule.registry,
     store: createSqliteThreadsStore(storeBootstrap.getDatabase),
     getOpenedWorkspace: workspacesModule.getOpenedWorkspace,
+    onThreadClosed: async (threadId) => {
+      await approvalsModule?.handleThreadClosed(threadId);
+    },
+    onSessionDisconnected: async () => {
+      await approvalsModule?.handleSessionDisconnected();
+    },
   });
   const finalizedThreadsModule = threadsModule;
+  approvalsModule = createApprovalsModule({
+    logger: logger.withContext({ component: "module.approvals" }),
+    registerMethod: appProtocolRuntime.registerMethod,
+    sendNotification: appProtocolRuntime.sendNotification,
+    registry: agentsModule.registry,
+    loadedThreads: {
+      isThreadLoadedForConnection: finalizedThreadsModule.isThreadLoadedForConnection,
+      listLoadedThreadSubscribers: finalizedThreadsModule.listLoadedThreadSubscribers,
+    },
+  });
   const turnsModule = createTurnsModule({
     logger: logger.withContext({ component: "module.turns" }),
     registerMethod: appProtocolRuntime.registerMethod,
@@ -360,6 +384,10 @@ const createDefaultComponents = (
     loadedThreads: {
       isThreadLoadedForConnection: finalizedThreadsModule.isThreadLoadedForConnection,
       listLoadedThreadSubscribers: finalizedThreadsModule.listLoadedThreadSubscribers,
+    },
+    ensureApprovalNotificationBinding: () => getApprovalsModule().ensureNotificationBinding(),
+    onTurnCompleted: async ({ threadId, turnId }) => {
+      await getApprovalsModule().handleTurnCompleted({ threadId, turnId });
     },
   });
   const transportComponent = createAppTransportComponent({
@@ -381,7 +409,7 @@ const createDefaultComponents = (
     workspacesModule.lifecycle,
     finalizedThreadsModule.lifecycle,
     turnsModule.lifecycle,
-    createApprovalsModulePlaceholder(),
+    approvalsModule.lifecycle,
     transportComponent,
   ]);
 };

@@ -233,21 +233,73 @@ export type AgentDiffFileSummary = Readonly<{
 
 export type AgentApprovalKind = "commandExecution" | "fileChange" | "mcpElicitation" | "unknown";
 
-export type AgentApprovalRequest = Readonly<{
-  requestId: AgentRequestId;
-  kind: AgentApprovalKind;
-  threadId?: string;
-  turnId?: string;
-  itemId?: string;
-  rawRequest: unknown;
-}>;
-
-export type AgentApprovalResolution =
+export type AgentApprovalDecisionResolution =
   | "approved"
   | "approvedForSession"
   | "declined"
-  | "cancelled"
-  | "stale";
+  | "cancelled";
+
+export type AgentApprovalCommandExecutionRequest = Readonly<{
+  requestId: AgentRequestId;
+  kind: "commandExecution";
+  threadId?: string;
+  turnId?: string | null;
+  itemId?: string | null;
+  supportedResolutions: readonly AgentApprovalDecisionResolution[];
+  approvalId: string | null;
+  reason: string | null;
+  command: string | null;
+  cwd: string | null;
+  commandActions: readonly unknown[] | null;
+  rawRequest: unknown;
+}>;
+
+export type AgentApprovalFileChangeRequest = Readonly<{
+  requestId: AgentRequestId;
+  kind: "fileChange";
+  threadId?: string;
+  turnId?: string | null;
+  itemId?: string | null;
+  supportedResolutions: readonly AgentApprovalDecisionResolution[];
+  reason: string | null;
+  grantRoot: string | null;
+  rawRequest: unknown;
+}>;
+
+export type AgentApprovalMcpElicitationRequest = Readonly<{
+  requestId: AgentRequestId;
+  kind: "mcpElicitation";
+  threadId?: string;
+  turnId?: string | null;
+  itemId?: string | null;
+  supportedResolutions: readonly AgentApprovalDecisionResolution[];
+  serverName: string;
+  mode: "form" | "url";
+  message: string;
+  requestedSchema: unknown | null;
+  url: string | null;
+  elicitationId: string | null;
+  metadata: unknown | null;
+  rawRequest: unknown;
+}>;
+
+export type AgentApprovalUnknownRequest = Readonly<{
+  requestId: AgentRequestId;
+  kind: "unknown";
+  threadId?: string;
+  turnId?: string | null;
+  itemId?: string | null;
+  supportedResolutions: readonly AgentApprovalDecisionResolution[];
+  rawRequest: unknown;
+}>;
+
+export type AgentApprovalRequest =
+  | AgentApprovalCommandExecutionRequest
+  | AgentApprovalFileChangeRequest
+  | AgentApprovalMcpElicitationRequest
+  | AgentApprovalUnknownRequest;
+
+export type AgentApprovalResolution = AgentApprovalDecisionResolution | "stale";
 
 export type AgentNotificationBase = Readonly<{
   agentId: string;
@@ -517,12 +569,12 @@ export type AgentTurnResult = Readonly<{
 
 export type AgentApprovalResolveParams = Readonly<{
   requestId: AgentRequestId;
-  resolution: AgentApprovalResolution;
+  resolution: AgentApprovalDecisionResolution;
 }>;
 
 export type AgentApprovalResolveResult = Readonly<{
   requestId: AgentRequestId;
-  resolution: AgentApprovalResolution;
+  resolution: AgentApprovalDecisionResolution;
 }>;
 
 export type AgentSession = Readonly<{

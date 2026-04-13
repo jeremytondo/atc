@@ -488,6 +488,17 @@ describe("mapCodexServerRequest", () => {
           threadId: "thread-1",
           turnId: "turn-1",
           itemId: "item-1",
+          supportedResolutions: ["approved", "approvedForSession", "declined", "cancelled"],
+          approvalId: null,
+          reason: null,
+          command: "git status",
+          cwd: "/tmp/project",
+          commandActions: [
+            {
+              type: "unknown",
+              command: "git status",
+            },
+          ],
           rawRequest: {
             id: "approval-1",
             method: "item/commandExecution/requestApproval",

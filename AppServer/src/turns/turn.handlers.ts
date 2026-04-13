@@ -27,13 +27,21 @@ import {
 import { createActiveTurnRegistry } from "@/turns/active-turn-registry";
 import {
   type Turn,
+  TurnInterruptParamsSchema,
+  type TurnInterruptResult,
+  TurnInterruptResultSchema,
   type TurnStartParams,
   TurnStartParamsSchema,
   type TurnStartResult,
   TurnStartResultSchema,
+  TurnSteerParamsSchema,
+  type TurnSteerResult,
+  TurnSteerResultSchema,
 } from "@/turns/schemas";
 import {
   createActiveTurnConflictProtocolError,
+  createActiveTurnMismatchProtocolError,
+  createActiveTurnNotFoundProtocolError,
   createTurnsService,
   mapInvalidProviderPayloadToProtocolError,
   type TurnsServiceError,
@@ -58,6 +66,8 @@ export type CreateTurnsModuleOptions = Readonly<{
   registry: AgentRegistry;
   getOpenedWorkspace: (connectionId: string) => Workspace | undefined;
   loadedThreads: LoadedThreadAccess;
+  ensureApprovalNotificationBinding?: () => Promise<Result<void, AgentSessionLookupError>>;
+  onTurnCompleted?: (input: Readonly<{ threadId: string; turnId: string }>) => Promise<void> | void;
 }>;
 
 export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModule => {
@@ -453,6 +463,10 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
           return;
         }
 
+        await options.onTurnCompleted?.({
+          threadId: notification.threadId,
+          turnId: turn.id,
+        });
         activeTurns.clearThread(notification.threadId);
         await fanOutThreadNotification(notification.threadId, {
           method: "turn/completed",
@@ -560,6 +574,11 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
         return err(mapTurnError(bindResult.error));
       }
 
+      const approvalBindResult = await options.ensureApprovalNotificationBinding?.();
+      if (approvalBindResult !== undefined && !approvalBindResult.ok) {
+        return err(mapTurnError(approvalBindResult.error));
+      }
+
       const agentRequestId = createAgentRequestId({
         connectionId,
         method: "turn/start",
@@ -570,6 +589,77 @@ export const createTurnsModule = (options: CreateTurnsModuleOptions): TurnsModul
         workspace,
         normalizeTurnStartParams(params),
       );
+      return mapTurnResult(result);
+    },
+  });
+
+  options.registerMethod({
+    method: "turn/steer",
+    paramsSchema: TurnSteerParamsSchema,
+    resultSchema: TurnSteerResultSchema,
+    handler: async ({ connectionId, params, requestId, session }) => {
+      if (!session.isInitialized()) {
+        return createSessionNotInitializedResult();
+      }
+
+      if (
+        !options.loadedThreads.isThreadLoadedForConnection({
+          connectionId,
+          threadId: params.threadId,
+        })
+      ) {
+        return err(createThreadNotLoadedForConnectionError(params.threadId));
+      }
+
+      const bindResult = await ensureSessionNotificationBinding();
+      if (!bindResult.ok) {
+        return err(mapTurnError(bindResult.error));
+      }
+
+      const approvalBindResult = await options.ensureApprovalNotificationBinding?.();
+      if (approvalBindResult !== undefined && !approvalBindResult.ok) {
+        return err(mapTurnError(approvalBindResult.error));
+      }
+
+      const agentRequestId = createAgentRequestId({
+        connectionId,
+        method: "turn/steer",
+        requestId,
+      });
+      const result = await service.steerTurn(agentRequestId, params);
+      return mapTurnResult(result);
+    },
+  });
+
+  options.registerMethod({
+    method: "turn/interrupt",
+    paramsSchema: TurnInterruptParamsSchema,
+    resultSchema: TurnInterruptResultSchema,
+    handler: async ({ connectionId, params, requestId, session }) => {
+      if (!session.isInitialized()) {
+        return createSessionNotInitializedResult();
+      }
+
+      if (
+        !options.loadedThreads.isThreadLoadedForConnection({
+          connectionId,
+          threadId: params.threadId,
+        })
+      ) {
+        return err(createThreadNotLoadedForConnectionError(params.threadId));
+      }
+
+      const bindResult = await ensureSessionNotificationBinding();
+      if (!bindResult.ok) {
+        return err(mapTurnError(bindResult.error));
+      }
+
+      const agentRequestId = createAgentRequestId({
+        connectionId,
+        method: "turn/interrupt",
+        requestId,
+      });
+      const result = await service.interruptTurn(agentRequestId, params);
       return mapTurnResult(result);
     },
   });
@@ -608,9 +698,9 @@ const mapTurnSummary = (turn: AgentTurnNotification["turn"]): Turn =>
         : Object.freeze({ type: turn.status.type }),
   });
 
-const mapTurnResult = (
-  result: Result<TurnStartResult, AgentSessionLookupError | TurnsServiceError>,
-): Result<TurnStartResult, ProtocolMethodError> => {
+const mapTurnResult = <TResult extends TurnStartResult | TurnSteerResult | TurnInterruptResult>(
+  result: Result<TResult, AgentSessionLookupError | TurnsServiceError>,
+): Result<TResult, ProtocolMethodError> => {
   if (result.ok) {
     return ok(result.data);
   }
@@ -632,6 +722,10 @@ const mapTurnError = (error: AgentSessionLookupError | TurnsServiceError): Proto
       return mapInvalidProviderPayloadToProtocolError(error);
     case "activeTurnConflict":
       return createActiveTurnConflictProtocolError(error);
+    case "activeTurnNotFound":
+      return createActiveTurnNotFoundProtocolError(error);
+    case "activeTurnMismatch":
+      return createActiveTurnMismatchProtocolError(error);
     case "agentNotFound":
       throw new Error(error.message);
     default:

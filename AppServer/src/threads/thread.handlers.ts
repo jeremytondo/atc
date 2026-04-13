@@ -75,6 +75,8 @@ export type CreateThreadsModuleOptions = Readonly<{
   store: ThreadsStore;
   getOpenedWorkspace: (connectionId: string) => Workspace | undefined;
   now?: () => string;
+  onThreadClosed?: (threadId: string) => Promise<void> | void;
+  onSessionDisconnected?: () => Promise<void> | void;
 }>;
 
 export const createThreadsModule = (options: CreateThreadsModuleOptions): ThreadsModule => {
@@ -140,6 +142,7 @@ export const createThreadsModule = (options: CreateThreadsModuleOptions): Thread
 
   const forwardAgentNotification = async (notification: AgentNotification): Promise<void> => {
     if (notification.type === "disconnect") {
+      await options.onSessionDisconnected?.();
       loadedThreads.clearAll();
       resetSessionSubscription();
       return;
@@ -160,6 +163,7 @@ export const createThreadsModule = (options: CreateThreadsModuleOptions): Thread
         });
         return;
       case "closed":
+        await options.onThreadClosed?.(notification.threadId);
         await fanOutThreadNotification(
           notification.threadId,
           {

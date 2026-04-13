@@ -12,7 +12,7 @@ import {
   createAppTransportComponent,
 } from "@/app/protocol";
 import { type AppServer, createAppServer, type SignalRegistrar } from "@/app/server";
-import { createApprovalsModulePlaceholder } from "@/approvals";
+import { createApprovalsModule } from "@/approvals";
 import { type AppDatabase, createStoreBootstrap } from "@/core/store";
 import {
   createFakeAgentAdapter,
@@ -2073,6 +2073,557 @@ describe("App Server protocol harness", () => {
     }
   });
 
+  test("fans out approval request and resolution notifications only to loaded-thread subscribers", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const canonicalWorkspacePath = await realpath(workspacePath);
+    const session = createFakeAgentSession({
+      resumeThread: async (_requestId, params) => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: params.threadId,
+            workspacePath: canonicalWorkspacePath,
+          }),
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+        },
+      }),
+      startTurn: async () => ({
+        ok: true,
+        data: {
+          turn: createTestAgentTurn({
+            id: "turn-1",
+          }),
+        },
+      }),
+    });
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeAgentAdapter({
+          session,
+        }),
+      ],
+    });
+    const clientA = await connectProtocolClient(harness.port);
+    const clientB = await connectProtocolClient(harness.port);
+    const bystander = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(clientA);
+      await initializeClient(clientB);
+      await initializeClient(bystander);
+      await openWorkspaceClient(clientA, workspacePath);
+      await openWorkspaceClient(clientB, workspacePath);
+      await openWorkspaceClient(bystander, workspacePath);
+
+      clientA.sendJson({
+        id: "req-thread-resume-a",
+        method: "thread/resume",
+        params: {
+          threadId: "thread-live",
+        },
+      });
+      clientB.sendJson({
+        id: "req-thread-resume-b",
+        method: "thread/resume",
+        params: {
+          threadId: "thread-live",
+        },
+      });
+
+      await clientA.nextMessage();
+      await clientB.nextMessage();
+
+      clientA.sendJson({
+        id: "req-turn-start",
+        method: "turn/start",
+        params: {
+          threadId: "thread-live",
+          prompt: "Run the command",
+        },
+      });
+      await clientA.nextMessage();
+
+      session.emitNotification(
+        createItemStartedNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+          itemId: "item-command",
+          itemType: "commandExecution",
+        }),
+      );
+      session.emitNotification(
+        createApprovalRequestedNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+          itemId: "item-command",
+          requestId: "approval-1",
+        }),
+      );
+
+      await expect(clientA.nextMessage()).resolves.toEqual({
+        method: "item/started",
+        params: {
+          threadId: "thread-live",
+          turnId: "turn-1",
+          item: buildHarnessItem("commandExecution", "item-command", "started"),
+        },
+      });
+      await expect(clientB.nextMessage()).resolves.toEqual({
+        method: "item/started",
+        params: {
+          threadId: "thread-live",
+          turnId: "turn-1",
+          item: buildHarnessItem("commandExecution", "item-command", "started"),
+        },
+      });
+      await expect(clientA.nextMessage()).resolves.toEqual({
+        method: "approval/requested",
+        params: {
+          threadId: "thread-live",
+          approval: {
+            requestId: "approval-1",
+            kind: "commandExecution",
+            threadId: "thread-live",
+            turnId: "turn-1",
+            itemId: "item-command",
+            supportedResolutions: ["approved", "approvedForSession", "declined", "cancelled"],
+            approvalId: null,
+            reason: "Run git status",
+            command: "git status",
+            cwd: "/tmp/project",
+            commandActions: [
+              {
+                type: "unknown",
+                command: "git status",
+              },
+            ],
+          },
+        },
+      });
+      await expect(clientB.nextMessage()).resolves.toEqual({
+        method: "approval/requested",
+        params: {
+          threadId: "thread-live",
+          approval: {
+            requestId: "approval-1",
+            kind: "commandExecution",
+            threadId: "thread-live",
+            turnId: "turn-1",
+            itemId: "item-command",
+            supportedResolutions: ["approved", "approvedForSession", "declined", "cancelled"],
+            approvalId: null,
+            reason: "Run git status",
+            command: "git status",
+            cwd: "/tmp/project",
+            commandActions: [
+              {
+                type: "unknown",
+                command: "git status",
+              },
+            ],
+          },
+        },
+      });
+      await expect(bystander.nextMessage(150)).rejects.toThrow("Timed out waiting for message");
+
+      clientA.sendJson({
+        id: "req-approval-resolve",
+        method: "approval/resolve",
+        params: {
+          requestId: "approval-1",
+          resolution: "approved",
+        },
+      });
+
+      const clientAMessages = [await clientA.nextMessage(), await clientA.nextMessage()];
+      expect(clientAMessages).toContainEqual({
+        id: "req-approval-resolve",
+        result: {
+          requestId: "approval-1",
+          resolution: "approved",
+        },
+      });
+      expect(clientAMessages).toContainEqual({
+        method: "approval/resolved",
+        params: {
+          threadId: "thread-live",
+          approval: {
+            requestId: "approval-1",
+            kind: "commandExecution",
+            threadId: "thread-live",
+            turnId: "turn-1",
+            itemId: "item-command",
+            supportedResolutions: ["approved", "approvedForSession", "declined", "cancelled"],
+            approvalId: null,
+            reason: "Run git status",
+            command: "git status",
+            cwd: "/tmp/project",
+            commandActions: [
+              {
+                type: "unknown",
+                command: "git status",
+              },
+            ],
+          },
+          resolution: "approved",
+        },
+      });
+      await expect(clientB.nextMessage()).resolves.toEqual({
+        method: "approval/resolved",
+        params: {
+          threadId: "thread-live",
+          approval: {
+            requestId: "approval-1",
+            kind: "commandExecution",
+            threadId: "thread-live",
+            turnId: "turn-1",
+            itemId: "item-command",
+            supportedResolutions: ["approved", "approvedForSession", "declined", "cancelled"],
+            approvalId: null,
+            reason: "Run git status",
+            command: "git status",
+            cwd: "/tmp/project",
+            commandActions: [
+              {
+                type: "unknown",
+                command: "git status",
+              },
+            ],
+          },
+          resolution: "approved",
+        },
+      });
+      await expect(bystander.nextMessage(150)).rejects.toThrow("Timed out waiting for message");
+      expect(session.resolveApprovalCalls).toEqual([
+        {
+          params: {
+            requestId: "approval-1",
+            resolution: "approved",
+          },
+        },
+      ]);
+    } finally {
+      await clientA.close();
+      await clientB.close();
+      await bystander.close();
+    }
+  });
+
+  test("supports turn controls and rejects stale or inactive turn sequencing", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const canonicalWorkspacePath = await realpath(workspacePath);
+    const session = createFakeAgentSession({
+      resumeThread: async (_requestId, params) => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: params.threadId,
+            workspacePath: canonicalWorkspacePath,
+          }),
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+        },
+      }),
+      startTurn: async () => ({
+        ok: true,
+        data: {
+          turn: createTestAgentTurn({
+            id: "turn-1",
+          }),
+        },
+      }),
+      steerTurn: async () => ({
+        ok: true,
+        data: {
+          turn: createTestAgentTurn({
+            id: "turn-1",
+            status: {
+              type: "awaitingInput",
+            },
+          }),
+        },
+      }),
+    });
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeAgentAdapter({
+          session,
+        }),
+      ],
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+      await openWorkspaceClient(client, workspacePath);
+
+      client.sendJson({
+        id: "req-thread-resume",
+        method: "thread/resume",
+        params: {
+          threadId: "thread-live",
+        },
+      });
+      await client.nextMessage();
+
+      client.sendJson({
+        id: "req-turn-start",
+        method: "turn/start",
+        params: {
+          threadId: "thread-live",
+          prompt: "Start the turn",
+        },
+      });
+      await client.nextMessage();
+
+      client.sendJson({
+        id: "req-turn-steer",
+        method: "turn/steer",
+        params: {
+          threadId: "thread-live",
+          turnId: "turn-1",
+          prompt: "Steer the turn",
+        },
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-turn-steer",
+        result: {
+          turn: {
+            id: "turn-1",
+            status: {
+              type: "awaitingInput",
+            },
+          },
+        },
+      });
+
+      client.sendJson({
+        id: "req-turn-steer-stale",
+        method: "turn/steer",
+        params: {
+          threadId: "thread-live",
+          turnId: "turn-2",
+          prompt: "Use a stale turn id",
+        },
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-turn-steer-stale",
+        error: {
+          code: -33013,
+          message: "Requested turn is not the active turn",
+          data: {
+            code: "TURN_ID_MISMATCH",
+            threadId: "thread-live",
+            requestedTurnId: "turn-2",
+            activeTurnId: "turn-1",
+          },
+        },
+      });
+      expect(session.steerTurnCalls).toHaveLength(1);
+    } finally {
+      await client.close();
+    }
+  });
+
+  test("marks pending approvals stale when a turn completes and returns interrupted turn summaries", async () => {
+    const workspacePath = await createWorkspaceDirectory();
+    const canonicalWorkspacePath = await realpath(workspacePath);
+    const session = createFakeAgentSession({
+      resumeThread: async (_requestId, params) => ({
+        ok: true,
+        data: {
+          thread: createTestAgentThread({
+            id: params.threadId,
+            workspacePath: canonicalWorkspacePath,
+          }),
+          model: "gpt-5.4",
+          reasoningEffort: "medium",
+        },
+      }),
+      startTurn: async () => ({
+        ok: true,
+        data: {
+          turn: createTestAgentTurn({
+            id: "turn-1",
+          }),
+        },
+      }),
+      interruptTurn: async () => ({
+        ok: true,
+        data: {
+          turn: createTestAgentTurn({
+            id: "turn-1",
+            status: {
+              type: "interrupted",
+            },
+          }),
+        },
+      }),
+    });
+    const harness = await createProtocolHarness({
+      agentAdapters: [
+        createFakeAgentAdapter({
+          session,
+        }),
+      ],
+    });
+    const client = await connectProtocolClient(harness.port);
+
+    try {
+      await initializeClient(client);
+      await openWorkspaceClient(client, workspacePath);
+
+      client.sendJson({
+        id: "req-thread-resume",
+        method: "thread/resume",
+        params: {
+          threadId: "thread-live",
+        },
+      });
+      await client.nextMessage();
+
+      client.sendJson({
+        id: "req-turn-start",
+        method: "turn/start",
+        params: {
+          threadId: "thread-live",
+          prompt: "Start the turn",
+        },
+      });
+      await client.nextMessage();
+
+      session.emitNotification(
+        createApprovalRequestedNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+          itemId: "item-command",
+          requestId: "approval-1",
+        }),
+      );
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        method: "approval/requested",
+        params: {
+          threadId: "thread-live",
+          approval: {
+            requestId: "approval-1",
+            kind: "commandExecution",
+            threadId: "thread-live",
+            turnId: "turn-1",
+            itemId: "item-command",
+            supportedResolutions: ["approved", "approvedForSession", "declined", "cancelled"],
+            approvalId: null,
+            reason: "Run git status",
+            command: "git status",
+            cwd: "/tmp/project",
+            commandActions: [
+              {
+                type: "unknown",
+                command: "git status",
+              },
+            ],
+          },
+        },
+      });
+
+      client.sendJson({
+        id: "req-turn-interrupt",
+        method: "turn/interrupt",
+        params: {
+          threadId: "thread-live",
+          turnId: "turn-1",
+        },
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-turn-interrupt",
+        result: {
+          turn: {
+            id: "turn-1",
+            status: {
+              type: "interrupted",
+            },
+          },
+        },
+      });
+
+      client.sendJson({
+        id: "req-turn-interrupt-again",
+        method: "turn/interrupt",
+        params: {
+          threadId: "thread-live",
+          turnId: "turn-1",
+        },
+      });
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        id: "req-turn-interrupt-again",
+        error: {
+          code: -33012,
+          message: "Thread does not have an active turn",
+          data: {
+            code: "TURN_NOT_ACTIVE",
+            threadId: "thread-live",
+          },
+        },
+      });
+
+      session.emitNotification(
+        createTurnCompletedNotification({
+          threadId: "thread-live",
+          turnId: "turn-1",
+          status: {
+            type: "interrupted",
+          },
+        }),
+      );
+
+      await expect(client.nextMessage()).resolves.toEqual({
+        method: "approval/resolved",
+        params: {
+          threadId: "thread-live",
+          approval: {
+            requestId: "approval-1",
+            kind: "commandExecution",
+            threadId: "thread-live",
+            turnId: "turn-1",
+            itemId: "item-command",
+            supportedResolutions: ["approved", "approvedForSession", "declined", "cancelled"],
+            approvalId: null,
+            reason: "Run git status",
+            command: "git status",
+            cwd: "/tmp/project",
+            commandActions: [
+              {
+                type: "unknown",
+                command: "git status",
+              },
+            ],
+          },
+          resolution: "stale",
+        },
+      });
+      await expect(client.nextMessage()).resolves.toEqual({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-live",
+          turn: {
+            id: "turn-1",
+            status: {
+              type: "interrupted",
+            },
+          },
+        },
+      });
+      expect(session.interruptTurnCalls).toHaveLength(1);
+    } finally {
+      await client.close();
+    }
+  });
+
   test("keeps thread/read archive projections consistent after archive and unarchive mutations", async () => {
     const workspacePath = await createWorkspaceDirectory();
     const canonicalWorkspacePath = await realpath(workspacePath);
@@ -2970,6 +3521,14 @@ const createProtocolHarness = async (
     ],
     registerMethod: appProtocolRuntime.registerMethod,
   });
+  let approvalsModule: ReturnType<typeof createApprovalsModule> | undefined;
+  const getApprovalsModule = (): ReturnType<typeof createApprovalsModule> => {
+    if (approvalsModule === undefined) {
+      throw new Error("Approvals module is not initialized.");
+    }
+
+    return approvalsModule;
+  };
   threadsModule = createThreadsModule({
     logger: logger.withContext({ component: "module.threads" }),
     registerMethod: appProtocolRuntime.registerMethod,
@@ -2979,8 +3538,24 @@ const createProtocolHarness = async (
       options.threadsStoreFactory?.(storeBootstrap.getDatabase) ??
       createSqliteThreadsStore(storeBootstrap.getDatabase),
     getOpenedWorkspace: workspacesModule.getOpenedWorkspace,
+    onThreadClosed: async (threadId) => {
+      await approvalsModule?.handleThreadClosed(threadId);
+    },
+    onSessionDisconnected: async () => {
+      await approvalsModule?.handleSessionDisconnected();
+    },
   });
   const finalizedThreadsModule = threadsModule;
+  approvalsModule = createApprovalsModule({
+    logger: logger.withContext({ component: "module.approvals" }),
+    registerMethod: appProtocolRuntime.registerMethod,
+    sendNotification: appProtocolRuntime.sendNotification,
+    registry: agentsModule.registry,
+    loadedThreads: {
+      isThreadLoadedForConnection: finalizedThreadsModule.isThreadLoadedForConnection,
+      listLoadedThreadSubscribers: finalizedThreadsModule.listLoadedThreadSubscribers,
+    },
+  });
   const turnsModule = createTurnsModule({
     logger: logger.withContext({ component: "module.turns" }),
     registerMethod: appProtocolRuntime.registerMethod,
@@ -2990,6 +3565,10 @@ const createProtocolHarness = async (
     loadedThreads: {
       isThreadLoadedForConnection: finalizedThreadsModule.isThreadLoadedForConnection,
       listLoadedThreadSubscribers: finalizedThreadsModule.listLoadedThreadSubscribers,
+    },
+    ensureApprovalNotificationBinding: () => getApprovalsModule().ensureNotificationBinding(),
+    onTurnCompleted: async ({ threadId, turnId }) => {
+      await getApprovalsModule().handleTurnCompleted({ threadId, turnId });
     },
   });
   const transportComponent = createAppTransportComponent({
@@ -3014,7 +3593,7 @@ const createProtocolHarness = async (
       workspacesModule.lifecycle,
       finalizedThreadsModule.lifecycle,
       turnsModule.lifecycle,
-      createApprovalsModulePlaceholder(),
+      approvalsModule.lifecycle,
       transportComponent,
     ],
   });
@@ -3466,6 +4045,46 @@ const createDiffUpdatedNotification = (input: { threadId: string; turnId: string
       deletions: 0,
     },
   ],
+});
+
+const createApprovalRequestedNotification = (input: {
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  requestId: string;
+}) => ({
+  agentId: "codex",
+  provider: "codex" as const,
+  receivedAt: "2026-04-10T12:00:00.000Z",
+  rawMethod: "item/commandExecution/requestApproval",
+  threadId: input.threadId,
+  turnId: input.turnId,
+  itemId: input.itemId,
+  type: "approval" as const,
+  event: "requested" as const,
+  requestId: input.requestId,
+  approval: {
+    requestId: input.requestId,
+    kind: "commandExecution" as const,
+    threadId: input.threadId,
+    turnId: input.turnId,
+    itemId: input.itemId,
+    supportedResolutions: ["approved", "approvedForSession", "declined", "cancelled"] as const,
+    approvalId: null,
+    reason: "Run git status",
+    command: "git status",
+    cwd: "/tmp/project",
+    commandActions: [
+      {
+        type: "unknown",
+        command: "git status",
+      },
+    ],
+    rawRequest: {
+      id: input.requestId,
+      method: "item/commandExecution/requestApproval",
+    },
+  },
 });
 
 const createItemStartedNotification = (input: {

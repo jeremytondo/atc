@@ -21,6 +21,10 @@ export const ATELIER_THREAD_WORKSPACE_MISMATCH_ERROR = -33008;
 export const ATELIER_INVALID_PROVIDER_PAYLOAD_ERROR = -33009;
 export const ATELIER_THREAD_NOT_LOADED_ERROR = -33010;
 export const ATELIER_ACTIVE_TURN_ALREADY_EXISTS_ERROR = -33011;
+export const ATELIER_ACTIVE_TURN_NOT_FOUND_ERROR = -33012;
+export const ATELIER_ACTIVE_TURN_MISMATCH_ERROR = -33013;
+export const ATELIER_APPROVAL_NOT_PENDING_ERROR = -33014;
+export const ATELIER_UNSUPPORTED_APPROVAL_RESOLUTION_ERROR = -33015;
 
 const PROTOCOL_METHOD_ERROR_BRAND = Symbol("ProtocolMethodError");
 
@@ -208,6 +212,58 @@ export const createActiveTurnAlreadyExistsResult = (
   activeTurnId?: string,
 ): Result<never, ProtocolMethodError> =>
   err(createActiveTurnAlreadyExistsError(threadId, activeTurnId));
+
+export const createActiveTurnNotFoundError = (threadId: string): ProtocolMethodError =>
+  createProtocolMethodError(
+    ATELIER_ACTIVE_TURN_NOT_FOUND_ERROR,
+    "Thread does not have an active turn",
+    Object.freeze({
+      code: "TURN_NOT_ACTIVE",
+      threadId,
+    }),
+  );
+
+export const createActiveTurnMismatchError = (
+  threadId: string,
+  requestedTurnId: string,
+  activeTurnId?: string,
+): ProtocolMethodError =>
+  createProtocolMethodError(
+    ATELIER_ACTIVE_TURN_MISMATCH_ERROR,
+    "Requested turn is not the active turn",
+    Object.freeze({
+      code: "TURN_ID_MISMATCH",
+      threadId,
+      requestedTurnId,
+      ...(activeTurnId ? { activeTurnId } : {}),
+    }),
+  );
+
+export const createApprovalNotPendingError = (requestId: string | number): ProtocolMethodError =>
+  createProtocolMethodError(
+    ATELIER_APPROVAL_NOT_PENDING_ERROR,
+    "Approval request is not pending",
+    Object.freeze({
+      code: "APPROVAL_NOT_PENDING",
+      requestId,
+    }),
+  );
+
+export const createUnsupportedApprovalResolutionError = (
+  requestId: string | number,
+  resolution: string,
+  supportedResolutions: readonly string[],
+): ProtocolMethodError =>
+  createProtocolMethodError(
+    ATELIER_UNSUPPORTED_APPROVAL_RESOLUTION_ERROR,
+    "Approval resolution is not supported for this request",
+    Object.freeze({
+      code: "UNSUPPORTED_APPROVAL_RESOLUTION",
+      requestId,
+      resolution,
+      supportedResolutions: [...supportedResolutions],
+    }),
+  );
 
 const brandProtocolMethodError = <T extends { code: number; message: string }>(
   error: T,

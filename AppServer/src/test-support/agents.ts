@@ -1,5 +1,7 @@
 import type { AgentAdapter } from "@/agents/adapter";
 import type {
+  AgentApprovalResolveParams,
+  AgentApprovalResolveResult,
   AgentListModelsParams,
   AgentListModelsResult,
   AgentListThreadsParams,
@@ -90,6 +92,24 @@ export type FakeAgentSession = AgentSession &
         cwd?: string;
       }>;
     }>[];
+    steerTurnCalls: readonly Readonly<{
+      requestId: AgentRequestId;
+      params: Readonly<{
+        threadId: string;
+        turnId: string;
+        prompt: string;
+      }>;
+    }>[];
+    interruptTurnCalls: readonly Readonly<{
+      requestId: AgentRequestId;
+      params: Readonly<{
+        threadId: string;
+        turnId: string;
+      }>;
+    }>[];
+    resolveApprovalCalls: readonly Readonly<{
+      params: AgentApprovalResolveParams;
+    }>[];
   }>;
 
 export type CreateFakeAgentSessionOptions = Readonly<{
@@ -155,6 +175,24 @@ export type CreateFakeAgentSessionOptions = Readonly<{
       cwd?: string;
     }>,
   ) => Promise<AgentOperationResult<AgentTurnResult>>;
+  steerTurn?: (
+    requestId: AgentRequestId,
+    params: Readonly<{
+      threadId: string;
+      turnId: string;
+      prompt: string;
+    }>,
+  ) => Promise<AgentOperationResult<AgentTurnResult>>;
+  interruptTurn?: (
+    requestId: AgentRequestId,
+    params: Readonly<{
+      threadId: string;
+      turnId: string;
+    }>,
+  ) => Promise<AgentOperationResult<AgentTurnResult>>;
+  resolveApproval?: (
+    params: AgentApprovalResolveParams,
+  ) => Promise<AgentOperationResult<AgentApprovalResolveResult>>;
 }>;
 
 export const createFakeAgentSession = (
@@ -240,6 +278,30 @@ export const createFakeAgentSession = (
         reasoningEffort?: AgentReasoningEffort;
         cwd?: string;
       }>;
+    }>
+  > = [];
+  const steerTurnCalls: Array<
+    Readonly<{
+      requestId: AgentRequestId;
+      params: Readonly<{
+        threadId: string;
+        turnId: string;
+        prompt: string;
+      }>;
+    }>
+  > = [];
+  const interruptTurnCalls: Array<
+    Readonly<{
+      requestId: AgentRequestId;
+      params: Readonly<{
+        threadId: string;
+        turnId: string;
+      }>;
+    }>
+  > = [];
+  const resolveApprovalCalls: Array<
+    Readonly<{
+      params: AgentApprovalResolveParams;
     }>
   > = [];
 
@@ -438,14 +500,61 @@ export const createFakeAgentSession = (
         }
       );
     },
-    steerTurn: async () => {
-      throw new Error("steerTurn should not be called in this test.");
+    steerTurn: async (requestId, params) => {
+      steerTurnCalls.push(
+        Object.freeze({
+          requestId,
+          params,
+        }),
+      );
+
+      return (
+        (await options.steerTurn?.(requestId, params)) ?? {
+          ok: true,
+          data: {
+            turn: createTestAgentTurn({
+              id: params.turnId,
+            }),
+          },
+        }
+      );
     },
-    interruptTurn: async () => {
-      throw new Error("interruptTurn should not be called in this test.");
+    interruptTurn: async (requestId, params) => {
+      interruptTurnCalls.push(
+        Object.freeze({
+          requestId,
+          params,
+        }),
+      );
+
+      return (
+        (await options.interruptTurn?.(requestId, params)) ?? {
+          ok: true,
+          data: {
+            turn: createTestAgentTurn({
+              id: params.turnId,
+              status: { type: "interrupted" },
+            }),
+          },
+        }
+      );
     },
-    resolveApproval: async () => {
-      throw new Error("resolveApproval should not be called in this test.");
+    resolveApproval: async (params) => {
+      resolveApprovalCalls.push(
+        Object.freeze({
+          params,
+        }),
+      );
+
+      return (
+        (await options.resolveApproval?.(params)) ?? {
+          ok: true,
+          data: {
+            requestId: params.requestId,
+            resolution: params.resolution,
+          },
+        }
+      );
     },
     disconnect: async () => {
       state = "disconnected";
@@ -465,6 +574,9 @@ export const createFakeAgentSession = (
     unarchiveThreadCalls,
     setThreadNameCalls,
     startTurnCalls,
+    steerTurnCalls,
+    interruptTurnCalls,
+    resolveApprovalCalls,
   };
 };
 

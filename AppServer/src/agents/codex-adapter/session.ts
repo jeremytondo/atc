@@ -767,7 +767,6 @@ const mapCommandApprovalResolution = (
     case "declined":
       return "decline";
     case "cancelled":
-    case "stale":
       return "cancel";
   }
 };
@@ -783,7 +782,6 @@ const mapFileChangeApprovalResolution = (
     case "declined":
       return "decline";
     case "cancelled":
-    case "stale":
       return "cancel";
   }
 };

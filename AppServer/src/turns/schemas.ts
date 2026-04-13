@@ -122,6 +122,31 @@ export const TurnStartResultSchema = Type.Object(
 );
 export type TurnStartResult = Static<typeof TurnStartResultSchema>;
 
+export const TurnSteerParamsSchema = Type.Object(
+  {
+    threadId: Type.String({ minLength: 1 }),
+    turnId: Type.String({ minLength: 1 }),
+    prompt: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+export type TurnSteerParams = Static<typeof TurnSteerParamsSchema>;
+
+export const TurnSteerResultSchema = TurnStartResultSchema;
+export type TurnSteerResult = Static<typeof TurnSteerResultSchema>;
+
+export const TurnInterruptParamsSchema = Type.Object(
+  {
+    threadId: Type.String({ minLength: 1 }),
+    turnId: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+export type TurnInterruptParams = Static<typeof TurnInterruptParamsSchema>;
+
+export const TurnInterruptResultSchema = TurnStartResultSchema;
+export type TurnInterruptResult = Static<typeof TurnInterruptResultSchema>;
+
 export const TurnStartedNotificationParamsSchema = Type.Object(
   {
     threadId: Type.String({ minLength: 1 }),

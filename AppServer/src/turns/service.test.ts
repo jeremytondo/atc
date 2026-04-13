@@ -136,4 +136,121 @@ describe("createTurnsService", () => {
       },
     });
   });
+
+  test("steers the active turn when the requested turn matches", async () => {
+    const activeTurns = createActiveTurnRegistry();
+    const session = createFakeAgentSession({
+      startTurn: async () => ({
+        ok: true,
+        data: {
+          turn: createTestAgentTurn({
+            id: "turn-1",
+          }),
+        },
+      }),
+      steerTurn: async () => ({
+        ok: true,
+        data: {
+          turn: createTestAgentTurn({
+            id: "turn-1",
+            status: {
+              type: "awaitingInput",
+            },
+          }),
+        },
+      }),
+    });
+    const service = createTurnsService({
+      logger: createSilentLogger("error"),
+      registry: createFakeAgentRegistry(session),
+      activeTurns,
+    });
+
+    await service.startTurn("req-start", workspace, {
+      threadId: "thread-1",
+      prompt: "Start a turn",
+    });
+
+    await expect(
+      service.steerTurn("req-steer", {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        prompt: "Tighten the plan",
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      data: {
+        turn: {
+          id: "turn-1",
+          status: {
+            type: "awaitingInput",
+          },
+        },
+      },
+    });
+    expect(session.steerTurnCalls).toEqual([
+      {
+        requestId: "req-steer",
+        params: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          prompt: "Tighten the plan",
+        },
+      },
+    ]);
+  });
+
+  test("rejects turn controls when the requested turn is not active", async () => {
+    const activeTurns = createActiveTurnRegistry();
+    const session = createFakeAgentSession({
+      startTurn: async () => ({
+        ok: true,
+        data: {
+          turn: createTestAgentTurn({
+            id: "turn-1",
+          }),
+        },
+      }),
+    });
+    const service = createTurnsService({
+      logger: createSilentLogger("error"),
+      registry: createFakeAgentRegistry(session),
+      activeTurns,
+    });
+
+    await service.startTurn("req-start", workspace, {
+      threadId: "thread-1",
+      prompt: "Start a turn",
+    });
+
+    await expect(
+      service.steerTurn("req-steer", {
+        threadId: "thread-1",
+        turnId: "turn-2",
+        prompt: "Use the wrong turn id",
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        type: "activeTurnMismatch",
+        threadId: "thread-1",
+        requestedTurnId: "turn-2",
+        activeTurnId: "turn-1",
+        message: "Requested turn is not the active turn.",
+      },
+    });
+    await expect(
+      service.interruptTurn("req-interrupt", {
+        threadId: "thread-2",
+        turnId: "turn-2",
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      error: {
+        type: "activeTurnNotFound",
+        threadId: "thread-2",
+        message: "Thread does not have an active turn.",
+      },
+    });
+  });
 });
