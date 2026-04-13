@@ -483,6 +483,9 @@ export type AgentThreadResult = Readonly<{
   reasoningEffort?: AgentReasoningEffort | null;
 }>;
 
+// Adapter `readThread` implementations always return a detail envelope. When
+// `includeTurns` is false, adapters should still project into `AgentThreadDetail`
+// and return an empty `turns` array rather than a summary-only shape.
 export type AgentThreadReadResult = Readonly<{
   thread: AgentThreadDetail;
 }>;
