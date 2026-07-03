@@ -1,0 +1,146 @@
+import Foundation
+
+/// URLSession-backed implementation of `CockpitClient`.
+public struct HTTPCockpitClient: CockpitClient {
+    public let server: CockpitServer
+    private let session: URLSession
+    private let decoder: JSONDecoder
+
+    public init(server: CockpitServer, session: URLSession = .shared) {
+        self.server = server
+        self.session = session
+        self.decoder = .cockpit()
+    }
+
+    // MARK: - CockpitClient
+
+    public func health() async throws -> Health {
+        try await get("health")
+    }
+
+    public func version() async throws -> Version {
+        try await get("version")
+    }
+
+    public func sessions(includeArchived: Bool, status: SessionStatus?) async throws -> [Session] {
+        var query: [URLQueryItem] = []
+        if includeArchived {
+            query.append(URLQueryItem(name: "includeArchived", value: "true"))
+        }
+        if let status {
+            query.append(URLQueryItem(name: "status", value: status.rawValue))
+        }
+        let envelope: SessionsEnvelope = try await get("sessions", query: query)
+        return envelope.sessions
+    }
+
+    public func session(id: String) async throws -> SessionDetail {
+        try await get("sessions/\(id)")
+    }
+
+    public func startSession(_ request: StartSessionRequest) async throws -> SessionDetail {
+        try await post("sessions/start", body: request)
+    }
+
+    public func terminateSession(id: String) async throws -> SessionDetail {
+        try await post("sessions/\(id)/terminate")
+    }
+
+    public func archiveSession(id: String) async throws -> SessionDetail {
+        try await post("sessions/\(id)/archive")
+    }
+
+    public func sendText(sessionID: String, text: String) async throws {
+        struct Body: Encodable { var text: String }
+        _ = try await send(method: "POST", path: "sessions/\(sessionID)/send-text", body: Body(text: text))
+    }
+
+    public func sendKey(sessionID: String, key: String) async throws {
+        struct Body: Encodable { var key: String }
+        _ = try await send(method: "POST", path: "sessions/\(sessionID)/send-key", body: Body(key: key))
+    }
+
+    public func actions() async throws -> [CockpitAction] {
+        let envelope: ActionsEnvelope = try await get("actions")
+        return envelope.actions
+    }
+
+    public func environments() async throws -> [CockpitEnvironment] {
+        let envelope: EnvironmentsEnvelope = try await get("environments")
+        return envelope.environments
+    }
+
+    public func attachURL(sessionID: String) -> URL {
+        server.attachURL(sessionID: sessionID)
+    }
+
+    public func attachHeaders() -> [String: String] {
+        server.authHeaders
+    }
+
+    // MARK: - Plumbing
+
+    private func get<T: Decodable>(_ path: String, query: [URLQueryItem] = []) async throws -> T {
+        let data = try await send(method: "GET", path: path, query: query, body: nil as Never?)
+        return try decode(data)
+    }
+
+    private func post<T: Decodable>(_ path: String) async throws -> T {
+        let data = try await send(method: "POST", path: path, body: nil as Never?)
+        return try decode(data)
+    }
+
+    private func post<T: Decodable>(_ path: String, body: some Encodable) async throws -> T {
+        let data = try await send(method: "POST", path: path, body: body)
+        return try decode(data)
+    }
+
+    private func decode<T: Decodable>(_ data: Data) throws -> T {
+        do {
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            throw CockpitError.decoding(underlying: error)
+        }
+    }
+
+    @discardableResult
+    private func send(
+        method: String,
+        path: String,
+        query: [URLQueryItem] = [],
+        body: (some Encodable)?
+    ) async throws -> Data {
+        var request = URLRequest(url: server.restURL(path, query: query))
+        request.httpMethod = method
+        for (header, value) in server.authHeaders {
+            request.setValue(value, forHTTPHeaderField: header)
+        }
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONEncoder().encode(body)
+        }
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw CockpitError.transport(underlying: error)
+        }
+
+        guard let http = response as? HTTPURLResponse else {
+            throw CockpitError.badStatus(-1)
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            if let envelope = try? decoder.decode(ErrorEnvelope.self, from: data) {
+                throw CockpitError.api(
+                    code: envelope.error,
+                    message: envelope.message,
+                    sessionID: envelope.sessionId
+                )
+            }
+            throw CockpitError.badStatus(http.statusCode)
+        }
+        return data
+    }
+}

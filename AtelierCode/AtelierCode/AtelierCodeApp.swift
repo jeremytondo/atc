@@ -1,17 +1,19 @@
-//
-//  AtelierCodeApp.swift
-//  AtelierCode
-//
-//  Created by Jeremy Margaritondo on 7/2/26.
-//
-
 import SwiftUI
 
 @main
 struct AtelierCodeApp: App {
+    @State private var appModel = AppModel()
+
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(appModel)
+                .preferredColorScheme(.dark)
+        }
+        Settings {
+            SettingsView()
+                .environment(appModel)
+                .preferredColorScheme(.dark)
         }
     }
 }
