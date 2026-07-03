@@ -14,7 +14,7 @@ struct ContentView: View {
             SessionListView(
                 selection: $selectedSessionID,
                 searchText: searchText,
-                connectedIDs: []
+                connectedIDs: Set(appModel.terminals.keys)
             )
             .navigationSplitViewColumnWidth(min: 220, ideal: 280)
             .searchable(text: $searchText, placement: .sidebar, prompt: "Search sessions")
@@ -41,49 +41,97 @@ struct ContentView: View {
                 }
             }
         } detail: {
-            if let session = selectedSessionID.flatMap({ appModel.sessions.session(id: $0) }) {
-                SessionContentView(session: session)
-            } else {
-                ContentUnavailableView(
-                    "No Session Selected",
-                    systemImage: "terminal",
-                    description: Text("Select a session in the sidebar.")
-                )
-            }
+            SessionContentView(selectedSession: selectedSession)
         }
         .sheet(isPresented: $showCreateSheet) {
             CreateSessionSheet { newSessionID in
                 selectedSessionID = newSessionID
             }
         }
+        .onChange(of: selectedSessionID) { attachSelectedIfNeeded() }
+        .onChange(of: appModel.sessions.sessions) { attachSelectedIfNeeded() }
         .task {
             await appModel.sessions.pollLoop()
         }
     }
+
+    private var selectedSession: Session? {
+        selectedSessionID.flatMap { appModel.sessions.session(id: $0) }
+    }
+
+    /// Selecting an attachable session auto-attaches — no explicit Connect
+    /// step. Also fires when a selected starting session becomes attachable.
+    private func attachSelectedIfNeeded() {
+        if let session = selectedSession, session.attachable {
+            appModel.attachIfNeeded(to: session)
+        }
+    }
 }
 
-/// Content area for the selected session: compact header above either the
-/// terminal (attachable) or a metadata view.
+/// Content area: compact header above the terminal stack. The TerminalPane
+/// is ALWAYS in the hierarchy (even with nothing selected) so live surfaces
+/// and their WebSockets survive any sidebar navigation; non-terminal states
+/// draw an opaque cover over it.
 struct SessionContentView: View {
     @Environment(AppModel.self) private var appModel
-    let session: Session
+    let selectedSession: Session?
+
+    @State private var showInspector = false
 
     var body: some View {
         VStack(spacing: 0) {
-            SessionHeaderBar(session: session)
-            Divider()
-            if session.attachable {
-                // Phase 4 replaces this placeholder with the live terminal pane.
-                ContentUnavailableView(
-                    "Terminal Coming Soon",
-                    systemImage: "terminal",
-                    description: Text("Attach lands in Phase 4.")
-                )
-            } else {
-                SessionDetailView(session: session)
+            if let session = selectedSession {
+                SessionHeaderBar(session: session, showInspector: $showInspector)
+                Divider()
+            }
+            ZStack {
+                TerminalPane(visibleSessionID: selectedSession?.id)
+                cover
             }
         }
-        .navigationTitle(session.displayName)
+        .inspector(isPresented: $showInspector) {
+            if let session = selectedSession {
+                SessionDetailView(session: session)
+                    .inspectorColumnWidth(min: 260, ideal: 320)
+            }
+        }
+        .navigationTitle(selectedSession?.displayName ?? "AtelierCode")
+    }
+
+    @ViewBuilder
+    private var cover: some View {
+        if let session = selectedSession {
+            if let controller = appModel.terminals[session.id] {
+                // Terminal visible; only the phase banner floats on top.
+                TerminalStatusBanner(controller: controller) {
+                    appModel.disconnectTerminal(id: session.id)
+                }
+            } else if session.attachable {
+                // Normally auto-attach creates the controller in the same
+                // update; this cover only lingers after an explicit
+                // Disconnect, so offer the way back in.
+                ContentUnavailableView {
+                    Label("Not Connected", systemImage: "cable.connector.slash")
+                } description: {
+                    Text("The session is running on the server.")
+                } actions: {
+                    Button("Connect") { appModel.attachIfNeeded(to: session) }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background()
+            } else {
+                SessionDetailView(session: session)
+                    .background()
+            }
+        } else {
+            ContentUnavailableView(
+                "No Session Selected",
+                systemImage: "terminal",
+                description: Text("Select a session in the sidebar.")
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background()
+        }
     }
 }
 
@@ -91,10 +139,15 @@ struct SessionContentView: View {
 struct SessionHeaderBar: View {
     @Environment(AppModel.self) private var appModel
     let session: Session
+    @Binding var showInspector: Bool
 
     @State private var confirmStop = false
     @State private var confirmArchive = false
     @State private var actionError: String?
+
+    private var isConnected: Bool {
+        appModel.terminals[session.id] != nil
+    }
 
     private var canStop: Bool {
         session.status == .running || session.status == .starting
@@ -117,6 +170,12 @@ struct SessionHeaderBar: View {
                 .lineLimit(1)
                 .truncationMode(.head)
             Spacer()
+            if isConnected {
+                Button("Disconnect", systemImage: "cable.connector.slash") {
+                    appModel.disconnectTerminal(id: session.id)
+                }
+                .help("Detach from the session (it keeps running)")
+            }
             if canStop {
                 Button("Stop", systemImage: "stop.circle") {
                     confirmStop = true
@@ -129,6 +188,12 @@ struct SessionHeaderBar: View {
                 }
                 .disabled(!canArchive)
                 .help(canArchive ? "Archive this session" : "Stop the session before archiving")
+            }
+            if isConnected {
+                Button("Info", systemImage: "sidebar.trailing") {
+                    showInspector.toggle()
+                }
+                .help("Show session metadata")
             }
         }
         .padding(.horizontal, 12)
