@@ -29,6 +29,10 @@ public struct StartSessionRequest: Encodable, Sendable, Hashable {
 /// `GET /api/health`.
 public struct Health: Decodable, Sendable, Hashable {
     public var status: String
+
+    public init(status: String) {
+        self.status = status
+    }
 }
 
 /// `GET /api/version`.
@@ -36,4 +40,10 @@ public struct Version: Decodable, Sendable, Hashable {
     public var name: String
     public var version: String
     public var commit: String
+
+    public init(name: String, version: String, commit: String) {
+        self.name = name
+        self.version = version
+        self.commit = commit
+    }
 }
