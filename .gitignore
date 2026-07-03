@@ -1,0 +1,10 @@
+# macOS
+.DS_Store
+
+# Xcode
+xcuserdata/
+DerivedData/
+
+# SwiftPM
+.build/
+.swiftpm/
