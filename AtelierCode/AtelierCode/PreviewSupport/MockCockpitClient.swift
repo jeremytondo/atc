@@ -126,6 +126,106 @@ nonisolated struct MockCockpitClient: CockpitClient {
         return try JSONDecoder().decode(Envelope.self, from: json).environments
     }
 
+    // MARK: - File system
+
+    var mockRoots: [RemoteWorkspaceRoot] = [
+        RemoteWorkspaceRoot(label: "Projects", path: "/home/dev/Projects"),
+        RemoteWorkspaceRoot(label: "Home", path: "/home/dev"),
+    ]
+
+    /// Directory path → full (unfiltered) children. `listDirectory` filters
+    /// dot-entries itself and throws typed errors, mimicking the server so
+    /// `RemoteFileBrowser` tests cover error handling.
+    var mockTree: [String: [RemoteEntry]] = {
+        func dir(_ path: String, symlink: Bool = false) -> RemoteEntry {
+            RemoteEntry(
+                name: (path as NSString).lastPathComponent, path: path,
+                kind: .directory, isSymlink: symlink,
+                modifiedAt: Date(timeIntervalSinceNow: -3600)
+            )
+        }
+        func file(_ path: String, size: Int64 = 2048, symlink: Bool = false) -> RemoteEntry {
+            RemoteEntry(
+                name: (path as NSString).lastPathComponent, path: path,
+                kind: .file, isSymlink: symlink, size: size,
+                modifiedAt: Date(timeIntervalSinceNow: -7200)
+            )
+        }
+        return [
+            "/home/dev": [
+                dir("/home/dev/.config"),
+                dir("/home/dev/Documents"),
+                dir("/home/dev/Projects"),
+                file("/home/dev/.zshrc", size: 512),
+            ],
+            "/home/dev/Projects": [
+                dir("/home/dev/Projects/atelier"),
+                dir("/home/dev/Projects/empty"),
+                dir("/home/dev/Projects/huge"),
+                dir("/home/dev/Projects/secrets"),
+                file("/home/dev/Projects/notes.md", size: 128),
+            ],
+            "/home/dev/Projects/atelier": [
+                dir("/home/dev/Projects/atelier/.git"),
+                dir("/home/dev/Projects/atelier/docs"),
+                dir("/home/dev/Projects/atelier/shared", symlink: true),
+                dir("/home/dev/Projects/atelier/src"),
+                file("/home/dev/Projects/atelier/.gitignore", size: 64),
+                RemoteEntry(
+                    name: "dangling", path: "/home/dev/Projects/atelier/dangling",
+                    kind: .unknown, isSymlink: true
+                ),
+                file("/home/dev/Projects/atelier/LICENSE", symlink: true),
+                file("/home/dev/Projects/atelier/README.md"),
+            ],
+            "/home/dev/Projects/atelier/src": [
+                dir("/home/dev/Projects/atelier/src/components"),
+                file("/home/dev/Projects/atelier/src/main.swift"),
+            ],
+            "/home/dev/Projects/atelier/src/components": [
+                file("/home/dev/Projects/atelier/src/components/Button.swift"),
+            ],
+            "/home/dev/Projects/atelier/docs": [
+                file("/home/dev/Projects/atelier/docs/plan.md"),
+            ],
+            // Symlinked dir: same children reachable under the lexical path.
+            "/home/dev/Projects/atelier/shared": [
+                file("/home/dev/Projects/atelier/shared/asset.png", size: 9000),
+            ],
+            "/home/dev/Projects/empty": [],
+            "/home/dev/Projects/huge": (1...40).map {
+                file("/home/dev/Projects/huge/file-\(String(format: "%03d", $0)).txt")
+            },
+            "/home/dev/.config": [
+                file("/home/dev/.config/settings.toml", size: 300),
+            ],
+            "/home/dev/Documents": [
+                file("/home/dev/Documents/taxes.pdf", size: 120_000),
+            ],
+        ]
+    }()
+
+    func workspaceRoots() async throws -> [RemoteWorkspaceRoot] {
+        mockRoots
+    }
+
+    func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing {
+        if path.hasSuffix("/secrets") {
+            throw CockpitError.api(
+                code: "permission_denied", message: "permission denied: \(path)", sessionID: nil
+            )
+        }
+        guard let children = mockTree[path] else {
+            throw CockpitError.api(code: "not_found", message: "not found: \(path)", sessionID: nil)
+        }
+        let visible = children.filter { showHidden || !$0.name.hasPrefix(".") }
+        return DirectoryListing(
+            path: path,
+            truncated: path.hasSuffix("/huge"),
+            entries: visible
+        )
+    }
+
     func attachURL(sessionID: String) -> URL {
         URL(string: "ws://127.0.0.1:7331/api/sessions/\(sessionID)/attach")!
     }
