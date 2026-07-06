@@ -15,6 +15,8 @@ public protocol CockpitClient: Sendable {
     func sendKey(sessionID: String, key: String) async throws
     func actions() async throws -> [CockpitAction]
     func environments() async throws -> [CockpitEnvironment]
+    func workspaceRoots() async throws -> [RemoteWorkspaceRoot]
+    func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing
 
     /// WebSocket URL for `GET /api/sessions/{id}/attach`.
     func attachURL(sessionID: String) -> URL
@@ -25,5 +27,9 @@ public protocol CockpitClient: Sendable {
 public extension CockpitClient {
     func sessions() async throws -> [Session] {
         try await sessions(includeArchived: false, status: nil)
+    }
+
+    func listDirectory(path: String) async throws -> DirectoryListing {
+        try await listDirectory(path: path, showHidden: false)
     }
 }

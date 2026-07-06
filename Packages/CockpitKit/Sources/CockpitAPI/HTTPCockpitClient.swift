@@ -70,6 +70,19 @@ public struct HTTPCockpitClient: CockpitClient {
         return envelope.environments
     }
 
+    public func workspaceRoots() async throws -> [RemoteWorkspaceRoot] {
+        let envelope: RootsEnvelope = try await get("fs/roots")
+        return envelope.roots
+    }
+
+    public func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing {
+        var query = [URLQueryItem(name: "path", value: path)]
+        if showHidden {
+            query.append(URLQueryItem(name: "showHidden", value: "true"))
+        }
+        return try await get("fs/list", query: query)
+    }
+
     public func attachURL(sessionID: String) -> URL {
         server.attachURL(sessionID: sessionID)
     }
