@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 import CockpitAPI
 
 /// Form for `POST /sessions/start`, driven by live `/actions` and
@@ -52,7 +51,7 @@ struct CreateSessionSheet: View {
                         } label: {
                             Image(systemName: "folder")
                         }
-                        .help("Choose a local folder (path is used on the server)")
+                        .help("Browse folders on the Cockpit workstation")
                     }
                     TextField("Name (optional)", text: $name)
                 }
@@ -107,9 +106,9 @@ struct CreateSessionSheet: View {
         .frame(width: 460, height: 440)
         .task { await loadDiscovery() }
         .onChange(of: selectedActionName) { resetParams() }
-        .fileImporter(isPresented: $showFolderPicker, allowedContentTypes: [.folder]) { result in
-            if case .success(let url) = result {
-                workingDir = url.path
+        .sheet(isPresented: $showFolderPicker) {
+            RemoteFolderPickerSheet(client: appModel.client, initialPath: workingDir) { path in
+                workingDir = path
             }
         }
     }

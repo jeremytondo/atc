@@ -25,24 +25,32 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		DE7C711E2FF757CA00D8D7E5 /* AtelierCode.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AtelierCode.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AC00000000000000000000D3 /* AtelierCodeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AtelierCodeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		DE7C711E2FF757CA00D8D7E5 /* AtelierCode.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AtelierCode.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		DE7C71202FF757CA00D8D7E5 /* AtelierCode */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = AtelierCode;
-			sourceTree = "<group>";
-		};
 		AC00000000000000000000D1 /* AtelierCodeTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = AtelierCodeTests;
 			sourceTree = "<group>";
 		};
+		DE7C71202FF757CA00D8D7E5 /* AtelierCode */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = AtelierCode;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		AC00000000000000000000D5 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AC00000000000000000000B5 /* CockpitAPI in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		DE7C711B2FF757CA00D8D7E5 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -51,14 +59,6 @@
 				AC00000000000000000000B2 /* GhosttyKit in Frameworks */,
 				AC00000000000000000000B3 /* GhosttyTerminal in Frameworks */,
 				AC00000000000000000000B4 /* GhosttyTheme in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		AC00000000000000000000D5 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				AC00000000000000000000B5 /* CockpitAPI in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -86,6 +86,29 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		AC00000000000000000000D2 /* AtelierCodeTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AC00000000000000000000D9 /* Build configuration list for PBXNativeTarget "AtelierCodeTests" */;
+			buildPhases = (
+				AC00000000000000000000D4 /* Sources */,
+				AC00000000000000000000D5 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AC00000000000000000000D8 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				AC00000000000000000000D1 /* AtelierCodeTests */,
+			);
+			name = AtelierCodeTests;
+			packageProductDependencies = (
+				AC00000000000000000000A5 /* CockpitAPI */,
+			);
+			productName = AtelierCodeTests;
+			productReference = AC00000000000000000000D3 /* AtelierCodeTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		DE7C711D2FF757CA00D8D7E5 /* AtelierCode */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = DE7C71292FF757CB00D8D7E5 /* Build configuration list for PBXNativeTarget "AtelierCode" */;
@@ -112,29 +135,6 @@
 			productReference = DE7C711E2FF757CA00D8D7E5 /* AtelierCode.app */;
 			productType = "com.apple.product-type.application";
 		};
-		AC00000000000000000000D2 /* AtelierCodeTests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = AC00000000000000000000D9 /* Build configuration list for PBXNativeTarget "AtelierCodeTests" */;
-			buildPhases = (
-				AC00000000000000000000D4 /* Sources */,
-				AC00000000000000000000D5 /* Frameworks */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				AC00000000000000000000D8 /* PBXTargetDependency */,
-			);
-			fileSystemSynchronizedGroups = (
-				AC00000000000000000000D1 /* AtelierCodeTests */,
-			);
-			name = AtelierCodeTests;
-			packageProductDependencies = (
-				AC00000000000000000000A5 /* CockpitAPI */,
-			);
-			productName = AtelierCodeTests;
-			productReference = AC00000000000000000000D3 /* AtelierCodeTests.xctest */;
-			productType = "com.apple.product-type.bundle.unit-test";
-		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -145,12 +145,12 @@
 				LastSwiftUpdateCheck = 2660;
 				LastUpgradeCheck = 2660;
 				TargetAttributes = {
-					DE7C711D2FF757CA00D8D7E5 = {
-						CreatedOnToolsVersion = 26.6;
-					};
 					AC00000000000000000000D2 = {
 						CreatedOnToolsVersion = 26.6;
 						TestTargetID = DE7C711D2FF757CA00D8D7E5;
+					};
+					DE7C711D2FF757CA00D8D7E5 = {
+						CreatedOnToolsVersion = 26.6;
 					};
 				};
 			};
@@ -189,14 +189,14 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		DE7C711A2FF757CA00D8D7E5 /* Sources */ = {
+		AC00000000000000000000D4 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		AC00000000000000000000D4 /* Sources */ = {
+		DE7C711A2FF757CA00D8D7E5 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -214,6 +214,47 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		AC00000000000000000000DA /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 337D6CNU4E;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = ElevenIdeas.AtelierCodeTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AtelierCode.app/Contents/MacOS/AtelierCode";
+			};
+			name = Debug;
+		};
+		AC00000000000000000000DB /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 337D6CNU4E;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = ElevenIdeas.AtelierCodeTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AtelierCode.app/Contents/MacOS/AtelierCode";
+			};
+			name = Release;
+		};
 		DE7C71272FF757CB00D8D7E5 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -401,50 +442,18 @@
 			};
 			name = Release;
 		};
-		AC00000000000000000000DA /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_IDENTITY = "-";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 337D6CNU4E;
-				GENERATE_INFOPLIST_FILE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.5;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = ElevenIdeas.AtelierCodeTests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AtelierCode.app/Contents/MacOS/AtelierCode";
-			};
-			name = Debug;
-		};
-		AC00000000000000000000DB /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 337D6CNU4E;
-				GENERATE_INFOPLIST_FILE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.5;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = ElevenIdeas.AtelierCodeTests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AtelierCode.app/Contents/MacOS/AtelierCode";
-			};
-			name = Release;
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		AC00000000000000000000D9 /* Build configuration list for PBXNativeTarget "AtelierCodeTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AC00000000000000000000DA /* Debug */,
+				AC00000000000000000000DB /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		DE7C71192FF757CA00D8D7E5 /* Build configuration list for PBXProject "AtelierCode" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -459,15 +468,6 @@
 			buildConfigurations = (
 				DE7C712A2FF757CB00D8D7E5 /* Debug */,
 				DE7C712B2FF757CB00D8D7E5 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		AC00000000000000000000D9 /* Build configuration list for PBXNativeTarget "AtelierCodeTests" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				AC00000000000000000000DA /* Debug */,
-				AC00000000000000000000DB /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -497,10 +497,6 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = CockpitAPI;
 		};
-		AC00000000000000000000A5 /* CockpitAPI */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = CockpitAPI;
-		};
 		AC00000000000000000000A2 /* GhosttyKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = AC00000000000000000000C2 /* XCRemoteSwiftPackageReference "libghostty-spm" */;
@@ -515,6 +511,10 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AC00000000000000000000C2 /* XCRemoteSwiftPackageReference "libghostty-spm" */;
 			productName = GhosttyTheme;
+		};
+		AC00000000000000000000A5 /* CockpitAPI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = CockpitAPI;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
