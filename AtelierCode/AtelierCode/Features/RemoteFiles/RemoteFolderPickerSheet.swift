@@ -20,10 +20,13 @@ struct RemoteFolderPickerSheet: View {
         VStack(spacing: 0) {
             header
             Divider()
+            // Panes are child structs and their rows are inline in the
+            // ForEach: rows built by view-returning helpers crash Xcode
+            // preview dynamic replacement (ViewListTree identity assert).
             if browser.listing == nil {
-                rootsList
+                RootsListPane(browser: browser)
             } else {
-                directoryList
+                DirectoryListPane(browser: browser)
             }
             Divider()
             footer
@@ -96,122 +99,6 @@ struct RemoteFolderPickerSheet: View {
         .frame(height: 20)
     }
 
-    // MARK: - Roots list
-
-    @ViewBuilder
-    private var rootsList: some View {
-        if browser.isLoading && !browser.hasLoadedRoots {
-            ProgressView()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if browser.roots.isEmpty && browser.hasLoadedRoots {
-            ContentUnavailableView(
-                "No browsable roots",
-                systemImage: "folder.badge.questionmark",
-                description: Text("Workspace roots are configured on the Cockpit server in the [fs] config section.")
-            )
-        } else {
-            List(selection: $browser.highlightedPath) {
-                ForEach(browser.roots) { root in
-                    rootRow(root)
-                        .tag(root.path)
-                }
-            }
-            .listStyle(.inset)
-            .onKeyPress(.return) { openHighlightedRoot() }
-        }
-    }
-
-    private func rootRow(_ root: RemoteWorkspaceRoot) -> some View {
-        HStack {
-            Image(systemName: "folder")
-            Text(root.label)
-            Spacer()
-            Text(root.path)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
-            Task { await browser.open(root: root) }
-        }
-    }
-
-    private func openHighlightedRoot() -> KeyPress.Result {
-        guard let path = browser.highlightedPath,
-              let root = browser.roots.first(where: { $0.path == path }) else { return .ignored }
-        Task { await browser.open(root: root) }
-        return .handled
-    }
-
-    // MARK: - Directory list
-
-    private var directoryList: some View {
-        VStack(spacing: 0) {
-            if browser.listing?.truncated == true {
-                HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle")
-                    Text("Listing truncated at 10,000 entries")
-                }
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                Divider()
-            }
-            List(selection: $browser.highlightedPath) {
-                ForEach(browser.listing?.entries ?? []) { entry in
-                    entryRow(entry)
-                        .tag(entry.path)
-                }
-            }
-            .listStyle(.inset)
-            .onKeyPress(.return) { descendHighlighted() }
-            .overlay {
-                if browser.isLoading {
-                    ProgressView()
-                } else if browser.listing?.entries.isEmpty == true {
-                    Text("Empty folder")
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-
-    private func entryRow(_ entry: RemoteEntry) -> some View {
-        let enterable = entry.kind == .directory
-        return HStack {
-            Image(systemName: icon(for: entry.kind))
-            Text(entry.name)
-            Spacer()
-        }
-        .foregroundStyle(enterable ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
-        .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
-            guard enterable else { return }
-            Task { await browser.descend(into: entry) }
-        }
-    }
-
-    private func icon(for kind: RemoteEntryKind) -> String {
-        switch kind {
-        case .directory: "folder"
-        case .file: "doc"
-        case .unknown: "questionmark.square.dashed"
-        }
-    }
-
-    private func descendHighlighted() -> KeyPress.Result {
-        guard let path = browser.highlightedPath,
-              let entry = browser.listing?.entries.first(where: { $0.path == path }) else { return .ignored }
-        if entry.kind == .directory {
-            Task { await browser.descend(into: entry) }
-        }
-        // Files and unknown entries consume the key and stay inert.
-        return .handled
-    }
-
     // MARK: - Footer
 
     private var footer: some View {
@@ -230,6 +117,121 @@ struct RemoteFolderPickerSheet: View {
             .disabled(browser.currentPath == nil)
         }
         .padding(12)
+    }
+}
+
+// MARK: - Roots list pane
+
+private struct RootsListPane: View {
+    @Bindable var browser: RemoteFileBrowser
+
+    var body: some View {
+        if browser.isLoading && !browser.hasLoadedRoots {
+            ProgressView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if browser.roots.isEmpty && browser.hasLoadedRoots {
+            ContentUnavailableView(
+                "No browsable roots",
+                systemImage: "folder.badge.questionmark",
+                description: Text("Workspace roots are configured on the Cockpit server in the [fs] config section.")
+            )
+        } else {
+            List(selection: $browser.highlightedPath) {
+                ForEach(browser.roots) { root in
+                    HStack {
+                        Image(systemName: "folder")
+                        Text(root.label)
+                        Spacer()
+                        Text(root.path)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) {
+                        Task { await browser.open(root: root) }
+                    }
+                    .tag(root.path)
+                }
+            }
+            .listStyle(.inset)
+            .onKeyPress(.return) { openHighlightedRoot() }
+        }
+    }
+
+    private func openHighlightedRoot() -> KeyPress.Result {
+        guard let path = browser.highlightedPath,
+              let root = browser.roots.first(where: { $0.path == path }) else { return .ignored }
+        Task { await browser.open(root: root) }
+        return .handled
+    }
+}
+
+// MARK: - Directory list pane
+
+private struct DirectoryListPane: View {
+    @Bindable var browser: RemoteFileBrowser
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if browser.listing?.truncated == true {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle")
+                    Text("Listing truncated at 10,000 entries")
+                }
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                Divider()
+            }
+            List(selection: $browser.highlightedPath) {
+                ForEach(browser.listing?.entries ?? []) { entry in
+                    let enterable = entry.kind == .directory
+                    HStack {
+                        Image(systemName: Self.icon(for: entry.kind))
+                        Text(entry.name)
+                        Spacer()
+                    }
+                    .foregroundStyle(enterable ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) {
+                        guard enterable else { return }
+                        Task { await browser.descend(into: entry) }
+                    }
+                    .tag(entry.path)
+                }
+            }
+            .listStyle(.inset)
+            .onKeyPress(.return) { descendHighlighted() }
+            .overlay {
+                if browser.isLoading {
+                    ProgressView()
+                } else if browser.listing?.entries.isEmpty == true {
+                    Text("Empty folder")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func descendHighlighted() -> KeyPress.Result {
+        guard let path = browser.highlightedPath,
+              let entry = browser.listing?.entries.first(where: { $0.path == path }) else { return .ignored }
+        if entry.kind == .directory {
+            Task { await browser.descend(into: entry) }
+        }
+        // Files and unknown entries consume the key and stay inert.
+        return .handled
+    }
+
+    private static func icon(for kind: RemoteEntryKind) -> String {
+        switch kind {
+        case .directory: "folder"
+        case .file: "doc"
+        case .unknown: "questionmark.square.dashed"
+        }
     }
 }
 
