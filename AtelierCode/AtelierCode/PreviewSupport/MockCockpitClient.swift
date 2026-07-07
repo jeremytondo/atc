@@ -3,27 +3,64 @@ import CockpitAPI
 
 /// Canned-data client for previews and offline development.
 nonisolated struct MockCockpitClient: CockpitClient {
+    /// Stable-ID project fixtures. Working dirs reuse `mockTree` paths so a
+    /// project-scoped session lands in a browsable directory. One archived.
+    var mockProjects: [Project] = [
+        Project(
+            id: "prj_atelier",
+            name: "Atelier",
+            workingDir: "/home/dev/Projects/atelier",
+            createdAt: Date(timeIntervalSinceNow: -400000),
+            updatedAt: Date(timeIntervalSinceNow: -60)
+        ),
+        Project(
+            id: "prj_blazerr",
+            name: "Blazerr",
+            workingDir: "/home/dev/Projects/huge",
+            createdAt: Date(timeIntervalSinceNow: -300000),
+            updatedAt: Date(timeIntervalSinceNow: -3600)
+        ),
+        Project(
+            id: "prj_scratch",
+            name: "Scratch",
+            workingDir: "/home/dev/Projects/empty",
+            createdAt: Date(timeIntervalSinceNow: -500000),
+            updatedAt: Date(timeIntervalSinceNow: -200000),
+            archivedAt: Date(timeIntervalSinceNow: -100000)
+        ),
+    ]
+
+    /// Nested project refs derived from `mockProjects`, for tagging sessions.
+    private static let atelierRef = SessionProject(
+        id: "prj_atelier", name: "Atelier", workingDir: "/home/dev/Projects/atelier"
+    )
+    private static let blazerrRef = SessionProject(
+        id: "prj_blazerr", name: "Blazerr", workingDir: "/home/dev/Projects/huge"
+    )
+
     var mockSessions: [Session] = [
         Session(
             id: "ses_running",
             name: "Fix the parser",
             action: "claude",
             environment: "host-login-shell",
-            workingDir: "/home/dev/projects/cockpit",
+            workingDir: "/home/dev/Projects/atelier",
             status: .running,
             attachable: true,
             createdAt: Date(timeIntervalSinceNow: -3600),
-            updatedAt: Date(timeIntervalSinceNow: -60)
+            updatedAt: Date(timeIntervalSinceNow: -60),
+            project: MockCockpitClient.atelierRef
         ),
         Session(
             id: "ses_starting",
             action: "codex",
             environment: "host-login-shell",
-            workingDir: "/home/dev/projects/web",
+            workingDir: "/home/dev/Projects/huge",
             status: .starting,
             attachable: false,
             createdAt: Date(timeIntervalSinceNow: -30),
-            updatedAt: Date(timeIntervalSinceNow: -30)
+            updatedAt: Date(timeIntervalSinceNow: -30),
+            project: MockCockpitClient.blazerrRef
         ),
         Session(
             id: "ses_failed",
@@ -42,12 +79,13 @@ nonisolated struct MockCockpitClient: CockpitClient {
             name: "Yesterday's refactor",
             action: "claude",
             environment: "host-login-shell",
-            workingDir: "/home/dev/projects/cockpit",
+            workingDir: "/home/dev/Projects/atelier",
             status: .terminated,
             attachable: false,
             createdAt: Date(timeIntervalSinceNow: -90000),
             updatedAt: Date(timeIntervalSinceNow: -86400),
-            terminatedAt: Date(timeIntervalSinceNow: -86400)
+            terminatedAt: Date(timeIntervalSinceNow: -86400),
+            project: MockCockpitClient.atelierRef
         ),
     ]
 
@@ -69,16 +107,38 @@ nonisolated struct MockCockpitClient: CockpitClient {
     }
 
     func startSession(_ request: StartSessionRequest) async throws -> SessionDetail {
+        var workingDir = request.workingDir ?? ""
+        var projectRef: SessionProject?
+        if let projectId = request.projectId {
+            guard let project = mockProjects.first(where: { $0.id == projectId }) else {
+                throw CockpitError.api(
+                    code: "project_not_found", message: "project not found: \(projectId)", sessionID: nil
+                )
+            }
+            guard !project.isArchived else {
+                throw CockpitError.api(
+                    code: "project_archived", message: "project is archived: \(projectId)", sessionID: nil
+                )
+            }
+            workingDir = project.workingDir
+            projectRef = SessionProject(
+                id: project.id,
+                name: project.name,
+                workingDir: project.workingDir,
+                archivedAt: project.archivedAt
+            )
+        }
         let session = Session(
             id: "ses_new",
             name: request.name,
             action: request.action,
             environment: request.environment ?? "host-login-shell",
-            workingDir: request.workingDir,
+            workingDir: workingDir,
             status: .starting,
             attachable: false,
             createdAt: Date(),
-            updatedAt: Date()
+            updatedAt: Date(),
+            project: projectRef
         )
         return detail(from: session)
     }
@@ -124,6 +184,69 @@ nonisolated struct MockCockpitClient: CockpitClient {
         """#.utf8)
         struct Envelope: Decodable { var environments: [CockpitEnvironment] }
         return try JSONDecoder().decode(Envelope.self, from: json).environments
+    }
+
+    // MARK: - Projects
+
+    func projects(includeArchived: Bool) async throws -> [Project] {
+        mockProjects.filter { includeArchived || !$0.isArchived }
+    }
+
+    func project(id: String) async throws -> Project {
+        try lookupProject(id)
+    }
+
+    func createProject(name: String, workingDir: String) async throws -> Project {
+        Project(
+            id: "prj_new",
+            name: name,
+            workingDir: workingDir,
+            createdAt: Date(),
+            updatedAt: Date()
+        )
+    }
+
+    func renameProject(id: String, name: String) async throws -> Project {
+        var project = try lookupProject(id)
+        project.name = name
+        project.updatedAt = Date()
+        return project
+    }
+
+    func archiveProject(id: String) async throws -> Project {
+        var project = try lookupProject(id)
+        project.archivedAt = Date()
+        project.updatedAt = Date()
+        return project
+    }
+
+    func unarchiveProject(id: String) async throws -> Project {
+        var project = try lookupProject(id)
+        project.archivedAt = nil
+        project.updatedAt = Date()
+        return project
+    }
+
+    func projectSessions(
+        projectID: String,
+        includeArchived: Bool,
+        status: SessionStatus?
+    ) async throws -> [Session] {
+        _ = try lookupProject(projectID)
+        return mockSessions.filter { session in
+            session.project?.id == projectID
+                && (includeArchived || !session.isArchived)
+                && (status == nil || session.status == status)
+        }
+    }
+
+    private func lookupProject(_ id: String) throws -> Project {
+        guard let project = mockProjects.first(where: { $0.id == id }) else {
+            throw CockpitError.api(
+                code: "project_not_found", message: "project not found: \(id)", sessionID: nil
+            )
+        }
+        return project
     }
 
     // MARK: - File system

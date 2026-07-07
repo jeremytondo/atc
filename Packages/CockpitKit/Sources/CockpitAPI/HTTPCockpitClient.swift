@@ -83,6 +83,53 @@ public struct HTTPCockpitClient: CockpitClient {
         return try await get("fs/list", query: query)
     }
 
+    public func projects(includeArchived: Bool) async throws -> [Project] {
+        var query: [URLQueryItem] = []
+        if includeArchived {
+            query.append(URLQueryItem(name: "includeArchived", value: "true"))
+        }
+        let envelope: ProjectsEnvelope = try await get("projects", query: query)
+        return envelope.projects
+    }
+
+    public func project(id: String) async throws -> Project {
+        try await get("projects/\(id)")
+    }
+
+    public func createProject(name: String, workingDir: String) async throws -> Project {
+        struct Body: Encodable { var name: String; var workingDir: String }
+        return try await post("projects", body: Body(name: name, workingDir: workingDir))
+    }
+
+    public func renameProject(id: String, name: String) async throws -> Project {
+        struct Body: Encodable { var name: String }
+        return try await patch("projects/\(id)", body: Body(name: name))
+    }
+
+    public func archiveProject(id: String) async throws -> Project {
+        try await post("projects/\(id)/archive")
+    }
+
+    public func unarchiveProject(id: String) async throws -> Project {
+        try await post("projects/\(id)/unarchive")
+    }
+
+    public func projectSessions(
+        projectID: String,
+        includeArchived: Bool,
+        status: SessionStatus?
+    ) async throws -> [Session] {
+        var query: [URLQueryItem] = []
+        if includeArchived {
+            query.append(URLQueryItem(name: "includeArchived", value: "true"))
+        }
+        if let status {
+            query.append(URLQueryItem(name: "status", value: status.rawValue))
+        }
+        let envelope: SessionsEnvelope = try await get("projects/\(projectID)/sessions", query: query)
+        return envelope.sessions
+    }
+
     public func attachURL(sessionID: String) -> URL {
         server.attachURL(sessionID: sessionID)
     }
@@ -105,6 +152,11 @@ public struct HTTPCockpitClient: CockpitClient {
 
     private func post<T: Decodable>(_ path: String, body: some Encodable) async throws -> T {
         let data = try await send(method: "POST", path: path, body: body)
+        return try decode(data)
+    }
+
+    private func patch<T: Decodable>(_ path: String, body: some Encodable) async throws -> T {
+        let data = try await send(method: "PATCH", path: path, body: body)
         return try decode(data)
     }
 
