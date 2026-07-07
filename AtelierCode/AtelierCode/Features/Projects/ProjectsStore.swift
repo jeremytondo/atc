@@ -25,21 +25,31 @@ final class ProjectsStore {
         didSet { Task { await refresh() } }
     }
 
+    /// Monotonic token: a slow in-flight refresh must not clobber the
+    /// result of a newer one (e.g. a stale includeArchived=true response
+    /// landing after the toggle turned off).
+    private var refreshGeneration = 0
+
     init(client: any CockpitClient) {
         self.client = client
     }
 
     func refresh() async {
+        refreshGeneration += 1
+        let generation = refreshGeneration
         isLoading = true
         defer {
             isLoading = false
             hasLoadedOnce = true
         }
         do {
-            projects = try await client.projects(includeArchived: includeArchived)
+            let fetched = try await client.projects(includeArchived: includeArchived)
+            guard generation == refreshGeneration else { return }
+            projects = fetched
             lastError = nil
             logger.debug("refreshed \(self.projects.count) projects")
         } catch {
+            guard generation == refreshGeneration else { return }
             lastError = error.localizedDescription
             logger.error("refresh failed: \(error)")
         }

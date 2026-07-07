@@ -107,6 +107,19 @@ nonisolated struct MockCockpitClient: CockpitClient {
     }
 
     func startSession(_ request: StartSessionRequest) async throws -> SessionDetail {
+        // Mirror the server's XOR rule so previews/tests fail where the
+        // real server would.
+        let hasWorkingDir = !(request.workingDir ?? "").trimmingCharacters(in: .whitespaces).isEmpty
+        let hasProject = !(request.projectId ?? "").trimmingCharacters(in: .whitespaces).isEmpty
+        guard hasWorkingDir != hasProject else {
+            throw CockpitError.api(
+                code: "invalid_request",
+                message: hasWorkingDir
+                    ? "workingDir and projectId are mutually exclusive"
+                    : "workingDir or projectId is required",
+                sessionID: nil
+            )
+        }
         var workingDir = request.workingDir ?? ""
         var projectRef: SessionProject?
         if let projectId = request.projectId {
@@ -129,7 +142,7 @@ nonisolated struct MockCockpitClient: CockpitClient {
             )
         }
         let session = Session(
-            id: "ses_new",
+            id: "ses_" + String(UUID().uuidString.lowercased().prefix(8)),
             name: request.name,
             action: request.action,
             environment: request.environment ?? "host-login-shell",
@@ -197,8 +210,12 @@ nonisolated struct MockCockpitClient: CockpitClient {
     }
 
     func createProject(name: String, workingDir: String) async throws -> Project {
+        // Unique id per call: repeated creates in a preview must not
+        // produce List rows with colliding identities. (The mock is a
+        // value type, so the created project still vanishes on the next
+        // refresh — same fidelity limit as mock session starts.)
         Project(
-            id: "prj_new",
+            id: "prj_" + String(UUID().uuidString.lowercased().prefix(8)),
             name: name,
             workingDir: workingDir,
             createdAt: Date(),

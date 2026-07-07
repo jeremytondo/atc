@@ -4,8 +4,9 @@ import CockpitAPI
 /// Sidebar: projects as collapsible groups with their sessions nested
 /// underneath. Selection is always a session ID — project rows are
 /// disclosure headers that carry the per-project actions (new session,
-/// rename, archive). Sessions that predate projects land in a trailing
-/// "Other Sessions" group so nothing disappears during migration.
+/// rename, archive). Sessions whose project is hidden (archived) or gone,
+/// and legacy unscoped sessions, land in a trailing "Other Sessions" group
+/// so nothing becomes unreachable.
 struct ProjectSidebarView: View {
     @Environment(AppModel.self) private var appModel
     @Binding var selection: String?
@@ -23,11 +24,17 @@ struct ProjectSidebarView: View {
     @State private var actionError: String?
 
     var body: some View {
+        // One pass over the stores per render; the List body indexes into it.
+        let groups = SidebarGroups(
+            projects: appModel.projects.projects,
+            sessions: appModel.sessions.sessions,
+            searchText: searchText
+        )
         List(selection: $selection) {
-            ForEach(visibleProjects) { project in
+            ForEach(groups.visibleProjects) { project in
                 DisclosureGroup(isExpanded: expansionBinding(project.id)) {
-                    let group = sessions(in: project)
-                    ForEach(group) { session in
+                    let members = groups.sessions(in: project.id)
+                    ForEach(members) { session in
                         SessionRowView(
                             session: session,
                             isConnected: connectedIDs.contains(session.id),
@@ -35,7 +42,7 @@ struct ProjectSidebarView: View {
                         )
                         .tag(session.id)
                     }
-                    if group.isEmpty {
+                    if members.isEmpty {
                         Text("No sessions")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
@@ -44,10 +51,9 @@ struct ProjectSidebarView: View {
                     projectLabel(project)
                 }
             }
-            let unscoped = unscopedSessions
-            if !unscoped.isEmpty {
+            if !groups.otherSessions.isEmpty {
                 Section("Other Sessions") {
-                    ForEach(unscoped) { session in
+                    ForEach(groups.otherSessions) { session in
                         SessionRowView(session: session, isConnected: connectedIDs.contains(session.id))
                             .tag(session.id)
                     }
@@ -55,7 +61,7 @@ struct ProjectSidebarView: View {
             }
         }
         .overlay {
-            if visibleProjects.isEmpty && unscopedSessions.isEmpty
+            if groups.isEmpty
                 && appModel.projects.hasLoadedOnce && appModel.sessions.hasLoadedOnce {
                 emptyState
             }
@@ -67,7 +73,8 @@ struct ProjectSidebarView: View {
             TextField("Name", text: $renameDraft)
             Button("Rename") {
                 if let project = renamingProject {
-                    run { try await appModel.projects.rename(id: project.id, name: renameDraft) }
+                    let trimmed = renameDraft.trimmingCharacters(in: .whitespaces)
+                    run { try await appModel.projects.rename(id: project.id, name: trimmed) }
                 }
             }
             .disabled(renameDraft.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -162,49 +169,6 @@ struct ProjectSidebarView: View {
         }
     }
 
-    // MARK: - Grouping & filtering
-
-    private var visibleProjects: [Project] {
-        let all = appModel.projects.projects
-        guard !searchText.isEmpty else { return all }
-        // A project stays visible if its own name matches or any of its
-        // sessions do.
-        return all.filter { project in
-            project.name.localizedCaseInsensitiveContains(searchText)
-                || project.workingDir.localizedCaseInsensitiveContains(searchText)
-                || !sessions(in: project).isEmpty
-        }
-    }
-
-    /// Sessions for one project, newest activity first. When searching, a
-    /// matching project shows all its sessions; otherwise only matching
-    /// sessions survive.
-    private func sessions(in project: Project) -> [Session] {
-        let members = appModel.sessions.sessions
-            .filter { $0.project?.id == project.id }
-            .sorted { $0.updatedAt > $1.updatedAt }
-        guard !searchText.isEmpty else { return members }
-        if project.name.localizedCaseInsensitiveContains(searchText)
-            || project.workingDir.localizedCaseInsensitiveContains(searchText) {
-            return members
-        }
-        return members.filter(matches)
-    }
-
-    private var unscopedSessions: [Session] {
-        let unscoped = appModel.sessions.sessions
-            .filter { $0.project == nil }
-            .sorted { $0.updatedAt > $1.updatedAt }
-        guard !searchText.isEmpty else { return unscoped }
-        return unscoped.filter(matches)
-    }
-
-    private func matches(_ session: Session) -> Bool {
-        session.displayName.localizedCaseInsensitiveContains(searchText)
-            || session.workingDir.localizedCaseInsensitiveContains(searchText)
-            || session.action.localizedCaseInsensitiveContains(searchText)
-    }
-
     private func expansionBinding(_ projectID: String) -> Binding<Bool> {
         Binding(
             get: { !collapsedProjectIDs.contains(projectID) },
@@ -226,5 +190,71 @@ struct ProjectSidebarView: View {
                 actionError = error.localizedDescription
             }
         }
+    }
+}
+
+/// The sidebar's grouping/filtering, computed once per render. Search rules:
+/// a project whose own name or directory matches shows all its sessions;
+/// otherwise it stays visible only if some of its sessions match, filtered
+/// down to those. Within a group, active sessions come first (newest
+/// activity), archived ones trail.
+struct SidebarGroups {
+    let visibleProjects: [Project]
+    let otherSessions: [Session]
+    private let sessionsByProject: [String: [Session]]
+
+    var isEmpty: Bool { visibleProjects.isEmpty && otherSessions.isEmpty }
+
+    func sessions(in projectID: String) -> [Session] {
+        sessionsByProject[projectID] ?? []
+    }
+
+    init(projects: [Project], sessions: [Session], searchText: String) {
+        let byProject = Dictionary(grouping: sessions, by: { $0.project?.id })
+        let listedProjectIDs = Set(projects.map(\.id))
+
+        func matches(_ session: Session) -> Bool {
+            session.displayName.localizedCaseInsensitiveContains(searchText)
+                || session.workingDir.localizedCaseInsensitiveContains(searchText)
+                || session.action.localizedCaseInsensitiveContains(searchText)
+        }
+        func matches(_ project: Project) -> Bool {
+            project.name.localizedCaseInsensitiveContains(searchText)
+                || project.workingDir.localizedCaseInsensitiveContains(searchText)
+        }
+        func ordered(_ group: [Session]) -> [Session] {
+            group.sorted {
+                if $0.isArchived != $1.isArchived { return !$0.isArchived }
+                return $0.updatedAt > $1.updatedAt
+            }
+        }
+
+        var visible: [Project] = []
+        var grouped: [String: [Session]] = [:]
+        for project in projects {
+            var members = byProject[project.id] ?? []
+            if !searchText.isEmpty && !matches(project) {
+                members = members.filter(matches)
+                if members.isEmpty { continue }
+            }
+            visible.append(project)
+            grouped[project.id] = ordered(members)
+        }
+
+        // Unscoped sessions, plus sessions whose project the archived filter
+        // hides (or that vanished server-side) — they must stay reachable.
+        var other = byProject[nil] ?? []
+        for (projectID, group) in byProject {
+            if let projectID, !listedProjectIDs.contains(projectID) {
+                other.append(contentsOf: group)
+            }
+        }
+        if !searchText.isEmpty {
+            other = other.filter(matches)
+        }
+
+        visibleProjects = visible
+        sessionsByProject = grouped
+        otherSessions = ordered(other)
     }
 }

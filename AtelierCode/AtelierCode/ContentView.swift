@@ -31,14 +31,13 @@ struct ContentView: View {
                     .help("New project")
                     .keyboardShortcut("n", modifiers: [.command, .shift])
                     Button {
-                        newSessionProject = selectedProject
+                        newSessionProject = newSessionTarget
                     } label: {
                         Label("New Session", systemImage: "plus")
                     }
-                    .help(selectedProject == nil
-                        ? "Select a project session first, or use a project's + button"
-                        : "New session in \(selectedProject!.name)")
-                    .disabled(selectedProject == nil)
+                    .help(newSessionTarget.map { "New session in \($0.name)" }
+                        ?? "Select a project session first, or use a project's + button")
+                    .disabled(newSessionTarget == nil)
                     .keyboardShortcut("n", modifiers: .command)
                     Toggle(isOn: showArchivedBinding) {
                         Label("Show Archived", systemImage: "archivebox")
@@ -81,10 +80,12 @@ struct ContentView: View {
         selectedSessionID.flatMap { appModel.sessions.session(id: $0) }
     }
 
-    /// Project context for ⌘N: the selected session's project.
-    private var selectedProject: Project? {
+    /// Project context for ⌘N: the selected session's project, unless it's
+    /// archived — the server refuses starts there, so the button matches
+    /// the sidebar and disables instead.
+    private var newSessionTarget: Project? {
         guard let ref = selectedSession?.project else { return nil }
-        return appModel.projects.project(id: ref.id)
+        let project = appModel.projects.project(id: ref.id)
             ?? Project(
                 id: ref.id,
                 name: ref.name,
@@ -93,6 +94,7 @@ struct ContentView: View {
                 updatedAt: .now,
                 archivedAt: ref.archivedAt
             )
+        return project.isArchived ? nil : project
     }
 
     /// One toggle drives both stores' archived filters.

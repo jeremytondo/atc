@@ -3,8 +3,13 @@ import Testing
 import CockpitAPI
 @testable import AtelierCode
 
-/// ProjectsStore behavior against the canned mock fixtures: refresh,
-/// archived filtering, and merge-after-mutation semantics.
+/// ProjectsStore behavior: refresh, archived filtering, and
+/// merge-after-mutation semantics.
+///
+/// Mutation tests use `StatefulProjectsClient` instead of the value-type
+/// `MockCockpitClient`: the store fires an unawaited refresh after every
+/// mutation, and only a client whose state actually changed keeps those
+/// refreshes from resurrecting pre-mutation fixtures mid-test.
 @Suite("ProjectsStore")
 struct ProjectsStoreTests {
     @Test("refresh loads active projects only by default")
@@ -20,70 +25,142 @@ struct ProjectsStoreTests {
     @Test("includeArchived surfaces archived projects")
     func includeArchived() async throws {
         let store = ProjectsStore(client: MockCockpitClient())
+        // didSet fires its own unawaited refresh, which may supersede an
+        // explicitly awaited one — so wait for convergence instead.
         store.includeArchived = true
-        await store.refresh()
+        for _ in 0..<200 where store.projects.count != 3 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         #expect(store.projects.count == 3)
         #expect(store.projects.contains { $0.id == "prj_scratch" && $0.isArchived })
     }
 
-    @Test("create merges the new project at the front")
+    @Test("create merges the new project at the front with a unique id")
     func createMerges() async throws {
-        let store = ProjectsStore(client: MockCockpitClient())
+        let store = ProjectsStore(client: StatefulProjectsClient())
         await store.refresh()
-        let created = try await store.create(name: "Fresh", workingDir: "/home/dev/Projects/atelier")
-        #expect(created.name == "Fresh")
-        #expect(store.projects.first?.id == created.id)
+        let first = try await store.create(name: "Fresh", workingDir: "/home/dev/fresh")
+        let second = try await store.create(name: "Fresher", workingDir: "/home/dev/fresher")
+        #expect(first.id != second.id)
+        #expect(store.projects.first?.id == second.id)
+        #expect(store.projects.contains { $0.id == first.id })
     }
 
     @Test("archive drops the project from the default filter")
     func archiveDrops() async throws {
-        let store = ProjectsStore(client: MockCockpitClient())
+        let store = ProjectsStore(client: StatefulProjectsClient())
         await store.refresh()
-        #expect(store.projects.contains { $0.id == "prj_atelier" })
-        try await store.archive(id: "prj_atelier")
-        #expect(!store.projects.contains { $0.id == "prj_atelier" })
+        let target = try #require(store.projects.first)
+        try await store.archive(id: target.id)
+        #expect(!store.projects.contains { $0.id == target.id })
     }
 
     @Test("rename updates the project in place")
     func renameUpdates() async throws {
-        let store = ProjectsStore(client: MockCockpitClient())
+        let store = ProjectsStore(client: StatefulProjectsClient())
         await store.refresh()
-        try await store.rename(id: "prj_atelier", name: "Atelier Renamed")
-        #expect(store.project(id: "prj_atelier")?.name == "Atelier Renamed")
+        let target = try #require(store.projects.first)
+        try await store.rename(id: target.id, name: "Renamed")
+        #expect(store.project(id: target.id)?.name == "Renamed")
     }
 
     @Test("failed refresh keeps the error and empty list")
     func refreshError() async throws {
-        struct FailingClient: CockpitClient {
-            func projects(includeArchived: Bool) async throws -> [Project] {
-                throw CockpitError.badStatus(500)
-            }
-            // Everything else is unreachable in this test.
-            func health() async throws -> Health { fatalError() }
-            func version() async throws -> Version { fatalError() }
-            func sessions(includeArchived: Bool, status: SessionStatus?) async throws -> [Session] { fatalError() }
-            func session(id: String) async throws -> SessionDetail { fatalError() }
-            func startSession(_ request: StartSessionRequest) async throws -> SessionDetail { fatalError() }
-            func terminateSession(id: String) async throws -> SessionDetail { fatalError() }
-            func archiveSession(id: String) async throws -> SessionDetail { fatalError() }
-            func sendText(sessionID: String, text: String) async throws { fatalError() }
-            func sendKey(sessionID: String, key: String) async throws { fatalError() }
-            func actions() async throws -> [CockpitAction] { fatalError() }
-            func environments() async throws -> [CockpitEnvironment] { fatalError() }
-            func workspaceRoots() async throws -> [RemoteWorkspaceRoot] { fatalError() }
-            func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing { fatalError() }
-            func project(id: String) async throws -> Project { fatalError() }
-            func createProject(name: String, workingDir: String) async throws -> Project { fatalError() }
-            func renameProject(id: String, name: String) async throws -> Project { fatalError() }
-            func archiveProject(id: String) async throws -> Project { fatalError() }
-            func unarchiveProject(id: String) async throws -> Project { fatalError() }
-            func projectSessions(projectID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session] { fatalError() }
-            func attachURL(sessionID: String) -> URL { fatalError() }
-            func attachHeaders() -> [String: String] { fatalError() }
-        }
-        let store = ProjectsStore(client: FailingClient())
+        let store = ProjectsStore(client: StatefulProjectsClient(failAll: true))
         await store.refresh()
         #expect(store.lastError != nil)
         #expect(store.projects.isEmpty)
     }
+}
+
+/// Minimal stateful in-memory Cockpit for store tests: project mutations
+/// persist, so the store's follow-up refreshes converge instead of racing
+/// the assertions. Only the project methods are implemented.
+final class StatefulProjectsClient: CockpitClient, @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [Project]
+    private var counter = 0
+    private let failAll: Bool
+
+    init(failAll: Bool = false) {
+        self.failAll = failAll
+        self.stored = [
+            Project(id: "prj_one", name: "One", workingDir: "/home/dev/one", createdAt: .now, updatedAt: .now),
+            Project(id: "prj_two", name: "Two", workingDir: "/home/dev/two", createdAt: .now, updatedAt: .now),
+        ]
+    }
+
+    private func withState<T>(_ body: (inout [Project]) throws -> T) throws -> T {
+        if failAll { throw CockpitError.badStatus(500) }
+        lock.lock()
+        defer { lock.unlock() }
+        return try body(&stored)
+    }
+
+    func projects(includeArchived: Bool) async throws -> [Project] {
+        try withState { $0.filter { includeArchived || !$0.isArchived } }
+    }
+
+    func project(id: String) async throws -> Project {
+        try withState { state in
+            guard let found = state.first(where: { $0.id == id }) else {
+                throw CockpitError.api(code: "project_not_found", message: id, sessionID: nil)
+            }
+            return found
+        }
+    }
+
+    func createProject(name: String, workingDir: String) async throws -> Project {
+        try withState { state in
+            counter += 1
+            let project = Project(
+                id: "prj_stateful_\(counter)", name: name, workingDir: workingDir,
+                createdAt: .now, updatedAt: .now
+            )
+            state.insert(project, at: 0)
+            return project
+        }
+    }
+
+    func renameProject(id: String, name: String) async throws -> Project {
+        try mutate(id) { $0.name = name }
+    }
+
+    func archiveProject(id: String) async throws -> Project {
+        try mutate(id) { $0.archivedAt = .now }
+    }
+
+    func unarchiveProject(id: String) async throws -> Project {
+        try mutate(id) { $0.archivedAt = nil }
+    }
+
+    private func mutate(_ id: String, _ change: (inout Project) -> Void) throws -> Project {
+        try withState { state in
+            guard let index = state.firstIndex(where: { $0.id == id }) else {
+                throw CockpitError.api(code: "project_not_found", message: id, sessionID: nil)
+            }
+            change(&state[index])
+            state[index].updatedAt = .now
+            return state[index]
+        }
+    }
+
+    // MARK: - Unused surface
+
+    func health() async throws -> Health { throw CockpitError.badStatus(500) }
+    func version() async throws -> Version { throw CockpitError.badStatus(500) }
+    func sessions(includeArchived: Bool, status: SessionStatus?) async throws -> [Session] { [] }
+    func session(id: String) async throws -> SessionDetail { throw CockpitError.badStatus(500) }
+    func startSession(_ request: StartSessionRequest) async throws -> SessionDetail { throw CockpitError.badStatus(500) }
+    func terminateSession(id: String) async throws -> SessionDetail { throw CockpitError.badStatus(500) }
+    func archiveSession(id: String) async throws -> SessionDetail { throw CockpitError.badStatus(500) }
+    func sendText(sessionID: String, text: String) async throws {}
+    func sendKey(sessionID: String, key: String) async throws {}
+    func actions() async throws -> [CockpitAction] { [] }
+    func environments() async throws -> [CockpitEnvironment] { [] }
+    func workspaceRoots() async throws -> [RemoteWorkspaceRoot] { [] }
+    func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing { throw CockpitError.badStatus(500) }
+    func projectSessions(projectID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session] { [] }
+    func attachURL(sessionID: String) -> URL { URL(string: "ws://127.0.0.1:1/attach")! }
+    func attachHeaders() -> [String: String] { [:] }
 }
