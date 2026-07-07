@@ -10,3 +10,7 @@ https://github.com/jeremytondo/cockpit
 
 It's running on the remote workstation defined in ~/.ssh/config. You can ssh into that machine to control it if needed.
 
+The app is installed on workstation and running and accessibile via the tailscale address:
+
+http://100.91.7.102:7331/
+
