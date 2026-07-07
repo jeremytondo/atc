@@ -1,50 +1,68 @@
 import SwiftUI
 import CockpitAPI
 
-/// Single-window shell: sessions sidebar, session content on the right.
+/// Single-window shell: project sidebar, session content on the right.
 struct ContentView: View {
     @Environment(AppModel.self) private var appModel
     @State private var selectedSessionID: String?
     @State private var searchText = ""
-    @State private var showCreateSheet = false
+    @State private var showCreateProject = false
+    /// Non-nil presents the New Session sheet scoped to that project.
+    @State private var newSessionProject: Project?
 
     var body: some View {
-        @Bindable var store = appModel.sessions
         NavigationSplitView {
-            SessionListView(
+            ProjectSidebarView(
                 selection: $selectedSessionID,
                 searchText: searchText,
-                connectedIDs: Set(appModel.terminals.keys)
+                connectedIDs: Set(appModel.terminals.keys),
+                newSessionProject: $newSessionProject,
+                onCreateProject: { showCreateProject = true }
             )
             .navigationSplitViewColumnWidth(min: 220, ideal: 280)
-            .searchable(text: $searchText, placement: .sidebar, prompt: "Search sessions")
+            .searchable(text: $searchText, placement: .sidebar, prompt: "Search projects and sessions")
             .toolbar {
                 ToolbarItemGroup {
                     Button {
-                        showCreateSheet = true
+                        showCreateProject = true
+                    } label: {
+                        Label("New Project", systemImage: "folder.badge.plus")
+                    }
+                    .help("New project")
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
+                    Button {
+                        newSessionProject = newSessionTarget
                     } label: {
                         Label("New Session", systemImage: "plus")
                     }
-                    .help("New session")
+                    .help(newSessionTarget.map { "New session in \($0.name)" }
+                        ?? "Select a project session first, or use a project's + button")
+                    .disabled(newSessionTarget == nil)
                     .keyboardShortcut("n", modifiers: .command)
-                    Toggle(isOn: $store.includeArchived) {
+                    Toggle(isOn: showArchivedBinding) {
                         Label("Show Archived", systemImage: "archivebox")
                     }
-                    .help("Show archived sessions")
+                    .help("Show archived projects and sessions")
                     Button {
-                        Task { await store.refresh() }
+                        Task {
+                            await appModel.projects.refresh()
+                            await appModel.sessions.refresh()
+                        }
                     } label: {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }
-                    .help("Refresh sessions")
+                    .help("Refresh projects and sessions")
                     .keyboardShortcut("r", modifiers: .command)
                 }
             }
         } detail: {
             SessionContentView(selectedSession: selectedSession)
         }
-        .sheet(isPresented: $showCreateSheet) {
-            CreateSessionSheet { newSessionID in
+        .sheet(isPresented: $showCreateProject) {
+            CreateProjectSheet()
+        }
+        .sheet(item: $newSessionProject) { project in
+            CreateSessionSheet(project: project) { newSessionID in
                 selectedSessionID = newSessionID
             }
         }
@@ -53,10 +71,41 @@ struct ContentView: View {
         .task {
             await appModel.sessions.pollLoop()
         }
+        .task {
+            await appModel.projects.pollLoop()
+        }
     }
 
     private var selectedSession: Session? {
         selectedSessionID.flatMap { appModel.sessions.session(id: $0) }
+    }
+
+    /// Project context for ⌘N: the selected session's project, unless it's
+    /// archived — the server refuses starts there, so the button matches
+    /// the sidebar and disables instead.
+    private var newSessionTarget: Project? {
+        guard let ref = selectedSession?.project else { return nil }
+        let project = appModel.projects.project(id: ref.id)
+            ?? Project(
+                id: ref.id,
+                name: ref.name,
+                workingDir: ref.workingDir,
+                createdAt: .now,
+                updatedAt: .now,
+                archivedAt: ref.archivedAt
+            )
+        return project.isArchived ? nil : project
+    }
+
+    /// One toggle drives both stores' archived filters.
+    private var showArchivedBinding: Binding<Bool> {
+        Binding(
+            get: { appModel.sessions.includeArchived },
+            set: { on in
+                appModel.sessions.includeArchived = on
+                appModel.projects.includeArchived = on
+            }
+        )
     }
 
     /// Selecting an attachable session auto-attaches — no explicit Connect

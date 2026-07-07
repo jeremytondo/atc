@@ -7,6 +7,27 @@ public enum SessionStatus: String, Codable, Sendable, CaseIterable, Hashable {
     case terminated
 }
 
+/// Project reference nested on project-scoped sessions. Present on session
+/// list items and detail only when the session belongs to a project.
+public struct SessionProject: Codable, Sendable, Hashable, Identifiable {
+    public var id: String
+    public var name: String
+    public var workingDir: String
+    public var archivedAt: Date?
+
+    public init(
+        id: String,
+        name: String,
+        workingDir: String,
+        archivedAt: Date? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.workingDir = workingDir
+        self.archivedAt = archivedAt
+    }
+}
+
 /// One entry from `GET /api/sessions` (wrapped in `{"sessions":[...]}`).
 public struct Session: Codable, Sendable, Hashable, Identifiable {
     public var id: String
@@ -22,6 +43,9 @@ public struct Session: Codable, Sendable, Hashable, Identifiable {
     public var updatedAt: Date
     public var terminatedAt: Date?
     public var archivedAt: Date?
+    /// The project this session is scoped to, if any (legacy/unscoped
+    /// sessions have none).
+    public var project: SessionProject?
 
     public init(
         id: String,
@@ -36,7 +60,8 @@ public struct Session: Codable, Sendable, Hashable, Identifiable {
         createdAt: Date,
         updatedAt: Date,
         terminatedAt: Date? = nil,
-        archivedAt: Date? = nil
+        archivedAt: Date? = nil,
+        project: SessionProject? = nil
     ) {
         self.id = id
         self.name = name
@@ -51,6 +76,7 @@ public struct Session: Codable, Sendable, Hashable, Identifiable {
         self.updatedAt = updatedAt
         self.terminatedAt = terminatedAt
         self.archivedAt = archivedAt
+        self.project = project
     }
 
     /// Archived is not a status — it's a non-null `archivedAt`.
@@ -80,6 +106,9 @@ public struct SessionDetail: Codable, Sendable, Hashable, Identifiable {
     public var updatedAt: Date
     public var terminatedAt: Date?
     public var archivedAt: Date?
+    /// The project this session is scoped to, if any (legacy/unscoped
+    /// sessions have none).
+    public var project: SessionProject?
 
     public var isArchived: Bool { archivedAt != nil }
 
@@ -99,7 +128,8 @@ public struct SessionDetail: Codable, Sendable, Hashable, Identifiable {
             createdAt: createdAt,
             updatedAt: updatedAt,
             terminatedAt: terminatedAt,
-            archivedAt: archivedAt
+            archivedAt: archivedAt,
+            project: project
         )
     }
 }

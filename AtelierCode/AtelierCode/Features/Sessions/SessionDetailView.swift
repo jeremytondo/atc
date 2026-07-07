@@ -19,6 +19,9 @@ struct SessionDetailView: View {
                 }
                 LabeledContent("Action", value: session.action)
                 LabeledContent("Environment", value: session.environment)
+                if let project = session.project {
+                    LabeledContent("Project", value: project.name)
+                }
                 LabeledContent("Working Directory", value: session.workingDir)
             }
             if session.failureReason != nil || session.failureCode != nil {

@@ -1,11 +1,15 @@
 import Foundation
 
-/// Body of `POST /api/sessions/start`.
+/// Body of `POST /api/sessions/start`. Exactly one of `workingDir` or
+/// `projectId` is required — they are mutually exclusive, and the server
+/// enforces the constraint. Nil fields are omitted by the synthesized
+/// `Encodable`.
 public struct StartSessionRequest: Encodable, Sendable, Hashable {
     public var action: String
     public var environment: String?
     public var params: [String: JSONValue]?
-    public var workingDir: String
+    public var workingDir: String?
+    public var projectId: String?
     public var prompt: String?
     public var name: String?
 
@@ -13,7 +17,8 @@ public struct StartSessionRequest: Encodable, Sendable, Hashable {
         action: String,
         environment: String? = nil,
         params: [String: JSONValue]? = nil,
-        workingDir: String,
+        workingDir: String? = nil,
+        projectId: String? = nil,
         prompt: String? = nil,
         name: String? = nil
     ) {
@@ -21,6 +26,7 @@ public struct StartSessionRequest: Encodable, Sendable, Hashable {
         self.environment = environment
         self.params = params
         self.workingDir = workingDir
+        self.projectId = projectId
         self.prompt = prompt
         self.name = name
     }

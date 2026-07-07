@@ -12,7 +12,7 @@ struct PickerHostingSmokeTest {
         RunLoop.main.run(until: Date(timeIntervalSinceNow: seconds))
     }
 
-    @Test("sheet hosts, loads roots, drills down without crashing")
+    @Test("sheet hosts, loads default directory without crashing")
     func hostAndNavigate() async throws {
         let sheet = RemoteFolderPickerSheet(client: MockCockpitClient()) { _ in }
         let window = NSWindow(
@@ -21,7 +21,7 @@ struct PickerHostingSmokeTest {
         )
         window.contentView = NSHostingView(rootView: sheet)
         window.orderFront(nil)
-        pump(seconds: 0.5)   // roots load + List render
+        pump(seconds: 0.5)   // default directory load + List render
         window.orderOut(nil)
     }
 

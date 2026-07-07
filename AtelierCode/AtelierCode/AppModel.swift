@@ -9,6 +9,7 @@ final class AppModel {
     let settings: AppSettings
     private(set) var client: any CockpitClient
     let sessions: SessionsStore
+    let projects: ProjectsStore
 
     /// Live terminal attaches by session ID. Connections and surfaces stay
     /// alive here while the user switches around the sidebar.
@@ -19,12 +20,14 @@ final class AppModel {
         let resolved = client ?? Self.makeClient(settings: settings)
         self.client = resolved
         self.sessions = SessionsStore(client: resolved)
+        self.projects = ProjectsStore(client: resolved)
     }
 
     /// Call after server URL or token changes.
     func rebuildClient() {
         client = Self.makeClient(settings: settings)
         sessions.client = client
+        projects.client = client
         // Existing attaches keep their old endpoint until disconnected.
     }
 

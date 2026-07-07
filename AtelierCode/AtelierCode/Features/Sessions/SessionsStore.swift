@@ -25,11 +25,18 @@ final class SessionsStore {
         didSet { Task { await refresh() } }
     }
 
+    /// Monotonic token: a slow in-flight refresh must not clobber the
+    /// result of a newer one (e.g. a stale includeArchived=true response
+    /// landing after the toggle turned off).
+    private var refreshGeneration = 0
+
     init(client: any CockpitClient) {
         self.client = client
     }
 
     func refresh() async {
+        refreshGeneration += 1
+        let generation = refreshGeneration
         isLoading = true
         defer {
             isLoading = false
@@ -38,10 +45,13 @@ final class SessionsStore {
         do {
             // Always fetch archived too when toggled; the server filters,
             // the view groups.
-            sessions = try await client.sessions(includeArchived: includeArchived, status: nil)
+            let fetched = try await client.sessions(includeArchived: includeArchived, status: nil)
+            guard generation == refreshGeneration else { return }
+            sessions = fetched
             lastError = nil
             logger.debug("refreshed \(self.sessions.count) sessions")
         } catch {
+            guard generation == refreshGeneration else { return }
             lastError = error.localizedDescription
             logger.error("refresh failed: \(error)")
         }
