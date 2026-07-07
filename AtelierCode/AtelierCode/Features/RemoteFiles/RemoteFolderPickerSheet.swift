@@ -24,7 +24,7 @@ struct RemoteFolderPickerSheet: View {
             // ForEach: rows built by view-returning helpers crash Xcode
             // preview dynamic replacement (ViewListTree identity assert).
             if browser.listing == nil {
-                RootsListPane(browser: browser)
+                InitialDirectoryPane(browser: browser)
             } else {
                 DirectoryListPane(browser: browser)
             }
@@ -33,14 +33,8 @@ struct RemoteFolderPickerSheet: View {
         }
         .frame(width: 520, height: 480)
         .task {
-            if initialPath.isEmpty {
-                await browser.loadRoots()
-            } else {
-                // Prefill from the working-dir field; on failure the roots
-                // list shows with the error visible above.
-                browser.typedPath = initialPath
-                await browser.commitTypedPath()
-            }
+            browser.typedPath = initialPath
+            await browser.commitTypedPath()
         }
     }
 
@@ -63,7 +57,7 @@ struct RemoteFolderPickerSheet: View {
                 } label: {
                     Image(systemName: "arrow.up")
                 }
-                .disabled(browser.listing == nil)
+                .disabled(!browser.canGoUp)
                 .help("Up")
                 breadcrumbBar
             }
@@ -120,50 +114,21 @@ struct RemoteFolderPickerSheet: View {
     }
 }
 
-// MARK: - Roots list pane
+// MARK: - Initial pane
 
-private struct RootsListPane: View {
+private struct InitialDirectoryPane: View {
     @Bindable var browser: RemoteFileBrowser
 
     var body: some View {
-        if browser.isLoading && !browser.hasLoadedRoots {
+        if browser.isLoading {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if browser.roots.isEmpty && browser.hasLoadedRoots {
-            ContentUnavailableView(
-                "No browsable roots",
-                systemImage: "folder.badge.questionmark",
-                description: Text("Workspace roots are configured on the Cockpit server in the [fs] config section.")
-            )
         } else {
-            List(selection: $browser.highlightedPath) {
-                ForEach(browser.roots) { root in
-                    HStack {
-                        Image(systemName: "folder")
-                        Text(root.label)
-                        Spacer()
-                        Text(root.path)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    .contentShape(Rectangle())
-                    .onTapGesture(count: 2) {
-                        Task { await browser.open(root: root) }
-                    }
-                    .tag(root.path)
-                }
-            }
-            .listStyle(.inset)
-            .onKeyPress(.return) { openHighlightedRoot() }
+            ContentUnavailableView(
+                "No folder loaded",
+                systemImage: "folder.badge.questionmark"
+            )
         }
-    }
-
-    private func openHighlightedRoot() -> KeyPress.Result {
-        guard let path = browser.highlightedPath,
-              let root = browser.roots.first(where: { $0.path == path }) else { return .ignored }
-        Task { await browser.open(root: root) }
-        return .handled
     }
 }
 
@@ -235,7 +200,7 @@ private struct DirectoryListPane: View {
     }
 }
 
-#Preview("Roots") {
+#Preview("Default directory") {
     RemoteFolderPickerSheet(client: MockCockpitClient()) { _ in }
         .preferredColorScheme(.dark)
 }
@@ -257,10 +222,5 @@ private struct DirectoryListPane: View {
 
 #Preview("Empty folder") {
     RemoteFolderPickerSheet(client: MockCockpitClient(), initialPath: "/home/dev/Projects/empty") { _ in }
-        .preferredColorScheme(.dark)
-}
-
-#Preview("No roots") {
-    RemoteFolderPickerSheet(client: MockCockpitClient(mockRoots: [])) { _ in }
         .preferredColorScheme(.dark)
 }

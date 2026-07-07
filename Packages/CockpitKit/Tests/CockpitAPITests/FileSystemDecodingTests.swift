@@ -4,11 +4,6 @@ import Testing
 
 /// Fixtures captured from the live server on 2026-07-06.
 
-/// `GET /api/fs/roots`
-private let rootsFixture = Data(#"""
-{"roots":[{"label":"Home","path":"/home/jeremytondo"}]}
-"""#.utf8)
-
 /// `GET /api/fs/list?path=/home/jeremytondo/fixture-tree&showHidden=true` —
 /// a tree built to exercise every entry shape: plain dir, dir symlink,
 /// hidden file, broken symlink (`unknown`, no size/modifiedAt), file
@@ -30,13 +25,6 @@ private let truncatedListFixture = Data(#"""
 
 @Suite("File system decoding")
 struct FileSystemDecodingTests {
-    @Test("roots envelope decodes")
-    func rootsDecode() throws {
-        let envelope = try JSONDecoder.cockpit().decode(RootsEnvelope.self, from: rootsFixture)
-        #expect(envelope.roots == [RemoteWorkspaceRoot(label: "Home", path: "/home/jeremytondo")])
-        #expect(envelope.roots[0].id == "/home/jeremytondo")
-    }
-
     @Test("listing decodes with real server shapes")
     func listDecodes() throws {
         let listing = try JSONDecoder.cockpit().decode(DirectoryListing.self, from: listFixture)
@@ -97,7 +85,6 @@ struct FileSystemDecodingTests {
 struct FileSystemErrorTests {
     private static let bodies: [(code: String, json: String)] = [
         ("invalid_path", #"{"error":"invalid_path","message":"invalid path: path must be absolute"}"#),
-        ("outside_browsable_roots", #"{"error":"outside_browsable_roots","message":"outside browsable roots: /etc/passwd"}"#),
         ("not_found", #"{"error":"not_found","message":"not found: /home/jeremytondo/nope-not-here"}"#),
         ("not_directory", #"{"error":"not_directory","message":"not a directory: /home/jeremytondo/fixture-tree/readme.md"}"#),
         ("permission_denied", #"{"error":"permission_denied","message":"permission denied: /home/jeremytondo/fixture-tree/locked"}"#),

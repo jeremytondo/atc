@@ -3,20 +3,17 @@ import Observation
 import CockpitAPI
 
 /// Picker-workflow state for browsing the workstation's filesystem via
-/// `/api/fs`. Not a generic tree engine — exactly the folder picker's
+/// `/api/fs`. Not a generic tree engine - exactly the folder picker's
 /// drill-down state. Knows nothing about views.
 @Observable
 final class RemoteFileBrowser {
     private let client: any CockpitClient
 
-    private(set) var roots: [RemoteWorkspaceRoot] = []
-    private(set) var activeRoot: RemoteWorkspaceRoot?
-    /// `nil` ⇒ showing the roots list.
+    /// `nil` while no directory is currently on screen.
     private(set) var listing: DirectoryListing?
     private(set) var isLoading = false
-    private(set) var hasLoadedRoots = false
     var lastError: String?
-    /// Highlighted Entry (List selection) — never the Chosen Folder.
+    /// Highlighted Entry (List selection) - never the Chosen Folder.
     var highlightedPath: String?
     /// Path-field draft; synced to `currentPath` on every navigation.
     var typedPath: String = ""
@@ -39,47 +36,33 @@ final class RemoteFileBrowser {
     /// The Chosen Folder candidate — the directory currently on screen.
     var currentPath: String? { listing?.path }
 
-    /// Whether Up navigates to a parent directory (false at the active
-    /// root's top and on the roots list). `goUp()` at the root still works:
-    /// it returns to the roots list.
+    /// Whether Up navigates to a parent directory.
     var canGoUp: Bool {
         guard let currentPath else { return false }
-        return currentPath != activeRoot?.path
+        return currentPath != "/"
     }
 
-    /// Active root's label followed by the lexical path segments below it.
+    /// Lexical path segments for the current directory.
     var breadcrumbs: [(label: String, path: String)] {
-        guard let currentPath, let activeRoot else { return [] }
-        var crumbs = [(label: activeRoot.label, path: activeRoot.path)]
-        guard currentPath != activeRoot.path else { return crumbs }
-        let relative = String(currentPath.dropFirst(activeRoot.path.count).drop(while: { $0 == "/" }))
-        var accumulated = activeRoot.path
-        for segment in relative.split(separator: "/") {
-            accumulated += "/\(segment)"
-            crumbs.append((label: String(segment), path: accumulated))
+        guard let currentPath, !currentPath.isEmpty else { return [] }
+        var crumbs: [(label: String, path: String)] = []
+        var accumulated = ""
+        for component in (currentPath as NSString).pathComponents {
+            if component == "/" {
+                accumulated = "/"
+                crumbs.append((label: "/", path: "/"))
+            } else {
+                accumulated = accumulated == "/" ? "/\(component)" : "\(accumulated)/\(component)"
+                crumbs.append((label: component, path: accumulated))
+            }
         }
         return crumbs
     }
 
     // MARK: - Commands
 
-    func loadRoots() async {
-        isLoading = true
-        defer {
-            isLoading = false
-            hasLoadedRoots = true
-        }
-        do {
-            roots = try await client.workspaceRoots()
-            lastError = nil
-        } catch {
-            lastError = error.localizedDescription
-        }
-    }
-
-    func open(root: RemoteWorkspaceRoot) async {
-        guard let fetched = await list(root.path) else { return }
-        activeRoot = root
+    func open(path: String) async {
+        guard let fetched = await list(path) else { return }
         apply(fetched)
     }
 
@@ -90,15 +73,7 @@ final class RemoteFileBrowser {
     }
 
     func goUp() async {
-        guard let currentPath else { return }
-        if !canGoUp {
-            // At the active root's top: back out to the roots list.
-            listing = nil
-            activeRoot = nil
-            typedPath = ""
-            highlightedPath = nil
-            return
-        }
+        guard let currentPath, canGoUp else { return }
         let parent = (currentPath as NSString).deletingLastPathComponent
         guard let fetched = await list(parent) else { return }
         apply(fetched)
@@ -108,12 +83,8 @@ final class RemoteFileBrowser {
     /// the trimmed string goes straight to `fs/list` and a failure renders
     /// the typed error while navigation state stays put.
     func commitTypedPath() async {
-        if !hasLoadedRoots {
-            await loadRoots()
-        }
         let trimmed = typedPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let fetched = await list(trimmed) else { return }
-        activeRoot = longestPrefixRoot(of: fetched.path)
         apply(fetched)
     }
 
@@ -153,14 +124,5 @@ final class RemoteFileBrowser {
         listing = fetched
         typedPath = fetched.path
         highlightedPath = nil
-    }
-
-    /// The root whose path is the longest lexical prefix of `path`. The
-    /// server already guaranteed containment, so a match exists whenever
-    /// the roots are current.
-    private func longestPrefixRoot(of path: String) -> RemoteWorkspaceRoot? {
-        roots
-            .filter { path == $0.path || path.hasPrefix($0.path == "/" ? "/" : $0.path + "/") }
-            .max { $0.path.count < $1.path.count }
     }
 }

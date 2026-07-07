@@ -1,18 +1,5 @@
 import Foundation
 
-/// One entry from `GET /api/fs/roots` (wrapped in `{"roots":[...]}`).
-/// `path` is the expanded, cleaned, absolute path on the workstation.
-public struct RemoteWorkspaceRoot: Codable, Sendable, Hashable, Identifiable {
-    public var id: String { path }
-    public let label: String
-    public let path: String
-
-    public init(label: String, path: String) {
-        self.label = label
-        self.path = path
-    }
-}
-
 /// Classification of a directory entry. Symlinks are classified by their
 /// target; broken symlinks, sockets, FIFOs, and devices are `.unknown`
 /// (visible, not enterable).
@@ -73,8 +60,4 @@ public struct DirectoryListing: Codable, Sendable, Hashable {
         self.truncated = truncated
         self.entries = entries
     }
-}
-
-struct RootsEnvelope: Decodable {
-    var roots: [RemoteWorkspaceRoot]
 }

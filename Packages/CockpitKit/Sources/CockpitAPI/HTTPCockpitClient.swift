@@ -70,11 +70,6 @@ public struct HTTPCockpitClient: CockpitClient {
         return envelope.environments
     }
 
-    public func workspaceRoots() async throws -> [RemoteWorkspaceRoot] {
-        let envelope: RootsEnvelope = try await get("fs/roots")
-        return envelope.roots
-    }
-
     public func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing {
         var query = [URLQueryItem(name: "path", value: path)]
         if showHidden {

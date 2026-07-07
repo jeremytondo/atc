@@ -268,11 +268,6 @@ nonisolated struct MockCockpitClient: CockpitClient {
 
     // MARK: - File system
 
-    var mockRoots: [RemoteWorkspaceRoot] = [
-        RemoteWorkspaceRoot(label: "Projects", path: "/home/dev/Projects"),
-        RemoteWorkspaceRoot(label: "Home", path: "/home/dev"),
-    ]
-
     /// Directory path → full (unfiltered) children. `listDirectory` filters
     /// dot-entries itself and throws typed errors, mimicking the server so
     /// `RemoteFileBrowser` tests cover error handling.
@@ -292,6 +287,12 @@ nonisolated struct MockCockpitClient: CockpitClient {
             )
         }
         return [
+            "/": [
+                dir("/home"),
+            ],
+            "/home": [
+                dir("/home/dev"),
+            ],
             "/home/dev": [
                 dir("/home/dev/.config"),
                 dir("/home/dev/Documents"),
@@ -345,23 +346,20 @@ nonisolated struct MockCockpitClient: CockpitClient {
         ]
     }()
 
-    func workspaceRoots() async throws -> [RemoteWorkspaceRoot] {
-        mockRoots
-    }
-
     func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing {
-        if path.hasSuffix("/secrets") {
+        let resolvedPath = path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "/home/dev" : path
+        if resolvedPath.hasSuffix("/secrets") {
             throw CockpitError.api(
-                code: "permission_denied", message: "permission denied: \(path)", sessionID: nil
+                code: "permission_denied", message: "permission denied: \(resolvedPath)", sessionID: nil
             )
         }
-        guard let children = mockTree[path] else {
-            throw CockpitError.api(code: "not_found", message: "not found: \(path)", sessionID: nil)
+        guard let children = mockTree[resolvedPath] else {
+            throw CockpitError.api(code: "not_found", message: "not found: \(resolvedPath)", sessionID: nil)
         }
         let visible = children.filter { showHidden || !$0.name.hasPrefix(".") }
         return DirectoryListing(
-            path: path,
-            truncated: path.hasSuffix("/huge"),
+            path: resolvedPath,
+            truncated: resolvedPath.hasSuffix("/huge"),
             entries: visible
         )
     }

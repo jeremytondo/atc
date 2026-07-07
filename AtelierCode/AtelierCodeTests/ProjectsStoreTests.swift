@@ -158,7 +158,6 @@ final class StatefulProjectsClient: CockpitClient, @unchecked Sendable {
     func sendKey(sessionID: String, key: String) async throws {}
     func actions() async throws -> [CockpitAction] { [] }
     func environments() async throws -> [CockpitEnvironment] { [] }
-    func workspaceRoots() async throws -> [RemoteWorkspaceRoot] { [] }
     func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing { throw CockpitError.badStatus(500) }
     func projectSessions(projectID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session] { [] }
     func attachURL(sessionID: String) -> URL { URL(string: "ws://127.0.0.1:1/attach")! }

@@ -53,4 +53,11 @@ struct FileSystemRequestTests {
         #expect(CapturingURLProtocol.lastURL?.absoluteString
             == "http://example.com:7331/api/fs/list?path=/home/j/My%20Projects%231")
     }
+
+    @Test("fs/list sends empty path for server default directory")
+    func emptyPath() async throws {
+        _ = try await makeClient().listDirectory(path: "")
+        #expect(CapturingURLProtocol.lastURL?.absoluteString
+            == "http://example.com:7331/api/fs/list?path=")
+    }
 }

@@ -15,7 +15,6 @@ public protocol CockpitClient: Sendable {
     func sendKey(sessionID: String, key: String) async throws
     func actions() async throws -> [CockpitAction]
     func environments() async throws -> [CockpitEnvironment]
-    func workspaceRoots() async throws -> [RemoteWorkspaceRoot]
     func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing
     func projects(includeArchived: Bool) async throws -> [Project]
     func project(id: String) async throws -> Project
