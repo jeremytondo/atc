@@ -181,11 +181,9 @@ struct ProjectRef: Hashable { let connectionID: UUID; let projectID: String }
 
 ## 3. Settings window
 
-- The SwiftUI `Settings` scene remains the canonical entry point (⌘,). Add an
-  always-visible main-window toolbar button that opens the same window via
-  `@Environment(\.openSettings)`.
-- Layout is a sidebar-style, multi-section-capable settings UI with
-  `Connections` as the only v1 section.
+- The SwiftUI `Settings` scene remains the canonical entry point (⌘,).
+- Layout opens directly to the Connections settings. There is no separate
+  settings section sidebar in v1.
 - **Connections section**: list of Connections (name + URL + status dot), Add
   (+) and Remove (−) controls, and a detail editor.
 - **Editor uses draft fields** (local `@State` copies) with explicit
@@ -198,8 +196,7 @@ struct ProjectRef: Hashable { let connectionID: UUID; let projectID: String }
   (tolerate `"dev"`/`"unknown"` builds); failure shows the error. Results are
   generation-guarded so edits invalidate in-flight tests.
 - Empty state (no Connections configured): both the Settings section and the
-  main window show a friendly empty state with an Add Connection path. No
-  seeded defaults.
+  main window show a friendly empty state. No seeded defaults.
 
 ## 4. Sidebar
 
@@ -308,17 +305,16 @@ stays in place until Phase 3.
 
 ## Phase 2 — Settings window Connections UI
 
-1. Rebuild `SettingsView` as the sidebar-style multi-section layout with the
-   single `Connections` section (list + editor as specced in §3).
+1. Rebuild `SettingsView` around the Connections section (list + editor as
+   specced in §3).
 2. Draft-field editor with Save/Cancel, inline validation, Add/Remove with
    the delete confirmation copy ("server data remains").
 3. Test Connection action with generation guard; throwaway client from draft
    values; health + version display.
-4. Add the main-window toolbar Settings button (`openSettings`).
-5. At this point Settings edits the Connection list but the running app still
+4. At this point Settings edits the Connection list but the running app still
    uses the old single-client path — acceptable mid-refactor state within the
    branch; note it in the checkpoint message.
-6. **Tests**: Settings hosting smoke test (NSHostingView + run-loop pump,
+5. **Tests**: Settings hosting smoke test (NSHostingView + run-loop pump,
    same pattern as `ProjectUIHostingSmokeTest`); draft save/cancel behavior
    if extracted into a testable draft model.
 
@@ -354,9 +350,8 @@ The structural core; biggest phase.
 4. Disable the Archive context-menu action when the project has known
    `starting`/`running` sessions; let the server 409 surface via the existing
    error alert as the stale-view fallback.
-5. Empty states: no Connections at all → main-window empty state with an
-   Add Connection path into Settings; Connections configured but nothing
-   loaded yet → existing loading behavior per store.
+5. Empty states: no Connections at all → main-window empty state; Connections
+   configured but nothing loaded yet → existing loading behavior per store.
 6. **Tests**: `SidebarGroupsTests` rewritten for multi-connection input —
    aggregation order (connection creation order, then server order), no
    `Other Sessions` under any input (unscoped sessions dropped, archived-

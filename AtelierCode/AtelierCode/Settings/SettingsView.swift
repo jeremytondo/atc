@@ -1,39 +1,9 @@
 import SwiftUI
 
-/// Sidebar-style, multi-section Settings shell. v1 has a single `Connections`
-/// section; the enum keeps room for more without reshaping the window.
+/// App Settings window. macOS owns the menu item and standard keyboard shortcut.
 struct SettingsView: View {
-    private enum SettingsSection: Hashable, CaseIterable, Identifiable {
-        case connections
-
-        var id: Self { self }
-        var label: String {
-            switch self {
-            case .connections: return "Connections"
-            }
-        }
-        var systemImage: String {
-            switch self {
-            case .connections: return "network"
-            }
-        }
-    }
-
-    @State private var selection: SettingsSection? = .connections
-
     var body: some View {
-        NavigationSplitView {
-            List(SettingsSection.allCases, selection: $selection) { section in
-                Label(section.label, systemImage: section.systemImage)
-                    .tag(section)
-            }
-            .navigationSplitViewColumnWidth(min: 160, ideal: 180, max: 220)
-        } detail: {
-            switch selection {
-            case .connections, .none:
-                ConnectionsSettingsView()
-            }
-        }
+        ConnectionsSettingsView()
         .frame(width: 700, height: 450)
     }
 }

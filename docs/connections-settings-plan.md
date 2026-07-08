@@ -25,8 +25,8 @@ AtelierCode should support multiple named Connections to Cockpit servers while k
 - User input may infer `http://` when the scheme is omitted, but saved URLs must be explicit `http` or `https`.
 - Tokens stay in plain app preferences for now; no Keychain work in this pass.
 - There is no default Connection concept. Connections use creation order.
-- First launch with no Connections shows an empty state and an Add Connection path. The app should not seed a hardcoded `Workstation` Connection.
-- Settings remains a dedicated macOS Settings window with a sidebar-style settings UI. The main app should also expose an always-visible toolbar Settings button that opens the same Settings window.
+- First launch with no Connections shows an empty state. The app should not seed a hardcoded `Workstation` Connection.
+- Settings remains a dedicated macOS Settings window opened through the standard macOS app menu and keyboard shortcut.
 - Settings v1 contains Connections only.
 - Connection editing uses draft fields and explicit Save/Cancel.
 - Test Connection can run against valid draft URL/token values before save. It should call health and version.
@@ -56,9 +56,8 @@ AtelierCode should support multiple named Connections to Cockpit servers while k
 
 2. Build the Settings window Connections UI.
    - Keep SwiftUI `Settings` as the canonical Settings entry point.
-   - Add a multi-section-capable Settings layout with `Connections` as the only v1 section.
+   - Add a Settings layout for managing Connections.
    - Provide Connection list, add, edit, save/cancel, remove, and test actions.
-   - Add a main-window toolbar Settings button that opens the same Settings window.
 
 3. Make app state Connection-aware.
    - Replace the single shared client/store assumption with per-Connection client state.

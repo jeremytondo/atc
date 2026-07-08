@@ -4,9 +4,8 @@ import Testing
 import CockpitAPI
 @testable import AtelierCode
 
-/// Hosts the full Settings window (sections shell + Connections section) in a
-/// real window and pumps the run loop — catches List/NavigationSplitView diff
-/// crashes previews can't attribute (same rationale as ProjectUIHostingSmokeTest).
+/// Hosts the full Settings window in a real window and pumps the run loop,
+/// catching crashes previews can't attribute.
 @Suite("Settings UI hosting smoke")
 struct SettingsHostingSmokeTest {
     private func pump(seconds: TimeInterval) {

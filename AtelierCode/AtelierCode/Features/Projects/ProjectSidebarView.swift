@@ -10,7 +10,6 @@ import CockpitAPI
 /// reachable only through the archived filter.
 struct ProjectSidebarView: View {
     @Environment(AppModel.self) private var appModel
-    @Environment(\.openSettings) private var openSettings
     @Binding var selection: SessionRef?
     let searchText: String
     let connectedRefs: Set<SessionRef>
@@ -183,8 +182,6 @@ struct ProjectSidebarView: View {
             Label("No Connections", systemImage: "network.slash")
         } description: {
             Text("Add a connection to a Cockpit server to see its projects here.")
-        } actions: {
-            Button("Open Settings") { openSettings() }
         }
     }
 
