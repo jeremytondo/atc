@@ -36,6 +36,17 @@ private nonisolated final class RecordingClient: CockpitClient, @unchecked Senda
     func sendText(sessionID: String, text: String) async throws {}
     func sendKey(sessionID: String, key: String) async throws {}
     func actions() async throws -> [CockpitAction] { try await inner.actions() }
+    func action(name: String) async throws -> CockpitAction { try await inner.action(name: name) }
+    func createAction(_ request: ActionWriteRequest) async throws -> CockpitAction {
+        try await inner.createAction(request)
+    }
+    func updateAction(name: String, _ request: ActionWriteRequest) async throws -> CockpitAction {
+        try await inner.updateAction(name: name, request)
+    }
+    func setActionEnabled(name: String, enabled: Bool) async throws -> CockpitAction {
+        try await inner.setActionEnabled(name: name, enabled: enabled)
+    }
+    func deleteAction(name: String) async throws { try await inner.deleteAction(name: name) }
     func environments() async throws -> [CockpitEnvironment] { try await inner.environments() }
     func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing {
         try await inner.listDirectory(path: path, showHidden: showHidden)
