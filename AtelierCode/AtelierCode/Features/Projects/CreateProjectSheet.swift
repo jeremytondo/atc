@@ -3,6 +3,8 @@ import CockpitAPI
 
 /// Form for `POST /projects`: a name plus a workstation directory picked
 /// through the remote folder browser.
+// Phase 5 adds a Connection selector; until then the first Connection
+// (creation order) hosts new projects.
 struct CreateProjectSheet: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
@@ -14,6 +16,8 @@ struct CreateProjectSheet: View {
     @State private var isSubmitting = false
     @State private var submitError: String?
     @State private var showFolderPicker = false
+
+    private var runtime: ConnectionRuntime? { appModel.runtimes.first }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,6 +32,7 @@ struct CreateProjectSheet: View {
                         } label: {
                             Image(systemName: "folder")
                         }
+                        .disabled(runtime == nil)
                         .help("Browse folders on the Cockpit workstation")
                     }
                 } footer: {
@@ -67,11 +72,13 @@ struct CreateProjectSheet: View {
         }
         .frame(width: 460, height: 250)
         .sheet(isPresented: $showFolderPicker) {
-            RemoteFolderPickerSheet(client: appModel.client, initialPath: workingDir) { path in
-                workingDir = path
-                // Picking a folder before typing a name suggests one.
-                if name.trimmingCharacters(in: .whitespaces).isEmpty {
-                    name = URL(filePath: path).lastPathComponent
+            if let runtime {
+                RemoteFolderPickerSheet(client: runtime.client, initialPath: workingDir) { path in
+                    workingDir = path
+                    // Picking a folder before typing a name suggests one.
+                    if name.trimmingCharacters(in: .whitespaces).isEmpty {
+                        name = URL(filePath: path).lastPathComponent
+                    }
                 }
             }
         }
@@ -79,15 +86,17 @@ struct CreateProjectSheet: View {
 
     private var canSubmit: Bool {
         !isSubmitting
+            && runtime != nil
             && !name.trimmingCharacters(in: .whitespaces).isEmpty
             && !workingDir.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     private func submit() async {
+        guard let runtime else { return }
         isSubmitting = true
         defer { isSubmitting = false }
         do {
-            let project = try await appModel.projects.create(
+            let project = try await runtime.projects.create(
                 name: name.trimmingCharacters(in: .whitespaces),
                 workingDir: workingDir.trimmingCharacters(in: .whitespaces)
             )
@@ -102,6 +111,6 @@ struct CreateProjectSheet: View {
 
 #Preview {
     CreateProjectSheet()
-        .environment(AppModel(client: MockCockpitClient()))
+        .environment(AppModel.preview())
         .preferredColorScheme(.dark)
 }

@@ -4,8 +4,10 @@ import CockpitAPI
 /// Metadata view for non-attachable sessions, and the inspector content
 /// for live ones.
 struct SessionDetailView: View {
-    @Environment(AppModel.self) private var appModel
     let session: Session
+    /// The owning Connection's client — details load from the same server
+    /// the session lives on.
+    let client: any CockpitClient
 
     @State private var detail: SessionDetail?
 
@@ -63,7 +65,7 @@ struct SessionDetailView: View {
         }
         .formStyle(.grouped)
         .task(id: session.id) {
-            detail = try? await appModel.client.session(id: session.id)
+            detail = try? await client.session(id: session.id)
         }
     }
 }

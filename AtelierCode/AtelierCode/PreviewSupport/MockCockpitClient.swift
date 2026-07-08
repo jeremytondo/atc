@@ -1,6 +1,18 @@
 import Foundation
 import CockpitAPI
 
+extension AppModel {
+    /// Preview/test fixture: an ephemeral Connection store (unique
+    /// UserDefaults suite, nothing persisted to .standard) holding one
+    /// Connection backed by the given client.
+    static func preview(client: any CockpitClient = MockCockpitClient()) -> AppModel {
+        let defaults = UserDefaults(suiteName: "preview.appmodel.\(UUID().uuidString)")!
+        let store = ConnectionsStore(defaults: defaults)
+        _ = try? store.add(name: "Workstation", urlString: "http://workstation.example:7331", token: "")
+        return AppModel(connections: store, clientFactory: { _ in client })
+    }
+}
+
 /// Canned-data client for previews and offline development.
 nonisolated struct MockCockpitClient: CockpitClient {
     /// Stable-ID project fixtures. Working dirs reuse `mockTree` paths so a

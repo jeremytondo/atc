@@ -43,6 +43,6 @@ struct SettingsView: View {
     _ = try? store.add(name: "Workstation", urlString: "http://workstation.tail1f9a09.ts.net:7331", token: "")
     _ = try? store.add(name: "Local Dev", urlString: "http://127.0.0.1:7331", token: "")
     return SettingsView()
-        .environment(AppModel(client: MockCockpitClient(), connections: store))
+        .environment(AppModel(connections: store, clientFactory: { _ in MockCockpitClient() }))
         .preferredColorScheme(.dark)
 }

@@ -5,25 +5,29 @@ import SwiftUI
 /// down a surface or drops its WebSocket.
 struct TerminalPane: View {
     @Environment(AppModel.self) private var appModel
-    let visibleSessionID: String?
+    let visibleRef: SessionRef?
     @FocusState private var focusedTerminal: String?
 
     var body: some View {
         ZStack {
             Color(red: 0.117, green: 0.117, blue: 0.180) // Mocha base, behind surface padding
-            ForEach(controllers) { controller in
-                TerminalHostView(controller: controller, focus: $focusedTerminal)
-                    .opacity(controller.sessionID == visibleSessionID ? 1 : 0)
-                    .allowsHitTesting(controller.sessionID == visibleSessionID)
+            ForEach(refs, id: \.self) { ref in
+                if let controller = appModel.terminals[ref] {
+                    TerminalHostView(controller: controller, focus: $focusedTerminal)
+                        .opacity(ref == visibleRef ? 1 : 0)
+                        .allowsHitTesting(ref == visibleRef)
+                }
             }
         }
-        .onChange(of: visibleSessionID, initial: true) {
-            focusedTerminal = visibleSessionID
+        .onChange(of: visibleRef, initial: true) {
+            focusedTerminal = visibleRef?.sessionID
         }
     }
 
-    private var controllers: [TerminalSessionController] {
-        appModel.terminals.values.sorted { $0.sessionID < $1.sessionID }
+    private var refs: [SessionRef] {
+        appModel.terminals.keys.sorted {
+            ($0.sessionID, $0.connectionID.uuidString) < ($1.sessionID, $1.connectionID.uuidString)
+        }
     }
 }
 

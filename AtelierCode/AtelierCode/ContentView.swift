@@ -1,23 +1,32 @@
 import SwiftUI
 import CockpitAPI
 
+/// Target for the New Session sheet: a project plus the Connection it
+/// lives on, so the sheet routes through the owning runtime.
+struct NewSessionContext: Identifiable {
+    let connectionID: UUID
+    let project: Project
+
+    var id: ProjectRef { ProjectRef(connectionID: connectionID, projectID: project.id) }
+}
+
 /// Single-window shell: project sidebar, session content on the right.
 struct ContentView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.openSettings) private var openSettings
-    @State private var selectedSessionID: String?
     @State private var searchText = ""
     @State private var showCreateProject = false
     /// Non-nil presents the New Session sheet scoped to that project.
-    @State private var newSessionProject: Project?
+    @State private var newSessionContext: NewSessionContext?
 
     var body: some View {
+        @Bindable var appModel = appModel
         NavigationSplitView {
             ProjectSidebarView(
-                selection: $selectedSessionID,
+                selection: $appModel.selection,
                 searchText: searchText,
-                connectedIDs: Set(appModel.terminals.keys),
-                newSessionProject: $newSessionProject,
+                connectedRefs: Set(appModel.terminals.keys),
+                newSessionContext: $newSessionContext,
                 onCreateProject: { showCreateProject = true }
             )
             .navigationSplitViewColumnWidth(min: 220, ideal: 280)
@@ -30,25 +39,19 @@ struct ContentView: View {
                         Label("New Project", systemImage: "folder.badge.plus")
                     }
                     .help("New project")
+                    .disabled(appModel.runtimes.isEmpty)
                     .keyboardShortcut("n", modifiers: [.command, .shift])
                     Button {
-                        newSessionProject = newSessionTarget
+                        newSessionContext = newSessionTarget
                     } label: {
                         Label("New Session", systemImage: "plus")
                     }
-                    .help(newSessionTarget.map { "New session in \($0.name)" }
+                    .help(newSessionTarget.map { "New session in \($0.project.name)" }
                         ?? "Select a project session first, or use a project's + button")
                     .disabled(newSessionTarget == nil)
                     .keyboardShortcut("n", modifiers: .command)
-                    Toggle(isOn: showArchivedBinding) {
-                        Label("Show Archived", systemImage: "archivebox")
-                    }
-                    .help("Show archived projects and sessions")
                     Button {
-                        Task {
-                            await appModel.projects.refresh()
-                            await appModel.sessions.refresh()
-                        }
+                        Task { await appModel.refreshAll() }
                     } label: {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }
@@ -63,36 +66,31 @@ struct ContentView: View {
                 }
             }
         } detail: {
-            SessionContentView(selectedSession: selectedSession)
+            SessionContentView(selectedRef: appModel.selection, selectedSession: selectedSession)
         }
         .sheet(isPresented: $showCreateProject) {
             CreateProjectSheet()
         }
-        .sheet(item: $newSessionProject) { project in
-            CreateSessionSheet(project: project) { newSessionID in
-                selectedSessionID = newSessionID
+        .sheet(item: $newSessionContext) { context in
+            CreateSessionSheet(context: context) { newRef in
+                appModel.selection = newRef
             }
         }
-        .onChange(of: selectedSessionID) { attachSelectedIfNeeded() }
-        .onChange(of: appModel.sessions.sessions) { attachSelectedIfNeeded() }
-        .task {
-            await appModel.sessions.pollLoop()
-        }
-        .task {
-            await appModel.projects.pollLoop()
-        }
+        .onChange(of: appModel.selection) { attachSelectedIfNeeded() }
+        .onChange(of: selectedSession) { attachSelectedIfNeeded() }
     }
 
     private var selectedSession: Session? {
-        selectedSessionID.flatMap { appModel.sessions.session(id: $0) }
+        appModel.selection.flatMap { appModel.session(for: $0) }
     }
 
     /// Project context for ⌘N: the selected session's project, unless it's
     /// archived — the server refuses starts there, so the button matches
     /// the sidebar and disables instead.
-    private var newSessionTarget: Project? {
-        guard let ref = selectedSession?.project else { return nil }
-        let project = appModel.projects.project(id: ref.id)
+    private var newSessionTarget: NewSessionContext? {
+        guard let selection = appModel.selection,
+              let ref = selectedSession?.project else { return nil }
+        let project = appModel.runtime(id: selection.connectionID)?.projects.project(id: ref.id)
             ?? Project(
                 id: ref.id,
                 name: ref.name,
@@ -101,25 +99,15 @@ struct ContentView: View {
                 updatedAt: .now,
                 archivedAt: ref.archivedAt
             )
-        return project.isArchived ? nil : project
-    }
-
-    /// One toggle drives both stores' archived filters.
-    private var showArchivedBinding: Binding<Bool> {
-        Binding(
-            get: { appModel.sessions.includeArchived },
-            set: { on in
-                appModel.sessions.includeArchived = on
-                appModel.projects.includeArchived = on
-            }
-        )
+        guard !project.isArchived else { return nil }
+        return NewSessionContext(connectionID: selection.connectionID, project: project)
     }
 
     /// Selecting an attachable session auto-attaches — no explicit Connect
     /// step. Also fires when a selected starting session becomes attachable.
     private func attachSelectedIfNeeded() {
-        if let session = selectedSession, session.attachable {
-            appModel.attachIfNeeded(to: session)
+        if let ref = appModel.selection, let session = selectedSession, session.attachable {
+            appModel.attachIfNeeded(to: session, connectionID: ref.connectionID)
         }
     }
 }
@@ -130,24 +118,26 @@ struct ContentView: View {
 /// draw an opaque cover over it.
 struct SessionContentView: View {
     @Environment(AppModel.self) private var appModel
+    let selectedRef: SessionRef?
     let selectedSession: Session?
 
     @State private var showInspector = false
 
     var body: some View {
         VStack(spacing: 0) {
-            if let session = selectedSession {
-                SessionHeaderBar(session: session, showInspector: $showInspector)
+            if let ref = selectedRef, let session = selectedSession {
+                SessionHeaderBar(sessionRef: ref, session: session, showInspector: $showInspector)
                 Divider()
             }
             ZStack {
-                TerminalPane(visibleSessionID: selectedSession?.id)
+                TerminalPane(visibleRef: selectedRef)
                 cover
             }
         }
         .inspector(isPresented: $showInspector) {
-            if let session = selectedSession {
-                SessionDetailView(session: session)
+            if let ref = selectedRef, let session = selectedSession,
+               let client = appModel.runtime(id: ref.connectionID)?.client {
+                SessionDetailView(session: session, client: client)
                     .inspectorColumnWidth(min: 260, ideal: 320)
             }
         }
@@ -156,11 +146,11 @@ struct SessionContentView: View {
 
     @ViewBuilder
     private var cover: some View {
-        if let session = selectedSession {
-            if let controller = appModel.terminals[session.id] {
+        if let ref = selectedRef, let session = selectedSession {
+            if let controller = appModel.terminals[ref] {
                 // Terminal visible; only the phase banner floats on top.
                 TerminalStatusBanner(controller: controller) {
-                    appModel.disconnectTerminal(id: session.id)
+                    appModel.disconnectTerminal(ref: ref)
                 }
             } else if session.attachable {
                 // Normally auto-attach creates the controller in the same
@@ -171,12 +161,14 @@ struct SessionContentView: View {
                 } description: {
                     Text("The session is running on the server.")
                 } actions: {
-                    Button("Connect") { appModel.attachIfNeeded(to: session) }
+                    Button("Connect") {
+                        appModel.attachIfNeeded(to: session, connectionID: ref.connectionID)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background()
-            } else {
-                SessionDetailView(session: session)
+            } else if let client = appModel.runtime(id: ref.connectionID)?.client {
+                SessionDetailView(session: session, client: client)
                     .background()
             }
         } else {
@@ -194,6 +186,7 @@ struct SessionContentView: View {
 /// Compact header: name, status, session actions.
 struct SessionHeaderBar: View {
     @Environment(AppModel.self) private var appModel
+    let sessionRef: SessionRef
     let session: Session
     @Binding var showInspector: Bool
 
@@ -202,7 +195,7 @@ struct SessionHeaderBar: View {
     @State private var actionError: String?
 
     private var isConnected: Bool {
-        appModel.terminals[session.id] != nil
+        appModel.terminals[sessionRef] != nil
     }
 
     private var canStop: Bool {
@@ -212,6 +205,10 @@ struct SessionHeaderBar: View {
     /// Mirror the server rule: archive only after the session ended.
     private var canArchive: Bool {
         !session.isArchived && (session.status == .terminated || session.status == .failed)
+    }
+
+    private var sessionsStore: SessionsStore? {
+        appModel.runtime(id: sessionRef.connectionID)?.sessions
     }
 
     var body: some View {
@@ -228,7 +225,7 @@ struct SessionHeaderBar: View {
             Spacer()
             if isConnected {
                 Button("Disconnect", systemImage: "cable.connector.slash") {
-                    appModel.disconnectTerminal(id: session.id)
+                    appModel.disconnectTerminal(ref: sessionRef)
                 }
                 .help("Detach from the session (it keeps running)")
             }
@@ -259,7 +256,7 @@ struct SessionHeaderBar: View {
             isPresented: $confirmStop
         ) {
             Button("Stop Session", role: .destructive) {
-                Task { await run { try await appModel.sessions.terminate(id: session.id) } }
+                Task { await run { try await sessionsStore?.terminate(id: session.id) } }
             }
         } message: {
             Text("The agent process will be terminated. The session record is kept until archived.")
@@ -269,7 +266,7 @@ struct SessionHeaderBar: View {
             isPresented: $confirmArchive
         ) {
             Button("Archive Session") {
-                Task { await run { try await appModel.sessions.archive(id: session.id) } }
+                Task { await run { try await sessionsStore?.archive(id: session.id) } }
             }
         } message: {
             Text("Archived sessions are hidden behind the archived filter.")
@@ -295,6 +292,6 @@ struct SessionHeaderBar: View {
 
 #Preview {
     ContentView()
-        .environment(AppModel(client: MockCockpitClient()))
+        .environment(AppModel.preview())
         .preferredColorScheme(.dark)
 }

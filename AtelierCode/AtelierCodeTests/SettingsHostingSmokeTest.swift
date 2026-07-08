@@ -44,7 +44,7 @@ struct SettingsHostingSmokeTest {
         #expect(store.connections.count == 2)
         host(
             SettingsView()
-                .environment(AppModel(client: MockCockpitClient(), connections: store))
+                .environment(AppModel(connections: store, clientFactory: { _ in MockCockpitClient() }))
         )
     }
 
@@ -54,7 +54,7 @@ struct SettingsHostingSmokeTest {
         #expect(store.connections.isEmpty)
         host(
             SettingsView()
-                .environment(AppModel(client: MockCockpitClient(), connections: store))
+                .environment(AppModel(connections: store, clientFactory: { _ in MockCockpitClient() }))
         )
     }
 }

@@ -42,7 +42,7 @@ struct ConnectionsSettingsView: View {
         ) {
             Button("Remove Connection", role: .destructive) {
                 if let id = selectedExistingID {
-                    store.remove(id: id)
+                    appModel.removeConnection(id: id)
                     target = nil
                 }
             }
@@ -143,6 +143,9 @@ private struct ConnectionEditorView: View {
     @State private var urlString = ""
     @State private var token = ""
     @State private var saveError: String?
+    /// URL/token change with live terminal attaches: confirm before the
+    /// runtime rebuild disconnects them. Cancel aborts the save entirely.
+    @State private var confirmRebuild = false
 
     @State private var testState: TestState = .idle
     /// Bumped on every draft edit and every new test; stale results are dropped.
@@ -233,6 +236,14 @@ private struct ConnectionEditorView: View {
         .onChange(of: name) { invalidateTest() }
         .onChange(of: urlString) { invalidateTest() }
         .onChange(of: token) { invalidateTest() }
+        .confirmationDialog(
+            "Save and disconnect terminals?",
+            isPresented: $confirmRebuild
+        ) {
+            Button("Save and Disconnect", role: .destructive) { performSave() }
+        } message: {
+            Text("Changing the URL or token reconnects this connection, and its open terminal sessions will be disconnected. Sessions keep running on the server.")
+        }
     }
 
     // MARK: Actions
@@ -256,12 +267,22 @@ private struct ConnectionEditorView: View {
 
     private func save() {
         saveError = nil
+        if let record = currentRecord,
+           appModel.wouldRebuildConnection(id: record.id, urlString: urlString, token: token),
+           appModel.hasLiveTerminals(connectionID: record.id) {
+            confirmRebuild = true
+            return
+        }
+        performSave()
+    }
+
+    private func performSave() {
         do {
             if let record = currentRecord {
-                try store.update(id: record.id, name: name, urlString: urlString, token: token)
+                try appModel.updateConnection(id: record.id, name: name, urlString: urlString, token: token)
                 onSaved(record.id)
             } else {
-                let record = try store.add(name: name, urlString: urlString, token: token)
+                let record = try appModel.addConnection(name: name, urlString: urlString, token: token)
                 onSaved(record.id)
             }
         } catch let error as ConnectionValidationError {
@@ -319,7 +340,7 @@ private struct ConnectionEditorView: View {
     _ = try? store.add(name: "Workstation", urlString: "http://workstation.tail1f9a09.ts.net:7331", token: "")
     _ = try? store.add(name: "Local Dev", urlString: "http://127.0.0.1:7331", token: "")
     return ConnectionsSettingsView()
-        .environment(AppModel(client: MockCockpitClient(), connections: store))
+        .environment(AppModel(connections: store, clientFactory: { _ in MockCockpitClient() }))
         .frame(width: 700, height: 450)
         .preferredColorScheme(.dark)
 }
@@ -327,7 +348,7 @@ private struct ConnectionEditorView: View {
 #Preview("Connections — empty") {
     let store = ConnectionsStore(defaults: UserDefaults(suiteName: "preview.connections.empty")!)
     return ConnectionsSettingsView()
-        .environment(AppModel(client: MockCockpitClient(), connections: store))
+        .environment(AppModel(connections: store, clientFactory: { _ in MockCockpitClient() }))
         .frame(width: 700, height: 450)
         .preferredColorScheme(.dark)
 }
