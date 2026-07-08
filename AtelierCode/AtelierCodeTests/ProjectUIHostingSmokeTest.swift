@@ -99,6 +99,17 @@ struct ProjectUIHostingSmokeTest {
         )
     }
 
+    @Test("create-project sheet with two connections hosts without crashing")
+    func hostCreateProjectMultiConnection() async throws {
+        host(
+            CreateProjectSheet()
+                .environment(AppModel.preview(connections: [
+                    (name: "Workstation", client: MockCockpitClient()),
+                    (name: "Laptop", client: MockCockpitClient()),
+                ]))
+        )
+    }
+
     @Test("create-session sheet loads actions without crashing")
     func hostCreateSession() async throws {
         let appModel = AppModel.preview()

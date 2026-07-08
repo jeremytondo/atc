@@ -11,6 +11,27 @@ extension AppModel {
         _ = try? store.add(name: "Workstation", urlString: "http://workstation.example:7331", token: "")
         return AppModel(connections: store, clientFactory: { _ in client })
     }
+
+    /// Preview/test fixture with several Connections, each backed by its own
+    /// client — for surfaces (e.g. the New Project Connection selector) that
+    /// only make sense with more than one Connection.
+    static func preview(connections: [(name: String, client: any CockpitClient)]) -> AppModel {
+        let defaults = UserDefaults(suiteName: "preview.appmodel.\(UUID().uuidString)")!
+        let store = ConnectionsStore(defaults: defaults)
+        var clientsByID: [UUID: any CockpitClient] = [:]
+        for (index, connection) in connections.enumerated() {
+            // Distinct host per Connection so the store's duplicate check
+            // doesn't reject the fixtures.
+            if let record = try? store.add(
+                name: connection.name,
+                urlString: "http://connection-\(index).example:7331",
+                token: ""
+            ) {
+                clientsByID[record.id] = connection.client
+            }
+        }
+        return AppModel(connections: store, clientFactory: { clientsByID[$0.id] ?? MockCockpitClient() })
+    }
 }
 
 /// Canned-data client for previews and offline development.

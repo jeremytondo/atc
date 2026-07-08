@@ -1,38 +1,78 @@
 import SwiftUI
 import CockpitAPI
 
-/// Form for `POST /projects`: a name plus a workstation directory picked
-/// through the remote folder browser.
-// Phase 5 adds a Connection selector; until then the first Connection
-// (creation order) hosts new projects.
+/// Editable state behind the New Project sheet, split out so the
+/// selection/clear rules are testable without hosting the view. The chosen
+/// folder is Connection-specific, so switching Connections drops it.
+@Observable
+final class CreateProjectDraft {
+    /// The Connection new projects are created on. Nil only before
+    /// preselection or when no Connections exist.
+    var connectionID: UUID?
+    var name = ""
+    var workingDir = ""
+
+    init(connectionID: UUID? = nil) {
+        self.connectionID = connectionID
+    }
+
+    /// Preselect the first Connection in creation order, once, without
+    /// clobbering a choice the user already made.
+    func preselectFirst(in runtimes: [ConnectionRuntime]) {
+        guard connectionID == nil else { return }
+        connectionID = runtimes.first?.id
+    }
+
+    /// Changing the selected Connection clears the chosen folder (browsing is
+    /// server-specific) but keeps the typed name.
+    func selectConnection(_ id: UUID?) {
+        guard id != connectionID else { return }
+        connectionID = id
+        workingDir = ""
+    }
+}
+
+/// Form for `POST /projects`: pick the owning Connection, a name, and a
+/// workstation directory browsed through that Connection's folder picker.
 struct CreateProjectSheet: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
     /// Called with the new project so the shell can expand/target it.
     var onCreated: (Project) -> Void = { _ in }
 
-    @State private var name = ""
-    @State private var workingDir = ""
+    @State private var draft = CreateProjectDraft()
     @State private var isSubmitting = false
     @State private var submitError: String?
     @State private var showFolderPicker = false
 
-    private var runtime: ConnectionRuntime? { appModel.runtimes.first }
+    /// The runtime new projects route through; nil only when no Connection is
+    /// selected (i.e. there are none).
+    private var selectedRuntime: ConnectionRuntime? {
+        draft.connectionID.flatMap { appModel.runtime(id: $0) }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             Form {
                 Section {
-                    TextField("Name", text: $name, prompt: Text("My Project"))
+                    Picker("Connection", selection: Binding(
+                        get: { draft.connectionID },
+                        set: { draft.selectConnection($0) }
+                    )) {
+                        ForEach(appModel.runtimes) { runtime in
+                            Text(runtime.record.name).tag(runtime.id as UUID?)
+                        }
+                    }
+                    TextField("Name", text: $draft.name, prompt: Text("My Project"))
                     HStack {
-                        TextField("Directory", text: $workingDir, prompt: Text("/path/on/the/server"))
+                        TextField("Directory", text: $draft.workingDir, prompt: Text("/path/on/the/server"))
                             .autocorrectionDisabled()
                         Button {
                             showFolderPicker = true
                         } label: {
                             Image(systemName: "folder")
                         }
-                        .disabled(runtime == nil)
+                        .disabled(selectedRuntime == nil)
                         .help("Browse folders on the Cockpit workstation")
                     }
                 } footer: {
@@ -70,14 +110,15 @@ struct CreateProjectSheet: View {
             }
             .padding(12)
         }
-        .frame(width: 460, height: 250)
+        .frame(width: 460, height: 290)
+        .onAppear { draft.preselectFirst(in: appModel.runtimes) }
         .sheet(isPresented: $showFolderPicker) {
-            if let runtime {
-                RemoteFolderPickerSheet(client: runtime.client, initialPath: workingDir) { path in
-                    workingDir = path
+            if let runtime = selectedRuntime {
+                RemoteFolderPickerSheet(client: runtime.client, initialPath: draft.workingDir) { path in
+                    draft.workingDir = path
                     // Picking a folder before typing a name suggests one.
-                    if name.trimmingCharacters(in: .whitespaces).isEmpty {
-                        name = URL(filePath: path).lastPathComponent
+                    if draft.name.trimmingCharacters(in: .whitespaces).isEmpty {
+                        draft.name = URL(filePath: path).lastPathComponent
                     }
                 }
             }
@@ -86,19 +127,19 @@ struct CreateProjectSheet: View {
 
     private var canSubmit: Bool {
         !isSubmitting
-            && runtime != nil
-            && !name.trimmingCharacters(in: .whitespaces).isEmpty
-            && !workingDir.trimmingCharacters(in: .whitespaces).isEmpty
+            && selectedRuntime != nil
+            && !draft.name.trimmingCharacters(in: .whitespaces).isEmpty
+            && !draft.workingDir.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     private func submit() async {
-        guard let runtime else { return }
+        guard let runtime = selectedRuntime else { return }
         isSubmitting = true
         defer { isSubmitting = false }
         do {
             let project = try await runtime.projects.create(
-                name: name.trimmingCharacters(in: .whitespaces),
-                workingDir: workingDir.trimmingCharacters(in: .whitespaces)
+                name: draft.name.trimmingCharacters(in: .whitespaces),
+                workingDir: draft.workingDir.trimmingCharacters(in: .whitespaces)
             )
             submitError = nil
             dismiss()
@@ -112,5 +153,14 @@ struct CreateProjectSheet: View {
 #Preview {
     CreateProjectSheet()
         .environment(AppModel.preview())
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Two connections") {
+    CreateProjectSheet()
+        .environment(AppModel.preview(connections: [
+            (name: "Workstation", client: MockCockpitClient()),
+            (name: "Laptop", client: MockCockpitClient()),
+        ]))
         .preferredColorScheme(.dark)
 }

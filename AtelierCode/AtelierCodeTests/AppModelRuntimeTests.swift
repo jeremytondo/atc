@@ -182,6 +182,9 @@ struct AppModelRuntimeTests {
         let a = try model.addConnection(name: "A", urlString: "http://a:1", token: "")
         let client = lastClient()
         let runtime = model.runtime(id: a.id)!
+        // Drive refreshes manually — a concurrent poll refresh could bump
+        // the stores' generation and drop this test's results.
+        runtime.stopPolling()
         #expect(runtime.reachability == .unknown || runtime.reachability == .connected)
 
         await runtime.refresh()
@@ -202,6 +205,9 @@ struct AppModelRuntimeTests {
     func sessionLookup() async throws {
         let (model, _) = makeModel()
         let a = try model.addConnection(name: "A", urlString: "http://a:1", token: "")
+        // Stop the poll task first: its concurrent refresh could bump the
+        // stores' generation and drop this manual refresh's result.
+        model.runtime(id: a.id)!.stopPolling()
         await model.runtime(id: a.id)!.refresh()
         let ref = SessionRef(connectionID: a.id, sessionID: "ses_running")
         #expect(model.session(for: ref)?.id == "ses_running")
