@@ -2,50 +2,157 @@ import Foundation
 import Observation
 import CockpitAPI
 
-/// Root domain model: owns settings, the API client, and the stores.
-/// Rebuilds the client when server settings change.
+/// Root domain model: owns the Connection list and one `ConnectionRuntime`
+/// per Connection. Aggregation across Connections happens above the
+/// per-runtime stores, in pure code (`SidebarGroups`).
 @Observable
 final class AppModel {
-    let settings: AppSettings
-    private(set) var client: any CockpitClient
-    let sessions: SessionsStore
-    let projects: ProjectsStore
+    let connections: ConnectionsStore
+    private(set) var runtimes: [ConnectionRuntime] = []
 
-    /// Live terminal attaches by session ID. Connections and surfaces stay
-    /// alive here while the user switches around the sidebar.
-    private(set) var terminals: [String: TerminalSessionController] = [:]
+    /// Sidebar selection. Lives here (not in a view) so deleting a
+    /// Connection can clear a selection that pointed into it.
+    var selection: SessionRef?
 
-    init(settings: AppSettings = AppSettings(), client: (any CockpitClient)? = nil) {
-        self.settings = settings
-        let resolved = client ?? Self.makeClient(settings: settings)
-        self.client = resolved
-        self.sessions = SessionsStore(client: resolved)
-        self.projects = ProjectsStore(client: resolved)
+    /// One archived filter for all runtimes' stores.
+    var includeArchived = false {
+        didSet {
+            guard includeArchived != oldValue else { return }
+            for runtime in runtimes {
+                runtime.projects.includeArchived = includeArchived
+                runtime.sessions.includeArchived = includeArchived
+            }
+        }
     }
 
-    /// Call after server URL or token changes.
-    func rebuildClient() {
-        client = Self.makeClient(settings: settings)
-        sessions.client = client
-        projects.client = client
-        // Existing attaches keep their old endpoint until disconnected.
+    /// Live terminal attaches by composite ref. Connections and surfaces
+    /// stay alive here while the user switches around the sidebar.
+    private(set) var terminals: [SessionRef: TerminalSessionController] = [:]
+
+    private let clientFactory: (ConnectionRecord) -> any CockpitClient
+
+    init(
+        connections: ConnectionsStore? = nil,
+        clientFactory: ((ConnectionRecord) -> any CockpitClient)? = nil
+    ) {
+        self.connections = connections ?? ConnectionsStore()
+        self.clientFactory = clientFactory ?? { record in
+            // urlString is store-normalized; building a URL from it can't
+            // fail in practice.
+            let url = URL(string: record.urlString)!
+            return HTTPCockpitClient(server: CockpitServer(baseURL: url, token: record.token))
+        }
+        for record in self.connections.connections {
+            runtimes.append(makeRuntime(record))
+        }
+    }
+
+    // MARK: - Runtime access
+
+    func runtime(id: UUID) -> ConnectionRuntime? {
+        runtimes.first { $0.id == id }
+    }
+
+    /// Reachability of a Connection for status dots; `.unknown` when no
+    /// runtime exists (e.g. a not-yet-saved draft).
+    func reachability(of id: UUID) -> Reachability {
+        runtime(id: id)?.reachability ?? .unknown
+    }
+
+    func session(for ref: SessionRef) -> Session? {
+        runtime(id: ref.connectionID)?.sessions.session(id: ref.sessionID)
+    }
+
+    func refreshAll() async {
+        for runtime in runtimes {
+            await runtime.refresh()
+        }
+    }
+
+    // MARK: - Connection mutations
+
+    /// Adds and starts a new Connection. Throws `ConnectionValidationError`.
+    @discardableResult
+    func addConnection(name: String, urlString: String, token: String) throws -> ConnectionRecord {
+        let record = try connections.add(name: name, urlString: urlString, token: token)
+        runtimes.append(makeRuntime(record))
+        return record
+    }
+
+    /// Whether saving these draft values would rebuild the runtime (URL or
+    /// token change). The Settings UI confirms first when terminals are live.
+    func wouldRebuildConnection(id: UUID, urlString: String, token: String) -> Bool {
+        guard let runtime = runtime(id: id) else { return false }
+        let normalized = ConnectionURL.normalize(urlString) ?? urlString
+        return normalized != runtime.record.urlString || token != runtime.record.token
+    }
+
+    func hasLiveTerminals(connectionID: UUID) -> Bool {
+        terminals.keys.contains { $0.connectionID == connectionID }
+    }
+
+    /// Saves an edit. Name-only changes update the record in place; URL or
+    /// token changes tear down and rebuild that Connection's runtime (new
+    /// client, fresh stores, terminals disconnected). Other Connections are
+    /// untouched. Throws `ConnectionValidationError`.
+    func updateConnection(id: UUID, name: String, urlString: String, token: String) throws {
+        let rebuild = wouldRebuildConnection(id: id, urlString: urlString, token: token)
+        try connections.update(id: id, name: name, urlString: urlString, token: token)
+        guard let record = connections.connections.first(where: { $0.id == id }),
+              let index = runtimes.firstIndex(where: { $0.id == id }) else { return }
+        if rebuild {
+            teardown(runtimes[index])
+            runtimes[index] = makeRuntime(record)
+        } else {
+            runtimes[index].updateRecord(record)
+        }
+    }
+
+    /// Deletes a Connection locally: stops polling, disconnects its
+    /// terminals, clears a selection pointing into it. No server calls —
+    /// Projects and Sessions remain on the Cockpit server.
+    func removeConnection(id: UUID) {
+        connections.remove(id: id)
+        guard let index = runtimes.firstIndex(where: { $0.id == id }) else { return }
+        teardown(runtimes[index])
+        runtimes.remove(at: index)
     }
 
     // MARK: - Terminal registry
 
-    func attachIfNeeded(to session: Session) {
-        guard session.attachable, terminals[session.id] == nil else { return }
-        terminals[session.id] = TerminalSessionController(sessionID: session.id, client: client)
+    func attachIfNeeded(to session: Session, connectionID: UUID) {
+        let ref = SessionRef(connectionID: connectionID, sessionID: session.id)
+        guard session.attachable,
+              terminals[ref] == nil,
+              let runtime = runtime(id: connectionID) else { return }
+        terminals[ref] = TerminalSessionController(sessionID: session.id, client: runtime.client)
     }
 
-    func disconnectTerminal(id: String) {
-        terminals[id]?.disconnect()
-        terminals.removeValue(forKey: id)
+    func disconnectTerminal(ref: SessionRef) {
+        terminals[ref]?.disconnect()
+        terminals.removeValue(forKey: ref)
     }
 
-    private static func makeClient(settings: AppSettings) -> any CockpitClient {
-        let url = settings.serverURL ?? URL(string: AppSettings.defaultServerURLString)!
-        let server = CockpitServer(baseURL: url, token: settings.token)
-        return HTTPCockpitClient(server: server)
+    // MARK: - Private
+
+    private func makeRuntime(_ record: ConnectionRecord) -> ConnectionRuntime {
+        let runtime = ConnectionRuntime(record: record, client: clientFactory(record))
+        if includeArchived {
+            runtime.projects.includeArchived = true
+            runtime.sessions.includeArchived = true
+        }
+        runtime.startPolling()
+        return runtime
+    }
+
+    private func teardown(_ runtime: ConnectionRuntime) {
+        runtime.stopPolling()
+        for ref in terminals.keys where ref.connectionID == runtime.id {
+            terminals[ref]?.disconnect()
+            terminals.removeValue(forKey: ref)
+        }
+        if selection?.connectionID == runtime.id {
+            selection = nil
+        }
     }
 }

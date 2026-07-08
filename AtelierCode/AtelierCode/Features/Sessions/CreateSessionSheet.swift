@@ -1,15 +1,15 @@
 import SwiftUI
 import CockpitAPI
 
-/// Form for `POST /sessions/start`, always scoped to a project: pick an
-/// action, optionally name the session. Working directory and environment
-/// are inherited (project directory, server-default environment).
+/// Form for `POST /sessions/start`, always scoped to a project on one
+/// Connection: pick an action, optionally name the session. Action loading,
+/// the start request, and the follow-up attach all use the owning runtime.
 struct CreateSessionSheet: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
-    let project: Project
-    /// Called with the new session's ID so the shell can select it.
-    var onCreated: (String) -> Void = { _ in }
+    let context: NewSessionContext
+    /// Called with the new session's ref so the shell can select it.
+    var onCreated: (SessionRef) -> Void = { _ in }
 
     @State private var actions: [CockpitAction] = []
     @State private var loadError: String?
@@ -19,6 +19,12 @@ struct CreateSessionSheet: View {
 
     @State private var isSubmitting = false
     @State private var submitError: String?
+
+    private var project: Project { context.project }
+
+    private var runtime: ConnectionRuntime? {
+        appModel.runtime(id: context.connectionID)
+    }
 
     private var selectedAction: CockpitAction? {
         actions.first { $0.name == selectedActionName }
@@ -83,12 +89,16 @@ struct CreateSessionSheet: View {
     }
 
     private var canSubmit: Bool {
-        !isSubmitting && selectedAction != nil
+        !isSubmitting && selectedAction != nil && runtime != nil
     }
 
     private func loadActions() async {
+        guard let runtime else {
+            loadError = "This project's connection is no longer configured."
+            return
+        }
         do {
-            actions = try await appModel.client.actions()
+            actions = try await runtime.client.actions()
             loadError = nil
             if selectedActionName.isEmpty {
                 selectedActionName = actions.first(where: \.enabled)?.name ?? ""
@@ -99,7 +109,7 @@ struct CreateSessionSheet: View {
     }
 
     private func submit() async {
-        guard let action = selectedAction else { return }
+        guard let action = selectedAction, let runtime else { return }
         isSubmitting = true
         defer { isSubmitting = false }
 
@@ -111,10 +121,10 @@ struct CreateSessionSheet: View {
         )
 
         do {
-            let detail = try await appModel.sessions.start(request)
+            let detail = try await runtime.sessions.start(request)
             submitError = nil
             dismiss()
-            onCreated(detail.id)
+            onCreated(SessionRef(connectionID: runtime.id, sessionID: detail.id))
         } catch {
             submitError = error.localizedDescription
         }
@@ -122,13 +132,17 @@ struct CreateSessionSheet: View {
 }
 
 #Preview {
-    CreateSessionSheet(project: Project(
-        id: "prj_atelier",
-        name: "Atelier",
-        workingDir: "/home/dev/Projects/atelier",
-        createdAt: .now,
-        updatedAt: .now
+    let appModel = AppModel.preview()
+    CreateSessionSheet(context: NewSessionContext(
+        connectionID: appModel.runtimes.first!.id,
+        project: Project(
+            id: "prj_atelier",
+            name: "Atelier",
+            workingDir: "/home/dev/Projects/atelier",
+            createdAt: .now,
+            updatedAt: .now
+        )
     ))
-    .environment(AppModel(client: MockCockpitClient()))
+    .environment(appModel)
     .preferredColorScheme(.dark)
 }

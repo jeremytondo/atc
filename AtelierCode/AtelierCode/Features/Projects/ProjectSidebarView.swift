@@ -1,46 +1,55 @@
 import SwiftUI
 import CockpitAPI
 
-/// Sidebar: projects as collapsible groups with their sessions nested
-/// underneath. Selection is always a session ID — project rows are
-/// disclosure headers that carry the per-project actions (new session,
-/// rename, archive). Sessions whose project is hidden (archived) or gone,
-/// and legacy unscoped sessions, land in a trailing "Other Sessions" group
-/// so nothing becomes unreachable.
+/// Sidebar: one flat list of projects aggregated across all Connections,
+/// with sessions nested underneath. Selection is always a `SessionRef` —
+/// project rows are disclosure headers that carry the per-project actions
+/// (new session, rename, archive). Every project row shows a chip naming
+/// its Connection with a reachability dot. There is no fallback bucket:
+/// unscoped sessions don't appear, and sessions of archived projects are
+/// reachable only through the archived filter.
 struct ProjectSidebarView: View {
     @Environment(AppModel.self) private var appModel
-    @Binding var selection: String?
+    @Binding var selection: SessionRef?
     let searchText: String
-    let connectedIDs: Set<String>
+    let connectedRefs: Set<SessionRef>
     /// The shell presents the New Session sheet for this project.
-    @Binding var newSessionProject: Project?
+    @Binding var newSessionContext: NewSessionContext?
     /// The shell presents the New Project sheet.
     var onCreateProject: () -> Void = {}
 
     /// Groups start expanded; only explicit collapses are remembered.
-    @State private var collapsedProjectIDs: Set<String> = []
-    @State private var renamingProject: Project?
+    @State private var collapsedProjects: Set<ProjectRef> = []
+    @State private var renamingRow: SidebarGroups.ProjectRow?
     @State private var renameDraft = ""
     @State private var actionError: String?
 
     var body: some View {
-        // One pass over the stores per render; the List body indexes into it.
+        @Bindable var appModel = appModel
+        // One pass over the runtimes per render; the List body indexes into it.
         let groups = SidebarGroups(
-            projects: appModel.projects.projects,
-            sessions: appModel.sessions.sessions,
+            inputs: appModel.runtimes.map {
+                SidebarGroups.ConnectionInput(
+                    connection: $0.record,
+                    projects: $0.projects.projects,
+                    sessions: $0.sessions.sessions
+                )
+            },
             searchText: searchText
         )
         List(selection: $selection) {
-            ForEach(groups.visibleProjects) { project in
-                DisclosureGroup(isExpanded: expansionBinding(project.id)) {
-                    let members = groups.sessions(in: project.id)
+            ForEach(groups.projectRows) { row in
+                DisclosureGroup(isExpanded: expansionBinding(row.ref)) {
+                    let members = groups.sessions(in: row.ref)
                     ForEach(members) { session in
                         SessionRowView(
                             session: session,
-                            isConnected: connectedIDs.contains(session.id),
+                            isConnected: connectedRefs.contains(
+                                SessionRef(connectionID: row.ref.connectionID, sessionID: session.id)
+                            ),
                             showsWorkingDir: false
                         )
-                        .tag(session.id)
+                        .tag(SessionRef(connectionID: row.ref.connectionID, sessionID: session.id))
                     }
                     if members.isEmpty {
                         Text("No sessions")
@@ -48,33 +57,47 @@ struct ProjectSidebarView: View {
                             .foregroundStyle(.tertiary)
                     }
                 } label: {
-                    projectLabel(project)
-                }
-            }
-            if !groups.otherSessions.isEmpty {
-                Section("Other Sessions") {
-                    ForEach(groups.otherSessions) { session in
-                        SessionRowView(session: session, isConnected: connectedIDs.contains(session.id))
-                            .tag(session.id)
-                    }
+                    projectLabel(row)
                 }
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            HStack {
+                Text("Projects")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Menu {
+                    Toggle("Show Archived", isOn: $appModel.includeArchived)
+                } label: {
+                    Label("Filter", systemImage: appModel.includeArchived
+                        ? "line.3.horizontal.decrease.circle.fill"
+                        : "line.3.horizontal.decrease.circle")
+                }
+                .menuStyle(.borderlessButton)
+                .labelStyle(.iconOnly)
+                .fixedSize()
+                .help("Filter the project list")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+        }
         .overlay {
-            if groups.isEmpty
-                && appModel.projects.hasLoadedOnce && appModel.sessions.hasLoadedOnce {
+            if appModel.runtimes.isEmpty {
+                noConnectionsState
+            } else if groups.isEmpty && allLoadedOnce {
                 emptyState
             }
         }
         .alert("Rename Project", isPresented: Binding(
-            get: { renamingProject != nil },
-            set: { if !$0 { renamingProject = nil } }
+            get: { renamingRow != nil },
+            set: { if !$0 { renamingRow = nil } }
         )) {
             TextField("Name", text: $renameDraft)
             Button("Rename") {
-                if let project = renamingProject {
+                if let row = renamingRow, let store = projectsStore(for: row) {
                     let trimmed = renameDraft.trimmingCharacters(in: .whitespaces)
-                    run { try await appModel.projects.rename(id: project.id, name: trimmed) }
+                    run { try await store.rename(id: row.project.id, name: trimmed) }
                 }
             }
             .disabled(renameDraft.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -93,8 +116,9 @@ struct ProjectSidebarView: View {
     // MARK: - Project row
 
     @ViewBuilder
-    private func projectLabel(_ project: Project) -> some View {
-        HStack {
+    private func projectLabel(_ row: SidebarGroups.ProjectRow) -> some View {
+        let project = row.project
+        HStack(spacing: 6) {
             Label {
                 Text(project.name)
                     .lineLimit(1)
@@ -102,10 +126,16 @@ struct ProjectSidebarView: View {
                 Image(systemName: project.isArchived ? "archivebox" : "folder")
             }
             .foregroundStyle(project.isArchived ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
-            Spacer()
+            Spacer(minLength: 4)
+            ConnectionChip(
+                name: row.connectionName,
+                reachability: appModel.reachability(of: row.ref.connectionID)
+            )
             if !project.isArchived {
                 Button {
-                    newSessionProject = project
+                    newSessionContext = NewSessionContext(
+                        connectionID: row.ref.connectionID, project: project
+                    )
                 } label: {
                     Image(systemName: "plus")
                 }
@@ -117,38 +147,54 @@ struct ProjectSidebarView: View {
         .contextMenu {
             if !project.isArchived {
                 Button("New Session", systemImage: "plus") {
-                    newSessionProject = project
+                    newSessionContext = NewSessionContext(
+                        connectionID: row.ref.connectionID, project: project
+                    )
                 }
                 Button("Rename…", systemImage: "pencil") {
                     renameDraft = project.name
-                    renamingProject = project
+                    renamingRow = row
                 }
                 Divider()
+                // Mirrors the server rule: no archiving with live sessions.
+                // A stale view still gets the server's 409 via the alert.
                 Button("Archive Project", systemImage: "archivebox") {
-                    run { try await appModel.projects.archive(id: project.id) }
+                    if let store = projectsStore(for: row) {
+                        run { try await store.archive(id: project.id) }
+                    }
                 }
+                .disabled(row.hasActiveSessions)
             } else {
                 Button("Unarchive Project", systemImage: "archivebox") {
-                    run { try await appModel.projects.unarchive(id: project.id) }
+                    if let store = projectsStore(for: row) {
+                        run { try await store.unarchive(id: project.id) }
+                    }
                 }
             }
         }
         .help(project.workingDir)
     }
 
+    // MARK: - Empty states
+
+    private var noConnectionsState: some View {
+        ContentUnavailableView {
+            Label("No Connections", systemImage: "network.slash")
+        } description: {
+            Text("Add a connection to a Cockpit server to see its projects here.")
+        }
+    }
+
     private var emptyState: some View {
         Group {
-            if let error = appModel.projects.lastError ?? appModel.sessions.lastError {
+            if let error = firstError {
                 ContentUnavailableView {
                     Label("Can't Reach Cockpit", systemImage: "wifi.exclamationmark")
                 } description: {
                     Text(error)
                 } actions: {
                     Button("Retry") {
-                        Task {
-                            await appModel.projects.refresh()
-                            await appModel.sessions.refresh()
-                        }
+                        Task { await appModel.refreshAll() }
                     }
                 }
             } else if searchText.isEmpty {
@@ -169,14 +215,35 @@ struct ProjectSidebarView: View {
         }
     }
 
-    private func expansionBinding(_ projectID: String) -> Binding<Bool> {
+    private var allLoadedOnce: Bool {
+        appModel.runtimes.allSatisfy {
+            $0.projects.hasLoadedOnce && $0.sessions.hasLoadedOnce
+        }
+    }
+
+    private var firstError: String? {
+        for runtime in appModel.runtimes {
+            if let error = runtime.projects.lastError ?? runtime.sessions.lastError {
+                return "\(runtime.record.name): \(error)"
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Helpers
+
+    private func projectsStore(for row: SidebarGroups.ProjectRow) -> ProjectsStore? {
+        appModel.runtime(id: row.ref.connectionID)?.projects
+    }
+
+    private func expansionBinding(_ ref: ProjectRef) -> Binding<Bool> {
         Binding(
-            get: { !collapsedProjectIDs.contains(projectID) },
+            get: { !collapsedProjects.contains(ref) },
             set: { expanded in
                 if expanded {
-                    collapsedProjectIDs.remove(projectID)
+                    collapsedProjects.remove(ref)
                 } else {
-                    collapsedProjectIDs.insert(projectID)
+                    collapsedProjects.insert(ref)
                 }
             }
         )
@@ -193,26 +260,62 @@ struct ProjectSidebarView: View {
     }
 }
 
-/// The sidebar's grouping/filtering, computed once per render. Search rules:
-/// a project whose own name or directory matches shows all its sessions;
-/// otherwise it stays visible only if some of its sessions match, filtered
-/// down to those. Within a group, active sessions come first (newest
-/// activity), archived ones trail.
+/// Neutral chip naming the Connection a project belongs to, with the
+/// reachability dot. The chip never uses color to identify the Connection.
+struct ConnectionChip: View {
+    let name: String
+    let reachability: Reachability
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(reachability.color)
+                .frame(width: 6, height: 6)
+            Text(name)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(.quaternary.opacity(0.5), in: Capsule())
+    }
+}
+
+/// The sidebar's grouping/filtering across Connections, computed once per
+/// render. Rows are ordered by Connection creation order, then each
+/// Connection's server ordering. Search rules: a project whose own name or
+/// directory matches shows all its sessions; otherwise it stays visible only
+/// if some of its sessions match, filtered down to those. Within a group,
+/// active sessions come first (newest activity), archived ones trail.
+/// Unscoped sessions and sessions of unlisted projects are dropped — the
+/// server guarantees active sessions can't be orphaned by archiving.
 struct SidebarGroups {
-    let visibleProjects: [Project]
-    let otherSessions: [Session]
-    private let sessionsByProject: [String: [Session]]
-
-    var isEmpty: Bool { visibleProjects.isEmpty && otherSessions.isEmpty }
-
-    func sessions(in projectID: String) -> [Session] {
-        sessionsByProject[projectID] ?? []
+    struct ConnectionInput {
+        let connection: ConnectionRecord
+        let projects: [Project]
+        let sessions: [Session]
     }
 
-    init(projects: [Project], sessions: [Session], searchText: String) {
-        let byProject = Dictionary(grouping: sessions, by: { $0.project?.id })
-        let listedProjectIDs = Set(projects.map(\.id))
+    struct ProjectRow: Identifiable {
+        let ref: ProjectRef
+        let project: Project
+        let connectionName: String
+        /// Any known session is `starting`/`running` — gates Archive.
+        let hasActiveSessions: Bool
+        var id: ProjectRef { ref }
+    }
 
+    private(set) var projectRows: [ProjectRow] = []
+    private var sessionsByProject: [ProjectRef: [Session]] = [:]
+
+    var isEmpty: Bool { projectRows.isEmpty }
+
+    func sessions(in ref: ProjectRef) -> [Session] {
+        sessionsByProject[ref] ?? []
+    }
+
+    init(inputs: [ConnectionInput], searchText: String) {
         func matches(_ session: Session) -> Bool {
             session.displayName.localizedCaseInsensitiveContains(searchText)
                 || session.workingDir.localizedCaseInsensitiveContains(searchText)
@@ -229,32 +332,26 @@ struct SidebarGroups {
             }
         }
 
-        var visible: [Project] = []
-        var grouped: [String: [Session]] = [:]
-        for project in projects {
-            var members = byProject[project.id] ?? []
-            if !searchText.isEmpty && !matches(project) {
-                members = members.filter(matches)
-                if members.isEmpty { continue }
+        for input in inputs {
+            let byProject = Dictionary(grouping: input.sessions, by: { $0.project?.id })
+            for project in input.projects {
+                let allMembers = byProject[project.id] ?? []
+                var members = allMembers
+                if !searchText.isEmpty && !matches(project) {
+                    members = members.filter(matches)
+                    if members.isEmpty { continue }
+                }
+                let ref = ProjectRef(connectionID: input.connection.id, projectID: project.id)
+                projectRows.append(ProjectRow(
+                    ref: ref,
+                    project: project,
+                    connectionName: input.connection.name,
+                    hasActiveSessions: allMembers.contains {
+                        $0.status == .starting || $0.status == .running
+                    }
+                ))
+                sessionsByProject[ref] = ordered(members)
             }
-            visible.append(project)
-            grouped[project.id] = ordered(members)
         }
-
-        // Unscoped sessions, plus sessions whose project the archived filter
-        // hides (or that vanished server-side) — they must stay reachable.
-        var other = byProject[nil] ?? []
-        for (projectID, group) in byProject {
-            if let projectID, !listedProjectIDs.contains(projectID) {
-                other.append(contentsOf: group)
-            }
-        }
-        if !searchText.isEmpty {
-            other = other.filter(matches)
-        }
-
-        visibleProjects = visible
-        sessionsByProject = grouped
-        otherSessions = ordered(other)
     }
 }

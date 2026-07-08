@@ -24,19 +24,29 @@ struct ProjectUIHostingSmokeTest {
         window.orderOut(nil)
     }
 
+    /// The runtime's own poll task races a manual `refreshAll` (the stores'
+    /// generation guard drops the loser), so wait boundedly for first data
+    /// instead of asserting right after one refresh.
+    private func waitForData(_ runtime: ConnectionRuntime) async {
+        for _ in 0..<100 {
+            if !runtime.projects.projects.isEmpty && !runtime.sessions.sessions.isEmpty { return }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
     @Test("sidebar renders projects with nested sessions without crashing")
     func hostSidebar() async throws {
-        let appModel = AppModel(client: MockCockpitClient())
-        await appModel.projects.refresh()
-        await appModel.sessions.refresh()
-        #expect(!appModel.projects.projects.isEmpty)
-        #expect(!appModel.sessions.sessions.isEmpty)
+        let appModel = AppModel.preview()
+        let runtime = try #require(appModel.runtimes.first)
+        await waitForData(runtime)
+        #expect(!runtime.projects.projects.isEmpty)
+        #expect(!runtime.sessions.sessions.isEmpty)
         host(
             ProjectSidebarView(
                 selection: .constant(nil),
                 searchText: "",
-                connectedIDs: [],
-                newSessionProject: .constant(nil)
+                connectedRefs: [],
+                newSessionContext: .constant(nil)
             )
             .environment(appModel),
             width: 280, height: 520
@@ -45,15 +55,36 @@ struct ProjectUIHostingSmokeTest {
 
     @Test("sidebar renders filtered by search without crashing")
     func hostSidebarSearching() async throws {
-        let appModel = AppModel(client: MockCockpitClient())
-        await appModel.projects.refresh()
-        await appModel.sessions.refresh()
+        let appModel = AppModel.preview()
+        if let runtime = appModel.runtimes.first { await waitForData(runtime) }
         host(
             ProjectSidebarView(
                 selection: .constant(nil),
                 searchText: "atelier",
-                connectedIDs: [],
-                newSessionProject: .constant(nil)
+                connectedRefs: [],
+                newSessionContext: .constant(nil)
+            )
+            .environment(appModel),
+            width: 280, height: 520
+        )
+    }
+
+    @Test("sidebar renders the no-connections empty state without crashing")
+    func hostSidebarNoConnections() async throws {
+        let suite = "ProjectUIHostingSmokeTest.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        let appModel = AppModel(
+            connections: ConnectionsStore(defaults: defaults),
+            clientFactory: { _ in MockCockpitClient() }
+        )
+        #expect(appModel.runtimes.isEmpty)
+        host(
+            ProjectSidebarView(
+                selection: .constant(nil),
+                searchText: "",
+                connectedRefs: [],
+                newSessionContext: .constant(nil)
             )
             .environment(appModel),
             width: 280, height: 520
@@ -64,18 +95,32 @@ struct ProjectUIHostingSmokeTest {
     func hostCreateProject() async throws {
         host(
             CreateProjectSheet()
-                .environment(AppModel(client: MockCockpitClient()))
+                .environment(AppModel.preview())
+        )
+    }
+
+    @Test("create-project sheet with two connections hosts without crashing")
+    func hostCreateProjectMultiConnection() async throws {
+        host(
+            CreateProjectSheet()
+                .environment(AppModel.preview(connections: [
+                    (name: "Workstation", client: MockCockpitClient()),
+                    (name: "Laptop", client: MockCockpitClient()),
+                ]))
         )
     }
 
     @Test("create-session sheet loads actions without crashing")
     func hostCreateSession() async throws {
-        let appModel = AppModel(client: MockCockpitClient())
-        await appModel.projects.refresh()
-        let project = try #require(appModel.projects.projects.first)
+        let appModel = AppModel.preview()
+        let runtime = try #require(appModel.runtimes.first)
+        await waitForData(runtime)
+        let project = try #require(runtime.projects.projects.first)
         host(
-            CreateSessionSheet(project: project)
-                .environment(appModel)
+            CreateSessionSheet(context: NewSessionContext(
+                connectionID: runtime.id, project: project
+            ))
+            .environment(appModel)
         )
     }
 }
