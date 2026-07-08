@@ -1,6 +1,6 @@
 # Connections and Settings Plan
 
-Status: Draft
+Status: Superseded by `docs/connections-settings-spec.md` (implemented)
 
 ## Goal
 
