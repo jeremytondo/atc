@@ -3,8 +3,16 @@ import SwiftUI
 /// App Settings window. macOS owns the menu item and standard keyboard shortcut.
 struct SettingsView: View {
     var body: some View {
-        ConnectionsSettingsView()
-        .frame(width: 700, height: 450)
+        TabView {
+            Tab("Connections", systemImage: "network") {
+                ConnectionsSettingsView()
+                    .frame(width: 700, height: 450)
+            }
+            Tab("Actions", systemImage: "bolt") {
+                ActionsSettingsView()
+                    .frame(width: 760, height: 540)
+            }
+        }
     }
 }
 
