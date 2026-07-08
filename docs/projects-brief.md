@@ -25,7 +25,7 @@ resources:
   installed.
 - A project can have one or more associated Terminal Sessions.
 - Terminal Sessions can still exist outside a project for backward
-  compatibility and direct Cockpit usage.
+  compatibility and direct Cockpit API/CLI usage.
 - Cockpit exposes project behavior through API and CLI surfaces before the
   SwiftUI app treats it as a primary navigation concept.
 
@@ -51,7 +51,8 @@ Use projects as the preferred Terminal Session creation path, but avoid making
 every existing session endpoint project-mandatory immediately. That lets
 Cockpit remain compatible with scripts, agents, and other clients that only
 know how to create a Terminal Session with an action, environment, and working
-directory.
+directory. AtelierCode itself should treat project-scoped Terminal Sessions as
+the v1 app surface and not expose unscoped Terminal Sessions in its primary UI.
 
 The T3 Code reference is useful mostly for product shape: projects group units
 of work, project lists sort by recent activity, and only a limited number of
@@ -71,8 +72,8 @@ containers or coupling the model to a specific front end.
   project's Terminal Sessions.
 - Add project selection to Terminal Session creation, with the project's working
   directory prefilled or inherited.
-- Preserve direct working-directory Terminal Session creation as an advanced or
-  legacy path.
+- Preserve direct working-directory Terminal Session creation for Cockpit API/CLI
+  usage, but do not expose it as an AtelierCode v1 app workflow.
 
 ## Non-Goals / Deferred Ideas
 
@@ -106,8 +107,8 @@ containers or coupling the model to a specific front end.
 - **AtelierCode App State**: Adds a `ProjectsStore` alongside `SessionsStore`,
   probably polling at the same cadence until Cockpit has push events.
 - **AtelierCode UI**: Makes projects a first-class browsing and creation
-  surface while still allowing non-project Terminal Sessions to appear somewhere
-  predictable.
+  surface and intentionally limits the v1 app workflow to project-scoped
+  Terminal Sessions.
 
 ## Core Concepts
 
@@ -122,23 +123,21 @@ containers or coupling the model to a specific front end.
 - **Project Terminal Session**: A Terminal Session associated with a project
   through `projectId`.
 - **Unscoped Terminal Session**: A backward-compatible Terminal Session with no
-  project.
+  project, retained for Cockpit API/CLI usage rather than AtelierCode v1 app
+  navigation.
 - **Archived Project**: A hidden-but-retained project record; associated
-  Terminal Sessions remain intact.
+  historical Terminal Sessions remain intact. A project with active Terminal
+  Sessions cannot be archived.
 
 ## Open Questions
 
 - Should a project working directory be required to sit under a configured
   Remote Workspace Root, or should Cockpit allow any valid absolute path like
   direct Terminal Session creation does today?
-- When a project is archived, should active Terminal Sessions block archiving,
-  continue running, or be terminated by default?
 - Should Terminal Sessions started from a project be allowed to override
   `workingDir`, or should project association imply exactly one working
   directory?
 - Should project names be unique globally, unique per working directory, or not
   unique at all?
-- Where should non-project Terminal Sessions live in the first AtelierCode UI
-  once projects become the primary container?
 - Should v1 include project renaming and working-directory edits, or only create
   plus archive?
