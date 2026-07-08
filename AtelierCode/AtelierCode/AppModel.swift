@@ -7,6 +7,7 @@ import CockpitAPI
 @Observable
 final class AppModel {
     let settings: AppSettings
+    let connections: ConnectionsStore
     private(set) var client: any CockpitClient
     let sessions: SessionsStore
     let projects: ProjectsStore
@@ -15,12 +16,24 @@ final class AppModel {
     /// alive here while the user switches around the sidebar.
     private(set) var terminals: [String: TerminalSessionController] = [:]
 
-    init(settings: AppSettings = AppSettings(), client: (any CockpitClient)? = nil) {
+    init(
+        settings: AppSettings = AppSettings(),
+        client: (any CockpitClient)? = nil,
+        connections: ConnectionsStore? = nil
+    ) {
         self.settings = settings
+        self.connections = connections ?? ConnectionsStore()
         let resolved = client ?? Self.makeClient(settings: settings)
         self.client = resolved
         self.sessions = SessionsStore(client: resolved)
         self.projects = ProjectsStore(client: resolved)
+    }
+
+    /// Reachability of a Connection for the Settings status dot.
+    /// Phase 3 wires this to per-connection runtimes; until then everything
+    /// reads as `.unknown`.
+    func reachability(of id: UUID) -> Reachability {
+        .unknown
     }
 
     /// Call after server URL or token changes.

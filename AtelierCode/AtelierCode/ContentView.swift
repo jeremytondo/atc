@@ -4,6 +4,7 @@ import CockpitAPI
 /// Single-window shell: project sidebar, session content on the right.
 struct ContentView: View {
     @Environment(AppModel.self) private var appModel
+    @Environment(\.openSettings) private var openSettings
     @State private var selectedSessionID: String?
     @State private var searchText = ""
     @State private var showCreateProject = false
@@ -53,6 +54,12 @@ struct ContentView: View {
                     }
                     .help("Refresh projects and sessions")
                     .keyboardShortcut("r", modifiers: .command)
+                    Button {
+                        openSettings()
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
+                    }
+                    .help("Settings")
                 }
             }
         } detail: {
