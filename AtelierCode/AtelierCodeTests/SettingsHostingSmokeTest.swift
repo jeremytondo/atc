@@ -56,4 +56,24 @@ struct SettingsHostingSmokeTest {
                 .environment(AppModel(connections: store, clientFactory: { _ in MockCockpitClient() }))
         )
     }
+
+    @Test("Actions settings hosts with seeded connections without crashing")
+    func hostActionsSeeded() async throws {
+        let store = makeStore(seeded: true)
+        host(
+            ActionsSettingsView()
+                .environment(AppModel(connections: store, clientFactory: { _ in MockCockpitClient() })),
+            width: 760, height: 540
+        )
+    }
+
+    @Test("Actions settings hosts the no-connections empty state without crashing")
+    func hostActionsEmpty() async throws {
+        let store = makeStore(seeded: false)
+        host(
+            ActionsSettingsView()
+                .environment(AppModel(connections: store, clientFactory: { _ in MockCockpitClient() })),
+            width: 760, height: 540
+        )
+    }
 }

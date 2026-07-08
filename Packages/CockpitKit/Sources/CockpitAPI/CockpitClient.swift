@@ -14,6 +14,13 @@ public protocol CockpitClient: Sendable {
     func sendText(sessionID: String, text: String) async throws
     func sendKey(sessionID: String, key: String) async throws
     func actions() async throws -> [CockpitAction]
+    func action(name: String) async throws -> CockpitAction
+    func createAction(_ request: ActionWriteRequest) async throws -> CockpitAction
+    func updateAction(name: String, _ request: ActionWriteRequest) async throws -> CockpitAction
+    func setActionEnabled(name: String, enabled: Bool) async throws -> CockpitAction
+    /// Deletes a custom action; on a built-in override, reverts it to the
+    /// built-in default instead (the action keeps existing).
+    func deleteAction(name: String) async throws
     func environments() async throws -> [CockpitEnvironment]
     func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing
     func projects(includeArchived: Bool) async throws -> [Project]

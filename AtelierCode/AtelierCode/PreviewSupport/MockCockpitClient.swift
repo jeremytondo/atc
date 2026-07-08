@@ -209,19 +209,32 @@ nonisolated struct MockCockpitClient: CockpitClient {
     func sendText(sessionID: String, text: String) async throws {}
     func sendKey(sessionID: String, key: String) async throws {}
 
+    /// Shared across copies of this value type so action mutations survive
+    /// refreshes — the settings UI is interactive in previews.
+    let actionRegistry = MockActionRegistry()
+
     func actions() async throws -> [CockpitAction] {
-        let json = Data(#"""
-        {"actions":[
-          {"name":"claude","origin":"builtin","enabled":true,"label":"Claude","description":"Claude Code CLI","prompt":{},"params":{}},
-          {"name":"codex","origin":"builtin","enabled":true,"label":"Codex","description":"OpenAI Codex CLI","prompt":{},"params":{
-            "model":{"type":"enum","values":["fast","smart"],"default":"fast","flag":"--model","label":"Model"},
-            "verbose":{"type":"bool","flag":"--verbose","label":"Verbose"}
-          }},
-          {"name":"lazygit","origin":"custom","enabled":true,"label":"LazyGit","params":{}}
-        ]}
-        """#.utf8)
-        struct Envelope: Decodable { var actions: [CockpitAction] }
-        return try JSONDecoder().decode(Envelope.self, from: json).actions
+        actionRegistry.list()
+    }
+
+    func action(name: String) async throws -> CockpitAction {
+        try actionRegistry.detail(name: name)
+    }
+
+    func createAction(_ request: ActionWriteRequest) async throws -> CockpitAction {
+        try actionRegistry.create(request)
+    }
+
+    func updateAction(name: String, _ request: ActionWriteRequest) async throws -> CockpitAction {
+        try actionRegistry.update(name: name, request)
+    }
+
+    func setActionEnabled(name: String, enabled: Bool) async throws -> CockpitAction {
+        try actionRegistry.setEnabled(name: name, enabled: enabled)
+    }
+
+    func deleteAction(name: String) async throws {
+        try actionRegistry.delete(name: name)
     }
 
     func environments() async throws -> [CockpitEnvironment] {
@@ -412,5 +425,212 @@ nonisolated struct MockCockpitClient: CockpitClient {
         decoder.dateDecodingStrategy = .iso8601
         let data = try! encoder.encode(session)
         return try! decoder.decode(SessionDetail.self, from: data)
+    }
+}
+
+/// In-memory mirror of the server's action registry: built-in defaults
+/// (claude, codex) always present underneath a file overlay of custom
+/// actions and built-in overrides. Mimics the server's origin computation,
+/// validation, and error codes so previews/tests fail where it would.
+nonisolated final class MockActionRegistry: @unchecked Sendable {
+    private let lock = NSLock()
+
+    /// Built-in definitions (origin field is ignored; computed at read time).
+    /// Codex carries synthetic params so param-rendering UI has a fixture.
+    private let builtins: [String: CockpitAction] = [
+        "claude": CockpitAction(
+            name: "claude", origin: "builtin", enabled: true,
+            label: "Claude", description: "Claude Code CLI",
+            command: "claude", args: [], prompt: .init()
+        ),
+        "codex": CockpitAction(
+            name: "codex", origin: "builtin", enabled: true,
+            label: "Codex", description: "OpenAI Codex CLI",
+            command: "codex", args: [], prompt: .init(),
+            params: [
+                "model": .init(type: "enum", values: ["fast", "smart"], default: .string("fast"), flag: "--model", label: "Model"),
+                "verbose": .init(type: "bool", flag: "--verbose", label: "Verbose"),
+            ]
+        ),
+    ]
+
+    /// The overlay: custom actions plus built-in overrides.
+    private var fileEntries: [String: CockpitAction] = [
+        "lazygit": CockpitAction(
+            name: "lazygit", origin: "custom", enabled: true,
+            label: "LazyGit", description: "Open LazyGit",
+            command: "lazygit", args: []
+        ),
+    ]
+
+    /// List view: origin computed, `command`/`args` stripped like the server.
+    func list() -> [CockpitAction] {
+        lock.withLock {
+            allNames().compactMap { name in
+                guard var action = effective(name: name) else { return nil }
+                action.command = nil
+                action.args = nil
+                return action
+            }
+        }
+    }
+
+    func detail(name: String) throws -> CockpitAction {
+        try lock.withLock { try requireEffective(name: name) }
+    }
+
+    func create(_ request: ActionWriteRequest) throws -> CockpitAction {
+        try lock.withLock {
+            let name = try resolveName(request)
+            try validate(request)
+            guard effective(name: name) == nil else {
+                throw CockpitError.api(
+                    code: "action_conflict", message: "action already exists: \(name)", sessionID: nil
+                )
+            }
+            fileEntries[name] = definition(from: request, name: name)
+            return try requireEffective(name: name)
+        }
+    }
+
+    func update(name: String, _ request: ActionWriteRequest) throws -> CockpitAction {
+        try lock.withLock {
+            if let bodyName = request.name, bodyName != name {
+                throw CockpitError.api(
+                    code: "invalid_request", message: "body name must match route name", sessionID: nil
+                )
+            }
+            try validate(request)
+            store(definition(from: request, name: name), name: name)
+            return try requireEffective(name: name)
+        }
+    }
+
+    func setEnabled(name: String, enabled: Bool) throws -> CockpitAction {
+        try lock.withLock {
+            var action = try requireEffective(name: name)
+            action.enabled = enabled
+            store(action, name: name)
+            return try requireEffective(name: name)
+        }
+    }
+
+    func delete(name: String) throws {
+        try lock.withLock {
+            if fileEntries.removeValue(forKey: name) != nil { return }
+            if builtins[name] != nil {
+                throw CockpitError.api(
+                    code: "action_conflict",
+                    message: "built-in action cannot be removed: \(name)", sessionID: nil
+                )
+            }
+            throw CockpitError.api(
+                code: "action_not_found", message: "action not found: \(name)", sessionID: nil
+            )
+        }
+    }
+
+    // MARK: - Server-rule internals (call only with the lock held)
+
+    private func allNames() -> [String] {
+        Set(builtins.keys).union(fileEntries.keys).sorted()
+    }
+
+    private func effective(name: String) -> CockpitAction? {
+        if var entry = fileEntries[name] {
+            entry.name = name
+            entry.origin = origin(of: entry, name: name)
+            return entry
+        }
+        if var builtin = builtins[name] {
+            builtin.origin = "builtin"
+            return builtin
+        }
+        return nil
+    }
+
+    private func requireEffective(name: String) throws -> CockpitAction {
+        guard let action = effective(name: name) else {
+            throw CockpitError.api(
+                code: "action_not_found", message: "action not found: \(name)", sessionID: nil
+            )
+        }
+        return action
+    }
+
+    /// An overlay that only flips `enabled` still reports `builtin`
+    /// (server: sameExceptDisabled).
+    private func origin(of entry: CockpitAction, name: String) -> String {
+        guard let builtin = builtins[name] else { return "custom" }
+        return sameExceptEnabled(entry, builtin) ? "builtin" : "modified"
+    }
+
+    private func sameExceptEnabled(_ a: CockpitAction, _ b: CockpitAction) -> Bool {
+        a.label == b.label && a.description == b.description
+            && a.command == b.command && a.args == b.args
+            && a.prompt == b.prompt && a.params == b.params
+    }
+
+    /// Writes an entry to the overlay, dropping it when it exactly matches
+    /// the built-in default (the server prunes no-op overrides).
+    private func store(_ action: CockpitAction, name: String) {
+        if let builtin = builtins[name],
+           sameExceptEnabled(action, builtin), action.enabled == builtin.enabled {
+            fileEntries[name] = nil
+        } else {
+            fileEntries[name] = action
+        }
+    }
+
+    private func resolveName(_ request: ActionWriteRequest) throws -> String {
+        let name = request.name ?? ActionName.slugify(request.label ?? "")
+        guard !name.isEmpty else {
+            throw CockpitError.api(
+                code: "invalid_request", message: "name or label is required", sessionID: nil
+            )
+        }
+        guard ActionName.isValid(name) else {
+            throw CockpitError.api(
+                code: "invalid_action",
+                message: "action name \"\(name)\" must match ^[A-Za-z0-9_-]+$", sessionID: nil
+            )
+        }
+        return name
+    }
+
+    private func validate(_ request: ActionWriteRequest) throws {
+        guard !request.command.trimmingCharacters(in: .whitespaces).isEmpty else {
+            throw CockpitError.api(
+                code: "invalid_action", message: "action command is required", sessionID: nil
+            )
+        }
+        for (paramName, spec) in request.params ?? [:] {
+            guard spec.isEnum || spec.isBool else {
+                throw CockpitError.api(
+                    code: "invalid_action",
+                    message: "param \(paramName): unsupported type \(spec.type)", sessionID: nil
+                )
+            }
+            if spec.isEnum, (spec.values ?? []).isEmpty {
+                throw CockpitError.api(
+                    code: "invalid_action",
+                    message: "param \(paramName): enum values are required", sessionID: nil
+                )
+            }
+        }
+    }
+
+    private func definition(from request: ActionWriteRequest, name: String) -> CockpitAction {
+        CockpitAction(
+            name: name,
+            origin: "custom",
+            enabled: request.enabled ?? true,
+            label: request.label,
+            description: request.description,
+            command: request.command,
+            args: request.args ?? [],
+            prompt: request.prompt,
+            params: request.params ?? [:]
+        )
     }
 }

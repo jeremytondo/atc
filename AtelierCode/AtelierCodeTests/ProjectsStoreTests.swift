@@ -157,6 +157,11 @@ final class StatefulProjectsClient: CockpitClient, @unchecked Sendable {
     func sendText(sessionID: String, text: String) async throws {}
     func sendKey(sessionID: String, key: String) async throws {}
     func actions() async throws -> [CockpitAction] { [] }
+    func action(name: String) async throws -> CockpitAction { throw CockpitError.badStatus(500) }
+    func createAction(_ request: ActionWriteRequest) async throws -> CockpitAction { throw CockpitError.badStatus(500) }
+    func updateAction(name: String, _ request: ActionWriteRequest) async throws -> CockpitAction { throw CockpitError.badStatus(500) }
+    func setActionEnabled(name: String, enabled: Bool) async throws -> CockpitAction { throw CockpitError.badStatus(500) }
+    func deleteAction(name: String) async throws { throw CockpitError.badStatus(500) }
     func environments() async throws -> [CockpitEnvironment] { [] }
     func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing { throw CockpitError.badStatus(500) }
     func projectSessions(projectID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session] { [] }

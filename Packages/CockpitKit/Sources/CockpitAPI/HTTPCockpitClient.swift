@@ -65,6 +65,27 @@ public struct HTTPCockpitClient: CockpitClient {
         return envelope.actions
     }
 
+    public func action(name: String) async throws -> CockpitAction {
+        try await get("actions/\(name)")
+    }
+
+    public func createAction(_ request: ActionWriteRequest) async throws -> CockpitAction {
+        try await post("actions", body: request)
+    }
+
+    public func updateAction(name: String, _ request: ActionWriteRequest) async throws -> CockpitAction {
+        try await put("actions/\(name)", body: request)
+    }
+
+    public func setActionEnabled(name: String, enabled: Bool) async throws -> CockpitAction {
+        struct Body: Encodable { var enabled: Bool }
+        return try await put("actions/\(name)/enabled", body: Body(enabled: enabled))
+    }
+
+    public func deleteAction(name: String) async throws {
+        _ = try await send(method: "DELETE", path: "actions/\(name)", body: nil as Never?)
+    }
+
     public func environments() async throws -> [CockpitEnvironment] {
         let envelope: EnvironmentsEnvelope = try await get("environments")
         return envelope.environments
@@ -152,6 +173,11 @@ public struct HTTPCockpitClient: CockpitClient {
 
     private func patch<T: Decodable>(_ path: String, body: some Encodable) async throws -> T {
         let data = try await send(method: "PATCH", path: path, body: body)
+        return try decode(data)
+    }
+
+    private func put<T: Decodable>(_ path: String, body: some Encodable) async throws -> T {
+        let data = try await send(method: "PUT", path: path, body: body)
         return try decode(data)
     }
 

@@ -28,6 +28,9 @@ final class ConnectionRuntime: Identifiable {
     let client: any CockpitClient
     let projects: ProjectsStore
     let sessions: SessionsStore
+    /// Not part of the poll cycle — actions change only when edited, so the
+    /// settings editor and pickers refresh this on demand.
+    let actions: ActionsStore
 
     /// Outcome of the most recent combined refresh: gray until one
     /// completes, then green/red. A red Connection keeps its last loaded
@@ -43,6 +46,7 @@ final class ConnectionRuntime: Identifiable {
         self.client = client
         self.projects = ProjectsStore(client: client)
         self.sessions = SessionsStore(client: client)
+        self.actions = ActionsStore(client: client)
     }
 
     /// Name-only edits don't disturb the client, stores, or attaches.
