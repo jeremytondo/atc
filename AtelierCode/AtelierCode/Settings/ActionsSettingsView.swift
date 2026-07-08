@@ -544,6 +544,16 @@ private struct ActionParamEditor: View {
         .preferredColorScheme(.dark)
 }
 
+#Preview("Editor — codex (params)") {
+    ActionEditorView(
+        store: ActionsStore(client: MockCockpitClient()),
+        target: .existing("codex"),
+        onSaved: { _ in }
+    )
+    .frame(width: 500, height: 540)
+    .preferredColorScheme(.dark)
+}
+
 #Preview("Actions — no connections") {
     ActionsSettingsView()
         .environment(AppModel(
