@@ -14,3 +14,7 @@ The app is installed on workstation and running and accessibile via the tailscal
 
 http://100.91.7.102:7331/
 
+## Code Style
+
+- Awalys strive for simplicity. This is not a complex enterprise app.
+- Code readability is critical. Code should be easily understandable by developers coming into the porject.
