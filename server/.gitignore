@@ -1,0 +1,14 @@
+/atc
+/dist/
+/tmp/
+
+/internal/assets/web/*
+!/internal/assets/web/
+!/internal/assets/web/.embedkeep
+!/internal/assets/web/_app/
+/internal/assets/web/_app/*
+!/internal/assets/web/_app/.embedkeep
+
+/web/node_modules/
+/web/.svelte-kit/
+/web/build/

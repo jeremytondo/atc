@@ -1,0 +1,88 @@
+name: Server Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Build a test artifact or publish a stable GitHub release"
+        type: choice
+        required: true
+        default: test
+        options:
+          - test
+          - stable
+      release_type:
+        description: "Stable release version bump"
+        type: choice
+        required: true
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: server
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: jdx/mise-action@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          working_directory: server
+
+      - name: Test
+        run: mise run test
+
+      - name: Prepare stable tag
+        id: tag
+        if: inputs.channel == 'stable'
+        run: |
+          if [ "${GITHUB_REF_NAME}" != "${{ github.event.repository.default_branch }}" ]; then
+            echo "stable releases must run from ${{ github.event.repository.default_branch }}; use channel=test for branch builds" >&2
+            exit 1
+          fi
+          tag="$(tools/next-version.sh "${{ inputs.release_type }}")"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "Release $tag"
+          git push origin "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Build test release artifacts
+        if: inputs.channel == 'test'
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean
+          workdir: server
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload test release artifacts
+        if: inputs.channel == 'test'
+        uses: actions/upload-artifact@v6
+        with:
+          name: atc-test-release-${{ github.ref_name }}-${{ github.sha }}
+          path: server/dist/*
+          if-no-files-found: error
+
+      - name: Publish stable GitHub release
+        if: inputs.channel == 'stable'
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --clean
+          workdir: server
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,170 @@
+import Foundation
+import Testing
+import AtelierCodeAPI
+@testable import AtelierCode
+
+/// ProjectsStore behavior: refresh, archived filtering, and
+/// merge-after-mutation semantics.
+///
+/// Mutation tests use `StatefulProjectsClient` instead of the value-type
+/// `MockAtelierCodeClient`: the store fires an unawaited refresh after every
+/// mutation, and only a client whose state actually changed keeps those
+/// refreshes from resurrecting pre-mutation fixtures mid-test.
+@Suite("ProjectsStore")
+struct ProjectsStoreTests {
+    @Test("refresh loads active projects only by default")
+    func refreshFiltersArchived() async throws {
+        let store = ProjectsStore(client: MockAtelierCodeClient())
+        await store.refresh()
+        #expect(store.hasLoadedOnce)
+        #expect(store.lastError == nil)
+        #expect(store.projects.count == 2)
+        #expect(store.projects.allSatisfy { !$0.isArchived })
+    }
+
+    @Test("includeArchived surfaces archived projects")
+    func includeArchived() async throws {
+        let store = ProjectsStore(client: MockAtelierCodeClient())
+        // didSet fires its own unawaited refresh, which may supersede an
+        // explicitly awaited one — so wait for convergence instead.
+        store.includeArchived = true
+        for _ in 0..<200 where store.projects.count != 3 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(store.projects.count == 3)
+        #expect(store.projects.contains { $0.id == "prj_scratch" && $0.isArchived })
+    }
+
+    @Test("create merges the new project at the front with a unique id")
+    func createMerges() async throws {
+        let store = ProjectsStore(client: StatefulProjectsClient())
+        await store.refresh()
+        let first = try await store.create(name: "Fresh", workingDir: "/home/dev/fresh")
+        let second = try await store.create(name: "Fresher", workingDir: "/home/dev/fresher")
+        #expect(first.id != second.id)
+        #expect(store.projects.first?.id == second.id)
+        #expect(store.projects.contains { $0.id == first.id })
+    }
+
+    @Test("archive drops the project from the default filter")
+    func archiveDrops() async throws {
+        let store = ProjectsStore(client: StatefulProjectsClient())
+        await store.refresh()
+        let target = try #require(store.projects.first)
+        try await store.archive(id: target.id)
+        #expect(!store.projects.contains { $0.id == target.id })
+    }
+
+    @Test("rename updates the project in place")
+    func renameUpdates() async throws {
+        let store = ProjectsStore(client: StatefulProjectsClient())
+        await store.refresh()
+        let target = try #require(store.projects.first)
+        try await store.rename(id: target.id, name: "Renamed")
+        #expect(store.project(id: target.id)?.name == "Renamed")
+    }
+
+    @Test("failed refresh keeps the error and empty list")
+    func refreshError() async throws {
+        let store = ProjectsStore(client: StatefulProjectsClient(failAll: true))
+        await store.refresh()
+        #expect(store.lastError != nil)
+        #expect(store.projects.isEmpty)
+    }
+}
+
+/// Minimal stateful in-memory server for store tests: project mutations
+/// persist, so the store's follow-up refreshes converge instead of racing
+/// the assertions. Only the project methods are implemented.
+final class StatefulProjectsClient: AtelierCodeClient, @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [Project]
+    private var counter = 0
+    private let failAll: Bool
+
+    init(failAll: Bool = false) {
+        self.failAll = failAll
+        self.stored = [
+            Project(id: "prj_one", name: "One", workingDir: "/home/dev/one", createdAt: .now, updatedAt: .now),
+            Project(id: "prj_two", name: "Two", workingDir: "/home/dev/two", createdAt: .now, updatedAt: .now),
+        ]
+    }
+
+    private func withState<T>(_ body: (inout [Project]) throws -> T) throws -> T {
+        if failAll { throw AtelierCodeError.badStatus(500) }
+        lock.lock()
+        defer { lock.unlock() }
+        return try body(&stored)
+    }
+
+    func projects(includeArchived: Bool) async throws -> [Project] {
+        try withState { $0.filter { includeArchived || !$0.isArchived } }
+    }
+
+    func project(id: String) async throws -> Project {
+        try withState { state in
+            guard let found = state.first(where: { $0.id == id }) else {
+                throw AtelierCodeError.api(code: "project_not_found", message: id, sessionID: nil)
+            }
+            return found
+        }
+    }
+
+    func createProject(name: String, workingDir: String) async throws -> Project {
+        try withState { state in
+            counter += 1
+            let project = Project(
+                id: "prj_stateful_\(counter)", name: name, workingDir: workingDir,
+                createdAt: .now, updatedAt: .now
+            )
+            state.insert(project, at: 0)
+            return project
+        }
+    }
+
+    func renameProject(id: String, name: String) async throws -> Project {
+        try mutate(id) { $0.name = name }
+    }
+
+    func archiveProject(id: String) async throws -> Project {
+        try mutate(id) { $0.archivedAt = .now }
+    }
+
+    func unarchiveProject(id: String) async throws -> Project {
+        try mutate(id) { $0.archivedAt = nil }
+    }
+
+    private func mutate(_ id: String, _ change: (inout Project) -> Void) throws -> Project {
+        try withState { state in
+            guard let index = state.firstIndex(where: { $0.id == id }) else {
+                throw AtelierCodeError.api(code: "project_not_found", message: id, sessionID: nil)
+            }
+            change(&state[index])
+            state[index].updatedAt = .now
+            return state[index]
+        }
+    }
+
+    // MARK: - Unused surface
+
+    func health() async throws -> Health { throw AtelierCodeError.badStatus(500) }
+    func version() async throws -> Version { throw AtelierCodeError.badStatus(500) }
+    func sessions(includeArchived: Bool, status: SessionStatus?) async throws -> [Session] { [] }
+    func session(id: String) async throws -> SessionDetail { throw AtelierCodeError.badStatus(500) }
+    func startSession(_ request: StartSessionRequest) async throws -> SessionDetail { throw AtelierCodeError.badStatus(500) }
+    func terminateSession(id: String) async throws -> SessionDetail { throw AtelierCodeError.badStatus(500) }
+    func archiveSession(id: String) async throws -> SessionDetail { throw AtelierCodeError.badStatus(500) }
+    func sendText(sessionID: String, text: String) async throws {}
+    func sendKey(sessionID: String, key: String) async throws {}
+    func actions() async throws -> [AtelierCodeAction] { [] }
+    func action(name: String) async throws -> AtelierCodeAction { throw AtelierCodeError.badStatus(500) }
+    func createAction(_ request: ActionWriteRequest) async throws -> AtelierCodeAction { throw AtelierCodeError.badStatus(500) }
+    func updateAction(name: String, _ request: ActionWriteRequest) async throws -> AtelierCodeAction { throw AtelierCodeError.badStatus(500) }
+    func setActionEnabled(name: String, enabled: Bool) async throws -> AtelierCodeAction { throw AtelierCodeError.badStatus(500) }
+    func deleteAction(name: String) async throws { throw AtelierCodeError.badStatus(500) }
+    func environments() async throws -> [AtelierCodeEnvironment] { [] }
+    func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing { throw AtelierCodeError.badStatus(500) }
+    func projectSessions(projectID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session] { [] }
+    func attachURL(sessionID: String) -> URL { URL(string: "ws://127.0.0.1:1/attach")! }
+    func attachHeaders() -> [String: String] { [:] }
+}

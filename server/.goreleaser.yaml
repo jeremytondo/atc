@@ -1,0 +1,59 @@
+version: 2
+
+project_name: atc
+
+before:
+  hooks:
+    - mise run web:build
+    - mise run assets:stage
+
+builds:
+  - id: atc
+    main: ./cmd/atc
+    binary: atc
+    env:
+      - CGO_ENABLED=0
+    targets:
+      - linux_amd64
+      - linux_arm64
+      - darwin_amd64
+      - darwin_arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/jeremytondo/atelier-code/internal/buildinfo.version={{ .Version }}
+      - -X github.com/jeremytondo/atelier-code/internal/buildinfo.commit={{ .Commit }}
+      - -X github.com/jeremytondo/atelier-code/internal/buildinfo.date={{ .CommitDate }}
+
+archives:
+  - id: atc
+    ids:
+      - atc
+    name_template: "atc_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}"
+    formats:
+      - tar.gz
+    files:
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ .Version }}-snapshot-{{ .ShortCommit }}"
+
+changelog:
+  sort: asc
+
+release:
+  github:
+    owner: jeremytondo
+    name: atelier-code
+  prerelease: auto
+  mode: replace
+  header: |
+    Install or update:
+
+    ```sh
+    curl -fsSL https://raw.githubusercontent.com/jeremytondo/atelier-code/main/server/install.sh | sh
+    ```

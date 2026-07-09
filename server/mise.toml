@@ -1,0 +1,55 @@
+[tools]
+go = "1.26.4"
+node = "25.6.0"
+pnpm = "10.25.0"
+
+# --- Primary entrypoints ---
+
+[tasks.dev]
+description = "Start the Atelier Code dev API and Vite web server in the foreground"
+run = "bash tools/dev.sh"
+
+[tasks.serve]
+description = "Build, embed, and run the Atelier Code service in the foreground (open http://127.0.0.1:7331)"
+depends = ["build"]
+run = "./dist/atc serve"
+
+[tasks.build]
+description = "Build web, embed assets, and compile the atc binary to dist/"
+run = [
+  "mise run web:build",
+  "mise run assets:stage",
+  "mkdir -p dist",
+  "go build -o dist/atc ./cmd/atc",
+]
+
+[tasks.install]
+description = "Build and install atc locally (default: ~/.local/bin/atc)"
+depends = ["build"]
+run = 'mkdir -p "${ATC_INSTALL_DIR:-$HOME/.local/bin}" && install -m 0755 dist/atc "${ATC_INSTALL_DIR:-$HOME/.local/bin}/atc"'
+
+[tasks.test]
+description = "Run Go tests"
+run = "bash tools/test.sh"
+
+# --- Building blocks (composed by the entrypoints above) ---
+
+[tasks."web:dev"]
+description = "Run the SvelteKit dev server alone"
+dir = "web"
+run = "pnpm install && pnpm dev"
+
+[tasks."web:build"]
+description = "Build the SvelteKit web app"
+dir = "web"
+run = "pnpm install --frozen-lockfile && pnpm build"
+
+[tasks."assets:stage"]
+description = "Copy the web build into the Go embed directory (required: go:embed can't reach ../web/build)"
+run = [
+  "test -f web/build/index.html",
+  "rm -rf internal/assets/web/*",
+  "mkdir -p internal/assets/web/_app",
+  "touch internal/assets/web/.embedkeep internal/assets/web/_app/.embedkeep",
+  "cp -R web/build/. internal/assets/web/",
+]
