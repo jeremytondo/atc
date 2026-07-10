@@ -22,8 +22,10 @@
     onCancel: () => void;
   } = $props();
 
-  let name = $state(source?.name ?? '');
-  let workingDir = $state(source?.workingDir ?? '');
+  // Writable deriveds: the draft starts from (and resets with) `source`;
+  // user edits override it until the editor is remounted or source changes.
+  let name = $derived(source?.name ?? '');
+  let workingDir = $derived(source?.workingDir ?? '');
 
   let canSave = $derived(
     name.trim() !== '' && (mode === 'rename' || workingDir.trim() !== '')

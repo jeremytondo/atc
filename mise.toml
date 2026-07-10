@@ -1,0 +1,46 @@
+# Repo-wide task runner. Each surface keeps its own tooling and stays
+# independently buildable; these tasks fan out so one command answers
+# "is the repo healthy?" the same way locally and in CI.
+
+[tasks.check]
+description = "All gates: server fmt/vet/tests + web check, Kit tests, macOS app tests"
+depends = ["server:check", "kit:test", "macos:test"]
+
+[tasks.test]
+description = "All tests: server Go suite, AtelierCodeKit, macOS app"
+depends = ["server:test", "kit:test", "macos:test"]
+
+# --- Server (Go API + embedded web UI) ---
+
+[tasks."server:check"]
+description = "Server gofmt/vet/tests and web type check"
+run = "mise run -C server check"
+
+[tasks."server:test"]
+description = "Server Go tests"
+run = "mise run -C server test"
+
+[tasks."server:build"]
+description = "Build the embedded atc binary"
+run = "mise run -C server build"
+
+[tasks."web:check"]
+description = "Type-check the web UI (svelte-check)"
+run = "mise run -C server web:check"
+
+# --- Swift surfaces ---
+
+[tasks."kit:test"]
+description = "AtelierCodeKit package tests"
+dir = "packages/AtelierCodeKit"
+run = "swift test"
+
+[tasks."macos:test"]
+description = "macOS app tests (signing disabled so any machine/CI can run them)"
+run = """
+xcodebuild test \
+  -project macos/AtelierCode.xcodeproj \
+  -scheme AtelierCode \
+  -destination platform=macOS \
+  CODE_SIGNING_ALLOWED=NO
+"""

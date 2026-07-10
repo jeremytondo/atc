@@ -59,6 +59,13 @@ struct CreateProjectSheet: View {
                         get: { draft.connectionID },
                         set: { draft.selectConnection($0) }
                     )) {
+                        // The selection is nil until onAppear preselects (and
+                        // always when no Connections exist); keep a matching
+                        // tag so AppKit doesn't log an invalid selection.
+                        if selectedRuntime == nil {
+                            Text(appModel.runtimes.isEmpty ? "No Connections" : "Select Connection")
+                                .tag(draft.connectionID)
+                        }
                         ForEach(appModel.runtimes) { runtime in
                             Text(runtime.record.name).tag(runtime.id as UUID?)
                         }

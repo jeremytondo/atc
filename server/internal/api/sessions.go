@@ -39,15 +39,15 @@ type SessionListResponse struct {
 
 // SessionListItem is the wire shape of one session in list responses.
 type SessionListItem struct {
-	ID            string  `json:"id"`
-	Name          string  `json:"name,omitempty"`
-	Action        string  `json:"action"`
-	Environment   string  `json:"environment"`
-	WorkingDir    string  `json:"workingDir"`
-	Status        string  `json:"status"`
-	Attachable    bool    `json:"attachable"`
-	FailureReason string  `json:"failureReason,omitempty"`
-	FailureCode   string  `json:"failureCode,omitempty"`
+	ID            string          `json:"id"`
+	Name          string          `json:"name,omitempty"`
+	Action        string          `json:"action"`
+	Environment   string          `json:"environment"`
+	WorkingDir    string          `json:"workingDir"`
+	Status        string          `json:"status"`
+	Attachable    bool            `json:"attachable"`
+	FailureReason string          `json:"failureReason,omitempty"`
+	FailureCode   string          `json:"failureCode,omitempty"`
 	CreatedAt     string          `json:"createdAt"`
 	UpdatedAt     string          `json:"updatedAt"`
 	TerminatedAt  *string         `json:"terminatedAt,omitempty"`
@@ -65,17 +65,17 @@ type SessionProject struct {
 
 // SessionDetail is the wire shape of session detail responses.
 type SessionDetail struct {
-	ID            string         `json:"id"`
-	Name          string         `json:"name,omitempty"`
-	Action        string         `json:"action"`
-	Environment   string         `json:"environment"`
-	Params        map[string]any `json:"params"`
-	WorkingDir    string         `json:"workingDir"`
-	Prompt        string         `json:"prompt,omitempty"`
-	Status        string         `json:"status"`
-	Attachable    bool           `json:"attachable"`
-	FailureReason string         `json:"failureReason,omitempty"`
-	FailureCode   string         `json:"failureCode,omitempty"`
+	ID            string          `json:"id"`
+	Name          string          `json:"name,omitempty"`
+	Action        string          `json:"action"`
+	Environment   string          `json:"environment"`
+	Params        map[string]any  `json:"params"`
+	WorkingDir    string          `json:"workingDir"`
+	Prompt        string          `json:"prompt,omitempty"`
+	Status        string          `json:"status"`
+	Attachable    bool            `json:"attachable"`
+	FailureReason string          `json:"failureReason,omitempty"`
+	FailureCode   string          `json:"failureCode,omitempty"`
 	CreatedAt     string          `json:"createdAt"`
 	UpdatedAt     string          `json:"updatedAt"`
 	TerminatedAt  *string         `json:"terminatedAt,omitempty"`

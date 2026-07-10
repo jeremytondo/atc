@@ -32,12 +32,33 @@ run = 'mkdir -p "${ATC_INSTALL_DIR:-$HOME/.local/bin}" && install -m 0755 dist/a
 description = "Run Go tests"
 run = "bash tools/test.sh"
 
+[tasks.check]
+description = "All server gates: gofmt, go vet, Go tests, web type check"
+depends = ["fmt:check", "vet", "test", "web:check"]
+
+[tasks.fmt]
+description = "Format Go code"
+run = "gofmt -w cmd cli internal"
+
+[tasks."fmt:check"]
+description = "Fail if any Go file is not gofmt-clean"
+run = 'unformatted="$(gofmt -l cmd cli internal)"; if [ -n "$unformatted" ]; then echo "gofmt needed:"; echo "$unformatted"; exit 1; fi'
+
+[tasks.vet]
+description = "Run go vet"
+run = "go vet ./..."
+
 # --- Building blocks (composed by the entrypoints above) ---
 
 [tasks."web:dev"]
 description = "Run the SvelteKit dev server alone"
 dir = "web"
 run = "pnpm install && pnpm dev"
+
+[tasks."web:check"]
+description = "Type-check the SvelteKit app (svelte-check)"
+dir = "web"
+run = "pnpm install --frozen-lockfile && pnpm check"
 
 [tasks."web:build"]
 description = "Build the SvelteKit web app"

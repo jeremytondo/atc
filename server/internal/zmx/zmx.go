@@ -24,7 +24,7 @@ import (
 const DefaultBin = "zmx"
 
 const (
-	atcNamePrefix      = "atc-"
+	atcNamePrefix          = "atc-"
 	defaultSessionTermType = "xterm-256color"
 )
 

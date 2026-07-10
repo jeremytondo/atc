@@ -84,6 +84,12 @@ struct ActionsSettingsView: View {
     private var header: some View {
         HStack(spacing: 12) {
             Picker("Connection", selection: $connectionID) {
+                // The selection is nil until onAppear picks the first runtime
+                // (and dangles if that Connection is deleted); keep a matching
+                // tag so AppKit doesn't log an invalid selection.
+                if runtime == nil {
+                    Text("Select Connection").tag(connectionID)
+                }
                 ForEach(appModel.runtimes) { runtime in
                     Text(runtime.record.name).tag(Optional(runtime.id))
                 }
