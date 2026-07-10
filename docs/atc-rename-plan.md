@@ -26,7 +26,7 @@ GitHub as a separate manual cutover step.
 | Current name | Replacement |
 | --- | --- |
 | Atelier Code | `atc` |
-| Atelier Code Server / Cockpit | `atc server` |
+| Atelier Code Server | `atc server` |
 | Atelier Code for macOS | `atc for macOS` |
 | `atelier-code` repository | `atc` |
 | `github.com/jeremytondo/atelier-code` | `github.com/jeremytondo/atc` |
@@ -96,12 +96,13 @@ GitHub as a separate manual cutover step.
 
 - Update active and archived documentation, comments, examples, fixtures,
   agent instructions, context files, and user-facing strings.
-- Rename filenames containing `atelier-code` or `cockpit`, including the
-  monorepo brief and affected ADR/design-document names.
+- Rename filenames containing `atelier-code` or the retired pre-monorepo
+  product name, including the monorepo brief and affected ADR/design-document
+  names.
 - Repair every internal Markdown link and source reference affected by renamed
   files or directories.
 - Require tracked-file searches to find no remaining `Atelier Code`,
-  `AtelierCode`, `atelier-code`, `Cockpit`, or `cockpit` product identifiers.
+  `AtelierCode`, `atelier-code`, or retired pre-monorepo product identifiers.
 - Preserve unrelated sample names such as `Atelier` only when they do not refer
   to this product.
 

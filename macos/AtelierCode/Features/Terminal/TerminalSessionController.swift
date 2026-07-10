@@ -158,9 +158,15 @@ final class TerminalSessionController: Identifiable {
             // and marking ready stops unbounded buffering.
             surfaceIsReady = true
             guard !Task.isCancelled else { return }
-            while !pendingOutput.isEmpty {
-                terminalSession.receive(pendingOutput.removeFirst())
+            // Drain by index: repeated removeFirst() is quadratic on a large
+            // replay, and the buffer must stay non-empty while draining so
+            // concurrent deliver() calls keep appending behind the cursor.
+            var index = 0
+            while index < pendingOutput.count {
+                terminalSession.receive(pendingOutput[index])
+                index += 1
             }
+            pendingOutput.removeAll()
             drainTask = nil
         }
     }

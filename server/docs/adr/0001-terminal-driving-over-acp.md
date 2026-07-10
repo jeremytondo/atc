@@ -1,5 +1,7 @@
 # Drive agents through their terminal, not ACP
 
+> **Terminology note (2026-07):** This ADR predates the Atelier Code rename. "Cockpit" is now the Atelier Code server (`atc`).
+
 `docs/archive/idea.md` originally proposed handing work to AI coding agents over ACP
 (Agent Client Protocol). We are instead orchestrating agents by spawning their
 real native CLI (`claude`, `codex`) in a persistent terminal session and driving

@@ -1,3 +1,5 @@
+> **Historical (archived 2026-07):** Describes the pre-monorepo Cockpit-era system. Names, paths, and instructions here are obsolete — see AGENTS.md and docs/platform-policy.md for current structure and policy.
+
 # Remote File Browsing — Exploration / Rough Draft
 
 > **Status: exploratory. Nothing here is decided.** This is a thinking document

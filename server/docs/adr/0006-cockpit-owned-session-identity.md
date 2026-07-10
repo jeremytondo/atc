@@ -1,5 +1,7 @@
 # Sessions use Cockpit-owned identity
 
+> **Terminology note (2026-07):** This ADR predates the Atelier Code rename. "Cockpit" is now the Atelier Code server (`atc`).
+
 Supersedes [ADR 0002](0002-session-identity-in-zmx-name.md).
 
 Cockpit sessions will expose a stable Cockpit-owned `Session.id` as their public
