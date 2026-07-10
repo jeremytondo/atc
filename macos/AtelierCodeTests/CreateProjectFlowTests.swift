@@ -118,7 +118,7 @@ struct CreateProjectFlowTests {
         let defaults = UserDefaults(suiteName: suite)!
         defaults.removePersistentDomain(forName: suite)
         let model = AppModel(
-            connections: ConnectionsStore(defaults: defaults),
+            connections: ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore()),
             clientFactory: { _ in MockAtelierCodeClient() }
         )
         #expect(model.runtimes.isEmpty)

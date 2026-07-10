@@ -563,7 +563,7 @@ private struct ActionParamEditor: View {
 #Preview("Actions — no connections") {
     ActionsSettingsView()
         .environment(AppModel(
-            connections: ConnectionsStore(defaults: UserDefaults(suiteName: "preview.actions.empty")!),
+            connections: ConnectionsStore(defaults: UserDefaults(suiteName: "preview.actions.empty")!, credentials: InMemoryCredentialStore()),
             clientFactory: { _ in MockAtelierCodeClient() }
         ))
         .frame(width: 760, height: 520)

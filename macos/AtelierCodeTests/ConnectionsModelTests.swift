@@ -127,6 +127,14 @@ struct ConnectionURLTests {
 @Suite("ConnectionsStore")
 struct ConnectionsStoreTests {
     /// A fresh, isolated UserDefaults suite; the caller must clean it up.
+    /// Credential store whose writes never stick — exercises the plaintext
+    /// fallback path.
+    private final class FailingCredentialStore: CredentialStore {
+        func token(for id: UUID) -> String? { nil }
+        func setToken(_ token: String, for id: UUID) -> Bool { false }
+        func deleteToken(for id: UUID) {}
+    }
+
     private func makeDefaults() -> (UserDefaults, String) {
         let suite = "ConnectionsStoreTests.\(UUID().uuidString)"
         return (UserDefaults(suiteName: suite)!, suite)
@@ -141,7 +149,10 @@ struct ConnectionsStoreTests {
         let (defaults, suite) = makeDefaults()
         defer { cleanup(defaults, suite) }
 
-        let store = ConnectionsStore(defaults: defaults)
+        // Tokens round-trip through the credential store, not the JSON, so
+        // the reload shares the same instance (as the real Keychain would).
+        let credentials = InMemoryCredentialStore()
+        let store = ConnectionsStore(defaults: defaults, credentials: credentials)
         try store.add(name: "First", urlString: "host-a:7331", token: "t1")
         try store.add(name: "Second", urlString: "https://host-b", token: "")
         #expect(store.connections.map(\.name) == ["First", "Second"])
@@ -149,15 +160,16 @@ struct ConnectionsStoreTests {
         #expect(store.connections[1].urlString == "https://host-b")
 
         // A new store reading the same defaults sees the same records/order.
-        let reloaded = ConnectionsStore(defaults: defaults)
+        let reloaded = ConnectionsStore(defaults: defaults, credentials: credentials)
         #expect(reloaded.connections == store.connections)
+        #expect(reloaded.connections[0].token == "t1")
     }
 
     @Test("empty name is rejected on add and update")
     func rejectsEmptyName() throws {
         let (defaults, suite) = makeDefaults()
         defer { cleanup(defaults, suite) }
-        let store = ConnectionsStore(defaults: defaults)
+        let store = ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore())
 
         #expect(throws: ConnectionValidationError.emptyName) {
             try store.add(name: "   ", urlString: "http://h", token: "")
@@ -172,7 +184,7 @@ struct ConnectionsStoreTests {
     func rejectsInvalidURL() throws {
         let (defaults, suite) = makeDefaults()
         defer { cleanup(defaults, suite) }
-        let store = ConnectionsStore(defaults: defaults)
+        let store = ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore())
         #expect(throws: ConnectionValidationError.invalidURL) {
             try store.add(name: "Bad", urlString: "ftp://h", token: "")
         }
@@ -182,7 +194,7 @@ struct ConnectionsStoreTests {
     func rejectsDuplicate() throws {
         let (defaults, suite) = makeDefaults()
         defer { cleanup(defaults, suite) }
-        let store = ConnectionsStore(defaults: defaults)
+        let store = ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore())
 
         try store.add(name: "A", urlString: "http://h:7331", token: "")
         // Same host+port, different scheme → duplicate.
@@ -203,7 +215,7 @@ struct ConnectionsStoreTests {
     func updateMissing() {
         let (defaults, suite) = makeDefaults()
         defer { cleanup(defaults, suite) }
-        let store = ConnectionsStore(defaults: defaults)
+        let store = ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore())
         #expect(throws: ConnectionValidationError.notFound) {
             try store.update(id: UUID(), name: "X", urlString: "http://h", token: "")
         }
@@ -213,11 +225,11 @@ struct ConnectionsStoreTests {
     func removePersists() throws {
         let (defaults, suite) = makeDefaults()
         defer { cleanup(defaults, suite) }
-        let store = ConnectionsStore(defaults: defaults)
+        let store = ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore())
         let rec = try store.add(name: "A", urlString: "http://h", token: "")
         store.remove(id: rec.id)
         #expect(store.connections.isEmpty)
-        #expect(ConnectionsStore(defaults: defaults).connections.isEmpty)
+        #expect(ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore()).connections.isEmpty)
     }
 
     // MARK: Migration
@@ -229,7 +241,7 @@ struct ConnectionsStoreTests {
         defaults.set("http://workstation.tail1f9a09.ts.net:7331", forKey: "serverURLString")
         defaults.set("secret-token", forKey: "apiToken")
 
-        let store = ConnectionsStore(defaults: defaults)
+        let store = ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore())
         #expect(store.connections.count == 1)
         let rec = store.connections[0]
         #expect(rec.name == "Workstation")
@@ -246,7 +258,7 @@ struct ConnectionsStoreTests {
         defer { cleanup(defaults, suite) }
         defaults.set("http://127.0.0.1:7331", forKey: "serverURLString")
 
-        let store = ConnectionsStore(defaults: defaults)
+        let store = ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore())
         #expect(store.connections.count == 1)
         #expect(store.connections[0].name == "127.0.0.1")
         #expect(store.connections[0].token == "")
@@ -256,7 +268,7 @@ struct ConnectionsStoreTests {
     func noLegacy() {
         let (defaults, suite) = makeDefaults()
         defer { cleanup(defaults, suite) }
-        let store = ConnectionsStore(defaults: defaults)
+        let store = ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore())
         #expect(store.connections.isEmpty)
     }
 
@@ -267,7 +279,7 @@ struct ConnectionsStoreTests {
         defaults.set("ftp://nope/path", forKey: "serverURLString")
         defaults.set("tok", forKey: "apiToken")
 
-        let store = ConnectionsStore(defaults: defaults)
+        let store = ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore())
         #expect(store.connections.isEmpty)
         #expect(defaults.object(forKey: "serverURLString") == nil)
         #expect(defaults.object(forKey: "apiToken") == nil)
@@ -279,12 +291,78 @@ struct ConnectionsStoreTests {
         defer { cleanup(defaults, suite) }
         defaults.set("http://host:7331", forKey: "serverURLString")
 
-        let first = ConnectionsStore(defaults: defaults)
+        let first = ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore())
         #expect(first.connections.count == 1)
         // Keys are gone, so a second init doesn't add another record.
-        let second = ConnectionsStore(defaults: defaults)
+        let second = ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore())
         #expect(second.connections.count == 1)
         #expect(second.connections == first.connections)
+    }
+
+    @Test("tokens never persist in UserDefaults once the credential store holds them")
+    func tokensLeaveUserDefaults() throws {
+        let (defaults, suite) = makeDefaults()
+        defer { cleanup(defaults, suite) }
+
+        let credentials = InMemoryCredentialStore()
+        let store = ConnectionsStore(defaults: defaults, credentials: credentials)
+        let rec = try store.add(name: "A", urlString: "http://h", token: "secret")
+
+        #expect(credentials.token(for: rec.id) == "secret")
+        let raw = try #require(defaults.data(forKey: "connections"))
+        let persisted = try JSONDecoder().decode([ConnectionRecord].self, from: raw)
+        #expect(persisted[0].token == "")
+        // The in-memory record still exposes the token to the app.
+        #expect(store.connections[0].token == "secret")
+    }
+
+    @Test("plaintext tokens in existing data migrate to the credential store on load")
+    func migratesPlaintextTokens() throws {
+        let (defaults, suite) = makeDefaults()
+        defer { cleanup(defaults, suite) }
+
+        // Pre-Keychain persisted shape: token inline in the JSON array.
+        let legacy = [ConnectionRecord(name: "Old", urlString: "http://h:7331", token: "plain")]
+        defaults.set(try JSONEncoder().encode(legacy), forKey: "connections")
+
+        let credentials = InMemoryCredentialStore()
+        let store = ConnectionsStore(defaults: defaults, credentials: credentials)
+        #expect(store.connections[0].token == "plain")
+        #expect(credentials.token(for: legacy[0].id) == "plain")
+        let raw = try #require(defaults.data(forKey: "connections"))
+        let persisted = try JSONDecoder().decode([ConnectionRecord].self, from: raw)
+        #expect(persisted[0].token == "")
+    }
+
+    @Test("a failed credential write keeps the plaintext fallback so the token survives")
+    func failedWriteKeepsPlaintext() throws {
+        let (defaults, suite) = makeDefaults()
+        defer { cleanup(defaults, suite) }
+
+        let store = ConnectionsStore(defaults: defaults, credentials: FailingCredentialStore())
+        let rec = try store.add(name: "A", urlString: "http://h", token: "secret")
+        #expect(store.connections[0].token == "secret")
+        let raw = try #require(defaults.data(forKey: "connections"))
+        let persisted = try JSONDecoder().decode([ConnectionRecord].self, from: raw)
+        #expect(persisted[0].token == "secret")
+
+        // A later load with a working credential store completes the move.
+        let credentials = InMemoryCredentialStore()
+        let healed = ConnectionsStore(defaults: defaults, credentials: credentials)
+        #expect(healed.connections[0].token == "secret")
+        #expect(credentials.token(for: rec.id) == "secret")
+    }
+
+    @Test("remove deletes the stored token")
+    func removeDeletesToken() throws {
+        let (defaults, suite) = makeDefaults()
+        defer { cleanup(defaults, suite) }
+
+        let credentials = InMemoryCredentialStore()
+        let store = ConnectionsStore(defaults: defaults, credentials: credentials)
+        let rec = try store.add(name: "A", urlString: "http://h", token: "secret")
+        store.remove(id: rec.id)
+        #expect(credentials.token(for: rec.id) == nil)
     }
 
     @Test("migration does not run when the connections key already has data")
@@ -293,12 +371,12 @@ struct ConnectionsStoreTests {
         defer { cleanup(defaults, suite) }
 
         // Seed real connection data, then plant legacy keys alongside it.
-        let seed = ConnectionsStore(defaults: defaults)
+        let seed = ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore())
         try seed.add(name: "Existing", urlString: "http://existing:1", token: "")
         defaults.set("http://legacy:7331", forKey: "serverURLString")
         defaults.set("tok", forKey: "apiToken")
 
-        let store = ConnectionsStore(defaults: defaults)
+        let store = ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore())
         #expect(store.connections.map(\.name) == ["Existing"])
         // Legacy keys are still cleaned up so the attempt won't repeat.
         #expect(defaults.object(forKey: "serverURLString") == nil)

@@ -7,7 +7,7 @@ extension AppModel {
     /// Connection backed by the given client.
     static func preview(client: any AtelierCodeClient = MockAtelierCodeClient()) -> AppModel {
         let defaults = UserDefaults(suiteName: "preview.appmodel.\(UUID().uuidString)")!
-        let store = ConnectionsStore(defaults: defaults)
+        let store = ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore())
         _ = try? store.add(name: "Workstation", urlString: "http://workstation.example:7331", token: "")
         return AppModel(connections: store, clientFactory: { _ in client })
     }
@@ -17,7 +17,7 @@ extension AppModel {
     /// only make sense with more than one Connection.
     static func preview(connections: [(name: String, client: any AtelierCodeClient)]) -> AppModel {
         let defaults = UserDefaults(suiteName: "preview.appmodel.\(UUID().uuidString)")!
-        let store = ConnectionsStore(defaults: defaults)
+        let store = ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore())
         var clientsByID: [UUID: any AtelierCodeClient] = [:]
         for (index, connection) in connections.enumerated() {
             // Distinct host per Connection so the store's duplicate check

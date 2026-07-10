@@ -29,7 +29,7 @@ struct SettingsHostingSmokeTest {
         let suite = "test.settings.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defaults.removePersistentDomain(forName: suite)
-        let store = ConnectionsStore(defaults: defaults)
+        let store = ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore())
         if seeded {
             _ = try? store.add(name: "Workstation", urlString: "http://workstation.example:7331", token: "")
             _ = try? store.add(name: "Local Dev", urlString: "http://127.0.0.1:7331", token: "secret")

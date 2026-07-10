@@ -109,7 +109,7 @@ struct AppModelRuntimeTests {
         let suite = "AppModelRuntimeTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defaults.removePersistentDomain(forName: suite)
-        let store = ConnectionsStore(defaults: defaults)
+        let store = ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore())
         var clients: [ScriptableClient] = []
         let model = AppModel(connections: store, clientFactory: { _ in
             let client = ScriptableClient()

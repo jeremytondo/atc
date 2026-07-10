@@ -17,7 +17,7 @@ struct SettingsView: View {
 }
 
 #Preview("Settings") {
-    let store = ConnectionsStore(defaults: UserDefaults(suiteName: "preview.settings.connections")!)
+    let store = ConnectionsStore(defaults: UserDefaults(suiteName: "preview.settings.connections")!, credentials: InMemoryCredentialStore())
     _ = try? store.add(name: "Workstation", urlString: "http://workstation.tail1f9a09.ts.net:7331", token: "")
     _ = try? store.add(name: "Local Dev", urlString: "http://127.0.0.1:7331", token: "")
     return SettingsView()
