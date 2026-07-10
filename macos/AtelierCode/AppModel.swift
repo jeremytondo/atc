@@ -63,9 +63,13 @@ final class AppModel {
         runtime(id: ref.connectionID)?.sessions.session(id: ref.sessionID)
     }
 
+    /// Refreshes every Connection concurrently so one unreachable server
+    /// doesn't delay the others.
     func refreshAll() async {
-        for runtime in runtimes {
-            await runtime.refresh()
+        await withTaskGroup { group in
+            for runtime in runtimes {
+                group.addTask { await runtime.refresh() }
+            }
         }
     }
 
@@ -87,8 +91,20 @@ final class AppModel {
         return normalized != runtime.record.urlString || token != runtime.record.token
     }
 
+    /// Whether any terminal on this Connection has a live attach. Retained
+    /// (ended) controllers don't count — editing the Connection would only
+    /// drop history, not sever a running WebSocket.
     func hasLiveTerminals(connectionID: UUID) -> Bool {
-        terminals.keys.contains { $0.connectionID == connectionID }
+        terminals.contains { ref, controller in
+            ref.connectionID == connectionID && controller.isActivelyAttached
+        }
+    }
+
+    /// Refs whose terminals have a live attach, for connection indicators.
+    /// `terminals.keys` would also include ended controllers kept for
+    /// scrollback.
+    var activelyAttachedRefs: Set<SessionRef> {
+        Set(terminals.filter { $0.value.isActivelyAttached }.keys)
     }
 
     /// Saves an edit. Name-only changes update the record in place; URL or

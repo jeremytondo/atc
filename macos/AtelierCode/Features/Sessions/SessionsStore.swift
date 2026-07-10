@@ -6,14 +6,15 @@ import AtelierCodeAPI
 private let logger = Logger(subsystem: "ElevenIdeas.AtelierCode", category: "sessions")
 
 /// Shared domain state for the session list. Polling is the whole sync
-/// story — the server has no SSE.
+/// story — the server has no SSE — and `ConnectionRuntime` owns the poll
+/// task; this store only refreshes on demand.
 @Observable
 final class SessionsStore {
     var client: any AtelierCodeClient {
         didSet {
             sessions = []
             lastError = nil
-            Task { await refresh() }
+            scheduleRefresh()
         }
     }
 
@@ -22,13 +23,17 @@ final class SessionsStore {
     private(set) var hasLoadedOnce = false
     var lastError: String?
     var includeArchived = false {
-        didSet { Task { await refresh() } }
+        didSet { scheduleRefresh() }
     }
 
     /// Monotonic token: a slow in-flight refresh must not clobber the
     /// result of a newer one (e.g. a stale includeArchived=true response
     /// landing after the toggle turned off).
     private var refreshGeneration = 0
+
+    /// The one owned follow-up refresh (post-mutation or filter change);
+    /// superseded follow-ups are cancelled instead of piling up.
+    private var followUpRefresh: Task<Void, Never>?
 
     init(client: any AtelierCodeClient) {
         self.client = client
@@ -39,8 +44,13 @@ final class SessionsStore {
         let generation = refreshGeneration
         isLoading = true
         defer {
-            isLoading = false
-            hasLoadedOnce = true
+            // Only the newest request settles visible state — an older
+            // request finishing late must not clear the spinner for a
+            // refresh that is still in flight.
+            if generation == refreshGeneration {
+                isLoading = false
+                hasLoadedOnce = true
+            }
         }
         do {
             // Always fetch archived too when toggled; the server filters,
@@ -57,12 +67,9 @@ final class SessionsStore {
         }
     }
 
-    /// ~7s polling loop; run from a root `.task {}` so it auto-cancels.
-    func pollLoop() async {
-        while !Task.isCancelled {
-            await refresh()
-            try? await Task.sleep(for: .seconds(7))
-        }
+    private func scheduleRefresh() {
+        followUpRefresh?.cancel()
+        followUpRefresh = Task { await refresh() }
     }
 
     // MARK: - Actions
@@ -72,7 +79,7 @@ final class SessionsStore {
     func start(_ request: StartSessionRequest) async throws -> SessionDetail {
         let detail = try await client.startSession(request)
         merge(detail)
-        Task { await refresh() }
+        scheduleRefresh()
         return detail
     }
 
@@ -80,7 +87,7 @@ final class SessionsStore {
     func terminate(id: String) async throws -> SessionDetail {
         let detail = try await client.terminateSession(id: id)
         merge(detail)
-        Task { await refresh() }
+        scheduleRefresh()
         return detail
     }
 
@@ -88,7 +95,7 @@ final class SessionsStore {
     func archive(id: String) async throws -> SessionDetail {
         let detail = try await client.archiveSession(id: id)
         merge(detail)
-        Task { await refresh() }
+        scheduleRefresh()
         return detail
     }
 

@@ -24,7 +24,7 @@ struct ContentView: View {
             ProjectSidebarView(
                 selection: $appModel.selection,
                 searchText: searchText,
-                connectedRefs: Set(appModel.terminals.keys),
+                connectedRefs: appModel.activelyAttachedRefs,
                 newSessionContext: $newSessionContext,
                 onCreateProject: { showCreateProject = true }
             )
@@ -188,7 +188,7 @@ struct SessionHeaderBar: View {
     @State private var actionError: String?
 
     private var isConnected: Bool {
-        appModel.terminals[sessionRef] != nil
+        appModel.terminals[sessionRef]?.isActivelyAttached == true
     }
 
     private var canStop: Bool {
