@@ -1,6 +1,6 @@
 # Sessions run typed Actions in explicit Environments
 
-> **Terminology note (2026-07):** This ADR predates the Atelier Code rename. "Cockpit" is now the Atelier Code server (`atc`), and `cockpit.toml` is now `atc.toml`.
+> **Terminology note (2026-07):** This ADR predates the atc rename. "atc" is now the atc server (`atc`), and `atc.toml` is now `atc.toml`.
 
 Supersedes [ADR 0003](0003-sessions-run-arbitrary-commands.md).
 
@@ -53,7 +53,7 @@ The Environment registry makes today's shell wrapper explicit instead of hiding
 it inside zmx integration code. The Step 0 environment spike found:
 
 - zmx sessions inherit the environment from the `zmx run` caller, which in
-  normal operation is the Cockpit service process.
+  normal operation is the atc service process.
 - `$SHELL -l -i -c` is necessary and sufficient on this host to reconstruct the
   expected interactive PATH and mise setup from a stripped service environment.
 - `$SHELL -l -c` is not enough on this host because important setup lives in
@@ -68,7 +68,7 @@ without changing the multiplexer seam.
 ## Shape
 
 - Config uses `actions.json` for API-managed Actions and `[environments]` in
-  `cockpit.toml`.
+  `atc.toml`.
 - Built-in Actions are `claude` and `codex`, both prompt-capable commands.
 - Built-in Actions are always present underneath the sparse `actions.json`
   overlay. File entries add custom Actions or override built-ins by name.

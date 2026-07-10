@@ -54,11 +54,11 @@ only gate is the (disabled) token.
 "Reachable from another machine" is primarily a **transport** question, not an
 app-auth question. Two very different architectures:
 
-- **(a) Keep Atelier Code local; secure the transport.** Atelier Code stays bound to
+- **(a) Keep atc local; secure the transport.** atc stays bound to
   loopback; the laptop reaches it via an SSH port-forward or a private mesh
   (Tailscale/WireGuard). The tunnel provides encryption *and* authentication.
-  Atelier Code barely changes.
-- **(b) Make Atelier Code a directly network-exposed service.** Bind to a routable
+  atc barely changes.
+- **(b) Make atc a directly network-exposed service.** Bind to a routable
   address and build real app-level auth + TLS into the Go app, because anything
   on the network can now reach the port.
 
@@ -77,15 +77,15 @@ exact port being tunneled**. Any option that keeps those aligned keeps the feel.
    `localhost:5173`; the forward carries it; Vite proxies `/api` (including the
    attach WS) to `127.0.0.1:7331`. All same-origin `localhost:5173`. Ideal for the
    dev loop; zero code change.
-2. **Direct MagicDNS bind.** Bind Atelier Code to the network and browse
+2. **Direct MagicDNS bind.** Bind atc to the network and browse
    `http://workstation.tail1f9a09.ts.net:7331`. No SSH forward; works whenever the
    box is up. Wire is WireGuard-encrypted within the tailnet. Tradeoff: a stable
    bookmark rather than the `localhost` link, and a non-loopback bind (already
    supported via `--http-addr` / `ATC_HTTP_ADDR`, which warns on non-loopback).
-3. **`tailscale serve` — recommended for the always-on console.** Atelier Code stays
+3. **`tailscale serve` — recommended for the always-on console.** atc stays
    bound to `127.0.0.1:7331`; `tailscale serve` proxies the tailnet name to that
    loopback port, giving `https://workstation.tail1f9a09.ts.net` with real
-   (Let's Encrypt) HTTPS, **tailnet-private** (not public internet). Atelier Code stays
+   (Let's Encrypt) HTTPS, **tailnet-private** (not public internet). atc stays
    loopback-simple; bookmark one HTTPS URL. (Verify exact CLI syntax with
    `tailscale serve --help` / `tailscale serve status` — it varies by version.)
 4. **`tailscale funnel` — avoid.** Same as serve but exposes to the *public
@@ -99,7 +99,7 @@ daemon.
 
 - **Dev:** keep the SSH `LocalForward` setup unchanged.
 - **Always-on console:** put it behind `tailscale serve` (HTTPS, stable URL,
-  tailnet-only, Atelier Code stays loopback + Unix-socket simple).
+  tailnet-only, atc stays loopback + Unix-socket simple).
 
 ## Future implementation notes
 

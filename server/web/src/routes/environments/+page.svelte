@@ -23,7 +23,7 @@
 </script>
 
 <svelte:head>
-  <title>Atelier Code · Environments</title>
+  <title>atc · Environments</title>
 </svelte:head>
 
 <div class="pad" style="max-width:780px">

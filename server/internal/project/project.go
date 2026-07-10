@@ -1,4 +1,4 @@
-// Package project owns Atelier Code Project semantics: named workstation
+// Package project owns atc Project semantics: named workstation
 // directories that group sessions. Projects are records only — they carry no
 // process state — and are archived rather than deleted.
 package project
@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jeremytondo/atelier-code/internal/publicid"
-	"github.com/jeremytondo/atelier-code/internal/store"
+	"github.com/jeremytondo/atc/internal/publicid"
+	"github.com/jeremytondo/atc/internal/store"
 )
 
 // Sentinel errors let callers (notably the API) map failures to stable status
@@ -36,7 +36,7 @@ var (
 	ErrProjectHasActiveSessions = errors.New("project has active sessions")
 )
 
-// Project is Atelier Code's domain model for a project. WorkingDir is fixed after
+// Project is atc's domain model for a project. WorkingDir is fixed after
 // creation; Name is renameable; a nil ArchivedAt means active.
 type Project struct {
 	ID         string

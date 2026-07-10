@@ -3,13 +3,13 @@ package server
 import (
 	"net/http"
 
-	"github.com/jeremytondo/atelier-code/internal/action"
-	"github.com/jeremytondo/atelier-code/internal/api"
-	"github.com/jeremytondo/atelier-code/internal/assets"
-	"github.com/jeremytondo/atelier-code/internal/diagnostics"
-	"github.com/jeremytondo/atelier-code/internal/fs"
-	"github.com/jeremytondo/atelier-code/internal/project"
-	"github.com/jeremytondo/atelier-code/internal/session"
+	"github.com/jeremytondo/atc/internal/action"
+	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/assets"
+	"github.com/jeremytondo/atc/internal/diagnostics"
+	"github.com/jeremytondo/atc/internal/fs"
+	"github.com/jeremytondo/atc/internal/project"
+	"github.com/jeremytondo/atc/internal/session"
 )
 
 // Router builds the HTTP handler, wiring the API (including session routes

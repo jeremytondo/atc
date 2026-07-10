@@ -71,7 +71,7 @@
 }
 
 /* ============================================================
-   Docs Console — ported from "Atelier Code Docs Console - Linear.dc.html"
+   Docs Console — ported from "atc Docs Console - Linear.dc.html"
    These plain-CSS tokens/classes drive the console shell and pages.
    They sit outside Tailwind's layers so they win over the base body
    rule above; the shadcn tokens/utilities remain for the terminal page.

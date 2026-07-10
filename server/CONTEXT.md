@@ -1,6 +1,6 @@
-# Atelier Code Server
+# atc server
 
-Atelier Code is an ideation, planning, workflow, and AI-coding-orchestration platform.
+atc is an ideation, planning, workflow, and AI-coding-orchestration platform.
 A local Go service owns the domain; CLI, web, and (future) iOS clients use it
 through an API boundary. This glossary fixes the language the codebase and docs
 use for these concepts.
@@ -11,9 +11,9 @@ use for these concepts.
 
 **Session**:
 A persistent terminal created from an Action, an Environment, and a working
-directory, then living independently of the Atelier Code service. Atelier Code starts it,
+directory, then living independently of the atc service. atc starts it,
 injects input, and can re-attach to it later; it does not own its foreground
-process. Its Atelier Code identity is independent of its multiplexer handle. Chosen
+process. Its atc identity is independent of its multiplexer handle. Chosen
 over "Run"/"Agent Run" deliberately, despite "session" being the underlying zmx
 term.
 _Avoid_: terminal, tab, pane, job, task, run, agent run.
@@ -44,14 +44,14 @@ _Avoid_: drive, control, puppet, automate.
 
 **Multiplexer**:
 The external tool that owns Session process lifecycle and PTY persistence
-(currently `zmx`). Atelier Code treats it as a swappable dependency behind a narrow
+(currently `zmx`). atc treats it as a swappable dependency behind a narrow
 internal abstraction (start argv / send text / send key / attach / list).
 _Avoid_: terminal server, pty manager, tmux.
 
 ### Projects
 
 **Project**:
-An Atelier Code-owned record that names one workstation directory and groups related
+An atc-owned record that names one workstation directory and groups related
 Sessions around that directory.
 _Avoid_: workspace, repository, folder, app project.
 

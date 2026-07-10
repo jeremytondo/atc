@@ -1,4 +1,4 @@
-// Package config resolves Atelier Code's user-facing settings from a layered set of
+// Package config resolves atc's user-facing settings from a layered set of
 // sources: a TOML config file, environment variables, and CLI flags. Precedence
 // runs flag > env > file > built-in default, so the most specific source wins.
 //
@@ -17,9 +17,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jeremytondo/atelier-code/internal/paths"
-	"github.com/jeremytondo/atelier-code/internal/server"
-	"github.com/jeremytondo/atelier-code/internal/session"
+	"github.com/jeremytondo/atc/internal/paths"
+	"github.com/jeremytondo/atc/internal/server"
+	"github.com/jeremytondo/atc/internal/session"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -38,7 +38,7 @@ const (
 	EnvAPIToken = "ATC_API_TOKEN"
 )
 
-// Config holds Atelier Code's resolved settings. The TOML tags mirror the on-disk
+// Config holds atc's resolved settings. The TOML tags mirror the on-disk
 // file layout.
 type Config struct {
 	Server ServerConfig `toml:"server"`

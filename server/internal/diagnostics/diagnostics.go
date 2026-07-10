@@ -1,6 +1,6 @@
 package diagnostics
 
-import "github.com/jeremytondo/atelier-code/internal/buildinfo"
+import "github.com/jeremytondo/atc/internal/buildinfo"
 
 type Health struct {
 	Status string `json:"status"`

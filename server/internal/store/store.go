@@ -1,4 +1,4 @@
-// Package store persists Atelier Code-owned state.
+// Package store persists atc-owned state.
 package store
 
 import (
@@ -52,7 +52,7 @@ const (
 	StatusTerminated Status = "terminated"
 )
 
-// Session is one persisted Atelier Code-owned session record. It is an internal
+// Session is one persisted atc-owned session record. It is an internal
 // domain value; the API layer owns its own wire types and serialization, so this
 // struct carries no JSON tags.
 type Session struct {

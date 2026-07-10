@@ -1,10 +1,10 @@
-# Tech Design — Atelier Code Projects
+# Tech Design — atc Projects
 
 Source brief: `docs/ideas/projects.md`. Implementation plan: `docs/plans/projects.md`.
 
 ## Scope
 
-Projects are Atelier Code-owned records that name one workstation directory and
+Projects are atc-owned records that name one workstation directory and
 group Sessions. This design covers:
 
 - A `projects` table and an optional `sessions.project_id` association.
@@ -123,7 +123,7 @@ type SessionProject struct {
   restricted to that Project's Sessions.
 - Error rename: `store.ErrNotFound` becomes `store.ErrSessionNotFound`;
   `store.ErrProjectNotFound` is added. The store package doc comment changes
-  from "session metadata" to "Atelier Code-owned state".
+  from "session metadata" to "atc-owned state".
 
 Projects are never deleted (non-goal), so the FK needs no ON DELETE action.
 
@@ -186,8 +186,8 @@ only record fields, never inline Sessions):
 ```json
 {
   "id": "prj_0abc...",
-  "name": "Atelier Code",
-  "workingDir": "/home/jeremy/Projects/atelier-code",
+  "name": "atc",
+  "workingDir": "/home/jeremy/Projects/atc",
   "createdAt": "2026-07-07T15:04:05.123456789Z",
   "updatedAt": "2026-07-07T15:04:05.123456789Z",
   "archivedAt": "2026-07-08T09:00:00Z"
@@ -219,8 +219,8 @@ present only for Project Sessions:
 ```json
 "project": {
   "id": "prj_0abc...",
-  "name": "Atelier Code",
-  "workingDir": "/home/jeremy/Projects/atelier-code",
+  "name": "atc",
+  "workingDir": "/home/jeremy/Projects/atc",
   "archivedAt": "2026-07-08T09:00:00Z"
 }
 ```
@@ -329,7 +329,7 @@ first, each shippable alone:
    no dependency-weight concern. TypeScript types in `api.ts` remain
    hand-written (accepted cost).
 3. **Store error rename**: `store.ErrNotFound` → `store.ErrSessionNotFound`;
-   store package doc comment updated to cover all Atelier Code-owned state.
+   store package doc comment updated to cover all atc-owned state.
 4. **Working directory validation on all Session starts**: `session.Start`
    validates absolute/exists/is-directory instead of only non-empty.
    Behavior change: a bad directory now fails fast with 400

@@ -1,6 +1,6 @@
 <script lang="ts">
   // Slide-in editor for actions, ported from the "Action editor" drawer in
-  // "Atelier Code Docs Console - Linear.dc.html". It owns a local draft built from the
+  // "atc Docs Console - Linear.dc.html". It owns a local draft built from the
   // source action and emits an ActionWrite on save; the parent performs the API
   // call and reload so all network + error handling stays in one place.
   import type { ActionDetail, ActionWrite, ParamSpec } from '$lib/api';

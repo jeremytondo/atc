@@ -122,7 +122,7 @@
 </script>
 
 <svelte:head>
-  <title>Atelier Code · {id}</title>
+  <title>atc · {id}</title>
 </svelte:head>
 
 <div class="flex h-screen w-screen flex-col bg-black">

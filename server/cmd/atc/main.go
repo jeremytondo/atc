@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/jeremytondo/atelier-code/cli"
+	"github.com/jeremytondo/atc/cli"
 )
 
 func main() {

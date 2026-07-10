@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	actionstore "github.com/jeremytondo/atelier-code/internal/action"
-	"github.com/jeremytondo/atelier-code/internal/diagnostics"
-	"github.com/jeremytondo/atelier-code/internal/session"
-	"github.com/jeremytondo/atelier-code/internal/store"
+	actionstore "github.com/jeremytondo/atc/internal/action"
+	"github.com/jeremytondo/atc/internal/diagnostics"
+	"github.com/jeremytondo/atc/internal/session"
+	"github.com/jeremytondo/atc/internal/store"
 )
 
 func TestListActionsReturnsDiscoveryMetadata(t *testing.T) {

@@ -163,7 +163,7 @@
 </script>
 
 <svelte:head>
-  <title>Atelier Code · {ep ? ep.title : 'Reference'}</title>
+  <title>atc · {ep ? ep.title : 'Reference'}</title>
 </svelte:head>
 
 {#if !ep}

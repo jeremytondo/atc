@@ -1,6 +1,6 @@
 # Drive agents through their terminal, not ACP
 
-> **Terminology note (2026-07):** This ADR predates the Atelier Code rename. "Cockpit" is now the Atelier Code server (`atc`).
+> **Terminology note (2026-07):** This ADR predates the atc rename. "atc" is now the atc server (`atc`).
 
 `docs/archive/idea.md` originally proposed handing work to AI coding agents over ACP
 (Agent Client Protocol). We are instead orchestrating agents by spawning their
@@ -13,7 +13,7 @@ it by injecting keystrokes, as if a human were typing.
   subscription pricing; driving the real `claude` binary does.
 - **Universality.** Any terminal/TUI agent can be driven the same way, with no
   per-agent protocol integration.
-- **Looser coupling.** Cockpit depends on a narrow multiplexer abstraction
+- **Looser coupling.** atc depends on a narrow multiplexer abstraction
   (start / send text / send key / list), not on an agent's protocol surface.
 
 ## Consequences

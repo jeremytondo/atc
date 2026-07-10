@@ -6,8 +6,8 @@ Decided 2026-07-10 during the foundation stabilization pass.
 
 ## Minimum macOS version: 26.0
 
-The app, `packages/AtelierCodeKit` (`.macOS(.v26)`), and the macOS CI runner
-all target macOS 26.0. Atelier Code is a personal/small-audience tool built on
+The app, `packages/ATCKit` (`.macOS(.v26)`), and the macOS CI runner
+all target macOS 26.0. atc is a personal/small-audience tool built on
 current APIs; carrying an older floor nobody tests against would be false
 compatibility. Raise the floor deliberately and in all three places at once.
 
@@ -29,7 +29,7 @@ Hardened runtime stays on either way — releases are signed and notarized
 ## Cleartext HTTP and ATS
 
 Connections to `http://` origins are a supported first-class mode: the
-canonical deployment is an Atelier Code server reached over a Tailscale
+canonical deployment is an atc server reached over a Tailscale
 tailnet (WireGuard-encrypted underneath) or an SSH tunnel to loopback. The
 connection editor therefore accepts cleartext origins without a warning —
 nagging the primary use case teaches users to ignore warnings. ATS allows

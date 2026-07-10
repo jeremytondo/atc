@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeremytondo/atelier-code/internal/project"
-	"github.com/jeremytondo/atelier-code/internal/store"
-	"github.com/jeremytondo/atelier-code/internal/zmx"
+	"github.com/jeremytondo/atc/internal/project"
+	"github.com/jeremytondo/atc/internal/store"
+	"github.com/jeremytondo/atc/internal/zmx"
 )
 
 // fakeMux is a faked Multiplexer that records calls and serves a fixed list.

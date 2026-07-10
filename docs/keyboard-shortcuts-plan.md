@@ -4,7 +4,7 @@ Status: Draft
 
 ## Goals
 
-AtelierCode should be comfortable to drive from the keyboard while preserving
+atc should be comfortable to drive from the keyboard while preserving
 the Terminal Session as the primary typing surface. Defaults should combine
 macOS and IDE conventions with Vim-flavored navigation where it fits the native
 UI.
@@ -20,7 +20,7 @@ keybindings yet.
 - Command aliases should share one command path whether invoked from a menu,
   toolbar, keyboard shortcut, Atelier Command Sequence, or command palette.
 - `Cmd-K` starts an Atelier Command Sequence. The user releases `Cmd-K`, then
-  presses an unmodified next key that targets AtelierCode rather than the
+  presses an unmodified next key that targets atc rather than the
   terminal.
 - Atelier Command Sequence letters are case-insensitive. Documentation may display
   them uppercase for readability, but Shift should not be required.
@@ -72,7 +72,7 @@ Refresh Projects and Sessions invokes the same command path as the toolbar
 Refresh action. Shortcut aliases should not define separate refresh behavior.
 
 `Cmd-F`, `Cmd-P`, `Cmd-T`, `Cmd-L`, and `Cmd-W` are intentionally unassigned
-for AtelierCode-specific behavior in v1.
+for atc-specific behavior in v1.
 
 ## Sidebar Navigation
 

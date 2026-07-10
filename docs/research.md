@@ -4,7 +4,7 @@
 
 Context:
 
-This review is a checkpoint on the whole Atelier Code monorepo before more
+This review is a checkpoint on the whole atc monorepo before more
 features are built. The standard is the repository's stated priority order:
 performance, reliability, simplicity, and user experience, with correctness,
 robustness, readability, and long-term maintainability treated as foundation
@@ -90,7 +90,7 @@ new feature work:
 | `gofmt -l .` in `server/` | **Fail** | `internal/api/sessions.go` and `internal/zmx/zmx.go` are not gofmt-clean. |
 | `CI=true mise run build` in `server/` | Pass with warnings | Web assets were built and embedded; `dist/atc` compiled. Svelte emitted two stale-prop warnings and Vite reported a 638.88 kB terminal-route chunk. |
 | `pnpm exec tsc --noEmit` | **Fail** | TypeScript cannot start because the generated SvelteKit config requests Node types but `@types/node` is not installed. |
-| `swift test` in `packages/AtelierCodeKit` | Pass | 36 tests in 11 suites. |
+| `swift test` in `packages/ATCKit` | Pass | 36 tests in 11 suites. |
 | `xcodebuild test` for the macOS app | Pass with runtime warnings | 104 tests in 12 suites. Test hosting emitted invalid optional Picker-selection warnings and an `NSTableView` reentrant-operation warning that says it will become an assertion in the future. |
 | Shell static analysis | Not run | `shellcheck` is not installed in the current toolchain. |
 
@@ -200,7 +200,7 @@ The Go standard library documents custom server timeouts and
 Evidence:
 
 - `ConnectionRecord.token` is encoded with the full connection array under one
-  UserDefaults key (`macos/AtelierCode/Settings/ConnectionsModel.swift`).
+  UserDefaults key (`macos/atc/Settings/ConnectionsModel.swift`).
 - The earlier settings plan explicitly deferred Keychain work. That was a
   reasonable vertical-slice decision, but the app now has durable multi-server
   settings, distribution automation, and remote access, so the deferral has
@@ -233,7 +233,7 @@ Evidence:
 - Go owns wire structs and routes in `server/internal/api`.
 - TypeScript repeats those models and endpoint paths in
   `server/web/src/lib/api.ts`.
-- Swift repeats them again in `packages/AtelierCodeKit`.
+- Swift repeats them again in `packages/ATCKit`.
 - The web API-reference data is a fourth manually maintained description. It
   already describes session start as returning `starting`, while the current
   synchronous service marks and returns the session `running` after zmx launch.
@@ -354,16 +354,16 @@ Recommendation:
 - Run the full Go suite on macOS at least until platform-specific daemon/socket
   behavior is stable.
 
-### P2-05 — Active documentation still defines the retired Cockpit-era system
+### P2-05 — Active documentation still defines the retired atc-era system
 
 Evidence:
 
-- The monorepo brief says to retire Cockpit from product language,
+- The monorepo brief says to retire atc from product language,
   documentation, new code, and install paths.
-- Numerous non-archived root and server documents still refer to `CockpitAPI`,
-  `CockpitClient`, `CockpitKit`, `HTTPCockpitClient`, `COCKPIT_*`, the separate
-  Cockpit repository, and obsolete paths such as `Packages/CockpitKit`.
-- Several server ADR filenames and active plan/spec files still use Cockpit as
+- Numerous non-archived root and server documents still refer to `ATCAPI`,
+  `ATCClient`, `ATCKit`, `HTTPATCClient`, `ATC_*`, the separate
+  atc repository, and obsolete paths such as `Packages/ATCKit`.
+- Several server ADR filenames and active plan/spec files still use atc as
   the owning product name.
 - These documents are discoverable beside current plans without a superseded or
   historical marker, so a new contributor can follow technically obsolete
@@ -372,14 +372,14 @@ Evidence:
 Recommendation:
 
 - Classify docs as current, historical, or superseded.
-- Update current product/architecture documents end to end to Atelier Code names
+- Update current product/architecture documents end to end to atc names
   and current monorepo paths.
 - Move useful historical implementation plans under an archive directory or add
   a prominent superseded header linking to the current source of truth.
 - Preserve ADR decision history, but annotate renamed concepts and add successor
   ADRs when the present decision differs.
 - Add a lightweight docs check for retired executable identifiers such as
-  `COCKPIT_`, `CockpitKit`, and old package paths outside explicitly historical
+  `ATC_`, `ATCKit`, and old package paths outside explicitly historical
   locations.
 
 ### P2-06 — macOS tests pass while the hosted UI emits runtime warnings
@@ -406,7 +406,7 @@ Recommendation:
 Evidence:
 
 - The Xcode project deployment target is macOS 26.5 in project and target
-  configurations, while `AtelierCodeKit` declares macOS 15.
+  configurations, while `ATCKit` declares macOS 15.
 - The app disables App Sandbox and allows arbitrary network loads through ATS.
 - Those choices may be appropriate for a terminal client that reads Ghostty
   config and connects to HTTP servers over a tailnet, but they are currently
@@ -465,7 +465,7 @@ Stabilize in this order:
    contract tests before adding more endpoints.
 4. **Fix lifecycle semantics:** separate retained terminal history from active
    connection state and consolidate refresh/poll ownership.
-5. **Make documentation current:** archive or update Cockpit-era plans and record
+5. **Make documentation current:** archive or update atc-era plans and record
    the macOS compatibility/network policy.
 6. **Then resume feature work.** Preserve the existing service boundaries and
    tests; they are the strongest part of the foundation.

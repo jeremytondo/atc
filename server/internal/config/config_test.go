@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeremytondo/atelier-code/internal/paths"
-	"github.com/jeremytondo/atelier-code/internal/server"
-	"github.com/jeremytondo/atelier-code/internal/session"
+	"github.com/jeremytondo/atc/internal/paths"
+	"github.com/jeremytondo/atc/internal/server"
+	"github.com/jeremytondo/atc/internal/session"
 )
 
 // envFunc builds a lookup over a fixed map for deterministic tests.

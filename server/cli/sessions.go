@@ -13,7 +13,7 @@ import (
 	"syscall"
 
 	"github.com/coder/websocket"
-	"github.com/jeremytondo/atelier-code/internal/api"
+	"github.com/jeremytondo/atc/internal/api"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -119,7 +119,7 @@ func sessionsListCommand(lookup envLookup) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List Atelier Code-managed sessions",
+		Short: "List atc-managed sessions",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateOutput(output); err != nil {

@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jeremytondo/atelier-code/internal/api"
+	"github.com/jeremytondo/atc/internal/api"
 	"github.com/spf13/cobra"
 )
 

@@ -1,4 +1,4 @@
-// API reference content, ported from "Atelier Code Docs Console - Linear.dc.html".
+// API reference content, ported from "atc Docs Console - Linear.dc.html".
 // This is authored documentation (descriptions, example payloads, CLI
 // equivalents) that drives the Reference pages. The Try it panel builds real
 // requests from each endpoint's `fields`; the backend is the source of truth
@@ -182,19 +182,19 @@ export const ENDPOINTS: Endpoint[] = [
       }
     ],
     fields: [
-      { key: 'name', label: 'name', kind: 'text', placeholder: 'Atelier Code', required: true },
+      { key: 'name', label: 'name', kind: 'text', placeholder: 'atc', required: true },
       {
         key: 'workingDir',
         label: 'workingDir',
         kind: 'text',
-        placeholder: '/home/you/projects/atelier-code',
+        placeholder: '/home/you/projects/atc',
         required: true
       }
     ],
-    returns: '{\n  "id": "prj_8f3a2c",\n  "name": "Atelier Code",\n  "workingDir": "/home/you/projects/atelier-code"\n}',
+    returns: '{\n  "id": "prj_8f3a2c",\n  "name": "atc",\n  "workingDir": "/home/you/projects/atc"\n}',
     cli: {
       cmd: 'atc projects create',
-      example: 'atc projects create --name "Atelier Code" --dir ~/projects/atelier-code'
+      example: 'atc projects create --name "atc" --dir ~/projects/atc'
     }
   },
   {
@@ -220,7 +220,7 @@ export const ENDPOINTS: Endpoint[] = [
     desc: 'Fetch one project record.',
     params: [{ name: 'id', type: 'string', required: true, desc: 'Project id (path).' }],
     fields: [{ key: 'id', label: 'id', kind: 'text', placeholder: 'prj_…', required: true }],
-    returns: '{ "id": "prj_…", "name": "Atelier Code", … }',
+    returns: '{ "id": "prj_…", "name": "atc", … }',
     cli: { cmd: 'atc projects show', example: 'atc projects show prj_8f3a2c' }
   },
   {
@@ -262,7 +262,7 @@ export const ENDPOINTS: Endpoint[] = [
     desc: 'Reactivate an archived project. Idempotent.',
     params: [{ name: 'id', type: 'string', required: true, desc: 'Project id (path).' }],
     fields: [{ key: 'id', label: 'id', kind: 'text', placeholder: 'prj_…', required: true }],
-    returns: '{ "id": "prj_…", "name": "Atelier Code", … }',
+    returns: '{ "id": "prj_…", "name": "atc", … }',
     cli: { cmd: 'atc projects unarchive', example: 'atc projects unarchive prj_8f3a2c' }
   },
   {
@@ -296,7 +296,7 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'GET',
     path: '/api/health',
     title: 'Health',
-    desc: 'Liveness check for the Atelier Code service.',
+    desc: 'Liveness check for the atc service.',
     params: [],
     fields: [],
     returns: '{ "status": "ok" }',

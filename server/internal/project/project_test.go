@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeremytondo/atelier-code/internal/store"
+	"github.com/jeremytondo/atc/internal/store"
 )
 
 func newService(t *testing.T) *Service {
@@ -65,19 +65,19 @@ func TestCreateValidatesAndCleans(t *testing.T) {
 	if _, err := svc.Create(ctx, "   ", workDir); !errors.Is(err, ErrInvalidProject) {
 		t.Fatalf("blank name err = %v, want ErrInvalidProject", err)
 	}
-	if _, err := svc.Create(ctx, "Atelier Code", "relative/path"); !errors.Is(err, ErrInvalidWorkingDir) {
+	if _, err := svc.Create(ctx, "atc", "relative/path"); !errors.Is(err, ErrInvalidWorkingDir) {
 		t.Fatalf("relative dir err = %v, want ErrInvalidWorkingDir", err)
 	}
 
-	created, err := svc.Create(ctx, "  Atelier Code  ", workDir+string(os.PathSeparator))
+	created, err := svc.Create(ctx, "  atc  ", workDir+string(os.PathSeparator))
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if !strings.HasPrefix(created.ID, "prj_") || len(created.ID) != len("prj_")+26 {
 		t.Fatalf("id = %q, want prj_-prefixed public id", created.ID)
 	}
-	if created.Name != "Atelier Code" {
-		t.Fatalf("name = %q, want trimmed Atelier Code", created.Name)
+	if created.Name != "atc" {
+		t.Fatalf("name = %q, want trimmed atc", created.Name)
 	}
 	if created.WorkingDir != workDir {
 		t.Fatalf("workingDir = %q, want cleaned %q", created.WorkingDir, workDir)
@@ -139,7 +139,7 @@ func TestArchiveUnarchiveSemantics(t *testing.T) {
 	ctx := context.Background()
 	svc := newService(t)
 
-	created, err := svc.Create(ctx, "Atelier Code", t.TempDir())
+	created, err := svc.Create(ctx, "atc", t.TempDir())
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestResolveForStart(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	created, err := svc.Create(ctx, "Atelier Code", workDir)
+	created, err := svc.Create(ctx, "atc", workDir)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}

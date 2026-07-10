@@ -7,11 +7,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/jeremytondo/atelier-code/internal/action"
-	"github.com/jeremytondo/atelier-code/internal/diagnostics"
-	"github.com/jeremytondo/atelier-code/internal/fs"
-	"github.com/jeremytondo/atelier-code/internal/project"
-	"github.com/jeremytondo/atelier-code/internal/session"
+	"github.com/jeremytondo/atc/internal/action"
+	"github.com/jeremytondo/atc/internal/diagnostics"
+	"github.com/jeremytondo/atc/internal/fs"
+	"github.com/jeremytondo/atc/internal/project"
+	"github.com/jeremytondo/atc/internal/session"
 )
 
 type apiRoutes struct {
@@ -56,7 +56,7 @@ func (routes apiRoutes) endpoints() map[string]http.HandlerFunc {
 	}
 }
 
-// Routes returns the HTTP handler for the Atelier Code API. The sessions, projects,
+// Routes returns the HTTP handler for the atc API. The sessions, projects,
 // and fs services may be nil when their routes are not needed (e.g.
 // diagnostics-only tests).
 func Routes(diagnostics diagnostics.Diagnostics, sessions *session.Service, projects *project.Service, actions *action.Store, fsService *fs.Service) http.Handler {

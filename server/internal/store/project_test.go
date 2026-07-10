@@ -154,11 +154,11 @@ func TestProjectCRUDRoundTrip(t *testing.T) {
 	clock := newTestClock(time.Date(2026, 7, 7, 12, 0, 0, 0, time.UTC))
 	st.now = clock.Now
 
-	created, err := st.CreateProject(ctx, CreateProjectInput{ID: "prj_alpha", Name: "Atelier Code", WorkingDir: "/work/atelier-code"})
+	created, err := st.CreateProject(ctx, CreateProjectInput{ID: "prj_alpha", Name: "atc", WorkingDir: "/work/atc"})
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	if created.ID != "prj_alpha" || created.Name != "Atelier Code" || created.WorkingDir != "/work/atelier-code" {
+	if created.ID != "prj_alpha" || created.Name != "atc" || created.WorkingDir != "/work/atc" {
 		t.Fatalf("created = %+v", created)
 	}
 	if created.CreatedAt.IsZero() || !created.CreatedAt.Equal(created.UpdatedAt) || created.ArchivedAt != nil {
@@ -173,11 +173,11 @@ func TestProjectCRUDRoundTrip(t *testing.T) {
 		t.Fatalf("GetProject = %+v, want %+v", got, created)
 	}
 
-	renamed, err := st.RenameProject(ctx, "prj_alpha", "Atelier Code v2")
+	renamed, err := st.RenameProject(ctx, "prj_alpha", "atc v2")
 	if err != nil {
 		t.Fatalf("RenameProject: %v", err)
 	}
-	if renamed.Name != "Atelier Code v2" || !renamed.UpdatedAt.After(created.UpdatedAt) {
+	if renamed.Name != "atc v2" || !renamed.UpdatedAt.After(created.UpdatedAt) {
 		t.Fatalf("renamed = %+v", renamed)
 	}
 

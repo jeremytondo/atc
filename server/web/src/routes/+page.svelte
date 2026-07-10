@@ -1,11 +1,11 @@
 <svelte:head>
-  <title>Atelier Code · Getting started</title>
+  <title>atc · Getting started</title>
 </svelte:head>
 
 <div class="pad" style="max-width:720px">
   <h1 class="h1">Getting started</h1>
   <p class="lede">
-    Atelier Code is a local service, CLI, and web UI for starting and managing persistent terminal
+    atc is a local service, CLI, and web UI for starting and managing persistent terminal
     sessions. Here's the quickest path from zero to a running session.
   </p>
 

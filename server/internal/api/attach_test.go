@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/jeremytondo/atelier-code/internal/zmx"
+	"github.com/jeremytondo/atc/internal/zmx"
 )
 
 // pipePTY is a fake zmx.PTY backing Read/Write with an in-memory pipe pair and

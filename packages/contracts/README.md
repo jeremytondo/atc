@@ -1,6 +1,6 @@
 # API Contract Fixtures
 
-`fixtures/` is the single source of truth for the Atelier Code HTTP API's wire
+`fixtures/` is the single source of truth for the atc HTTP API's wire
 shapes. Each file pins one request/response shape and lists every route that
 uses it:
 
@@ -18,7 +18,7 @@ that hasn't caught up:
 - **Go** (`server/internal/api/contract_test.go`) — round-trips each fixture
   through the producing wire structs and requires every registered route
   (except the WebSocket attach) to appear in exactly this fixture set.
-- **Swift** (`packages/AtelierCodeKit/.../ContractFixtureTests.swift`) —
+- **Swift** (`packages/ATCKit/.../ContractFixtureTests.swift`) —
   decodes each response into the Kit models the macOS app uses.
 - **TypeScript** (`server/web/src/lib/api.contract.test.ts`) — `satisfies`
   assertions against the web client's types plus mocked-fetch decoding tests.

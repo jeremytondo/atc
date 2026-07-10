@@ -1,9 +1,9 @@
-> **Historical (archived 2026-07):** Describes the pre-monorepo Cockpit-era system. Names, paths, and instructions here are obsolete — see AGENTS.md and docs/platform-policy.md for current structure and policy.
+> **Historical (archived 2026-07):** Describes the pre-monorepo atc-era system. Names, paths, and instructions here are obsolete — see AGENTS.md and docs/platform-policy.md for current structure and policy.
 
-# Tech Design — Remote File Browsing, Part 2: AtelierCode Remote Folder Picker
+# Tech Design — Remote File Browsing, Part 2: atc Remote Folder Picker
 
 > Implements the client half of `docs/remote-file-browsing-prd.md` against the
-> Cockpit contract defined in `docs/remote-file-browsing-design-1-cockpit.md`
+> atc contract defined in `docs/remote-file-browsing-design-1-atc.md`
 > (Part 1). **Prerequisite:** Part 1 is deployed to the workstation and its
 > captured response fixtures are available. Work happens in this repo; jj
 > protocol per `AGENTS.md`.
@@ -11,11 +11,11 @@
 ## 1. Scope
 
 Replace `CreateSessionSheet`'s local `.fileImporter` with a remote folder
-picker driven by Cockpit's `/api/fs`:
+picker driven by atc's `/api/fs`:
 
-- `CockpitAPI` package: FS DTOs, two `CockpitClient` methods, HTTP
+- `ATCAPI` package: FS DTOs, two `ATCClient` methods, HTTP
   implementation, decoding tests against captured fixtures.
-- `MockCockpitClient`: a canned in-memory remote tree for previews and tests.
+- `MockATCClient`: a canned in-memory remote tree for previews and tests.
 - `RemoteFileBrowser`: a narrow `@Observable` picker-workflow model in
   `Features/RemoteFiles/`.
 - `RemoteFolderPickerSheet`: the drill-down UI.
@@ -37,17 +37,17 @@ picker driven by Cockpit's `/api/fs`:
 - Entries arrive pre-sorted (dirs first, dotfiles first, case-insensitive);
   hidden entries are already filtered server-side per `showHidden`.
 - Errors use the existing envelope and surface as
-  `CockpitError.api(code:message:sessionID:)` with `apiCode` one of:
+  `ATCError.api(code:message:sessionID:)` with `apiCode` one of:
   `invalid_path` (400), `outside_browsable_roots` (403), `not_found` (404),
   `not_directory` (400), `permission_denied` (403), `internal_error` (500).
 - `modifiedAt` is RFC3339Nano — decodes via the existing
-  `JSONDecoder.cockpit()` / `.cockpitRFC3339Nano` strategy unchanged.
+  `JSONDecoder.atc()` / `.atcRFC3339Nano` strategy unchanged.
 
 ## 3. Changes from the PRD (and why)
 
-1. **The mock tree stays in the app's `PreviewSupport/MockCockpitClient.swift`**,
+1. **The mock tree stays in the app's `PreviewSupport/MockATCClient.swift`**,
    not the package. The PRD says the package owns "mock data," but the codebase
-   already keeps `MockCockpitClient` in the app; moving it is unrelated churn.
+   already keeps `MockATCClient` in the app; moving it is unrelated churn.
    The package owns DTOs, decoding, methods, and the HTTP implementation.
 2. **Scripted UI tests are replaced by a manual verification checklist plus a
    model-level test suite** (§9). The app has no test target of any kind today;
@@ -68,9 +68,9 @@ picker driven by Cockpit's `/api/fs`:
 
 Everything else follows the PRD as written.
 
-## 4. `CockpitAPI` package changes
+## 4. `ATCAPI` package changes
 
-New file `Sources/CockpitAPI/Models/FileSystemModels.swift`:
+New file `Sources/ATCAPI/Models/FileSystemModels.swift`:
 
 ```swift
 public struct RemoteWorkspaceRoot: Codable, Sendable, Hashable, Identifiable {
@@ -103,7 +103,7 @@ public struct DirectoryListing: Codable, Sendable, Hashable {
 struct RootsEnvelope: Decodable { let roots: [RemoteWorkspaceRoot] }  // internal, like SessionsEnvelope
 ```
 
-`CockpitClient` protocol additions (both implementors must conform):
+`ATCClient` protocol additions (both implementors must conform):
 
 ```swift
 func workspaceRoots() async throws -> [RemoteWorkspaceRoot]
@@ -113,7 +113,7 @@ func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryList
 Plus a protocol-extension default `listDirectory(path:)` with
 `showHidden: false`, mirroring the `sessions()` default.
 
-`HTTPCockpitClient`:
+`HTTPATCClient`:
 
 - `workspaceRoots()` → `get(RootsEnvelope.self, "fs/roots").roots`.
 - `listDirectory` → `get(DirectoryListing.self, "fs/list", query: items)` where
@@ -122,9 +122,9 @@ Plus a protocol-extension default `listDirectory(path:)` with
 
 No decoder changes: fields are camelCase (no key strategy needed) and
 `modifiedAt` rides the existing date strategy. Server errors flow through the
-existing non-2xx → `ErrorEnvelope` → `CockpitError.api` path untouched.
+existing non-2xx → `ErrorEnvelope` → `ATCError.api` path untouched.
 
-## 5. Mock data — `MockCockpitClient`
+## 5. Mock data — `MockATCClient`
 
 Extend the existing `nonisolated struct` with a canned tree. A programmatic
 dictionary beats inline JSON here because the mock must *navigate*, not just
@@ -139,7 +139,7 @@ Content requirements (so previews exercise every UI state):
 - Two roots (`Projects`, `Home`); 3-4 levels of nesting.
 - Files and folders mixed; several dotfiles/dot-dirs (hidden-toggle demo);
   a directory symlink, a file symlink, and a broken symlink (`.unknown`);
-  one directory whose listing throws `CockpitError.api(code:
+  one directory whose listing throws `ATCError.api(code:
   "permission_denied", ...)`; one listing with `truncated: true`; one empty
   directory.
 - `listDirectory` filters dot-entries itself when `showHidden` is false and
@@ -148,9 +148,9 @@ Content requirements (so previews exercise every UI state):
 
 ## 6. `RemoteFileBrowser` — the `@Observable` picker model
 
-New file `AtelierCode/Features/RemoteFiles/RemoteFileBrowser.swift`. Follows
+New file `atc/Features/RemoteFiles/RemoteFileBrowser.swift`. Follows
 the `SessionsStore` template: `@Observable final class` (main-actor by project
-default), knows nothing about views, takes `any CockpitClient` in `init`
+default), knows nothing about views, takes `any ATCClient` in `init`
 (injected from `AppModel.client` by the presenting view; no `AppModel`
 dependency, which keeps the model trivially testable).
 
@@ -238,7 +238,7 @@ primary with `.defaultAction`); `.preferredColorScheme(.dark)` in previews.
   list (rows: `folder.badge.gearshape`-free, just `folder` + label + dimmed
   path); otherwise the directory list. Empty roots →
   `ContentUnavailableView("No browsable roots", …)` explaining that roots are
-  configured on the Cockpit server. Loading → `ProgressView`; errors → the
+  configured on the atc server. Loading → `ProgressView`; errors → the
   existing inline red `Label` convention (persistent field-adjacent text for
   path-commit errors, not an alert).
 - **List + Highlighted Entry**: `List(selection: $browser.highlightedPath)`
@@ -280,7 +280,7 @@ fuzzy finder) exists.
 - The `folder` button now sets `showFolderPicker = true` to present
   `RemoteFolderPickerSheet` via `.sheet(isPresented:)`, constructing
   `RemoteFileBrowser(client: appModel.client)`. New `.help`:
-  `"Browse folders on the Cockpit workstation"`.
+  `"Browse folders on the atc workstation"`.
 - `onChoose:` writes the chosen path into the existing `workingDir` `@State`.
   The `TextField` prompt stays `/path/on/the/server`.
 - **Prefill** (PRD "may"): on picker appear, if trimmed `workingDir` is
@@ -290,20 +290,20 @@ fuzzy finder) exists.
 
 ## 9. Testing
 
-**Seam 1 — package (`CockpitAPITests`, Swift Testing, existing target).**
+**Seam 1 — package (`ATCAPITests`, Swift Testing, existing target).**
 Fixtures are verbatim captures from the live Part 1 server (raw-string `Data`,
 capture-date comment — house convention):
 - Decode `fs/roots` fixture via `RootsEnvelope`; decode `fs/list` fixture
   (entries incl. nullable `size`/`modifiedAt`, a symlink, an `unknown`,
   `truncated` both ways, empty `entries`); unrecognized `kind` → `.unknown`.
-- `CockpitServerTests`-style URL tests: `fs/list` query contains `path`;
+- `ATCServerTests`-style URL tests: `fs/list` query contains `path`;
   `showHidden` present only when true; path percent-encoding.
 - `ErrorEnvelopeTests`-style: each of the five FS error bodies decodes and
   surfaces the right `apiCode`/`errorDescription`.
 
-**Seam 2 — new app unit-test target `AtelierCodeTests`** (Swift Testing; first
+**Seam 2 — new app unit-test target `ATCTests`** (Swift Testing; first
 app test target — add to the pbxproj). Tests drive `RemoteFileBrowser` with
-`MockCockpitClient`:
+`MockATCClient`:
 - loadRoots populates roots; open(root:) lists it and sets activeRoot.
 - descend into directory updates listing/typedPath and clears highlight;
   descend into file/unknown is a no-op.
@@ -328,10 +328,10 @@ the workstation** (end-to-end, per PRD).
 ## 10. Milestones
 
 1. **Fixtures + DTOs**: capture live responses; `FileSystemModels.swift`,
-   protocol methods, `HTTPCockpitClient` impl; Seam-1 tests green
-   (`swift test --package-path Packages/CockpitKit`).
-2. **Mock tree**: `MockCockpitClient` conformance + canned tree (§5).
-3. **Model + test target**: `RemoteFileBrowser`; create `AtelierCodeTests`;
+   protocol methods, `HTTPATCClient` impl; Seam-1 tests green
+   (`swift test --package-path Packages/ATCKit`).
+2. **Mock tree**: `MockATCClient` conformance + canned tree (§5).
+3. **Model + test target**: `RemoteFileBrowser`; create `ATCTests`;
    Seam-2 tests green.
 4. **UI**: `RemoteFolderPickerSheet` with previews for roots/list/error/empty/
    truncated states.

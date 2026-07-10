@@ -7,12 +7,12 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/jeremytondo/atelier-code/internal/api"
+	"github.com/jeremytondo/atc/internal/api"
 )
 
 const attachTokenSubprotocolPrefix = "atc.token."
 
-// withAuth guards next with Atelier Code's transport-aware authentication. Requests
+// withAuth guards next with atc's transport-aware authentication. Requests
 // arriving on the owner-only Unix socket are always trusted. Requests on the
 // TCP listener must present the configured bearer token. When no token is
 // configured the guard is a no-op seam, so local TCP use keeps working until an

@@ -1,23 +1,23 @@
-> **Historical (archived 2026-07):** Describes the pre-monorepo Cockpit-era system. Names, paths, and instructions here are obsolete — see AGENTS.md and docs/platform-policy.md for current structure and policy.
+> **Historical (archived 2026-07):** Describes the pre-monorepo atc-era system. Names, paths, and instructions here are obsolete — see AGENTS.md and docs/platform-policy.md for current structure and policy.
 
-# Cockpit Projects Brief
+# atc Projects Brief
 
 Status: Ready for spec
 
 ## Purpose
 
-Projects give Cockpit a durable way to group related Sessions around a named
+Projects give atc a durable way to group related Sessions around a named
 work container. A Project gives users a stable place to create, find, and manage
-Sessions for a workstation directory while preserving Cockpit as a standalone
+Sessions for a workstation directory while preserving atc as a standalone
 local API, CLI, and admin web UI for persistent terminal sessions.
 
 ## Idea Definition
 
-A Project is a Cockpit-owned record with a stable ID, required display name,
+A Project is an atc-owned record with a stable ID, required display name,
 required working directory, lifecycle timestamps, and archive state. Sessions may
 optionally belong to a Project. Project Sessions inherit the Project Working
 Directory, while unscoped Sessions continue to work for compatibility and direct
-Cockpit usage.
+atc usage.
 
 Projects are user-defined work containers, not unique directory records.
 Multiple Projects may use the same Project Working Directory, and Project names
@@ -25,14 +25,14 @@ do not have to be unique.
 
 ## V1 Decisions
 
-- Project IDs are Cockpit-owned opaque public IDs with a `prj_` prefix. They do
+- Project IDs are atc-owned opaque public IDs with a `prj_` prefix. They do
   not encode Project name, directory, archive state, or client meaning.
 - Project references in the API and CLI use Project IDs, not Project names.
 - Project names are required at creation and may be renamed later.
 - Project Working Directory is required at creation and is fixed afterward.
   Changing directories means creating a new Project.
 - Project Working Directory is not constrained by a configured filesystem root.
-  Cockpit may use any valid absolute directory it can access.
+  atc may use any valid absolute directory it can access.
 - Project creation validates that the Project Working Directory is absolute,
   exists, and is a directory.
 - CLI Project creation may accept relative `--dir` values, `~`, and `~/...`,
@@ -80,10 +80,10 @@ do not have to be unique.
 
 ## CLI Shape
 
-- Add `cockpit projects create`, `list`, `show`, `rename`, `archive`, and
+- Add `atc projects create`, `list`, `show`, `rename`, `archive`, and
   `unarchive`.
 - Project-scoped Session creation stays under
-  `cockpit sessions start --project <id>`.
+  `atc sessions start --project <id>`.
 - Project CLI commands support `-o, --output text|json`; JSON output returns the
   raw API response.
 - In text mode, `projects create` prints the Project ID and name. `projects
@@ -107,7 +107,7 @@ include-archived control following normal Session list behavior.
 
 ## Non-Goals / Deferred Ideas
 
-- AtelierCode Swift models, API client methods, app state, or app UI.
+- atc Swift models, API client methods, app state, or app UI.
 - Cross-workstation Project identity.
 - Repository identity or clone correlation across machines.
 - Multi-root Projects.
@@ -135,12 +135,12 @@ include-archived control following normal Session list behavior.
   Session creation remains part of the Session command family.
 - **Admin Web UI**: Lets operators manage Projects and start or inspect
   project-scoped Sessions.
-- **Future App Clients**: Consume Cockpit Project APIs after the Cockpit
+- **Future App Clients**: Consume atc Project APIs after the atc
   contract is stable.
 
 ## Core Concepts
 
-- **Project**: A Cockpit record that names one workstation directory and groups
+- **Project**: A atc record that names one workstation directory and groups
   Sessions.
 - **Project Working Directory**: The default directory used when starting a
   Project-scoped Session.

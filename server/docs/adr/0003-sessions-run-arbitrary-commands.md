@@ -1,6 +1,6 @@
 # Sessions run an arbitrary command, not a fixed agent enum
 
-> **Terminology note (2026-07):** This ADR predates the Atelier Code rename. "Cockpit" is now the Atelier Code server (`atc`); the `cockpit:` session-name prefix described below is historical.
+> **Terminology note (2026-07):** This ADR predates the atc rename. "atc" is now the atc server (`atc`); the `atc:` session-name prefix described below is historical.
 
 > **Superseded by [ADR 0004](0004-sessions-launch-agents-from-a-registry.md).**
 > A security review of the MVP reversed this decision: `start` now launches an
@@ -14,7 +14,7 @@ case, not a constrained field.
 
 ## Why
 
-- DEV-22's own opening states the real goal: "Cockpit needs to **perform actions
+- DEV-22's own opening states the real goal: "atc needs to **perform actions
   on the workstation** … the **first such action** is an AI coding session." The
   general capability is the point; the agent is example #1.
 - It is simpler, not more complex: there is no agent enum and no
@@ -27,7 +27,7 @@ case, not a constrained field.
 - `start` takes a `command` (shell string), a `dir`, and an optional scope. No
   `--agent` flag. The command is launched via `$SHELL -l -i -c "<command>"` so
   it inherits the full environment.
-- The session name encodes *scope* (`cockpit:item:DEV-22`), never the command.
+- The session name encodes *scope* (`atc:item:DEV-22`), never the command.
   What is running is read from `zmx list` (`cmd=…`) when needed.
 
 ## Consequences

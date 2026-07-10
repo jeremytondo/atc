@@ -10,13 +10,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeremytondo/atelier-code/internal/diagnostics"
+	"github.com/jeremytondo/atc/internal/diagnostics"
 )
 
 // The canonical cross-client API contract lives in
 // packages/contracts/fixtures: one JSON file per request/response shape,
 // listing every route that uses it. These tests bind the fixtures to the Go
-// wire structs (the producer side); AtelierCodeKit and the web client decode
+// wire structs (the producer side); ATCKit and the web client decode
 // the same files, so a shape change fails on every surface that hasn't
 // caught up.
 

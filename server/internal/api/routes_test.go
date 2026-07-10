@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeremytondo/atelier-code/internal/diagnostics"
+	"github.com/jeremytondo/atc/internal/diagnostics"
 )
 
 func TestRoutesHealth(t *testing.T) {

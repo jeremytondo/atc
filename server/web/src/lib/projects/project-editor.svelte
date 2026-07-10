@@ -61,7 +61,7 @@
         class="inp"
         value={name}
         oninput={(e) => (name = e.currentTarget.value)}
-        placeholder="Atelier Code"
+        placeholder="atc"
       />
       <p class="hint">A human label; it can be renamed later.</p>
     </div>
@@ -73,7 +73,7 @@
         class="inp mono"
         value={workingDir}
         oninput={(e) => (workingDir = e.currentTarget.value)}
-        placeholder="/home/you/projects/atelier-code"
+        placeholder="/home/you/projects/atc"
         disabled={mode === 'rename'}
       />
       {#if mode === 'rename'}

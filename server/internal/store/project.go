@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Project is one persisted Atelier Code-owned project record. Like Session, it
+// Project is one persisted atc-owned project record. Like Session, it
 // carries no JSON tags; the API layer owns wire types and serialization.
 type Project struct {
 	ID         string

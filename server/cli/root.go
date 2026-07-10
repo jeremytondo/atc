@@ -10,18 +10,18 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jeremytondo/atelier-code/internal/buildinfo"
-	"github.com/jeremytondo/atelier-code/internal/config"
-	"github.com/jeremytondo/atelier-code/internal/daemon"
-	"github.com/jeremytondo/atelier-code/internal/logging"
-	"github.com/jeremytondo/atelier-code/internal/paths"
-	"github.com/jeremytondo/atelier-code/internal/server"
+	"github.com/jeremytondo/atc/internal/buildinfo"
+	"github.com/jeremytondo/atc/internal/config"
+	"github.com/jeremytondo/atc/internal/daemon"
+	"github.com/jeremytondo/atc/internal/logging"
+	"github.com/jeremytondo/atc/internal/paths"
+	"github.com/jeremytondo/atc/internal/server"
 	"github.com/spf13/cobra"
 )
 
 type envLookup func(string) string
 
-// Execute runs the Atelier Code command line interface.
+// Execute runs the atc command line interface.
 func Execute() error {
 	cmd := rootCommand()
 	cmd.SetOut(os.Stdout)
@@ -36,7 +36,7 @@ func Execute() error {
 func rootCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "atc",
-		Short:         "Run and administer the Atelier Code local service",
+		Short:         "Run and administer the atc local service",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -86,7 +86,7 @@ func serveCommand(lookup envLookup, logOutput io.Writer) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "serve",
-		Short: "Run the Atelier Code service in the foreground",
+		Short: "Run the atc service in the foreground",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := resolveConfig(cmd, lookup)
 			if err != nil {
@@ -124,8 +124,8 @@ func startCommand(lookup envLookup) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "start",
-		Short: "Start the Atelier Code service in the background",
-		Long: "Start the Atelier Code service in the background.\n\n" +
+		Short: "Start the atc service in the background",
+		Long: "Start the atc service in the background.\n\n" +
 			"PID file: <service-control-dir>/atc.pid.\n" +
 			"Socket path: <service-control-dir>/atc.sock.\n" +
 			serviceControlDirHelp(),
@@ -169,8 +169,8 @@ func startCommand(lookup envLookup) *cobra.Command {
 func stopCommand(lookup envLookup) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "stop",
-		Short: "Stop the background Atelier Code service",
-		Long: "Stop the background Atelier Code service.\n\n" +
+		Short: "Stop the background atc service",
+		Long: "Stop the background atc service.\n\n" +
 			"PID file: <service-control-dir>/atc.pid.\n" +
 			"Socket path: <service-control-dir>/atc.sock.\n" +
 			serviceControlDirHelp(),
@@ -197,8 +197,8 @@ func stopCommand(lookup envLookup) *cobra.Command {
 func statusCommand(lookup envLookup) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status",
-		Short: "Report background Atelier Code service process status",
-		Long: "Report background Atelier Code service process status from the PID file and Unix socket.\n\n" +
+		Short: "Report background atc service process status",
+		Long: "Report background atc service process status from the PID file and Unix socket.\n\n" +
 			"PID file: <service-control-dir>/atc.pid.\n" +
 			"Socket path: <service-control-dir>/atc.sock.\n" +
 			serviceControlDirHelp(),
@@ -236,8 +236,8 @@ func statusCommand(lookup envLookup) *cobra.Command {
 func healthCommand(lookup envLookup) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "health",
-		Short: "Check the Atelier Code service API through the local Unix socket",
-		Long: "Check the Atelier Code service API through the local Unix socket.\n\n" +
+		Short: "Check the atc service API through the local Unix socket",
+		Long: "Check the atc service API through the local Unix socket.\n\n" +
 			"Socket path: <service-control-dir>/atc.sock. The service control directory is " +
 			"$XDG_RUNTIME_DIR/atc when XDG_RUNTIME_DIR is set, otherwise " +
 			"$TMPDIR/atc-$UID when TMPDIR is set, otherwise /tmp/atc-$UID.",
@@ -272,7 +272,7 @@ func versionCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "version",
-		Short: "Print the Atelier Code build version",
+		Short: "Print the atc build version",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			info := buildinfo.Current()
 			if jsonOutput {

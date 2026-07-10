@@ -1,5 +1,5 @@
-// Package session owns Atelier Code session semantics on top of persisted metadata
-// and the multiplexer boundary. Public callers use Atelier Code-owned session ids;
+// Package session owns atc session semantics on top of persisted metadata
+// and the multiplexer boundary. Public callers use atc-owned session ids;
 // zmx names are derived internally and are never persisted or exposed.
 package session
 
@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jeremytondo/atelier-code/internal/project"
-	"github.com/jeremytondo/atelier-code/internal/store"
-	"github.com/jeremytondo/atelier-code/internal/zmx"
+	"github.com/jeremytondo/atc/internal/project"
+	"github.com/jeremytondo/atc/internal/store"
+	"github.com/jeremytondo/atc/internal/zmx"
 )
 
 const (
@@ -51,7 +51,7 @@ var (
 	ErrInvalidWorkingDir = project.ErrInvalidWorkingDir
 )
 
-// LaunchError is returned when zmx launch fails after Atelier Code has already
+// LaunchError is returned when zmx launch fails after atc has already
 // created the starting record. Error returns the safe user-facing reason; Err is
 // kept only for logging and wrapping.
 type LaunchError struct {
@@ -87,7 +87,7 @@ type StartInput struct {
 	ProjectID string
 }
 
-// Session is Atelier Code's full domain model for a session. API list/detail
+// Session is atc's full domain model for a session. API list/detail
 // serializers decide which fields are exposed on each endpoint.
 type Session struct {
 	ID            string

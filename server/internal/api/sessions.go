@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jeremytondo/atelier-code/internal/project"
-	"github.com/jeremytondo/atelier-code/internal/session"
+	"github.com/jeremytondo/atc/internal/project"
+	"github.com/jeremytondo/atc/internal/session"
 )
 
 type startRequest struct {

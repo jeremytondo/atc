@@ -4,13 +4,13 @@
 
 Status: Draft v2
 
-Purpose: Turn Cockpit's terminal-session proof loop into a durable backend
+Purpose: Turn atc's terminal-session proof loop into a durable backend
 contract for starting, tracking, attaching to, and sending input to coding-agent
 sessions.
 
-Source: [`docs/agent-sessions-brief.md`](../agent-sessions-brief.md), ADR
-[0005](../adr/0005-sqlite-for-cockpit-state.md), and ADR
-[0006](../adr/0006-cockpit-owned-session-identity.md). This spec supersedes
+Source: [`agent-sessions-brief.md`](agent-sessions-brief.md), ADR
+[0005](../adr/0005-sqlite-for-atc-state.md), and ADR
+[0006](../adr/0006-atc-owned-session-identity.md). This spec supersedes
 [`terminal-session-orchestration.md`](../archive/terminal-session-orchestration.md)
 where the two conflict; the older document remains the MVP history.
 
@@ -26,8 +26,8 @@ implementation contract.
 
 ## 1. Problem Statement
 
-Cockpit can currently launch configured agents in `zmx`, list live
-Cockpit-managed sessions, send text/keys, and attach over a WebSocket terminal
+atc can currently launch configured agents in `zmx`, list live
+atc-managed sessions, send text/keys, and attach over a WebSocket terminal
 bridge. That proof loop is not yet a stable product backend: identity is encoded
 in the multiplexer name, metadata is not durable, failed launches disappear,
 agents are not discoverable, and clients have to depend on implementation
@@ -37,7 +37,7 @@ The project exists to:
 
 - Provide a stable session-centered API and CLI contract for coding-agent
   sessions.
-- Persist Cockpit-owned session metadata that the multiplexer cannot recover.
+- Persist atc-owned session metadata that the multiplexer cannot recover.
 - Keep `zmx` replaceable by confining its behavior and names to the multiplexer
   boundary.
 - Give browser, native, CLI, and agent clients the same backend semantics for
@@ -56,8 +56,8 @@ The project does not attempt to solve:
 
 ### 2.1 Goals
 
-- Introduce Cockpit-owned stable `Session.id` values as public session identity.
-- Introduce a SQLite-backed Cockpit state store and session registry.
+- Introduce atc-owned stable `Session.id` values as public session identity.
+- Introduce a SQLite-backed atc state store and session registry.
 - Add automatic startup migrations using an established Go migration library.
 - Replace legacy scope/name-derived session identity with persisted session
   properties.
@@ -67,7 +67,7 @@ The project does not attempt to solve:
   `start`, `list`, `read`, `attach`, `send-text`, `send-key`, `terminate`, and
   `archive`.
 - Mirror the same operations in the CLI with plural resource groups:
-  `cockpit agents ...` and `cockpit sessions ...`.
+  `atc agents ...` and `atc sessions ...`.
 - Preserve direct WebSocket attach and define its frame protocol.
 - Keep terminal input ordering simple and best-effort for a single developer's
   workstation.
@@ -84,17 +84,17 @@ The project does not attempt to solve:
 - No generic diagnostics endpoint; diagnostics live on relevant resources.
 - No custom migration runner.
 - No compatibility requirement for the old flat RPC routes or singular
-  `cockpit session ...` CLI.
+  `atc session ...` CLI.
 - No UI redesign beyond using the new backend contract when UI code is touched.
 
 ## 3. Project Boundary
 
 This specification defines the next backend agent-session pass inside the
-existing Cockpit service.
+existing atc service.
 
 Target users:
 
-- A single local developer running Cockpit on a workstation or remote dev host.
+- A single local developer running atc on a workstation or remote dev host.
 - Browser, native Mac, CLI, and agent/script clients using the local API.
 
 Primary workflows:
@@ -113,7 +113,7 @@ Primary workflows:
 Supported platforms or environments:
 
 - Local Unix-like hosts; Linux remains the primary remote-host target.
-- Existing Cockpit TCP and Unix-socket service listeners.
+- Existing atc TCP and Unix-socket service listeners.
 - The external `zmx` binary as the current multiplexer implementation.
 
 Initial deployment shape:
@@ -124,7 +124,7 @@ Initial deployment shape:
 Explicit exclusions:
 
 - Hosted, multi-user, or public-internet deployment semantics.
-- Any durable storage outside SQLite for Cockpit-owned state.
+- Any durable storage outside SQLite for atc-owned state.
 - Any API that exposes multiplexer session names as public identity.
 
 ## 4. Implementation Profile
@@ -138,7 +138,7 @@ profile unless this specification is amended.
   1.26.x.
 - CLI framework: Cobra, already approved.
 - HTTP/WebSocket: existing HTTP server and `github.com/coder/websocket`.
-- Storage: SQLite through one Cockpit state-store boundary.
+- Storage: SQLite through one atc state-store boundary.
 - Migrations: established Go migration library with embedded ordered SQL files.
 - Testing: `go test ./...`; store and multiplexer behavior MUST be testable
   without a live `zmx` daemon.
@@ -152,8 +152,8 @@ profile unless this specification is amended.
 
 ### 4.2 Additional Technology Decisions
 
-- SQLite is the Cockpit-owned state store (ADR 0005).
-- Session identity is Cockpit-owned and not derived from `zmx` names (ADR 0006).
+- SQLite is the atc-owned state store (ADR 0005).
+- Session identity is atc-owned and not derived from `zmx` names (ADR 0006).
 - The SQLite driver and migration library are implementation-defined, but the
   implementation MUST use established Go libraries and MUST NOT build a custom
   migration runner.
@@ -161,10 +161,10 @@ profile unless this specification is amended.
   applied automatically during service startup.
 - The service MUST fail startup clearly if the database cannot be opened or
   migrated.
-- The database path defaults to `$XDG_STATE_HOME/cockpit/cockpit.db`, falling
-  back to `~/.local/state/cockpit/cockpit.db`.
+- The database path defaults to `$XDG_STATE_HOME/atc/atc.db`, falling
+  back to `~/.local/state/atc/atc.db`.
 - The database path MUST be overrideable through config and environment, using
-  `store.db_path` and `COCKPIT_DB_PATH` unless implementation documents a
+  `store.db_path` and `ATC_DB_PATH` unless implementation documents a
   different equivalent key before coding.
 - No CLI flag is required for the database path.
 - The existing service control directory remains runtime-only for sockets, PID
@@ -177,7 +177,7 @@ New and touched areas SHOULD follow this shape:
 ```txt
 internal/
   store/       # SQLite connection, migrations, transactions, session store
-  session/     # Cockpit session domain, agent registry, lifecycle rules
+  session/     # atc session domain, agent registry, lifecycle rules
   zmx/         # zmx command behavior and attach process details
   api/         # HTTP JSON + WebSocket routes
   server/      # routing, auth, listener-aware middleware, store wiring
@@ -199,7 +199,7 @@ Project-specific layout rules:
   process management, and multiplexer-private names.
 - Other packages MUST NOT depend on `zmx` package-specific types, `zmx` command
   output quirks, or `zmx` session names.
-- `internal/session` MUST own Cockpit session validation, status transitions,
+- `internal/session` MUST own atc session validation, status transitions,
   launch command construction from the agent registry, and lifecycle rules.
 - `internal/api` MUST translate HTTP/WebSocket requests into domain operations;
   it MUST NOT invoke `zmx` directly.
@@ -252,21 +252,21 @@ Implementations MUST NOT:
 
 ### 5.1 Main Components
 
-1. `internal/store` — Cockpit state store
+1. `internal/store` — atc state store
    - Opens the SQLite database at the resolved state path.
    - Applies embedded SQL migrations.
    - Exposes session persistence operations.
    - Owns transaction boundaries for session start and lifecycle updates.
 
 2. `internal/session` — Session domain
-   - Generates and validates Cockpit session ids.
+   - Generates and validates atc session ids.
    - Validates agent names and accepted params.
    - Builds launch commands from the agent registry.
    - Starts, lists, reads, sends input, terminates, and archives sessions.
    - Reconciles persisted session state with multiplexer liveness.
 
 3. `internal/zmx` — Multiplexer implementation
-   - Maps Cockpit session ids to private `zmx` names.
+   - Maps atc session ids to private `zmx` names.
    - Starts, sends to, attaches to, resizes, terminates, and lists multiplexer
      sessions.
    - Contains all `zmx` command and output knowledge.
@@ -277,7 +277,7 @@ Implementations MUST NOT:
    - Bridges WebSocket attach frames to the session attach stream.
 
 5. `cli` — Operator and automation surface
-   - Exposes `cockpit agents ...` and `cockpit sessions ...`.
+   - Exposes `atc agents ...` and `atc sessions ...`.
    - Calls the service API over the Unix socket.
 
 6. `internal/server`
@@ -286,7 +286,7 @@ Implementations MUST NOT:
 
 ### 5.2 Component Boundaries
 
-- `store` owns durable Cockpit state; `zmx` owns live terminal process state.
+- `store` owns durable atc state; `zmx` owns live terminal process state.
 - `session` joins persisted metadata with multiplexer-derived liveness and
   attachability.
 - `api` owns protocol translation, not domain rules.
@@ -300,7 +300,7 @@ Implementations MUST NOT:
 - The `zmx` binary and daemon.
 - The user's login shell for launching agent commands.
 - Local filesystem working directories.
-- Existing Cockpit TCP and Unix-socket listeners.
+- Existing atc TCP and Unix-socket listeners.
 
 ## 6. Core Domain Model
 
@@ -308,11 +308,11 @@ Implementations MUST NOT:
 
 #### 6.1.1 Session
 
-A persistent terminal instance created by Cockpit to run a configured Agent.
+A persistent terminal instance created by atc to run a configured Agent.
 
 Fields:
 
-- `id` (string): Stable Cockpit-owned id. Opaque, URL-safe, prefixed with
+- `id` (string): Stable atc-owned id. Opaque, URL-safe, prefixed with
   `ses_`, and used for all public references.
 - `name` (string, optional): User-facing display name set at start. Not identity
   and not used by the multiplexer.
@@ -320,7 +320,7 @@ Fields:
 - `params` (object): Accepted launch params after validation against the agent
   registry. Returned in detail responses, not list responses.
 - `workingDir` (string): Working directory used for launch.
-- `prompt` (string, optional): Starting prompt stored by Cockpit. Returned in
+- `prompt` (string, optional): Starting prompt stored by atc. Returned in
   detail responses, not list responses.
 - `status` (enum): `starting`, `running`, `failed`, or `terminated`. Archive is
   not a status; see `archivedAt`.
@@ -329,8 +329,8 @@ Fields:
   from the error-code vocabulary in §7.5.4. Present whenever `status` is
   `failed`.
 - `createdAt` (timestamp): Session record creation time.
-- `updatedAt` (timestamp): Last Cockpit metadata/status update time.
-- `terminatedAt` (timestamp, optional): Time Cockpit determined no live terminal
+- `updatedAt` (timestamp): Last atc metadata/status update time.
+- `terminatedAt` (timestamp, optional): Time atc determined no live terminal
   session remained.
 - `archivedAt` (timestamp, optional): Time the session was archived. A session is
   archived iff this is set; archiving does not change `status`, so a failed or
@@ -391,12 +391,12 @@ Free-form string params are deliberately unsupported.
 - A Session references one Agent by registry name.
 - A Session stores accepted launch params, not raw caller input.
 - A Session's live terminal process is owned by the Multiplexer.
-- The Store persists Cockpit-owned metadata; the Multiplexer supplies liveness
+- The Store persists atc-owned metadata; the Multiplexer supplies liveness
   and terminal streams.
 
 ### 6.3 Identifiers and Normalization Rules
 
-- `Session.id` MUST be generated by Cockpit, not supplied by clients.
+- `Session.id` MUST be generated by atc, not supplied by clients.
 - `Session.id` MUST be URL-safe and MUST NOT encode semantic data.
 - Session ids SHOULD use at least 128 bits of randomness or an equivalent
   collision-resistant scheme.
@@ -411,7 +411,7 @@ Free-form string params are deliberately unsupported.
 
 #### 7.1.1 Purpose
 
-Own SQLite-backed Cockpit state.
+Own SQLite-backed atc state.
 
 #### 7.1.2 Responsibilities
 
@@ -444,7 +444,7 @@ This component MUST NOT:
 
 #### 7.2.1 Purpose
 
-Own Cockpit session semantics on top of persisted metadata and the multiplexer
+Own atc session semantics on top of persisted metadata and the multiplexer
 boundary.
 
 #### 7.2.2 Responsibilities
@@ -478,7 +478,7 @@ This component MUST NOT:
 - The new record MUST start with status `starting`.
 - `Start` MUST build the launch command only from operator-defined registry
   config and accepted closed params.
-- If `prompt` is present, Cockpit MUST store it and pass it to the agent as a
+- If `prompt` is present, atc MUST store it and pass it to the agent as a
   launch argument per the agent's `prompt` placement (§6.1.2), as a single
   safely-quoted argument (§8.2). The agent receives the prompt at startup and
   acts on it; there is no separate post-launch inject-or-submit step for the
@@ -536,7 +536,7 @@ without checking liveness, since a crash between a successful launch and the
 - Input operations MUST fail for missing, failed, terminated, or archived
   sessions.
 - Input operations remain available while WebSocket clients are attached.
-- Cockpit does not coordinate concurrent writers beyond best-effort arrival at
+- atc does not coordinate concurrent writers beyond best-effort arrival at
   the multiplexer boundary.
 
 #### 7.2.6 Attach Behavior
@@ -544,13 +544,13 @@ without checking liveness, since a crash between a successful launch and the
 - `Attach` MUST fail for missing, failed, terminated, or archived sessions.
 - Multiple simultaneous attaches MUST be allowed when the multiplexer supports
   them.
-- Cockpit MUST NOT add an exclusive attach lock in this pass.
+- atc MUST NOT add an exclusive attach lock in this pass.
 
 #### 7.2.7 Terminate Behavior
 
 - `Terminate` MUST request the multiplexer boundary to stop the live terminal
   session for the `Session.id`.
-- Once the terminal session is no longer reachable, Cockpit MUST set
+- Once the terminal session is no longer reachable, atc MUST set
   `terminatedAt` and status `terminated`. Terminating an already-archived session
   MUST NOT change `archivedAt`.
 - `Terminate` MUST be idempotent for already terminated, failed, archived, or
@@ -834,17 +834,17 @@ long-lived token. It is not part of this pass.
 
 #### 7.7.1 Required Commands
 
-- `cockpit agents list`
-- `cockpit sessions start --agent <name> [--param key=value]... [--dir <path>] [--prompt <text>] [--name <name>]`
-- `cockpit sessions list`
-- `cockpit sessions show <id>`
-- `cockpit sessions attach <id>`
-- `cockpit sessions send-text <id> <text>`
-- `cockpit sessions send-key <id> <key>`
-- `cockpit sessions terminate <id>`
-- `cockpit sessions archive <id>`
+- `atc agents list`
+- `atc sessions start --agent <name> [--param key=value]... [--dir <path>] [--prompt <text>] [--name <name>]`
+- `atc sessions list`
+- `atc sessions show <id>`
+- `atc sessions attach <id>`
+- `atc sessions send-text <id> <text>`
+- `atc sessions send-key <id> <key>`
+- `atc sessions terminate <id>`
+- `atc sessions archive <id>`
 
-The singular `cockpit session ...` command group MAY be removed. Compatibility
+The singular `atc session ...` command group MAY be removed. Compatibility
 is not required.
 
 #### 7.7.2 Behavior
@@ -942,7 +942,7 @@ transition:
 - a non-archived `running` record positively observed as no longer live to
   `terminated`, setting `terminatedAt`.
 
-Pre-existing sessions from the prior `cockpit:<kind>:<id>` scheme are not
+Pre-existing sessions from the prior `atc:<kind>:<id>` scheme are not
 adopted: they are absent from the store and do not match the new derived names,
 so they become invisible to the new backend on upgrade. No migration of running
 sessions is performed.

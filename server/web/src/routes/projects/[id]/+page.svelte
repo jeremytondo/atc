@@ -183,7 +183,7 @@
 </script>
 
 <svelte:head>
-  <title>Atelier Code · {project?.name ?? 'Project'}</title>
+  <title>atc · {project?.name ?? 'Project'}</title>
 </svelte:head>
 
 <div class="pad" style="max-width:780px">

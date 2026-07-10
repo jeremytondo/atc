@@ -1,4 +1,4 @@
-// Package paths resolves where Atelier Code keeps its Unix socket and PID file, so
+// Package paths resolves where atc keeps its Unix socket and PID file, so
 // the background service and the CLI commands that manage it (start, stop,
 // status, health) all agree on the same locations. The directory is chosen
 // from the environment: XDG_RUNTIME_DIR, then TMPDIR, then /tmp.

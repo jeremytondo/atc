@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/coder/websocket"
-	"github.com/jeremytondo/atelier-code/internal/paths"
+	"github.com/jeremytondo/atc/internal/paths"
 )
 
 func TestSessionsStartPostsNewShape(t *testing.T) {

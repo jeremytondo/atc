@@ -1,4 +1,4 @@
-# Cockpit Idea
+# atc Idea
 
 > **Archived:** This was the original broad product idea document. Current
 > implementation work should use active specs under `docs/specs/` and ADRs under
@@ -32,7 +32,7 @@ This is the bulk of where things are done in the app. This is essentially a mark
 - History - The ability to keep track of changes with git style diffs and rollbacks. 
  
 ### Environment 
-Environments are used to support local coding for a project. At a base level an environment is just a path to a local folder that contains a codebase. In the future we may be able to integrate this with something like Mise and/or containers to allow more control over the environment from within Cockpit.
+Environments are used to support local coding for a project. At a base level an environment is just a path to a local folder that contains a codebase. In the future we may be able to integrate this with something like Mise and/or containers to allow more control over the environment from within atc.
  
 ## Workflows
 I have a particular workflow I like to use, but I think I’d like to keep things simple, provide the base level of features and allow flexibility to change up the workflow. In general though, here are examples of two common workflows I use.

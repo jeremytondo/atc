@@ -1,6 +1,6 @@
 # Actions are read through from a JSON overlay
 
-> **Terminology note (2026-07):** This ADR predates the Atelier Code rename. "Cockpit" is now the Atelier Code server (`atc`).
+> **Terminology note (2026-07):** This ADR predates the atc rename. "atc" is now the atc server (`atc`).
 
 ## Decision
 
@@ -9,7 +9,7 @@ sparse entries over the built-in `claude` and `codex` defaults. Discovery,
 detail reads, API writes, deletes, and session start all use the same
 file-backed store.
 
-Cockpit does not keep a long-lived Action registry cache and does not expose a
+atc does not keep a long-lived Action registry cache and does not expose a
 reload endpoint for Actions in v1.
 
 ## Rationale

@@ -1,4 +1,4 @@
-// Package daemon starts, stops, and inspects the local Atelier Code service process.
+// Package daemon starts, stops, and inspects the local atc service process.
 package daemon
 
 import (
@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jeremytondo/atelier-code/internal/paths"
+	"github.com/jeremytondo/atc/internal/paths"
 )
 
 const LogName = "atc.log"
@@ -59,7 +59,7 @@ func Start(ctx context.Context, cfg Config) (StartResult, error) {
 		return StartResult{}, err
 	}
 	if status.Running {
-		return StartResult{}, fmt.Errorf("Atelier Code service already appears to be running with PID %d", status.PID)
+		return StartResult{}, fmt.Errorf("atc service already appears to be running with PID %d", status.PID)
 	}
 	if status.Stale {
 		if err := os.Remove(cfg.Paths.PIDPath); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -68,9 +68,9 @@ func Start(ctx context.Context, cfg Config) (StartResult, error) {
 	}
 	if status.SocketReachable {
 		if status.SocketPID > 0 {
-			return StartResult{}, fmt.Errorf("Atelier Code service already appears to be reachable at Unix socket %s by PID %d; run \"atc stop\" to stop it", cfg.Paths.SocketPath, status.SocketPID)
+			return StartResult{}, fmt.Errorf("atc service already appears to be reachable at Unix socket %s by PID %d; run \"atc stop\" to stop it", cfg.Paths.SocketPath, status.SocketPID)
 		}
-		return StartResult{}, fmt.Errorf("Atelier Code service already appears to be reachable at Unix socket %s; run \"atc stop\" to stop it", cfg.Paths.SocketPath)
+		return StartResult{}, fmt.Errorf("atc service already appears to be reachable at Unix socket %s; run \"atc stop\" to stop it", cfg.Paths.SocketPath)
 	}
 
 	exe, err := os.Executable()
@@ -100,7 +100,7 @@ func Start(ctx context.Context, cfg Config) (StartResult, error) {
 	detachDaemonCommand(cmd)
 
 	if err := cmd.Start(); err != nil {
-		return StartResult{}, fmt.Errorf("start Atelier Code service: %w", err)
+		return StartResult{}, fmt.Errorf("start atc service: %w", err)
 	}
 
 	pid := cmd.Process.Pid
@@ -140,17 +140,17 @@ func Stop(ctx context.Context, servicePaths paths.Paths) (int, error) {
 	case status.SocketPID > 0:
 		return stopPID(ctx, servicePaths.PIDPath, status.SocketPID)
 	case status.SocketReachable:
-		return 0, fmt.Errorf("Atelier Code service is reachable at Unix socket %s, but its PID could not be determined", servicePaths.SocketPath)
+		return 0, fmt.Errorf("atc service is reachable at Unix socket %s, but its PID could not be determined", servicePaths.SocketPath)
 	case status.Stale:
 		_ = os.Remove(servicePaths.PIDPath)
 	}
 
-	return 0, fmt.Errorf("Atelier Code service is not running")
+	return 0, fmt.Errorf("atc service is not running")
 }
 
 func stopPID(ctx context.Context, pidPath string, pid int) (int, error) {
 	if err := terminateDaemonPID(pid); err != nil {
-		return 0, fmt.Errorf("stop Atelier Code service with PID %d: %w", pid, err)
+		return 0, fmt.Errorf("stop atc service with PID %d: %w", pid, err)
 	}
 	if err := waitForExit(ctx, pid); err != nil {
 		return pid, err
@@ -248,14 +248,14 @@ func waitForStartup(ctx context.Context, socketPath string, waitCh <-chan error)
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("wait for Atelier Code service startup: %w", ctx.Err())
+			return fmt.Errorf("wait for atc service startup: %w", ctx.Err())
 		case <-timeout.C:
-			return fmt.Errorf("Atelier Code service did not become reachable at Unix socket %s", socketPath)
+			return fmt.Errorf("atc service did not become reachable at Unix socket %s", socketPath)
 		case err := <-waitCh:
 			if err != nil {
-				return fmt.Errorf("Atelier Code service exited during startup: %w", err)
+				return fmt.Errorf("atc service exited during startup: %w", err)
 			}
-			return fmt.Errorf("Atelier Code service exited during startup")
+			return fmt.Errorf("atc service exited during startup")
 		case <-ticker.C:
 			if socketReachable(socketPath) {
 				return nil
@@ -282,9 +282,9 @@ func waitForExit(ctx context.Context, pid int) error {
 
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("wait for Atelier Code service with PID %d to stop: %w", pid, ctx.Err())
+			return fmt.Errorf("wait for atc service with PID %d to stop: %w", pid, ctx.Err())
 		case <-timeout.C:
-			return fmt.Errorf("Atelier Code service with PID %d did not stop after SIGTERM", pid)
+			return fmt.Errorf("atc service with PID %d did not stop after SIGTERM", pid)
 		case <-ticker.C:
 		}
 	}

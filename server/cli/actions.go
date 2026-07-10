@@ -19,7 +19,7 @@ type actionItem struct {
 func actionsCommand(lookup envLookup) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "actions",
-		Short: "Discover launchable Atelier Code actions",
+		Short: "Discover launchable atc actions",
 	}
 	cmd.AddCommand(actionsListCommand(lookup))
 	return cmd

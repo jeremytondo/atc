@@ -1,4 +1,4 @@
-// Package zmx is the single, narrow seam through which Atelier Code talks to the zmx
+// Package zmx is the single, narrow seam through which atc talks to the zmx
 // multiplexer. It builds and runs zmx as a child process and deals only in zmx
 // session names and byte payloads. Confining zmx invocation and private name
 // derivation to this package is what keeps the multiplexer swappable.
@@ -47,7 +47,7 @@ type PTY interface {
 }
 
 // Default attach dimensions used when a client does not provide an initial
-// terminal size before Atelier Code must spawn the attach PTY.
+// terminal size before atc must spawn the attach PTY.
 const (
 	DefaultAttachRows uint16 = 24
 	DefaultAttachCols uint16 = 80
@@ -126,7 +126,7 @@ func (w *Wrapper) List(ctx context.Context) ([]Session, error) {
 	return parseList(out), nil
 }
 
-// NameForID derives the private zmx name for an Atelier Code-owned session id. The
+// NameForID derives the private zmx name for an atc-owned session id. The
 // name is deterministic and recomputable, but intentionally does not reveal the
 // public id.
 func NameForID(id string) string {
