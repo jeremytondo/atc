@@ -121,6 +121,13 @@ ssh -L 5173:127.0.0.1:5173 workstation.tailnet.ts.net
 reachable TCP address, configure `auth.token` / `ATC_API_TOKEN`; the
 owner-only Unix socket used by local CLI commands is always trusted.
 
+**Remote trust model:** the API can browse files, launch configured commands,
+and attach to terminals, so a reachable bind is a real exposure. Binding a
+non-loopback address without a token is supported for trusted overlay networks
+(a tailnet interface, or `tailscale serve` in front of loopback), and the
+service logs a warning at startup instead of refusing to run. Never bind
+`0.0.0.0` without a token on a network you don't fully trust.
+
 **Tailscale bonus:** for the embedded mode only, you can expose a tailnet-only HTTPS URL
 backed by the loopback port without any port forwarding:
 

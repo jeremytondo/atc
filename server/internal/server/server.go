@@ -51,7 +51,7 @@ func Serve(ctx context.Context, cfg Config) error {
 	if err := validateTCPAddr(cfg.HTTPAddr); err != nil {
 		return err
 	}
-	if cfg.HTTPAddrExplicit && !isLoopbackTCPAddr(cfg.HTTPAddr) {
+	if unauthenticatedRemoteBind(cfg) {
 		logger.Warn("explicit non-loopback TCP bind configured without TCP authentication", "http_addr", cfg.HTTPAddr)
 	}
 
@@ -129,10 +129,23 @@ func Serve(ctx context.Context, cfg Config) error {
 	}
 }
 
+// unauthenticatedRemoteBind reports whether the configured TCP bind exposes
+// the API beyond loopback without a bearer token. Startup deliberately
+// continues in that case — unauthenticated use over a trusted overlay network
+// (e.g. a tailnet) is a supported mode — but it must be loudly visible.
+func unauthenticatedRemoteBind(cfg Config) bool {
+	return cfg.HTTPAddrExplicit && !isLoopbackTCPAddr(cfg.HTTPAddr) && cfg.AuthToken == ""
+}
+
 func newHTTPServer(handler http.Handler) *http.Server {
 	return &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
+		// No global Read/Write timeouts: the attach route holds a WebSocket
+		// open for the life of a terminal session, and either timeout would
+		// sever it. JSON request bodies are bounded per-request in the API's
+		// decodeJSON instead; IdleTimeout only reaps idle keep-alive conns.
+		IdleTimeout: 2 * time.Minute,
 	}
 }
 

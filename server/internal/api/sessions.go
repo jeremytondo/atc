@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -212,16 +211,6 @@ func (routes apiRoutes) archiveSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, detailResponse(archived))
-}
-
-// decodeJSON decodes the request body into dst, writing a 400 and returning
-// false on failure.
-func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
-	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "request body must be valid JSON")
-		return false
-	}
-	return true
 }
 
 func (routes apiRoutes) requireSessions(w http.ResponseWriter) bool {
