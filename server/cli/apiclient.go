@@ -66,7 +66,7 @@ func (client *apiClient) getQuery(ctx context.Context, endpoint string, query ur
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read Atelier Code service API response: %w", err)
+		return nil, fmt.Errorf("read atc service API response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, apiError(resp.StatusCode, body)
@@ -106,7 +106,7 @@ func (client *apiClient) send(ctx context.Context, method, endpoint string, body
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read Atelier Code service API response: %w", err)
+		return nil, fmt.Errorf("read atc service API response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, apiError(resp.StatusCode, respBody)
@@ -133,7 +133,7 @@ func (client *apiClient) dialAttach(ctx context.Context, id string) (*websocket.
 			return nil, apiError(resp.StatusCode, body)
 		}
 	}
-	return nil, fmt.Errorf("attach to Atelier Code session %s: %w", id, err)
+	return nil, fmt.Errorf("attach to atc session %s: %w", id, err)
 }
 
 func (client *apiClient) authorize(req *http.Request) {
@@ -143,7 +143,7 @@ func (client *apiClient) authorize(req *http.Request) {
 }
 
 func (client *apiClient) serviceUnavailableError(err error) error {
-	return fmt.Errorf("Atelier Code service is not running or socket unavailable at %s: %w", client.socketPath, err)
+	return fmt.Errorf("atc service is not running or socket unavailable at %s: %w", client.socketPath, err)
 }
 
 // apiError builds an error from a non-2xx response, preferring the API's
@@ -155,7 +155,7 @@ func apiError(status int, body []byte) error {
 	if err := json.Unmarshal(body, &e); err == nil && e.Message != "" {
 		return fmt.Errorf("%s (HTTP %d)", e.Message, status)
 	}
-	return fmt.Errorf("Atelier Code service API returned HTTP %d", status)
+	return fmt.Errorf("atc service API returned HTTP %d", status)
 }
 
 func apiPath(endpoint string) string {

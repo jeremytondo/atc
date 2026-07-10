@@ -1,13 +1,13 @@
-# Tech Design — Remote File Browsing: Atelier Code `/api/fs`
+# Tech Design — Remote File Browsing: atc `/api/fs`
 
 ## Scope
 
-Atelier Code exposes a read-only filesystem browsing API for the host running the
+atc exposes a read-only filesystem browsing API for the host running the
 service:
 
 - `GET /api/fs/list` — list the immediate children of one directory.
 - Omitted or empty `path` defaults to the current user's home directory.
-- Any absolute path is browseable if the Atelier Code process can read it.
+- Any absolute path is browseable if the atc process can read it.
 
 No file reading, mutation, recursive walking, or search index is included.
 

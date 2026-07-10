@@ -1,15 +1,15 @@
-> **Historical (archived 2026-07):** Describes the pre-monorepo Cockpit-era system. Names, paths, and instructions here are obsolete — see AGENTS.md and docs/platform-policy.md for current structure and policy.
+> **Historical (archived 2026-07):** Describes the pre-monorepo atc-era system. Names, paths, and instructions here are obsolete — see AGENTS.md and docs/platform-policy.md for current structure and policy.
 
 # Connections and Settings — Spec and Implementation Plan
 
 Status: Ready for implementation
 Supersedes: `docs/connections-settings-plan.md` (Draft)
-Related: `docs/adr/0002-local-connections-scope-cockpit-projects.md`, `CONTEXT.md` language definitions
+Related: `docs/adr/0002-local-connections-scope-atc-projects.md`, `CONTEXT.md` language definitions
 
 ## Goal
 
-AtelierCode supports multiple named Connections to Cockpit servers. Projects and
-Terminal Sessions remain Cockpit-owned records; the app displays Projects from
+atc supports multiple named Connections to atc servers. Projects and
+Terminal Sessions remain atc-owned records; the app displays Projects from
 all configured Connections in one flat, project-first sidebar, shows the owning
 Connection on each Project row, and manages Connections in a real macOS
 Settings window.
@@ -21,7 +21,7 @@ These are deliberate deviations or additions relative to
 as written.
 
 1. **Phase 0 is real work, not a mirror.** The draft said archive-with-active-
-   sessions "should be enforced by Cockpit." It is not enforced today:
+   sessions "should be enforced by atc." It is not enforced today:
    `store.ArchiveProject` is a bare `UPDATE ... SET archived_at` with no session
    check. Phase 0 adds that enforcement server-side. This matters beyond
    correctness: removing `Other Sessions` from the sidebar is only safe if the
@@ -54,14 +54,14 @@ as written.
 
 ## Non-Goals (unchanged from draft)
 
-- No Cockpit API changes for Connection storage — Connections are app-local.
+- No atc API changes for Connection storage — Connections are app-local.
 - No cross-server Project identity.
 - No durable offline Project cache.
 - No user-configurable Connection colors; chip color never identifies a Connection.
 - No Connection reordering in v1.
 - No Keychain token storage in this pass.
 - No in-main-window Settings overlay.
-- No app UI for unscoped Terminal Sessions in v1 (Cockpit API/CLI keep supporting them).
+- No app UI for unscoped Terminal Sessions in v1 (atc API/CLI keep supporting them).
 - No hardcoded seeded production Connection.
 
 ---
@@ -85,7 +85,7 @@ struct ConnectionRecord: Codable, Identifiable, Hashable, Sendable {
   UserDefaults key (`connections`). Array order **is** creation order; no
   separate position field. New Connections append.
 - Lives in the app target (e.g. `Settings/ConnectionsModel.swift` or similar),
-  not in CockpitKit — CockpitKit stays a pure API client package.
+  not in ATCKit — ATCKit stays a pure API client package.
 - A `ConnectionsStore` (`@Observable`) owns the array, performs validation,
   persists on every mutation, and exposes add/update/remove.
 
@@ -121,7 +121,7 @@ in UserDefaults and holds a valid URL:
 - If the legacy key is absent or invalid, do nothing — first launch shows the
   empty state. `AppSettings.defaultServerURLString` is deleted outright; it
   must not survive as a fallback anywhere (check `AppModel.makeClient` and
-  `CockpitServerTests`).
+  `ATCServerTests`).
 
 ## 2. Connection-aware app state
 
@@ -132,7 +132,7 @@ in UserDefaults and holds a valid URL:
 ```swift
 @Observable final class ConnectionRuntime: Identifiable {
     let record: ConnectionRecord        // snapshot at build time
-    let client: any CockpitClient
+    let client: any ATCClient
     let projects: ProjectsStore
     let sessions: SessionsStore
     var reachability: Reachability      // .unknown / .connected / .unreachable
@@ -172,7 +172,7 @@ struct ProjectRef: Hashable { let connectionID: UUID; let projectID: String }
   terminal attaches, a confirmation dialog explains they will be disconnected;
   Cancel aborts the save entirely. Other Connections are untouched.
 - **Deleting a Connection** always confirms, and the dialog states that
-  Projects and Terminal Sessions remain on the Cockpit server. Delete tears
+  Projects and Terminal Sessions remain on the atc server. Delete tears
   down the runtime, disconnects its terminals, clears selection if the
   selected session belonged to it, and removes the record. Local-only; no
   server calls.
@@ -193,7 +193,7 @@ struct ProjectRef: Hashable { let connectionID: UUID; let projectID: String }
   Validation errors (bad URL, duplicate host+port, empty name) render inline
   and block Save.
 - **Test Connection** is enabled whenever the draft URL parses (independent of
-  save state). It builds a throwaway `HTTPCockpitClient` from the draft values
+  save state). It builds a throwaway `HTTPATCClient` from the draft values
   and calls `health()` then `version()`. Success shows server name + version
   (tolerate `"dev"`/`"unknown"` builds); failure shows the error. Results are
   generation-guarded so edits invalidate in-flight tests.
@@ -241,7 +241,7 @@ struct ProjectRef: Hashable { let connectionID: UUID; let projectID: String }
 - Terminal attach continues to auto-attach on selection, now resolving the
   controller through `SessionRef`.
 
-## 6. Cockpit facts this spec relies on (verified against the repo and live server)
+## 6. atc facts this spec relies on (verified against the repo and live server)
 
 - `GET /api/health` → `{"status":"ok"}` and `GET /api/version` →
   `{name, version, commit}` both exist — Test Connection needs no server work.
@@ -261,7 +261,7 @@ struct ProjectRef: Hashable { let connectionID: UUID; let projectID: String }
 Checkpoint with `jj describe`/`jj new` after each phase (and after coherent
 steps within a phase) once tests pass.
 
-## Phase 0 — Cockpit API changes (do first, in the cockpit repo)
+## Phase 0 — atc API changes (do first, in the atc repo)
 
 The only server-side prerequisite. Everything else in this spec is app-local.
 
@@ -272,10 +272,10 @@ The only server-side prerequisite. Everything else in this spec is app-local.
    existing error envelope. Implement the check in the project service/store
    layer (transactionally with the archive update, so a session starting
    concurrently can't slip through), not just the handler.
-2. **CLI + web UI parity.** Surface the new 409 sensibly in the Cockpit CLI
+2. **CLI + web UI parity.** Surface the new 409 sensibly in the atc CLI
    and existing web UI (they share wire structs; likely just error-message
    passthrough).
-3. **Tests** in the cockpit repo covering: archive blocked with a `starting`
+3. **Tests** in the atc repo covering: archive blocked with a `starting`
    session, blocked with a `running` session, allowed with only
    `failed`/`terminated`/archived sessions, allowed with no sessions.
 4. Deploy to the workstation before starting Phase 4 (the sidebar phase that
@@ -297,7 +297,7 @@ stays in place until Phase 3.
    creation-order semantics via array order.
 3. Add legacy migration from `serverURLString`/`apiToken` (runs in
    `ConnectionsStore.init` or app startup; deletes legacy keys after).
-4. **Tests** (`AtelierCodeTests`): validation matrix (scheme inference,
+4. **Tests** (`ATCTests`): validation matrix (scheme inference,
    explicit-scheme persistence, origin-only rejection of path/query/fragment,
    trailing-slash normalization), duplicate detection (same host+port across
    schemes, differing effective ports, case-insensitive host, self-exclusion
@@ -369,7 +369,7 @@ The structural core; biggest phase.
    (name preserved), create routed to the selected runtime.
 2. `CreateSessionSheet` + attach path: route actions/start/attach through the
    owning runtime resolved from the target `ProjectRef`.
-3. Update `MockCockpitClient`/preview fixtures to multi-connection shapes
+3. Update `MockATCClient`/preview fixtures to multi-connection shapes
    where previews need them.
 4. **Tests**: New Project selector behavior (preselection, directory cleared
    on connection change, name kept, picker disabled with no selection),
@@ -382,7 +382,7 @@ The structural core; biggest phase.
    references in tests, old toolbar archived toggle.
 2. Full test run; manual verification against the live workstation server:
    add the workstation Connection (via migration or manually), add a second
-   Connection (a local cockpit dev server) and verify aggregation, chips,
+   Connection (a local atc dev server) and verify aggregation, chips,
    red-dot behavior when one is stopped, edit-URL disconnect confirmation,
    delete-Connection cleanup, New Project across both, Phase 0 409 on
    archiving a project with a running session.

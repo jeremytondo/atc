@@ -5,8 +5,8 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/jeremytondo/atelier-code/internal/project"
-	"github.com/jeremytondo/atelier-code/internal/session"
+	"github.com/jeremytondo/atc/internal/project"
+	"github.com/jeremytondo/atc/internal/session"
 )
 
 // Project is the wire shape of project list and detail responses (the two are

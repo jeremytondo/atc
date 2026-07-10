@@ -1,4 +1,4 @@
-// Package publicid generates opaque Atelier Code-owned public identifiers.
+// Package publicid generates opaque atc-owned public identifiers.
 package publicid
 
 import (

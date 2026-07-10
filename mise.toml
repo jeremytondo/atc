@@ -7,7 +7,7 @@ description = "All gates: server fmt/vet/tests + web check, Kit tests, macOS app
 depends = ["server:check", "kit:test", "macos:test"]
 
 [tasks.test]
-description = "All tests: server Go suite, AtelierCodeKit, macOS app"
+description = "All tests: server Go suite, ATCKit, macOS app"
 depends = ["server:test", "kit:test", "macos:test"]
 
 # --- Server (Go API + embedded web UI) ---
@@ -31,16 +31,16 @@ run = "mise run -C server web:check"
 # --- Swift surfaces ---
 
 [tasks."kit:test"]
-description = "AtelierCodeKit package tests"
-dir = "packages/AtelierCodeKit"
+description = "ATCKit package tests"
+dir = "packages/ATCKit"
 run = "swift test"
 
 [tasks."macos:test"]
 description = "macOS app tests (signing disabled so any machine/CI can run them)"
 run = """
 xcodebuild test \
-  -project macos/AtelierCode.xcodeproj \
-  -scheme AtelierCode \
+  -project macos/atc.xcodeproj \
+  -scheme atc \
   -destination platform=macOS \
   CODE_SIGNING_ALLOWED=NO
 """

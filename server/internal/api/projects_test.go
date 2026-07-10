@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeremytondo/atelier-code/internal/diagnostics"
-	"github.com/jeremytondo/atelier-code/internal/zmx"
+	"github.com/jeremytondo/atc/internal/diagnostics"
+	"github.com/jeremytondo/atc/internal/zmx"
 )
 
 // createTestProject drives POST /projects and returns the created record.
@@ -31,8 +31,8 @@ func TestCreateProjectReturnsFullRecord(t *testing.T) {
 	h, _ := newHandler(t, &fakeMux{})
 	workDir := t.TempDir()
 
-	created := createTestProject(t, h, "Atelier Code", workDir)
-	if !strings.HasPrefix(created.ID, "prj_") || created.Name != "Atelier Code" || created.WorkingDir != workDir {
+	created := createTestProject(t, h, "atc", workDir)
+	if !strings.HasPrefix(created.ID, "prj_") || created.Name != "atc" || created.WorkingDir != workDir {
 		t.Fatalf("created = %+v", created)
 	}
 	if created.CreatedAt == "" || created.UpdatedAt == "" || created.ArchivedAt != nil {
@@ -54,10 +54,10 @@ func TestCreateProjectValidationErrors(t *testing.T) {
 		{name: "invalid JSON", body: `{not json`, code: "invalid_request"},
 		{name: "missing name", body: `{"workingDir":"` + workDir + `"}`, code: "invalid_request"},
 		{name: "blank name", body: `{"name":"   ","workingDir":"` + workDir + `"}`, code: "invalid_request"},
-		{name: "missing workingDir", body: `{"name":"Atelier Code"}`, code: "invalid_working_dir"},
-		{name: "relative workingDir", body: `{"name":"Atelier Code","workingDir":"relative/path"}`, code: "invalid_working_dir"},
-		{name: "missing directory", body: `{"name":"Atelier Code","workingDir":"` + filepath.Join(workDir, "missing") + `"}`, code: "invalid_working_dir"},
-		{name: "workingDir is a file", body: `{"name":"Atelier Code","workingDir":"` + notADir + `"}`, code: "invalid_working_dir"},
+		{name: "missing workingDir", body: `{"name":"atc"}`, code: "invalid_working_dir"},
+		{name: "relative workingDir", body: `{"name":"atc","workingDir":"relative/path"}`, code: "invalid_working_dir"},
+		{name: "missing directory", body: `{"name":"atc","workingDir":"` + filepath.Join(workDir, "missing") + `"}`, code: "invalid_working_dir"},
+		{name: "workingDir is a file", body: `{"name":"atc","workingDir":"` + notADir + `"}`, code: "invalid_working_dir"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -113,7 +113,7 @@ func TestListProjectsHidesArchivedByDefault(t *testing.T) {
 
 func TestGetProjectAndNotFound(t *testing.T) {
 	h, _ := newHandler(t, &fakeMux{})
-	created := createTestProject(t, h, "Atelier Code", t.TempDir())
+	created := createTestProject(t, h, "atc", t.TempDir())
 
 	rec := do(t, h, http.MethodGet, "/projects/"+created.ID, "")
 	if rec.Code != http.StatusOK {
@@ -123,7 +123,7 @@ func TestGetProjectAndNotFound(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.ID != created.ID || got.Name != "Atelier Code" {
+	if got.ID != created.ID || got.Name != "atc" {
 		t.Fatalf("got = %+v", got)
 	}
 
@@ -136,7 +136,7 @@ func TestGetProjectAndNotFound(t *testing.T) {
 
 func TestPatchProjectRenamesWithStrictDecode(t *testing.T) {
 	h, _ := newHandler(t, &fakeMux{})
-	created := createTestProject(t, h, "Atelier Code", t.TempDir())
+	created := createTestProject(t, h, "atc", t.TempDir())
 
 	rec := do(t, h, http.MethodPatch, "/projects/"+created.ID, `{"name":"Renamed"}`)
 	if rec.Code != http.StatusOK {
@@ -178,7 +178,7 @@ func TestPatchProjectRenamesWithStrictDecode(t *testing.T) {
 
 func TestArchiveAndUnarchiveProjectAreIdempotent(t *testing.T) {
 	h, _ := newHandler(t, &fakeMux{})
-	created := createTestProject(t, h, "Atelier Code", t.TempDir())
+	created := createTestProject(t, h, "atc", t.TempDir())
 
 	rec := do(t, h, http.MethodPost, "/projects/"+created.ID+"/archive", "")
 	if rec.Code != http.StatusOK {
@@ -222,7 +222,7 @@ func TestArchiveAndUnarchiveProjectAreIdempotent(t *testing.T) {
 
 func TestArchiveProjectWithActiveSessionConflicts(t *testing.T) {
 	h, _ := newHandler(t, &fakeMux{})
-	created := createTestProject(t, h, "Atelier Code", t.TempDir())
+	created := createTestProject(t, h, "atc", t.TempDir())
 
 	rec := do(t, h, http.MethodPost, "/sessions/start", `{"action":"claude","projectId":"`+created.ID+`"}`)
 	if rec.Code != http.StatusOK {
@@ -264,7 +264,7 @@ func TestStartSessionWithProject(t *testing.T) {
 	mux := &fakeMux{}
 	h, _ := newHandler(t, mux)
 	projectDir := t.TempDir()
-	created := createTestProject(t, h, "Atelier Code", projectDir)
+	created := createTestProject(t, h, "atc", projectDir)
 
 	rec := do(t, h, http.MethodPost, "/sessions/start", `{"action":"claude","projectId":"`+created.ID+`"}`)
 	if rec.Code != http.StatusOK {
@@ -277,7 +277,7 @@ func TestStartSessionWithProject(t *testing.T) {
 	if resp.WorkingDir != projectDir {
 		t.Fatalf("workingDir = %q, want inherited project dir", resp.WorkingDir)
 	}
-	if resp.Project == nil || resp.Project.ID != created.ID || resp.Project.Name != "Atelier Code" || resp.Project.WorkingDir != projectDir {
+	if resp.Project == nil || resp.Project.ID != created.ID || resp.Project.Name != "atc" || resp.Project.WorkingDir != projectDir {
 		t.Fatalf("project = %+v", resp.Project)
 	}
 	if mux.lastStart.dir != projectDir {
@@ -341,7 +341,7 @@ func TestStartSessionProjectErrors(t *testing.T) {
 func TestListProjectSessions(t *testing.T) {
 	mux := &fakeMux{}
 	h, st := newHandler(t, mux)
-	created := createTestProject(t, h, "Atelier Code", t.TempDir())
+	created := createTestProject(t, h, "atc", t.TempDir())
 
 	rec := do(t, h, http.MethodPost, "/sessions/start", `{"action":"claude","projectId":"`+created.ID+`"}`)
 	if rec.Code != http.StatusOK {

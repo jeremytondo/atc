@@ -1,6 +1,6 @@
 // Binds the TypeScript API types and client to the shared cross-client
 // fixtures in packages/contracts/fixtures — the same files the Go server
-// round-trips and AtelierCodeKit decodes. The `satisfies` assertions fail
+// round-trips and ATCKit decodes. The `satisfies` assertions fail
 // `pnpm check` when a fixture and a type drift apart; the runtime tests
 // exercise the client's envelope unwrapping against fixture bodies.
 import { describe, expect, it, vi, afterEach } from 'vitest';

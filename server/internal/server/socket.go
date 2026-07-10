@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jeremytondo/atelier-code/internal/paths"
+	"github.com/jeremytondo/atc/internal/paths"
 )
 
 // prepareUnixSocket ensures the socket's control directory exists and clears a
@@ -34,7 +34,7 @@ func prepareUnixSocket(socketPath string) error {
 	conn, err := net.DialTimeout("unix", socketPath, 200*time.Millisecond)
 	if err == nil {
 		conn.Close()
-		return fmt.Errorf("Atelier Code service already reachable at Unix socket %s", socketPath)
+		return fmt.Errorf("atc service already reachable at Unix socket %s", socketPath)
 	}
 	if !isClearlyStaleUnixSocketError(err) {
 		return fmt.Errorf("refusing to remove Unix socket %s because liveness check failed ambiguously: %w", socketPath, err)

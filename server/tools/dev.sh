@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Dev runs a hermetic profile under tmp/dev/: its own config, loopback bind,
-# Unix socket, database, and actions file. Your personal Atelier Code config
+# Unix socket, database, and actions file. Your personal atc config
 # (~/.config/atc/atc.toml) and ATC_* environment overrides never
 # apply here, and the dedicated port keeps dev clear of a background service
 # on the default 7331. Delete tmp/dev for a fresh dev state.
@@ -24,8 +24,8 @@ usage() {
   cat <<EOF
 usage: tools/dev.sh
 
-Starts the Atelier Code API and Vite web server in the foreground, isolated from
-any installed Atelier Code service (state lives in tmp/dev/).
+Starts the atc API and Vite web server in the foreground, isolated from
+any installed atc service (state lives in tmp/dev/).
 Stop both processes with Ctrl-C.
 EOF
 }
@@ -222,7 +222,7 @@ cleanup() {
   CLEANED_UP=1
 
   stop_process "Vite dev server" "$WEB_PID" "$signal"
-  stop_process "Atelier Code API" "$API_PID" "$signal"
+  stop_process "atc API" "$API_PID" "$signal"
 }
 
 on_signal() {
@@ -262,7 +262,7 @@ main() {
     exit 2
   fi
 
-  require_port_free "Atelier Code API" "$API_PORT"
+  require_port_free "atc API" "$API_PORT"
   require_port_free "Vite web" "$WEB_PORT"
 
   trap 'on_signal HUP' HUP
@@ -270,12 +270,12 @@ main() {
   trap 'on_signal TERM' TERM
   trap cleanup EXIT
 
-  echo "Starting Atelier Code dev..."
+  echo "Starting atc dev..."
   write_dev_config
   start_api
   start_web
 
-  if ! wait_for_http "Atelier Code API" "$API_URL/api/health" "$API_PID"; then
+  if ! wait_for_http "atc API" "$API_URL/api/health" "$API_PID"; then
     exit 1
   fi
   if ! wait_for_http "Vite dev server" "$WEB_URL/" "$WEB_PID"; then
@@ -283,7 +283,7 @@ main() {
   fi
 
   cat <<EOF
-Atelier Code dev ready
+atc dev ready
 UI:    $WEB_URL
 API:   $API_URL
 State: tmp/dev (delete for a fresh dev database)

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"net/http"
 
-	actionstore "github.com/jeremytondo/atelier-code/internal/action"
-	"github.com/jeremytondo/atelier-code/internal/session"
+	actionstore "github.com/jeremytondo/atc/internal/action"
+	"github.com/jeremytondo/atc/internal/session"
 )
 
 type actionsResponse struct {

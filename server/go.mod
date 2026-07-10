@@ -1,4 +1,4 @@
-module github.com/jeremytondo/atelier-code
+module github.com/jeremytondo/atc
 
 go 1.26.4
 

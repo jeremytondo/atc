@@ -59,7 +59,7 @@
 </script>
 
 <svelte:head>
-  <title>Atelier Code · Projects</title>
+  <title>atc · Projects</title>
 </svelte:head>
 
 <div class="pad" style="max-width:780px">

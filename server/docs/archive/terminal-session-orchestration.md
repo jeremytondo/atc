@@ -2,7 +2,7 @@
 
 Status: Draft v1
 
-Purpose: Let Cockpit spawn a command in a persistent terminal session that lives independently of the Cockpit service, inject text and keys into it, and list those sessions — over both the API and CLI.
+Purpose: Let atc spawn a command in a persistent terminal session that lives independently of the atc service, inject text and keys into it, and list those sessions — over both the API and CLI.
 
 Source: Linear DEV-22. Decisions in this spec were settled in a design session and are recorded in [`CONTEXT.md`](../../CONTEXT.md) (glossary) and [`docs/adr/0001`–`0004`](../adr/). This spec MUST NOT silently re-open those decisions.
 
@@ -16,13 +16,13 @@ The key words `MUST`, `MUST NOT`, `REQUIRED`, `SHOULD`, `SHOULD NOT`, `RECOMMEND
 
 ## 1. Problem Statement
 
-Cockpit must perform actions on the workstation on behalf of API and CLI clients. The first such action is starting and interacting with a persistent, terminal-based process — primarily an AI coding agent (`claude`, `codex`), but generalized to any command.
+atc must perform actions on the workstation on behalf of API and CLI clients. The first such action is starting and interacting with a persistent, terminal-based process — primarily an AI coding agent (`claude`, `codex`), but generalized to any command.
 
 The project exists to:
 
-- Spawn a command in a terminal session that **persists independently of the Cockpit service**, so the session survives a service restart and can be attached to later.
+- Spawn a command in a terminal session that **persists independently of the atc service**, so the session survives a service restart and can be attached to later.
 - Inject text into a running session without submitting it, and inject control/special keys (including the key that submits).
-- List Cockpit-managed sessions so clients can answer "what is running?" without Cockpit holding its own session state.
+- List atc-managed sessions so clients can answer "what is running?" without atc holding its own session state.
 - Expose all of the above identically over the API and the CLI.
 
 The project does not attempt to solve:
@@ -30,7 +30,7 @@ The project does not attempt to solve:
 - Reading agent/process output back programmatically (output streaming).
 - A web-based or in-app terminal.
 - Remote access (SSH, Tailscale).
-- Persisting session metadata in Cockpit (a registry/database).
+- Persisting session metadata in atc (a registry/database).
 - Input arbitration when a human terminal and the API drive the same session concurrently (`zmx`'s "leader" concept).
 
 ## 2. Goals and Non-Goals
@@ -40,7 +40,7 @@ The project does not attempt to solve:
 - Provide a `start` operation that launches a registered **agent** in a detached, persistent, scoped session and returns the session name immediately (fire-and-register; never blocks on the process). The command is built from the agent registry, not supplied by the caller (ADR 0004).
 - Provide a `send` operation that injects text verbatim, without submitting.
 - Provide a `key` operation that injects a friendly-named control/special key as raw bytes.
-- Provide a `list` operation that returns Cockpit-managed sessions discovered from the multiplexer.
+- Provide a `list` operation that returns atc-managed sessions discovered from the multiplexer.
 - Mirror all operations across HTTP API and CLI.
 - Keep the multiplexer (`zmx`) behind a single, narrow internal wrapper so it is swappable.
 
@@ -55,7 +55,7 @@ The project does not attempt to solve:
 
 ## 3. Initial Project Boundary
 
-This specification defines the MVP for terminal session orchestration within the existing Cockpit service.
+This specification defines the MVP for terminal session orchestration within the existing atc service.
 
 Target users:
 
@@ -67,8 +67,8 @@ Primary workflows:
 - Start a session running a command (e.g. `claude`) scoped to an item, a project, or nothing.
 - Send a prompt into a running session, then submit it with an `enter` key.
 - Interrupt a session with `ctrl-c`.
-- List running Cockpit sessions.
-- Attach to a session from a local terminal (via `zmx attach`, outside Cockpit) to observe it.
+- List running atc sessions.
+- Attach to a session from a local terminal (via `zmx attach`, outside atc) to observe it.
 
 Supported platforms or environments:
 
@@ -117,15 +117,15 @@ internal/
   api/        # MODIFIED: session routes
   server/     # MODIFIED: transport-aware auth middleware (token on TCP)
   config/     # MODIFIED: zmx binary location, agent registry, API token
-cli/          # MODIFIED: `cockpit session …` commands
+cli/          # MODIFIED: `atc session …` commands
 docs/
   specs/terminal-session-orchestration.md  # this document
 ```
 
 Project-specific layout rules:
 
-- `internal/zmx/` MUST deal only in `zmx` session names and byte payloads. It MUST NOT know about items, projects, scopes, the `cockpit:` naming scheme, or key registries.
-- `internal/session/` MUST own the `cockpit:<kind>:<id>` naming scheme, scope parsing/encoding, the key registry, the agent registry and command construction, and the start/send/key/list operations. It depends on `internal/zmx`.
+- `internal/zmx/` MUST deal only in `zmx` session names and byte payloads. It MUST NOT know about items, projects, scopes, the `atc:` naming scheme, or key registries.
+- `internal/session/` MUST own the `atc:<kind>:<id>` naming scheme, scope parsing/encoding, the key registry, the agent registry and command construction, and the start/send/key/list operations. It depends on `internal/zmx`.
 - `internal/api/` MUST translate HTTP requests into `internal/session` calls. It MUST NOT invoke `zmx` directly.
 - `cli/` session commands MUST call the API over the Unix socket, consistent with the existing API-backed command pattern. They MUST NOT call `internal/session` or `zmx` directly.
 
@@ -163,7 +163,7 @@ Implementations MUST NOT:
    - Pipes byte payloads to `zmx send` via stdin.
 
 2. `internal/session` — Session domain
-   - Encodes/decodes the `cockpit:<kind>:<id>` name.
+   - Encodes/decodes the `atc:<kind>:<id>` name.
    - Generates collision-resistant free-session ids.
    - Translates friendly key names to bytes (key registry).
    - Resolves an agent name + typed params into a command via the agent registry.
@@ -174,12 +174,12 @@ Implementations MUST NOT:
    - Translates requests to `internal/session` calls and JSON responses.
 
 4. `cli` — Operator/agent surface
-   - `cockpit session start|send|key|list`, calling the API over the Unix socket.
+   - `atc session start|send|key|list`, calling the API over the Unix socket.
 
 ### 5.2 Component Boundaries
 
 - `internal/zmx` owns `zmx` command construction and execution; it MUST NOT own naming, scope, or key semantics.
-- `internal/session` owns all Cockpit-specific session semantics; it MUST NOT construct `zmx` commands itself.
+- `internal/session` owns all atc-specific session semantics; it MUST NOT construct `zmx` commands itself.
 - `internal/api` owns HTTP translation; it MUST NOT own `zmx` or core listener concerns.
 - `cli` owns command UX; it MUST reach the service through the API over the Unix socket.
 
@@ -197,13 +197,13 @@ No data is persisted. The model below describes in-memory/derived shapes; identi
 
 #### 6.1.1 Session
 
-A persistent terminal running a command, independent of the Cockpit service.
+A persistent terminal running a command, independent of the atc service.
 
 Fields:
 
-- `name` (string): the full `zmx` session name, `cockpit:<kind>:<id>`. The sole identity.
+- `name` (string): the full `zmx` session name, `atc:<kind>:<id>`. The sole identity.
 - `scope` (Scope): derived by parsing `name`.
-- `command` (string): the command the session runs. On `list`, derived from `zmx`'s reported `cmd`. Not stored by Cockpit.
+- `command` (string): the command the session runs. On `list`, derived from `zmx`'s reported `cmd`. Not stored by atc.
 - `dir` (string): the working directory the session started in. On `list`, derived from `zmx`'s reported `start_dir`.
 - `created` (timestamp): derived from `zmx`'s reported `created`.
 
@@ -229,14 +229,14 @@ MVP registry (exact, closed set):
 ### 6.2 Relationships
 
 - A `Session` has exactly one `Scope`, encoded in its `name`.
-- `Scope` is a Cockpit concept; `zmx` knows only the opaque `name`.
+- `Scope` is an atc concept; `zmx` knows only the opaque `name`.
 
 ### 6.3 Identifiers and Normalization Rules
 
-- Session name format: `cockpit:<kind>:<id>`, colon-separated.
+- Session name format: `atc:<kind>:<id>`, colon-separated.
 - `kind` MUST be one of `item`, `project`, `free`.
 - Parse-back MUST use `SplitN(name, ":", 3)`; the third segment is the id. This relies on item ids and project slugs never containing a colon (confirmed).
-- "Cockpit-managed" MUST be defined as: name matches the 3-part pattern AND `kind` is a valid kind. A naive `cockpit:` prefix match MUST NOT be used (so hand-made sessions like `cockpit:claude-code` are excluded).
+- "atc-managed" MUST be defined as: name matches the 3-part pattern AND `kind` is a valid kind. A naive `atc:` prefix match MUST NOT be used (so hand-made sessions like `atc:claude-code` are excluded).
 - Free-session ids MUST be collision-resistant, generated from `crypto/rand` (RECOMMENDED: ~8 lowercase base32 chars). Two concurrent free `start` calls MUST NOT collide.
 
 ## 7. Component Specifications
@@ -245,7 +245,7 @@ MVP registry (exact, closed set):
 
 #### 7.1.1 Purpose
 
-Provide the single, narrow seam through which Cockpit talks to `zmx`.
+Provide the single, narrow seam through which atc talks to `zmx`.
 
 #### 7.1.2 Responsibilities
 
@@ -258,7 +258,7 @@ This component MUST:
 
 This component MUST NOT:
 
-- Apply or interpret the `cockpit:` naming scheme, scope, or key semantics.
+- Apply or interpret the `atc:` naming scheme, scope, or key semantics.
 - Maintain state between calls.
 
 #### 7.1.3 Inputs and Outputs
@@ -283,7 +283,7 @@ Outputs: success/error from the underlying `zmx` invocation; for `List`, parsed 
 
 #### 7.2.1 Purpose
 
-Own all Cockpit-specific session semantics on top of the wrapper.
+Own all atc-specific session semantics on top of the wrapper.
 
 #### 7.2.2 Responsibilities
 
@@ -291,12 +291,12 @@ This component MUST:
 
 - `Start(scope, dir, agent, params)`:
   - Resolve `agent` against the registry, building the command from its `bin`, base `args`, and validated `params`. Unknown agent or invalid param is a caller error; no command text comes from the caller.
-  - Determine the session name: for `item`/`project`, `cockpit:<kind>:<id>`; for `free`, `cockpit:free:<generated-id>`.
-  - For `item`/`project` scope, reject if a Cockpit-managed session with that name already exists (check via `List`).
+  - Determine the session name: for `item`/`project`, `atc:<kind>:<id>`; for `free`, `atc:free:<generated-id>`.
+  - For `item`/`project` scope, reject if an atc-managed session with that name already exists (check via `List`).
   - Call `zmx.Start` with the built command and return the name.
 - `Send(name, text)`: inject `text` bytes verbatim via `zmx.Send` (no appended carriage return).
 - `Key(name, keyName)`: look up `keyName` in the registry and inject its bytes via `zmx.Send`.
-- `List()`: call `zmx.List`, keep only Cockpit-managed sessions (§6.3), and return them with parsed scope.
+- `List()`: call `zmx.List`, keep only atc-managed sessions (§6.3), and return them with parsed scope.
 
 This component MUST NOT:
 
@@ -332,7 +332,7 @@ SHOULD log, on `start`: the session name, the working directory, and the command
 
 See §8. Translates requests to `internal/session`; owns no `zmx` or listener concerns.
 
-### 7.4 `cli` (`cockpit session …`)
+### 7.4 `cli` (`atc session …`)
 
 #### 7.4.1 Purpose
 
@@ -342,10 +342,10 @@ Give humans and agents the same operations as the API.
 
 This component MUST provide:
 
-- `cockpit session start --agent <name> [--param key=value]… [--item <id> | --project <slug>] [--dir <path>]` — prints the session name to stdout on success.
-- `cockpit session send <name> <text>` — injects text, no submit.
-- `cockpit session key <name> <key>` — injects a registry key.
-- `cockpit session list` — lists Cockpit-managed sessions.
+- `atc session start --agent <name> [--param key=value]… [--item <id> | --project <slug>] [--dir <path>]` — prints the session name to stdout on success.
+- `atc session send <name> <text>` — injects text, no submit.
+- `atc session key <name> <key>` — injects a registry key.
+- `atc session list` — lists atc-managed sessions.
 
 #### 7.4.3 Behavior
 
@@ -374,7 +374,7 @@ Expose session operations as the source of truth for all clients.
 - `POST /api/sessions/start`: start a session; returns its name.
 - `POST /api/sessions/send`: inject text without submitting.
 - `POST /api/sessions/key`: inject a registry key.
-- `GET /api/sessions`: list Cockpit-managed sessions.
+- `GET /api/sessions`: list atc-managed sessions.
 
 Routing style is flat RPC (operation in the path, identifiers in the body), consistent with the existing switch-based router. Path parameters are not required.
 
@@ -401,13 +401,13 @@ Requests on the TCP listener MUST carry `Authorization: Bearer <token>` when a t
 `POST /api/sessions/send`:
 
 ```json
-{ "name": "cockpit:item:DEV-22", "text": "implement the parser" }
+{ "name": "atc:item:DEV-22", "text": "implement the parser" }
 ```
 
 `POST /api/sessions/key`:
 
 ```json
-{ "name": "cockpit:item:DEV-22", "key": "enter" }
+{ "name": "atc:item:DEV-22", "key": "enter" }
 ```
 
 #### 8.1.4 Output Contracts
@@ -415,7 +415,7 @@ Requests on the TCP listener MUST carry `Authorization: Bearer <token>` when a t
 `POST /api/sessions/start` → HTTP 200:
 
 ```json
-{ "name": "cockpit:item:DEV-22" }
+{ "name": "atc:item:DEV-22" }
 ```
 
 `POST /api/sessions/send` and `/key` → HTTP 200 with an empty JSON object `{}` on success.
@@ -426,7 +426,7 @@ Requests on the TCP listener MUST carry `Authorization: Bearer <token>` when a t
 {
   "sessions": [
     {
-      "name": "cockpit:item:DEV-22",
+      "name": "atc:item:DEV-22",
       "scope": { "kind": "item", "id": "DEV-22" },
       "command": "/usr/bin/zsh -l -i -c claude",
       "dir": "/home/user/project",
@@ -455,7 +455,7 @@ The system MUST persist:
 
 The system MAY create:
 
-- Working-directory side effects produced by the spawned command itself (outside Cockpit's control).
+- Working-directory side effects produced by the spawned command itself (outside atc's control).
 
 Identity and liveness MUST be derived from `zmx list` on demand.
 
@@ -492,24 +492,24 @@ The system SHOULD expose:
 
 - `zmx` binary location: resolved from `PATH` by default; overridable via configuration.
   - Sources/precedence MUST follow the existing config precedence (CLI/flag, then environment, then config file, then built-in default), consistent with `internal/config`.
-  - RECOMMENDED keys/vars: a config key (e.g. `zmx_bin`) and/or `COCKPIT_ZMX_BIN`.
+  - RECOMMENDED keys/vars: a config key (e.g. `zmx_bin`) and/or `ATC_ZMX_BIN`.
   - Default: `zmx` (resolved via `PATH`).
   - Validation: if the resolved binary cannot be executed, session operations that need it MUST fail clearly.
 - Agent registry: an `[agents]` table mapping each agent name to its `bin`, base `args`, and typed `params` (`enum`/`bool`). When the config file defines `[agents]` it fully replaces the built-in defaults; otherwise a default registry (`claude`, `codex` as bare binaries) applies. The registry is a service-level setting (no CLI flag); the CLI reaches it through the running service.
 - TCP API token: the bearer token required on the TCP listener.
-  - Precedence follows the standard config order; RECOMMENDED key `auth.token` and/or `COCKPIT_API_TOKEN`.
+  - Precedence follows the standard config order; RECOMMENDED key `auth.token` and/or `ATC_API_TOKEN`.
   - Default: empty (TCP authentication disabled; Unix socket remains trusted).
 
 ## 10. Acceptance Criteria
 
 The implementation is considered complete when:
 
-- `cockpit session start --agent claude` (item, project, and free variants) returns a `cockpit:<kind>:<id>` name and the session appears in `zmx list`, with `start` returning promptly (not blocking on the agent).
-- `cockpit session start --agent <unknown>` fails with a 400 / clear CLI error; `--param` values are validated against the agent's spec.
-- `cockpit session send <name> "<text>"` places text in the running command without submitting.
-- `cockpit session key <name> enter` submits the pending text.
-- `cockpit session key <name> ctrl-c` interrupts the running command.
-- `cockpit session list` returns only Cockpit-managed sessions, with parsed scope, tolerating unreachable entries.
+- `atc session start --agent claude` (item, project, and free variants) returns a `atc:<kind>:<id>` name and the session appears in `zmx list`, with `start` returning promptly (not blocking on the agent).
+- `atc session start --agent <unknown>` fails with a 400 / clear CLI error; `--param` values are validated against the agent's spec.
+- `atc session send <name> "<text>"` places text in the running command without submitting.
+- `atc session key <name> enter` submits the pending text.
+- `atc session key <name> ctrl-c` interrupts the running command.
+- `atc session list` returns only atc-managed sessions, with parsed scope, tolerating unreachable entries.
 - The same four operations work over `POST /api/sessions/start|send|key` and `GET /api/sessions`.
 - After `start`, attaching with `zmx attach <name>` from a separate terminal shows the command alive and working on what was sent (the DEV-22 proof loop: spawn → inject → submit → persist → attach).
 - A second `item`/`project` `start` for an existing session fails (409 / clear CLI error) rather than injecting into it.
@@ -528,7 +528,7 @@ The implementation is not acceptable if:
 
 Automated tests:
 
-- `internal/session`: name encode/decode round-trips, including ids/slugs containing hyphens; rejection of non-managed names (`cockpit:claude-code`); free-id generation is non-colliding and well-formed; key registry maps the three keys to correct bytes; unknown key errors.
+- `internal/session`: name encode/decode round-trips, including ids/slugs containing hyphens; rejection of non-managed names (`atc:claude-code`); free-id generation is non-colliding and well-formed; key registry maps the three keys to correct bytes; unknown key errors.
 - `internal/session`: `start` resolves the agent registry into the expected command and enforces unknown-agent, invalid-param, and reject-if-exists rules, using a faked `zmx` wrapper (no live daemon). Agent command construction covers enum/bool params, deterministic ordering, and shell-quoting.
 - `internal/zmx`: command construction (argument order, `-d` after name, working-directory wiring, stdin payload delivery) verified without a live daemon — e.g. via an injected runner/exec seam or a stub `zmx` on `PATH`.
 - `internal/api`: request validation, status-code mapping (400/401/404/409/500), and response shapes.
@@ -544,7 +544,7 @@ Manual checks:
 Integration checks:
 
 - CLI `session` commands reach the running service over the Unix socket and produce identical results to direct API calls.
-- `list` reflects sessions created by `start` and excludes non-Cockpit `zmx` sessions.
+- `list` reflects sessions created by `start` and excludes non-atc `zmx` sessions.
 
 Regression checks:
 
@@ -580,7 +580,7 @@ Out of scope for initial implementation:
 
 - Free-id length/alphabet: ~8 base32 chars is RECOMMENDED; confirm before lock-in if a shorter/longer id is preferred. (Deferrable)
 - `GET /api/sessions` field set: name, scope, command, dir, created are proposed from `zmx list`; confirm whether `pid`/status should also be surfaced. (Deferrable)
-- Whether `cockpit session send` should accept text via stdin (in addition to an argument) for large prompts. (Deferrable)
+- Whether `atc session send` should accept text via stdin (in addition to an argument) for large prompts. (Deferrable)
 - `zmx` portability confirmation on every intended target OS beyond the current Linux workstation (DEV-22 dependency note). (Spec-shaping for non-Linux targets only)
 
 ## Appendices
@@ -590,5 +590,5 @@ Out of scope for initial implementation:
 - Start: `zmx run <name> -d $SHELL -l -i -c "<command>"`, child cwd = `dir`, where `<command>` is built by `internal/session` from the agent registry (`bin` + base `args` + validated param tokens, shell-quoted) — not received from the caller. `run` appends a completion marker to the launch line; this is harmless because it only fires after the command exits.
 - Send text: pipe `text` bytes to `zmx send <name>` stdin (verbatim; no carriage return).
 - Send key: pipe the registry bytes to `zmx send <name>` stdin (`enter`=`\r`, `ctrl-c`=`0x03`, `escape`=`0x1B`).
-- List: `zmx list`, then filter to names matching `cockpit:(item|project|free):<id>`.
-- Attach (human, outside Cockpit): `zmx attach <name>`.
+- List: `zmx list`, then filter to names matching `atc:(item|project|free):<id>`.
+- Attach (human, outside atc): `zmx attach <name>`.

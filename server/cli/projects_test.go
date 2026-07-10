@@ -73,22 +73,22 @@ func TestProjectsCreatePostsResolvedDir(t *testing.T) {
 				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 					t.Fatalf("decode request: %v", err)
 				}
-				if req["name"] != "Atelier Code" || req["workingDir"] != want {
-					t.Fatalf("request = %#v, want name Atelier Code dir %q", req, want)
+				if req["name"] != "atc" || req["workingDir"] != want {
+					t.Fatalf("request = %#v, want name atc dir %q", req, want)
 				}
 				w.WriteHeader(http.StatusCreated)
-				_, _ = w.Write([]byte(`{"id":"prj_123","name":"Atelier Code","workingDir":"` + want + `","createdAt":"2026-07-07T15:04:05Z","updatedAt":"2026-07-07T15:04:05Z"}`))
+				_, _ = w.Write([]byte(`{"id":"prj_123","name":"atc","workingDir":"` + want + `","createdAt":"2026-07-07T15:04:05Z","updatedAt":"2026-07-07T15:04:05Z"}`))
 			})
 
 			cmd := projectsCommand(lookup)
 			var out bytes.Buffer
 			cmd.SetOut(&out)
-			cmd.SetArgs([]string{"create", "--name", "Atelier Code", "--dir", arg})
+			cmd.SetArgs([]string{"create", "--name", "atc", "--dir", arg})
 
 			if err := cmd.Execute(); err != nil {
 				t.Fatalf("Execute returned error: %v", err)
 			}
-			if got := out.String(); got != "prj_123\tAtelier Code\n" {
+			if got := out.String(); got != "prj_123\tatc\n" {
 				t.Fatalf("output = %q, want id and name", got)
 			}
 		})
@@ -126,7 +126,7 @@ func TestProjectsListTextAndQuery(t *testing.T) {
 
 func TestProjectsListJSONIsRawBody(t *testing.T) {
 	lookup := testRuntimeLookup(t)
-	body := `{"projects":[{"id":"prj_123","name":"Atelier Code","workingDir":"/repo","createdAt":"2026-07-07T15:04:05Z","updatedAt":"2026-07-07T15:04:05Z"}]}`
+	body := `{"projects":[{"id":"prj_123","name":"atc","workingDir":"/repo","createdAt":"2026-07-07T15:04:05Z","updatedAt":"2026-07-07T15:04:05Z"}]}`
 	serveUnixAPI(t, lookup, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(body))
 	})
@@ -150,7 +150,7 @@ func TestProjectsShowPrintsKeyValueLines(t *testing.T) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/projects/prj_show" {
 			t.Fatalf("request = %s %s, want GET /api/projects/prj_show", r.Method, r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"id":"prj_show","name":"Atelier Code","workingDir":"/repo","createdAt":"2026-07-07T15:04:05Z","updatedAt":"2026-07-07T16:04:05Z","archivedAt":"2026-07-08T09:00:00Z"}`))
+		_, _ = w.Write([]byte(`{"id":"prj_show","name":"atc","workingDir":"/repo","createdAt":"2026-07-07T15:04:05Z","updatedAt":"2026-07-07T16:04:05Z","archivedAt":"2026-07-08T09:00:00Z"}`))
 	})
 
 	cmd := projectsCommand(lookup)
@@ -161,7 +161,7 @@ func TestProjectsShowPrintsKeyValueLines(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
-	want := "id\tprj_show\nname\tAtelier Code\nworkingDir\t/repo\ncreatedAt\t2026-07-07T15:04:05Z\nupdatedAt\t2026-07-07T16:04:05Z\narchivedAt\t2026-07-08T09:00:00Z\n"
+	want := "id\tprj_show\nname\tatc\nworkingDir\t/repo\ncreatedAt\t2026-07-07T15:04:05Z\nupdatedAt\t2026-07-07T16:04:05Z\narchivedAt\t2026-07-08T09:00:00Z\n"
 	if got := out.String(); got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
@@ -302,7 +302,7 @@ func TestSessionsListWithProjectUsesProjectRoute(t *testing.T) {
 func TestSessionsShowPrintsProjectFields(t *testing.T) {
 	lookup := testRuntimeLookup(t)
 	serveUnixAPI(t, lookup, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"id":"ses_show","action":"codex","environment":"host-login-shell","params":{},"workingDir":"/repo","status":"running","attachable":true,"createdAt":"2026-07-07T15:04:05Z","updatedAt":"2026-07-07T15:04:06Z","project":{"id":"prj_123","name":"Atelier Code","workingDir":"/repo"}}`))
+		_, _ = w.Write([]byte(`{"id":"ses_show","action":"codex","environment":"host-login-shell","params":{},"workingDir":"/repo","status":"running","attachable":true,"createdAt":"2026-07-07T15:04:05Z","updatedAt":"2026-07-07T15:04:06Z","project":{"id":"prj_123","name":"atc","workingDir":"/repo"}}`))
 	})
 
 	cmd := sessionsCommand(lookup)
@@ -314,7 +314,7 @@ func TestSessionsShowPrintsProjectFields(t *testing.T) {
 		t.Fatalf("Execute returned error: %v", err)
 	}
 	got := out.String()
-	for _, want := range []string{"project\tprj_123\n", "projectName\tAtelier Code\n"} {
+	for _, want := range []string{"project\tprj_123\n", "projectName\tatc\n"} {
 		if !bytes.Contains([]byte(got), []byte(want)) {
 			t.Fatalf("output = %q, want to contain %q", got, want)
 		}

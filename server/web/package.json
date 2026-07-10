@@ -1,5 +1,5 @@
 {
-  "name": "@atelier-code/web",
+  "name": "@atc/web",
   "private": true,
   "version": "0.0.0",
   "type": "module",

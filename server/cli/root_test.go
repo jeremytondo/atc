@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremytondo/atelier-code/internal/paths"
-	"github.com/jeremytondo/atelier-code/internal/server"
+	"github.com/jeremytondo/atc/internal/paths"
+	"github.com/jeremytondo/atc/internal/server"
 	"github.com/spf13/cobra"
 )
 

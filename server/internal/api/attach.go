@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/jeremytondo/atelier-code/internal/session"
-	"github.com/jeremytondo/atelier-code/internal/zmx"
+	"github.com/jeremytondo/atc/internal/session"
+	"github.com/jeremytondo/atc/internal/zmx"
 )
 
 // attachOriginPatterns are the authorities allowed to open an attach WebSocket.

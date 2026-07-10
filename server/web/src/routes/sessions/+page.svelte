@@ -109,7 +109,7 @@
 </script>
 
 <svelte:head>
-  <title>Atelier Code · Sessions</title>
+  <title>atc · Sessions</title>
 </svelte:head>
 
 <div class="pad">

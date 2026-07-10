@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeremytondo/atelier-code/internal/session"
+	"github.com/jeremytondo/atc/internal/session"
 )
 
 func TestLoadAbsentFileReturnsDefaults(t *testing.T) {

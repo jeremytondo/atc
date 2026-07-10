@@ -1,6 +1,6 @@
-> **Historical (archived 2026-07):** Describes the pre-monorepo Cockpit-era system. Names, paths, and instructions here are obsolete — see AGENTS.md and docs/platform-policy.md for current structure and policy.
+> **Historical (archived 2026-07):** Describes the pre-monorepo atc-era system. Names, paths, and instructions here are obsolete — see AGENTS.md and docs/platform-policy.md for current structure and policy.
 
-# Implementation Plan — Cockpit Projects
+# Implementation Plan — atc Projects
 
 Spec: `docs/specs/projects.md`. Brief: `docs/ideas/projects.md`.
 
@@ -19,7 +19,7 @@ No Projects code; makes the codebase ready and better on its own.
    in `cli/sessions.go` and import `internal/api` from the CLI. No wire
    change — assert with existing CLI end-to-end tests.
 3. **Rename `store.ErrNotFound` → `store.ErrSessionNotFound`** and update the
-   store package doc comment to "Cockpit-owned state". Mechanical; compiler
+   store package doc comment to "atc-owned state". Mechanical; compiler
    finds every caller.
 4. **Validate working directory on all Session starts**: add the
    absolute/exists/is-directory check to `session.Start` (helper placed where

@@ -2,7 +2,7 @@
 
 # Backend Agent Sessions — implementation playbook
 
-The executable companion to [`docs/specs/backend-agent-sessions.md`](../specs/backend-agent-sessions.md).
+The executable companion to [`backend-agent-sessions.md`](backend-agent-sessions.md).
 Work it one phase at a time, each on its own branch. Each phase lists its
 prerequisites and an exit gate so a fresh session can pick it up cold.
 
@@ -18,18 +18,18 @@ prerequisites and an exit gate so a fresh session can pick it up cold.
 
 ## Context
 
-Cockpit today proves the terminal-session loop (now archived at
+atc today proves the terminal-session loop (now archived at
 `docs/archive/terminal-session-orchestration.md`): it launches registry agents in
-`zmx`, lists Cockpit-managed sessions by parsing a `cockpit:<kind>:<id>` multiplexer
+`zmx`, lists atc-managed sessions by parsing a `atc:<kind>:<id>` multiplexer
 name, sends text/keys, and bridges a WebSocket attach. That proof loop is **not** a
 durable backend: identity lives in the `zmx` name, nothing is persisted, failed
 launches vanish, and agents are hard-coded.
 
-`docs/specs/backend-agent-sessions.md` (Draft v2, with ADR 0005 "SQLite for state"
-and ADR 0006 "Cockpit-owned identity") turns this into a stable contract: a
-SQLite-backed session registry, opaque Cockpit-owned `ses_` ids, agent discovery, a
+`server/docs/archive/backend-agent-sessions.md` (Draft v2, with ADR 0005 "SQLite for state"
+and ADR 0006 "atc-owned identity") turns this into a stable contract: a
+SQLite-backed session registry, opaque atc-owned `ses_` ids, agent discovery, a
 resource-oriented `/api/sessions/{id}/...` API, a documented WebSocket attach
-protocol, and plural `cockpit agents/sessions` CLI groups. The spec **supersedes** the
+protocol, and plural `atc agents/sessions` CLI groups. The spec **supersedes** the
 MVP where they conflict. Goal: implement that spec end-to-end (backend, CLI, embedded
 SvelteKit app) so one developer can start, list, read, attach, send input to,
 terminate, and archive agent sessions through one backend, with state surviving
@@ -121,7 +121,7 @@ restarts.
   `freeID`). Remove `Scope`/`Kind`, `ScopeFrom`, `sessionName`/`parseName` from the
   domain.
 - `zmx.NameForID(id) string` — deterministic, recomputable
-  (`cockpit-<hex(sha256(id))[:N]>`), used internally by Start/Send/Attach/List-filter/
+  (`atc-<hex(sha256(id))[:N]>`), used internally by Start/Send/Attach/List-filter/
   Terminate; never persisted, never exposed (§7.3). Add `zmx.Terminate(ctx, name)`
   (best-effort, idempotent for absent sessions); confirm `Attach` PTY `Resize` exists
   (it does). Keep all `zmx` command knowledge in this package.
@@ -173,8 +173,8 @@ restarts.
   Phase 4).
 
 **Wiring (`internal/paths`, `internal/server`)**
-- `paths`: `StateDir`/`DBPath` — `$XDG_STATE_HOME/cockpit/cockpit.db`, fallback
-  `~/.local/state/cockpit/cockpit.db` (distinct from the runtime control dir, which
+- `paths`: `StateDir`/`DBPath` — `$XDG_STATE_HOME/atc/atc.db`, fallback
+  `~/.local/state/atc/atc.db` (distinct from the runtime control dir, which
   stays socket/PID/logs only).
 - `server.Serve`: open the store (fail-clear) before serving, build `session.Service`
   with it, run `Reconcile`, close on shutdown. Update `Router`/`Routes` signatures and
@@ -188,7 +188,7 @@ API request validation, status-code mapping, response shaping, launch-failure bo
 Reuse the existing `fakeMux` pattern (`session_test.go`) + a temp store.
 
 **Exit gate:** `go test ./...` green. Smoke (set `XDG_STATE_HOME` to a temp dir; the
-`COCKPIT_DB_PATH` override is Phase 5): DB created/migrated on first start;
+`ATC_DB_PATH` override is Phase 5): DB created/migrated on first start;
 `POST /api/sessions/start` (valid→`running` full session; unknown agent→400 no record;
 bad param→400; prompt to no-prompt agent→fail); `GET /api/sessions` (newest-first,
 omits prompt/params, `?status=`); `GET /api/sessions/{id}`; send-text then send-key
@@ -230,7 +230,7 @@ the token via `Sec-WebSocket-Protocol` only (none in URL), binary I/O + resize w
 
 **Branch:** `feat/agent-sessions-config` · **Prereqs:** Phase 2.
 
-- `StoreConfig{ DBPath string }` (`store.db_path`) + env `COCKPIT_DB_PATH`, standard
+- `StoreConfig{ DBPath string }` (`store.db_path`) + env `ATC_DB_PATH`, standard
   precedence, no CLI flag (layered over Phase 2's `paths.DBPath` default).
 - Extend agent TOML for the new `label/description/prompt` + param `default/label/
   description` fields.
@@ -256,8 +256,8 @@ the token via `Sec-WebSocket-Protocol` only (none in URL), binary I/O + resize w
   resize; connect with the `Authorization` header.
 
 **Exit gate:** `go test ./cli/...` green (request/response incl. `-o json` against a
-fake API server/socket — existing pattern); against a running daemon, `cockpit agents
-list` and the `cockpit sessions` verbs work end-to-end; `cockpit sessions attach <id>`
+fake API server/socket — existing pattern); against a running daemon, `atc agents
+list` and the `atc sessions` verbs work end-to-end; `atc sessions attach <id>`
 bridges a real terminal.
 
 ## Phase 7 — Web app (`web/src/...`)

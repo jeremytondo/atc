@@ -13,7 +13,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/jeremytondo/atelier-code/internal/session"
+	"github.com/jeremytondo/atc/internal/session"
 )
 
 var (

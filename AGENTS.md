@@ -1,4 +1,4 @@
-# Atelier Code Agent Instructions
+# atc Agent Instructions
 
 ## Core Priorities
 - Performance

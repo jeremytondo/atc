@@ -1,4 +1,4 @@
-// Package logging builds Atelier Code's structured logger from already-resolved
+// Package logging builds atc's structured logger from already-resolved
 // configuration. It owns the mapping from config's log level and format strings
 // to a concrete slog handler, keeping that concern out of the config package.
 package logging
@@ -7,7 +7,7 @@ import (
 	"io"
 	"log/slog"
 
-	"github.com/jeremytondo/atelier-code/internal/config"
+	"github.com/jeremytondo/atc/internal/config"
 )
 
 // New constructs a slog.Logger honoring the configured level and format. The

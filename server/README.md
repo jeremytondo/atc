@@ -1,6 +1,6 @@
-# Atelier Code Server
+# atc server
 
-Atelier Code Server is a standalone Go service, CLI (`atc`), and embedded admin web UI for starting and
+atc server is a standalone Go service, CLI (`atc`), and embedded admin web UI for starting and
 managing persistent terminal sessions. Sessions run configured typed Actions in
 explicit Environments; local CLI commands talk to the background service through
 the owner-only Unix socket.
@@ -24,30 +24,30 @@ need them installed separately.
 
 ## Installing Releases
 
-Atelier Code release builds are published through GitHub Releases. The installer
+atc release builds are published through GitHub Releases. The installer
 supports Linux and macOS on `amd64` and `arm64`, including Arch Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/jeremytondo/atelier-code/main/server/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/jeremytondo/atc/main/server/install.sh | sh
 ```
 
 By default this installs `atc` to `~/.local/bin`. Override the location with
 `ATC_INSTALL_DIR`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/jeremytondo/atelier-code/main/server/install.sh | ATC_INSTALL_DIR="$HOME/bin" sh
+curl -fsSL https://raw.githubusercontent.com/jeremytondo/atc/main/server/install.sh | ATC_INSTALL_DIR="$HOME/bin" sh
 ```
 
 Install a specific release tag:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/jeremytondo/atelier-code/main/server/install.sh | sh -s -- --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/jeremytondo/atc/main/server/install.sh | sh -s -- --version v0.1.0
 ```
 
 Update an existing direct install in place:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/jeremytondo/atelier-code/main/server/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/jeremytondo/atc/main/server/install.sh | sh
 ```
 
 The installer verifies the GitHub Release checksum before replacing the binary.
@@ -216,7 +216,7 @@ gh workflow run release.yml --ref main -f channel=stable -f release_type=minor
 
 ## Configuration
 
-Atelier Code reads an optional TOML config file. Every setting also has a built-in default, so the file is never required.
+atc reads an optional TOML config file. Every setting also has a built-in default, so the file is never required.
 
 The default location is `$XDG_CONFIG_HOME/atc/atc.toml` (i.e. `~/.config/atc/atc.toml`). Override it with the `--config` flag or the `ATC_CONFIG` environment variable:
 
@@ -225,7 +225,7 @@ go run ./cmd/atc serve --config ./atc.toml
 ATC_CONFIG=./atc.toml go run ./cmd/atc serve
 ```
 
-A missing config file at the default location is fine — Atelier Code falls back to defaults. A file passed explicitly via `--config` or `ATC_CONFIG` that is missing or malformed is an error.
+A missing config file at the default location is fine — atc falls back to defaults. A file passed explicitly via `--config` or `ATC_CONFIG` that is missing or malformed is an error.
 
 Settings resolve with the precedence **flag > environment variable > config file > built-in default**, so a more specific source always wins. `http_addr` has a CLI flag (`--http-addr`) and environment override (`ATC_HTTP_ADDR`). `zmx.bin`, `auth.token`, and `store.db_path` can be overridden with `ATC_ZMX_BIN`, `ATC_API_TOKEN`, and `ATC_DB_PATH`.
 
@@ -254,9 +254,9 @@ bin = "zmx"                    # zmx binary; can be an absolute path
 token = ""                     # bearer token for TCP API; empty disables it
 ```
 
-Atelier Code is pre-alpha, so SQLite migrations may be squashed while the state model
+atc is pre-alpha, so SQLite migrations may be squashed while the state model
 is still changing. If a local development database fails to migrate after
-pulling schema changes, delete the configured state DB and let Atelier Code recreate
+pulling schema changes, delete the configured state DB and let atc recreate
 it.
 
 The config file applies to background mode too: `atc start` forwards an explicit `--config` path to the detached service so it resolves the same file.
@@ -337,7 +337,7 @@ uses `host-login-shell`.
 
 ## Background Service
 
-`atc start` is the normal operator path. It starts the Atelier Code service in the
+`atc start` is the normal operator path. It starts the atc service in the
 background by launching the foreground `serve` entrypoint.
 
 Start the service:
@@ -460,7 +460,7 @@ session in it (the session inherits the project's directory), and list its
 sessions:
 
 ```sh
-go run ./cmd/atc projects create --name "Atelier Code" --dir ~/Projects/atelier-code
+go run ./cmd/atc projects create --name "atc" --dir ~/Projects/atc
 go run ./cmd/atc sessions start --action claude --project <id>
 go run ./cmd/atc sessions list --project <id>
 ```

@@ -192,7 +192,7 @@
 </script>
 
 <svelte:head>
-  <title>Atelier Code · Actions</title>
+  <title>atc · Actions</title>
 </svelte:head>
 
 <div class="pad" style="max-width:780px">
@@ -204,7 +204,7 @@
     </div>
   </div>
   <p class="lede" style="margin-bottom:22px">
-    The typed commands a session can run. Built-ins ship with Atelier Code; customizations live in your
+    The typed commands a session can run. Built-ins ship with atc; customizations live in your
     actions file.
   </p>
 

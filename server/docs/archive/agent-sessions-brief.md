@@ -1,6 +1,6 @@
 > Archived: superseded by `docs/plans/sessions-actions-environments.md` and `docs/specs/sessions-actions-environments.md`.
 
-# Cockpit Backend Agent Sessions Brief
+# atc Backend Agent Sessions Brief
 
 Status: Draft
 
@@ -13,14 +13,14 @@ inventing its own session semantics.
 
 ## Idea Definition
 
-Cockpit should expose a local service API for working with coding agents such as
+atc should expose a local service API for working with coding agents such as
 Claude Code and Codex through their real CLI/TUI processes. The service should
 launch configured agents, keep enough metadata to explain what is running, expose
 session lifecycle and attach operations, and keep the terminal multiplexer
 implementation behind a narrow internal boundary.
 
 The current backend proves the core loop: launch a registered agent in `zmx`,
-list Cockpit-managed sessions, inject text/keys, and attach over a WebSocket
+list atc-managed sessions, inject text/keys, and attach over a WebSocket
 terminal bridge. The next backend iteration should turn that proof loop into a
 stable product contract.
 
@@ -32,7 +32,7 @@ stable product contract.
   session lifecycle API rather than introducing agent-owned sessions.
 - Decouple session identity from projects and items. Do not model project/item
   links in this backend pass; leave that integration deferred.
-- Introduce a Cockpit-owned stable session id as the public identifier. Clients
+- Introduce an atc-owned stable session id as the public identifier. Clients
   and higher-level backend packages should not know or persist multiplexer
   handles.
 - Session ids should be opaque, generated, URL-safe strings with a short prefix
@@ -41,10 +41,10 @@ stable product contract.
 - Sessions may have an optional user-facing `name` for display in lists,
   titles, and CLI output. `id` remains the stable API identity; multiplexer
   names remain private.
-- Introduce a small Cockpit-owned session registry keyed by the stable Cockpit
-  session id. Use `zmx` for liveness and PTY ownership, but store Cockpit
+- Introduce a small atc-owned session registry keyed by the stable atc
+  session id. Use `zmx` for liveness and PTY ownership, but store atc
   metadata that `zmx` cannot recover.
-- Let the multiplexer boundary map Cockpit session ids to its private session
+- Let the multiplexer boundary map atc session ids to its private session
   names. Do not encode project, item, agent, or other human-facing details in
   those names.
 - Promote WebSocket attach behavior into an explicit backend contract before
@@ -61,7 +61,7 @@ stable product contract.
   input, and status; agents are discoverable launch configuration.
 - Define stable HTTP and CLI operation names around `Session.id`, using `start`
   consistently for launching a session.
-- Define the Cockpit-owned session identity contract and make multiplexer handle
+- Define the atc-owned session identity contract and make multiplexer handle
   mapping private to the multiplexer boundary.
 - Audit the current package boundary so the session domain depends on generic
   multiplexer and PTY contracts rather than `zmx`-specific package types.
@@ -69,15 +69,15 @@ stable product contract.
   scoping model.
 - Define the backend session-manager contract: session list shape, attach
   protocol, lifecycle operations, events, diagnostics, and auth behavior.
-- Define the first persistent session registry around Cockpit-owned metadata:
+- Define the first persistent session registry around atc-owned metadata:
   `id`, `agent`, validated `params`, `workingDir`, optional `prompt`, optional
   user-facing `name`, persisted start status, optional failure reason,
   `createdAt`, `updatedAt`, and lifecycle timestamps for archive/termination
   when those operations exist.
 - Back the session registry with a local SQLite database. Keep the initial
   schema small and session-focused, but treat SQLite as the likely foundation
-  for Cockpit-owned application state rather than a one-off session file.
-- Introduce a single Cockpit state-store boundary for SQLite ownership:
+  for atc-owned application state rather than a one-off session file.
+- Introduce a single atc state-store boundary for SQLite ownership:
   connection lifecycle, migrations, and transactions live there, even if the
   only initial table is for sessions.
 - Use an established Go migration library for SQLite migrations. Commit ordered
@@ -86,9 +86,9 @@ stable product contract.
   unless the chosen tool cannot meet the local embedded use case.
 - Apply pending SQLite migrations automatically during service startup. Startup
   should fail clearly if the database cannot be opened or migrated.
-- Store the SQLite database under Cockpit's XDG state directory, such as
-  `$XDG_STATE_HOME/cockpit/cockpit.db` with a fallback to
-  `~/.local/state/cockpit/cockpit.db`. Do not place persistent state under the
+- Store the SQLite database under atc's XDG state directory, such as
+  `$XDG_STATE_HOME/atc/atc.db` with a fallback to
+  `~/.local/state/atc/atc.db`. Do not place persistent state under the
   runtime/control directory used for sockets and PID files.
 - Support a config/env override for the SQLite database path for tests,
   alternate profiles, and portable setups. Do not add a CLI flag unless a
@@ -140,11 +140,11 @@ stable product contract.
   messages use text JSON frames, starting with
   `{ "type": "resize", "cols": 120, "rows": 40 }`.
 - Multiple clients may attach to the same live session when the multiplexer
-  supports it. Cockpit should not add an exclusive attach lock in this pass;
+  supports it. atc should not add an exclusive attach lock in this pass;
   input arbitration is deferred to multiplexer behavior and user expectations.
 - `send-text` and `send-key` remain available while WebSocket clients are
   attached. Input ordering is best-effort by arrival at the multiplexer boundary;
-  Cockpit does not coordinate concurrent writers in this single-developer
+  atc does not coordinate concurrent writers in this single-developer
   backend pass.
 - Session input: support `send text` and `send key` operations through a stable
   API. `send text` injects bytes without submitting; `send key` injects a named
@@ -189,14 +189,14 @@ stable product contract.
   parameters, and client-facing metadata.
 - **Agent/Session API**: Public HTTP and CLI contract for discovery, start,
   list, read, attach, session input, lifecycle, and diagnostics.
-- **Session Domain**: Owns Cockpit session identity, validation, metadata,
+- **Session Domain**: Owns atc session identity, validation, metadata,
   lifecycle rules, and mapping between API concepts and multiplexer operations.
-- **Session Registry Store**: Persists Cockpit-owned metadata that cannot be
+- **Session Registry Store**: Persists atc-owned metadata that cannot be
   derived from the multiplexer, such as agent name, validated params, working
   directory, originating prompt, optional user-facing session name, and
   timestamps. The first implementation should use a local SQLite database.
-- **Cockpit Store**: Owns the SQLite connection, migrations, and transaction
-  boundary for Cockpit-owned application state. The first table can be
+- **atc Store**: Owns the SQLite connection, migrations, and transaction
+  boundary for atc-owned application state. The first table can be
   session-focused; the boundary should not become a generic ORM. Migrations
   should use an established Go migration library with embedded SQL files.
 - **Session Properties**: Describe the intrinsic facts of a session, such as
@@ -233,16 +233,16 @@ stable product contract.
   `POST /sessions/{id}/send-text`, `POST /sessions/{id}/send-key`,
   `POST /sessions/{id}/terminate`, and `POST /sessions/{id}/archive`.
 - The stable CLI should mirror those operation names where useful:
-  `cockpit agents list`, `cockpit sessions start`, `cockpit sessions list`,
-  `cockpit sessions show <id>`, `cockpit sessions attach <id>`,
-  `cockpit sessions send-text <id> ...`, `cockpit sessions send-key <id> ...`,
-  `cockpit sessions terminate <id>`, and `cockpit sessions archive <id>`.
+  `atc agents list`, `atc sessions start`, `atc sessions list`,
+  `atc sessions show <id>`, `atc sessions attach <id>`,
+  `atc sessions send-text <id> ...`, `atc sessions send-key <id> ...`,
+  `atc sessions terminate <id>`, and `atc sessions archive <id>`.
 - `start`, not `create`, is the canonical operation name because it launches a
   real terminal session, not just a persisted record.
 - The older routes (`/sessions/send`, `/sessions/key`) and singular
-  `cockpit session ...` CLI do not need compatibility support and can be removed
+  `atc session ...` CLI do not need compatibility support and can be removed
   when the new contract is implemented.
-- Sessions should expose a stable Cockpit-owned id as their public identity.
+- Sessions should expose a stable atc-owned id as their public identity.
   Multiplexer handles are private to the multiplexer boundary.
 - Session ids should be opaque, generated, URL-safe, prefixed strings, and
   should not encode project, item, agent, creation time, or multiplexer details.
@@ -251,21 +251,21 @@ stable product contract.
 - Session `name` can be set at start and returned by session reads/lists.
   Rename/update endpoints are deferred.
 - Multiplexer names should not encode project, item, agent, or other
-  human-facing details; those details belong in Cockpit metadata.
+  human-facing details; those details belong in atc metadata.
 - `zmx`-specific behavior belongs inside `internal/zmx`. The rest of the
   backend should depend on generic multiplexer and PTY contracts.
 - The new public contract should model session properties only. It should not
   expose `Scope`, introduce `Context` as a separate concept, or include
   project/item relationships in this backend pass.
-- The first persistent session registry should store only Cockpit-owned session
+- The first persistent session registry should store only atc-owned session
   metadata: `id`, `agent`, validated `params`, `workingDir`, optional `prompt`,
   optional user-facing `name`, persisted start status, optional failure reason,
   `createdAt`, `updatedAt`, and lifecycle timestamps when those lifecycle
   operations exist.
 - The session registry should be backed by SQLite. Keep the first schema tiny
   and session-focused, while leaving room for SQLite to become the app-wide
-  Cockpit state store.
-- SQLite should enter through a single Cockpit state-store boundary that owns
+  atc state store.
+- SQLite should enter through a single atc state-store boundary that owns
   connection lifecycle, migrations, and transactions. Avoid separate ad hoc
   files or persistence mechanisms per subsystem.
 - SQLite schema changes should use an established migration library with
@@ -295,8 +295,8 @@ stable product contract.
 - Attach frames should stay simple: terminal bytes use binary frames in both
   directions, and client control messages use text JSON frames such as resize.
 - Multiple simultaneous attaches are allowed when supported by the multiplexer;
-  Cockpit should not add an exclusive attach lock in this pass.
-- Session input remains available while clients are attached. Cockpit does not
+  atc should not add an exclusive attach lock in this pass.
+- Session input remains available while clients are attached. atc does not
   coordinate concurrent writers beyond best-effort arrival order at the
   multiplexer boundary.
 - `start` should create a durable record before launching, then transition
@@ -317,7 +317,7 @@ stable product contract.
 - `GET /sessions/{id}` should include the full session detail: agent, accepted
   launch params, working directory, optional user-facing name, stored starting
   prompt, timestamps, status, failure reason when present, and attachability.
-- Cockpit should not persist terminal output in this backend pass. The live
+- atc should not persist terminal output in this backend pass. The live
   attach stream is the only terminal-output path; the registry may store the
   starting prompt but not ongoing scrollback, transcripts, or summaries.
 - Default session listing should return non-archived sessions, including live
@@ -340,7 +340,7 @@ stable product contract.
   optional agent `description`, and optional parameter labels/descriptions.
   Icons, categories, rich UI hints, and agent-specific behavior flags are
   deferred.
-- `start` should accept an optional `prompt`. Cockpit stores the prompt as
+- `start` should accept an optional `prompt`. atc stores the prompt as
   session metadata and passes it to the agent as a single safely-quoted launch
   argument per the agent's `prompt` placement; the agent acts on it at startup
   with no separate inject-or-submit step. Follow-up input after launch uses

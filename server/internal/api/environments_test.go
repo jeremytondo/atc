@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/jeremytondo/atelier-code/internal/diagnostics"
+	"github.com/jeremytondo/atc/internal/diagnostics"
 )
 
 func TestListEnvironmentsReturnsDiscoveryMetadata(t *testing.T) {

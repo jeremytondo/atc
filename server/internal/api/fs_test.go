@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremytondo/atelier-code/internal/diagnostics"
-	"github.com/jeremytondo/atelier-code/internal/fs"
+	"github.com/jeremytondo/atc/internal/diagnostics"
+	"github.com/jeremytondo/atc/internal/fs"
 )
 
 func fsHandler(t *testing.T) http.Handler {

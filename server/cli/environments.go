@@ -21,7 +21,7 @@ type environmentItem struct {
 func environmentsCommand(lookup envLookup) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "environments",
-		Short: "Discover Atelier Code launch environments",
+		Short: "Discover atc launch environments",
 	}
 	cmd.AddCommand(environmentsListCommand(lookup))
 	return cmd

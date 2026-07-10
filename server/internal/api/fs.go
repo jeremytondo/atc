@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/jeremytondo/atelier-code/internal/fs"
+	"github.com/jeremytondo/atc/internal/fs"
 )
 
 type fsListResponse struct {

@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"github.com/jeremytondo/atelier-code/internal/session"
+	"github.com/jeremytondo/atc/internal/session"
 )
 
 type environmentsResponse struct {

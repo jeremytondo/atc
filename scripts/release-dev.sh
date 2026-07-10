@@ -6,13 +6,13 @@ usage() {
 Usage: scripts/release-dev.sh [--upload]
 
 Builds, exports, packages, notarizes, staples, and verifies a Developer ID
-DMG for AtelierCode Dev.app. With --upload, also creates a GitHub prerelease
+DMG for atc.app. With --upload, also creates a GitHub prerelease
 and uploads the notarized DMG.
 
 Environment overrides:
-  AC_TEAM_ID          Apple Developer Team ID (default: 337D6CNU4E)
-  AC_NOTARY_PROFILE  notarytool keychain profile (default: ateliercode-notary)
-  AC_ARTIFACT_ROOT   artifact root (default: .build/release-dev)
+  ATC_TEAM_ID         Apple Developer Team ID (default: 337D6CNU4E)
+  ATC_NOTARY_PROFILE  notarytool keychain profile (default: atc-notary)
+  ATC_ARTIFACT_ROOT   artifact root (default: .build/release-dev)
 USAGE
 }
 
@@ -47,14 +47,14 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-AC_TEAM_ID="${AC_TEAM_ID:-337D6CNU4E}"
-AC_NOTARY_PROFILE="${AC_NOTARY_PROFILE:-ateliercode-notary}"
-AC_ARTIFACT_ROOT="${AC_ARTIFACT_ROOT:-.build/release-dev}"
+ATC_TEAM_ID="${ATC_TEAM_ID:-337D6CNU4E}"
+ATC_NOTARY_PROFILE="${ATC_NOTARY_PROFILE:-atc-notary}"
+ATC_ARTIFACT_ROOT="${ATC_ARTIFACT_ROOT:-.build/release-dev}"
 
-APP_NAME="AtelierCode Dev"
-BUNDLE_ID="ElevenIdeas.AtelierCode.dev"
-PROJECT_REL="macos/AtelierCode.xcodeproj"
-SCHEME="AtelierCode"
+APP_NAME="atc"
+BUNDLE_ID="ElevenIdeas.atc.dev"
+PROJECT_REL="macos/atc.xcodeproj"
+SCHEME="atc"
 CONFIGURATION="Release"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -64,14 +64,14 @@ EXPORT_OPTIONS_PLIST="$SCRIPT_DIR/ExportOptions.DeveloperID.plist"
 
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 TAG="dev-$TIMESTAMP"
-TITLE="AtelierCode Dev $TIMESTAMP"
-RUN_DIR="$REPO_ROOT/$AC_ARTIFACT_ROOT/$TIMESTAMP"
-ARCHIVE_PATH="$RUN_DIR/AtelierCodeDev.xcarchive"
+TITLE="atc Dev $TIMESTAMP"
+RUN_DIR="$REPO_ROOT/$ATC_ARTIFACT_ROOT/$TIMESTAMP"
+ARCHIVE_PATH="$RUN_DIR/atc-dev.xcarchive"
 EXPORT_PATH="$RUN_DIR/export"
 DERIVED_DATA_PATH="$RUN_DIR/DerivedData"
 SOURCE_PACKAGES_PATH="$RUN_DIR/SourcePackages"
 DMG_ROOT="$RUN_DIR/dmg-root"
-DMG_PATH="$RUN_DIR/AtelierCode-Dev-$TIMESTAMP.dmg"
+DMG_PATH="$RUN_DIR/atc-dev-$TIMESTAMP.dmg"
 APP_PATH="$EXPORT_PATH/$APP_NAME.app"
 
 DEVELOPER_ID_IDENTITY=""
@@ -82,7 +82,7 @@ find_developer_id_identity() {
   identities="$(security find-identity -v -p codesigning 2>&1 || true)"
   while IFS= read -r line; do
     case "$line" in
-      *"Developer ID Application:"*"($AC_TEAM_ID)"*)
+      *"Developer ID Application:"*"($ATC_TEAM_ID)"*)
         DEVELOPER_ID_IDENTITY="${line#*\"}"
         DEVELOPER_ID_IDENTITY="${DEVELOPER_ID_IDENTITY%%\"*}"
         break
@@ -92,13 +92,13 @@ find_developer_id_identity() {
 
   if [[ -z "$DEVELOPER_ID_IDENTITY" ]]; then
     printf '%s\n' "$identities" >&2
-    die "No valid Developer ID Application identity found for Team ID $AC_TEAM_ID. Install the certificate and private key, then rerun."
+    die "No valid Developer ID Application identity found for Team ID $ATC_TEAM_ID. Install the certificate and private key, then rerun."
   fi
 }
 
 validate_notary_profile() {
-  if ! xcrun notarytool history --keychain-profile "$AC_NOTARY_PROFILE" --no-progress >/dev/null 2>&1; then
-    die "notarytool profile '$AC_NOTARY_PROFILE' is unavailable or invalid. Store credentials with xcrun notarytool store-credentials, then rerun."
+  if ! xcrun notarytool history --keychain-profile "$ATC_NOTARY_PROFILE" --no-progress >/dev/null 2>&1; then
+    die "notarytool profile '$ATC_NOTARY_PROFILE' is unavailable or invalid. Store credentials with xcrun notarytool store-credentials, then rerun."
   fi
 }
 
@@ -140,7 +140,7 @@ XCODE_OVERRIDES=(
   "ONLY_ACTIVE_ARCH=NO"
   "PRODUCT_NAME=$APP_NAME"
   "PRODUCT_BUNDLE_IDENTIFIER=$BUNDLE_ID"
-  "DEVELOPMENT_TEAM=$AC_TEAM_ID"
+  "DEVELOPMENT_TEAM=$ATC_TEAM_ID"
   "CODE_SIGN_STYLE=Automatic"
 )
 
@@ -185,7 +185,7 @@ codesign --verify --verbose=2 "$DMG_PATH"
 
 log "Submitting DMG for notarization"
 xcrun notarytool submit "$DMG_PATH" \
-  --keychain-profile "$AC_NOTARY_PROFILE" \
+  --keychain-profile "$ATC_NOTARY_PROFILE" \
   --wait
 
 log "Stapling notarization ticket"

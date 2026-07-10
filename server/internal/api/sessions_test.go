@@ -11,12 +11,12 @@ import (
 	"strings"
 	"testing"
 
-	actionstore "github.com/jeremytondo/atelier-code/internal/action"
-	"github.com/jeremytondo/atelier-code/internal/diagnostics"
-	"github.com/jeremytondo/atelier-code/internal/project"
-	"github.com/jeremytondo/atelier-code/internal/session"
-	"github.com/jeremytondo/atelier-code/internal/store"
-	"github.com/jeremytondo/atelier-code/internal/zmx"
+	actionstore "github.com/jeremytondo/atc/internal/action"
+	"github.com/jeremytondo/atc/internal/diagnostics"
+	"github.com/jeremytondo/atc/internal/project"
+	"github.com/jeremytondo/atc/internal/session"
+	"github.com/jeremytondo/atc/internal/store"
+	"github.com/jeremytondo/atc/internal/zmx"
 )
 
 // fakeMux is a faked session.Multiplexer for driving the API end to end.

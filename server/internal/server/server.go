@@ -1,4 +1,4 @@
-// Package server owns Atelier Code's HTTP serving boundary: it builds the router,
+// Package server owns atc's HTTP serving boundary: it builds the router,
 // serves the API and embedded web UI over configured TCP and Unix socket
 // listeners, and marks requests with the listener they arrived on. Callers own
 // the higher-level service lifecycle and path/config resolution.
@@ -14,12 +14,12 @@ import (
 	"os"
 	"time"
 
-	"github.com/jeremytondo/atelier-code/internal/action"
-	"github.com/jeremytondo/atelier-code/internal/fs"
-	"github.com/jeremytondo/atelier-code/internal/project"
-	"github.com/jeremytondo/atelier-code/internal/session"
-	"github.com/jeremytondo/atelier-code/internal/store"
-	"github.com/jeremytondo/atelier-code/internal/zmx"
+	"github.com/jeremytondo/atc/internal/action"
+	"github.com/jeremytondo/atc/internal/fs"
+	"github.com/jeremytondo/atc/internal/project"
+	"github.com/jeremytondo/atc/internal/session"
+	"github.com/jeremytondo/atc/internal/store"
+	"github.com/jeremytondo/atc/internal/zmx"
 )
 
 const DefaultHTTPAddr = "127.0.0.1:7331"

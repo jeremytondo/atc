@@ -9,9 +9,9 @@ import (
 	"testing"
 
 	"github.com/coder/websocket"
-	"github.com/jeremytondo/atelier-code/internal/session"
-	"github.com/jeremytondo/atelier-code/internal/store"
-	"github.com/jeremytondo/atelier-code/internal/zmx"
+	"github.com/jeremytondo/atc/internal/session"
+	"github.com/jeremytondo/atc/internal/store"
+	"github.com/jeremytondo/atc/internal/zmx"
 )
 
 // authedRouter wraps the router in the given listener boundary so withAuth can

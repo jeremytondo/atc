@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeremytondo/atelier-code/internal/config"
+	"github.com/jeremytondo/atc/internal/config"
 )
 
 func TestNewRespectsLevel(t *testing.T) {

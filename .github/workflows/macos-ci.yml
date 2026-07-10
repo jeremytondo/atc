@@ -38,7 +38,7 @@ jobs:
         run: xcodebuild -version
 
       # Same commands as local `mise run kit:test` / `mise run macos:test`.
-      - name: AtelierCodeKit tests
+      - name: ATCKit tests
         run: mise run kit:test
 
       - name: macOS app tests

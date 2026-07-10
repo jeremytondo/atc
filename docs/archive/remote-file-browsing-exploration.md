@@ -1,4 +1,4 @@
-> **Historical (archived 2026-07):** Describes the pre-monorepo Cockpit-era system. Names, paths, and instructions here are obsolete — see AGENTS.md and docs/platform-policy.md for current structure and policy.
+> **Historical (archived 2026-07):** Describes the pre-monorepo atc-era system. Names, paths, and instructions here are obsolete — see AGENTS.md and docs/platform-policy.md for current structure and policy.
 
 # Remote File Browsing — Exploration / Rough Draft
 
@@ -10,7 +10,7 @@
 
 ## Overview
 
-We want AtelierCode to work with the file trees on the remote Cockpit
+We want atc to work with the file trees on the remote atc
 workstation — browsing, picking, and selecting files/folders. This is broad, and
 we expect to grow into several UI shapes over time:
 
@@ -18,9 +18,9 @@ we expect to grow into several UI shapes over time:
 - a **fuzzy-finder picker** (type-to-match a file within a project),
 - and likely others we haven't named yet.
 
-Everything the app knows about the remote host comes through the **Cockpit
+Everything the app knows about the remote host comes through the **atc
 API**, so any of this is really two intertwined problems: (1) the **SwiftUI**
-mechanisms to render and drive each interaction, and (2) the **Cockpit API**
+mechanisms to render and drive each interaction, and (2) the **atc API**
 surface that feeds them. Neither exists yet.
 
 The proposed *first* concrete target — small enough to learn from, useful on its
@@ -39,16 +39,16 @@ Two findings frame the whole effort:
 1. **The current folder picker is local, and that's semantically wrong.**
    `CreateSessionSheet` uses SwiftUI's `.fileImporter` to pick a folder on *this
    Mac* and copies its path into `workingDir` — but `workingDir` is a path on
-   the *Cockpit workstation*. The field's own help text admits it: "Choose a
+   the *atc workstation*. The field's own help text admits it: "Choose a
    local folder (path is used on the server)." So this feature isn't net-new
    surface so much as fixing an existing mismatch.
 
-2. **Cockpit has no filesystem API at all.** There are no list/browse/find
+2. **atc has no filesystem API at all.** There are no list/browse/find
    endpoints. `workingDir` is passed straight through to the session as an
    opaque string — never listed, validated, or resolved. So *any* remote
    browsing depends on new server work; it cannot be built against today's API.
 
-A helpful third observation: Cockpit's existing **"actions/environments
+A helpful third observation: atc's existing **"actions/environments
 discovery + dynamic param renderer"** pattern is a close analog to a directory
 browser (server describes a shape → client fetches and renders it generically),
 and the app's async-load conventions (`.task`, `@State` for loading/error,
@@ -116,7 +116,7 @@ GET /api/fs/list?path=<abs>&showHidden=<bool>
 ```
 
 Use path strings as entry identity and navigation state. Do not introduce
-separate entry IDs unless Cockpit later supports virtual roots or non-filesystem
+separate entry IDs unless atc later supports virtual roots or non-filesystem
 providers. Hidden entries are excluded by default (`showHidden=false`), but the
 endpoint supports including them because developer workflows often need
 directories such as `.git`, `.codex`, or `.config`.
@@ -129,10 +129,10 @@ Unreadable directories discovered while listing a readable parent should remain
 visible as directory entries; attempting to enter them returns
 `permission_denied`. If the requested parent itself is unreadable, `fs/list`
 returns `permission_denied` for that request.
-Cockpit should clean/normalize requested paths before validation. Raw `..`
+atc should clean/normalize requested paths before validation. Raw `..`
 segments are allowed only when the normalized result remains in the browsable
 namespace.
-Cockpit should return a stable default order: directories first, then files,
+atc should return a stable default order: directories first, then files,
 dot-prefixed entries before others within each group, then case-insensitive by
 name. Clients may still re-sort for their own UI.
 `GET /api/fs/list` is directory-only: it returns children for directory paths
@@ -142,30 +142,30 @@ separate endpoint such as `GET /api/fs/read?path=...`.
 `fs/list` should apply a generous server-side entry cap of 10,000 entries and
 return `truncated: true` when the result was cut off, so huge directories cannot
 make the picker sluggish or memory-heavy.
-V1 `fs/list` errors should use Cockpit's existing error envelope with one of:
+V1 `fs/list` errors should use atc's existing error envelope with one of:
 `not_found`, `not_directory`, `permission_denied`, `outside_browsable_roots`,
 or `invalid_path`.
-Cockpit should respect normal request-context cancellation and apply a
+atc should respect normal request-context cancellation and apply a
 server-side timeout for slow listings; no custom cancel endpoint is needed.
 
-Whatever we pick should fit Cockpit's existing conventions (stdlib `net/http`
+Whatever we pick should fit atc's existing conventions (stdlib `net/http`
 `ServeMux`, `writeJSON`, named-wrapper responses like `{"entries":[…]}`, the
 `{error,message}` envelope, free bearer auth under `/api`).
 
 ### Access scope: Remote Workspace Roots
 
-Cockpit's auth today is all-or-nothing at the transport, and session-start
+atc's auth today is all-or-nothing at the transport, and session-start
 already runs arbitrary commands in any `workingDir` — so *listing* doesn't
 really widen the trust boundary, but it does widen what's easily readable.
-AtelierCode should browse only inside **Remote Workspace Roots**: named folders
-on the Cockpit workstation that define starting namespaces for
+atc should browse only inside **Remote Workspace Roots**: named folders
+on the atc workstation that define starting namespaces for
 remote browsing and session working-directory selection.
 
 Alternatives considered:
 
 - **Full-host browse**, seeded at `$HOME`, relying on the existing token
   boundary (+ a symlink/`..` escape guard).
-- **Remote Workspace Roots** — a new Cockpit config section names the parent
+- **Remote Workspace Roots** — a new atc config section names the parent
   folders the API is allowed to expose as browsing starting points. This is not
   a resolved-path sandbox: directory symlinks reachable from a root remain
   browseable, including their children, even when the symlink target resolves
@@ -173,10 +173,10 @@ Alternatives considered:
 - **Hybrid** — browse widely but seed the UI with configured favorites /
   recents.
 
-**Decision:** use Remote Workspace Roots, expressed as settings in Cockpit. This
+**Decision:** use Remote Workspace Roots, expressed as settings in atc. This
 turns the browsing boundary into a small config list and gives the client an
 obvious set of starting points. For the first version, roots are static server
-configuration: AtelierCode reads and displays them, but does not add, edit, or
+configuration: atc reads and displays them, but does not add, edit, or
 remove them at runtime. Root paths may use `~` for the server user's home
 directory, but v1 should not expand arbitrary environment variables. The exact
 config shape is still open. A rough illustration only:
@@ -188,9 +188,9 @@ label = "Projects"
 path  = "/…/Projects"
 ```
 
-If no roots are configured, Cockpit should synthesize a default `Home` root at
+If no roots are configured, atc should synthesize a default `Home` root at
 the server user's `$HOME` so the feature works out of the box. Explicit config
-replaces that default. If configured roots are invalid or unreadable, Cockpit
+replaces that default. If configured roots are invalid or unreadable, atc
 should omit them from `fs/roots` and log the cause server-side; the picker shows
 an empty state if no usable roots are returned.
 
@@ -201,9 +201,9 @@ and a file symlink is represented like a file. The API can still expose
 `isSymlink` metadata, but symlinks do not need traversal tokens or special
 capabilities. Broken symlinks appear as visible, non-enterable unknown entries.
 For the first version, Remote Workspace Roots constrain remote browsing and
-AtelierCode-driven working-directory selection only. They are not yet a global
-Cockpit execution policy: `POST /api/sessions/start` can keep accepting
-arbitrary `workingDir` strings until Cockpit intentionally introduces broader
+atc-driven working-directory selection only. They are not yet a global
+atc execution policy: `POST /api/sessions/start` can keep accepting
+arbitrary `workingDir` strings until atc intentionally introduces broader
 workspace enforcement.
 
 ### Client architecture: layered, with a reusable core
@@ -211,16 +211,16 @@ workspace enforcement.
 Borrowing trees.software's "framework-agnostic core," a candidate layering that
 lets one investment serve all three future UIs:
 
-1. **`CockpitAPI` (package):** directory-listing method(s) on the `CockpitClient`
-   protocol + `HTTPCockpitClient` + `MockCockpitClient`, plus `RemoteEntry` /
+1. **`ATCAPI` (package):** directory-listing method(s) on the `ATCClient`
+   protocol + `HTTPATCClient` + `MockATCClient`, plus `RemoteEntry` /
    `DirectoryListing` DTOs (with `RemoteEntry.id == path`). Pure Foundation, no
    UI — same boundary the rest of the package respects.
 2. **A narrow app-side `@Observable` browsing model** (e.g.
    `RemoteFileBrowser` in `Features/RemoteFiles/`): picker workflow state such
    as current listing, loading/error, selected path, typed path, `showHidden`,
    and commands such as `loadRoots`, `openRoot`, `descend`, `goUp`, and
-   `setPath`. The Cockpit-owned remote filesystem contract belongs in
-   `CockpitKit` (DTOs and `CockpitClient` methods); `RemoteFileBrowser` belongs
+   `setPath`. The atc-owned remote filesystem contract belongs in
+   `ATCKit` (DTOs and `ATCClient` methods); `RemoteFileBrowser` belongs
    in the app because it represents what the picker is currently doing with
    that data. It is not an API DTO, not a SwiftUI view, and not a generic
    tree/search engine.
@@ -238,14 +238,14 @@ itself worth questioning.
 One concrete way to start (again — *a* starting point, not the plan):
 
 - Add the browse DTOs + client method, with a canned in-memory tree in
-  `MockCockpitClient` so the UI is buildable before any server work exists.
+  `MockATCClient` so the UI is buildable before any server work exists.
 - Build the `RemoteFileBrowser` model.
 - Build a drill-down `RemoteFolderPicker` sheet: roots list → directory list,
   clickable breadcrumb segments plus an Up button, an editable path field, a
   hidden-files toggle, visible-but-disabled file rows, and a "use this folder"
   action. Long paths should middle-truncate instead of wrapping into multiple
   rows. Standard load/loading/error conventions. Manual path entry remains in
-  the first slice: pasted paths are remote paths validated by Cockpit, and the
+  the first slice: pasted paths are remote paths validated by atc, and the
   action is enabled only when the path lists as a directory within the browsable
   namespace. Manual path validation happens only when the user commits the field
   with Return or a Go button, not on every keystroke.
@@ -268,10 +268,10 @@ One concrete way to start (again — *a* starting point, not the plan):
   the chosen path into `workingDir` (and fix the misleading help text).
 
 Build the server contract first, then the app UI against that contract. The
-boundary decisions live mostly in Cockpit (roots, `$HOME` fallback, symlink
+boundary decisions live mostly in atc (roots, `$HOME` fallback, symlink
 behavior, path identity, hidden files, and error codes), so a mock-first UI would
 risk inventing a contract the server then fights. Once the server shape exists,
-add matching `CockpitKit` DTOs/tests, then `MockCockpitClient` data for previews,
+add matching `ATCKit` DTOs/tests, then `MockATCClient` data for previews,
 then `RemoteFileBrowser` and `RemoteFolderPicker`.
 
 **Current leaning on scope:** keep the first slice to *just* the folder picker
@@ -281,7 +281,7 @@ piece before investing in the broader shapes. Not decided.
 ## Open questions / still to explore
 
 - **Access scope & config:** final config shape.
-- **Path validation & safety:** Cockpit has no browsing guard today — how do we
+- **Path validation & safety:** atc has no browsing guard today — how do we
   represent and validate traversal through directory symlinks without treating
   Remote Workspace Roots as a resolved-path sandbox?
 - **API shape details:** resolved for v1.
@@ -298,11 +298,11 @@ piece before investing in the broader shapes. Not decided.
 - **Fuzzy finder mechanics (later):** server-side vs. client-side ranking,
   `.gitignore` awareness, result caps, the search-mode behaviors.
 - **Cross-repo coordination:** the server changes live in the separate
-  `cockpit` repo; how we stage client + server work together.
+  `atc` repo; how we stage client + server work together.
 
 ## References
 
 - Reference component (web): <https://trees.software/>
-- Cockpit server: <https://github.com/jeremytondo/cockpit>
-- Related: `docs/poc-plan.md` (documents the current Cockpit API surface and the
+- atc server: <https://github.com/jeremytondo/atc>
+- Related: `docs/poc-plan.md` (documents the current atc API surface and the
   app's layering conventions).

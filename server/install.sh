@@ -1,19 +1,19 @@
 #!/bin/sh
 set -eu
 
-repo="${ATC_REPO:-jeremytondo/atelier-code}"
+repo="${ATC_REPO:-jeremytondo/atc}"
 install_dir="${ATC_INSTALL_DIR:-$HOME/.local/bin}"
 version="${ATC_VERSION:-latest}"
 
 usage() {
   cat <<'EOF'
-Install Atelier Code from GitHub Releases.
+Install atc from GitHub Releases.
 
 Usage:
   ./install.sh [--version vX.Y.Z]
 
 Environment:
-  ATC_REPO         GitHub repository (default: jeremytondo/atelier-code)
+  ATC_REPO         GitHub repository (default: jeremytondo/atc)
   ATC_INSTALL_DIR  Install directory (default: ~/.local/bin)
   ATC_VERSION      Release tag, or latest (default: latest)
 EOF

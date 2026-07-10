@@ -1,4 +1,4 @@
-# Cockpit Framework Specification
+# atc Framework Specification
 
 Status: Framework slice complete.
 
@@ -12,7 +12,7 @@ Status: Framework slice complete.
 > Linear issues and `docs/adr/`). Treat this document as the historical record
 > of the application skeleton, not as the governing scope for product work.
 
-Purpose: Define the initial Cockpit application framework: a Go service, Cobra CLI, basic HTTP API, embedded SvelteKit web app, and mise development/build tasks.
+Purpose: Define the initial atc application framework: a Go service, Cobra CLI, basic HTTP API, embedded SvelteKit web app, and mise development/build tasks.
 
 ## Normative Language
 
@@ -22,19 +22,19 @@ The key words `MUST`, `MUST NOT`, `REQUIRED`, `SHOULD`, `SHOULD NOT`, `RECOMMEND
 
 ## Terminology
 
-- Cockpit service: the long-running Cockpit process that owns the local control surface and runs the HTTP server.
+- atc service: the long-running atc process that owns the local control surface and runs the HTTP server.
 - Server: the HTTP serving implementation inside the service, including routing, TCP listener setup, Unix socket listener setup, and listener-aware middleware.
-- Foreground mode: `cockpit serve`, which runs the service attached to the current terminal until interrupted.
-- Background mode: `cockpit start`, which launches the same service detached from the current terminal and manages it with local lifecycle files. This may also be described as daemon mode.
-- Service control directory: the per-user directory containing local service coordination files such as `cockpit.sock` and `cockpit.pid`.
+- Foreground mode: `atc serve`, which runs the service attached to the current terminal until interrupted.
+- Background mode: `atc start`, which launches the same service detached from the current terminal and manages it with local lifecycle files. This may also be described as daemon mode.
+- Service control directory: the per-user directory containing local service coordination files such as `atc.sock` and `atc.pid`.
 
 ## 1. Problem Statement
 
-Cockpit is intended to become an ideation, planning, workflow, and AI coding orchestration platform. The initial implementation exists only to establish the application skeleton that later product behavior can safely build on.
+atc is intended to become an ideation, planning, workflow, and AI coding orchestration platform. The initial implementation exists only to establish the application skeleton that later product behavior can safely build on.
 
 The project exists to:
 
-- Provide a single local Go service as the source of truth for future Cockpit behavior.
+- Provide a single local Go service as the source of truth for future atc behavior.
 - Provide a CLI command surface for service lifecycle and API-backed local automation.
 - Provide a browser-based web UI that can run during development and ship inside the Go binary.
 - Establish repeatable development and build commands through mise.
@@ -62,7 +62,7 @@ The project does not attempt to solve:
 ### 2.2 Non-Goals
 
 - The implementation MUST NOT add a database.
-- The implementation MUST NOT implement real Cockpit domain behavior beyond framework diagnostics.
+- The implementation MUST NOT implement real atc domain behavior beyond framework diagnostics.
 - The implementation MUST NOT implement Project, Item, Environment, workflow, agent, or review models.
 - The implementation MUST NOT install OS services, launch agents, systemd units, or auto-start hooks.
 - The implementation MUST NOT expose a CLI `version` command until version metadata is backed by CI/CD or another intentional release process.
@@ -70,11 +70,11 @@ The project does not attempt to solve:
 
 ## 3. Initial Project Boundary
 
-This specification defines the hello-world framework for Cockpit.
+This specification defines the hello-world framework for atc.
 
 Target users:
 
-- A local developer running Cockpit on a workstation or remote development host.
+- A local developer running atc on a workstation or remote development host.
 - AI agents or scripts that need a stable local CLI/API surface.
 
 Primary workflows:
@@ -127,7 +127,7 @@ This section is normative. Agent-generated implementation work MUST follow this 
 
 ### 4.2 Additional Technology Decisions
 
-- Cobra MUST be used from the initial CLI implementation, even though the first command set is small, because Cockpit is expected to grow a larger command surface.
+- Cobra MUST be used from the initial CLI implementation, even though the first command set is small, because atc is expected to grow a larger command surface.
 - mise MUST define the common development and build task surface.
 - The Go module MUST live at the repository root.
 - The web source MUST live under `web/` and use pnpm as its frontend package manager.
@@ -142,11 +142,11 @@ This section is normative. Agent-generated implementation work MUST follow this 
 The project SHOULD use this structure:
 
 ```txt
-cockpit/
+atc/
   go.mod
   mise.toml
   cmd/
-    cockpit/
+    atc/
       main.go
   cli/
   internal/
@@ -165,15 +165,15 @@ cockpit/
 
 Project-specific layout rules:
 
-- `cmd/cockpit/main.go` MUST be a thin entrypoint.
+- `cmd/atc/main.go` MUST be a thin entrypoint.
 - `cli/` MUST own Cobra command definitions.
 - `internal/core/` MUST own framework-level application logic.
 - `internal/api/` MUST expose HTTP handlers and MUST NOT own listeners.
 - `internal/assets/` MUST expose the embedded web asset filesystem and MUST NOT own HTTP routing or listeners.
 - `internal/paths/` MUST own service control path resolution and local service coordination file locations (the Unix socket and PID paths).
 - `internal/server/` MUST own HTTP server setup, routing, listener creation including stale Unix socket preparation, and listener-aware middleware.
-- Foreground mode (`cockpit serve`) MUST start the service by invoking `internal/server/` directly from `cli/`. There is no separate foreground wrapper package; `cockpit serve` is the canonical way to start the server in-process.
-- `internal/daemon/` is PLANNED and not yet implemented. When background mode (`start`/`stop`/`status`) is built, it MUST own background run-mode lifecycle only: launching `cockpit serve` as a detached child process and managing the PID file. It MUST NOT own foreground execution.
+- Foreground mode (`atc serve`) MUST start the service by invoking `internal/server/` directly from `cli/`. There is no separate foreground wrapper package; `atc serve` is the canonical way to start the server in-process.
+- `internal/daemon/` is PLANNED and not yet implemented. When background mode (`start`/`stop`/`status`) is built, it MUST own background run-mode lifecycle only: launching `atc serve` as a detached child process and managing the PID file. It MUST NOT own foreground execution.
 - `internal/assets/web/` MUST contain staged built frontend assets only.
 - `web/` MUST contain frontend source and MUST NOT be imported by Go directly.
 
@@ -245,7 +245,7 @@ Implementations MUST NOT:
 - `paths` MUST own local service control path resolution and coordination file locations and MUST NOT import other internal components.
 - `server` MUST be the only component that creates listeners, and MUST own stale Unix socket preparation before binding the Unix listener.
 - `cli` MUST run foreground mode (`serve`) by invoking `server` directly, and MAY import `paths` to resolve coordination file locations.
-- `daemon` (PLANNED, not yet implemented) MUST own background run-mode lifecycle only — `start`/`stop`/`status` — launching `cockpit serve` as a detached child rather than serving in-process, and managing the PID file. It MUST NOT own foreground execution. It MAY import `paths`.
+- `daemon` (PLANNED, not yet implemented) MUST own background run-mode lifecycle only — `start`/`stop`/`status` — launching `atc serve` as a detached child rather than serving in-process, and managing the PID file. It MUST NOT own foreground execution. It MAY import `paths`.
 - `assets` MUST expose embedded web asset filesystems and MUST NOT know about HTTP routing, listeners, or service lifecycle.
 - API-backed CLI commands MUST dial the service through the Unix socket instead of importing `core` directly.
 
@@ -258,7 +258,7 @@ Implementations MUST NOT:
 
 ## 6. Core Domain Model
 
-The initial framework has no persistent Cockpit domain model.
+The initial framework has no persistent atc domain model.
 
 ### 6.1 Framework Data Shapes
 
@@ -276,7 +276,7 @@ Represents diagnostic build metadata.
 
 Fields:
 
-- `name` (string): MUST be `cockpit`.
+- `name` (string): MUST be `atc`.
 - `version` (string): MAY be `dev` until release automation exists.
 - `commit` (string): MAY be `unknown` until release automation exists.
 
@@ -291,43 +291,43 @@ Fields:
 
 #### 7.1.1 Purpose
 
-The CLI provides local service lifecycle control and agent-friendly access to Cockpit's API.
+The CLI provides local service lifecycle control and agent-friendly access to atc's API.
 
 #### 7.1.2 Responsibilities
 
 The CLI MUST:
 
 - Use Cobra for command definitions.
-- Provide `cockpit serve`.
-- Provide `cockpit start`.
-- Provide `cockpit stop`.
-- Provide `cockpit status`.
-- Provide `cockpit health`.
+- Provide `atc serve`.
+- Provide `atc start`.
+- Provide `atc stop`.
+- Provide `atc status`.
+- Provide `atc health`.
 - Provide help text for every command.
 
 The CLI MUST NOT:
 
-- Expose `cockpit version` in this framework slice.
+- Expose `atc version` in this framework slice.
 - Implement real product workflows.
 - Install OS-level services or auto-start hooks.
 
 #### 7.1.3 Behavior
 
-- `cockpit serve` MUST run the service in foreground mode.
-- `cockpit serve` and `cockpit start` MUST bind TCP to `127.0.0.1:7331` by default.
-- `cockpit serve` and `cockpit start` MUST accept `--http-addr`.
-- `COCKPIT_HTTP_ADDR` MUST provide a default HTTP address when `--http-addr` is not set.
-- `cockpit start` SHOULD launch the service in background mode using local PID and socket files.
-- `cockpit stop` MUST stop a running background service when possible.
-- `cockpit status` MUST report whether the service appears to be running.
-- `cockpit health` MUST call `GET /api/health` through the Unix socket and report success or failure.
+- `atc serve` MUST run the service in foreground mode.
+- `atc serve` and `atc start` MUST bind TCP to `127.0.0.1:7331` by default.
+- `atc serve` and `atc start` MUST accept `--http-addr`.
+- `ATC_HTTP_ADDR` MUST provide a default HTTP address when `--http-addr` is not set.
+- `atc start` SHOULD launch the service in background mode using local PID and socket files.
+- `atc stop` MUST stop a running background service when possible.
+- `atc status` MUST report whether the service appears to be running.
+- `atc health` MUST call `GET /api/health` through the Unix socket and report success or failure.
 
 #### 7.1.4 Validation and Failure Handling
 
 - Invalid listen addresses MUST fail with a clear error.
-- `cockpit start` MUST fail clearly when the service is already running.
-- `cockpit stop` MUST fail clearly when no service is running.
-- `cockpit health` MUST fail clearly when the Unix socket cannot be reached or the API returns a non-2xx response.
+- `atc start` MUST fail clearly when the service is already running.
+- `atc stop` MUST fail clearly when no service is running.
+- `atc health` MUST fail clearly when the Unix socket cannot be reached or the API returns a non-2xx response.
 - PID and socket paths MUST follow the service control directory defaults in this specification and MUST be documented by command help or developer documentation.
 
 ### 7.2 Server
@@ -356,7 +356,7 @@ The server MUST NOT:
 #### 7.2.3 Behavior
 
 - The service MUST bind TCP to `127.0.0.1:7331` by default.
-- Non-loopback TCP binding MUST be opt-in via `--http-addr` or `COCKPIT_HTTP_ADDR`.
+- Non-loopback TCP binding MUST be opt-in via `--http-addr` or `ATC_HTTP_ADDR`.
 - When non-loopback TCP binding is used without TCP auth, the service SHOULD log a warning.
 - Unix socket requests MAY be treated as trusted local requests.
 - TCP requests MUST pass through a distinct middleware path so token auth can be added later.
@@ -373,7 +373,7 @@ The server MUST NOT:
 
 #### 7.3.1 Purpose
 
-The API proves that Cockpit clients can communicate with the service through stable HTTP contracts.
+The API proves that atc clients can communicate with the service through stable HTTP contracts.
 
 #### 7.3.2 Required Endpoints
 
@@ -394,7 +394,7 @@ The API proves that Cockpit clients can communicate with the service through sta
 
 ```json
 {
-  "name": "cockpit",
+  "name": "atc",
   "version": "dev",
   "commit": "unknown"
 }
@@ -412,14 +412,14 @@ The `version` and `commit` values MAY become build-time injected values later.
 
 #### 7.4.1 Purpose
 
-The web app proves that Cockpit can provide a browser UI during development and ship it inside the Go binary.
+The web app proves that atc can provide a browser UI during development and ship it inside the Go binary.
 
 #### 7.4.2 Responsibilities
 
 The web app MUST:
 
 - Use SvelteKit.
-- Provide a hello-world Cockpit page.
+- Provide a hello-world atc page.
 - Be runnable through a frontend development task.
 - Build to static output suitable for Go embedding.
 - Use a configurable API base URL in development when it calls the API.
@@ -476,7 +476,7 @@ Frontend tasks MUST run pnpm commands from inside `web/`. mise task names are th
 ### 8.2 CLI To Service API
 
 - API-backed CLI commands MUST communicate through the Unix domain socket.
-- `cockpit health` MUST map to `GET /api/health`.
+- `atc health` MUST map to `GET /api/health`.
 - CLI output SHOULD be concise and script-friendly.
 - CLI failures MUST use non-zero exit codes.
 
@@ -544,7 +544,7 @@ The system SHOULD expose:
 The implementation MUST support:
 
 - `--http-addr` for the TCP bind address.
-- `COCKPIT_HTTP_ADDR` as the environment default for TCP bind address.
+- `ATC_HTTP_ADDR` as the environment default for TCP bind address.
 
 Configuration precedence:
 
@@ -555,11 +555,11 @@ Configuration precedence:
 Defaults:
 
 - TCP bind address: `127.0.0.1:7331`.
-- Service control directory: `$XDG_RUNTIME_DIR/cockpit` when `XDG_RUNTIME_DIR` is set and non-empty.
-- Service control directory fallback: `$TMPDIR/cockpit-$UID` when `TMPDIR` is set and non-empty, otherwise `/tmp/cockpit-$UID`.
+- Service control directory: `$XDG_RUNTIME_DIR/atc` when `XDG_RUNTIME_DIR` is set and non-empty.
+- Service control directory fallback: `$TMPDIR/atc-$UID` when `TMPDIR` is set and non-empty, otherwise `/tmp/atc-$UID`.
 - Service control directory permissions: the implementation MUST create the directory with `0700` permissions when possible.
-- Unix socket path: `<service-control-dir>/cockpit.sock`.
-- PID file path: `<service-control-dir>/cockpit.pid`.
+- Unix socket path: `<service-control-dir>/atc.sock`.
+- PID file path: `<service-control-dir>/atc.pid`.
 
 ## 10. Acceptance Criteria
 
@@ -567,10 +567,10 @@ The implementation is considered complete when:
 
 - `go.mod` exists at the repository root and targets the latest patch release in the Go 1.26.x line.
 - The CLI is implemented with Cobra.
-- `cockpit serve` runs the service in foreground mode.
-- `cockpit start`, `cockpit stop`, and `cockpit status` provide basic local service lifecycle management.
-- `cockpit serve` and `cockpit start` accept `--http-addr` and respect `COCKPIT_HTTP_ADDR`.
-- `cockpit health` calls `GET /api/health` over the Unix socket.
+- `atc serve` runs the service in foreground mode.
+- `atc start`, `atc stop`, and `atc status` provide basic local service lifecycle management.
+- `atc serve` and `atc start` accept `--http-addr` and respect `ATC_HTTP_ADDR`.
+- `atc health` calls `GET /api/health` over the Unix socket.
 - `GET /api/health` returns the required JSON health response.
 - `GET /api/version` returns the required JSON version response.
 - The service serves one router containing `/api/` routes and embedded web assets.
@@ -585,7 +585,7 @@ The implementation is not acceptable if:
 
 - It requires a database.
 - It implements real product workflows.
-- It bypasses the API for `cockpit health`.
+- It bypasses the API for `atc health`.
 - It exposes unauthenticated non-loopback TCP binding by default.
 - It requires OS service installation.
 - It requires committed staged web build artifacts.
@@ -601,8 +601,8 @@ Automated tests:
 
 Manual checks:
 
-- Run `cockpit serve` and confirm `GET /api/health` works over TCP.
-- Run `cockpit start`, `cockpit status`, `cockpit health`, and `cockpit stop`.
+- Run `atc serve` and confirm `GET /api/health` works over TCP.
+- Run `atc start`, `atc status`, `atc health`, and `atc stop`.
 - Run the web development task and confirm the SvelteKit hello-world page loads.
 - Run the integrated service and confirm the embedded web page loads.
 - Run with `--http-addr 0.0.0.0:7331` or a tailnet address and confirm remote browser access is possible.
@@ -617,7 +617,7 @@ Regression checks:
 
 - A missing staged asset directory MUST not result in silently stale embedded assets.
 - API routes MUST continue to take precedence over frontend fallback routing.
-- `cockpit status` MUST remain a lifecycle check, not an alias for API health.
+- `atc status` MUST remain a lifecycle check, not an alias for API health.
 
 ## 12. Definition of Done
 
@@ -651,8 +651,8 @@ Out of scope for initial implementation:
 ## 13. Resolved Implementation Decisions
 
 - `web/` MUST use pnpm as its frontend package manager.
-- Runtime files MUST live under `$XDG_RUNTIME_DIR/cockpit` when available, falling back to `$TMPDIR/cockpit-$UID` or `/tmp/cockpit-$UID`.
-- The Unix socket path MUST be `<service-control-dir>/cockpit.sock`.
-- The PID file path MUST be `<service-control-dir>/cockpit.pid`.
+- Runtime files MUST live under `$XDG_RUNTIME_DIR/atc` when available, falling back to `$TMPDIR/atc-$UID` or `/tmp/atc-$UID`.
+- The Unix socket path MUST be `<service-control-dir>/atc.sock`.
+- The PID file path MUST be `<service-control-dir>/atc.pid`.
 - The initial integrated Go service MUST serve embedded web assets only.
 - A later development mode MAY serve web assets directly from disk, but that behavior is deferred until frontend iteration against the Go service needs it.

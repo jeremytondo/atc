@@ -22,9 +22,9 @@ builds:
       - -trimpath
     ldflags:
       - -s -w
-      - -X github.com/jeremytondo/atelier-code/internal/buildinfo.version={{ .Version }}
-      - -X github.com/jeremytondo/atelier-code/internal/buildinfo.commit={{ .Commit }}
-      - -X github.com/jeremytondo/atelier-code/internal/buildinfo.date={{ .CommitDate }}
+      - -X github.com/jeremytondo/atc/internal/buildinfo.version={{ .Version }}
+      - -X github.com/jeremytondo/atc/internal/buildinfo.commit={{ .Commit }}
+      - -X github.com/jeremytondo/atc/internal/buildinfo.date={{ .CommitDate }}
 
 archives:
   - id: atc
@@ -48,12 +48,12 @@ changelog:
 release:
   github:
     owner: jeremytondo
-    name: atelier-code
+    name: atc
   prerelease: auto
   mode: replace
   header: |
     Install or update:
 
     ```sh
-    curl -fsSL https://raw.githubusercontent.com/jeremytondo/atelier-code/main/server/install.sh | sh
+    curl -fsSL https://raw.githubusercontent.com/jeremytondo/atc/main/server/install.sh | sh
     ```

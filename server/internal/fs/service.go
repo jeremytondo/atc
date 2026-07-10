@@ -1,4 +1,4 @@
-// Package fs implements Atelier Code's read-only remote filesystem browsing behind
+// Package fs implements atc's read-only remote filesystem browsing behind
 // GET /api/fs/list.
 package fs
 

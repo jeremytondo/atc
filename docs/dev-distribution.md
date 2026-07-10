@@ -5,13 +5,13 @@ does not add an app updater framework or any runtime release-checking behavior.
 
 ## App Identity
 
-- App name: `AtelierCode Dev.app`
-- Bundle ID: `ElevenIdeas.AtelierCode.dev`
+- App name: `atc.app`
+- Bundle ID: `ElevenIdeas.atc.dev`
 - Artifact: DMG
 - Release tag format: `dev-YYYYMMDD-HHMMSS`
 - Architecture: Apple Silicon `arm64`
 - Apple Team ID: `337D6CNU4E`
-- Notary profile: `ateliercode-notary`
+- Notary profile: `atc-notary`
 
 ## One-Time Setup
 
@@ -31,7 +31,7 @@ Store notarization credentials in the Keychain profile used by the release
 script:
 
 ```sh
-xcrun notarytool store-credentials ateliercode-notary \
+xcrun notarytool store-credentials atc-notary \
   --apple-id "you@example.com" \
   --team-id 337D6CNU4E \
   --password "app-specific-password"
@@ -56,14 +56,14 @@ scripts/release-dev.sh
 ```
 
 The script creates a timestamped working directory under
-`.build/release-dev/`, archives the app with the shared `AtelierCode` scheme,
+`.build/release-dev/`, archives the app with the shared `atc` scheme,
 exports it with Developer ID signing, creates a DMG, notarizes and staples the
 DMG, then verifies the result with `codesign`, `stapler`, and `spctl`.
 
 The final DMG path is printed at the end, for example:
 
 ```text
-.build/release-dev/20260704-143015/AtelierCode-Dev-20260704-143015.dmg
+.build/release-dev/20260704-143015/atc-dev-20260704-143015.dmg
 ```
 
 ## GitHub Prerelease Upload
@@ -77,9 +77,9 @@ scripts/release-dev.sh --upload
 This creates:
 
 - Tag: `dev-YYYYMMDD-HHMMSS`
-- Title: `AtelierCode Dev YYYYMMDD-HHMMSS`
+- Title: `atc Dev YYYYMMDD-HHMMSS`
 - Prerelease: yes
-- Asset: `AtelierCode-Dev-YYYYMMDD-HHMMSS.dmg`
+- Asset: `atc-dev-YYYYMMDD-HHMMSS.dmg`
 
 The script only requires `gh` authentication when `--upload` is used.
 
@@ -88,15 +88,15 @@ The script only requires `gh` authentication when `--upload` is used.
 The script supports these environment overrides:
 
 ```sh
-AC_TEAM_ID=337D6CNU4E
-AC_NOTARY_PROFILE=ateliercode-notary
-AC_ARTIFACT_ROOT=.build/release-dev
+ATC_TEAM_ID=337D6CNU4E
+ATC_NOTARY_PROFILE=atc-notary
+ATC_ARTIFACT_ROOT=.build/release-dev
 ```
 
 Example:
 
 ```sh
-AC_ARTIFACT_ROOT=/tmp/ateliercode-release scripts/release-dev.sh
+ATC_ARTIFACT_ROOT=/tmp/atc-release scripts/release-dev.sh
 ```
 
 ## Pause Points
@@ -106,7 +106,7 @@ If `security find-identity -p codesigning` does not show a valid
 the certificate and make sure its private key is available in the release Mac's
 Keychain.
 
-If `xcrun notarytool` cannot use the `ateliercode-notary` profile, store or
+If `xcrun notarytool` cannot use the `atc-notary` profile, store or
 repair the credentials with `xcrun notarytool store-credentials`.
 
 If `scripts/release-dev.sh --upload` reports that GitHub is not authenticated,
@@ -121,9 +121,8 @@ After upload, verify the release on the laptop:
 
 1. Download the DMG from the GitHub prerelease.
 2. Open the DMG.
-3. Drag `AtelierCode Dev.app` to `/Applications`.
+3. Drag `atc.app` to `/Applications`.
 4. Launch the app and confirm macOS does not show a Gatekeeper warning.
 5. Build and upload a newer dev release.
-6. Download the newer DMG and replace `/Applications/AtelierCode Dev.app`.
+6. Download the newer DMG and replace `/Applications/atc.app`.
 7. Launch again and confirm replacement works.
-

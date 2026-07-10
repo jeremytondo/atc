@@ -6,11 +6,11 @@ pnpm = "10.25.0"
 # --- Primary entrypoints ---
 
 [tasks.dev]
-description = "Start the Atelier Code dev API and Vite web server in the foreground"
+description = "Start the atc dev API and Vite web server in the foreground"
 run = "bash tools/dev.sh"
 
 [tasks.serve]
-description = "Build, embed, and run the Atelier Code service in the foreground (open http://127.0.0.1:7331)"
+description = "Build, embed, and run the atc service in the foreground (open http://127.0.0.1:7331)"
 depends = ["build"]
 run = "./dist/atc serve"
 

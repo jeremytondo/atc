@@ -1,4 +1,4 @@
-// Shared Atelier Code API client. All frontend network access goes through here so
+// Shared atc API client. All frontend network access goes through here so
 // the bearer token (persisted in localStorage by the sidebar token field) is
 // applied consistently. Mirrors the fetch pattern the old session dashboard
 // used, extracted so the console shell and every page can reuse it.
