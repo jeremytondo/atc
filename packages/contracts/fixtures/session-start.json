@@ -1,0 +1,29 @@
+{
+  "routes": ["POST /sessions/start"],
+  "request": {
+    "action": "claude",
+    "environment": "zsh",
+    "params": {"model": "opus"},
+    "prompt": "fix the login bug",
+    "name": "Fix the login bug",
+    "projectId": "prj_fixture01"
+  },
+  "response": {
+    "id": "ses_fixture01",
+    "name": "Fix the login bug",
+    "action": "claude",
+    "environment": "zsh",
+    "params": {"model": "opus"},
+    "workingDir": "/home/dev/projects/atelier",
+    "prompt": "fix the login bug",
+    "status": "running",
+    "attachable": true,
+    "createdAt": "2026-07-09T12:34:56.789Z",
+    "updatedAt": "2026-07-09T12:34:56.789Z",
+    "project": {
+      "id": "prj_fixture01",
+      "name": "Atelier",
+      "workingDir": "/home/dev/projects/atelier"
+    }
+  }
+}

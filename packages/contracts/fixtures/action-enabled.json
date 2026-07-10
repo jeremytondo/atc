@@ -1,0 +1,15 @@
+{
+  "routes": ["PUT /actions/{name}/enabled"],
+  "request": {
+    "enabled": false
+  },
+  "response": {
+    "name": "shell",
+    "origin": "builtin",
+    "enabled": false,
+    "label": "Shell",
+    "command": "zsh",
+    "args": [],
+    "params": {}
+  }
+}

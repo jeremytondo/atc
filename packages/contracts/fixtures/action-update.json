@@ -1,0 +1,23 @@
+{
+  "routes": ["PUT /actions/{name}"],
+  "request": {
+    "name": "my-agent",
+    "label": "My Agent",
+    "description": "Custom agent, updated",
+    "command": "my-agent",
+    "args": [],
+    "prompt": null,
+    "params": {},
+    "enabled": false
+  },
+  "response": {
+    "name": "my-agent",
+    "origin": "custom",
+    "enabled": false,
+    "label": "My Agent",
+    "description": "Custom agent, updated",
+    "command": "my-agent",
+    "args": [],
+    "params": {}
+  }
+}

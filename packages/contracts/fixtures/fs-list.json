@@ -1,0 +1,30 @@
+{
+  "routes": ["GET /fs/list"],
+  "response": {
+    "path": "/home/dev/projects",
+    "truncated": false,
+    "entries": [
+      {
+        "name": "atelier",
+        "path": "/home/dev/projects/atelier",
+        "kind": "directory",
+        "isSymlink": false,
+        "modifiedAt": "2026-07-09T12:34:56.789Z"
+      },
+      {
+        "name": "notes.md",
+        "path": "/home/dev/projects/notes.md",
+        "kind": "file",
+        "isSymlink": true,
+        "size": 2048,
+        "modifiedAt": "2026-07-09T12:34:56.789Z"
+      },
+      {
+        "name": "broken-link",
+        "path": "/home/dev/projects/broken-link",
+        "kind": "unknown",
+        "isSymlink": true
+      }
+    ]
+  }
+}

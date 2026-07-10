@@ -22,37 +22,49 @@ type apiRoutes struct {
 	fs          *fs.Service
 }
 
+// endpoints is the API's route inventory: every pattern and its handler.
+// Contract tests iterate this table to require a fixture under
+// packages/contracts/fixtures for each route, so all endpoints must be
+// registered here rather than directly on the mux.
+func (routes apiRoutes) endpoints() map[string]http.HandlerFunc {
+	return map[string]http.HandlerFunc{
+		"GET /health":                   routes.health,
+		"GET /version":                  routes.version,
+		"GET /actions":                  routes.listActions,
+		"GET /actions/{name}":           routes.getAction,
+		"POST /actions":                 routes.createAction,
+		"PUT /actions/{name}":           routes.updateAction,
+		"PUT /actions/{name}/enabled":   routes.setActionEnabled,
+		"DELETE /actions/{name}":        routes.deleteAction,
+		"GET /environments":             routes.listEnvironments,
+		"GET /fs/list":                  routes.fsList,
+		"POST /projects":                routes.createProject,
+		"GET /projects":                 routes.listProjects,
+		"GET /projects/{id}":            routes.getProject,
+		"PATCH /projects/{id}":          routes.patchProject,
+		"POST /projects/{id}/archive":   routes.archiveProject,
+		"POST /projects/{id}/unarchive": routes.unarchiveProject,
+		"GET /projects/{id}/sessions":   routes.listProjectSessions,
+		"POST /sessions/start":          routes.startSession,
+		"GET /sessions":                 routes.listSessions,
+		"GET /sessions/{id}":            routes.readSession,
+		"POST /sessions/{id}/send-text": routes.sendText,
+		"POST /sessions/{id}/send-key":  routes.sendKey,
+		"POST /sessions/{id}/terminate": routes.terminateSession,
+		"POST /sessions/{id}/archive":   routes.archiveSession,
+		"GET /sessions/{id}/attach":     routes.attachSession,
+	}
+}
+
 // Routes returns the HTTP handler for the Atelier Code API. The sessions, projects,
 // and fs services may be nil when their routes are not needed (e.g.
 // diagnostics-only tests).
 func Routes(diagnostics diagnostics.Diagnostics, sessions *session.Service, projects *project.Service, actions *action.Store, fsService *fs.Service) http.Handler {
 	routes := apiRoutes{diagnostics: diagnostics, sessions: sessions, projects: projects, actions: actions, fs: fsService}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", routes.health)
-	mux.HandleFunc("GET /version", routes.version)
-	mux.HandleFunc("GET /actions", routes.listActions)
-	mux.HandleFunc("GET /actions/{name}", routes.getAction)
-	mux.HandleFunc("POST /actions", routes.createAction)
-	mux.HandleFunc("PUT /actions/{name}", routes.updateAction)
-	mux.HandleFunc("PUT /actions/{name}/enabled", routes.setActionEnabled)
-	mux.HandleFunc("DELETE /actions/{name}", routes.deleteAction)
-	mux.HandleFunc("GET /environments", routes.listEnvironments)
-	mux.HandleFunc("GET /fs/list", routes.fsList)
-	mux.HandleFunc("POST /projects", routes.createProject)
-	mux.HandleFunc("GET /projects", routes.listProjects)
-	mux.HandleFunc("GET /projects/{id}", routes.getProject)
-	mux.HandleFunc("PATCH /projects/{id}", routes.patchProject)
-	mux.HandleFunc("POST /projects/{id}/archive", routes.archiveProject)
-	mux.HandleFunc("POST /projects/{id}/unarchive", routes.unarchiveProject)
-	mux.HandleFunc("GET /projects/{id}/sessions", routes.listProjectSessions)
-	mux.HandleFunc("POST /sessions/start", routes.startSession)
-	mux.HandleFunc("GET /sessions", routes.listSessions)
-	mux.HandleFunc("GET /sessions/{id}", routes.readSession)
-	mux.HandleFunc("POST /sessions/{id}/send-text", routes.sendText)
-	mux.HandleFunc("POST /sessions/{id}/send-key", routes.sendKey)
-	mux.HandleFunc("POST /sessions/{id}/terminate", routes.terminateSession)
-	mux.HandleFunc("POST /sessions/{id}/archive", routes.archiveSession)
-	mux.HandleFunc("GET /sessions/{id}/attach", routes.attachSession)
+	for pattern, handler := range routes.endpoints() {
+		mux.HandleFunc(pattern, handler)
+	}
 	mux.HandleFunc("/", routes.notFound)
 	return mux
 }

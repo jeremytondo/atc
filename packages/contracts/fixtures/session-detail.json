@@ -1,0 +1,25 @@
+{
+  "routes": ["GET /sessions/{id}", "POST /sessions/{id}/terminate", "POST /sessions/{id}/archive"],
+  "response": {
+    "id": "ses_fixture02",
+    "name": "Broken launch",
+    "action": "shell",
+    "environment": "zsh",
+    "params": {},
+    "workingDir": "/home/dev/projects/experiment",
+    "status": "failed",
+    "attachable": false,
+    "failureReason": "zmx exited before the session became ready",
+    "failureCode": "launch_failed",
+    "createdAt": "2026-07-08T10:00:00Z",
+    "updatedAt": "2026-07-08T10:00:05Z",
+    "terminatedAt": "2026-07-08T10:00:05Z",
+    "archivedAt": "2026-07-08T11:00:00Z",
+    "project": {
+      "id": "prj_fixture02",
+      "name": "Archived Experiment",
+      "workingDir": "/home/dev/projects/experiment",
+      "archivedAt": "2026-07-02T09:30:00Z"
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "routes": [],
+  "response": {
+    "error": "session_not_found",
+    "message": "session ses_fixture01 not found",
+    "sessionId": "ses_fixture01"
+  }
+}
