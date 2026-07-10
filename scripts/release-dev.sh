@@ -53,7 +53,7 @@ AC_ARTIFACT_ROOT="${AC_ARTIFACT_ROOT:-.build/release-dev}"
 
 APP_NAME="AtelierCode Dev"
 BUNDLE_ID="ElevenIdeas.AtelierCode.dev"
-PROJECT_REL="AtelierCode/AtelierCode.xcodeproj"
+PROJECT_REL="macos/AtelierCode.xcodeproj"
 SCHEME="AtelierCode"
 CONFIGURATION="Release"
 

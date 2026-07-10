@@ -1,0 +1,103 @@
+package server
+
+import (
+	"context"
+	"net"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestServeRejectsInvalidListenAddress(t *testing.T) {
+	err := Serve(context.Background(), Config{HTTPAddr: "not-a-listen-address"})
+	if err == nil {
+		t.Fatal("Serve returned nil error, want invalid listen address error")
+	}
+	if !strings.Contains(err.Error(), "invalid TCP listen address") {
+		t.Fatalf("error = %q, want invalid listen address", err)
+	}
+}
+
+func TestServeRejectsEmptySocketPath(t *testing.T) {
+	err := Serve(context.Background(), Config{HTTPAddr: "127.0.0.1:0"})
+	if err == nil {
+		t.Fatal("Serve returned nil error, want missing socket path error")
+	}
+	if !strings.Contains(err.Error(), "Unix socket path is required") {
+		t.Fatalf("error = %q, want missing socket path", err)
+	}
+}
+
+func TestServeRejectsEmptyDBPath(t *testing.T) {
+	err := Serve(context.Background(), Config{
+		HTTPAddr:   "127.0.0.1:0",
+		SocketPath: filepath.Join(t.TempDir(), "atc.sock"),
+	})
+	if err == nil {
+		t.Fatal("Serve returned nil error, want missing DB path error")
+	}
+	if !strings.Contains(err.Error(), "session database path is required") {
+		t.Fatalf("error = %q, want missing DB path", err)
+	}
+}
+
+func TestServeRejectsEmptyActionsPath(t *testing.T) {
+	dir := t.TempDir()
+	err := Serve(context.Background(), Config{
+		HTTPAddr:   "127.0.0.1:0",
+		SocketPath: filepath.Join(dir, "atc.sock"),
+		DBPath:     filepath.Join(dir, "state", "atc.db"),
+	})
+	if err == nil {
+		t.Fatal("Serve returned nil error, want missing actions path error")
+	}
+	if !strings.Contains(err.Error(), "actions file path is required") {
+		t.Fatalf("error = %q, want missing actions path", err)
+	}
+}
+
+func TestServeListensOnUnixSocket(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	dir := t.TempDir()
+	socketPath := filepath.Join(dir, "atc.sock")
+	dbPath := filepath.Join(dir, "state", "atc.db")
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- Serve(ctx, Config{
+			HTTPAddr:    "127.0.0.1:0",
+			SocketPath:  socketPath,
+			DBPath:      dbPath,
+			ActionsPath: filepath.Join(dir, "config", "actions.json"),
+		})
+	}()
+
+	waitForHealth(t, socketPath)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Serve returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not stop after context cancellation")
+	}
+}
+
+func waitForHealth(t *testing.T, socketPath string) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("unix", socketPath, 100*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("service health over Unix socket did not become ready at %s", socketPath)
+}
