@@ -47,7 +47,7 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'POST',
     path: '/api/sessions/start',
     title: 'Start session',
-    desc: 'Launch a persistent terminal from an action, an environment, and a working directory. Returns the new session in its starting state.',
+    desc: 'Launch a persistent terminal from an action, an environment, and a working directory. The launch is synchronous: the response is the new session, already running and attachable.',
     params: [
       { name: 'action', type: 'string', required: true, desc: 'Name of the action to run.' },
       {
@@ -76,7 +76,7 @@ export const ENDPOINTS: Endpoint[] = [
       { key: 'name', label: 'name', kind: 'text', placeholder: 'optional' },
       { key: 'prompt', label: 'prompt', kind: 'textarea', placeholder: 'optional starting prompt…' }
     ],
-    returns: '{\n  "id": "ses_8f3a2c",\n  "status": "starting",\n  "action": "codex",\n  "attachable": false\n}',
+    returns: '{\n  "id": "ses_8f3a2c",\n  "status": "running",\n  "action": "codex",\n  "attachable": true\n}',
     cli: {
       cmd: 'atc sessions start',
       example: 'atc sessions start \\\n  --action codex --env host-login-shell --dir .'

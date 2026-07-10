@@ -1,0 +1,7 @@
+{
+  "routes": ["POST /sessions/{id}/send-text"],
+  "request": {
+    "text": "ls -la\n"
+  },
+  "response": {}
+}

@@ -1,5 +1,7 @@
 # SQLite stores Cockpit-owned state
 
+> **Terminology note (2026-07):** This ADR predates the Atelier Code rename. "Cockpit" is now the Atelier Code server (`atc`).
+
 Cockpit will use a local SQLite database for Cockpit-owned application state,
 starting with the persistent session registry. Earlier specs deliberately
 avoided persistence for the terminal-session proof loop, but the next backend

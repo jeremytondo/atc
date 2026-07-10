@@ -87,6 +87,42 @@ func TestServeListensOnUnixSocket(t *testing.T) {
 	}
 }
 
+func TestUnauthenticatedRemoteBind(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  Config
+		want bool
+	}{
+		{
+			name: "loopback without token does not warn",
+			cfg:  Config{HTTPAddr: "127.0.0.1:7331", HTTPAddrExplicit: true},
+			want: false,
+		},
+		{
+			name: "remote with token does not warn",
+			cfg:  Config{HTTPAddr: "0.0.0.0:7331", HTTPAddrExplicit: true, AuthToken: "secret"},
+			want: false,
+		},
+		{
+			name: "remote without token warns",
+			cfg:  Config{HTTPAddr: "0.0.0.0:7331", HTTPAddrExplicit: true},
+			want: true,
+		},
+		{
+			name: "implicit default bind never warns",
+			cfg:  Config{HTTPAddr: DefaultHTTPAddr},
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := unauthenticatedRemoteBind(tc.cfg); got != tc.want {
+				t.Fatalf("unauthenticatedRemoteBind(%+v) = %v, want %v", tc.cfg, got, tc.want)
+			}
+		})
+	}
+}
+
 func waitForHealth(t *testing.T, socketPath string) {
 	t.Helper()
 

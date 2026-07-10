@@ -1,5 +1,7 @@
 # Sessions run typed Actions in explicit Environments
 
+> **Terminology note (2026-07):** This ADR predates the Atelier Code rename. "Cockpit" is now the Atelier Code server (`atc`), and `cockpit.toml` is now `atc.toml`.
+
 Supersedes [ADR 0003](0003-sessions-run-arbitrary-commands.md).
 
 ADR 0004 is intentionally edited in place as a living record for the launch

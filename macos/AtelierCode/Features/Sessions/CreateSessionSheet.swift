@@ -30,12 +30,21 @@ struct CreateSessionSheet: View {
         actions.first { $0.name == selectedActionName }
     }
 
+    private var enabledActions: [AtelierCodeAction] {
+        actions.filter(\.enabled)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Form {
                 Section {
                     Picker("Action", selection: $selectedActionName) {
-                        ForEach(actions.filter(\.enabled)) { action in
+                        // Actions load async; the "" selection needs a matching
+                        // tag until then or AppKit logs an invalid selection.
+                        if enabledActions.isEmpty {
+                            Text("Loading…").tag("")
+                        }
+                        ForEach(enabledActions) { action in
                             Text(action.displayLabel).tag(action.name)
                         }
                     }

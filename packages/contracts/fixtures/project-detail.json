@@ -1,0 +1,11 @@
+{
+  "routes": ["GET /projects/{id}", "POST /projects/{id}/archive", "POST /projects/{id}/unarchive"],
+  "response": {
+    "id": "prj_fixture02",
+    "name": "Archived Experiment",
+    "workingDir": "/home/dev/projects/experiment",
+    "createdAt": "2026-07-01T08:00:00Z",
+    "updatedAt": "2026-07-02T09:30:00Z",
+    "archivedAt": "2026-07-02T09:30:00Z"
+  }
+}

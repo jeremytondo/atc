@@ -1,0 +1,23 @@
+{
+  "routes": ["GET /actions/{name}"],
+  "response": {
+    "name": "claude",
+    "origin": "modified",
+    "enabled": true,
+    "label": "Claude Code",
+    "description": "Anthropic's coding agent",
+    "command": "claude",
+    "args": ["--verbose"],
+    "prompt": {"flag": "-p"},
+    "params": {
+      "model": {
+        "type": "enum",
+        "values": ["opus", "sonnet"],
+        "default": "opus",
+        "flag": "--model",
+        "label": "Model",
+        "description": "Which model to use"
+      }
+    }
+  }
+}

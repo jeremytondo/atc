@@ -197,6 +197,34 @@ func TestAttachBuffersKeystrokesBeforeInitialResize(t *testing.T) {
 	}
 }
 
+func TestAttachDropsPreResizeInputOverAggregateCap(t *testing.T) {
+	pty := newPipePTY()
+	mux := &fakeMux{attachPTY: pty}
+	conn, srv := dialAttachRaw(t, mux, "ses_attach")
+	defer srv.Close()
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// A single frame larger than the aggregate cap is dropped entirely;
+	// later input that fits is still buffered and delivered in order.
+	oversized := make([]byte, attachInitialInputLimit+1)
+	if err := conn.Write(context.Background(), websocket.MessageBinary, oversized); err != nil {
+		t.Fatalf("write oversized: %v", err)
+	}
+	if err := conn.Write(context.Background(), websocket.MessageBinary, []byte("kept\r")); err != nil {
+		t.Fatalf("write kept: %v", err)
+	}
+	writeResize(t, conn, 100, 30)
+
+	buf := make([]byte, 32)
+	n, err := pty.fromCliOut.Read(buf)
+	if err != nil {
+		t.Fatalf("pty read: %v", err)
+	}
+	if string(buf[:n]) != "kept\r" {
+		t.Fatalf("delivered = %q, want only the frame under the cap", buf[:n])
+	}
+}
+
 func TestAttachFallsBackWhenInitialResizeIsMissing(t *testing.T) {
 	oldTimeout := attachInitialResizeTimeout
 	attachInitialResizeTimeout = 25 * time.Millisecond

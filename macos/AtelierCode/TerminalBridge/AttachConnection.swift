@@ -24,11 +24,6 @@ enum AttachEvent: Sendable {
 /// keystrokes; client→server TEXT = `{"type":"resize","cols":N,"rows":N}`.
 /// One instance per connection attempt — reconnect makes a new one.
 actor AttachConnection {
-    private enum Outbound {
-        case data(Data)
-        case resize(cols: UInt16, rows: UInt16)
-    }
-
     /// Server frame read limit is 1 MiB; stay well under it.
     private static let chunkSize = 256 * 1024
     private static let pingInterval: Duration = .seconds(30)
@@ -42,8 +37,11 @@ actor AttachConnection {
     private var closedByClient = false
     private var finished = false
 
-    private let outbound: AsyncStream<Outbound>
-    private let outboundContinuation: AsyncStream<Outbound>.Continuation
+    private let outbound = OutboundQueue()
+    /// Wake-up for the pump; the data itself lives in `outbound`, so one
+    /// buffered signal is always enough.
+    private let outboundSignal: AsyncStream<Void>
+    private let outboundSignalContinuation: AsyncStream<Void>.Continuation
 
     init(url: URL, headers: [String: String]) {
         var request = URLRequest(url: url)
@@ -53,18 +51,22 @@ actor AttachConnection {
         self.request = request
         socketDelegate = SocketDelegate()
         urlSession = URLSession(configuration: .default, delegate: socketDelegate, delegateQueue: nil)
-        (outbound, outboundContinuation) = AsyncStream.makeStream(of: Outbound.self)
+        (outboundSignal, outboundSignalContinuation) = AsyncStream.makeStream(
+            of: Void.self, bufferingPolicy: .bufferingNewest(1)
+        )
     }
 
     // MARK: - Producer side (called synchronously from Ghostty callbacks;
-    // a single AsyncStream keeps keystroke/resize ordering intact)
+    // the lock-guarded queue keeps keystroke ordering intact)
 
     nonisolated func enqueue(_ data: Data) {
-        outboundContinuation.yield(.data(data))
+        outbound.enqueue(data)
+        outboundSignalContinuation.yield(())
     }
 
     nonisolated func enqueueResize(cols: UInt16, rows: UInt16) {
-        outboundContinuation.yield(.resize(cols: cols, rows: rows))
+        outbound.setResize(cols: cols, rows: rows)
+        outboundSignalContinuation.yield(())
     }
 
     // MARK: - Lifecycle
@@ -101,7 +103,7 @@ actor AttachConnection {
     private func tearDown() {
         pingTask?.cancel()
         pumpTask?.cancel()
-        outboundContinuation.finish()
+        outboundSignalContinuation.finish()
         urlSession.finishTasksAndInvalidate()
     }
 
@@ -154,19 +156,21 @@ actor AttachConnection {
 
     private func startOutboundPump(_ task: URLSessionWebSocketTask) {
         pumpTask = Task {
-            for await item in outbound {
-                do {
-                    switch item {
-                    case .data(let data):
-                        for chunk in Self.chunked(data) {
-                            try await task.send(.data(chunk))
+            for await _ in outboundSignal {
+                while let item = outbound.dequeue() {
+                    do {
+                        switch item {
+                        case .data(let data):
+                            for chunk in Self.chunked(data) {
+                                try await task.send(.data(chunk))
+                            }
+                        case .resize(let cols, let rows):
+                            try await task.send(.string(#"{"type":"resize","cols":\#(cols),"rows":\#(rows)}"#))
                         }
-                    case .resize(let cols, let rows):
-                        try await task.send(.string(#"{"type":"resize","cols":\#(cols),"rows":\#(rows)}"#))
+                    } catch {
+                        // The receive loop surfaces the failure; just stop pumping.
+                        return
                     }
-                } catch {
-                    // The receive loop surfaces the failure; just stop pumping.
-                    return
                 }
             }
         }
@@ -197,6 +201,51 @@ actor AttachConnection {
             offset = end
         }
         return chunks
+    }
+}
+
+/// Lock-guarded outbound buffer. Keystroke chunks keep their order under a
+/// byte bound — a stalled socket plus a huge paste drops the excess instead
+/// of growing memory — and only the most recent resize is kept, sent ahead
+/// of data so the server sizes the PTY before applying input.
+private final class OutboundQueue: @unchecked Sendable {
+    /// Matches the server's per-frame read limit; more than this buffered
+    /// means the socket is effectively dead anyway.
+    private static let maxBufferedBytes = 1 << 20
+
+    private let lock = NSLock()
+    private var chunks: [Data] = []
+    private var bufferedBytes = 0
+    private var pendingResize: (cols: UInt16, rows: UInt16)?
+
+    enum Item {
+        case data(Data)
+        case resize(cols: UInt16, rows: UInt16)
+    }
+
+    func enqueue(_ data: Data) {
+        lock.withLock {
+            guard bufferedBytes + data.count <= Self.maxBufferedBytes else { return }
+            chunks.append(data)
+            bufferedBytes += data.count
+        }
+    }
+
+    func setResize(cols: UInt16, rows: UInt16) {
+        lock.withLock { pendingResize = (cols, rows) }
+    }
+
+    func dequeue() -> Item? {
+        lock.withLock {
+            if let resize = pendingResize {
+                pendingResize = nil
+                return .resize(cols: resize.cols, rows: resize.rows)
+            }
+            guard !chunks.isEmpty else { return nil }
+            let data = chunks.removeFirst()
+            bufferedBytes -= data.count
+            return .data(data)
+        }
     }
 }
 

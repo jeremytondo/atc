@@ -336,7 +336,7 @@ private struct ConnectionEditorView: View {
 }
 
 #Preview("Connections — populated") {
-    let store = ConnectionsStore(defaults: UserDefaults(suiteName: "preview.connections.populated")!)
+    let store = ConnectionsStore(defaults: UserDefaults(suiteName: "preview.connections.populated")!, credentials: InMemoryCredentialStore())
     _ = try? store.add(name: "Workstation", urlString: "http://workstation.tail1f9a09.ts.net:7331", token: "")
     _ = try? store.add(name: "Local Dev", urlString: "http://127.0.0.1:7331", token: "")
     return ConnectionsSettingsView()
@@ -346,7 +346,7 @@ private struct ConnectionEditorView: View {
 }
 
 #Preview("Connections — empty") {
-    let store = ConnectionsStore(defaults: UserDefaults(suiteName: "preview.connections.empty")!)
+    let store = ConnectionsStore(defaults: UserDefaults(suiteName: "preview.connections.empty")!, credentials: InMemoryCredentialStore())
     return ConnectionsSettingsView()
         .environment(AppModel(connections: store, clientFactory: { _ in MockAtelierCodeClient() }))
         .frame(width: 700, height: 450)

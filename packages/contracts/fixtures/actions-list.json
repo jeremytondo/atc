@@ -1,0 +1,36 @@
+{
+  "routes": ["GET /actions"],
+  "response": {
+    "actions": [
+      {
+        "name": "claude",
+        "origin": "modified",
+        "enabled": true,
+        "label": "Claude Code",
+        "description": "Anthropic's coding agent",
+        "prompt": {},
+        "params": {
+          "model": {
+            "type": "enum",
+            "values": ["opus", "sonnet"],
+            "default": "opus",
+            "flag": "--model",
+            "label": "Model",
+            "description": "Which model to use"
+          },
+          "yolo": {
+            "type": "bool",
+            "default": true,
+            "flag": "--dangerously-skip-permissions"
+          }
+        }
+      },
+      {
+        "name": "shell",
+        "origin": "builtin",
+        "enabled": false,
+        "params": {}
+      }
+    ]
+  }
+}

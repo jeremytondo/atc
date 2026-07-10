@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
@@ -150,11 +151,13 @@ func TestListEmptyDirectory(t *testing.T) {
 }
 
 func TestListSorting(t *testing.T) {
+	// Only names that coexist on case-insensitive filesystems (macOS APFS);
+	// case-only ties are covered by TestCompareEntries on constructed values.
 	root := t.TempDir()
 	for _, dir := range []string{".hidden-dir", "Beta", "alpha"} {
 		mkdir(t, filepath.Join(root, dir))
 	}
-	for _, file := range []string{".dotfile", "delta.txt", "Gamma.txt", "AB", "ab"} {
+	for _, file := range []string{".dotfile", "delta.txt", "Gamma.txt"} {
 		writeFile(t, filepath.Join(root, file), "")
 	}
 
@@ -162,7 +165,7 @@ func TestListSorting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	want := []string{".hidden-dir", "alpha", "Beta", ".dotfile", "AB", "ab", "delta.txt", "Gamma.txt"}
+	want := []string{".hidden-dir", "alpha", "Beta", ".dotfile", "delta.txt", "Gamma.txt"}
 	got := entryNames(listing)
 	if len(got) != len(want) {
 		t.Fatalf("names = %v, want %v", got, want)
@@ -170,6 +173,31 @@ func TestListSorting(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("names = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestCompareEntries(t *testing.T) {
+	entries := []Entry{
+		{Name: "Gamma.txt", Kind: KindFile},
+		{Name: "ab", Kind: KindFile},
+		{Name: "alpha", Kind: KindDirectory},
+		{Name: ".dotfile", Kind: KindFile},
+		{Name: "AB", Kind: KindFile},
+		{Name: "delta.txt", Kind: KindFile},
+		{Name: ".hidden-dir", Kind: KindDirectory},
+		{Name: "Beta", Kind: KindDirectory},
+	}
+	slices.SortFunc(entries, compareEntries)
+
+	want := []string{".hidden-dir", "alpha", "Beta", ".dotfile", "AB", "ab", "delta.txt", "Gamma.txt"}
+	for i := range want {
+		if entries[i].Name != want[i] {
+			names := make([]string, len(entries))
+			for j, entry := range entries {
+				names[j] = entry.Name
+			}
+			t.Fatalf("names = %v, want %v", names, want)
 		}
 	}
 }

@@ -1,0 +1,43 @@
+{
+  "routes": ["GET /sessions", "GET /projects/{id}/sessions"],
+  "response": {
+    "sessions": [
+      {
+        "id": "ses_fixture01",
+        "name": "Fix the login bug",
+        "action": "claude",
+        "environment": "zsh",
+        "workingDir": "/home/dev/projects/atelier",
+        "status": "running",
+        "attachable": true,
+        "createdAt": "2026-07-09T12:34:56.789Z",
+        "updatedAt": "2026-07-09T12:35:00Z",
+        "project": {
+          "id": "prj_fixture01",
+          "name": "Atelier",
+          "workingDir": "/home/dev/projects/atelier"
+        }
+      },
+      {
+        "id": "ses_fixture02",
+        "action": "shell",
+        "environment": "zsh",
+        "workingDir": "/home/dev/projects/experiment",
+        "status": "failed",
+        "attachable": false,
+        "failureReason": "zmx exited before the session became ready",
+        "failureCode": "launch_failed",
+        "createdAt": "2026-07-08T10:00:00Z",
+        "updatedAt": "2026-07-08T10:00:05Z",
+        "terminatedAt": "2026-07-08T10:00:05Z",
+        "archivedAt": "2026-07-08T11:00:00Z",
+        "project": {
+          "id": "prj_fixture02",
+          "name": "Archived Experiment",
+          "workingDir": "/home/dev/projects/experiment",
+          "archivedAt": "2026-07-02T09:30:00Z"
+        }
+      }
+    ]
+  }
+}

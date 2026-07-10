@@ -35,7 +35,7 @@ Authentication is a single middleware, `withAuth`, wrapping only `/api/`
 
 1. **Token empty → the guard is a no-op; every request passes.** This is the
    default, because the token is only ever set via `[auth] token` in the TOML or
-   `COCKPIT_API_TOKEN`, and nothing sets it. **So today the REST API is
+   `ATC_API_TOKEN`, and nothing sets it. **So today the REST API is
    effectively open to anything that can reach `127.0.0.1:7331`.**
 2. Request arrived on the Unix socket → always trusted.
 3. Request on TCP with a token configured → must present
@@ -54,11 +54,11 @@ only gate is the (disabled) token.
 "Reachable from another machine" is primarily a **transport** question, not an
 app-auth question. Two very different architectures:
 
-- **(a) Keep Cockpit local; secure the transport.** Cockpit stays bound to
+- **(a) Keep Atelier Code local; secure the transport.** Atelier Code stays bound to
   loopback; the laptop reaches it via an SSH port-forward or a private mesh
   (Tailscale/WireGuard). The tunnel provides encryption *and* authentication.
-  Cockpit barely changes.
-- **(b) Make Cockpit a directly network-exposed service.** Bind to a routable
+  Atelier Code barely changes.
+- **(b) Make Atelier Code a directly network-exposed service.** Bind to a routable
   address and build real app-level auth + TLS into the Go app, because anything
   on the network can now reach the port.
 
@@ -77,15 +77,15 @@ exact port being tunneled**. Any option that keeps those aligned keeps the feel.
    `localhost:5173`; the forward carries it; Vite proxies `/api` (including the
    attach WS) to `127.0.0.1:7331`. All same-origin `localhost:5173`. Ideal for the
    dev loop; zero code change.
-2. **Direct MagicDNS bind.** Bind Cockpit to the network and browse
+2. **Direct MagicDNS bind.** Bind Atelier Code to the network and browse
    `http://workstation.tail1f9a09.ts.net:7331`. No SSH forward; works whenever the
    box is up. Wire is WireGuard-encrypted within the tailnet. Tradeoff: a stable
    bookmark rather than the `localhost` link, and a non-loopback bind (already
-   supported via `--http-addr` / `COCKPIT_HTTP_ADDR`, which warns on non-loopback).
-3. **`tailscale serve` — recommended for the always-on console.** Cockpit stays
+   supported via `--http-addr` / `ATC_HTTP_ADDR`, which warns on non-loopback).
+3. **`tailscale serve` — recommended for the always-on console.** Atelier Code stays
    bound to `127.0.0.1:7331`; `tailscale serve` proxies the tailnet name to that
    loopback port, giving `https://workstation.tail1f9a09.ts.net` with real
-   (Let's Encrypt) HTTPS, **tailnet-private** (not public internet). Cockpit stays
+   (Let's Encrypt) HTTPS, **tailnet-private** (not public internet). Atelier Code stays
    loopback-simple; bookmark one HTTPS URL. (Verify exact CLI syntax with
    `tailscale serve --help` / `tailscale serve status` — it varies by version.)
 4. **`tailscale funnel` — avoid.** Same as serve but exposes to the *public
@@ -99,7 +99,7 @@ daemon.
 
 - **Dev:** keep the SSH `LocalForward` setup unchanged.
 - **Always-on console:** put it behind `tailscale serve` (HTTPS, stable URL,
-  tailnet-only, Cockpit stays loopback + Unix-socket simple).
+  tailnet-only, Atelier Code stays loopback + Unix-socket simple).
 
 ## Future implementation notes
 
@@ -134,7 +134,7 @@ When this is picked up as real work:
 - `internal/server/server.go` — dual listeners, `DefaultHTTPAddr`, non-loopback
   bind warning.
 - `internal/server/listener.go` — TCP/Unix listener boundary.
-- `internal/config/config.go` — `AuthConfig.Token`, `COCKPIT_API_TOKEN`.
+- `internal/config/config.go` — `AuthConfig.Token`, `ATC_API_TOKEN`.
 - `internal/api/attach.go` — attach WebSocket `Origin` handling.
 - `internal/paths/paths.go` — `0700` control dir for the Unix socket.
 - `web/src/lib/api.ts`, `web/src/lib/shell.svelte` — sidebar token field.

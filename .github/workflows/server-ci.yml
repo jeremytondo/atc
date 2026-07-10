@@ -4,16 +4,22 @@ on:
   pull_request:
     paths:
       - "server/**"
+      - "mise.toml"
       - ".github/workflows/server-ci.yml"
   push:
     branches:
       - main
     paths:
       - "server/**"
+      - "mise.toml"
       - ".github/workflows/server-ci.yml"
 
 permissions:
   contents: read
+
+concurrency:
+  group: server-ci-${{ github.ref }}
+  cancel-in-progress: true
 
 defaults:
   run:
@@ -22,6 +28,7 @@ defaults:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -30,8 +37,10 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           working_directory: server
 
-      - name: Test
-        run: mise run test
+      # Same gates as local `mise run check`: gofmt, go vet, Go tests,
+      # svelte-check with warnings as errors.
+      - name: Check
+        run: mise run check
 
       - name: Build
         run: mise run build

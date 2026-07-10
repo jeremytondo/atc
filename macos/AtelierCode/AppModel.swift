@@ -1,6 +1,9 @@
 import Foundation
 import Observation
+import OSLog
 import AtelierCodeAPI
+
+private let logger = Logger(subsystem: "ElevenIdeas.AtelierCode", category: "appmodel")
 
 /// Root domain model: owns the Connection list and one `ConnectionRuntime`
 /// per Connection. Aggregation across Connections happens above the
@@ -37,13 +40,15 @@ final class AppModel {
     ) {
         self.connections = connections ?? ConnectionsStore()
         self.clientFactory = clientFactory ?? { record in
-            // urlString is store-normalized; building a URL from it can't
-            // fail in practice.
+            // makeRuntime rejects records whose urlString doesn't parse, so
+            // the unwrap here can't be reached with a corrupted record.
             let url = URL(string: record.urlString)!
             return HTTPAtelierCodeClient(server: AtelierCodeServer(baseURL: url, token: record.token))
         }
         for record in self.connections.connections {
-            runtimes.append(makeRuntime(record))
+            if let runtime = makeRuntime(record) {
+                runtimes.append(runtime)
+            }
         }
     }
 
@@ -63,9 +68,13 @@ final class AppModel {
         runtime(id: ref.connectionID)?.sessions.session(id: ref.sessionID)
     }
 
+    /// Refreshes every Connection concurrently so one unreachable server
+    /// doesn't delay the others.
     func refreshAll() async {
-        for runtime in runtimes {
-            await runtime.refresh()
+        await withTaskGroup { group in
+            for runtime in runtimes {
+                group.addTask { await runtime.refresh() }
+            }
         }
     }
 
@@ -75,7 +84,9 @@ final class AppModel {
     @discardableResult
     func addConnection(name: String, urlString: String, token: String) throws -> ConnectionRecord {
         let record = try connections.add(name: name, urlString: urlString, token: token)
-        runtimes.append(makeRuntime(record))
+        if let runtime = makeRuntime(record) {
+            runtimes.append(runtime)
+        }
         return record
     }
 
@@ -87,8 +98,20 @@ final class AppModel {
         return normalized != runtime.record.urlString || token != runtime.record.token
     }
 
+    /// Whether any terminal on this Connection has a live attach. Retained
+    /// (ended) controllers don't count — editing the Connection would only
+    /// drop history, not sever a running WebSocket.
     func hasLiveTerminals(connectionID: UUID) -> Bool {
-        terminals.keys.contains { $0.connectionID == connectionID }
+        terminals.contains { ref, controller in
+            ref.connectionID == connectionID && controller.isActivelyAttached
+        }
+    }
+
+    /// Refs whose terminals have a live attach, for connection indicators.
+    /// `terminals.keys` would also include ended controllers kept for
+    /// scrollback.
+    var activelyAttachedRefs: Set<SessionRef> {
+        Set(terminals.filter { $0.value.isActivelyAttached }.keys)
     }
 
     /// Saves an edit. Name-only changes update the record in place; URL or
@@ -100,9 +123,9 @@ final class AppModel {
         try connections.update(id: id, name: name, urlString: urlString, token: token)
         guard let record = connections.connections.first(where: { $0.id == id }),
               let index = runtimes.firstIndex(where: { $0.id == id }) else { return }
-        if rebuild {
+        if rebuild, let runtime = makeRuntime(record) {
             teardown(runtimes[index])
-            runtimes[index] = makeRuntime(record)
+            runtimes[index] = runtime
         } else {
             runtimes[index].updateRecord(record)
         }
@@ -135,7 +158,14 @@ final class AppModel {
 
     // MARK: - Private
 
-    private func makeRuntime(_ record: ConnectionRecord) -> ConnectionRuntime {
+    /// Nil only for a corrupted persisted record (urlString that no longer
+    /// parses): the Connection is skipped with a log instead of crashing at
+    /// launch — records created through the store are always valid.
+    private func makeRuntime(_ record: ConnectionRecord) -> ConnectionRuntime? {
+        guard URL(string: record.urlString) != nil else {
+            logger.error("skipping connection \(record.id) — unparseable URL \(record.urlString)")
+            return nil
+        }
         let runtime = ConnectionRuntime(record: record, client: clientFactory(record))
         if includeArchived {
             runtime.projects.includeArchived = true

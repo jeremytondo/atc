@@ -1,0 +1,37 @@
+{
+  "routes": ["POST /actions"],
+  "request": {
+    "label": "My Agent",
+    "description": "Custom agent",
+    "command": "my-agent",
+    "args": ["--fast"],
+    "prompt": {},
+    "params": {
+      "mode": {
+        "type": "enum",
+        "values": ["fast", "smart"],
+        "default": "fast",
+        "flag": "--mode"
+      }
+    },
+    "enabled": true
+  },
+  "response": {
+    "name": "my-agent",
+    "origin": "custom",
+    "enabled": true,
+    "label": "My Agent",
+    "description": "Custom agent",
+    "command": "my-agent",
+    "args": ["--fast"],
+    "prompt": {},
+    "params": {
+      "mode": {
+        "type": "enum",
+        "values": ["fast", "smart"],
+        "default": "fast",
+        "flag": "--mode"
+      }
+    }
+  }
+}

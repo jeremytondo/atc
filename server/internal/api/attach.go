@@ -35,6 +35,12 @@ type resizeMessage struct {
 
 var attachInitialResizeTimeout = 2 * time.Second
 
+// attachInitialInputLimit caps the aggregate bytes buffered while waiting for
+// the initial resize. Each frame is already capped by the read limit, but a
+// client pasting heavily before its resize arrives could otherwise grow the
+// buffer without bound; excess input is dropped, not fatal.
+const attachInitialInputLimit = 256 * 1024
+
 type acceptedAttachSubprotocolKey struct{}
 
 // WithAcceptedAttachSubprotocol stores the already-authenticated WebSocket
@@ -163,6 +169,9 @@ type initialAttachInput struct {
 	rows   uint16
 	cols   uint16
 	binary [][]byte
+	// buffered is the running total of bytes in binary, checked against
+	// attachInitialInputLimit.
+	buffered int
 }
 
 func defaultInitialAttachInput() initialAttachInput {
@@ -185,6 +194,10 @@ func readInitialAttachInput(conn *websocket.Conn) (initialAttachInput, error) {
 
 		switch typ {
 		case websocket.MessageBinary:
+			if input.buffered+len(data) > attachInitialInputLimit {
+				continue
+			}
+			input.buffered += len(data)
 			input.binary = append(input.binary, append([]byte(nil), data...))
 		case websocket.MessageText:
 			rows, cols, ok := decodeResizeMessage(data)

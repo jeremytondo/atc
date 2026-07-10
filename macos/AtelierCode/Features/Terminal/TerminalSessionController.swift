@@ -15,6 +15,16 @@ final class TerminalSessionController: Identifiable {
         case connecting
         case connected
         case ended(AttachEndReason)
+
+        /// Whether the WebSocket bridge is (or is becoming) live. Ended
+        /// controllers stay in the AppModel registry for scrollback, so
+        /// connection indicators must check this, not registry membership.
+        var isActivelyAttached: Bool {
+            switch self {
+            case .connecting, .connected: return true
+            case .ended: return false
+            }
+        }
     }
 
     /// One Ghostty runtime/config for all surfaces.
@@ -25,6 +35,10 @@ final class TerminalSessionController: Identifiable {
     private(set) var phase: Phase = .connecting
 
     var id: String { sessionID }
+
+    /// See `Phase.isActivelyAttached` — liveness for indicators and
+    /// destructive-action confirmation, distinct from retained history.
+    var isActivelyAttached: Bool { phase.isActivelyAttached }
 
     private let attachURL: URL
     private let attachHeaders: [String: String]
@@ -144,9 +158,15 @@ final class TerminalSessionController: Identifiable {
             // and marking ready stops unbounded buffering.
             surfaceIsReady = true
             guard !Task.isCancelled else { return }
-            while !pendingOutput.isEmpty {
-                terminalSession.receive(pendingOutput.removeFirst())
+            // Drain by index: repeated removeFirst() is quadratic on a large
+            // replay, and the buffer must stay non-empty while draining so
+            // concurrent deliver() calls keep appending behind the cursor.
+            var index = 0
+            while index < pendingOutput.count {
+                terminalSession.receive(pendingOutput[index])
+                index += 1
             }
+            pendingOutput.removeAll()
             drainTask = nil
         }
     }

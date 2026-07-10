@@ -71,6 +71,87 @@ struct ProjectsStoreTests {
         #expect(store.lastError != nil)
         #expect(store.projects.isEmpty)
     }
+
+    @Test("an older refresh finishing late does not settle the newer one's loading state")
+    func staleRefreshKeepsLoading() async throws {
+        let client = GatedProjectsClient()
+        let store = ProjectsStore(client: client)
+
+        // Start refresh #1 and wait until it is parked inside the client,
+        // so refresh #2 is guaranteed the newer generation.
+        let first = Task { await store.refresh() }
+        try await client.waitForWaiters(1)
+        let second = Task { await store.refresh() }
+        try await client.waitForWaiters(2)
+
+        // The older request completes while the newer is still in flight:
+        // the spinner must stay on and hasLoadedOnce must stay false.
+        client.releaseNext()
+        await first.value
+        #expect(store.isLoading)
+        #expect(!store.hasLoadedOnce)
+
+        client.releaseNext()
+        await second.value
+        #expect(!store.isLoading)
+        #expect(store.hasLoadedOnce)
+    }
+}
+
+/// Client whose `projects()` parks until the test releases it, for
+/// deterministic overlapping-refresh sequencing. Waiters release in call
+/// order.
+final class GatedProjectsClient: AtelierCodeClient, @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func waitForWaiters(_ count: Int) async throws {
+        for _ in 0..<500 {
+            if lock.withLock({ waiters.count }) >= count { return }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        throw AtelierCodeError.badStatus(500)
+    }
+
+    func releaseNext() {
+        let waiter = lock.withLock { waiters.isEmpty ? nil : waiters.removeFirst() }
+        waiter?.resume()
+    }
+
+    func projects(includeArchived: Bool) async throws -> [Project] {
+        await withCheckedContinuation { continuation in
+            lock.withLock { waiters.append(continuation) }
+        }
+        return []
+    }
+
+    // MARK: - Unused surface
+
+    func health() async throws -> Health { throw AtelierCodeError.badStatus(500) }
+    func version() async throws -> Version { throw AtelierCodeError.badStatus(500) }
+    func sessions(includeArchived: Bool, status: SessionStatus?) async throws -> [Session] { [] }
+    func session(id: String) async throws -> SessionDetail { throw AtelierCodeError.badStatus(500) }
+    func startSession(_ request: StartSessionRequest) async throws -> SessionDetail { throw AtelierCodeError.badStatus(500) }
+    func terminateSession(id: String) async throws -> SessionDetail { throw AtelierCodeError.badStatus(500) }
+    func archiveSession(id: String) async throws -> SessionDetail { throw AtelierCodeError.badStatus(500) }
+    func sendText(sessionID: String, text: String) async throws {}
+    func sendKey(sessionID: String, key: String) async throws {}
+    func actions() async throws -> [AtelierCodeAction] { [] }
+    func action(name: String) async throws -> AtelierCodeAction { throw AtelierCodeError.badStatus(500) }
+    func createAction(_ request: ActionWriteRequest) async throws -> AtelierCodeAction { throw AtelierCodeError.badStatus(500) }
+    func updateAction(name: String, _ request: ActionWriteRequest) async throws -> AtelierCodeAction { throw AtelierCodeError.badStatus(500) }
+    func setActionEnabled(name: String, enabled: Bool) async throws -> AtelierCodeAction { throw AtelierCodeError.badStatus(500) }
+    func deleteAction(name: String) async throws { throw AtelierCodeError.badStatus(500) }
+    func environments() async throws -> [AtelierCodeEnvironment] { [] }
+    func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing { throw AtelierCodeError.badStatus(500) }
+    func project(id: String) async throws -> Project { throw AtelierCodeError.badStatus(500) }
+    func createProject(name: String, workingDir: String) async throws -> Project { throw AtelierCodeError.badStatus(500) }
+    func renameProject(id: String, name: String) async throws -> Project { throw AtelierCodeError.badStatus(500) }
+    func archiveProject(id: String) async throws -> Project { throw AtelierCodeError.badStatus(500) }
+    func unarchiveProject(id: String) async throws -> Project { throw AtelierCodeError.badStatus(500) }
+    func projectSessions(projectID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session] { [] }
+    func attachURL(sessionID: String) -> URL { URL(string: "ws://127.0.0.1:1/attach")! }
+    func attachHeaders() -> [String: String] { [:] }
 }
 
 /// Minimal stateful in-memory server for store tests: project mutations

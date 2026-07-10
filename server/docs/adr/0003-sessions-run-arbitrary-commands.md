@@ -1,5 +1,7 @@
 # Sessions run an arbitrary command, not a fixed agent enum
 
+> **Terminology note (2026-07):** This ADR predates the Atelier Code rename. "Cockpit" is now the Atelier Code server (`atc`); the `cockpit:` session-name prefix described below is historical.
+
 > **Superseded by [ADR 0004](0004-sessions-launch-agents-from-a-registry.md).**
 > A security review of the MVP reversed this decision: `start` now launches an
 > agent from a server-side registry rather than an arbitrary command string.

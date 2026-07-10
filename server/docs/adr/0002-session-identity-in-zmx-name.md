@@ -1,5 +1,7 @@
 # Session identity lives in the zmx name; no Cockpit registry (MVP)
 
+> **Terminology note (2026-07):** This ADR predates the Atelier Code rename. "Cockpit" is now the Atelier Code server (`atc`); the `cockpit:` session-name prefix described below is historical.
+
 > **Superseded by [ADR 0006](0006-cockpit-owned-session-identity.md).**
 > The backend agent-sessions pass introduces a SQLite session registry and a
 > stable Cockpit-owned `Session.id`; multiplexer names are now private

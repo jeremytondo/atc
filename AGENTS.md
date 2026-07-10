@@ -35,6 +35,7 @@ AGTerm (https://github.com/umputun/agterm): Great LibGhostty app with a lot of s
 - Always strive for simplicity. This is not a complex enterprise app.
 - Code readability is critical. Code should be easily understandable by
   developers coming into the project.
+- Developer ergonoics is important. It should be easy for developers to work with and test the codebase.
 
 ## Model Selection
 

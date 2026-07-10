@@ -3,7 +3,9 @@
   import { page } from '$app/state';
   import { init, Terminal, FitAddon } from 'ghostty-web';
 
-  const id = page.params.id;
+  // The [id] route param is always present here; '' only satisfies the
+  // generic page.params typing and would just 404 the attach.
+  const id = page.params.id ?? '';
   const tokenStorageKey = 'atc.apiToken';
   const attachTokenSubprotocolPrefix = 'atc.token.';
 

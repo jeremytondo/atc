@@ -75,7 +75,7 @@ struct ProjectUIHostingSmokeTest {
         let defaults = UserDefaults(suiteName: suite)!
         defaults.removePersistentDomain(forName: suite)
         let appModel = AppModel(
-            connections: ConnectionsStore(defaults: defaults),
+            connections: ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore()),
             clientFactory: { _ in MockAtelierCodeClient() }
         )
         #expect(appModel.runtimes.isEmpty)

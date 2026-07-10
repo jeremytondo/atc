@@ -2,7 +2,9 @@ import Foundation
 import Observation
 
 /// An app-local Connection to an Atelier Code server. Persisted as part of a
-/// JSON-encoded `[ConnectionRecord]` array under a single UserDefaults key.
+/// JSON-encoded `[ConnectionRecord]` array under a single UserDefaults key —
+/// except `token`, which lives in the credential store (Keychain) keyed by
+/// `id` and is stripped from the JSON before writing.
 /// `id` is stable local identity, never shown to the user; `name` is
 /// app-chosen and not required to be unique; `urlString` is always a
 /// normalized, origin-only URL with an explicit `http`/`https` scheme;
@@ -123,6 +125,7 @@ final class ConnectionsStore {
     private(set) var connections: [ConnectionRecord] = []
 
     private let defaults: UserDefaults
+    private let credentials: any CredentialStore
 
     private enum Keys {
         static let connections = "connections"
@@ -130,10 +133,15 @@ final class ConnectionsStore {
         static let legacyToken = "apiToken"
     }
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, credentials: any CredentialStore = KeychainCredentialStore()) {
         self.defaults = defaults
-        load()
+        self.credentials = credentials
+        let hadPlaintextTokens = load()
         migrateLegacyIfNeeded()
+        // One-time migration per record: any token found in the persisted
+        // JSON moves to the credential store on the next persist, which
+        // strips it from UserDefaults only after a verified write.
+        if hadPlaintextTokens { persist() }
     }
 
     // MARK: Mutations
@@ -182,21 +190,45 @@ final class ConnectionsStore {
     func remove(id: UUID) {
         let before = connections.count
         connections.removeAll { $0.id == id }
-        if connections.count != before { persist() }
+        if connections.count != before {
+            credentials.deleteToken(for: id)
+            persist()
+        }
     }
 
     // MARK: Persistence
 
-    private func load() {
+    /// Loads the persisted list, hydrating tokens from the credential store.
+    /// Returns whether any persisted record still carried a plaintext token
+    /// (pre-Keychain data, or a previously failed credential write).
+    private func load() -> Bool {
         guard let data = defaults.data(forKey: Keys.connections),
               let decoded = try? JSONDecoder().decode([ConnectionRecord].self, from: data) else {
-            return
+            return false
         }
-        connections = decoded
+        connections = decoded.map { record in
+            var record = record
+            if record.token.isEmpty, let stored = credentials.token(for: record.id) {
+                record.token = stored
+            }
+            return record
+        }
+        return decoded.contains { !$0.token.isEmpty }
     }
 
     private func persist() {
-        guard let data = try? JSONEncoder().encode(connections) else { return }
+        let records = connections.map { record in
+            var copy = record
+            // Strip the token from the JSON only once the credential store
+            // durably holds it; on failure the plaintext stays in
+            // UserDefaults (the pre-Keychain behavior) so the token is never
+            // lost, and the next persist retries the migration.
+            if credentials.setToken(record.token, for: record.id) {
+                copy.token = ""
+            }
+            return copy
+        }
+        guard let data = try? JSONEncoder().encode(records) else { return }
         defaults.set(data, forKey: Keys.connections)
     }
 

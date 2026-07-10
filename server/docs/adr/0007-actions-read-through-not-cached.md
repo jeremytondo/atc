@@ -1,5 +1,7 @@
 # Actions are read through from a JSON overlay
 
+> **Terminology note (2026-07):** This ADR predates the Atelier Code rename. "Cockpit" is now the Atelier Code server (`atc`).
+
 ## Decision
 
 Actions are resolved by reading `actions.json` at point of use and merging its

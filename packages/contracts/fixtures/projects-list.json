@@ -1,0 +1,22 @@
+{
+  "routes": ["GET /projects"],
+  "response": {
+    "projects": [
+      {
+        "id": "prj_fixture01",
+        "name": "Atelier",
+        "workingDir": "/home/dev/projects/atelier",
+        "createdAt": "2026-07-09T12:34:56.789Z",
+        "updatedAt": "2026-07-09T13:00:00Z"
+      },
+      {
+        "id": "prj_fixture02",
+        "name": "Archived Experiment",
+        "workingDir": "/home/dev/projects/experiment",
+        "createdAt": "2026-07-01T08:00:00Z",
+        "updatedAt": "2026-07-02T09:30:00Z",
+        "archivedAt": "2026-07-02T09:30:00Z"
+      }
+    ]
+  }
+}
