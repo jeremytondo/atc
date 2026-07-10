@@ -1,18 +1,16 @@
 # Atelier Code Agent Instructions
 
-## Repository Layout
+## Core Priorities
+- Performance
+- Reliability
+- Simplicity
+- User Experience
 
-This is the Atelier Code monorepo. Every product surface lives here:
+If a tradeoff is required, choose correctness and robustness over short-term convenience.
 
-- `server/` — Atelier Code Server: the standalone Go service, HTTP/WebSocket
-  API, `atc` CLI, and embedded admin web UI. Has its own toolchain (`mise`),
-  tests (`mise run test`), and release pipeline.
-- `macos/` — Atelier Code for macOS: the native SwiftUI client
-  (`AtelierCode.xcodeproj`).
-- `packages/` — shared cross-surface libraries. `AtelierCodeKit` is the Swift
-  API client used by the macOS app (and future iOS app).
-- `docs/` — product and architecture documentation for the whole project.
-- `scripts/` — repo-level helper scripts.
+## Maintainability
+
+Long term maintainability is a core priority. If you add new functionality, first check if there is shared logic that can be extracted to a separate module. Duplicate logic across multiple files is a code smell and should be avoided. Don't be afraid to change existing code. Don't take shortcuts by just adding local logic to solve a problem.
 
 ## Source Control
 
@@ -24,17 +22,21 @@ again. To push a branch, use a jj bookmark and push it to the git remote. To
 create a PR push a branch and then create a PR in GitHub. Follow JJ best
 practices.
 
-## Atelier Code Server
+## Reference Apps 
 
-The macOS app is driven by Atelier Code Server, whose source lives in
-`server/`. A running instance is installed on the remote workstation defined
-in `~/.ssh/config`; you can ssh into that machine to control it if needed.
-It is reachable via the tailscale address:
+Use the follwing apps as references and inspiration of similar projects. Can be used for design and UX inspiration as well as code and architecture ideas.
 
-http://100.91.7.102:7331/
+T3Code (https://github.com/pingdotgg/t3code/): Great user expereience and similar feature set.
+Codex Desktop App (https://chatgpt.com/codex): Greate user experience
+AGTerm (https://github.com/umputun/agterm): Great LibGhostty app with a lot of similar features.
 
 ## Code Style
 
 - Always strive for simplicity. This is not a complex enterprise app.
 - Code readability is critical. Code should be easily understandable by
   developers coming into the project.
+
+## Model Selection
+
+When starting sub agents or running workflows, be smart about which agents to choose in order to save on token cost. Use agents like Opus, Sonnet, Terra, or Luna when it makes sense. Always review and check their work.
+
