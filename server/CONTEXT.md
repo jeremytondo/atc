@@ -21,14 +21,20 @@ _Avoid_: terminal, tab, pane, job, task, run, agent run.
 **Action**:
 The named command template a Session runs. Actions are operator-defined config
 with a required executable `command`, fixed `args`, optional initial prompt
-placement, and optional typed params.
+placement, optional typed params, and an optional Agent capability.
 _Avoid_: raw command, arbitrary command, harness.
 
 **Agent**:
 An AI coding tool (currently `claude` or `codex`) used through its real native
-CLI/TUI rather than a protocol. Agent is product language for some Actions, not
-the backend primitive and not a required property of every Session.
+CLI/TUI rather than a protocol. An Agent is represented by an Agent-capable
+Action, not by a separate process or lifecycle domain.
 _Avoid_: harness, bot, model, assistant.
+
+**Agent Activity**:
+An optional state reported by an Agent integration for one Session, such as
+working, needs input, or completed. It is distinct from a Session's process
+lifecycle and does not apply to every Session.
+_Avoid_: Session status, process status
 
 **Environment**:
 The named launch wrapper that decides how/where an Action runs. The default is

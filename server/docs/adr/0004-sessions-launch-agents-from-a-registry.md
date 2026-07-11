@@ -16,8 +16,8 @@ resolved against a server-side typed registry, optional typed params, an optiona
 **Environment** name, and a working directory.
 
 An Action is what runs. It is a named command template with an executable
-`command`, fixed `args`, optional initial prompt placement, and optional typed
-params.
+`command`, fixed `args`, optional initial prompt placement, optional typed
+params, and an optional Agent capability.
 
 An Environment is how the Action runs. The default Environment is
 `host-login-shell`, which wraps the Action argv as:
@@ -28,6 +28,13 @@ An Environment is how the Action runs. The default Environment is
 
 `Action + Environment + workingDir` is the start contract. Action and
 Environment are independent registries.
+
+An Agent-capable Action does not create a separate Agent Session runtime. A
+Session launched from one remains an ordinary Session with the same zmx
+lifecycle, attach, input, and archive behavior as every other Session. Future
+Agent integrations MAY report optional Agent Activity for that specific Session;
+this activity is distinct from process lifecycle and is normalized by the
+integration rather than inferred from terminal output.
 
 ## Rationale
 
@@ -77,7 +84,7 @@ without changing the multiplexer seam.
 - The built-in `host-login-shell` Environment is additive; configured
   environments do not remove it.
 - `GET /api/actions` exposes Action discovery with display metadata, params,
-  prompt placement, and origin.
+  prompt placement, Agent capability metadata, and origin.
 - `GET /api/actions/{name}` exposes the full definition for edit UX.
 - `POST`, `PUT`, and `DELETE /api/actions...` are normal authenticated API
   operations. The owner Unix socket is trusted; TCP uses the configured bearer
@@ -98,5 +105,5 @@ without changing the multiplexer seam.
 - Multiplexer launch failure remains a 502 and returns the created `sessionId`.
 - zmx integration accepts final argv and no longer owns shell literals or
   quoting.
-- "Agent" remains useful product language for some commands, but it is not the
-  backend primitive.
+- "Agent" is an optional Action capability, not a separate process or lifecycle
+  primitive. Agent-specific behavior layers onto the generic Session model.
