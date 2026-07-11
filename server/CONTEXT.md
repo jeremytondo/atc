@@ -10,24 +10,34 @@ use for these concepts.
 ### Orchestration
 
 **Session**:
-A persistent terminal created from an Action, an Environment, and a working
-directory, then living independently of the atc service. atc starts it,
+A persistent wrapper around a zmx session, created from an Action or the
+server-selected Interactive Shell in a Workspace working directory, then living
+independently of the atc service. atc starts it,
 injects input, and can re-attach to it later; it does not own its foreground
 process. Its atc identity is independent of its multiplexer handle. Chosen
 over "Run"/"Agent Run" deliberately, despite "session" being the underlying zmx
-term.
+term. Archive hides a stopped Session while retaining its metadata and is
+reversible through unarchive; delete stops it when necessary and removes only
+atc metadata.
 _Avoid_: terminal, tab, pane, job, task, run, agent run.
 
 **Action**:
 The named command template a Session runs. Actions are operator-defined config
 with a required executable `command`, fixed `args`, optional initial prompt
-placement, optional typed params, and an optional Agent capability.
+placement, and optional typed params. An Action is either a general Action or
+an Agent Action; its type is fixed when it is created. A custom Action cannot
+be deleted while it has active Sessions.
 _Avoid_: raw command, arbitrary command, harness.
+
+**Agent Action**:
+An Action typed to launch an Agent. It may later declare Agent integration
+metadata, but it uses the same command and Session lifecycle as every Action.
+_Avoid_: non-Agent Action, agent command
 
 **Agent**:
 An AI coding tool (currently `claude` or `codex`) used through its real native
-CLI/TUI rather than a protocol. An Agent is represented by an Agent-capable
-Action, not by a separate process or lifecycle domain.
+CLI/TUI rather than a protocol. An Agent is represented by an Agent Action, not
+by a separate process or lifecycle domain.
 _Avoid_: harness, bot, model, assistant.
 
 **Agent Activity**:
@@ -35,6 +45,11 @@ An optional state reported by an Agent integration for one Session, such as
 working, needs input, or completed. It is distinct from a Session's process
 lifecycle and does not apply to every Session.
 _Avoid_: Session status, process status
+
+**Interactive Shell**:
+The server-selected shell started when a Session has no Action. It provides the
+plain terminal prompt without accepting an arbitrary caller-provided command.
+_Avoid_: shell action, raw command
 
 **Environment**:
 The named launch wrapper that decides how/where an Action runs. The default is
@@ -57,9 +72,22 @@ _Avoid_: terminal server, pty manager, tmux.
 ### Projects
 
 **Project**:
-An atc-owned record that names one workstation directory and groups related
-Sessions around that directory.
+An atc-owned record that names one workstation directory and contains related
+Workspaces. Workspace Sessions reach their Project through their Workspace. A
+Project can be archived only after all of its Workspaces are archived.
+It can be deleted only after all of its Workspaces are deleted, without changing
+filesystem state.
 _Avoid_: workspace, repository, folder, app project.
+
+**Workspace**:
+An atc-owned task context within one Project. In the initial version, a
+Workspace uses the Project Working Directory, owns its Sessions, persists after
+they end, and may be archived only when it has no active Sessions. Its name is
+user-owned, renameable, and need not be unique. Deleting a Workspace never
+changes its working directory or other filesystem state, but stops and deletes
+all of its associated Sessions only after every stop succeeds. Archive is
+reversible through unarchive.
+_Avoid_: checkout, worktree, disposable session group
 
 **Project Working Directory**:
 The absolute workstation directory a Project names and uses as the default

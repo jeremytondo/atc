@@ -11,13 +11,13 @@ names and launch environment model changed before release.
 
 ## Decision
 
-`start` does not accept an arbitrary shell command. It takes an **Action** name
-resolved against a server-side typed registry, optional typed params, an optional
-**Environment** name, and a working directory.
+`start` does not accept an arbitrary shell command. It starts either an
+**Action** resolved against a server-side typed registry or the server-selected
+Interactive Shell, with an optional **Environment** in a required Workspace.
 
 An Action is what runs. It is a named command template with an executable
 `command`, fixed `args`, optional initial prompt placement, optional typed
-params, and an optional Agent capability.
+params, and an Action type: Action or Agent Action.
 
 An Environment is how the Action runs. The default Environment is
 `host-login-shell`, which wraps the Action argv as:
@@ -26,10 +26,13 @@ An Environment is how the Action runs. The default Environment is
 [$SHELL_OR_/bin/sh, -l, -i, -c, shellJoin(inner)]
 ```
 
-`Action + Environment + workingDir` is the start contract. Action and
-Environment are independent registries.
+`Action-or-Interactive-Shell + Environment + workspaceId` is the start contract.
+Action and Environment are independent registries. The Workspace resolves the
+Project and working directory; callers cannot supply either. The Interactive
+Shell is a server-selected terminal launch, not an Action supplied by the
+caller.
 
-An Agent-capable Action does not create a separate Agent Session runtime. A
+An Agent Action does not create a separate Agent Session runtime. A
 Session launched from one remains an ordinary Session with the same zmx
 lifecycle, attach, input, and archive behavior as every other Session. Future
 Agent integrations MAY report optional Agent Activity for that specific Session;
@@ -50,11 +53,15 @@ terminal input can inject arbitrary keystrokes into a running process. The
 defensible boundary is transport-aware authentication plus removing raw command
 text from start requests.
 
-The typed Action registry keeps launch choices owner-controlled. Actions can be
+The typed Action registry keeps Action launch choices owner-controlled. Actions can be
 managed by hand in `actions.json` or through the authenticated API, but session
 start still accepts only a named Action plus closed enum/bool params. Free-form
 string params are deliberately unsupported. `command` is the executable name or
 path, not a shell command string; fixed command arguments belong in `args`.
+
+The plain Interactive Shell is the only Action-free launch path. It is selected
+by the server and accepts no caller-provided command, so it does not reopen the
+arbitrary-command API boundary.
 
 The Environment registry makes today's shell wrapper explicit instead of hiding
 it inside zmx integration code. The Step 0 environment spike found:
@@ -79,25 +86,33 @@ without changing the multiplexer seam.
 - Built-in Actions are `claude` and `codex`, both prompt-capable commands.
 - Built-in Actions are always present underneath the sparse `actions.json`
   overlay. File entries add custom Actions or override built-ins by name.
+- Action type is chosen when an Action is created and cannot be changed. To
+  reclassify an Action, create a new one.
+- A custom Action cannot be deleted while it has active Sessions.
 - Built-ins can be overridden, but not removed in v1. Deleting an override
   reverts to the built-in definition.
 - The built-in `host-login-shell` Environment is additive; configured
   environments do not remove it.
 - `GET /api/actions` exposes Action discovery with display metadata, params,
-  prompt placement, Agent capability metadata, and origin.
+  prompt placement, Action type metadata, and origin.
 - `GET /api/actions/{name}` exposes the full definition for edit UX.
 - `POST`, `PUT`, and `DELETE /api/actions...` are normal authenticated API
   operations. The owner Unix socket is trusted; TCP uses the configured bearer
   token when one is set.
 - `GET /api/environments` exposes selectable Environments.
-- `POST /api/sessions/start` accepts `action`, optional `environment`, `params`,
-  `workingDir`, optional `prompt`, and optional `name`.
-- Persisted Sessions store `action` and `environment`.
+- `POST /api/sessions/start` accepts required `workspaceId`, optional `action`,
+  optional `environment`, `params`, optional `prompt`, and optional `name`.
+  When `action` is omitted, atc starts the Interactive Shell; `params` and
+  `prompt` then have no meaning and are rejected.
+- Persisted Sessions store their required Workspace association, optional
+  `action`, and `environment`.
 
 ## Consequences
 
 - Unknown Action, unknown Environment, and invalid params are 400 caller errors
   validated before any zmx launch.
+- The Action-free Interactive Shell is server-selected and never accepts a raw
+  caller command.
 - Invalid Action writes are 400 caller errors. A corrupt or invalid
   hand-edited `actions.json` is a 500 operator/config error on discovery or
   session start.
@@ -105,5 +120,5 @@ without changing the multiplexer seam.
 - Multiplexer launch failure remains a 502 and returns the created `sessionId`.
 - zmx integration accepts final argv and no longer owns shell literals or
   quoting.
-- "Agent" is an optional Action capability, not a separate process or lifecycle
+- An Agent Action is an Action type, not a separate process or lifecycle
   primitive. Agent-specific behavior layers onto the generic Session model.
