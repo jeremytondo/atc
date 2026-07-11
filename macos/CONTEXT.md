@@ -13,8 +13,8 @@ A Server-owned record for one codebase on an atc server. A Project provides the 
 _Avoid_: Local project, app project
 
 **Workspace**:
-A Server-owned task context within one Project. A Workspace has its own working folder, Editor, Agent Sessions, and Terminals; multiple Workspaces MAY use the same folder without sharing any of those sessions.
-_Avoid_: Checkout, worktree, Jujutsu workspace
+A Server-owned task context within one Project. In the initial version, every Workspace uses its Project's default folder while owning its own Editor, Agent Sessions, and Terminals.
+_Avoid_: Checkout, worktree
 
 **Terminal Session**:
 A Server-owned terminal process created on a particular atc server. A Terminal Session belongs to its Workspace, except for legacy Project-scoped sessions.
