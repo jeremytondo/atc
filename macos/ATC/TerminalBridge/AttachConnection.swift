@@ -192,8 +192,11 @@ actor AttachConnection {
                 try? await Task.sleep(for: Self.pingInterval)
                 guard !Task.isCancelled else { return }
                 task.sendPing { _ in
-                    // A failed ping tears the connection; the receive loop
-                    // reports it.
+                    // Best effort: pings keep tunnels and NATs from reaping
+                    // an idle connection and give the OS traffic with which
+                    // to notice a dead peer. A failure here is not a
+                    // reliable disconnect signal — the receive loop and the
+                    // recovery monitor own failure detection.
                 }
             }
         }
@@ -248,6 +251,13 @@ nonisolated final class OutboundQueue: @unchecked Sendable {
     func enqueue(_ data: Data, didEnqueue: @Sendable () -> Void = {}) -> Bool {
         producerLock.lock()
         defer { producerLock.unlock() }
+
+        // Nothing to buffer — don't park an empty write behind a full queue.
+        if data.isEmpty {
+            condition.lock()
+            defer { condition.unlock() }
+            return !isFinished
+        }
 
         var offset = data.startIndex
         repeat {

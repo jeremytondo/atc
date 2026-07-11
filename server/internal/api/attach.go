@@ -41,6 +41,18 @@ var attachInitialResizeTimeout = 2 * time.Second
 // keepalive cycles before the bridge is torn down.
 const attachWriteTimeout = 2 * time.Minute
 
+// attachPingInterval/attachPingTimeout drive the server-side liveness probe.
+// The write timeout above only arms while PTY output is flowing, so a client
+// that vanished without closing TCP would otherwise hold its bridge (and zmx
+// attach child) forever once the terminal goes quiet. Ping waits for the
+// matching pong, which catches that case even on an idle terminal. The pong
+// bound matches attachWriteTimeout so recoverable stalls get the same grace
+// as slow writes. Variables so tests can shrink them.
+var (
+	attachPingInterval = 30 * time.Second
+	attachPingTimeout  = attachWriteTimeout
+)
+
 // attachInitialInputLimit caps the aggregate bytes buffered while waiting for
 // the initial resize. Each frame is already capped by the read limit, but a
 // client pasting heavily before its resize arrives could otherwise grow the
@@ -138,6 +150,29 @@ func (routes apiRoutes) attachSession(w http.ResponseWriter, r *http.Request) {
 			}
 			if readErr != nil {
 				closeSessionEnded(conn)
+				return
+			}
+		}
+	}()
+
+	// Liveness probe: a dead client stops answering pings, and Ping blocks
+	// until the matching pong arrives (surfaced by the read loop below).
+	// Cancelling tears down both pumps, which closes the PTY and detaches
+	// the zmx child instead of holding them for a vanished peer.
+	go func() {
+		defer cancel()
+		ticker := time.NewTicker(attachPingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			pingCtx, cancelPing := context.WithTimeout(ctx, attachPingTimeout)
+			err := conn.Ping(pingCtx)
+			cancelPing()
+			if err != nil {
 				return
 			}
 		}

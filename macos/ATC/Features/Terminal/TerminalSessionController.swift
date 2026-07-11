@@ -15,11 +15,19 @@ final class TerminalSessionController: Identifiable {
         let baseDelayMilliseconds: Int64
         let maximumDelayMilliseconds: Int64
         let jitterFraction: Double
+        /// Consecutive automatic retries before giving up. A permanent
+        /// failure (revoked token, deleted server) surfaces as an endless
+        /// stream of transport failures; without a budget the controller
+        /// would churn connection attempts forever. Manual reconnect and
+        /// wake/path recovery reset the budget, so an environment that
+        /// heals later still recovers without user action.
+        let maximumAttempts: Int
 
         static let `default` = RetryPolicy(
             baseDelayMilliseconds: 500,
             maximumDelayMilliseconds: 8_000,
-            jitterFraction: 0.2
+            jitterFraction: 0.2,
+            maximumAttempts: 10
         )
 
         /// Exponential delay with symmetric jitter. The final value is
@@ -41,6 +49,12 @@ final class TerminalSessionController: Identifiable {
     enum Phase: Equatable {
         case connecting
         case connected
+        /// A dropped attach is being replaced automatically — either a
+        /// backoff timer is pending or a replacement attempt is in flight.
+        /// Distinct from `.connecting` so the status banner reads
+        /// "Reconnecting" instead of flickering through `.ended` and
+        /// "Connecting" on every retry cycle.
+        case reconnecting
         case ended(AttachEndReason)
 
         /// Whether the WebSocket bridge is (or is becoming) live. Ended
@@ -48,7 +62,7 @@ final class TerminalSessionController: Identifiable {
         /// connection indicators must check this, not registry membership.
         var isActivelyAttached: Bool {
             switch self {
-            case .connecting, .connected: return true
+            case .connecting, .connected, .reconnecting: return true
             case .ended: return false
             }
         }
@@ -157,7 +171,6 @@ final class TerminalSessionController: Identifiable {
 
     private func beginReconnect() {
         cancelRetry()
-        connectionGeneration += 1
         let connection = connection
         self.connection = nil
         connectionRef.set(nil)
@@ -168,7 +181,7 @@ final class TerminalSessionController: Identifiable {
     }
 
     private func connect(isReconnect: Bool) {
-        phase = .connecting
+        phase = isReconnect ? .reconnecting : .connecting
         connectionGeneration += 1
         let generation = connectionGeneration
         let connection = connectionFactory(attachURL, attachHeaders)
@@ -208,20 +221,27 @@ final class TerminalSessionController: Identifiable {
             connection = nil
             connectionRef.set(nil)
             eventTask = nil
-            phase = .ended(reason)
             switch reason {
             case .serverError, .transportFailure:
-                scheduleAutomaticReconnect()
+                // Stay in `.reconnecting` across backoff cycles so the banner
+                // doesn't flicker. `.ended` is the give-up state: its banner
+                // offers a manual Reconnect, and wake/path recovery still
+                // revives the controller with a fresh retry budget.
+                phase = scheduleAutomaticReconnect() ? .reconnecting : .ended(reason)
             case .sessionEnded, .closedByClient:
                 automaticRecoveryEnabled = false
                 retryAttempt = 0
                 cancelRetry()
+                phase = .ended(reason)
             }
         }
     }
 
-    private func scheduleAutomaticReconnect() {
-        guard automaticRecoveryEnabled, retryTask == nil else { return }
+    /// Returns whether a retry was scheduled; false once the policy's
+    /// attempt budget is spent (or recovery is disabled entirely).
+    private func scheduleAutomaticReconnect() -> Bool {
+        guard automaticRecoveryEnabled, retryTask == nil,
+              retryAttempt < retryPolicy.maximumAttempts else { return false }
         let delay = retryPolicy.delay(forAttempt: retryAttempt, jitterUnit: jitterUnit())
         retryAttempt += 1
         retryGeneration += 1
@@ -242,6 +262,7 @@ final class TerminalSessionController: Identifiable {
             self.retryTask = nil
             self.connect(isReconnect: true)
         }
+        return true
     }
 
     private func cancelRetry() {

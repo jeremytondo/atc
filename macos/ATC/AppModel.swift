@@ -206,8 +206,4 @@ final class AppModel {
             selection = nil
         }
     }
-
-    deinit {
-        terminalRecoveryMonitor.stop()
-    }
 }

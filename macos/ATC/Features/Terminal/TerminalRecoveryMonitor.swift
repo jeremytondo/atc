@@ -12,7 +12,10 @@ final class TerminalRecoveryMonitor {
     private let wakeNotification: Notification.Name
     private let pathMonitor: NWPathMonitor?
     private let pathQueue = DispatchQueue(label: "ElevenIdeas.atc.terminal-path")
-    private var wakeObserver: (any NSObjectProtocol)?
+    // Read from the nonisolated `deinit` to release the observer. Only
+    // mutated on the main actor while the monitor is alive, and deinit runs
+    // strictly after the last reference is gone, so this cannot race.
+    private nonisolated(unsafe) var wakeObserver: (any NSObjectProtocol)?
     private var previousPathWasSatisfied: Bool?
     private var started = false
 

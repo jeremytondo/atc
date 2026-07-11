@@ -108,6 +108,85 @@ struct TerminalReconnectTests {
         #expect(delays.delays == [.milliseconds(500), .seconds(1), .milliseconds(500)])
     }
 
+    @Test("automatic retries stop at the policy budget; recovery signals restore it")
+    func retryBudgetExhaustion() async {
+        let harness = AttachHarness()
+        let delays = RetryDelayRecorder()
+        let policy = TerminalSessionController.RetryPolicy(
+            baseDelayMilliseconds: 500,
+            maximumDelayMilliseconds: 8_000,
+            jitterFraction: 0.2,
+            maximumAttempts: 2
+        )
+        let controller = TerminalSessionController(
+            sessionID: "session",
+            client: MockATCClient(),
+            connectionFactory: harness.makeHandle,
+            retryPolicy: policy,
+            retrySleep: delays.sleep,
+            jitterUnit: { 0.5 }
+        )
+        defer { controller.disconnect() }
+
+        harness.send(.ended(.transportFailure("offline")), attempt: 0, finish: true)
+        await waitFor { harness.attempts.count == 2 }
+        harness.send(.ended(.transportFailure("offline")), attempt: 1, finish: true)
+        await waitFor { harness.attempts.count == 3 }
+        #expect(delays.delays.count == 2)
+
+        // The budget is spent: the third failure must give up rather than
+        // churn forever against a permanent failure.
+        harness.send(.ended(.transportFailure("offline")), attempt: 2, finish: true)
+        await waitFor { controller.phase == .ended(.transportFailure("offline")) }
+        await Task.yield()
+        #expect(harness.attempts.count == 3)
+        #expect(delays.delays.count == 2)
+        #expect(!controller.isActivelyAttached)
+
+        // Wake/path recovery revives a given-up controller with a fresh
+        // budget — a healed environment must not require a manual click.
+        controller.recoverAfterInterruption()
+        #expect(harness.attempts.count == 4)
+        #expect(controller.phase == .reconnecting)
+        harness.send(.ended(.transportFailure("offline")), attempt: 3, finish: true)
+        await waitFor { harness.attempts.count == 5 }
+        #expect(delays.delays.count == 3)
+    }
+
+    @Test("a pending backoff reports reconnecting and manual reconnect skips the wait")
+    func pendingRetryReportsReconnecting() async {
+        let harness = AttachHarness()
+        // A one-hour backoff (with the default real-clock sleep) pins the
+        // controller in the waiting-for-retry window for the whole test.
+        let policy = TerminalSessionController.RetryPolicy(
+            baseDelayMilliseconds: 3_600_000,
+            maximumDelayMilliseconds: 3_600_000,
+            jitterFraction: 0,
+            maximumAttempts: 10
+        )
+        let controller = TerminalSessionController(
+            sessionID: "session",
+            client: MockATCClient(),
+            connectionFactory: harness.makeHandle,
+            retryPolicy: policy,
+            jitterUnit: { 0.5 }
+        )
+        defer { controller.disconnect() }
+
+        harness.send(.ended(.transportFailure("offline")), attempt: 0, finish: true)
+        await waitFor { controller.phase == .reconnecting }
+        // No `.ended` flicker while the timer waits, and indicators still
+        // treat the terminal as attached.
+        #expect(controller.phase == .reconnecting)
+        #expect(controller.isActivelyAttached)
+        #expect(harness.attempts.count == 1)
+
+        controller.reconnect()
+        await waitFor { harness.attempts.count == 2 }
+        #expect(harness.attempts.count == 2)
+        #expect(controller.phase == .reconnecting)
+    }
+
     @Test("terminal end and client close never auto-retry or recover")
     func terminalEndStatesStayStopped() async {
         for reason in [AttachEndReason.sessionEnded, .closedByClient] {
@@ -158,7 +237,7 @@ struct TerminalReconnectTests {
         // started. It must not overwrite the new attempt's phase or policy.
         harness.send(.ended(.sessionEnded), attempt: 0, finish: true)
         await Task.yield()
-        #expect(controller.phase == .connecting)
+        #expect(controller.phase == .reconnecting)
 
         // A reconnect that fails before opening also preserves the surface.
         harness.send(.ended(.transportFailure("still offline")), attempt: 1, finish: true)

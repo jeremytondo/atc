@@ -70,6 +70,32 @@ struct OutboundQueueTests {
         #expect(received == firstData + secondData)
     }
 
+    @Test("an empty write returns immediately even when the queue is full")
+    func emptyWriteNeverBlocks() async {
+        let queue = OutboundQueue(maxBufferedBytes: 4, maxChunkBytes: 4)
+        let probe = ProducerProbe()
+        #expect(queue.enqueue(Data("full".utf8)))
+
+        // Run detached so a regression shows up as a failed expectation
+        // instead of hanging the suite on the blocked producer.
+        let empty = Task.detached {
+            let accepted = queue.enqueue(Data())
+            probe.recordFinished(accepted: accepted)
+            return accepted
+        }
+        let finished = await waitUntil { probe.accepted != nil }
+        if !finished {
+            queue.finish()
+        }
+        let accepted = await empty.value
+        #expect(finished, "empty write blocked behind a full queue")
+        #expect(accepted)
+
+        // After shutdown even an empty write reports the queue as unusable.
+        queue.finish()
+        #expect(!queue.enqueue(Data()))
+    }
+
     @Test("finish wakes a backpressured producer and rejects later writes")
     func finishWakesBlockedProducer() async {
         let queue = OutboundQueue(maxBufferedBytes: 4, maxChunkBytes: 4)
