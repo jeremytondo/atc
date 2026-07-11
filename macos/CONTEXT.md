@@ -9,12 +9,24 @@ A named relationship from atc to one atc server, whether that server is running 
 _Avoid_: Workspace, account
 
 **Project**:
-A Server-owned record for a named working area on one atc server. atc displays Projects through their Connection, but does not own the Project record itself.
+A Server-owned record for one codebase on an atc server. A Project provides the default repository folder for its Workspaces; atc displays Projects through their Connection, but does not own the Project record itself.
 _Avoid_: Local project, app project
 
+**Workspace**:
+A Server-owned task context within one Project. A Workspace has its own working folder, Editor, Agent Sessions, and Terminals; multiple Workspaces MAY use the same folder without sharing any of those sessions.
+_Avoid_: Checkout, worktree, Jujutsu workspace
+
 **Terminal Session**:
-A Server-owned terminal process created on a particular atc server. atc displays and controls a Terminal Session through the Connection it came from, and its app UI is intentionally centered on project-scoped Terminal Sessions.
-_Avoid_: Agent session
+A Server-owned terminal process created on a particular atc server. A Terminal Session belongs to its Workspace, except for legacy Project-scoped sessions.
+_Avoid_: Terminal, shell
+
+**Editor**:
+The single terminal-based code editor reserved for a Workspace, initially Neovim. Every Workspace has its own Editor even when multiple Workspaces use the same folder.
+_Avoid_: Editor session
+
+**Agent Session**:
+A Terminal Session configured to run a coding agent such as Codex or Claude Code. A Workspace may have multiple Agent Sessions.
+_Avoid_: Agent
 
 **Focused Sidebar Row**:
 The Project or Terminal Session row currently targeted by keyboard navigation in the sidebar. A Focused Sidebar Row is distinct from the selected Terminal Session because Projects can be focused without becoming the active detail content.
