@@ -28,7 +28,8 @@ Use the follwing apps as references and inspiration of similar projects. Can be 
 
 T3Code (https://github.com/pingdotgg/t3code/): Great user expereience and similar feature set.
 Codex Desktop App (https://chatgpt.com/codex): Greate user experience
-AGTerm (https://github.com/umputun/agterm): Great LibGhostty app with a lot of similar features.
+AGTerm (https://github.com/umputun/agterm): LibGhostty app with a lot of similar features.
+CMUX (https://github.com/manaflow-ai/cmux): Agentic coding focused terminal based on libghostty.
 
 ## Code Style
 
