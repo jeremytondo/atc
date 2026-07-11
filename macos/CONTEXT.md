@@ -13,16 +13,12 @@ A Server-owned record for one codebase on an atc server. A Project provides the 
 _Avoid_: Local project, app project
 
 **Workspace**:
-A Server-owned task context within one Project. In the initial version, every Workspace uses its Project's default folder while owning its own Editor, Agent Sessions, and Terminals.
+A Server-owned task context within one Project. In the initial version, every Workspace uses its Project's default folder while owning its own Agent Sessions and Terminals.
 _Avoid_: Checkout, worktree
 
 **Terminal Session**:
 A Server-owned terminal process created on a particular atc server. A Terminal Session belongs to its Workspace, except for legacy Project-scoped sessions.
 _Avoid_: Terminal, shell
-
-**Editor**:
-The single terminal-based code editor reserved for a Workspace, initially Neovim. Every Workspace has its own Editor even when multiple Workspaces use the same folder.
-_Avoid_: Editor session
 
 **Agent Session**:
 A Terminal Session configured to run a coding agent such as Codex or Claude Code. A Workspace may have multiple Agent Sessions.
