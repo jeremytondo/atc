@@ -24,9 +24,9 @@ enum AttachEvent: Sendable {
 /// keystrokes; client→server TEXT = `{"type":"resize","cols":N,"rows":N}`.
 /// One instance per connection attempt — reconnect makes a new one.
 actor AttachConnection {
-    /// Server frame read limit is 1 MiB; stay well under it.
-    private static let chunkSize = 256 * 1024
-    private static let pingInterval: Duration = .seconds(30)
+    /// Frequent pings are a liveness backstop for sleeping Macs, network
+    /// changes, and idle SSH-tunnel forwards.
+    private static let pingInterval: Duration = .seconds(10)
 
     private let request: URLRequest
     private let socketDelegate: SocketDelegate
@@ -60,8 +60,12 @@ actor AttachConnection {
     // the lock-guarded queue keeps keystroke ordering intact)
 
     nonisolated func enqueue(_ data: Data) {
-        outbound.enqueue(data)
-        outboundSignalContinuation.yield(())
+        outbound.enqueue(data) {
+            // Large writes may block for backpressure and enter the queue in
+            // several chunks. Wake the pump after every chunk so it can make
+            // room for the remainder of the same synchronous callback.
+            outboundSignalContinuation.yield(())
+        }
     }
 
     nonisolated func enqueueResize(cols: UInt16, rows: UInt16) {
@@ -103,6 +107,9 @@ actor AttachConnection {
     private func tearDown() {
         pingTask?.cancel()
         pumpTask?.cancel()
+        // Cancelled pumps cannot make more queue space. Finish the queue to
+        // wake any Ghostty callback currently waiting on backpressure.
+        outbound.finish()
         outboundSignalContinuation.finish()
         urlSession.finishTasksAndInvalidate()
     }
@@ -161,14 +168,15 @@ actor AttachConnection {
                     do {
                         switch item {
                         case .data(let data):
-                            for chunk in Self.chunked(data) {
-                                try await task.send(.data(chunk))
-                            }
+                            try await task.send(.data(data))
                         case .resize(let cols, let rows):
                             try await task.send(.string(#"{"type":"resize","cols":\#(cols),"rows":\#(rows)}"#))
                         }
                     } catch {
-                        // The receive loop surfaces the failure; just stop pumping.
+                        // The receive loop surfaces the transport failure.
+                        // Stop accepting input immediately so a producer
+                        // cannot remain blocked behind this dead pump.
+                        outbound.finish()
                         return
                     }
                 }
@@ -191,61 +199,136 @@ actor AttachConnection {
         }
     }
 
-    private static func chunked(_ data: Data) -> [Data] {
-        guard data.count > chunkSize else { return [data] }
-        var chunks: [Data] = []
-        var offset = data.startIndex
-        while offset < data.endIndex {
-            let end = data.index(offset, offsetBy: chunkSize, limitedBy: data.endIndex) ?? data.endIndex
-            chunks.append(data.subdata(in: offset..<end))
-            offset = end
-        }
-        return chunks
-    }
 }
 
 /// Lock-guarded outbound buffer. Keystroke chunks keep their order under a
-/// byte bound — a stalled socket plus a huge paste drops the excess instead
-/// of growing memory — and only the most recent resize is kept, sent ahead
-/// of data so the server sizes the PTY before applying input.
-private final class OutboundQueue: @unchecked Sendable {
-    /// Matches the server's per-frame read limit; more than this buffered
-    /// means the socket is effectively dead anyway.
-    private static let maxBufferedBytes = 1 << 20
+/// byte bound. A full queue applies synchronous backpressure to Ghostty's
+/// background write callback instead of discarding paste data. Only the most
+/// recent resize is kept, sent ahead of data so the server sizes the PTY
+/// before applying input.
+nonisolated final class OutboundQueue: @unchecked Sendable {
+    /// The server's 1 MiB limit applies to individual WebSocket frames, not
+    /// the aggregate backlog. Eight MiB accommodates paste-heavy workflows
+    /// while still bounding a stalled connection's retained input.
+    private static let defaultMaxBufferedBytes = 8 << 20
+    /// Stay comfortably below the server's per-frame read limit.
+    private static let defaultMaxChunkBytes = 256 << 10
 
-    private let lock = NSLock()
+    /// Serializes whole producer calls. Without this, two Ghostty callbacks
+    /// could interleave when the first one waits for queue space.
+    private let producerLock = NSLock()
+    private let condition = NSCondition()
+    private let maxBufferedBytes: Int
+    private let maxChunkBytes: Int
     private var chunks: [Data] = []
+    private var firstChunkIndex = 0
     private var bufferedBytes = 0
     private var pendingResize: (cols: UInt16, rows: UInt16)?
+    private var isFinished = false
 
     enum Item {
         case data(Data)
         case resize(cols: UInt16, rows: UInt16)
     }
 
-    func enqueue(_ data: Data) {
-        lock.withLock {
-            guard bufferedBytes + data.count <= Self.maxBufferedBytes else { return }
-            chunks.append(data)
-            bufferedBytes += data.count
-        }
+    init(
+        maxBufferedBytes: Int = OutboundQueue.defaultMaxBufferedBytes,
+        maxChunkBytes: Int = OutboundQueue.defaultMaxChunkBytes
+    ) {
+        precondition(maxBufferedBytes > 0)
+        precondition(maxChunkBytes > 0)
+        self.maxBufferedBytes = maxBufferedBytes
+        self.maxChunkBytes = min(maxChunkBytes, maxBufferedBytes)
+    }
+
+    /// Returns false only when shutdown interrupts or precedes the write.
+    /// `didEnqueue` must wake the consumer after each accepted chunk: a write
+    /// larger than the byte bound cannot finish until the consumer drains it.
+    @discardableResult
+    func enqueue(_ data: Data, didEnqueue: @Sendable () -> Void = {}) -> Bool {
+        producerLock.lock()
+        defer { producerLock.unlock() }
+
+        var offset = data.startIndex
+        repeat {
+            condition.lock()
+            while !isFinished && bufferedBytes == maxBufferedBytes {
+                condition.wait()
+            }
+            guard !isFinished else {
+                condition.unlock()
+                return false
+            }
+            guard offset < data.endIndex else {
+                condition.unlock()
+                return true
+            }
+
+            let availableBytes = maxBufferedBytes - bufferedBytes
+            let chunkCount = min(maxChunkBytes, availableBytes, data.distance(from: offset, to: data.endIndex))
+            let end = data.index(offset, offsetBy: chunkCount)
+            let chunk = data.subdata(in: offset..<end)
+            chunks.append(chunk)
+            bufferedBytes += chunk.count
+            offset = end
+            condition.unlock()
+
+            didEnqueue()
+        } while offset < data.endIndex
+
+        return true
     }
 
     func setResize(cols: UInt16, rows: UInt16) {
-        lock.withLock { pendingResize = (cols, rows) }
+        condition.lock()
+        if !isFinished {
+            pendingResize = (cols, rows)
+        }
+        condition.unlock()
     }
 
     func dequeue() -> Item? {
-        lock.withLock {
-            if let resize = pendingResize {
-                pendingResize = nil
-                return .resize(cols: resize.cols, rows: resize.rows)
-            }
-            guard !chunks.isEmpty else { return nil }
-            let data = chunks.removeFirst()
-            bufferedBytes -= data.count
-            return .data(data)
+        condition.lock()
+        defer { condition.unlock() }
+
+        if let resize = pendingResize {
+            pendingResize = nil
+            return .resize(cols: resize.cols, rows: resize.rows)
         }
+        guard firstChunkIndex < chunks.count else { return nil }
+
+        let data = chunks[firstChunkIndex]
+        // Release the queue's reference immediately without paying the
+        // removeFirst() copy on every keystroke.
+        chunks[firstChunkIndex] = Data()
+        firstChunkIndex += 1
+        bufferedBytes -= data.count
+        if firstChunkIndex == chunks.count {
+            chunks.removeAll(keepingCapacity: true)
+            firstChunkIndex = 0
+        } else if firstChunkIndex >= 64, firstChunkIndex * 2 >= chunks.count {
+            chunks.removeFirst(firstChunkIndex)
+            firstChunkIndex = 0
+        }
+        condition.signal()
+        return .data(data)
+    }
+
+    /// Discards input only as part of explicit connection teardown and wakes
+    /// every producer that may be blocked waiting for the cancelled pump.
+    func finish() {
+        condition.lock()
+        guard !isFinished else {
+            condition.unlock()
+            return
+        }
+        isFinished = true
+        chunks.removeAll()
+        firstChunkIndex = 0
+        bufferedBytes = 0
+        pendingResize = nil
+        condition.broadcast()
+        condition.unlock()
     }
 }
 
