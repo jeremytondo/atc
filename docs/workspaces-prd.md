@@ -190,6 +190,10 @@ prevent the reference from silently omitting a public endpoint.
 
 ## 6. Phase 2 — macOS Dashboard and Workspace UI
 
+Implementation detail for this phase — navigation architecture, data-layer
+changes, UI structure, and build order — lives in
+[workspaces-phase2-spec.md](workspaces-phase2-spec.md).
+
 The macOS app MUST use the server Workspace model and retain the existing native
 atc design direction. The Dashboard and Workspace wireframes are hierarchy
 references, not a replacement design system; in particular, the wireframe's
