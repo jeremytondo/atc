@@ -41,7 +41,7 @@ struct SidebarGroupsTests {
             updatedAt: updatedAt,
             archivedAt: archived ? .now : nil,
             project: project.map {
-                SessionProject(id: $0.id, name: $0.name, workingDir: $0.workingDir, archivedAt: $0.archivedAt)
+                SessionProject(id: $0.id, name: $0.name)
             }
         )
     }

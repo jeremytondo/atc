@@ -85,6 +85,11 @@ func (client *apiClient) patch(ctx context.Context, endpoint string, body any) (
 	return client.send(ctx, http.MethodPatch, endpoint, body)
 }
 
+// delete mirrors post with the DELETE method and an empty body.
+func (client *apiClient) delete(ctx context.Context, endpoint string) ([]byte, error) {
+	return client.send(ctx, http.MethodDelete, endpoint, struct{}{})
+}
+
 func (client *apiClient) send(ctx context.Context, method, endpoint string, body any) ([]byte, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {

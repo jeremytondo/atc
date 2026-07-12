@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/jeremytondo/atc/internal/diagnostics"
 	"github.com/jeremytondo/atc/internal/session"
 	"github.com/jeremytondo/atc/internal/store"
+	"github.com/jeremytondo/atc/internal/workspace"
 )
 
 func TestListActionsReturnsDiscoveryMetadata(t *testing.T) {
@@ -311,8 +313,7 @@ func TestSetActionEnabledTogglesAndBlocksStart(t *testing.T) {
 	}
 
 	// A disabled action cannot launch a session.
-	workDir := t.TempDir()
-	rec = do(t, h, http.MethodPost, "/sessions/start", `{"action":"codex","workingDir":"`+workDir+`"}`)
+	rec = do(t, h, http.MethodPost, "/sessions/start", `{"action":"codex","workspaceId":"`+actionsTestWorkspaceID+`"}`)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("start disabled status = %d, want 409 (%s)", rec.Code, rec.Body)
 	}
@@ -323,7 +324,7 @@ func TestSetActionEnabledTogglesAndBlocksStart(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("enable status = %d, want 200 (%s)", rec.Code, rec.Body)
 	}
-	rec = do(t, h, http.MethodPost, "/sessions/start", `{"action":"codex","workingDir":"`+workDir+`"}`)
+	rec = do(t, h, http.MethodPost, "/sessions/start", `{"action":"codex","workspaceId":"`+actionsTestWorkspaceID+`"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("start re-enabled status = %d, want 200 (%s)", rec.Code, rec.Body)
 	}
@@ -439,8 +440,8 @@ func TestActionReadErrorsMapToInternalError(t *testing.T) {
 	}
 	actionStore := actionstore.NewStore(path, session.ActionRegistry{
 		"tool": {Command: "tool"},
-	})
-	h := Routes(diagnostics.DefaultDiagnostics(), nil, nil, actionStore, nil)
+	}, nil)
+	h := Routes(diagnostics.DefaultDiagnostics(), nil, nil, nil, actionStore, nil)
 
 	rec := do(t, h, http.MethodGet, "/actions", "")
 	if rec.Code != http.StatusInternalServerError {
@@ -450,11 +451,15 @@ func TestActionReadErrorsMapToInternalError(t *testing.T) {
 }
 
 func TestListActionsRequiresStore(t *testing.T) {
-	rec := do(t, Routes(diagnostics.DefaultDiagnostics(), nil, nil, nil, nil), http.MethodGet, "/actions", "")
+	rec := do(t, Routes(diagnostics.DefaultDiagnostics(), nil, nil, nil, nil, nil), http.MethodGet, "/actions", "")
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500 (%s)", rec.Code, rec.Body)
 	}
 }
+
+// actionsTestWorkspaceID is the workspace newActionsHandler seeds so start
+// requests through the actions tests have somewhere to land.
+const actionsTestWorkspaceID = "wsp_actions"
 
 func newActionsHandler(t *testing.T, actions session.ActionRegistry) http.Handler {
 	t.Helper()
@@ -463,9 +468,18 @@ func newActionsHandler(t *testing.T, actions session.ActionRegistry) http.Handle
 		t.Fatalf("Open store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+	if _, err := st.CreateProject(ctx, store.CreateProjectInput{ID: "prj_actions", Name: "Actions", WorkingDir: t.TempDir()}); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, err := st.CreateWorkspace(ctx, store.CreateWorkspaceInput{ID: actionsTestWorkspaceID, ProjectID: "prj_actions", Name: "Actions"}); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
 	environments := session.EnvironmentRegistry{
 		"host-login-shell": {Kind: session.EnvironmentKindHostLoginShell},
 	}
-	actionStore := actionstore.NewStore(filepath.Join(t.TempDir(), "actions.json"), actions)
-	return Routes(diagnostics.DefaultDiagnostics(), session.NewService(st, &fakeMux{}, actionStore, environments, nil, nil), nil, actionStore, nil)
+	actionStore := actionstore.NewStore(filepath.Join(t.TempDir(), "actions.json"), actions, st)
+	workspaces := workspace.NewService(st, nil)
+	sessions := session.NewService(st, &fakeMux{}, actionStore, environments, workspaces, nil)
+	return Routes(diagnostics.DefaultDiagnostics(), sessions, nil, workspaces, actionStore, nil)
 }

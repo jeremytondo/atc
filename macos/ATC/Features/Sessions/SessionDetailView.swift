@@ -19,7 +19,7 @@ struct SessionDetailView: View {
                 LabeledContent("Status") {
                     StatusBadge(session: session, showLabel: true)
                 }
-                LabeledContent("Action", value: session.action)
+                LabeledContent("Action", value: session.actionLabel)
                 LabeledContent("Environment", value: session.environment)
                 if let project = session.project {
                     LabeledContent("Project", value: project.name)

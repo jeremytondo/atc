@@ -31,7 +31,7 @@ func TestListEnvironmentsReturnsDiscoveryMetadata(t *testing.T) {
 }
 
 func TestListEnvironmentsRequiresService(t *testing.T) {
-	rec := do(t, Routes(diagnostics.DefaultDiagnostics(), nil, nil, nil, nil), http.MethodGet, "/environments", "")
+	rec := do(t, Routes(diagnostics.DefaultDiagnostics(), nil, nil, nil, nil, nil), http.MethodGet, "/environments", "")
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500 (%s)", rec.Code, rec.Body)
 	}

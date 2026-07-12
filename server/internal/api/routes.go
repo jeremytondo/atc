@@ -12,12 +12,14 @@ import (
 	"github.com/jeremytondo/atc/internal/fs"
 	"github.com/jeremytondo/atc/internal/project"
 	"github.com/jeremytondo/atc/internal/session"
+	"github.com/jeremytondo/atc/internal/workspace"
 )
 
 type apiRoutes struct {
 	diagnostics diagnostics.Diagnostics
 	sessions    *session.Service
 	projects    *project.Service
+	workspaces  *workspace.Service
 	actions     *action.Store
 	fs          *fs.Service
 }
@@ -28,39 +30,50 @@ type apiRoutes struct {
 // registered here rather than directly on the mux.
 func (routes apiRoutes) endpoints() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
-		"GET /health":                   routes.health,
-		"GET /version":                  routes.version,
-		"GET /actions":                  routes.listActions,
-		"GET /actions/{name}":           routes.getAction,
-		"POST /actions":                 routes.createAction,
-		"PUT /actions/{name}":           routes.updateAction,
-		"PUT /actions/{name}/enabled":   routes.setActionEnabled,
-		"DELETE /actions/{name}":        routes.deleteAction,
-		"GET /environments":             routes.listEnvironments,
-		"GET /fs/list":                  routes.fsList,
-		"POST /projects":                routes.createProject,
-		"GET /projects":                 routes.listProjects,
-		"GET /projects/{id}":            routes.getProject,
-		"PATCH /projects/{id}":          routes.patchProject,
-		"POST /projects/{id}/archive":   routes.archiveProject,
-		"POST /projects/{id}/unarchive": routes.unarchiveProject,
-		"GET /projects/{id}/sessions":   routes.listProjectSessions,
-		"POST /sessions/start":          routes.startSession,
-		"GET /sessions":                 routes.listSessions,
-		"GET /sessions/{id}":            routes.readSession,
-		"POST /sessions/{id}/send-text": routes.sendText,
-		"POST /sessions/{id}/send-key":  routes.sendKey,
-		"POST /sessions/{id}/terminate": routes.terminateSession,
-		"POST /sessions/{id}/archive":   routes.archiveSession,
-		"GET /sessions/{id}/attach":     routes.attachSession,
+		"GET /health":                     routes.health,
+		"GET /version":                    routes.version,
+		"GET /actions":                    routes.listActions,
+		"GET /actions/{name}":             routes.getAction,
+		"POST /actions":                   routes.createAction,
+		"PUT /actions/{name}":             routes.updateAction,
+		"PUT /actions/{name}/enabled":     routes.setActionEnabled,
+		"DELETE /actions/{name}":          routes.deleteAction,
+		"GET /environments":               routes.listEnvironments,
+		"GET /fs/list":                    routes.fsList,
+		"POST /projects":                  routes.createProject,
+		"GET /projects":                   routes.listProjects,
+		"GET /projects/{id}":              routes.getProject,
+		"PATCH /projects/{id}":            routes.patchProject,
+		"POST /projects/{id}/archive":     routes.archiveProject,
+		"POST /projects/{id}/unarchive":   routes.unarchiveProject,
+		"DELETE /projects/{id}":           routes.deleteProject,
+		"GET /projects/{id}/sessions":     routes.listProjectSessions,
+		"POST /workspaces":                routes.createWorkspace,
+		"GET /workspaces":                 routes.listWorkspaces,
+		"GET /workspaces/{id}":            routes.getWorkspace,
+		"PATCH /workspaces/{id}":          routes.patchWorkspace,
+		"POST /workspaces/{id}/archive":   routes.archiveWorkspace,
+		"POST /workspaces/{id}/unarchive": routes.unarchiveWorkspace,
+		"DELETE /workspaces/{id}":         routes.deleteWorkspace,
+		"GET /workspaces/{id}/sessions":   routes.listWorkspaceSessions,
+		"POST /sessions/start":            routes.startSession,
+		"GET /sessions":                   routes.listSessions,
+		"GET /sessions/{id}":              routes.readSession,
+		"POST /sessions/{id}/send-text":   routes.sendText,
+		"POST /sessions/{id}/send-key":    routes.sendKey,
+		"POST /sessions/{id}/terminate":   routes.terminateSession,
+		"POST /sessions/{id}/archive":     routes.archiveSession,
+		"POST /sessions/{id}/unarchive":   routes.unarchiveSession,
+		"DELETE /sessions/{id}":           routes.deleteSession,
+		"GET /sessions/{id}/attach":       routes.attachSession,
 	}
 }
 
 // Routes returns the HTTP handler for the atc API. The sessions, projects,
-// and fs services may be nil when their routes are not needed (e.g.
-// diagnostics-only tests).
-func Routes(diagnostics diagnostics.Diagnostics, sessions *session.Service, projects *project.Service, actions *action.Store, fsService *fs.Service) http.Handler {
-	routes := apiRoutes{diagnostics: diagnostics, sessions: sessions, projects: projects, actions: actions, fs: fsService}
+// workspaces, and fs services may be nil when their routes are not needed
+// (e.g. diagnostics-only tests).
+func Routes(diagnostics diagnostics.Diagnostics, sessions *session.Service, projects *project.Service, workspaces *workspace.Service, actions *action.Store, fsService *fs.Service) http.Handler {
+	routes := apiRoutes{diagnostics: diagnostics, sessions: sessions, projects: projects, workspaces: workspaces, actions: actions, fs: fsService}
 	mux := http.NewServeMux()
 	for pattern, handler := range routes.endpoints() {
 		mux.HandleFunc(pattern, handler)

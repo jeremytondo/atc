@@ -9,7 +9,8 @@ private let sessionsFixture = Data(#"""
   {"id":"ses_p6p7ma7hu7gs7gf6us9k97434g","action":"claude","environment":"host-login-shell","workingDir":"/home/jeremytondo/Projects/atc","status":"terminated","attachable":false,"createdAt":"2026-06-30T03:30:53.536616153Z","updatedAt":"2026-07-01T20:09:31.517106561Z","terminatedAt":"2026-07-01T19:29:02.141995752Z","archivedAt":"2026-07-01T20:09:31.517106561Z"},
   {"id":"ses_n7ka7ajhjlt0hfi0n466aa5mg4","name":"atc Claude Test","action":"claude","environment":"host-login-shell","workingDir":"/home/jeremytondo/Projects/atc/server","status":"terminated","attachable":false,"createdAt":"2026-06-30T02:59:17.697575859Z","updatedAt":"2026-07-01T19:29:02.16375741Z","terminatedAt":"2026-07-01T19:29:02.16375741Z"},
   {"id":"ses_live","name":"Live One","action":"codex","environment":"host-login-shell","workingDir":"/tmp","status":"running","attachable":true,"createdAt":"2026-06-30T01:44:53.678613522Z","updatedAt":"2026-06-30T01:44:53.678613522Z"},
-  {"id":"ses_failed","action":"codex","environment":"host-login-shell","workingDir":"/tmp","status":"failed","attachable":false,"failureReason":"command not found","failureCode":"spawn_failed","createdAt":"2026-06-30T01:43:06.504785282Z","updatedAt":"2026-06-30T01:44:28.228109473Z"}
+  {"id":"ses_failed","action":"codex","environment":"host-login-shell","workingDir":"/tmp","status":"failed","attachable":false,"failureReason":"command not found","failureCode":"spawn_failed","createdAt":"2026-06-30T01:43:06.504785282Z","updatedAt":"2026-06-30T01:44:28.228109473Z"},
+  {"id":"ses_shell","environment":"host-login-shell","workingDir":"/tmp","status":"running","attachable":true,"createdAt":"2026-06-30T01:45:00Z","updatedAt":"2026-06-30T01:45:00Z","workspace":{"id":"wsp_shell","name":"Scratch"},"project":{"id":"prj_tmp","name":"Tmp"}}
 ]}
 """#.utf8)
 
@@ -22,7 +23,7 @@ struct SessionDecodingTests {
     @Test("wrapped list decodes with real server shapes")
     func listDecodes() throws {
         let envelope = try JSONDecoder.atc().decode(SessionsEnvelope.self, from: sessionsFixture)
-        #expect(envelope.sessions.count == 4)
+        #expect(envelope.sessions.count == 5)
 
         let archived = envelope.sessions[0]
         #expect(archived.isArchived)
@@ -42,6 +43,13 @@ struct SessionDecodingTests {
         let failed = envelope.sessions[3]
         #expect(failed.status == .failed)
         #expect(failed.failureCode == "spawn_failed")
+
+        // An Interactive Shell session has no action and carries its refs.
+        let shell = envelope.sessions[4]
+        #expect(shell.action == nil)
+        #expect(shell.displayName == "Shell")
+        #expect(shell.workspace?.id == "wsp_shell")
+        #expect(shell.project?.id == "prj_tmp")
     }
 
     @Test("detail decodes params and prompt")

@@ -14,7 +14,7 @@ func TestRoutesHealth(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 
-	Routes(diagnostics.DefaultDiagnostics(), nil, nil, nil, nil).ServeHTTP(rec, req)
+	Routes(diagnostics.DefaultDiagnostics(), nil, nil, nil, nil, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -33,7 +33,7 @@ func TestRoutesVersion(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/version", nil)
 
-	Routes(diagnostics.DefaultDiagnostics(), nil, nil, nil, nil).ServeHTTP(rec, req)
+	Routes(diagnostics.DefaultDiagnostics(), nil, nil, nil, nil, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -89,7 +89,7 @@ func TestRoutesUnknownRoute(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/missing", nil)
 
-	Routes(diagnostics.DefaultDiagnostics(), nil, nil, nil, nil).ServeHTTP(rec, req)
+	Routes(diagnostics.DefaultDiagnostics(), nil, nil, nil, nil, nil).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)

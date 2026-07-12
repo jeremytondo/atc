@@ -13,6 +13,7 @@ type actionsListResponse struct {
 
 type actionItem struct {
 	Name  string `json:"name"`
+	Type  string `json:"type"`
 	Label string `json:"label,omitempty"`
 }
 
@@ -54,7 +55,7 @@ func actionsListCommand(lookup envLookup) *cobra.Command {
 				return fmt.Errorf("decode response: %w", err)
 			}
 			for _, action := range resp.Actions {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", action.Name, action.Label)
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", action.Name, action.Type, action.Label)
 			}
 			return nil
 		},

@@ -1,0 +1,6 @@
+{
+  "routes": [
+    "DELETE /workspaces/{id}"
+  ],
+  "response": {}
+}

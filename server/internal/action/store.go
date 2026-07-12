@@ -21,6 +21,9 @@ var (
 	ErrDuplicate      = errors.New("action already exists")
 	ErrBuiltinRemoval = errors.New("built-in action cannot be removed")
 	ErrInvalidAction  = errors.New("invalid action")
+	// ErrActionInUse is returned when a delete is rejected because a starting
+	// or running session still references the action.
+	ErrActionInUse = errors.New("action is in use by an active session")
 )
 
 var actionNameRE = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
@@ -73,17 +76,25 @@ type Discovery struct {
 	Origin Origin
 }
 
+// ActiveSessionCounter reports how many starting or running sessions
+// reference an action name, so deletion can be guarded.
+type ActiveSessionCounter interface {
+	CountActiveSessionsForAction(ctx context.Context, action string) (int, error)
+}
+
 // Store reads and writes the sparse actions.json overlay.
 type Store struct {
 	path     string
 	defaults session.ActionRegistry
+	sessions ActiveSessionCounter
 	mu       sync.Mutex
 }
 
 // NewStore returns a file-backed Action store. defaults are copied so callers
-// can keep mutating their original registry safely.
-func NewStore(path string, defaults session.ActionRegistry) *Store {
-	return &Store{path: path, defaults: normalizeRegistry(defaults)}
+// can keep mutating their original registry safely. A nil sessions counter
+// disables the delete-while-in-use guard (acceptable only in tests).
+func NewStore(path string, defaults session.ActionRegistry, sessions ActiveSessionCounter) *Store {
+	return &Store{path: path, defaults: normalizeRegistry(defaults), sessions: sessions}
 }
 
 // Load reads the file overlay if present and merges it over built-in defaults.
@@ -125,10 +136,14 @@ func (s *Store) Get(ctx context.Context, name string) (session.Action, Origin, e
 }
 
 // Create writes a new file-backed action. It rejects names that already resolve
-// through either the file overlay or the built-ins.
+// through either the file overlay or the built-ins. An absent type defaults
+// to "action".
 func (s *Store) Create(ctx context.Context, name string, action session.Action) error {
 	if err := validateName(name); err != nil {
 		return err
+	}
+	if action.Type == "" {
+		action.Type = session.DefaultActionType
 	}
 	action, err := validateWriteAction(name, action)
 	if err != nil {
@@ -153,13 +168,10 @@ func (s *Store) Create(ctx context.Context, name string, action session.Action) 
 }
 
 // Update writes or replaces a file-backed action. Updating a built-in name
-// creates a file override.
+// creates a file override. Type is immutable: an omitted type inherits the
+// current effective type; a different type is rejected.
 func (s *Store) Update(ctx context.Context, name string, action session.Action) error {
 	if err := validateName(name); err != nil {
-		return err
-	}
-	action, err := validateWriteAction(name, action)
-	if err != nil {
 		return err
 	}
 
@@ -167,6 +179,21 @@ func (s *Store) Update(ctx context.Context, name string, action session.Action) 
 	defer s.mu.Unlock()
 
 	fileActions, err := s.readFileActions(ctx)
+	if err != nil {
+		return err
+	}
+	currentType := session.DefaultActionType
+	if current, ok := fileActions[name]; ok {
+		currentType = current.Type
+	} else if def, ok := s.defaults[name]; ok {
+		currentType = def.Type
+	}
+	if action.Type == "" {
+		action.Type = currentType
+	} else if action.Type != currentType {
+		return fmt.Errorf("%w: type is immutable (action %q is %q)", ErrInvalidAction, name, currentType)
+	}
+	action, err = validateWriteAction(name, action)
 	if err != nil {
 		return err
 	}
@@ -179,7 +206,9 @@ func (s *Store) Update(ctx context.Context, name string, action session.Action) 
 }
 
 // Delete removes a file entry. Deleting a file-backed override of a built-in
-// reverts to the built-in; deleting a bare built-in is rejected.
+// reverts to the built-in and is always allowed; deleting a custom action is
+// rejected while any starting or running session references it; deleting a
+// bare built-in is rejected.
 func (s *Store) Delete(ctx context.Context, name string) error {
 	if err := validateName(name); err != nil {
 		return err
@@ -193,6 +222,13 @@ func (s *Store) Delete(ctx context.Context, name string) error {
 		return err
 	}
 	if _, ok := fileActions[name]; ok {
+		if _, isBuiltin := s.defaults[name]; !isBuiltin {
+			// Only true removal is guarded; reverting an override keeps the
+			// built-in launchable, so running sessions are unaffected.
+			if err := s.requireActionUnused(ctx, name); err != nil {
+				return err
+			}
+		}
 		delete(fileActions, name)
 		return s.writeFileActions(ctx, fileActions)
 	}
@@ -200,6 +236,20 @@ func (s *Store) Delete(ctx context.Context, name string) error {
 		return fmt.Errorf("%w: %s", ErrBuiltinRemoval, name)
 	}
 	return fmt.Errorf("%w: %s", ErrNotFound, name)
+}
+
+func (s *Store) requireActionUnused(ctx context.Context, name string) error {
+	if s.sessions == nil {
+		return nil
+	}
+	active, err := s.sessions.CountActiveSessionsForAction(ctx, name)
+	if err != nil {
+		return fmt.Errorf("count active sessions for action %s: %w", name, err)
+	}
+	if active > 0 {
+		return fmt.Errorf("%w: %s (%d active)", ErrActionInUse, name, active)
+	}
+	return nil
 }
 
 // SetEnabled toggles whether name can launch a session. It resolves the current
@@ -247,6 +297,13 @@ func (s *Store) equalsDefault(name string, action session.Action) bool {
 }
 
 func (s *Store) loadWithSources(ctx context.Context) (session.ActionRegistry, map[string]Source, error) {
+	// Reads take the same lock as writes so session start's post-insert
+	// re-resolution serializes against Delete's count-then-remove critical
+	// section: a load that still sees an action happened before the delete,
+	// so the delete's active-session count sees the inserted session row.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	fileActions, err := s.readFileActions(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -302,9 +359,29 @@ func (s *Store) readFileActions(ctx context.Context) (map[string]session.Action,
 		if err := validateName(name); err != nil {
 			return nil, fmt.Errorf("parse actions file %s: %v", s.path, err)
 		}
+		action, err := s.resolveEntryType(name, action)
+		if err != nil {
+			return nil, fmt.Errorf("parse actions file %s: %v", s.path, err)
+		}
 		actions[name] = normalizeAction(action)
 	}
 	return actions, nil
+}
+
+// resolveEntryType applies type inheritance for file entries: an override of
+// a built-in inherits the built-in's type when absent, and may not declare a
+// different one; a custom entry defaults to "action".
+func (s *Store) resolveEntryType(name string, action session.Action) (session.Action, error) {
+	def, isBuiltin := s.defaults[name]
+	switch {
+	case action.Type == "" && isBuiltin:
+		action.Type = def.Type
+	case action.Type == "":
+		action.Type = session.DefaultActionType
+	case isBuiltin && action.Type != def.Type:
+		return session.Action{}, fmt.Errorf("action %q declares type %q but overrides a built-in of type %q", name, action.Type, def.Type)
+	}
+	return action, nil
 }
 
 func (s *Store) writeFileActions(ctx context.Context, actions map[string]session.Action) error {
@@ -381,7 +458,11 @@ func normalizeAction(action session.Action) session.Action {
 func normalizeRegistry(registry session.ActionRegistry) session.ActionRegistry {
 	normalized := make(session.ActionRegistry, len(registry))
 	for name, action := range registry {
-		normalized[name] = normalizeAction(action)
+		action = normalizeAction(action)
+		if action.Type == "" {
+			action.Type = session.DefaultActionType
+		}
+		normalized[name] = action
 	}
 	return normalized
 }

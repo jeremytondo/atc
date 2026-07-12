@@ -1,18 +1,28 @@
 {
-  "routes": ["GET /actions/{name}"],
+  "routes": [
+    "GET /actions/{name}"
+  ],
   "response": {
     "name": "claude",
+    "type": "agent",
     "origin": "modified",
     "enabled": true,
     "label": "Claude Code",
     "description": "Anthropic's coding agent",
     "command": "claude",
-    "args": ["--verbose"],
-    "prompt": {"flag": "-p"},
+    "args": [
+      "--verbose"
+    ],
+    "prompt": {
+      "flag": "-p"
+    },
     "params": {
       "model": {
         "type": "enum",
-        "values": ["opus", "sonnet"],
+        "values": [
+          "opus",
+          "sonnet"
+        ],
         "default": "opus",
         "flag": "--model",
         "label": "Model",

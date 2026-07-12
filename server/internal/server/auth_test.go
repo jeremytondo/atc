@@ -11,13 +11,14 @@ import (
 	"github.com/coder/websocket"
 	"github.com/jeremytondo/atc/internal/session"
 	"github.com/jeremytondo/atc/internal/store"
+	"github.com/jeremytondo/atc/internal/workspace"
 	"github.com/jeremytondo/atc/internal/zmx"
 )
 
 // authedRouter wraps the router in the given listener boundary so withAuth can
 // see which transport a request arrived on.
 func authedRouter(kind ListenerKind, token string) http.Handler {
-	return withListenerBoundary(kind, Router(nil, nil, nil, nil, token))
+	return withListenerBoundary(kind, Router(nil, nil, nil, nil, nil, token))
 }
 
 func TestAuthAllowsTCPWhenNoTokenConfigured(t *testing.T) {
@@ -227,22 +228,31 @@ func newAuthAttachServerWithToken(t *testing.T, token string) (*httptest.Server,
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
+	ctx := context.Background()
+	if _, err := st.CreateProject(ctx, store.CreateProjectInput{ID: "prj_auth", Name: "Auth", WorkingDir: t.TempDir()}); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, err := st.CreateWorkspace(ctx, store.CreateWorkspaceInput{ID: "wsp_auth", ProjectID: "prj_auth", Name: "Auth"}); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+
 	mux := &authFakeMux{attachPTY: newAuthPTY()}
+	workspaces := workspace.NewService(st, nil)
 	svc := session.NewService(st, mux, session.ActionRegistry{
 		"claude": {Command: "claude"},
 	}, session.EnvironmentRegistry{
 		"host-login-shell": {Kind: session.EnvironmentKindHostLoginShell},
-	}, nil, nil)
-	started, err := svc.Start(context.Background(), session.StartInput{
+	}, workspaces, nil)
+	started, err := svc.Start(ctx, session.StartInput{
 		Action:      "claude",
 		Environment: "host-login-shell",
-		WorkingDir:  t.TempDir(),
+		WorkspaceID: "wsp_auth",
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 
-	handler := withListenerBoundary(ListenerTCP, routerWithWeb(svc, nil, nil, nil, token, http.NotFoundHandler()))
+	handler := withListenerBoundary(ListenerTCP, routerWithWeb(svc, nil, workspaces, nil, nil, token, http.NotFoundHandler()))
 	srv := httptest.NewServer(handler)
 	url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/sessions/" + started.ID + "/attach"
 	return srv, url

@@ -55,11 +55,30 @@ type ParamSpec struct {
 	Description string `toml:"description" json:"description"`
 }
 
+// ActionType classifies what an action launches: a plain command ("action")
+// or a coding agent ("agent"). It is presentation-and-policy metadata only;
+// launch behavior is identical.
+type ActionType string
+
+const (
+	ActionTypeAction ActionType = "action"
+	ActionTypeAgent  ActionType = "agent"
+)
+
+// DefaultActionType applies when an action definition omits its type.
+const DefaultActionType = ActionTypeAction
+
+func validActionType(t ActionType) bool {
+	return t == ActionTypeAction || t == ActionTypeAgent
+}
+
 // Action is a launchable command template: an executable command, fixed base
 // arguments, optional display metadata, prompt placement, and a closed set of
 // typed parameters.
 // Everything here is operator-defined config.
 type Action struct {
+	// Type is "action" or "agent" and is immutable once the action exists.
+	Type        ActionType           `toml:"type" json:"type"`
 	Label       string               `toml:"label" json:"label,omitempty"`
 	Description string               `toml:"description" json:"description,omitempty"`
 	Command     string               `toml:"command" json:"command"`
@@ -73,10 +92,12 @@ type Action struct {
 }
 
 // UnmarshalJSON accepts the current action schema and the pre-release
-// `bin`/`kind` spelling. `kind` used to distinguish agent from command actions;
-// prompt support is now expressed by the presence of `prompt`.
+// `bin`/`kind` spelling. The legacy `kind` maps onto Type ("agent" → agent,
+// "command" → action); an absent type stays empty so callers can apply
+// defaulting or built-in inheritance.
 func (a *Action) UnmarshalJSON(data []byte) error {
 	var raw struct {
+		Type        ActionType           `json:"type"`
 		Kind        string               `json:"kind"`
 		Label       string               `json:"label"`
 		Description string               `json:"description"`
@@ -90,10 +111,9 @@ func (a *Action) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	switch raw.Kind {
-	case "", "command", "agent":
-	default:
-		return fmt.Errorf("unsupported legacy kind %q", raw.Kind)
+	actionType, err := resolveActionType(raw.Type, raw.Kind)
+	if err != nil {
+		return err
 	}
 	if raw.Command != "" && raw.Bin != "" && raw.Command != raw.Bin {
 		return fmt.Errorf("command %q conflicts with legacy bin %q", raw.Command, raw.Bin)
@@ -103,6 +123,7 @@ func (a *Action) UnmarshalJSON(data []byte) error {
 		command = raw.Bin
 	}
 	*a = Action{
+		Type:        actionType,
 		Label:       raw.Label,
 		Description: raw.Description,
 		Command:     command,
@@ -114,6 +135,39 @@ func (a *Action) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// ResolveActionType merges an explicit type with the legacy kind spelling:
+// kind "agent" means agent, "command" means action, and an absent kind leaves
+// the explicit type (possibly empty for later defaulting). A kind that
+// contradicts an explicit type is rejected.
+func ResolveActionType(actionType ActionType, kind string) (ActionType, error) {
+	return resolveActionType(actionType, kind)
+}
+
+func resolveActionType(actionType ActionType, kind string) (ActionType, error) {
+	var fromKind ActionType
+	switch kind {
+	case "":
+	case "command":
+		fromKind = ActionTypeAction
+	case "agent":
+		fromKind = ActionTypeAgent
+	default:
+		return "", fmt.Errorf("unsupported legacy kind %q", kind)
+	}
+	switch {
+	case actionType == "" && fromKind == "":
+		return "", nil
+	case actionType == "":
+		return fromKind, nil
+	case !validActionType(actionType):
+		return "", fmt.Errorf("unsupported action type %q", actionType)
+	case fromKind != "" && fromKind != actionType:
+		return "", fmt.Errorf("type %q conflicts with legacy kind %q", actionType, kind)
+	default:
+		return actionType, nil
+	}
+}
+
 // ActionRegistry maps action names to their definitions.
 type ActionRegistry map[string]Action
 
@@ -122,12 +176,14 @@ type ActionRegistry map[string]Action
 func DefaultActions() ActionRegistry {
 	return ActionRegistry{
 		"claude": {
+			Type:        ActionTypeAgent,
 			Label:       "Claude",
 			Description: "Claude Code CLI",
 			Command:     "claude",
 			Prompt:      &PromptSpec{},
 		},
 		"codex": {
+			Type:        ActionTypeAgent,
 			Label:       "Codex",
 			Description: "OpenAI Codex CLI",
 			Command:     "codex",
@@ -167,6 +223,7 @@ func (a Action) Clone() Action {
 // ActionDiscovery is the safe client-facing shape for one configured action.
 type ActionDiscovery struct {
 	Name        string
+	Type        ActionType
 	Label       string
 	Description string
 	Prompt      *PromptSpec
@@ -183,6 +240,7 @@ func (r ActionRegistry) Discover(ctx context.Context) []ActionDiscovery {
 		action := r[name]
 		actions = append(actions, ActionDiscovery{
 			Name:        name,
+			Type:        action.Type,
 			Label:       action.Label,
 			Description: action.Description,
 			Prompt:      clonePromptSpec(action.Prompt),
@@ -198,6 +256,9 @@ func (r ActionRegistry) Discover(ctx context.Context) []ActionDiscovery {
 func (r ActionRegistry) Validate() error {
 	for _, actionName := range r.names() {
 		action := r[actionName]
+		if action.Type != "" && !validActionType(action.Type) {
+			return fmt.Errorf("%w: action %q has unsupported type %q", ErrActionMisconfigured, actionName, action.Type)
+		}
 		if strings.TrimSpace(action.Command) == "" {
 			return fmt.Errorf("%w: action %q must define command", ErrActionMisconfigured, actionName)
 		}

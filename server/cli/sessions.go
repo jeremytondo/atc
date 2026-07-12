@@ -36,16 +36,18 @@ func sessionsCommand(lookup envLookup) *cobra.Command {
 	cmd.AddCommand(sessionsSendKeyCommand(lookup))
 	cmd.AddCommand(sessionsTerminateCommand(lookup))
 	cmd.AddCommand(sessionsArchiveCommand(lookup))
+	cmd.AddCommand(sessionsUnarchiveCommand(lookup))
+	cmd.AddCommand(sessionsDeleteCommand(lookup))
 	return cmd
 }
 
 func sessionsStartCommand(lookup envLookup) *cobra.Command {
-	var action, environment, dir, prompt, name, projectID, output string
+	var action, environment, prompt, name, workspaceID, output string
 	var params []string
 
 	cmd := &cobra.Command{
-		Use:   "start --action <name> [--env <name>] [--param key=value]... [--dir <path> | --project <id>] [--prompt <text>] [--name <name>]",
-		Short: "Start a session",
+		Use:   "start --workspace <id> [--action <name>] [--env <name>] [--param key=value]... [--prompt <text>] [--name <name>]",
+		Short: "Start a session in a workspace (no action starts the interactive shell)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateOutput(output); err != nil {
@@ -56,26 +58,17 @@ func sessionsStartCommand(lookup envLookup) *cobra.Command {
 				return err
 			}
 			request := map[string]any{
-				"action":      action,
+				"workspaceId": workspaceID,
 				"environment": environment,
-				"params":      paramMap,
 				"prompt":      prompt,
 				"name":        name,
 			}
-			if projectID != "" {
-				// A project session inherits the project's directory, so the cwd
-				// default does not apply and no workingDir is sent.
-				request["projectId"] = projectID
-			} else {
-				workdir := dir
-				if workdir == "" {
-					wd, err := os.Getwd()
-					if err != nil {
-						return fmt.Errorf("resolve working directory: %w", err)
-					}
-					workdir = wd
-				}
-				request["workingDir"] = workdir
+			// action is optional: omitted, the server launches the Interactive
+			// Shell, which accepts neither params nor a prompt. The keys are
+			// left out entirely so the server sees a true omission.
+			if action != "" {
+				request["action"] = action
+				request["params"] = paramMap
 			}
 
 			client, err := commandAPIClient(cmd, lookup)
@@ -99,22 +92,20 @@ func sessionsStartCommand(lookup envLookup) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&action, "action", "", "Action to launch")
+	cmd.Flags().StringVar(&workspaceID, "workspace", "", "Workspace to start the session in (inherits the project's working directory)")
+	cmd.Flags().StringVar(&action, "action", "", "Action to launch (default: the interactive shell)")
 	cmd.Flags().StringVar(&environment, "env", "", "Environment to run in (default: host-login-shell)")
 	cmd.Flags().StringArrayVar(&params, "param", nil, "Action parameter as key=value (repeatable)")
-	cmd.Flags().StringVar(&dir, "dir", "", "Working directory (default: current directory)")
 	cmd.Flags().StringVar(&prompt, "prompt", "", "Initial prompt for the agent")
 	cmd.Flags().StringVar(&name, "name", "", "Human-readable session name")
-	cmd.Flags().StringVar(&projectID, "project", "", "Project to start the session in (inherits its working directory)")
 	cmd.Flags().StringVarP(&output, "output", "o", outputText, "Output format: text or json")
-	_ = cmd.MarkFlagRequired("action")
-	cmd.MarkFlagsMutuallyExclusive("dir", "project")
+	_ = cmd.MarkFlagRequired("workspace")
 
 	return cmd
 }
 
 func sessionsListCommand(lookup envLookup) *cobra.Command {
-	var output, status, projectID string
+	var output, status, projectID, workspaceID string
 	var includeArchived bool
 
 	cmd := &cobra.Command{
@@ -134,7 +125,9 @@ func sessionsListCommand(lookup envLookup) *cobra.Command {
 				query.Set("includeArchived", "true")
 			}
 			endpoint := "sessions"
-			if projectID != "" {
+			if workspaceID != "" {
+				endpoint = workspaceEndpoint(workspaceID, "sessions")
+			} else if projectID != "" {
 				endpoint = projectEndpoint(projectID, "sessions")
 			}
 
@@ -163,7 +156,9 @@ func sessionsListCommand(lookup envLookup) *cobra.Command {
 	cmd.Flags().StringVarP(&output, "output", "o", outputText, "Output format: text or json")
 	cmd.Flags().StringVar(&status, "status", "", "Filter sessions by status")
 	cmd.Flags().StringVar(&projectID, "project", "", "List only one project's sessions")
+	cmd.Flags().StringVar(&workspaceID, "workspace", "", "List only one workspace's sessions")
 	cmd.Flags().BoolVar(&includeArchived, "include-archived", false, "Include archived sessions")
+	cmd.MarkFlagsMutuallyExclusive("project", "workspace")
 	return cmd
 }
 
@@ -245,6 +240,31 @@ func sessionsArchiveCommand(lookup envLookup) *cobra.Command {
 	})
 }
 
+func sessionsUnarchiveCommand(lookup envLookup) *cobra.Command {
+	return resourceActionCommand(lookup, "unarchive <id>", "Unarchive a session", 1, func(id string, args []string) (string, any) {
+		return sessionEndpoint(id, "unarchive"), struct{}{}
+	})
+}
+
+func sessionsDeleteCommand(lookup envLookup) *cobra.Command {
+	return &cobra.Command{
+		Use:   "delete <id>",
+		Short: "Delete a session: stops it if active and removes its metadata",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := commandAPIClient(cmd, lookup)
+			if err != nil {
+				return err
+			}
+			if _, err := client.delete(cmd.Context(), sessionEndpoint(args[0])); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Deleted session %s. %s\n", args[0], filesNotTouched)
+			return nil
+		},
+	}
+}
+
 func resourceActionCommand(lookup envLookup, use, short string, argCount int, build func(id string, args []string) (string, any)) *cobra.Command {
 	return &cobra.Command{
 		Use:   use,
@@ -323,13 +343,22 @@ func writeSessionDetailText(cmd *cobra.Command, s api.SessionDetail) error {
 		params = string(encoded)
 	}
 
+	// An empty action is the Interactive Shell; show that instead of a blank.
+	action := s.Action
+	if action == "" {
+		action = "(interactive shell)"
+	}
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "id\t%s\n", s.ID)
 	fmt.Fprintf(out, "status\t%s\n", s.Status)
-	fmt.Fprintf(out, "action\t%s\n", s.Action)
+	fmt.Fprintf(out, "action\t%s\n", action)
 	fmt.Fprintf(out, "environment\t%s\n", s.Environment)
 	fmt.Fprintf(out, "workingDir\t%s\n", s.WorkingDir)
 	fmt.Fprintf(out, "attachable\t%t\n", s.Attachable)
+	if s.Workspace != nil {
+		fmt.Fprintf(out, "workspace\t%s\n", s.Workspace.ID)
+		fmt.Fprintf(out, "workspaceName\t%s\n", s.Workspace.Name)
+	}
 	if s.Project != nil {
 		fmt.Fprintf(out, "project\t%s\n", s.Project.ID)
 		fmt.Fprintf(out, "projectName\t%s\n", s.Project.Name)

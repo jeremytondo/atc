@@ -3,7 +3,7 @@
   // "atc Docs Console - Linear.dc.html". It owns a local draft built from the
   // source action and emits an ActionWrite on save; the parent performs the API
   // call and reload so all network + error handling stays in one place.
-  import type { ActionDetail, ActionWrite, ParamSpec } from '$lib/api';
+  import type { ActionDetail, ActionType, ActionWrite, ParamSpec } from '$lib/api';
 
   type DraftParam = {
     name: string;
@@ -21,6 +21,9 @@
     // The human-facing name the operator types (backend `label`); the machine id
     // is derived from it, so there is only one field to fill.
     label: string;
+    // What the action launches (plain command vs coding agent); chosen on
+    // create and immutable afterwards, mirroring the backend contract.
+    type: ActionType;
     description: string;
     command: string;
     // One entry per argv token, mirroring the backend's `args` array. Editing
@@ -57,6 +60,7 @@
     if (!d) {
       return {
         label: '',
+        type: 'action',
         description: '',
         command: '',
         args: [],
@@ -68,6 +72,7 @@
     }
     return {
       label: d.label ?? '',
+      type: d.type ?? 'action',
       description: d.description ?? '',
       command: d.command ?? '',
       args: [...(d.args ?? [])],
@@ -184,6 +189,9 @@
       // single source of truth); the preview above just mirrors it. On edit the
       // id is fixed and sent so the update targets the right action.
       name: mode === 'edit' ? actionId : undefined,
+      // Sent on create to pick agent vs plain command; on edit it echoes the
+      // fixed current type, which the backend accepts.
+      type: draft.type,
       label: draft.label.trim(),
       description: draft.description.trim(),
       command: draft.command.trim(),
@@ -234,6 +242,25 @@
       {:else}
         <p class="hint">Shown when you start a session; the API id is generated from it.</p>
       {/if}
+    </div>
+
+    <div style="margin-bottom:14px">
+      <label class="lbl" for="ed-type">Type</label>
+      <select
+        id="ed-type"
+        class="sel"
+        value={draft.type}
+        onchange={(e) => (draft.type = e.currentTarget.value as ActionType)}
+        disabled={mode === 'edit'}
+        style="width:100%"
+      >
+        <option value="action">Command</option>
+        <option value="agent">Agent</option>
+      </select>
+      <p class="hint">
+        Agents are coding-agent CLIs like Claude Code or Codex{#if mode === 'edit'}
+          · fixed after create{/if}.
+      </p>
     </div>
 
     <div style="margin-bottom:14px">

@@ -28,14 +28,33 @@ const sqliteDriver = "sqlite"
 var (
 	// ErrSessionNotFound is returned when a session id does not exist.
 	ErrSessionNotFound = errors.New("session not found")
+	// ErrSessionActive is returned when a delete is rejected because the
+	// session is still starting or running.
+	ErrSessionActive = errors.New("session is active")
+	// ErrSessionNotStarting is returned when a starting-only transition
+	// (MarkRunning, MarkFailed) finds the session already settled, which
+	// means a concurrent Terminate or Delete won the race.
+	ErrSessionNotStarting = errors.New("session is not starting")
 	// ErrProjectNotFound is returned when a project id does not exist.
 	ErrProjectNotFound = errors.New("project not found")
-	// ErrProjectArchived is returned when a session insert references an
-	// archived project.
+	// ErrProjectArchived is returned when a write references an archived
+	// project.
 	ErrProjectArchived = errors.New("project is archived")
-	// ErrProjectHasActiveSessions is returned when an archive is rejected
-	// because the project still has a starting or running session.
-	ErrProjectHasActiveSessions = errors.New("project has active sessions")
+	// ErrProjectHasUnarchivedWorkspaces is returned when a project archive is
+	// rejected because the project still has an unarchived workspace.
+	ErrProjectHasUnarchivedWorkspaces = errors.New("project has unarchived workspaces")
+	// ErrProjectHasWorkspaces is returned when a project delete is rejected
+	// because the project still has workspaces.
+	ErrProjectHasWorkspaces = errors.New("project has workspaces")
+	// ErrWorkspaceNotFound is returned when a workspace id does not exist.
+	ErrWorkspaceNotFound = errors.New("workspace not found")
+	// ErrWorkspaceArchived is returned when a session insert references an
+	// archived workspace.
+	ErrWorkspaceArchived = errors.New("workspace is archived")
+	// ErrWorkspaceHasActiveSessions is returned when a workspace archive or
+	// delete is rejected because the workspace still has a starting or
+	// running session.
+	ErrWorkspaceHasActiveSessions = errors.New("workspace has active sessions")
 	// ErrInvalidStatus is returned when a status value is outside the session
 	// status vocabulary.
 	ErrInvalidStatus = errors.New("invalid session status")
@@ -56,8 +75,9 @@ const (
 // domain value; the API layer owns its own wire types and serialization, so this
 // struct carries no JSON tags.
 type Session struct {
-	ID            string
-	Name          string
+	ID   string
+	Name string
+	// Action is the launch action name; empty means the Interactive Shell.
 	Action        string
 	Environment   string
 	Params        json.RawMessage
@@ -66,43 +86,55 @@ type Session struct {
 	Status        Status
 	FailureReason string
 	FailureCode   string
-	ProjectID     string
-	Project       *SessionProject
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	TerminatedAt  *time.Time
-	ArchivedAt    *time.Time
+	WorkspaceID   string
+	Workspace     *SessionWorkspace
+	// Project is the derived project reference, reached through the session's
+	// workspace, kept so clients that group sessions by project keep working.
+	Project      *SessionProject
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	TerminatedAt *time.Time
+	ArchivedAt   *time.Time
 }
 
-// SessionProject is the project slice hydrated onto sessions that belong to
-// one, loaded through a LEFT JOIN on reads.
+// SessionWorkspace is the workspace slice hydrated onto sessions, loaded
+// through a JOIN on reads.
+type SessionWorkspace struct {
+	ID   string
+	Name string
+}
+
+// SessionProject is the derived project slice hydrated onto sessions through
+// their workspace.
 type SessionProject struct {
-	ID         string
-	Name       string
-	WorkingDir string
-	ArchivedAt *time.Time
+	ID   string
+	Name string
 }
 
 // CreateSessionInput is the metadata stored when a start request is accepted
 // but before the multiplexer launch result is known.
 type CreateSessionInput struct {
-	ID          string
-	Name        string
+	ID   string
+	Name string
+	// Action is the launch action name; empty means the Interactive Shell.
 	Action      string
 	Environment string
 	Params      json.RawMessage
 	WorkingDir  string
 	Prompt      string
-	// ProjectID associates the session with a project; empty means unscoped.
-	ProjectID string
+	// WorkspaceID scopes the session to a workspace and is required.
+	WorkspaceID string
 }
 
 // ListFilter controls session list queries. Archived sessions are hidden by
-// default; Status and ProjectID are optional.
+// default; Status, WorkspaceID, and ProjectID are optional.
 type ListFilter struct {
 	IncludeArchived bool
 	Status          Status
-	// ProjectID restricts the list to one project's sessions when set.
+	// WorkspaceID restricts the list to one workspace's sessions when set.
+	WorkspaceID string
+	// ProjectID restricts the list to sessions whose workspace belongs to the
+	// project when set.
 	ProjectID string
 }
 
@@ -120,6 +152,7 @@ type Tx struct {
 type runner interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 	QueryRowContext(context.Context, string, ...any) *sql.Row
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
 type queries struct {
@@ -194,12 +227,15 @@ func (s *Store) CreateStarting(ctx context.Context, input CreateSessionInput) (S
 	return s.queries().CreateStarting(ctx, input)
 }
 
-// MarkRunning records a successful launch.
+// MarkRunning records a successful launch. It only settles a starting
+// record; a session settled concurrently returns ErrSessionNotStarting.
 func (s *Store) MarkRunning(ctx context.Context, id string) (Session, error) {
 	return s.queries().MarkRunning(ctx, id)
 }
 
-// MarkFailed records a failed launch with a safe reason and machine code.
+// MarkFailed records a failed launch with a safe reason and machine code. It
+// only settles a starting record; a session settled concurrently returns
+// ErrSessionNotStarting.
 func (s *Store) MarkFailed(ctx context.Context, id, reason, code string) (Session, error) {
 	return s.queries().MarkFailed(ctx, id, reason, code)
 }
@@ -212,6 +248,50 @@ func (s *Store) MarkTerminated(ctx context.Context, id string) (Session, error) 
 // MarkArchived archives a session without changing its status.
 func (s *Store) MarkArchived(ctx context.Context, id string) (Session, error) {
 	return s.queries().MarkArchived(ctx, id)
+}
+
+// MarkUnarchived reactivates an archived session. Unarchiving an unarchived
+// session is a no-op that returns the current record.
+func (s *Store) MarkUnarchived(ctx context.Context, id string) (Session, error) {
+	return s.queries().MarkUnarchived(ctx, id)
+}
+
+// DeleteSession removes a session's metadata row. Deleting a starting or
+// running session is rejected; the guard and the delete are one statement so
+// nothing can slip between them. Files are never touched.
+func (s *Store) DeleteSession(ctx context.Context, id string) error {
+	q := s.queries()
+	result, err := q.runner.ExecContext(ctx, `
+	DELETE FROM sessions WHERE id = ? AND status NOT IN (?, ?)`,
+		id, StatusStarting, StatusRunning,
+	)
+	if err != nil {
+		return fmt.Errorf("delete session %s: %w", id, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete session %s: %w", id, err)
+	}
+	if affected > 0 {
+		return nil
+	}
+	if _, err := q.Get(ctx, id); err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: %s", ErrSessionActive, id)
+}
+
+// CountActiveSessionsForAction reports how many starting or running sessions
+// reference the named action, so action deletion can be guarded.
+func (s *Store) CountActiveSessionsForAction(ctx context.Context, action string) (int, error) {
+	var active int
+	if err := s.queries().runner.QueryRowContext(ctx, `
+	SELECT count(*) FROM sessions WHERE action = ? AND status IN (?, ?)`,
+		action, StatusStarting, StatusRunning,
+	).Scan(&active); err != nil {
+		return 0, fmt.Errorf("count active sessions for action %s: %w", action, err)
+	}
+	return active, nil
 }
 
 // Get loads a session by id.
@@ -258,56 +338,52 @@ func (s *Store) queries() queries {
 }
 
 func (q queries) CreateStarting(ctx context.Context, input CreateSessionInput) (Session, error) {
+	if input.WorkspaceID == "" {
+		return Session{}, errors.New("create starting session: workspace id is required")
+	}
 	params, err := normalizeParams(input.Params)
 	if err != nil {
 		return Session{}, err
 	}
 	now := q.nowUTC()
-	args := []any{
+	// The single-statement guard makes the insert atomic with the workspace
+	// check, so a start racing a workspace archive or delete cannot leave an
+	// active session under an archived or missing workspace (the mirror of
+	// the archive/delete-side active-session checks). The workspace guard
+	// transitively covers the project: archive preconditions keep every
+	// workspace of an archived project archived.
+	created, err := q.scanOne(q.runner.QueryRowContext(ctx, `
+	INSERT INTO sessions (
+		id, name, action, environment, params, working_dir, prompt, status, workspace_id, created_at, updated_at
+	)
+	SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+	WHERE EXISTS (SELECT 1 FROM workspaces WHERE id = ? AND archived_at IS NULL)
+	RETURNING`+sessionColumnsSQL,
 		input.ID,
 		nullableString(input.Name),
-		input.Action,
+		nullableString(input.Action),
 		input.Environment,
 		params,
 		input.WorkingDir,
 		nullableString(input.Prompt),
 		StatusStarting,
-		nullableString(input.ProjectID),
+		input.WorkspaceID,
 		formatTime(now),
 		formatTime(now),
-	}
-	query := `
-	INSERT INTO sessions (
-		id, name, action, environment, params, working_dir, prompt, status, project_id, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	RETURNING` + sessionColumnsSQL
-	if input.ProjectID != "" {
-		// The single-statement guard makes the insert atomic with the project
-		// check, so a start racing a project archive cannot leave an active
-		// session under an archived project (the mirror of the archive-side
-		// active-session check).
-		query = `
-	INSERT INTO sessions (
-		id, name, action, environment, params, working_dir, prompt, status, project_id, created_at, updated_at
-	)
-	SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-	WHERE EXISTS (SELECT 1 FROM projects WHERE id = ? AND archived_at IS NULL)
-	RETURNING` + sessionColumnsSQL
-		args = append(args, input.ProjectID)
-	}
-	created, err := q.scanOne(q.runner.QueryRowContext(ctx, query, args...))
-	if errors.Is(err, sql.ErrNoRows) && input.ProjectID != "" {
-		return Session{}, q.classifyProjectGuardFailure(ctx, input.ProjectID)
+		input.WorkspaceID,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Session{}, q.classifyWorkspaceGuardFailure(ctx, input.WorkspaceID)
 	}
 	if err != nil {
 		return Session{}, fmt.Errorf("create starting session %s: %w", input.ID, err)
 	}
-	return q.hydrateProject(ctx, created)
+	return q.hydrateRefs(ctx, created)
 }
 
-// classifyProjectGuardFailure explains a guarded session insert that matched
-// no project row. The guard itself is what prevents the bad insert; this
-// follow-up read only picks the right error.
+// classifyProjectGuardFailure explains a guarded workspace insert that
+// matched no project row. The guard itself is what prevents the bad insert;
+// this follow-up read only picks the right error.
 func (q queries) classifyProjectGuardFailure(ctx context.Context, projectID string) error {
 	project, err := scanProject(q.runner.QueryRowContext(ctx, selectProjectSQL+` WHERE id = ?`, projectID))
 	switch {
@@ -318,21 +394,37 @@ func (q queries) classifyProjectGuardFailure(ctx context.Context, projectID stri
 	case project.ArchivedAt != nil:
 		return fmt.Errorf("%w: %s", ErrProjectArchived, projectID)
 	default:
-		return fmt.Errorf("create session in project %s: insert matched no row", projectID)
+		return fmt.Errorf("create workspace in project %s: insert matched no row", projectID)
+	}
+}
+
+// classifyWorkspaceGuardFailure explains a guarded session insert that
+// matched no workspace row, mirroring classifyProjectGuardFailure.
+func (q queries) classifyWorkspaceGuardFailure(ctx context.Context, workspaceID string) error {
+	workspace, err := scanWorkspace(q.runner.QueryRowContext(ctx, selectWorkspaceSQL+` WHERE id = ?`, workspaceID))
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return fmt.Errorf("%w: %s", ErrWorkspaceNotFound, workspaceID)
+	case err != nil:
+		return fmt.Errorf("resolve workspace %s: %w", workspaceID, err)
+	case workspace.ArchivedAt != nil:
+		return fmt.Errorf("%w: %s", ErrWorkspaceArchived, workspaceID)
+	default:
+		return fmt.Errorf("create session in workspace %s: insert matched no row", workspaceID)
 	}
 }
 
 func (q queries) MarkRunning(ctx context.Context, id string) (Session, error) {
 	now := q.nowUTC()
-	return q.updateOne(ctx, id, "mark running", `
+	return q.settleStarting(ctx, id, "mark running", `
 	UPDATE sessions
 	SET status = ?,
 		failure_reason = NULL,
 		failure_code = NULL,
 		updated_at = ?
-	WHERE id = ?
+	WHERE id = ? AND status = ?
 	RETURNING`+sessionColumnsSQL,
-		StatusRunning, formatTime(now), id,
+		StatusRunning, formatTime(now), id, StatusStarting,
 	)
 }
 
@@ -344,13 +436,26 @@ func (q queries) MarkFailed(ctx context.Context, id, reason, code string) (Sessi
 		return Session{}, errors.New("mark session failed: failure code is required")
 	}
 	now := q.nowUTC()
-	return q.updateOne(ctx, id, "mark failed", `
+	return q.settleStarting(ctx, id, "mark failed", `
 	UPDATE sessions
 	SET status = ?, failure_reason = ?, failure_code = ?, updated_at = ?
-	WHERE id = ?
+	WHERE id = ? AND status = ?
 	RETURNING`+sessionColumnsSQL,
-		StatusFailed, reason, code, formatTime(now), id,
+		StatusFailed, reason, code, formatTime(now), id, StatusStarting,
 	)
+}
+
+// settleStarting runs a starting-only transition and separates "the session
+// does not exist" from "the session exists but was settled concurrently", so
+// an in-flight Start can tell it lost the record to a Terminate or Delete.
+func (q queries) settleStarting(ctx context.Context, id, action, query string, args ...any) (Session, error) {
+	session, err := q.updateOne(ctx, id, action, query, args...)
+	if errors.Is(err, ErrSessionNotFound) {
+		if _, getErr := q.Get(ctx, id); getErr == nil {
+			return Session{}, fmt.Errorf("%w: %s", ErrSessionNotStarting, id)
+		}
+	}
+	return session, err
 }
 
 func (q queries) MarkTerminated(ctx context.Context, id string) (Session, error) {
@@ -375,6 +480,18 @@ func (q queries) MarkArchived(ctx context.Context, id string) (Session, error) {
 	WHERE id = ?
 	RETURNING`+sessionColumnsSQL,
 		formatTime(now), formatTime(now), id,
+	)
+}
+
+func (q queries) MarkUnarchived(ctx context.Context, id string) (Session, error) {
+	now := q.nowUTC()
+	return q.updateOne(ctx, id, "mark unarchived", `
+	UPDATE sessions
+	SET updated_at = CASE WHEN archived_at IS NOT NULL THEN ? ELSE updated_at END,
+		archived_at = NULL
+	WHERE id = ?
+	RETURNING`+sessionColumnsSQL,
+		formatTime(now), id,
 	)
 }
 
@@ -403,8 +520,12 @@ func (q queries) List(ctx context.Context, filter ListFilter) ([]Session, error)
 		clauses = append(clauses, "s.status = ?")
 		args = append(args, filter.Status)
 	}
+	if filter.WorkspaceID != "" {
+		clauses = append(clauses, "s.workspace_id = ?")
+		args = append(args, filter.WorkspaceID)
+	}
 	if filter.ProjectID != "" {
-		clauses = append(clauses, "s.project_id = ?")
+		clauses = append(clauses, "w.project_id = ?")
 		args = append(args, filter.ProjectID)
 	}
 
@@ -444,30 +565,29 @@ func (q queries) updateOne(ctx context.Context, id, action, query string, args .
 	if err != nil {
 		return Session{}, fmt.Errorf("%s session %s: %w", action, id, err)
 	}
-	return q.hydrateProject(ctx, session)
+	return q.hydrateRefs(ctx, session)
 }
 
 func (q queries) scanOne(row *sql.Row) (Session, error) {
 	return scanSession(row)
 }
 
-// hydrateProject attaches the project slice to a session returned by a write.
-// Writes use RETURNING, which cannot join, so the project row is loaded with a
-// follow-up query; reads join instead.
-func (q queries) hydrateProject(ctx context.Context, session Session) (Session, error) {
-	if session.ProjectID == "" {
-		return session, nil
-	}
-	project, err := scanProject(q.runner.QueryRowContext(ctx, selectProjectSQL+` WHERE id = ?`, session.ProjectID))
+// hydrateRefs attaches the workspace and derived project slices to a session
+// returned by a write. Writes use RETURNING, which cannot join, so the rows
+// are loaded with a follow-up query; reads join instead.
+func (q queries) hydrateRefs(ctx context.Context, session Session) (Session, error) {
+	var workspaceName, projectID, projectName string
+	err := q.runner.QueryRowContext(ctx, `
+	SELECT w.name, p.id, p.name
+	FROM workspaces w
+	JOIN projects p ON p.id = w.project_id
+	WHERE w.id = ?`, session.WorkspaceID,
+	).Scan(&workspaceName, &projectID, &projectName)
 	if err != nil {
-		return Session{}, fmt.Errorf("hydrate project for session %s: %w", session.ID, err)
+		return Session{}, fmt.Errorf("hydrate workspace for session %s: %w", session.ID, err)
 	}
-	session.Project = &SessionProject{
-		ID:         project.ID,
-		Name:       project.Name,
-		WorkingDir: project.WorkingDir,
-		ArchivedAt: project.ArchivedAt,
-	}
+	session.Workspace = &SessionWorkspace{ID: session.WorkspaceID, Name: workspaceName}
+	session.Project = &SessionProject{ID: projectID, Name: projectName}
 	return session, nil
 }
 
@@ -480,12 +600,12 @@ func (q queries) nowUTC() time.Time {
 }
 
 // sessionColumnsSQL is the bare column list used with RETURNING on writes;
-// sessionJoinColumnsSQL is the s.-qualified equivalent (plus joined project
-// columns) used by reads, which LEFT JOIN projects.
+// sessionJoinColumnsSQL is the s.-qualified equivalent (plus joined workspace
+// and project columns) used by reads, which JOIN workspaces and projects.
 const sessionColumnsSQL = `
 		id,
 		COALESCE(name, ''),
-		action,
+		COALESCE(action, ''),
 		environment,
 		params,
 		working_dir,
@@ -493,7 +613,7 @@ const sessionColumnsSQL = `
 		status,
 		COALESCE(failure_reason, ''),
 		COALESCE(failure_code, ''),
-		COALESCE(project_id, ''),
+		workspace_id,
 		created_at,
 		updated_at,
 		terminated_at,
@@ -502,7 +622,7 @@ const sessionColumnsSQL = `
 const sessionJoinColumnsSQL = `
 		s.id,
 		COALESCE(s.name, ''),
-		s.action,
+		COALESCE(s.action, ''),
 		s.environment,
 		s.params,
 		s.working_dir,
@@ -510,19 +630,20 @@ const sessionJoinColumnsSQL = `
 		s.status,
 		COALESCE(s.failure_reason, ''),
 		COALESCE(s.failure_code, ''),
-		COALESCE(s.project_id, ''),
+		s.workspace_id,
 		s.created_at,
 		s.updated_at,
 		s.terminated_at,
 		s.archived_at,
-		p.name,
-		p.working_dir,
-		p.archived_at`
+		w.name,
+		p.id,
+		p.name`
 
 const selectSessionSQL = `
 SELECT` + sessionJoinColumnsSQL + `
 	FROM sessions s
-	LEFT JOIN projects p ON p.id = s.project_id`
+	JOIN workspaces w ON w.id = s.workspace_id
+	JOIN projects p ON p.id = w.project_id`
 
 type scanner interface {
 	Scan(...any) error
@@ -537,23 +658,13 @@ func scanSession(row scanner) (Session, error) {
 }
 
 func scanJoinedSession(row scanner) (Session, error) {
-	var projectName, projectWorkingDir, projectArchivedAt sql.NullString
-	session, err := scanSessionColumns(row, &projectName, &projectWorkingDir, &projectArchivedAt)
+	var workspaceName, projectID, projectName string
+	session, err := scanSessionColumns(row, &workspaceName, &projectID, &projectName)
 	if err != nil {
 		return Session{}, err
 	}
-	if session.ProjectID != "" {
-		archivedAt, err := parseOptionalTime(projectArchivedAt)
-		if err != nil {
-			return Session{}, fmt.Errorf("parse project archived_at: %w", err)
-		}
-		session.Project = &SessionProject{
-			ID:         session.ProjectID,
-			Name:       projectName.String,
-			WorkingDir: projectWorkingDir.String,
-			ArchivedAt: archivedAt,
-		}
-	}
+	session.Workspace = &SessionWorkspace{ID: session.WorkspaceID, Name: workspaceName}
+	session.Project = &SessionProject{ID: projectID, Name: projectName}
 	return session, nil
 }
 
@@ -573,7 +684,7 @@ func scanSessionColumns(row scanner, extra ...any) (Session, error) {
 		&session.Status,
 		&session.FailureReason,
 		&session.FailureCode,
-		&session.ProjectID,
+		&session.WorkspaceID,
 		&createdAt,
 		&updatedAt,
 		&terminatedAt,

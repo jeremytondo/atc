@@ -1,5 +1,8 @@
 {
-  "routes": ["GET /sessions", "GET /projects/{id}/sessions"],
+  "routes": [
+    "GET /sessions",
+    "GET /projects/{id}/sessions"
+  ],
   "response": {
     "sessions": [
       {
@@ -12,15 +15,17 @@
         "attachable": true,
         "createdAt": "2026-07-09T12:34:56.789Z",
         "updatedAt": "2026-07-09T12:35:00Z",
+        "workspace": {
+          "id": "wsp_fixture01",
+          "name": "Login bug"
+        },
         "project": {
           "id": "prj_fixture01",
-          "name": "Atelier",
-          "workingDir": "/home/dev/projects/atelier"
+          "name": "Atelier"
         }
       },
       {
         "id": "ses_fixture02",
-        "action": "shell",
         "environment": "zsh",
         "workingDir": "/home/dev/projects/experiment",
         "status": "failed",
@@ -31,11 +36,13 @@
         "updatedAt": "2026-07-08T10:00:05Z",
         "terminatedAt": "2026-07-08T10:00:05Z",
         "archivedAt": "2026-07-08T11:00:00Z",
+        "workspace": {
+          "id": "wsp_fixture02",
+          "name": "Experiment shell"
+        },
         "project": {
           "id": "prj_fixture02",
-          "name": "Archived Experiment",
-          "workingDir": "/home/dev/projects/experiment",
-          "archivedAt": "2026-07-02T09:30:00Z"
+          "name": "Archived Experiment"
         }
       }
     ]

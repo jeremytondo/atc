@@ -16,8 +16,12 @@ export type ParamSpec = {
 
 export type ActionOrigin = 'builtin' | 'modified' | 'custom' | string;
 
+// ActionType classifies what an action launches; it is immutable after create.
+export type ActionType = 'action' | 'agent' | string;
+
 export type Action = {
   name: string;
+  type?: ActionType;
   origin?: ActionOrigin;
   enabled?: boolean;
   label?: string;
@@ -28,6 +32,7 @@ export type Action = {
 
 export type ActionDetail = {
   name: string;
+  type?: ActionType;
   origin?: ActionOrigin;
   enabled?: boolean;
   label?: string;
@@ -39,9 +44,11 @@ export type ActionDetail = {
 };
 
 // ActionWrite is the create/update body the backend accepts. Prompt is null when
-// the action takes no initial prompt; enabled is optional (omitted = enabled).
+// the action takes no initial prompt; enabled is optional (omitted = enabled);
+// type is optional (defaults to "action" on create, immutable afterwards).
 export type ActionWrite = {
   name?: string;
+  type?: ActionType;
   label?: string;
   description?: string;
   command: string;
@@ -68,18 +75,34 @@ export type Project = {
   archivedAt?: string;
 };
 
-// SessionProject is the project object nested on project-scoped sessions.
+// Workspace is a named unit of work inside a project that groups sessions.
+export type Workspace = {
+  id: string;
+  projectId: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt?: string;
+};
+
+// SessionWorkspace is the workspace object nested on sessions.
+export type SessionWorkspace = {
+  id: string;
+  name: string;
+};
+
+// SessionProject is the derived project object nested on sessions, kept so
+// clients that group by project keep working.
 export type SessionProject = {
   id: string;
   name: string;
-  workingDir: string;
-  archivedAt?: string;
 };
 
 export type SessionListItem = {
   id: string;
   name?: string;
-  action: string;
+  // Absent action means the session is an Interactive Shell.
+  action?: string;
   environment: string;
   workingDir: string;
   status: string;
@@ -90,6 +113,7 @@ export type SessionListItem = {
   updatedAt: string;
   terminatedAt?: string;
   archivedAt?: string;
+  workspace?: SessionWorkspace;
   project?: SessionProject;
 };
 
@@ -99,13 +123,13 @@ export type SessionDetail = SessionListItem & {
 };
 
 export type StartSessionRequest = {
-  action: string;
+  workspaceId: string;
+  // Omitted action launches the Interactive Shell.
+  action?: string;
   environment?: string;
   params?: Record<string, string>;
   prompt?: string;
   name?: string;
-  projectId?: string;
-  workingDir?: string;
 };
 
 export type ErrorResponse = {
@@ -227,6 +251,16 @@ export async function archiveSession(id: string): Promise<void> {
   await apiFetch(`/api/sessions/${encodeURIComponent(id)}/archive`, { method: 'POST' });
 }
 
+export async function unarchiveSession(id: string): Promise<void> {
+  await apiFetch(`/api/sessions/${encodeURIComponent(id)}/unarchive`, { method: 'POST' });
+}
+
+// deleteSession stops the session if it is active, then removes its metadata.
+// Files on disk are never touched.
+export async function deleteSession(id: string): Promise<void> {
+  await apiFetch(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
 export async function listProjects(opts: { includeArchived?: boolean } = {}): Promise<Project[]> {
   const qs = opts.includeArchived ? '?includeArchived=true' : '';
   const res = await apiFetch(`/api/projects${qs}`);
@@ -264,6 +298,12 @@ export async function unarchiveProject(id: string): Promise<Project> {
   return (await res.json()) as Project;
 }
 
+// deleteProject removes a project with zero workspaces. Files on disk are
+// never touched.
+export async function deleteProject(id: string): Promise<void> {
+  await apiFetch(`/api/projects/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
 export async function listProjectSessions(
   id: string,
   opts: { includeArchived?: boolean } = {}
@@ -272,4 +312,70 @@ export async function listProjectSessions(
   const res = await apiFetch(`/api/projects/${encodeURIComponent(id)}/sessions${qs}`);
   const body = (await res.json()) as { sessions?: SessionListItem[] };
   return body.sessions ?? [];
+}
+
+export async function listWorkspaces(
+  opts: { projectId?: string; includeArchived?: boolean } = {}
+): Promise<Workspace[]> {
+  const query = new URLSearchParams();
+  if (opts.projectId) query.set('projectId', opts.projectId);
+  if (opts.includeArchived) query.set('includeArchived', 'true');
+  const qs = query.size > 0 ? `?${query.toString()}` : '';
+  const res = await apiFetch(`/api/workspaces${qs}`);
+  const body = (await res.json()) as { workspaces?: Workspace[] };
+  return body.workspaces ?? [];
+}
+
+export async function getWorkspace(id: string): Promise<Workspace> {
+  const res = await apiFetch(`/api/workspaces/${encodeURIComponent(id)}`);
+  return (await res.json()) as Workspace;
+}
+
+export async function createWorkspace(projectId: string, name: string): Promise<Workspace> {
+  const res = await apiFetch('/api/workspaces', jsonInit('POST', { projectId, name }));
+  return (await res.json()) as Workspace;
+}
+
+export async function renameWorkspace(id: string, name: string): Promise<Workspace> {
+  const res = await apiFetch(
+    `/api/workspaces/${encodeURIComponent(id)}`,
+    jsonInit('PATCH', { name })
+  );
+  return (await res.json()) as Workspace;
+}
+
+export async function archiveWorkspace(id: string): Promise<Workspace> {
+  const res = await apiFetch(`/api/workspaces/${encodeURIComponent(id)}/archive`, {
+    method: 'POST'
+  });
+  return (await res.json()) as Workspace;
+}
+
+export async function unarchiveWorkspace(id: string): Promise<Workspace> {
+  const res = await apiFetch(`/api/workspaces/${encodeURIComponent(id)}/unarchive`, {
+    method: 'POST'
+  });
+  return (await res.json()) as Workspace;
+}
+
+// deleteWorkspace stops the workspace's active sessions, then removes the
+// workspace and its session metadata. Files on disk are never touched.
+export async function deleteWorkspace(id: string): Promise<void> {
+  await apiFetch(`/api/workspaces/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export async function listWorkspaceSessions(
+  id: string,
+  opts: { includeArchived?: boolean } = {}
+): Promise<SessionListItem[]> {
+  const qs = opts.includeArchived ? '?includeArchived=true' : '';
+  const res = await apiFetch(`/api/workspaces/${encodeURIComponent(id)}/sessions${qs}`);
+  const body = (await res.json()) as { sessions?: SessionListItem[] };
+  return body.sessions ?? [];
+}
+
+// sessionActionLabel is the display label for a session's action; an absent
+// action is the Interactive Shell.
+export function sessionActionLabel(session: { action?: string }): string {
+  return session.action || 'interactive shell';
 }

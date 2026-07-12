@@ -23,6 +23,7 @@ func projectsCommand(lookup envLookup) *cobra.Command {
 	cmd.AddCommand(projectsRenameCommand(lookup))
 	cmd.AddCommand(projectsArchiveCommand(lookup))
 	cmd.AddCommand(projectsUnarchiveCommand(lookup))
+	cmd.AddCommand(projectsDeleteCommand(lookup))
 	return cmd
 }
 
@@ -214,6 +215,25 @@ func projectsUnarchiveCommand(lookup envLookup) *cobra.Command {
 	return resourceActionCommand(lookup, "unarchive <id>", "Unarchive a project", 1, func(id string, args []string) (string, any) {
 		return projectEndpoint(id, "unarchive"), struct{}{}
 	})
+}
+
+func projectsDeleteCommand(lookup envLookup) *cobra.Command {
+	return &cobra.Command{
+		Use:   "delete <id>",
+		Short: "Delete a project with zero workspaces",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := commandAPIClient(cmd, lookup)
+			if err != nil {
+				return err
+			}
+			if _, err := client.delete(cmd.Context(), projectEndpoint(args[0])); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Deleted project %s. %s\n", args[0], filesNotTouched)
+			return nil
+		},
+	}
 }
 
 // resolveDirArg expands a --dir argument before it is sent to the API:

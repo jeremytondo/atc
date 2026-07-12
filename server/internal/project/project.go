@@ -28,12 +28,15 @@ var (
 	// ErrInvalidWorkingDir is returned when a working directory is relative,
 	// missing, or not a directory.
 	ErrInvalidWorkingDir = errors.New("invalid working directory")
-	// ErrProjectArchived is returned when a session start references an
-	// archived project.
+	// ErrProjectArchived is returned when a workspace create or session start
+	// references an archived project.
 	ErrProjectArchived = errors.New("project is archived")
-	// ErrProjectHasActiveSessions is returned when an archive is rejected
-	// because the project still has a starting or running session.
-	ErrProjectHasActiveSessions = errors.New("project has active sessions")
+	// ErrProjectHasUnarchivedWorkspaces is returned when an archive is
+	// rejected because the project still has an unarchived workspace.
+	ErrProjectHasUnarchivedWorkspaces = errors.New("project has unarchived workspaces")
+	// ErrProjectHasWorkspaces is returned when a delete is rejected because
+	// the project still has workspaces.
+	ErrProjectHasWorkspaces = errors.New("project has workspaces")
 )
 
 // Project is atc's domain model for a project. WorkingDir is fixed after
@@ -146,18 +149,33 @@ func (s *Service) Rename(ctx context.Context, id, name string) (Project, error) 
 	return domainProject(record), nil
 }
 
-// Archive hides a project from default lists and blocks new session starts.
-// Archiving an archived project is a no-op returning the current record. A
-// project with a starting or running session cannot be archived.
+// Archive hides a project from default lists and blocks new workspace
+// creation. Archiving an archived project is a no-op returning the current
+// record. A project with an unarchived workspace cannot be archived.
 func (s *Service) Archive(ctx context.Context, id string) (Project, error) {
 	record, err := s.store.ArchiveProject(ctx, id)
-	if errors.Is(err, store.ErrProjectHasActiveSessions) {
-		return Project{}, fmt.Errorf("%w: %s", ErrProjectHasActiveSessions, id)
+	if errors.Is(err, store.ErrProjectHasUnarchivedWorkspaces) {
+		return Project{}, fmt.Errorf("%w: %s", ErrProjectHasUnarchivedWorkspaces, id)
 	}
 	if err != nil {
 		return Project{}, translateStoreErr(err)
 	}
 	return domainProject(record), nil
+}
+
+// Delete removes a project record. Deletion is allowed only when the project
+// has zero workspaces, and removes only the project row — files are never
+// touched.
+func (s *Service) Delete(ctx context.Context, id string) error {
+	err := s.store.DeleteProject(ctx, id)
+	if errors.Is(err, store.ErrProjectHasWorkspaces) {
+		return fmt.Errorf("%w: %s", ErrProjectHasWorkspaces, id)
+	}
+	if err != nil {
+		return translateStoreErr(err)
+	}
+	s.logger.Info("project deleted", "id", id)
+	return nil
 }
 
 // Unarchive reactivates a project. Unarchiving an active project is a no-op

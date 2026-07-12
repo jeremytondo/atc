@@ -44,6 +44,9 @@ public struct ATCAction: Codable, Sendable, Hashable, Identifiable {
     }
 
     public var name: String
+    /// "action" | "agent" — presentation metadata, immutable server-side.
+    /// Optional so pre-type captures still decode; treat nil as "action".
+    public var type: String?
     /// custom | modified | builtin — drives client edit affordances.
     public var origin: String
     public var enabled: Bool
@@ -58,6 +61,7 @@ public struct ATCAction: Codable, Sendable, Hashable, Identifiable {
 
     public init(
         name: String,
+        type: String? = nil,
         origin: String,
         enabled: Bool,
         label: String? = nil,
@@ -68,6 +72,7 @@ public struct ATCAction: Codable, Sendable, Hashable, Identifiable {
         params: [String: ParamSpec] = [:]
     ) {
         self.name = name
+        self.type = type
         self.origin = origin
         self.enabled = enabled
         self.label = label
@@ -84,6 +89,7 @@ public struct ATCAction: Codable, Sendable, Hashable, Identifiable {
     public var isBuiltin: Bool { origin == "builtin" }
     public var isModified: Bool { origin == "modified" }
     public var isCustom: Bool { origin == "custom" }
+    public var isAgent: Bool { type == "agent" }
 }
 
 /// Body for `POST /api/actions` and `PUT /api/actions/{name}`. PUT is a
@@ -93,6 +99,9 @@ public struct ActionWriteRequest: Codable, Sendable, Hashable {
     /// Optional on create — the server derives it from `label` via slugify.
     /// On PUT it must match the route name if present.
     public var name: String?
+    /// "action" | "agent". Defaults to "action" on create when omitted;
+    /// immutable on update (an omitted type inherits the current one).
+    public var type: String?
     public var label: String?
     public var description: String?
     public var command: String
@@ -105,6 +114,7 @@ public struct ActionWriteRequest: Codable, Sendable, Hashable {
 
     public init(
         name: String? = nil,
+        type: String? = nil,
         label: String? = nil,
         description: String? = nil,
         command: String,
@@ -114,6 +124,7 @@ public struct ActionWriteRequest: Codable, Sendable, Hashable {
         enabled: Bool? = nil
     ) {
         self.name = name
+        self.type = type
         self.label = label
         self.description = description
         self.command = command

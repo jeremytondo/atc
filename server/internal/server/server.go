@@ -19,6 +19,7 @@ import (
 	"github.com/jeremytondo/atc/internal/project"
 	"github.com/jeremytondo/atc/internal/session"
 	"github.com/jeremytondo/atc/internal/store"
+	"github.com/jeremytondo/atc/internal/workspace"
 	"github.com/jeremytondo/atc/internal/zmx"
 )
 
@@ -74,9 +75,10 @@ func Serve(ctx context.Context, cfg Config) error {
 	}
 	defer sessionStore.Close()
 
-	actions := action.NewStore(cfg.ActionsPath, session.DefaultActions())
+	actions := action.NewStore(cfg.ActionsPath, session.DefaultActions(), sessionStore)
 	projects := project.NewService(sessionStore, logger)
-	sessions := session.NewService(sessionStore, zmx.New(cfg.ZmxBin), actions, cfg.Environments, projects, logger)
+	workspaces := workspace.NewService(sessionStore, logger)
+	sessions := session.NewService(sessionStore, zmx.New(cfg.ZmxBin), actions, cfg.Environments, workspaces, logger)
 	if err := sessions.Reconcile(ctx); err != nil {
 		return fmt.Errorf("reconcile sessions: %w", err)
 	}
@@ -96,7 +98,7 @@ func Serve(ctx context.Context, cfg Config) error {
 
 	fsService := fs.NewService(logger)
 
-	router := Router(sessions, projects, actions, fsService, cfg.AuthToken)
+	router := Router(sessions, projects, workspaces, actions, fsService, cfg.AuthToken)
 	tcpServer := newHTTPServer(withListenerBoundary(ListenerTCP, router))
 	unixServer := newHTTPServer(withListenerBoundary(ListenerUnix, router))
 

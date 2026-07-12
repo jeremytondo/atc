@@ -130,6 +130,17 @@ func (routes apiRoutes) unarchiveProject(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, projectResponse(unarchived))
 }
 
+func (routes apiRoutes) deleteProject(w http.ResponseWriter, r *http.Request) {
+	if !routes.requireProjects(w) {
+		return
+	}
+	if err := routes.projects.Delete(r.Context(), r.PathValue("id")); err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct{}{})
+}
+
 // listProjectSessions is the single project-scoped session listing route. It
 // shares the session list serialization and returns 404 project_not_found for
 // an unknown project instead of a silently empty list.
@@ -148,7 +159,7 @@ func (routes apiRoutes) listProjectSessions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	statusFilter := session.Status(r.URL.Query().Get("status"))
-	sessions, err := routes.sessions.List(r.Context(), includeArchived, statusFilter, got.ID)
+	sessions, err := routes.sessions.List(r.Context(), includeArchived, statusFilter, session.ListScope{ProjectID: got.ID})
 	if err != nil {
 		writeSessionError(w, err)
 		return
@@ -180,8 +191,10 @@ func writeProjectError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 	case errors.Is(err, project.ErrProjectArchived):
 		writeError(w, http.StatusConflict, "project_archived", err.Error())
-	case errors.Is(err, project.ErrProjectHasActiveSessions):
-		writeError(w, http.StatusConflict, "project_has_active_sessions", err.Error())
+	case errors.Is(err, project.ErrProjectHasUnarchivedWorkspaces):
+		writeError(w, http.StatusConflict, "project_has_unarchived_workspaces", err.Error())
+	case errors.Is(err, project.ErrProjectHasWorkspaces):
+		writeError(w, http.StatusConflict, "project_has_workspaces", err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 	}

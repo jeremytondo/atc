@@ -1,9 +1,12 @@
 {
-  "routes": ["GET /sessions/{id}", "POST /sessions/{id}/terminate", "POST /sessions/{id}/archive"],
+  "routes": [
+    "GET /sessions/{id}",
+    "POST /sessions/{id}/terminate",
+    "POST /sessions/{id}/archive"
+  ],
   "response": {
     "id": "ses_fixture02",
     "name": "Broken launch",
-    "action": "shell",
     "environment": "zsh",
     "params": {},
     "workingDir": "/home/dev/projects/experiment",
@@ -15,11 +18,13 @@
     "updatedAt": "2026-07-08T10:00:05Z",
     "terminatedAt": "2026-07-08T10:00:05Z",
     "archivedAt": "2026-07-08T11:00:00Z",
+    "workspace": {
+      "id": "wsp_fixture02",
+      "name": "Experiment shell"
+    },
     "project": {
       "id": "prj_fixture02",
-      "name": "Archived Experiment",
-      "workingDir": "/home/dev/projects/experiment",
-      "archivedAt": "2026-07-02T09:30:00Z"
+      "name": "Archived Experiment"
     }
   }
 }
