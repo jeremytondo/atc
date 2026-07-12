@@ -83,6 +83,37 @@ struct ShellHostingSmokeTest {
         #expect(appModel.openWorkspace != nil)
     }
 
+    @Test("removing the open workspace's connection routes back to the dashboard")
+    func removedConnectionRoutesBack() async throws {
+        let appModel = AppModel.preview()
+        let runtime = try #require(appModel.runtimes.first)
+        await waitForData(runtime)
+        let windowState = WindowState()
+        windowState.openWorkspace(
+            WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser"),
+            in: appModel
+        )
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        window.contentView = NSHostingView(
+            rootView: RootView().environment(appModel).environment(windowState)
+        )
+        window.orderFront(nil)
+        pump(seconds: 0.5)
+        #expect(windowState.route == .workspace)
+
+        // Teardown nils openWorkspace before the view sees the change; the
+        // route must still fall back to the Dashboard.
+        appModel.removeConnection(id: runtime.id)
+        pump(seconds: 0.5)
+        window.orderOut(nil)
+        #expect(windowState.route == .dashboard)
+        #expect(appModel.openWorkspace == nil)
+    }
+
     @Test("workspace shell hosts an empty workspace with creation actions")
     func hostShellEmptyWorkspace() async throws {
         // prj_notes has zero workspaces; wsp_refactor has sessions — use a

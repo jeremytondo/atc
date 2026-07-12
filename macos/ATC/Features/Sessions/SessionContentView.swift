@@ -197,7 +197,7 @@ struct SessionHeaderBar: View {
                 Task { await run { try await sessionsStore?.terminate(id: session.id) } }
             }
         } message: {
-            Text("The agent process will be terminated. The session record is kept until archived.")
+            Text("The process will be terminated. The session record is kept until archived.")
         }
         .confirmationDialog(
             "Archive “\(displayName)”?",

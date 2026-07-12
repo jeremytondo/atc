@@ -1,9 +1,10 @@
 import Foundation
+import ATCAPI
 
 /// Persists each Workspace's last-selected session (`workspaceID →
 /// sessionID`) in UserDefaults, so reopening a Workspace restores where the
-/// user left off. Restoration is best-effort: the caller checks the stored
-/// session still exists in its store before selecting it.
+/// user left off. Restoration is best-effort: a remembered session that no
+/// longer exists (or moved) falls back to no selection.
 struct WorkspaceSelectionMemory {
     private let defaults: UserDefaults
     private static let key = "workspaceSelections"
@@ -21,6 +22,18 @@ struct WorkspaceSelectionMemory {
         guard map[workspaceID] != sessionID else { return }
         map[workspaceID] = sessionID
         defaults.set(map, forKey: Self.key)
+    }
+
+    /// The selection to restore when opening a Workspace: the remembered
+    /// session if it still exists in the store and still belongs to that
+    /// Workspace (any lifecycle state); nil otherwise, which shows the
+    /// Workspace empty state.
+    func restoredSelection(for ref: WorkspaceRef, in sessions: [Session]) -> SessionRef? {
+        guard let saved = sessionID(for: ref.workspaceID),
+              let session = sessions.first(where: { $0.id == saved }),
+              session.workspace?.id == ref.workspaceID
+        else { return nil }
+        return SessionRef(connectionID: ref.connectionID, sessionID: session.id)
     }
 
     func forget(workspaceID: String) {

@@ -157,6 +157,38 @@ struct WorkspaceFlowTests {
         #expect(memory.sessionID(for: "wsp_b") == "ses_2")
     }
 
+    @Test("selection restore hits the surviving session and falls back to nil")
+    func selectionRestoreFallbacks() {
+        let suite = "WorkspaceFlowTests.restore.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        let memory = WorkspaceSelectionMemory(defaults: defaults)
+        let connectionID = UUID()
+        let ref = WorkspaceRef(connectionID: connectionID, workspaceID: "wsp_a")
+        let survivor = Session(
+            id: "ses_1", environment: "host", workingDir: "/home/dev",
+            status: .terminated, attachable: false,
+            createdAt: .now, updatedAt: .now,
+            workspace: SessionWorkspace(id: "wsp_a", name: "A")
+        )
+
+        // Nothing remembered → empty state.
+        #expect(memory.restoredSelection(for: ref, in: [survivor]) == nil)
+
+        // Remembered and surviving (any lifecycle state) → restored.
+        memory.remember(sessionID: "ses_1", for: "wsp_a")
+        #expect(memory.restoredSelection(for: ref, in: [survivor])
+            == SessionRef(connectionID: connectionID, sessionID: "ses_1"))
+
+        // Remembered but gone from the store → empty state.
+        #expect(memory.restoredSelection(for: ref, in: []) == nil)
+
+        // Remembered but now in a different workspace → empty state.
+        var moved = survivor
+        moved.workspace = SessionWorkspace(id: "wsp_b", name: "B")
+        #expect(memory.restoredSelection(for: ref, in: [moved]) == nil)
+    }
+
     // MARK: - Delete confirmations
 
     @Test("every delete confirmation names its target and ends with the ADR sentence")

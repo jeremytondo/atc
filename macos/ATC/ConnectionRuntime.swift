@@ -81,8 +81,11 @@ final class ConnectionRuntime: Identifiable {
     }
 
     /// One combined refresh of all four stores; reachability reflects the
-    /// outcome (actions are excluded — a registry hiccup shouldn't flag the
-    /// whole Connection red). The requests interleave on I/O.
+    /// outcome. The derivation deliberately stays projects + sessions:
+    /// actions are excluded so a registry hiccup doesn't flag the whole
+    /// Connection red, and workspaces are excluded so a server predating
+    /// the workspace routes still reads as reachable. The requests
+    /// interleave on I/O.
     func refresh() async {
         async let projectsDone: Void = projects.refresh()
         async let sessionsDone: Void = sessions.refresh()

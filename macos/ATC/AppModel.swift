@@ -14,11 +14,14 @@ final class AppModel {
     private(set) var runtimes: [ConnectionRuntime] = []
 
     /// Sidebar selection. Lives here (not in a view) so deleting a
-    /// Connection can clear a selection that pointed into it. Selecting a
-    /// session marks it most-recently-used for the attachment budget.
+    /// Connection can clear a selection that pointed into it. Selecting an
+    /// attached session marks it most-recently-used for the attachment
+    /// budget (cold sessions enter the order when they attach).
     var selection: SessionRef? {
         didSet {
-            if let selection { markRecentlyUsed(selection) }
+            if let selection, terminals[selection] != nil {
+                markRecentlyUsed(selection)
+            }
         }
     }
 
@@ -180,11 +183,14 @@ final class AppModel {
 
     func attachIfNeeded(to session: Session, connectionID: UUID) {
         let ref = SessionRef(connectionID: connectionID, sessionID: session.id)
-        markRecentlyUsed(ref)
+        if terminals[ref] != nil {
+            markRecentlyUsed(ref)
+            return
+        }
         guard session.attachable,
-              terminals[ref] == nil,
               let runtime = runtime(id: connectionID) else { return }
         terminals[ref] = terminalControllerFactory(session.id, runtime.client)
+        markRecentlyUsed(ref)
         evictOverBudget()
     }
 
@@ -205,8 +211,9 @@ final class AppModel {
 
     // MARK: - Attachment budget
 
-    /// Moves `ref` to the most-recently-used end of the LRU order (only
-    /// while it's attached — the order tracks `terminals` keys).
+    /// Moves `ref` to the most-recently-used end of the LRU order. Called
+    /// only for attached refs, so `attachOrder` stays a permutation of
+    /// `terminals.keys` and never accumulates stale entries.
     private func markRecentlyUsed(_ ref: SessionRef) {
         attachOrder.removeAll { $0 == ref }
         attachOrder.append(ref)

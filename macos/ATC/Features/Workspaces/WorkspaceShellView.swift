@@ -360,13 +360,10 @@ struct WorkspaceShellView: View {
             return
         }
         pendingSelectionRestore = false
-        if let saved = selectionMemory.sessionID(for: ref.workspaceID),
-           let session = runtime?.sessions.session(id: saved),
-           session.workspace?.id == ref.workspaceID {
-            appModel.selection = SessionRef(connectionID: ref.connectionID, sessionID: session.id)
-        } else {
-            appModel.selection = nil
-        }
+        appModel.selection = selectionMemory.restoredSelection(
+            for: ref,
+            in: runtime?.sessions.sessions ?? []
+        )
     }
 
     /// Persists `workspaceID → sessionID` on every selection change.

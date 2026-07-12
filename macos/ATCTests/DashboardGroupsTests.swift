@@ -125,6 +125,14 @@ struct DashboardGroupsTests {
         #expect(row.hasActiveSessions)
     }
 
+    @Test("archived-only projects hide their cards but still count as projects")
+    func archivedOnlyIsNotEmpty() {
+        let result = groups(projects: [project("dusty", archived: true)], workspaces: [])
+        // No visible cards, but the "No Projects" overlay must not show.
+        #expect(result.isEmpty)
+        #expect(result.totalProjectCount == 1)
+    }
+
     @Test("sections keep connection order and derive the context label")
     func sectionOrderAndContext() {
         let local = ConnectionRecord(name: "Here", urlString: "http://localhost:7331", token: "")

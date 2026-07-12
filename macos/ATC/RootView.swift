@@ -45,9 +45,12 @@ struct RootView: View {
         }
         .onChange(of: appModel.openWorkspaceExists) { _, exists in
             // Deleted via web/CLI, or its Connection removed: back to the
-            // Dashboard. Session terminations that accompany a remote
-            // delete flow through the existing attach-end machinery.
-            if !exists, appModel.openWorkspace != nil {
+            // Dashboard. Keyed on the route, not the ref — removing a
+            // Connection already nils openWorkspace in teardown, and the
+            // shell route must still fall back. Session terminations that
+            // accompany a remote delete flow through the existing
+            // attach-end machinery.
+            if !exists, windowState.route == .workspace {
                 windowState.handleOpenWorkspaceGone(in: appModel)
             }
         }

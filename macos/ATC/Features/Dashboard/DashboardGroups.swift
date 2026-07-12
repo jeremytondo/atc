@@ -54,11 +54,17 @@ struct DashboardGroups {
 
     private(set) var sections: [Section] = []
 
-    /// True when no section has any card (drives the all-empty overlay).
+    /// Every project across all Connections, before archived filtering —
+    /// the "No Projects" overlay must not appear when projects merely
+    /// hide behind the archived toggle.
+    private(set) var totalProjectCount = 0
+
+    /// True when no section has any visible card.
     var isEmpty: Bool { sections.allSatisfy(\.cards.isEmpty) }
 
     init(inputs: [ConnectionInput], showArchived: Bool) {
         for input in inputs {
+            totalProjectCount += input.projects.count
             let workspacesByProject = Dictionary(grouping: input.workspaces, by: \.projectId)
             let sessionsByWorkspace = Dictionary(grouping: input.sessions, by: { $0.workspace?.id })
             var cards: [ProjectCard] = []

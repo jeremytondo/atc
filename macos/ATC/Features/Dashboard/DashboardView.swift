@@ -83,7 +83,7 @@ struct DashboardView: View {
         .overlay {
             if appModel.runtimes.isEmpty {
                 noConnectionsState
-            } else if groups.isEmpty && allLoadedOnce {
+            } else if groups.totalProjectCount == 0 && allLoadedOnce {
                 emptyState
             }
         }
