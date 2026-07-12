@@ -11,6 +11,10 @@ public protocol ATCClient: Sendable {
     func startSession(_ request: StartSessionRequest) async throws -> SessionDetail
     func terminateSession(id: String) async throws -> SessionDetail
     func archiveSession(id: String) async throws -> SessionDetail
+    func unarchiveSession(id: String) async throws -> SessionDetail
+    /// Deletes a session's metadata, terminating it first if active. Files
+    /// are never touched.
+    func deleteSession(id: String) async throws
     func sendText(sessionID: String, text: String) async throws
     func sendKey(sessionID: String, key: String) async throws
     func actions() async throws -> [ATCAction]
@@ -29,7 +33,20 @@ public protocol ATCClient: Sendable {
     func renameProject(id: String, name: String) async throws -> Project
     func archiveProject(id: String) async throws -> Project
     func unarchiveProject(id: String) async throws -> Project
+    /// Deletes a project record; allowed only once it has zero workspaces.
+    func deleteProject(id: String) async throws
     func projectSessions(projectID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session]
+    /// Lists workspaces newest-first; a nil `projectID` spans every project.
+    func workspaces(projectID: String?, includeArchived: Bool) async throws -> [Workspace]
+    func workspace(id: String) async throws -> Workspace
+    func createWorkspace(projectID: String, name: String) async throws -> Workspace
+    func renameWorkspace(id: String, name: String) async throws -> Workspace
+    func archiveWorkspace(id: String) async throws -> Workspace
+    func unarchiveWorkspace(id: String) async throws -> Workspace
+    /// Deletes a workspace and its sessions' metadata, stopping active
+    /// sessions first. Files are never touched.
+    func deleteWorkspace(id: String) async throws
+    func workspaceSessions(workspaceID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session]
 
     /// WebSocket URL for `GET /api/sessions/{id}/attach`.
     func attachURL(sessionID: String) -> URL
@@ -52,5 +69,13 @@ public extension ATCClient {
 
     func projectSessions(projectID: String) async throws -> [Session] {
         try await projectSessions(projectID: projectID, includeArchived: false, status: nil)
+    }
+
+    func workspaces(projectID: String? = nil) async throws -> [Workspace] {
+        try await workspaces(projectID: projectID, includeArchived: false)
+    }
+
+    func workspaceSessions(workspaceID: String) async throws -> [Session] {
+        try await workspaceSessions(workspaceID: workspaceID, includeArchived: false, status: nil)
     }
 }

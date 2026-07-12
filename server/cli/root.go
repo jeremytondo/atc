@@ -52,6 +52,7 @@ func rootCommand() *cobra.Command {
 	cmd.AddCommand(actionsCommand(os.Getenv))
 	cmd.AddCommand(environmentsCommand(os.Getenv))
 	cmd.AddCommand(projectsCommand(os.Getenv))
+	cmd.AddCommand(workspacesCommand(os.Getenv))
 	cmd.AddCommand(sessionsCommand(os.Getenv))
 
 	return cmd

@@ -2,9 +2,13 @@ import SwiftUI
 import ATCAPI
 
 /// Form for `POST /sessions/start`, always scoped to a project on one
-/// Connection: pick an action, optionally name the session. Action loading,
-/// the start request, and the follow-up attach all use the owning runtime.
+/// Connection: pick a workspace (or name a new one), pick an action, and
+/// optionally name the session. Action/workspace loading, the start request,
+/// and the follow-up attach all use the owning runtime.
 struct CreateSessionSheet: View {
+    /// Sentinel Picker tag for "create a new workspace instead".
+    private static let newWorkspaceTag = ""
+
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
     let context: NewSessionContext
@@ -12,9 +16,12 @@ struct CreateSessionSheet: View {
     var onCreated: (SessionRef) -> Void = { _ in }
 
     @State private var actions: [ATCAction] = []
+    @State private var workspaces: [Workspace] = []
     @State private var loadError: String?
 
     @State private var selectedActionName = ""
+    @State private var selectedWorkspaceID = Self.newWorkspaceTag
+    @State private var newWorkspaceName = ""
     @State private var name = ""
 
     @State private var isSubmitting = false
@@ -34,10 +41,23 @@ struct CreateSessionSheet: View {
         actions.filter(\.enabled)
     }
 
+    private var isCreatingWorkspace: Bool {
+        selectedWorkspaceID == Self.newWorkspaceTag
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Form {
                 Section {
+                    Picker("Workspace", selection: $selectedWorkspaceID) {
+                        ForEach(workspaces) { workspace in
+                            Text(workspace.name).tag(workspace.id)
+                        }
+                        Text("New Workspace…").tag(Self.newWorkspaceTag)
+                    }
+                    if isCreatingWorkspace {
+                        TextField("New workspace name", text: $newWorkspaceName)
+                    }
                     Picker("Action", selection: $selectedActionName) {
                         // Actions load async; the "" selection needs a matching
                         // tag until then or AppKit logs an invalid selection.
@@ -93,24 +113,30 @@ struct CreateSessionSheet: View {
             }
             .padding(12)
         }
-        .frame(width: 400, height: 260)
-        .task { await loadActions() }
+        .frame(width: 400, height: 320)
+        .task { await load() }
     }
 
     private var canSubmit: Bool {
-        !isSubmitting && selectedAction != nil && runtime != nil
+        let hasWorkspace = !isCreatingWorkspace
+            || !newWorkspaceName.trimmingCharacters(in: .whitespaces).isEmpty
+        return !isSubmitting && selectedAction != nil && hasWorkspace && runtime != nil
     }
 
-    private func loadActions() async {
+    private func load() async {
         guard let runtime else {
             loadError = "This project's connection is no longer configured."
             return
         }
         do {
             actions = try await runtime.client.actions()
+            workspaces = try await runtime.client.workspaces(projectID: project.id, includeArchived: false)
             loadError = nil
             if selectedActionName.isEmpty {
                 selectedActionName = actions.first(where: \.enabled)?.name ?? ""
+            }
+            if selectedWorkspaceID == Self.newWorkspaceTag, let first = workspaces.first {
+                selectedWorkspaceID = first.id
             }
         } catch {
             loadError = error.localizedDescription
@@ -122,14 +148,24 @@ struct CreateSessionSheet: View {
         isSubmitting = true
         defer { isSubmitting = false }
 
-        let trimmedName = name.trimmingCharacters(in: .whitespaces)
-        let request = StartSessionRequest(
-            action: action.name,
-            projectId: project.id,
-            name: trimmedName.isEmpty ? nil : trimmedName
-        )
-
         do {
+            let workspaceID: String
+            if isCreatingWorkspace {
+                let created = try await runtime.client.createWorkspace(
+                    projectID: project.id,
+                    name: newWorkspaceName.trimmingCharacters(in: .whitespaces)
+                )
+                workspaceID = created.id
+            } else {
+                workspaceID = selectedWorkspaceID
+            }
+
+            let trimmedName = name.trimmingCharacters(in: .whitespaces)
+            let request = StartSessionRequest(
+                workspaceId: workspaceID,
+                action: action.name,
+                name: trimmedName.isEmpty ? nil : trimmedName
+            )
             let detail = try await runtime.sessions.start(request)
             submitError = nil
             dismiss()

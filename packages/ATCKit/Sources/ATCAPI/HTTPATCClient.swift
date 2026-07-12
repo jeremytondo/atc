@@ -50,6 +50,14 @@ public struct HTTPATCClient: ATCClient {
         try await post("sessions/\(id)/archive")
     }
 
+    public func unarchiveSession(id: String) async throws -> SessionDetail {
+        try await post("sessions/\(id)/unarchive")
+    }
+
+    public func deleteSession(id: String) async throws {
+        _ = try await send(method: "DELETE", path: "sessions/\(id)", body: nil as Never?)
+    }
+
     public func sendText(sessionID: String, text: String) async throws {
         struct Body: Encodable { var text: String }
         _ = try await send(method: "POST", path: "sessions/\(sessionID)/send-text", body: Body(text: text))
@@ -128,6 +136,64 @@ public struct HTTPATCClient: ATCClient {
 
     public func unarchiveProject(id: String) async throws -> Project {
         try await post("projects/\(id)/unarchive")
+    }
+
+    public func deleteProject(id: String) async throws {
+        _ = try await send(method: "DELETE", path: "projects/\(id)", body: nil as Never?)
+    }
+
+    public func workspaces(projectID: String?, includeArchived: Bool) async throws -> [Workspace] {
+        var query: [URLQueryItem] = []
+        if let projectID {
+            query.append(URLQueryItem(name: "projectId", value: projectID))
+        }
+        if includeArchived {
+            query.append(URLQueryItem(name: "includeArchived", value: "true"))
+        }
+        let envelope: WorkspacesEnvelope = try await get("workspaces", query: query)
+        return envelope.workspaces
+    }
+
+    public func workspace(id: String) async throws -> Workspace {
+        try await get("workspaces/\(id)")
+    }
+
+    public func createWorkspace(projectID: String, name: String) async throws -> Workspace {
+        struct Body: Encodable { var projectId: String; var name: String }
+        return try await post("workspaces", body: Body(projectId: projectID, name: name))
+    }
+
+    public func renameWorkspace(id: String, name: String) async throws -> Workspace {
+        struct Body: Encodable { var name: String }
+        return try await patch("workspaces/\(id)", body: Body(name: name))
+    }
+
+    public func archiveWorkspace(id: String) async throws -> Workspace {
+        try await post("workspaces/\(id)/archive")
+    }
+
+    public func unarchiveWorkspace(id: String) async throws -> Workspace {
+        try await post("workspaces/\(id)/unarchive")
+    }
+
+    public func deleteWorkspace(id: String) async throws {
+        _ = try await send(method: "DELETE", path: "workspaces/\(id)", body: nil as Never?)
+    }
+
+    public func workspaceSessions(
+        workspaceID: String,
+        includeArchived: Bool,
+        status: SessionStatus?
+    ) async throws -> [Session] {
+        var query: [URLQueryItem] = []
+        if includeArchived {
+            query.append(URLQueryItem(name: "includeArchived", value: "true"))
+        }
+        if let status {
+            query.append(URLQueryItem(name: "status", value: status.rawValue))
+        }
+        let envelope: SessionsEnvelope = try await get("workspaces/\(workspaceID)/sessions", query: query)
+        return envelope.sessions
     }
 
     public func projectSessions(

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -230,32 +231,25 @@ func TestProjectsArchiveAndUnarchivePostResourceRoutes(t *testing.T) {
 	}
 }
 
-func TestSessionsStartWithProjectSendsProjectIDAndNoDir(t *testing.T) {
+func TestProjectsDeleteUsesDeleteMethodAndPrintsFilesStatement(t *testing.T) {
 	lookup := testRuntimeLookup(t)
 	serveUnixAPI(t, lookup, func(w http.ResponseWriter, r *http.Request) {
-		var req map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode request: %v", err)
+		if r.Method != http.MethodDelete || r.URL.Path != "/api/projects/prj_123" {
+			t.Fatalf("request = %s %s, want DELETE /api/projects/prj_123", r.Method, r.URL.Path)
 		}
-		if req["projectId"] != "prj_123" {
-			t.Fatalf("projectId = %#v, want prj_123", req["projectId"])
-		}
-		if _, ok := req["workingDir"]; ok {
-			t.Fatalf("request = %#v, want no workingDir for project start", req)
-		}
-		_, _ = w.Write([]byte(`{"id":"ses_123","action":"codex","environment":"host-login-shell","params":{},"workingDir":"/repo","status":"running","attachable":true,"createdAt":"2026-07-07T15:04:05Z","updatedAt":"2026-07-07T15:04:06Z"}`))
+		_, _ = w.Write([]byte(`{}`))
 	})
 
-	cmd := sessionsCommand(lookup)
+	cmd := projectsCommand(lookup)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"start", "--action", "codex", "--project", "prj_123"})
+	cmd.SetArgs([]string{"delete", "prj_123"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
-	if got := out.String(); got != "ses_123\trunning\n" {
-		t.Fatalf("output = %q, want id and status", got)
+	if got := out.String(); !strings.Contains(got, "prj_123") || !strings.Contains(got, filesNotTouched) {
+		t.Fatalf("output = %q, want deleted id and files statement", got)
 	}
 }
 

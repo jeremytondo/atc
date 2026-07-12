@@ -13,6 +13,9 @@ import projectCreate from '../../../../packages/contracts/fixtures/project-creat
 import projectsList from '../../../../packages/contracts/fixtures/projects-list.json';
 import sessionStart from '../../../../packages/contracts/fixtures/session-start.json';
 import sessionsList from '../../../../packages/contracts/fixtures/sessions-list.json';
+import workspaceCreate from '../../../../packages/contracts/fixtures/workspace-create.json';
+import workspaceSessions from '../../../../packages/contracts/fixtures/workspace-sessions.json';
+import workspacesList from '../../../../packages/contracts/fixtures/workspaces-list.json';
 
 import {
   listActions,
@@ -22,6 +25,9 @@ import {
   createProject,
   listSessions,
   startSession,
+  listWorkspaces,
+  createWorkspace,
+  listWorkspaceSessions,
   type ActionDetail,
   type Environment,
   type ErrorResponse,
@@ -29,6 +35,7 @@ import {
   type SessionDetail,
   type SessionListItem,
   type StartSessionRequest,
+  type Workspace,
   type ApiError
 } from './api';
 
@@ -39,6 +46,9 @@ sessionStart.response satisfies SessionDetail;
 sessionStart.request satisfies StartSessionRequest;
 projectsList.response satisfies { projects: Project[] };
 projectCreate.response satisfies Project;
+workspacesList.response satisfies { workspaces: Workspace[] };
+workspaceCreate.response satisfies Workspace;
+workspaceSessions.response satisfies { sessions: SessionListItem[] };
 // actions-list is checked at runtime only: TS normalizes the two actions'
 // differing `params` literals into phantom `key?: undefined` members that a
 // Record index signature rejects.
@@ -70,6 +80,9 @@ describe('api client unwraps fixture responses', () => {
     const sessions = await listSessions();
     expect(sessions.map((s) => s.id)).toEqual(['ses_fixture01', 'ses_fixture02']);
     expect(sessions[0].project?.id).toBe('prj_fixture01');
+    expect(sessions[0].workspace?.id).toBe('wsp_fixture01');
+    // The second fixture session is an Interactive Shell: no action.
+    expect(sessions[1].action).toBeUndefined();
   });
 
   it('startSession returns the session detail', async () => {
@@ -77,6 +90,28 @@ describe('api client unwraps fixture responses', () => {
     const detail = await startSession(sessionStart.request);
     expect(detail.status).toBe('running');
     expect(detail.params).toEqual({ model: 'opus' });
+    expect(detail.workspace?.id).toBe('wsp_fixture01');
+  });
+
+  it('listWorkspaces returns the workspaces array', async () => {
+    mockFetch(workspacesList.response);
+    const workspaces = await listWorkspaces();
+    expect(workspaces).toHaveLength(2);
+    expect(workspaces[1].archivedAt).toBeDefined();
+  });
+
+  it('createWorkspace returns the workspace', async () => {
+    mockFetch(workspaceCreate.response, 201);
+    const workspace = await createWorkspace('prj_fixture01', 'Login bug');
+    expect(workspace.id).toBe('wsp_fixture01');
+    expect(workspace.projectId).toBe('prj_fixture01');
+  });
+
+  it('listWorkspaceSessions returns the sessions array', async () => {
+    mockFetch(workspaceSessions.response);
+    const sessions = await listWorkspaceSessions('wsp_fixture01');
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].workspace?.id).toBe('wsp_fixture01');
   });
 
   it('listProjects returns the projects array', async () => {

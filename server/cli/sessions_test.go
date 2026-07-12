@@ -16,7 +16,7 @@ import (
 	"github.com/jeremytondo/atc/internal/paths"
 )
 
-func TestSessionsStartPostsNewShape(t *testing.T) {
+func TestSessionsStartPostsWorkspaceShape(t *testing.T) {
 	lookup := testRuntimeLookup(t)
 	serveUnixAPI(t, lookup, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/sessions/start" {
@@ -26,20 +26,23 @@ func TestSessionsStartPostsNewShape(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if req["action"] != "codex" || req["environment"] != "host-login-shell" || req["workingDir"] != "/repo" || req["prompt"] != "review" || req["name"] != "Review" {
-			t.Fatalf("request = %#v, want new start shape", req)
+		if req["action"] != "codex" || req["environment"] != "host-login-shell" || req["workspaceId"] != "wsp_123" || req["prompt"] != "review" || req["name"] != "Review" {
+			t.Fatalf("request = %#v, want workspace start shape", req)
+		}
+		if _, ok := req["workingDir"]; ok {
+			t.Fatalf("request = %#v, want no workingDir", req)
 		}
 		params, ok := req["params"].(map[string]any)
 		if !ok || params["model"] != "gpt-5-codex" {
 			t.Fatalf("params = %#v, want model param", req["params"])
 		}
-		_, _ = w.Write([]byte(`{"id":"ses_123","action":"codex","environment":"host-login-shell","params":{"model":"gpt-5-codex"},"workingDir":"/repo","prompt":"review","status":"running","attachable":true,"createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z"}`))
+		_, _ = w.Write([]byte(`{"id":"ses_123","action":"codex","environment":"host-login-shell","params":{"model":"gpt-5-codex"},"workingDir":"/repo","prompt":"review","status":"running","attachable":true,"createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z","workspace":{"id":"wsp_123","name":"Review"}}`))
 	})
 
 	cmd := sessionsCommand(lookup)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"start", "--action", "codex", "--env", "host-login-shell", "--param", "model=gpt-5-codex", "--dir", "/repo", "--prompt", "review", "--name", "Review"})
+	cmd.SetArgs([]string{"start", "--workspace", "wsp_123", "--action", "codex", "--env", "host-login-shell", "--param", "model=gpt-5-codex", "--prompt", "review", "--name", "Review"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute returned error: %v", err)
@@ -49,47 +52,46 @@ func TestSessionsStartPostsNewShape(t *testing.T) {
 	}
 }
 
-func TestSessionsStartDefaultsDirToCurrentDirectory(t *testing.T) {
+func TestSessionsStartWithoutActionOmitsActionAndParams(t *testing.T) {
 	lookup := testRuntimeLookup(t)
-	wantDir := t.TempDir()
-	previousDir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("get cwd: %v", err)
-	}
-	if err := os.Chdir(wantDir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	wantRequestDir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("get changed cwd: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chdir(previousDir); err != nil {
-			t.Fatalf("restore cwd: %v", err)
-		}
-	})
-
 	serveUnixAPI(t, lookup, func(w http.ResponseWriter, r *http.Request) {
 		var req map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if req["workingDir"] != wantRequestDir {
-			t.Fatalf("workingDir = %#v, want %q", req["workingDir"], wantRequestDir)
+		if req["workspaceId"] != "wsp_123" {
+			t.Fatalf("workspaceId = %#v, want wsp_123", req["workspaceId"])
 		}
-		_, _ = w.Write([]byte(`{"id":"ses_123","action":"codex","environment":"host-login-shell","params":{},"workingDir":"` + wantRequestDir + `","status":"running","attachable":true,"createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z"}`))
+		// An interactive-shell start must not carry action or params keys.
+		if _, ok := req["action"]; ok {
+			t.Fatalf("request = %#v, want no action", req)
+		}
+		if _, ok := req["params"]; ok {
+			t.Fatalf("request = %#v, want no params", req)
+		}
+		_, _ = w.Write([]byte(`{"id":"ses_123","environment":"host-login-shell","params":{},"workingDir":"/repo","status":"running","attachable":true,"createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z","workspace":{"id":"wsp_123","name":"Shell"}}`))
 	})
 
 	cmd := sessionsCommand(lookup)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"start", "--action", "codex"})
+	cmd.SetArgs([]string{"start", "--workspace", "wsp_123"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
 	if got := out.String(); got != "ses_123\trunning\n" {
 		t.Fatalf("output = %q, want id and status", got)
+	}
+}
+
+func TestSessionsStartRequiresWorkspace(t *testing.T) {
+	cmd := sessionsCommand(testRuntimeLookup(t))
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"start", "--action", "codex"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("Execute succeeded without --workspace")
 	}
 }
 
@@ -184,6 +186,12 @@ func TestSessionActionsPostResourceRoutes(t *testing.T) {
 			path:     "/api/sessions/ses_123/archive",
 			wantBody: `{}`,
 		},
+		{
+			name:     "unarchive",
+			args:     []string{"unarchive", "ses_123"},
+			path:     "/api/sessions/ses_123/unarchive",
+			wantBody: `{}`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -215,6 +223,47 @@ func TestSessionActionsPostResourceRoutes(t *testing.T) {
 				t.Fatalf("output = %q, want affected id", got)
 			}
 		})
+	}
+}
+
+func TestSessionsListScopesToWorkspace(t *testing.T) {
+	lookup := testRuntimeLookup(t)
+	serveUnixAPI(t, lookup, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/workspaces/wsp_123/sessions" {
+			t.Fatalf("request = %s %s, want GET /api/workspaces/wsp_123/sessions", r.Method, r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"sessions":[]}`))
+	})
+
+	cmd := sessionsCommand(lookup)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list", "--workspace", "wsp_123"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+}
+
+func TestSessionsDeleteUsesDeleteMethodAndPrintsFilesStatement(t *testing.T) {
+	lookup := testRuntimeLookup(t)
+	serveUnixAPI(t, lookup, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/api/sessions/ses_123" {
+			t.Fatalf("request = %s %s, want DELETE /api/sessions/ses_123", r.Method, r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{}`))
+	})
+
+	cmd := sessionsCommand(lookup)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"delete", "ses_123"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if got := out.String(); !strings.Contains(got, "ses_123") || !strings.Contains(got, filesNotTouched) {
+		t.Fatalf("output = %q, want deleted id and files statement", got)
 	}
 }
 

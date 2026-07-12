@@ -7,24 +7,26 @@ public enum SessionStatus: String, Codable, Sendable, CaseIterable, Hashable {
     case terminated
 }
 
-/// Project reference nested on project-scoped sessions. Present on session
-/// list items and detail only when the session belongs to a project.
+/// Workspace reference nested on sessions.
+public struct SessionWorkspace: Codable, Sendable, Hashable, Identifiable {
+    public var id: String
+    public var name: String
+
+    public init(id: String, name: String) {
+        self.id = id
+        self.name = name
+    }
+}
+
+/// Derived project reference nested on sessions, reached through the
+/// session's workspace — kept so clients that group by project keep working.
 public struct SessionProject: Codable, Sendable, Hashable, Identifiable {
     public var id: String
     public var name: String
-    public var workingDir: String
-    public var archivedAt: Date?
 
-    public init(
-        id: String,
-        name: String,
-        workingDir: String,
-        archivedAt: Date? = nil
-    ) {
+    public init(id: String, name: String) {
         self.id = id
         self.name = name
-        self.workingDir = workingDir
-        self.archivedAt = archivedAt
     }
 }
 
@@ -32,7 +34,8 @@ public struct SessionProject: Codable, Sendable, Hashable, Identifiable {
 public struct Session: Codable, Sendable, Hashable, Identifiable {
     public var id: String
     public var name: String?
-    public var action: String
+    /// The launch action; nil means the Interactive Shell.
+    public var action: String?
     public var environment: String
     public var workingDir: String
     public var status: SessionStatus
@@ -43,14 +46,15 @@ public struct Session: Codable, Sendable, Hashable, Identifiable {
     public var updatedAt: Date
     public var terminatedAt: Date?
     public var archivedAt: Date?
-    /// The project this session is scoped to, if any (legacy/unscoped
-    /// sessions have none).
+    /// The workspace this session belongs to.
+    public var workspace: SessionWorkspace?
+    /// The workspace's project, derived server-side.
     public var project: SessionProject?
 
     public init(
         id: String,
         name: String? = nil,
-        action: String,
+        action: String? = nil,
         environment: String,
         workingDir: String,
         status: SessionStatus,
@@ -61,6 +65,7 @@ public struct Session: Codable, Sendable, Hashable, Identifiable {
         updatedAt: Date,
         terminatedAt: Date? = nil,
         archivedAt: Date? = nil,
+        workspace: SessionWorkspace? = nil,
         project: SessionProject? = nil
     ) {
         self.id = id
@@ -76,24 +81,31 @@ public struct Session: Codable, Sendable, Hashable, Identifiable {
         self.updatedAt = updatedAt
         self.terminatedAt = terminatedAt
         self.archivedAt = archivedAt
+        self.workspace = workspace
         self.project = project
     }
 
     /// Archived is not a status — it's a non-null `archivedAt`.
     public var isArchived: Bool { archivedAt != nil }
 
-    /// Best display name: user-given name, else the action.
+    /// Human label for what the session launched: the action name, or
+    /// "Shell" for the Interactive Shell.
+    public var actionLabel: String { action ?? "Shell" }
+
+    /// Best display name: user-given name, else what was launched.
     public var displayName: String {
         if let name, !name.isEmpty { return name }
-        return action
+        return actionLabel
     }
 }
 
-/// `GET /api/sessions/{id}` and the response of start/terminate/archive.
+/// `GET /api/sessions/{id}` and the response of start/terminate/archive/
+/// unarchive.
 public struct SessionDetail: Codable, Sendable, Hashable, Identifiable {
     public var id: String
     public var name: String?
-    public var action: String
+    /// The launch action; nil means the Interactive Shell.
+    public var action: String?
     public var environment: String
     public var params: [String: JSONValue]?
     public var workingDir: String
@@ -106,8 +118,9 @@ public struct SessionDetail: Codable, Sendable, Hashable, Identifiable {
     public var updatedAt: Date
     public var terminatedAt: Date?
     public var archivedAt: Date?
-    /// The project this session is scoped to, if any (legacy/unscoped
-    /// sessions have none).
+    /// The workspace this session belongs to.
+    public var workspace: SessionWorkspace?
+    /// The workspace's project, derived server-side.
     public var project: SessionProject?
 
     public var isArchived: Bool { archivedAt != nil }
@@ -129,6 +142,7 @@ public struct SessionDetail: Codable, Sendable, Hashable, Identifiable {
             updatedAt: updatedAt,
             terminatedAt: terminatedAt,
             archivedAt: archivedAt,
+            workspace: workspace,
             project: project
         )
     }

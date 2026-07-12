@@ -71,13 +71,37 @@ nonisolated struct MockATCClient: ATCClient {
         ),
     ]
 
-    /// Nested project refs derived from `mockProjects`, for tagging sessions.
-    private static let atelierRef = SessionProject(
-        id: "prj_atelier", name: "Atelier", workingDir: "/home/dev/Projects/atelier"
-    )
-    private static let blazerrRef = SessionProject(
-        id: "prj_blazerr", name: "Blazerr", workingDir: "/home/dev/Projects/huge"
-    )
+    /// Stable-ID workspace fixtures, two per active project.
+    var mockWorkspaces: [Workspace] = [
+        Workspace(
+            id: "wsp_parser",
+            projectId: "prj_atelier",
+            name: "Parser fixes",
+            createdAt: Date(timeIntervalSinceNow: -200000),
+            updatedAt: Date(timeIntervalSinceNow: -60)
+        ),
+        Workspace(
+            id: "wsp_refactor",
+            projectId: "prj_atelier",
+            name: "Refactor",
+            createdAt: Date(timeIntervalSinceNow: -90000),
+            updatedAt: Date(timeIntervalSinceNow: -86400)
+        ),
+        Workspace(
+            id: "wsp_blazerr",
+            projectId: "prj_blazerr",
+            name: "Spike",
+            createdAt: Date(timeIntervalSinceNow: -150000),
+            updatedAt: Date(timeIntervalSinceNow: -30)
+        ),
+    ]
+
+    /// Nested refs derived from the fixtures above, for tagging sessions.
+    private static let atelierRef = SessionProject(id: "prj_atelier", name: "Atelier")
+    private static let blazerrRef = SessionProject(id: "prj_blazerr", name: "Blazerr")
+    private static let parserRef = SessionWorkspace(id: "wsp_parser", name: "Parser fixes")
+    private static let refactorRef = SessionWorkspace(id: "wsp_refactor", name: "Refactor")
+    private static let blazerrWorkspaceRef = SessionWorkspace(id: "wsp_blazerr", name: "Spike")
 
     var mockSessions: [Session] = [
         Session(
@@ -90,6 +114,7 @@ nonisolated struct MockATCClient: ATCClient {
             attachable: true,
             createdAt: Date(timeIntervalSinceNow: -3600),
             updatedAt: Date(timeIntervalSinceNow: -60),
+            workspace: MockATCClient.parserRef,
             project: MockATCClient.atelierRef
         ),
         Session(
@@ -101,6 +126,7 @@ nonisolated struct MockATCClient: ATCClient {
             attachable: false,
             createdAt: Date(timeIntervalSinceNow: -30),
             updatedAt: Date(timeIntervalSinceNow: -30),
+            workspace: MockATCClient.blazerrWorkspaceRef,
             project: MockATCClient.blazerrRef
         ),
         Session(
@@ -126,6 +152,7 @@ nonisolated struct MockATCClient: ATCClient {
             createdAt: Date(timeIntervalSinceNow: -90000),
             updatedAt: Date(timeIntervalSinceNow: -86400),
             terminatedAt: Date(timeIntervalSinceNow: -86400),
+            workspace: MockATCClient.refactorRef,
             project: MockATCClient.atelierRef
         ),
     ]
@@ -148,51 +175,33 @@ nonisolated struct MockATCClient: ATCClient {
     }
 
     func startSession(_ request: StartSessionRequest) async throws -> SessionDetail {
-        // Mirror the server's XOR rule so previews/tests fail where the
-        // real server would.
-        let hasWorkingDir = !(request.workingDir ?? "").trimmingCharacters(in: .whitespaces).isEmpty
-        let hasProject = !(request.projectId ?? "").trimmingCharacters(in: .whitespaces).isEmpty
-        guard hasWorkingDir != hasProject else {
+        // Mirror the server's workspace rules so previews/tests fail where
+        // the real server would.
+        guard !request.workspaceId.trimmingCharacters(in: .whitespaces).isEmpty else {
             throw ATCError.api(
-                code: "invalid_request",
-                message: hasWorkingDir
-                    ? "workingDir and projectId are mutually exclusive"
-                    : "workingDir or projectId is required",
-                sessionID: nil
+                code: "invalid_request", message: "workspaceId is required", sessionID: nil
             )
         }
-        var workingDir = request.workingDir ?? ""
-        var projectRef: SessionProject?
-        if let projectId = request.projectId {
-            guard let project = mockProjects.first(where: { $0.id == projectId }) else {
-                throw ATCError.api(
-                    code: "project_not_found", message: "project not found: \(projectId)", sessionID: nil
-                )
-            }
-            guard !project.isArchived else {
-                throw ATCError.api(
-                    code: "project_archived", message: "project is archived: \(projectId)", sessionID: nil
-                )
-            }
-            workingDir = project.workingDir
-            projectRef = SessionProject(
-                id: project.id,
-                name: project.name,
-                workingDir: project.workingDir,
-                archivedAt: project.archivedAt
+        let workspace = try lookupWorkspace(request.workspaceId)
+        guard !workspace.isArchived else {
+            throw ATCError.api(
+                code: "workspace_archived",
+                message: "workspace is archived: \(workspace.id)", sessionID: nil
             )
         }
+        let project = try lookupProject(workspace.projectId)
         let session = Session(
             id: "ses_" + String(UUID().uuidString.lowercased().prefix(8)),
             name: request.name,
             action: request.action,
             environment: request.environment ?? "host-login-shell",
-            workingDir: workingDir,
+            workingDir: project.workingDir,
             status: .starting,
             attachable: false,
             createdAt: Date(),
             updatedAt: Date(),
-            project: projectRef
+            workspace: SessionWorkspace(id: workspace.id, name: workspace.name),
+            project: SessionProject(id: project.id, name: project.name)
         )
         return detail(from: session)
     }
@@ -212,6 +221,16 @@ nonisolated struct MockATCClient: ATCClient {
         }
         session.archivedAt = Date()
         return session
+    }
+
+    func unarchiveSession(id: String) async throws -> SessionDetail {
+        var session = try await self.session(id: id)
+        session.archivedAt = nil
+        return session
+    }
+
+    func deleteSession(id: String) async throws {
+        _ = try await self.session(id: id)
     }
 
     func sendText(sessionID: String, text: String) async throws {}
@@ -309,6 +328,94 @@ nonisolated struct MockATCClient: ATCClient {
                 && (includeArchived || !session.isArchived)
                 && (status == nil || session.status == status)
         }
+    }
+
+    func deleteProject(id: String) async throws {
+        let project = try lookupProject(id)
+        guard !mockWorkspaces.contains(where: { $0.projectId == project.id }) else {
+            throw ATCError.api(
+                code: "project_has_workspaces",
+                message: "project has workspaces: \(id)", sessionID: nil
+            )
+        }
+    }
+
+    // MARK: - Workspaces
+
+    func workspaces(projectID: String?, includeArchived: Bool) async throws -> [Workspace] {
+        mockWorkspaces.filter { workspace in
+            (projectID == nil || workspace.projectId == projectID)
+                && (includeArchived || !workspace.isArchived)
+        }
+    }
+
+    func workspace(id: String) async throws -> Workspace {
+        try lookupWorkspace(id)
+    }
+
+    func createWorkspace(projectID: String, name: String) async throws -> Workspace {
+        let project = try lookupProject(projectID)
+        guard !project.isArchived else {
+            throw ATCError.api(
+                code: "project_archived", message: "project is archived: \(projectID)", sessionID: nil
+            )
+        }
+        // Unique id per call, same fidelity limit as mock project creates:
+        // the value type means it vanishes on the next refresh.
+        return Workspace(
+            id: "wsp_" + String(UUID().uuidString.lowercased().prefix(8)),
+            projectId: projectID,
+            name: name,
+            createdAt: Date(),
+            updatedAt: Date()
+        )
+    }
+
+    func renameWorkspace(id: String, name: String) async throws -> Workspace {
+        var workspace = try lookupWorkspace(id)
+        workspace.name = name
+        workspace.updatedAt = Date()
+        return workspace
+    }
+
+    func archiveWorkspace(id: String) async throws -> Workspace {
+        var workspace = try lookupWorkspace(id)
+        workspace.archivedAt = Date()
+        workspace.updatedAt = Date()
+        return workspace
+    }
+
+    func unarchiveWorkspace(id: String) async throws -> Workspace {
+        var workspace = try lookupWorkspace(id)
+        workspace.archivedAt = nil
+        workspace.updatedAt = Date()
+        return workspace
+    }
+
+    func deleteWorkspace(id: String) async throws {
+        _ = try lookupWorkspace(id)
+    }
+
+    func workspaceSessions(
+        workspaceID: String,
+        includeArchived: Bool,
+        status: SessionStatus?
+    ) async throws -> [Session] {
+        _ = try lookupWorkspace(workspaceID)
+        return mockSessions.filter { session in
+            session.workspace?.id == workspaceID
+                && (includeArchived || !session.isArchived)
+                && (status == nil || session.status == status)
+        }
+    }
+
+    private func lookupWorkspace(_ id: String) throws -> Workspace {
+        guard let workspace = mockWorkspaces.first(where: { $0.id == id }) else {
+            throw ATCError.api(
+                code: "workspace_not_found", message: "workspace not found: \(id)", sessionID: nil
+            )
+        }
+        return workspace
     }
 
     private func lookupProject(_ id: String) throws -> Project {

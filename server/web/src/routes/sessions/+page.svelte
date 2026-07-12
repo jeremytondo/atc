@@ -4,6 +4,9 @@
     listSessions,
     terminateSession,
     archiveSession,
+    unarchiveSession,
+    deleteSession,
+    sessionActionLabel,
     messageFromError,
     type SessionListItem
   } from '$lib/api';
@@ -105,6 +108,39 @@
     }
   }
 
+  async function unarchive(id: string) {
+    busyId = id;
+    error = '';
+    try {
+      await unarchiveSession(id);
+      await load();
+    } catch (e) {
+      error = messageFromError(e);
+    } finally {
+      busyId = '';
+    }
+  }
+
+  async function remove(s: SessionListItem) {
+    const label = s.name?.trim() || s.id;
+    const ok = confirm(
+      `Delete session "${label}"?\n\n` +
+        `The session is stopped if it is still running and its record is removed. ` +
+        `Files on disk are not touched.`
+    );
+    if (!ok) return;
+    busyId = s.id;
+    error = '';
+    try {
+      await deleteSession(s.id);
+      await load();
+    } catch (e) {
+      error = messageFromError(e);
+    } finally {
+      busyId = '';
+    }
+  }
+
   onMount(load);
 </script>
 
@@ -169,7 +205,14 @@
                 style="color:var(--dc-acc);text-decoration:none">{s.project.name}</a
               >
             {/if}
-            <span class="badge">{s.action}</span>
+            {#if s.workspace}
+              <a
+                class="badge"
+                href={`/workspaces/${encodeURIComponent(s.workspace.id)}`}
+                style="color:var(--dc-acc);text-decoration:none">{s.workspace.name}</a
+              >
+            {/if}
+            <span class="badge">{sessionActionLabel(s)}</span>
             <span class="badge" style="color:var(--dc-dim)">{s.environment}</span>
             <span class="stime">{timeAgo(s.createdAt)}</span>
             <div class="iacts">
@@ -181,11 +224,19 @@
                   >Stop</button
                 >
               {/if}
-              {#if s.status === 'failed' || s.status === 'terminated'}
+              {#if (s.status === 'failed' || s.status === 'terminated') && !s.archivedAt}
                 <button class="btn xs" onclick={() => archive(s.id)} disabled={busyId === s.id}
                   >Archive</button
                 >
               {/if}
+              {#if s.archivedAt}
+                <button class="btn xs" onclick={() => unarchive(s.id)} disabled={busyId === s.id}
+                  >Unarchive</button
+                >
+              {/if}
+              <button class="btn xs" onclick={() => remove(s)} disabled={busyId === s.id}
+                >Delete</button
+              >
             </div>
           </div>
         </div>

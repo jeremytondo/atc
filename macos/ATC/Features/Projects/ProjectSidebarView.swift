@@ -319,7 +319,7 @@ struct SidebarGroups {
         func matches(_ session: Session) -> Bool {
             session.displayName.localizedCaseInsensitiveContains(searchText)
                 || session.workingDir.localizedCaseInsensitiveContains(searchText)
-                || session.action.localizedCaseInsensitiveContains(searchText)
+                || session.actionLabel.localizedCaseInsensitiveContains(searchText)
         }
         func matches(_ project: Project) -> Bool {
             project.name.localizedCaseInsensitiveContains(searchText)

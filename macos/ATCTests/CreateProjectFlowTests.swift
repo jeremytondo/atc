@@ -33,6 +33,8 @@ private nonisolated final class RecordingClient: ATCClient, @unchecked Sendable 
     func session(id: String) async throws -> SessionDetail { try await inner.session(id: id) }
     func terminateSession(id: String) async throws -> SessionDetail { try await inner.terminateSession(id: id) }
     func archiveSession(id: String) async throws -> SessionDetail { try await inner.archiveSession(id: id) }
+    func unarchiveSession(id: String) async throws -> SessionDetail { try await inner.unarchiveSession(id: id) }
+    func deleteSession(id: String) async throws { try await inner.deleteSession(id: id) }
     func sendText(sessionID: String, text: String) async throws {}
     func sendKey(sessionID: String, key: String) async throws {}
     func actions() async throws -> [ATCAction] { try await inner.actions() }
@@ -62,6 +64,23 @@ private nonisolated final class RecordingClient: ATCClient, @unchecked Sendable 
     func unarchiveProject(id: String) async throws -> Project { try await inner.unarchiveProject(id: id) }
     func projectSessions(projectID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session] {
         try await inner.projectSessions(projectID: projectID, includeArchived: includeArchived, status: status)
+    }
+    func deleteProject(id: String) async throws { try await inner.deleteProject(id: id) }
+    func workspaces(projectID: String?, includeArchived: Bool) async throws -> [Workspace] {
+        try await inner.workspaces(projectID: projectID, includeArchived: includeArchived)
+    }
+    func workspace(id: String) async throws -> Workspace { try await inner.workspace(id: id) }
+    func createWorkspace(projectID: String, name: String) async throws -> Workspace {
+        try await inner.createWorkspace(projectID: projectID, name: name)
+    }
+    func renameWorkspace(id: String, name: String) async throws -> Workspace {
+        try await inner.renameWorkspace(id: id, name: name)
+    }
+    func archiveWorkspace(id: String) async throws -> Workspace { try await inner.archiveWorkspace(id: id) }
+    func unarchiveWorkspace(id: String) async throws -> Workspace { try await inner.unarchiveWorkspace(id: id) }
+    func deleteWorkspace(id: String) async throws { try await inner.deleteWorkspace(id: id) }
+    func workspaceSessions(workspaceID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session] {
+        try await inner.workspaceSessions(workspaceID: workspaceID, includeArchived: includeArchived, status: status)
     }
     func attachURL(sessionID: String) -> URL { inner.attachURL(sessionID: sessionID) }
     func attachHeaders() -> [String: String] { inner.attachHeaders() }
@@ -158,11 +177,11 @@ struct CreateProjectFlowTests {
             (name: "B", client: clientB),
         ])
         let runtimeB = model.runtimes[1]
-        let request = StartSessionRequest(action: "claude", projectId: "prj_atelier", name: nil)
+        let request = StartSessionRequest(workspaceId: "wsp_parser", action: "claude", name: nil)
         _ = try await runtimeB.sessions.start(request)
 
         #expect(clientB.startedSessions.count == 1)
-        #expect(clientB.startedSessions.first?.projectId == "prj_atelier")
+        #expect(clientB.startedSessions.first?.workspaceId == "wsp_parser")
         #expect(clientA.startedSessions.isEmpty)
     }
 }

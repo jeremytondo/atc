@@ -82,17 +82,12 @@ struct ContentView: View {
     /// the sidebar and disables instead.
     private var newSessionTarget: NewSessionContext? {
         guard let selection = appModel.selection,
-              let ref = selectedSession?.project else { return nil }
-        let project = appModel.runtime(id: selection.connectionID)?.projects.project(id: ref.id)
-            ?? Project(
-                id: ref.id,
-                name: ref.name,
-                workingDir: ref.workingDir,
-                createdAt: .now,
-                updatedAt: .now,
-                archivedAt: ref.archivedAt
-            )
-        guard !project.isArchived else { return nil }
+              let ref = selectedSession?.project,
+              // The derived ref is only {id, name}; the full record (working
+              // directory, archive state) must come from the runtime's store.
+              let project = appModel.runtime(id: selection.connectionID)?.projects.project(id: ref.id),
+              !project.isArchived
+        else { return nil }
         return NewSessionContext(connectionID: selection.connectionID, project: project)
     }
 

@@ -33,17 +33,29 @@ struct ContractFixtureTests {
         let sessions = try decodeResponse("sessions-list", as: SessionsEnvelope.self).sessions
         #expect(sessions.count == 2)
         #expect(sessions[0].status == .running)
+        #expect(sessions[0].workspace?.id == "wsp_fixture01")
         #expect(sessions[0].project?.id == "prj_fixture01")
+        // The second session is an Interactive Shell: no action on the wire.
+        #expect(sessions[1].action == nil)
+        #expect(sessions[1].displayName == "Shell")
         #expect(sessions[1].status == .failed)
         #expect(sessions[1].failureCode == "launch_failed")
         #expect(sessions[1].isArchived)
     }
 
-    @Test("session detail", arguments: ["session-detail", "session-start"])
+    @Test("session detail", arguments: ["session-detail", "session-start", "session-unarchive"])
     func sessionDetail(fixture: String) throws {
         let detail = try decodeResponse(fixture, as: SessionDetail.self)
         #expect(!detail.id.isEmpty)
+        #expect(detail.workspace != nil)
         #expect(detail.project != nil)
+    }
+
+    @Test("workspace sessions list")
+    func workspaceSessions() throws {
+        let sessions = try decodeResponse("workspace-sessions", as: SessionsEnvelope.self).sessions
+        #expect(sessions.count == 1)
+        #expect(sessions[0].workspace?.id == "wsp_fixture01")
     }
 
     @Test("projects list")
@@ -61,10 +73,29 @@ struct ContractFixtureTests {
         #expect(!project.workingDir.isEmpty)
     }
 
+    @Test("workspaces list")
+    func workspacesList() throws {
+        let workspaces = try decodeResponse("workspaces-list", as: WorkspacesEnvelope.self).workspaces
+        #expect(workspaces.count == 2)
+        #expect(!workspaces[0].isArchived)
+        #expect(workspaces[0].projectId == "prj_fixture01")
+        #expect(workspaces[1].isArchived)
+    }
+
+    @Test("workspace detail", arguments: ["workspace-detail", "workspace-create", "workspace-rename"])
+    func workspaceDetail(fixture: String) throws {
+        let workspace = try decodeResponse(fixture, as: Workspace.self)
+        #expect(!workspace.id.isEmpty)
+        #expect(!workspace.projectId.isEmpty)
+        #expect(!workspace.name.isEmpty)
+    }
+
     @Test("actions list")
     func actionsList() throws {
         let actions = try decodeResponse("actions-list", as: ActionsEnvelope.self).actions
         #expect(actions.count == 2)
+        #expect(actions[0].isAgent)
+        #expect(actions[1].type == "action")
         #expect(actions[0].isModified)
         #expect(actions[0].acceptsPrompt)
         #expect(actions[0].params["model"]?.isEnum == true)

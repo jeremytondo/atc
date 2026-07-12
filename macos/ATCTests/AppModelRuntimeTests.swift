@@ -48,6 +48,12 @@ private nonisolated final class ScriptableClient: ATCClient, @unchecked Sendable
     func archiveSession(id: String) async throws -> SessionDetail {
         try await gate(); return try await inner.archiveSession(id: id)
     }
+    func unarchiveSession(id: String) async throws -> SessionDetail {
+        try await gate(); return try await inner.unarchiveSession(id: id)
+    }
+    func deleteSession(id: String) async throws {
+        try await gate(); try await inner.deleteSession(id: id)
+    }
     func sendText(sessionID: String, text: String) async throws { try await gate() }
     func sendKey(sessionID: String, key: String) async throws { try await gate() }
     func actions() async throws -> [ATCAction] { try await gate(); return try await inner.actions() }
@@ -92,6 +98,37 @@ private nonisolated final class ScriptableClient: ATCClient, @unchecked Sendable
         try await gate()
         return try await inner.projectSessions(
             projectID: projectID, includeArchived: includeArchived, status: status
+        )
+    }
+    func deleteProject(id: String) async throws {
+        try await gate(); try await inner.deleteProject(id: id)
+    }
+    func workspaces(projectID: String?, includeArchived: Bool) async throws -> [Workspace] {
+        try await gate()
+        return try await inner.workspaces(projectID: projectID, includeArchived: includeArchived)
+    }
+    func workspace(id: String) async throws -> Workspace {
+        try await gate(); return try await inner.workspace(id: id)
+    }
+    func createWorkspace(projectID: String, name: String) async throws -> Workspace {
+        try await gate(); return try await inner.createWorkspace(projectID: projectID, name: name)
+    }
+    func renameWorkspace(id: String, name: String) async throws -> Workspace {
+        try await gate(); return try await inner.renameWorkspace(id: id, name: name)
+    }
+    func archiveWorkspace(id: String) async throws -> Workspace {
+        try await gate(); return try await inner.archiveWorkspace(id: id)
+    }
+    func unarchiveWorkspace(id: String) async throws -> Workspace {
+        try await gate(); return try await inner.unarchiveWorkspace(id: id)
+    }
+    func deleteWorkspace(id: String) async throws {
+        try await gate(); try await inner.deleteWorkspace(id: id)
+    }
+    func workspaceSessions(workspaceID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session] {
+        try await gate()
+        return try await inner.workspaceSessions(
+            workspaceID: workspaceID, includeArchived: includeArchived, status: status
         )
     }
     func attachURL(sessionID: String) -> URL { inner.attachURL(sessionID: sessionID) }

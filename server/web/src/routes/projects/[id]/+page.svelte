@@ -1,54 +1,54 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { page } from '$app/state';
+  import { goto } from '$app/navigation';
   import {
     getProject,
     renameProject,
     archiveProject,
     unarchiveProject,
+    deleteProject,
     listProjectSessions,
-    listActions,
-    listEnvironments,
-    startSession,
+    listWorkspaces,
+    createWorkspace,
+    renameWorkspace,
+    archiveWorkspace,
+    unarchiveWorkspace,
+    deleteWorkspace,
+    listWorkspaceSessions,
+    sessionActionLabel,
     messageFromError,
     type Project,
     type SessionListItem,
-    type Action,
-    type Environment
+    type Workspace
   } from '$lib/api';
   import ErrorBanner from '$lib/error-banner.svelte';
   import ProjectEditor from '$lib/projects/project-editor.svelte';
+  import WorkspaceEditor from '$lib/workspaces/workspace-editor.svelte';
 
   const projectId = $derived(page.params.id ?? '');
 
   let project = $state<Project | null>(null);
+  let workspaces = $state<Workspace[]>([]);
   let sessions = $state<SessionListItem[]>([]);
-  let actions = $state<Action[]>([]);
-  let environments = $state<Environment[]>([]);
   let loading = $state(false);
   let error = $state('');
   let busy = $state(false);
+  let busyWorkspaceId = $state('');
   let includeArchived = $state(false);
+  let includeArchivedWorkspaces = $state(false);
 
   let renameOpen = $state(false);
   let saving = $state(false);
   let saveError = $state('');
 
-  // Start Session form state. Params reset whenever the action changes because
-  // each action declares its own spec.
-  let startAction = $state('');
-  let startEnvironment = $state('');
-  let startName = $state('');
-  let startPrompt = $state('');
-  let startParams = $state<Record<string, string>>({});
-  let starting = $state(false);
-  let startError = $state('');
-
-  let enabledActions = $derived(actions.filter((a) => a.enabled !== false));
-  let selectedAction = $derived(enabledActions.find((a) => a.name === startAction) ?? null);
-  let selectedParams = $derived(
-    Object.entries(selectedAction?.params ?? {}).sort(([a], [b]) => a.localeCompare(b))
-  );
+  // Workspace editor state: mode plus the workspace being renamed (null for
+  // create).
+  let workspaceEditorOpen = $state(false);
+  let workspaceEditorMode = $state<'create' | 'rename'>('create');
+  let workspaceEditorSource = $state<Workspace | null>(null);
+  let workspaceSaving = $state(false);
+  let workspaceSaveError = $state('');
 
   function dotColor(status: string) {
     return (
@@ -80,25 +80,19 @@
     sessions = await listProjectSessions(projectId, { includeArchived });
   }
 
+  async function loadWorkspaces() {
+    workspaces = await listWorkspaces({
+      projectId,
+      includeArchived: includeArchivedWorkspaces
+    });
+  }
+
   async function load() {
     loading = true;
     error = '';
     try {
-      const [got, acts, envs] = await Promise.all([
-        getProject(projectId),
-        listActions(),
-        listEnvironments()
-      ]);
-      project = got;
-      actions = acts;
-      environments = envs;
-      if (!startAction) {
-        startAction = acts.find((a) => a.enabled !== false)?.name ?? '';
-      }
-      if (!startEnvironment) {
-        startEnvironment = envs.find((e) => e.default)?.name ?? envs[0]?.name ?? '';
-      }
-      await loadSessions();
+      project = await getProject(projectId);
+      await Promise.all([loadWorkspaces(), loadSessions()]);
     } catch (e) {
       error = messageFromError(e);
     } finally {
@@ -111,10 +105,9 @@
     void loadSessions().catch((e) => (error = messageFromError(e)));
   }
 
-  function onActionChange(event: Event) {
-    startAction = (event.currentTarget as HTMLSelectElement).value;
-    startParams = {};
-    startError = '';
+  function toggleArchivedWorkspaces() {
+    includeArchivedWorkspaces = !includeArchivedWorkspaces;
+    void loadWorkspaces().catch((e) => (error = messageFromError(e)));
   }
 
   async function archiveToggle() {
@@ -125,6 +118,26 @@
       project = project.archivedAt
         ? await unarchiveProject(project.id)
         : await archiveProject(project.id);
+    } catch (e) {
+      error = messageFromError(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function removeProject() {
+    if (!project) return;
+    const ok = confirm(
+      `Delete project "${project.name}"?\n\n` +
+        `Only the project record is removed; a project with workspaces cannot be deleted. ` +
+        `Files on disk are not touched.`
+    );
+    if (!ok) return;
+    busy = true;
+    error = '';
+    try {
+      await deleteProject(project.id);
+      await goto('/projects');
     } catch (e) {
       error = messageFromError(e);
     } finally {
@@ -152,30 +165,86 @@
     }
   }
 
-  async function start() {
-    if (!project || !startAction || starting) return;
-    starting = true;
-    startError = '';
+  function openNewWorkspace() {
+    workspaceEditorMode = 'create';
+    workspaceEditorSource = null;
+    workspaceSaveError = '';
+    workspaceEditorOpen = true;
+  }
+
+  function openRenameWorkspace(ws: Workspace) {
+    workspaceEditorMode = 'rename';
+    workspaceEditorSource = ws;
+    workspaceSaveError = '';
+    workspaceEditorOpen = true;
+  }
+
+  function closeWorkspaceEditor() {
+    workspaceEditorOpen = false;
+    workspaceSaving = false;
+    workspaceSaveError = '';
+  }
+
+  async function saveWorkspace(values: { name: string }) {
+    workspaceSaving = true;
+    workspaceSaveError = '';
     try {
-      const params: Record<string, string> = {};
-      for (const [key, value] of Object.entries(startParams)) {
-        if (value !== '') params[key] = value;
+      if (workspaceEditorMode === 'create') {
+        await createWorkspace(projectId, values.name);
+      } else if (workspaceEditorSource) {
+        await renameWorkspace(workspaceEditorSource.id, values.name);
       }
-      await startSession({
-        action: startAction,
-        environment: startEnvironment || undefined,
-        params: Object.keys(params).length > 0 ? params : undefined,
-        name: startName.trim() || undefined,
-        prompt: startPrompt.trim() || undefined,
-        projectId: project.id
-      });
-      startName = '';
-      startPrompt = '';
-      await loadSessions();
+      await loadWorkspaces();
+      closeWorkspaceEditor();
     } catch (e) {
-      startError = messageFromError(e);
+      workspaceSaveError = messageFromError(e);
     } finally {
-      starting = false;
+      workspaceSaving = false;
+    }
+  }
+
+  async function workspaceArchiveToggle(ws: Workspace) {
+    busyWorkspaceId = ws.id;
+    error = '';
+    try {
+      if (ws.archivedAt) {
+        await unarchiveWorkspace(ws.id);
+      } else {
+        await archiveWorkspace(ws.id);
+      }
+      await loadWorkspaces();
+    } catch (e) {
+      error = messageFromError(e);
+    } finally {
+      busyWorkspaceId = '';
+    }
+  }
+
+  async function removeWorkspace(ws: Workspace) {
+    busyWorkspaceId = ws.id;
+    error = '';
+    try {
+      // Count the sessions the delete will remove so the confirmation is
+      // honest about scope; a lookup failure falls back to an uncounted
+      // message rather than blocking the delete.
+      let sessionNote = 'Its session history is removed';
+      try {
+        const affected = await listWorkspaceSessions(ws.id, { includeArchived: true });
+        sessionNote = `${affected.length} session${affected.length === 1 ? '' : 's'} will be stopped and removed`;
+      } catch {
+        // Deliberately non-fatal: the confirmation still states the effect.
+      }
+      const ok = confirm(
+        `Delete workspace "${ws.name}"?\n\n` +
+          `${sessionNote}. Files on disk are not touched.`
+      );
+      if (!ok) return;
+      await deleteWorkspace(ws.id);
+      await Promise.all([loadWorkspaces(), loadSessions()]);
+    } catch (e) {
+      error = messageFromError(e);
+    } finally {
+      busyWorkspaceId = '';
     }
   }
 
@@ -209,6 +278,7 @@
         <button class="btn" onclick={archiveToggle} disabled={busy}>
           {project.archivedAt ? 'Unarchive' : 'Archive'}
         </button>
+        <button class="btn" onclick={removeProject} disabled={busy}>Delete</button>
       </div>
     </div>
     <p class="lede" style="margin-bottom:20px">
@@ -240,93 +310,65 @@
       {/if}
     </div>
 
-    {#if !project.archivedAt}
-      <div class="seclabel">Start session</div>
-      <div class="card" style="padding:16px;margin-bottom:26px">
-        <div class="fieldgrid" style="margin-bottom:12px">
-          <div>
-            <label class="lbl" for="start-action">Action</label>
-            <select id="start-action" class="sel" value={startAction} onchange={onActionChange}>
-              {#each enabledActions as a (a.name)}
-                <option value={a.name}>{a.label || a.name}</option>
-              {/each}
-            </select>
-          </div>
-          <div>
-            <label class="lbl" for="start-env">Environment</label>
-            <select
-              id="start-env"
-              class="sel"
-              value={startEnvironment}
-              onchange={(e) => (startEnvironment = e.currentTarget.value)}
-            >
-              {#each environments as env (env.name)}
-                <option value={env.name}>{env.label || env.name}</option>
-              {/each}
-            </select>
-          </div>
-        </div>
-        <div style="margin-bottom:12px">
-          <label class="lbl" for="start-name">Name</label>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <div class="seclabel" style="margin:0">Workspaces</div>
+      <div style="display:flex;align-items:center;gap:14px">
+        <label
+          style="display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--dc-mut);cursor:pointer"
+        >
           <input
-            id="start-name"
-            class="inp"
-            value={startName}
-            oninput={(e) => (startName = e.currentTarget.value)}
-            placeholder="optional"
+            type="checkbox"
+            checked={includeArchivedWorkspaces}
+            onchange={toggleArchivedWorkspaces}
           />
-        </div>
-        {#if selectedAction?.prompt}
-          <div style="margin-bottom:12px">
-            <label class="lbl" for="start-prompt">Prompt</label>
-            <textarea
-              id="start-prompt"
-              class="ta"
-              value={startPrompt}
-              oninput={(e) => (startPrompt = e.currentTarget.value)}
-              placeholder="optional starting prompt…"
-            ></textarea>
-          </div>
+          Show archived
+        </label>
+        {#if !project.archivedAt}
+          <button class="btn xs" onclick={openNewWorkspace}>+ New workspace</button>
         {/if}
-        {#each selectedParams as [name, spec] (name)}
-          <div style="margin-bottom:12px">
-            <label class="lbl" for={`start-param-${name}`}>{spec.label || name}</label>
-            {#if spec.type === 'bool'}
-              <select
-                id={`start-param-${name}`}
-                class="sel"
-                value={startParams[name] ?? ''}
-                onchange={(e) => (startParams = { ...startParams, [name]: e.currentTarget.value })}
-              >
-                <option value="">(default)</option>
-                <option value="true">true</option>
-                <option value="false">false</option>
-              </select>
-            {:else}
-              <select
-                id={`start-param-${name}`}
-                class="sel"
-                value={startParams[name] ?? ''}
-                onchange={(e) => (startParams = { ...startParams, [name]: e.currentTarget.value })}
-              >
-                <option value="">(default)</option>
-                {#each spec.values ?? [] as v (v)}
-                  <option value={v}>{v}</option>
-                {/each}
-              </select>
-            {/if}
+      </div>
+    </div>
+    {#if workspaces.length === 0}
+      <div
+        class="card"
+        style="padding:20px;text-align:center;color:var(--dc-mut);font-size:13px;margin-bottom:26px"
+      >
+        No workspaces yet. Create one to start sessions in this project.
+      </div>
+    {:else}
+      <div style="margin-bottom:26px">
+        {#each workspaces as ws (ws.id)}
+          <div class="irow" style={ws.archivedAt ? 'opacity:.55' : ''}>
+            <div class="sident">
+              <span class="sname">{ws.name}</span>
+              <span class="ssub">{ws.id}</span>
+            </div>
+            <div class="imeta">
+              {#if ws.archivedAt}<span class="badge line">archived</span>{/if}
+              <span class="stime">{timeAgo(ws.createdAt)}</span>
+              <div class="iacts">
+                <a class="btn xs" href={`/workspaces/${encodeURIComponent(ws.id)}`}>Open</a>
+                <button
+                  class="btn xs"
+                  onclick={() => openRenameWorkspace(ws)}
+                  disabled={busyWorkspaceId === ws.id}>Rename</button
+                >
+                <button
+                  class="btn xs"
+                  onclick={() => workspaceArchiveToggle(ws)}
+                  disabled={busyWorkspaceId === ws.id}
+                >
+                  {ws.archivedAt ? 'Unarchive' : 'Archive'}
+                </button>
+                <button
+                  class="btn xs"
+                  onclick={() => removeWorkspace(ws)}
+                  disabled={busyWorkspaceId === ws.id}>Delete</button
+                >
+              </div>
+            </div>
           </div>
         {/each}
-
-        <ErrorBanner message={startError} />
-        <button
-          class="btn primary"
-          class:off={!startAction}
-          disabled={!startAction || starting}
-          onclick={start}
-        >
-          {starting ? 'Starting…' : 'Start session'}
-        </button>
       </div>
     {/if}
 
@@ -341,7 +383,7 @@
     </div>
     {#if sessions.length === 0}
       <div class="card" style="padding:20px;text-align:center;color:var(--dc-mut);font-size:13px">
-        No sessions in this project yet.
+        No sessions in this project yet. Open a workspace to start one.
       </div>
     {:else}
       <div>
@@ -357,7 +399,14 @@
               {/if}
             </div>
             <div class="imeta">
-              <span class="badge">{s.action}</span>
+              {#if s.workspace}
+                <a
+                  class="badge"
+                  href={`/workspaces/${encodeURIComponent(s.workspace.id)}`}
+                  style="color:var(--dc-acc);text-decoration:none">{s.workspace.name}</a
+                >
+              {/if}
+              <span class="badge">{sessionActionLabel(s)}</span>
               <span class="badge" style="color:var(--dc-dim)">{s.status}</span>
               <span class="stime">{timeAgo(s.createdAt)}</span>
               <div class="iacts">
@@ -379,5 +428,16 @@
     {saveError}
     onSave={saveRename}
     onCancel={closeRename}
+  />
+{/if}
+
+{#if workspaceEditorOpen}
+  <WorkspaceEditor
+    mode={workspaceEditorMode}
+    source={workspaceEditorSource}
+    saving={workspaceSaving}
+    saveError={workspaceSaveError}
+    onSave={saveWorkspace}
+    onCancel={closeWorkspaceEditor}
   />
 {/if}

@@ -33,7 +33,7 @@ func TestActionsListJSONMatchesAPIResponse(t *testing.T) {
 func TestActionsListText(t *testing.T) {
 	lookup := testRuntimeLookup(t)
 	serveUnixAPI(t, lookup, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"actions":[{"name":"codex","label":"Codex","params":{}},{"name":"lazygit","label":"Lazygit","params":{}}]}`))
+		_, _ = w.Write([]byte(`{"actions":[{"name":"codex","type":"agent","label":"Codex","params":{}},{"name":"lazygit","type":"action","label":"Lazygit","params":{}}]}`))
 	})
 
 	cmd := actionsCommand(lookup)
@@ -44,7 +44,7 @@ func TestActionsListText(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
-	want := "codex\tCodex\nlazygit\tLazygit\n"
+	want := "codex\tagent\tCodex\nlazygit\taction\tLazygit\n"
 	if got := out.String(); got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}

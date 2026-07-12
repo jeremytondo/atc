@@ -34,6 +34,6 @@ struct SessionRowView: View {
 
     private var caption: String {
         if showsWorkingDir { return session.workingDir }
-        return "\(session.action) · \(session.updatedAt.formatted(.relative(presentation: .named)))"
+        return "\(session.actionLabel) · \(session.updatedAt.formatted(.relative(presentation: .named)))"
     }
 }

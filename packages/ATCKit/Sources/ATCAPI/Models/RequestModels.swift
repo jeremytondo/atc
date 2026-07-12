@@ -1,32 +1,29 @@
 import Foundation
 
-/// Body of `POST /api/sessions/start`. Exactly one of `workingDir` or
-/// `projectId` is required — they are mutually exclusive, and the server
-/// enforces the constraint. Nil fields are omitted by the synthesized
-/// `Encodable`.
+/// Body of `POST /api/sessions/start`. `workspaceId` is required; the
+/// session launches in the workspace's project working directory. A nil
+/// `action` launches the Interactive Shell, which accepts neither `params`
+/// nor `prompt`. Nil fields are omitted by the synthesized `Encodable`.
 public struct StartSessionRequest: Encodable, Sendable, Hashable {
-    public var action: String
+    public var workspaceId: String
+    public var action: String?
     public var environment: String?
     public var params: [String: JSONValue]?
-    public var workingDir: String?
-    public var projectId: String?
     public var prompt: String?
     public var name: String?
 
     public init(
-        action: String,
+        workspaceId: String,
+        action: String? = nil,
         environment: String? = nil,
         params: [String: JSONValue]? = nil,
-        workingDir: String? = nil,
-        projectId: String? = nil,
         prompt: String? = nil,
         name: String? = nil
     ) {
+        self.workspaceId = workspaceId
         self.action = action
         self.environment = environment
         self.params = params
-        self.workingDir = workingDir
-        self.projectId = projectId
         self.prompt = prompt
         self.name = name
     }
