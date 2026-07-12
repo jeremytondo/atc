@@ -6,8 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -16,6 +14,7 @@ import (
 	"github.com/jeremytondo/atc/internal/project"
 	"github.com/jeremytondo/atc/internal/session"
 	"github.com/jeremytondo/atc/internal/store"
+	"github.com/jeremytondo/atc/internal/workspace"
 	"github.com/jeremytondo/atc/internal/zmx"
 )
 
@@ -37,6 +36,7 @@ type fakeMux struct {
 		payload []byte
 	}
 	lastTerminate string
+	terminateErr  error
 }
 
 func (f *fakeMux) Start(_ context.Context, name, dir string, argv []string) error {
@@ -67,6 +67,9 @@ func (f *fakeMux) List(context.Context) ([]zmx.Session, error) {
 
 func (f *fakeMux) Terminate(_ context.Context, name string) error {
 	f.lastTerminate = name
+	if f.terminateErr != nil {
+		return f.terminateErr
+	}
 	for i, s := range f.sessions {
 		if s.Name == name {
 			f.sessions = append(f.sessions[:i], f.sessions[i+1:]...)
@@ -76,13 +79,31 @@ func (f *fakeMux) Terminate(_ context.Context, name string) error {
 	return nil
 }
 
-func newHandler(t *testing.T, mux *fakeMux) (http.Handler, *store.Store) {
+// testWorkspaceID is the workspace every handler test hangs sessions off;
+// newHandler seeds its project/workspace rows.
+const testWorkspaceID = "wsp_test"
+
+type handlerEnv struct {
+	handler http.Handler
+	store   *store.Store
+	workDir string
+}
+
+func newHandlerEnv(t *testing.T, mux *fakeMux) handlerEnv {
 	t.Helper()
 	st, err := store.Open(t.TempDir() + "/atc.db")
 	if err != nil {
 		t.Fatalf("Open store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
+	workDir := t.TempDir()
+	ctx := context.Background()
+	if _, err := st.CreateProject(ctx, store.CreateProjectInput{ID: "prj_test", Name: "Test", WorkingDir: workDir}); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, err := st.CreateWorkspace(ctx, store.CreateWorkspaceInput{ID: testWorkspaceID, ProjectID: "prj_test", Name: "Test workspace"}); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
 	actions := session.ActionRegistry{
 		"claude": {Command: "claude"},
 		"codex": {
@@ -96,10 +117,18 @@ func newHandler(t *testing.T, mux *fakeMux) (http.Handler, *store.Store) {
 	environments := session.EnvironmentRegistry{
 		"host-login-shell": {Kind: session.EnvironmentKindHostLoginShell},
 	}
-	actionStore := actionstore.NewStore(filepath.Join(t.TempDir(), "actions.json"), actions)
+	actionStore := actionstore.NewStore(t.TempDir()+"/actions.json", actions, st)
 	projects := project.NewService(st, nil)
-	sessions := session.NewService(st, mux, actionStore, environments, projects, nil)
-	return Routes(diagnostics.DefaultDiagnostics(), sessions, projects, actionStore, nil), st
+	workspaces := workspace.NewService(st, nil)
+	sessions := session.NewService(st, mux, actionStore, environments, workspaces, nil)
+	handler := Routes(diagnostics.DefaultDiagnostics(), sessions, projects, workspaces, actionStore, nil)
+	return handlerEnv{handler: handler, store: st, workDir: workDir}
+}
+
+func newHandler(t *testing.T, mux *fakeMux) (http.Handler, *store.Store) {
+	t.Helper()
+	env := newHandlerEnv(t, mux)
+	return env.handler, env.store
 }
 
 func do(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {
@@ -112,36 +141,31 @@ func do(t *testing.T, h http.Handler, method, path, body string) *httptest.Respo
 
 func TestStartSessionReturnsFullSession(t *testing.T) {
 	mux := &fakeMux{}
-	h, _ := newHandler(t, mux)
-	workDir := t.TempDir()
-	rec := do(t, h, http.MethodPost, "/sessions/start",
-		`{"action":"codex","params":{"model":"gpt-5"},"workingDir":"`+workDir+`","prompt":"review this","name":"Review"}`)
+	env := newHandlerEnv(t, mux)
+	rec := do(t, env.handler, http.MethodPost, "/sessions/start",
+		`{"action":"codex","params":{"model":"gpt-5"},"workspaceId":"`+testWorkspaceID+`","prompt":"review this","name":"Review"}`)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body)
 	}
-	var resp struct {
-		ID          string         `json:"id"`
-		Name        string         `json:"name"`
-		Action      string         `json:"action"`
-		Environment string         `json:"environment"`
-		Params      map[string]any `json:"params"`
-		WorkingDir  string         `json:"workingDir"`
-		Prompt      string         `json:"prompt"`
-		Status      string         `json:"status"`
-		Attachable  bool           `json:"attachable"`
-	}
+	var resp SessionDetail
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if !strings.HasPrefix(resp.ID, "ses_") || resp.Name != "Review" || resp.Action != "codex" || resp.Environment != "host-login-shell" ||
-		resp.WorkingDir != workDir || resp.Prompt != "review this" || resp.Status != "running" || !resp.Attachable {
+		resp.WorkingDir != env.workDir || resp.Prompt != "review this" || resp.Status != "running" || !resp.Attachable {
 		t.Fatalf("response = %+v", resp)
 	}
 	if resp.Params["model"] != "gpt-5" {
 		t.Fatalf("params = %#v", resp.Params)
 	}
-	if mux.lastStart.name != zmx.NameForID(resp.ID) || mux.lastStart.dir != workDir {
+	if resp.Workspace == nil || resp.Workspace.ID != testWorkspaceID || resp.Workspace.Name != "Test workspace" {
+		t.Fatalf("workspace ref = %+v", resp.Workspace)
+	}
+	if resp.Project == nil || resp.Project.ID != "prj_test" || resp.Project.Name != "Test" {
+		t.Fatalf("project ref = %+v", resp.Project)
+	}
+	if mux.lastStart.name != zmx.NameForID(resp.ID) || mux.lastStart.dir != env.workDir {
 		t.Fatalf("start = %+v", mux.lastStart)
 	}
 	if got := strings.Join(mux.lastStart.argv, " "); !strings.Contains(got, "-l -i -c codex --model gpt-5 'review this'") {
@@ -152,41 +176,61 @@ func TestStartSessionReturnsFullSession(t *testing.T) {
 	}
 }
 
-func TestStartSessionValidationErrors(t *testing.T) {
-	workDir := t.TempDir()
-	notADir := filepath.Join(workDir, "file.txt")
-	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
-		t.Fatalf("write file: %v", err)
+func TestStartSessionWithoutActionLaunchesInteractiveShell(t *testing.T) {
+	mux := &fakeMux{}
+	env := newHandlerEnv(t, mux)
+	rec := do(t, env.handler, http.MethodPost, "/sessions/start", `{"workspaceId":"`+testWorkspaceID+`"}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body)
 	}
+	var resp SessionDetail
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Action != "" || resp.Status != "running" {
+		t.Fatalf("response = %+v, want running interactive shell", resp)
+	}
+	// The wire form of an interactive shell session omits action entirely.
+	if strings.Contains(rec.Body.String(), `"action"`) {
+		t.Fatalf("interactive shell response carries action: %s", rec.Body)
+	}
+	argv := strings.Join(mux.lastStart.argv, " ")
+	if strings.Contains(argv, "-c") {
+		t.Fatalf("interactive shell argv carries a command payload: %#v", mux.lastStart.argv)
+	}
+}
+
+func TestStartSessionValidationErrors(t *testing.T) {
 	tests := []struct {
-		name string
-		body string
-		code string
+		name   string
+		body   string
+		status int
+		code   string
 	}{
-		{name: "missing workingDir", body: `{"action":"claude"}`, code: "invalid_request"},
-		{name: "blank workingDir", body: `{"action":"claude","workingDir":"   "}`, code: "invalid_request"},
-		{name: "missing action", body: `{"workingDir":"` + workDir + `"}`, code: "invalid_request"},
-		{name: "unknown action", body: `{"action":"ghost","workingDir":"` + workDir + `"}`, code: "unknown_action"},
-		{name: "unknown environment", body: `{"action":"codex","environment":"ghost","workingDir":"` + workDir + `"}`, code: "unknown_environment"},
-		{name: "invalid params", body: `{"action":"codex","workingDir":"` + workDir + `","params":{"model":"gpt-4"}}`, code: "invalid_params"},
-		{name: "unsupported prompt", body: `{"action":"claude","workingDir":"` + workDir + `","prompt":"do it"}`, code: "invalid_params"},
-		{name: "relative workingDir", body: `{"action":"claude","workingDir":"relative/path"}`, code: "invalid_working_dir"},
-		{name: "missing directory", body: `{"action":"claude","workingDir":"` + filepath.Join(workDir, "missing") + `"}`, code: "invalid_working_dir"},
-		{name: "workingDir is a file", body: `{"action":"claude","workingDir":"` + notADir + `"}`, code: "invalid_working_dir"},
+		{name: "missing workspaceId", body: `{"action":"claude"}`, status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "blank workspaceId", body: `{"action":"claude","workspaceId":"   "}`, status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "unknown workspace", body: `{"action":"claude","workspaceId":"wsp_ghost"}`, status: http.StatusBadRequest, code: "workspace_not_found"},
+		{name: "unknown action", body: `{"action":"ghost","workspaceId":"` + testWorkspaceID + `"}`, status: http.StatusBadRequest, code: "unknown_action"},
+		{name: "unknown environment", body: `{"action":"codex","environment":"ghost","workspaceId":"` + testWorkspaceID + `"}`, status: http.StatusBadRequest, code: "unknown_environment"},
+		{name: "invalid params", body: `{"action":"codex","workspaceId":"` + testWorkspaceID + `","params":{"model":"gpt-4"}}`, status: http.StatusBadRequest, code: "invalid_params"},
+		{name: "unsupported prompt", body: `{"action":"claude","workspaceId":"` + testWorkspaceID + `","prompt":"do it"}`, status: http.StatusBadRequest, code: "invalid_params"},
+		{name: "params without action", body: `{"workspaceId":"` + testWorkspaceID + `","params":{"model":"gpt-5"}}`, status: http.StatusBadRequest, code: "invalid_params"},
+		{name: "prompt without action", body: `{"workspaceId":"` + testWorkspaceID + `","prompt":"do it"}`, status: http.StatusBadRequest, code: "invalid_params"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mux := &fakeMux{}
-			h, st := newHandler(t, mux)
-			rec := do(t, h, http.MethodPost, "/sessions/start", tt.body)
-			if rec.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d, want 400 (%s)", rec.Code, rec.Body)
+			env := newHandlerEnv(t, mux)
+			rec := do(t, env.handler, http.MethodPost, "/sessions/start", tt.body)
+			if rec.Code != tt.status {
+				t.Fatalf("status = %d, want %d (%s)", rec.Code, tt.status, rec.Body)
 			}
 			assertErrorCode(t, rec, tt.code)
 			if mux.lastStart.name != "" {
 				t.Fatalf("start called: %+v", mux.lastStart)
 			}
-			records, err := st.List(context.Background(), store.ListFilter{IncludeArchived: true})
+			records, err := env.store.List(context.Background(), store.ListFilter{IncludeArchived: true})
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
@@ -197,10 +241,23 @@ func TestStartSessionValidationErrors(t *testing.T) {
 	}
 }
 
+func TestStartSessionRejectsArchivedWorkspace(t *testing.T) {
+	mux := &fakeMux{}
+	env := newHandlerEnv(t, mux)
+	if _, err := env.store.ArchiveWorkspace(context.Background(), testWorkspaceID); err != nil {
+		t.Fatalf("ArchiveWorkspace: %v", err)
+	}
+	rec := do(t, env.handler, http.MethodPost, "/sessions/start", `{"action":"claude","workspaceId":"`+testWorkspaceID+`"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (%s)", rec.Code, rec.Body)
+	}
+	assertErrorCode(t, rec, "workspace_archived")
+}
+
 func TestStartSessionLaunchFailureReturnsSessionID(t *testing.T) {
 	mux := &fakeMux{startErr: errors.New("zmx failed")}
 	h, st := newHandler(t, mux)
-	rec := do(t, h, http.MethodPost, "/sessions/start", `{"action":"claude","workingDir":"`+t.TempDir()+`"}`)
+	rec := do(t, h, http.MethodPost, "/sessions/start", `{"action":"claude","workspaceId":"`+testWorkspaceID+`"}`)
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502 (%s)", rec.Code, rec.Body)
@@ -272,7 +329,7 @@ func TestListSessionsOmitsPromptAndParamsAndFiltersStatus(t *testing.T) {
 	assertErrorCode(t, rec, "invalid_request")
 }
 
-func TestReadSessionIncludesPromptAndParams(t *testing.T) {
+func TestReadSessionIncludesPromptParamsAndWorkspace(t *testing.T) {
 	mux := &fakeMux{}
 	h, st := newHandler(t, mux)
 	seedRunning(t, st, "ses_detail", "Detail")
@@ -288,6 +345,12 @@ func TestReadSessionIncludesPromptAndParams(t *testing.T) {
 	}
 	if resp.ID != "ses_detail" || resp.Name != "Detail" || resp.Action != "codex" || resp.Environment != "host-login-shell" || resp.Prompt != "hello" || resp.Params["model"] != "gpt-5" || !resp.Attachable {
 		t.Fatalf("detail = %+v", resp)
+	}
+	if resp.Workspace == nil || resp.Workspace.ID != testWorkspaceID {
+		t.Fatalf("workspace ref = %+v", resp.Workspace)
+	}
+	if resp.Project == nil || resp.Project.ID != "prj_test" {
+		t.Fatalf("project ref = %+v", resp.Project)
 	}
 }
 
@@ -378,6 +441,76 @@ func TestTerminateAndArchive(t *testing.T) {
 	}
 }
 
+func TestUnarchiveSessionRoute(t *testing.T) {
+	mux := &fakeMux{}
+	h, st := newHandler(t, mux)
+	seedRunning(t, st, "ses_done", "Done")
+	if _, err := st.MarkTerminated(context.Background(), "ses_done"); err != nil {
+		t.Fatalf("MarkTerminated: %v", err)
+	}
+	if _, err := st.MarkArchived(context.Background(), "ses_done"); err != nil {
+		t.Fatalf("MarkArchived: %v", err)
+	}
+
+	rec := do(t, h, http.MethodPost, "/sessions/ses_done/unarchive", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body)
+	}
+	var resp SessionDetail
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.ArchivedAt != nil {
+		t.Fatalf("archivedAt = %v, want cleared", resp.ArchivedAt)
+	}
+
+	rec = do(t, h, http.MethodPost, "/sessions/ses_missing/unarchive", "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("missing status = %d, want 404", rec.Code)
+	}
+	assertErrorCode(t, rec, "session_not_found")
+}
+
+func TestDeleteSessionRoute(t *testing.T) {
+	mux := &fakeMux{}
+	h, st := newHandler(t, mux)
+	seedRunning(t, st, "ses_live", "Live")
+	mux.sessions = []zmx.Session{{Name: zmx.NameForID("ses_live")}}
+
+	// Deleting an active session terminates it first, then removes metadata.
+	rec := do(t, h, http.MethodDelete, "/sessions/ses_live", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body)
+	}
+	if mux.lastTerminate != zmx.NameForID("ses_live") {
+		t.Fatalf("terminate name = %q", mux.lastTerminate)
+	}
+	if _, err := st.Get(context.Background(), "ses_live"); !errors.Is(err, store.ErrSessionNotFound) {
+		t.Fatalf("Get after delete err = %v, want not found", err)
+	}
+
+	rec = do(t, h, http.MethodDelete, "/sessions/ses_live", "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("second delete status = %d, want 404", rec.Code)
+	}
+	assertErrorCode(t, rec, "session_not_found")
+}
+
+func TestDeleteSessionStopFailureKeepsMetadata(t *testing.T) {
+	mux := &fakeMux{terminateErr: errors.New("zmx kill failed")}
+	h, st := newHandler(t, mux)
+	seedRunning(t, st, "ses_live", "Live")
+	mux.sessions = []zmx.Session{{Name: zmx.NameForID("ses_live")}}
+
+	rec := do(t, h, http.MethodDelete, "/sessions/ses_live", "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (%s)", rec.Code, rec.Body)
+	}
+	if _, err := st.Get(context.Background(), "ses_live"); err != nil {
+		t.Fatalf("metadata lost after failed delete: %v", err)
+	}
+}
+
 func TestOldRoutesAreRemoved(t *testing.T) {
 	h, _ := newHandler(t, &fakeMux{})
 	for _, tt := range []struct {
@@ -416,6 +549,7 @@ func seedRunning(t *testing.T, st *store.Store, id, name string) {
 		Params:      json.RawMessage(`{"model":"gpt-5"}`),
 		WorkingDir:  "/work",
 		Prompt:      "hello",
+		WorkspaceID: testWorkspaceID,
 	}); err != nil {
 		t.Fatalf("CreateStarting(%s): %v", id, err)
 	}
@@ -431,6 +565,7 @@ func seedFailed(t *testing.T, st *store.Store, id string) {
 		Action:      "codex",
 		Environment: "host-login-shell",
 		WorkingDir:  "/work",
+		WorkspaceID: testWorkspaceID,
 	}); err != nil {
 		t.Fatalf("CreateStarting(%s): %v", id, err)
 	}

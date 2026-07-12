@@ -86,12 +86,14 @@ func TestListProjectsHidesArchivedByDefault(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list status = %d, want 200 (%s)", rec.Code, rec.Body)
 	}
+	// The handler seeds prj_test, so lists include it alongside this test's
+	// projects, newest-created-first.
 	var active ProjectListResponse
 	if err := json.NewDecoder(rec.Body).Decode(&active); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
-	if len(active.Projects) != 1 || active.Projects[0].ID != second.ID {
-		t.Fatalf("default list = %+v, want only active project", active.Projects)
+	if len(active.Projects) != 2 || active.Projects[0].ID != second.ID || active.Projects[1].ID != "prj_test" {
+		t.Fatalf("default list = %+v, want active projects only", active.Projects)
 	}
 
 	rec = do(t, h, http.MethodGet, "/projects?includeArchived=true", "")
@@ -99,8 +101,7 @@ func TestListProjectsHidesArchivedByDefault(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&all); err != nil {
 		t.Fatalf("decode full list: %v", err)
 	}
-	// Newest-created-first.
-	if len(all.Projects) != 2 || all.Projects[0].ID != second.ID || all.Projects[1].ID != first.ID {
+	if len(all.Projects) != 3 || all.Projects[0].ID != second.ID || all.Projects[1].ID != first.ID {
 		t.Fatalf("full list = %+v", all.Projects)
 	}
 
@@ -220,24 +221,16 @@ func TestArchiveAndUnarchiveProjectAreIdempotent(t *testing.T) {
 	assertErrorCode(t, rec, "project_not_found")
 }
 
-func TestArchiveProjectWithActiveSessionConflicts(t *testing.T) {
+func TestArchiveProjectBlockedByUnarchivedWorkspace(t *testing.T) {
 	h, _ := newHandler(t, &fakeMux{})
 	created := createTestProject(t, h, "atc", t.TempDir())
+	ws := createTestWorkspace(t, h, created.ID, "Feature work")
 
-	rec := do(t, h, http.MethodPost, "/sessions/start", `{"action":"claude","projectId":"`+created.ID+`"}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("start status = %d, want 200 (%s)", rec.Code, rec.Body)
-	}
-	var started SessionDetail
-	if err := json.NewDecoder(rec.Body).Decode(&started); err != nil {
-		t.Fatalf("decode started: %v", err)
-	}
-
-	rec = do(t, h, http.MethodPost, "/projects/"+created.ID+"/archive", "")
+	rec := do(t, h, http.MethodPost, "/projects/"+created.ID+"/archive", "")
 	if rec.Code != http.StatusConflict {
-		t.Fatalf("archive with running session status = %d, want 409 (%s)", rec.Code, rec.Body)
+		t.Fatalf("archive with unarchived workspace status = %d, want 409 (%s)", rec.Code, rec.Body)
 	}
-	assertErrorCode(t, rec, "project_has_active_sessions")
+	assertErrorCode(t, rec, "project_has_unarchived_workspaces")
 
 	// The rejected archive left the project active.
 	rec = do(t, h, http.MethodGet, "/projects/"+created.ID, "")
@@ -249,101 +242,55 @@ func TestArchiveProjectWithActiveSessionConflicts(t *testing.T) {
 		t.Fatalf("project archived despite conflict: %+v", got)
 	}
 
-	// Once the session terminates, the archive goes through.
-	rec = do(t, h, http.MethodPost, "/sessions/"+started.ID+"/terminate", "")
+	// Once every workspace is archived, the archive goes through.
+	rec = do(t, h, http.MethodPost, "/workspaces/"+ws.ID+"/archive", "")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("terminate status = %d (%s)", rec.Code, rec.Body)
+		t.Fatalf("workspace archive status = %d (%s)", rec.Code, rec.Body)
 	}
 	rec = do(t, h, http.MethodPost, "/projects/"+created.ID+"/archive", "")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("archive after terminate status = %d, want 200 (%s)", rec.Code, rec.Body)
+		t.Fatalf("archive after workspace archive status = %d, want 200 (%s)", rec.Code, rec.Body)
 	}
 }
 
-func TestStartSessionWithProject(t *testing.T) {
-	mux := &fakeMux{}
-	h, _ := newHandler(t, mux)
-	projectDir := t.TempDir()
-	created := createTestProject(t, h, "atc", projectDir)
-
-	rec := do(t, h, http.MethodPost, "/sessions/start", `{"action":"claude","projectId":"`+created.ID+`"}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("start status = %d, want 200 (%s)", rec.Code, rec.Body)
-	}
-	var resp SessionDetail
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp.WorkingDir != projectDir {
-		t.Fatalf("workingDir = %q, want inherited project dir", resp.WorkingDir)
-	}
-	if resp.Project == nil || resp.Project.ID != created.ID || resp.Project.Name != "atc" || resp.Project.WorkingDir != projectDir {
-		t.Fatalf("project = %+v", resp.Project)
-	}
-	if mux.lastStart.dir != projectDir {
-		t.Fatalf("launch dir = %q, want project dir", mux.lastStart.dir)
-	}
-
-	// The nested project appears on list and detail reads too.
-	rec = do(t, h, http.MethodGet, "/sessions", "")
-	var list SessionListResponse
-	if err := json.NewDecoder(rec.Body).Decode(&list); err != nil {
-		t.Fatalf("decode list: %v", err)
-	}
-	if len(list.Sessions) != 1 || list.Sessions[0].Project == nil || list.Sessions[0].Project.ID != created.ID {
-		t.Fatalf("list = %+v", list.Sessions)
-	}
-}
-
-func TestStartSessionProjectErrors(t *testing.T) {
+func TestDeleteProjectRequiresZeroWorkspaces(t *testing.T) {
 	h, _ := newHandler(t, &fakeMux{})
-	workDir := t.TempDir()
-	active := createTestProject(t, h, "Active", workDir)
+	created := createTestProject(t, h, "atc", t.TempDir())
+	ws := createTestWorkspace(t, h, created.ID, "Only workspace")
 
-	archived := createTestProject(t, h, "Archived", workDir)
-	rec := do(t, h, http.MethodPost, "/projects/"+archived.ID+"/archive", "")
+	rec := do(t, h, http.MethodDelete, "/projects/"+created.ID, "")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("delete with workspaces status = %d, want 409 (%s)", rec.Code, rec.Body)
+	}
+	assertErrorCode(t, rec, "project_has_workspaces")
+
+	rec = do(t, h, http.MethodDelete, "/workspaces/"+ws.ID, "")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("archive status = %d (%s)", rec.Code, rec.Body)
+		t.Fatalf("workspace delete status = %d (%s)", rec.Code, rec.Body)
+	}
+	rec = do(t, h, http.MethodDelete, "/projects/"+created.ID, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, want 200 (%s)", rec.Code, rec.Body)
+	}
+	rec = do(t, h, http.MethodGet, "/projects/"+created.ID, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("get after delete status = %d, want 404", rec.Code)
 	}
 
-	vanishedDir := filepath.Join(t.TempDir(), "repo")
-	if err := os.Mkdir(vanishedDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
+	rec = do(t, h, http.MethodDelete, "/projects/prj_missing", "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("delete missing status = %d, want 404", rec.Code)
 	}
-	vanished := createTestProject(t, h, "Vanished", vanishedDir)
-	if err := os.Remove(vanishedDir); err != nil {
-		t.Fatalf("remove dir: %v", err)
-	}
-
-	tests := []struct {
-		name   string
-		body   string
-		status int
-		code   string
-	}{
-		{name: "workingDir and projectId conflict", body: `{"action":"claude","workingDir":"` + workDir + `","projectId":"` + active.ID + `"}`, status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "neither workingDir nor projectId", body: `{"action":"claude"}`, status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "unknown project", body: `{"action":"claude","projectId":"prj_missing"}`, status: http.StatusBadRequest, code: "project_not_found"},
-		{name: "archived project", body: `{"action":"claude","projectId":"` + archived.ID + `"}`, status: http.StatusConflict, code: "project_archived"},
-		{name: "vanished project directory", body: `{"action":"claude","projectId":"` + vanished.ID + `"}`, status: http.StatusBadRequest, code: "invalid_working_dir"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			rec := do(t, h, http.MethodPost, "/sessions/start", tt.body)
-			if rec.Code != tt.status {
-				t.Fatalf("status = %d, want %d (%s)", rec.Code, tt.status, rec.Body)
-			}
-			assertErrorCode(t, rec, tt.code)
-		})
-	}
+	assertErrorCode(t, rec, "project_not_found")
 }
 
 func TestListProjectSessions(t *testing.T) {
 	mux := &fakeMux{}
 	h, st := newHandler(t, mux)
 	created := createTestProject(t, h, "atc", t.TempDir())
+	ws := createTestWorkspace(t, h, created.ID, "Feature work")
 
-	rec := do(t, h, http.MethodPost, "/sessions/start", `{"action":"claude","projectId":"`+created.ID+`"}`)
+	rec := do(t, h, http.MethodPost, "/sessions/start", `{"action":"claude","workspaceId":"`+ws.ID+`"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("start status = %d (%s)", rec.Code, rec.Body)
 	}
@@ -401,7 +348,7 @@ func TestListProjectSessions(t *testing.T) {
 }
 
 func TestProjectRoutesWithoutServiceReturnInternalError(t *testing.T) {
-	h := Routes(diagnostics.DefaultDiagnostics(), nil, nil, nil, nil)
+	h := Routes(diagnostics.DefaultDiagnostics(), nil, nil, nil, nil, nil)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/projects", nil)
 	h.ServeHTTP(rec, req)

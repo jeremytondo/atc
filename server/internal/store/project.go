@@ -112,9 +112,10 @@ func (s *Store) RenameProject(ctx context.Context, id, name string) (Project, er
 }
 
 // ArchiveProject archives a project. Archiving an archived project is a
-// no-op that returns the current record. A project with a starting or
-// running session cannot be archived; the check and the update share one
-// transaction so a session starting concurrently cannot slip through.
+// no-op that returns the current record. A project with an unarchived
+// workspace cannot be archived; the check and the update share one
+// transaction so a workspace created or unarchived concurrently cannot slip
+// through.
 func (s *Store) ArchiveProject(ctx context.Context, id string) (Project, error) {
 	var archived Project
 	err := s.WithTx(ctx, func(tx *Tx) error {
@@ -129,15 +130,15 @@ func (s *Store) ArchiveProject(ctx context.Context, id string) (Project, error) 
 }
 
 func (q queries) archiveProject(ctx context.Context, id string) (Project, error) {
-	var active int
+	var unarchived int
 	if err := q.runner.QueryRowContext(ctx, `
-	SELECT count(*) FROM sessions WHERE project_id = ? AND status IN (?, ?)`,
-		id, StatusStarting, StatusRunning,
-	).Scan(&active); err != nil {
-		return Project{}, fmt.Errorf("archive project %s: count active sessions: %w", id, err)
+	SELECT count(*) FROM workspaces WHERE project_id = ? AND archived_at IS NULL`,
+		id,
+	).Scan(&unarchived); err != nil {
+		return Project{}, fmt.Errorf("archive project %s: count unarchived workspaces: %w", id, err)
 	}
-	if active > 0 {
-		return Project{}, fmt.Errorf("%w: %s", ErrProjectHasActiveSessions, id)
+	if unarchived > 0 {
+		return Project{}, fmt.Errorf("%w: %s", ErrProjectHasUnarchivedWorkspaces, id)
 	}
 	now := q.nowUTC()
 	return q.updateOneProject(ctx, id, "archive", `
@@ -148,6 +149,33 @@ func (q queries) archiveProject(ctx context.Context, id string) (Project, error)
 	RETURNING`+projectColumnsSQL,
 		formatTime(now), formatTime(now), id,
 	)
+}
+
+// DeleteProject removes a project row. Deletion is allowed only when the
+// project has zero workspaces; the check and the delete share one transaction
+// so a workspace created concurrently cannot slip through. Files are never
+// touched.
+func (s *Store) DeleteProject(ctx context.Context, id string) error {
+	return s.WithTx(ctx, func(tx *Tx) error {
+		if _, err := scanProject(tx.q.runner.QueryRowContext(ctx, selectProjectSQL+` WHERE id = ?`, id)); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("%w: %s", ErrProjectNotFound, id)
+			}
+			return fmt.Errorf("delete project %s: %w", id, err)
+		}
+		var workspaces int
+		if err := tx.q.runner.QueryRowContext(ctx, `
+		SELECT count(*) FROM workspaces WHERE project_id = ?`, id).Scan(&workspaces); err != nil {
+			return fmt.Errorf("delete project %s: count workspaces: %w", id, err)
+		}
+		if workspaces > 0 {
+			return fmt.Errorf("%w: %s", ErrProjectHasWorkspaces, id)
+		}
+		if _, err := tx.q.runner.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, id); err != nil {
+			return fmt.Errorf("delete project %s: %w", id, err)
+		}
+		return nil
+	})
 }
 
 // UnarchiveProject reactivates a project. Unarchiving an active project is a

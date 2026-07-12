@@ -1,7 +1,10 @@
 {
-  "routes": ["PUT /actions/{name}"],
+  "routes": [
+    "PUT /actions/{name}"
+  ],
   "request": {
     "name": "my-agent",
+    "type": "agent",
     "label": "My Agent",
     "description": "Custom agent, updated",
     "command": "my-agent",
@@ -12,6 +15,7 @@
   },
   "response": {
     "name": "my-agent",
+    "type": "agent",
     "origin": "custom",
     "enabled": false,
     "label": "My Agent",

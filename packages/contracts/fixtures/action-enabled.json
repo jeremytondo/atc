@@ -1,10 +1,13 @@
 {
-  "routes": ["PUT /actions/{name}/enabled"],
+  "routes": [
+    "PUT /actions/{name}/enabled"
+  ],
   "request": {
     "enabled": false
   },
   "response": {
     "name": "shell",
+    "type": "action",
     "origin": "builtin",
     "enabled": false,
     "label": "Shell",

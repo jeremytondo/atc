@@ -1,0 +1,16 @@
+{
+  "routes": [
+    "POST /workspaces"
+  ],
+  "request": {
+    "projectId": "prj_fixture01",
+    "name": "Login bug"
+  },
+  "response": {
+    "id": "wsp_fixture01",
+    "projectId": "prj_fixture01",
+    "name": "Login bug",
+    "createdAt": "2026-07-09T12:30:00Z",
+    "updatedAt": "2026-07-09T12:30:00Z"
+  }
+}

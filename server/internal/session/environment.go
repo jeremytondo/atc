@@ -55,6 +55,17 @@ func (e Environment) Command(inner []string) ([]string, error) {
 	}
 }
 
+// InteractiveCommand is the argv for the Interactive Shell: the environment's
+// wrapper with no command payload, leaving the user at their shell.
+func (e Environment) InteractiveCommand() ([]string, error) {
+	switch e.Kind {
+	case EnvironmentKindHostLoginShell:
+		return []string{loginShell(), "-l", "-i"}, nil
+	default:
+		return nil, fmt.Errorf("%w: unsupported kind %q", ErrEnvironmentMisconfigured, e.Kind)
+	}
+}
+
 // Discover returns configured environments in stable name order.
 func (r EnvironmentRegistry) Discover(context.Context) []EnvironmentDiscovery {
 	names := r.names()

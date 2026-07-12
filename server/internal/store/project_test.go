@@ -20,7 +20,7 @@ func TestMigrationAddsProjectsSchema(t *testing.T) {
 		t.Fatalf("projects table count = %d, want 1", projectsTable)
 	}
 
-	for _, index := range []string{"projects_created_at_idx", "projects_archived_at_idx", "sessions_project_id_idx"} {
+	for _, index := range []string{"projects_created_at_idx", "projects_archived_at_idx"} {
 		var count int
 		if err := st.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, index).Scan(&count); err != nil {
 			t.Fatalf("query index %s: %v", index, err)
@@ -29,60 +29,9 @@ func TestMigrationAddsProjectsSchema(t *testing.T) {
 			t.Fatalf("index %s count = %d, want 1", index, count)
 		}
 	}
-
-	var projectIDColumn int
-	if err := st.db.QueryRow(`SELECT count(*) FROM pragma_table_info('sessions') WHERE name = 'project_id'`).Scan(&projectIDColumn); err != nil {
-		t.Fatalf("query sessions.project_id column: %v", err)
-	}
-	if projectIDColumn != 1 {
-		t.Fatalf("sessions.project_id column count = %d, want 1", projectIDColumn)
-	}
 }
 
-func TestCreateSessionEnforcesProjectForeignKey(t *testing.T) {
-	ctx := context.Background()
-	st := openTestStore(t)
-	defer st.Close()
-
-	if _, err := st.CreateStarting(ctx, CreateSessionInput{
-		ID:          "ses_orphan",
-		Action:      "codex",
-		Environment: "host-login-shell",
-		WorkingDir:  "/work",
-		ProjectID:   "prj_ghost",
-	}); !errors.Is(err, ErrProjectNotFound) {
-		t.Fatalf("CreateStarting err = %v, want ErrProjectNotFound", err)
-	}
-}
-
-func TestCreateSessionRejectsArchivedProject(t *testing.T) {
-	ctx := context.Background()
-	st := openTestStore(t)
-	defer st.Close()
-
-	if _, err := st.CreateProject(ctx, CreateProjectInput{ID: "prj_gone", Name: "Gone", WorkingDir: "/work"}); err != nil {
-		t.Fatalf("CreateProject: %v", err)
-	}
-	if _, err := st.ArchiveProject(ctx, "prj_gone"); err != nil {
-		t.Fatalf("ArchiveProject: %v", err)
-	}
-
-	if _, err := st.CreateStarting(ctx, CreateSessionInput{
-		ID:          "ses_late",
-		Action:      "codex",
-		Environment: "host-login-shell",
-		WorkingDir:  "/work",
-		ProjectID:   "prj_gone",
-	}); !errors.Is(err, ErrProjectArchived) {
-		t.Fatalf("CreateStarting err = %v, want ErrProjectArchived", err)
-	}
-	// The rejected insert must leave no session row behind.
-	if _, err := st.Get(ctx, "ses_late"); !errors.Is(err, ErrSessionNotFound) {
-		t.Fatalf("Get err = %v, want ErrSessionNotFound", err)
-	}
-}
-
-func TestArchiveProjectBlockedByActiveSessions(t *testing.T) {
+func TestArchiveProjectBlockedByUnarchivedWorkspaces(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
 	defer st.Close()
@@ -90,25 +39,12 @@ func TestArchiveProjectBlockedByActiveSessions(t *testing.T) {
 	if _, err := st.CreateProject(ctx, CreateProjectInput{ID: "prj_busy", Name: "Busy", WorkingDir: "/work"}); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	if _, err := st.CreateStarting(ctx, CreateSessionInput{
-		ID:          "ses_active",
-		Action:      "codex",
-		Environment: "host-login-shell",
-		WorkingDir:  "/work",
-		ProjectID:   "prj_busy",
-	}); err != nil {
-		t.Fatalf("CreateStarting: %v", err)
+	if _, err := st.CreateWorkspace(ctx, CreateWorkspaceInput{ID: "wsp_open", ProjectID: "prj_busy", Name: "Open"}); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
 	}
 
-	// Blocked while the session is starting, then running.
-	if _, err := st.ArchiveProject(ctx, "prj_busy"); !errors.Is(err, ErrProjectHasActiveSessions) {
-		t.Fatalf("archive with starting session err = %v, want ErrProjectHasActiveSessions", err)
-	}
-	if _, err := st.MarkRunning(ctx, "ses_active"); err != nil {
-		t.Fatalf("MarkRunning: %v", err)
-	}
-	if _, err := st.ArchiveProject(ctx, "prj_busy"); !errors.Is(err, ErrProjectHasActiveSessions) {
-		t.Fatalf("archive with running session err = %v, want ErrProjectHasActiveSessions", err)
+	if _, err := st.ArchiveProject(ctx, "prj_busy"); !errors.Is(err, ErrProjectHasUnarchivedWorkspaces) {
+		t.Fatalf("archive with unarchived workspace err = %v, want ErrProjectHasUnarchivedWorkspaces", err)
 	}
 	// A rejected archive must not have flipped archived_at.
 	got, err := st.GetProject(ctx, "prj_busy")
@@ -116,34 +52,65 @@ func TestArchiveProjectBlockedByActiveSessions(t *testing.T) {
 		t.Fatalf("GetProject: %v", err)
 	}
 	if got.ArchivedAt != nil {
-		t.Fatalf("project archived despite active session: %+v", got)
+		t.Fatalf("project archived despite unarchived workspace: %+v", got)
 	}
 
-	// Terminated (even archived) and failed sessions do not block.
-	if _, err := st.MarkTerminated(ctx, "ses_active"); err != nil {
-		t.Fatalf("MarkTerminated: %v", err)
-	}
-	if _, err := st.MarkArchived(ctx, "ses_active"); err != nil {
-		t.Fatalf("MarkArchived: %v", err)
-	}
+	// Once every workspace is archived, the project can archive. Ended
+	// sessions inside archived workspaces do not block.
 	if _, err := st.CreateStarting(ctx, CreateSessionInput{
-		ID:          "ses_failed",
-		Action:      "codex",
-		Environment: "host-login-shell",
-		WorkingDir:  "/work",
-		ProjectID:   "prj_busy",
+		ID: "ses_done", Action: "codex", Environment: "host-login-shell", WorkingDir: "/work", WorkspaceID: "wsp_open",
 	}); err != nil {
-		t.Fatalf("CreateStarting failed session: %v", err)
+		t.Fatalf("CreateStarting: %v", err)
 	}
-	if _, err := st.MarkFailed(ctx, "ses_failed", "launch failed", "launch_failed"); err != nil {
+	if _, err := st.MarkFailed(ctx, "ses_done", "launch failed", "launch_failed"); err != nil {
 		t.Fatalf("MarkFailed: %v", err)
+	}
+	if _, err := st.ArchiveWorkspace(ctx, "wsp_open"); err != nil {
+		t.Fatalf("ArchiveWorkspace: %v", err)
 	}
 	archived, err := st.ArchiveProject(ctx, "prj_busy")
 	if err != nil {
-		t.Fatalf("archive with only inactive sessions: %v", err)
+		t.Fatalf("archive with only archived workspaces: %v", err)
 	}
 	if archived.ArchivedAt == nil {
 		t.Fatalf("archived = %+v, want archivedAt set", archived)
+	}
+}
+
+func TestDeleteProjectRequiresZeroWorkspaces(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	defer st.Close()
+
+	if err := st.DeleteProject(ctx, "prj_missing"); !errors.Is(err, ErrProjectNotFound) {
+		t.Fatalf("delete missing project err = %v, want ErrProjectNotFound", err)
+	}
+
+	if _, err := st.CreateProject(ctx, CreateProjectInput{ID: "prj_full", Name: "Full", WorkingDir: "/work"}); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if _, err := st.CreateWorkspace(ctx, CreateWorkspaceInput{ID: "wsp_only", ProjectID: "prj_full", Name: "Only"}); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	if err := st.DeleteProject(ctx, "prj_full"); !errors.Is(err, ErrProjectHasWorkspaces) {
+		t.Fatalf("delete project with workspaces err = %v, want ErrProjectHasWorkspaces", err)
+	}
+	// Archived workspaces still block deletion; only zero workspaces allows it.
+	if _, err := st.ArchiveWorkspace(ctx, "wsp_only"); err != nil {
+		t.Fatalf("ArchiveWorkspace: %v", err)
+	}
+	if err := st.DeleteProject(ctx, "prj_full"); !errors.Is(err, ErrProjectHasWorkspaces) {
+		t.Fatalf("delete project with archived workspace err = %v, want ErrProjectHasWorkspaces", err)
+	}
+
+	if err := st.DeleteWorkspace(ctx, "wsp_only"); err != nil {
+		t.Fatalf("DeleteWorkspace: %v", err)
+	}
+	if err := st.DeleteProject(ctx, "prj_full"); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+	if _, err := st.GetProject(ctx, "prj_full"); !errors.Is(err, ErrProjectNotFound) {
+		t.Fatalf("GetProject after delete err = %v, want ErrProjectNotFound", err)
 	}
 }
 
@@ -277,113 +244,6 @@ func TestListProjectsBreaksCreatedAtTiesByInsertionOrder(t *testing.T) {
 		t.Fatalf("ListProjects: %v", err)
 	}
 	assertProjectIDs(t, list, []string{"prj_b", "prj_a", "prj_c"})
-}
-
-func TestSessionProjectHydrationAndFilter(t *testing.T) {
-	ctx := context.Background()
-	st := openTestStore(t)
-	defer st.Close()
-
-	if _, err := st.CreateProject(ctx, CreateProjectInput{ID: "prj_home", Name: "Home", WorkingDir: "/work/home"}); err != nil {
-		t.Fatalf("CreateProject: %v", err)
-	}
-
-	scoped, err := st.CreateStarting(ctx, CreateSessionInput{
-		ID:          "ses_scoped",
-		Action:      "codex",
-		Environment: "host-login-shell",
-		WorkingDir:  "/work/home",
-		ProjectID:   "prj_home",
-	})
-	if err != nil {
-		t.Fatalf("CreateStarting scoped: %v", err)
-	}
-	if scoped.ProjectID != "prj_home" || scoped.Project == nil || scoped.Project.Name != "Home" || scoped.Project.WorkingDir != "/work/home" {
-		t.Fatalf("scoped create = %+v project=%+v", scoped, scoped.Project)
-	}
-	if _, err := st.CreateStarting(ctx, CreateSessionInput{
-		ID:          "ses_unscoped",
-		Action:      "codex",
-		Environment: "host-login-shell",
-		WorkingDir:  "/work",
-	}); err != nil {
-		t.Fatalf("CreateStarting unscoped: %v", err)
-	}
-
-	// Reads hydrate through the join.
-	got, err := st.Get(ctx, "ses_scoped")
-	if err != nil {
-		t.Fatalf("Get scoped: %v", err)
-	}
-	if got.Project == nil || got.Project.ID != "prj_home" || got.Project.ArchivedAt != nil {
-		t.Fatalf("scoped get project = %+v", got.Project)
-	}
-	unscoped, err := st.Get(ctx, "ses_unscoped")
-	if err != nil {
-		t.Fatalf("Get unscoped: %v", err)
-	}
-	if unscoped.ProjectID != "" || unscoped.Project != nil {
-		t.Fatalf("unscoped get = %+v project=%+v", unscoped, unscoped.Project)
-	}
-
-	// Writes hydrate too, so status transitions keep the project visible.
-	running, err := st.MarkRunning(ctx, "ses_scoped")
-	if err != nil {
-		t.Fatalf("MarkRunning: %v", err)
-	}
-	if running.Project == nil || running.Project.ID != "prj_home" {
-		t.Fatalf("running project = %+v", running.Project)
-	}
-
-	// The joined project reflects archive state (the session must be inactive
-	// first; archiving over an active session is rejected).
-	if _, err := st.MarkTerminated(ctx, "ses_scoped"); err != nil {
-		t.Fatalf("MarkTerminated: %v", err)
-	}
-	if _, err := st.ArchiveProject(ctx, "prj_home"); err != nil {
-		t.Fatalf("ArchiveProject: %v", err)
-	}
-	archivedProject, err := st.Get(ctx, "ses_scoped")
-	if err != nil {
-		t.Fatalf("Get after project archive: %v", err)
-	}
-	if archivedProject.Project == nil || archivedProject.Project.ArchivedAt == nil {
-		t.Fatalf("project after archive = %+v", archivedProject.Project)
-	}
-
-	// ProjectID filtering restricts the list.
-	scopedList, err := st.List(ctx, ListFilter{ProjectID: "prj_home"})
-	if err != nil {
-		t.Fatalf("List filtered: %v", err)
-	}
-	assertSessionIDs(t, scopedList, []string{"ses_scoped"})
-	fullList, err := st.List(ctx, ListFilter{})
-	if err != nil {
-		t.Fatalf("List all: %v", err)
-	}
-	assertSessionIDs(t, fullList, []string{"ses_unscoped", "ses_scoped"})
-}
-
-func TestPreProjectSessionsReadBackWithNoProject(t *testing.T) {
-	ctx := context.Background()
-	st := openTestStore(t)
-	defer st.Close()
-
-	// Rows inserted without a project column value (as every pre-migration row
-	// was) must read back cleanly with no project.
-	if _, err := st.db.Exec(`
-	INSERT INTO sessions (id, action, environment, params, working_dir, status, created_at, updated_at)
-	VALUES ('ses_legacy', 'codex', 'host-login-shell', '{}', '/work', 'terminated', '2026-01-01T00:00:00.000000000Z', '2026-01-01T00:00:00.000000000Z')`); err != nil {
-		t.Fatalf("insert legacy row: %v", err)
-	}
-
-	got, err := st.Get(ctx, "ses_legacy")
-	if err != nil {
-		t.Fatalf("Get legacy: %v", err)
-	}
-	if got.ProjectID != "" || got.Project != nil {
-		t.Fatalf("legacy session = %+v project=%+v, want no project", got, got.Project)
-	}
 }
 
 func assertProjectIDs(t *testing.T, projects []Project, want []string) {

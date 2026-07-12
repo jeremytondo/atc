@@ -1,9 +1,12 @@
 {
-  "routes": ["GET /actions"],
+  "routes": [
+    "GET /actions"
+  ],
   "response": {
     "actions": [
       {
         "name": "claude",
+        "type": "agent",
         "origin": "modified",
         "enabled": true,
         "label": "Claude Code",
@@ -12,7 +15,10 @@
         "params": {
           "model": {
             "type": "enum",
-            "values": ["opus", "sonnet"],
+            "values": [
+              "opus",
+              "sonnet"
+            ],
             "default": "opus",
             "flag": "--model",
             "label": "Model",
@@ -27,6 +33,7 @@
       },
       {
         "name": "shell",
+        "type": "action",
         "origin": "builtin",
         "enabled": false,
         "params": {}

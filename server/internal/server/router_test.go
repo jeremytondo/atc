@@ -12,7 +12,7 @@ func TestRouterServesAPIHealth(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 
-	Router(nil, nil, nil, nil, "").ServeHTTP(rec, req)
+	Router(nil, nil, nil, nil, nil, "").ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -31,7 +31,7 @@ func TestRouterReturnsJSONForUnknownAPIRoutes(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/missing", nil)
 
-	Router(nil, nil, nil, nil, "").ServeHTTP(rec, req)
+	Router(nil, nil, nil, nil, nil, "").ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
@@ -45,7 +45,7 @@ func TestRouterServesWebFallback(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/browser/route", nil)
 
-	routerWithWeb(nil, nil, nil, nil, "", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	routerWithWeb(nil, nil, nil, nil, nil, "", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, "web fallback")
 	})).ServeHTTP(rec, req)
 

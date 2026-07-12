@@ -78,7 +78,7 @@ func TestOpenDoesNotChmodExistingParent(t *testing.T) {
 		t.Fatalf("stat parent dir: %v", err)
 	}
 	if got := info.Mode().Perm(); got != 0o755 {
-		t.Fatalf("existing parent dir mode = %#o, want 0755", got)
+		t.Fatalf("parent dir mode = %#o, want unchanged 0755", got)
 	}
 }
 
@@ -86,6 +86,7 @@ func TestCreateStartingAndTransitionsRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
 	defer st.Close()
+	seedWorkspace(t, st, "prj_main", "wsp_main")
 	clock := newTestClock(time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC))
 	st.now = clock.Now
 
@@ -97,6 +98,7 @@ func TestCreateStartingAndTransitionsRoundTrip(t *testing.T) {
 		Params:      json.RawMessage(`{"model":"gpt-5","resume":true}`),
 		WorkingDir:  "/work",
 		Prompt:      "implement the plan",
+		WorkspaceID: "wsp_main",
 	})
 	if err != nil {
 		t.Fatalf("CreateStarting: %v", err)
@@ -154,12 +156,147 @@ func TestCreateStartingAndTransitionsRoundTrip(t *testing.T) {
 		t.Fatal("archivedAt is nil")
 	}
 
+	unarchived, err := st.MarkUnarchived(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("MarkUnarchived: %v", err)
+	}
+	if unarchived.ArchivedAt != nil || !unarchived.UpdatedAt.After(archived.UpdatedAt) {
+		t.Fatalf("unarchived = %+v", unarchived)
+	}
+	unarchivedAgain, err := st.MarkUnarchived(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("MarkUnarchived again: %v", err)
+	}
+	if unarchivedAgain.ArchivedAt != nil || !unarchivedAgain.UpdatedAt.Equal(unarchived.UpdatedAt) {
+		t.Fatalf("second unarchive = %+v, want unchanged %+v", unarchivedAgain, unarchived)
+	}
+
 	got, err := st.Get(ctx, created.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if !reflect.DeepEqual(got, archived) {
-		t.Fatalf("Get = %+v, want %+v", got, archived)
+	if !reflect.DeepEqual(got, unarchived) {
+		t.Fatalf("Get = %+v, want %+v", got, unarchived)
+	}
+}
+
+func TestCreateStartingRequiresWorkspace(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	defer st.Close()
+
+	if _, err := st.CreateStarting(ctx, CreateSessionInput{
+		ID:          "ses_unscoped",
+		Action:      "codex",
+		Environment: "host-login-shell",
+		WorkingDir:  "/work",
+	}); err == nil {
+		t.Fatal("CreateStarting accepted a session without a workspace")
+	}
+}
+
+func TestCreateStartingWithoutActionStoresInteractiveShell(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	defer st.Close()
+	seedWorkspace(t, st, "prj_main", "wsp_main")
+
+	created, err := st.CreateStarting(ctx, CreateSessionInput{
+		ID:          "ses_shell",
+		Environment: "host-login-shell",
+		WorkingDir:  "/work",
+		WorkspaceID: "wsp_main",
+	})
+	if err != nil {
+		t.Fatalf("CreateStarting: %v", err)
+	}
+	if created.Action != "" {
+		t.Fatalf("action = %q, want empty for the Interactive Shell", created.Action)
+	}
+	got, err := st.Get(ctx, "ses_shell")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Action != "" {
+		t.Fatalf("read action = %q, want empty", got.Action)
+	}
+}
+
+func TestDeleteSessionRemovesSettledAndRejectsActive(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	defer st.Close()
+	seedWorkspace(t, st, "prj_main", "wsp_main")
+
+	if _, err := st.CreateStarting(ctx, CreateSessionInput{
+		ID: "ses_doomed", Action: "codex", Environment: "host-login-shell", WorkingDir: "/work", WorkspaceID: "wsp_main",
+	}); err != nil {
+		t.Fatalf("CreateStarting: %v", err)
+	}
+	if err := st.DeleteSession(ctx, "ses_doomed"); !errors.Is(err, ErrSessionActive) {
+		t.Fatalf("delete starting session err = %v, want ErrSessionActive", err)
+	}
+	if _, err := st.MarkRunning(ctx, "ses_doomed"); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+	if err := st.DeleteSession(ctx, "ses_doomed"); !errors.Is(err, ErrSessionActive) {
+		t.Fatalf("delete running session err = %v, want ErrSessionActive", err)
+	}
+	if _, err := st.MarkTerminated(ctx, "ses_doomed"); err != nil {
+		t.Fatalf("MarkTerminated: %v", err)
+	}
+	if err := st.DeleteSession(ctx, "ses_doomed"); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+	if _, err := st.Get(ctx, "ses_doomed"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("Get after delete err = %v, want ErrSessionNotFound", err)
+	}
+	if err := st.DeleteSession(ctx, "ses_doomed"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("delete missing session err = %v, want ErrSessionNotFound", err)
+	}
+}
+
+func TestCountActiveSessionsForAction(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	defer st.Close()
+	seedWorkspace(t, st, "prj_main", "wsp_main")
+
+	create := func(id, action string) {
+		t.Helper()
+		if _, err := st.CreateStarting(ctx, CreateSessionInput{
+			ID: id, Action: action, Environment: "host-login-shell", WorkingDir: "/work", WorkspaceID: "wsp_main",
+		}); err != nil {
+			t.Fatalf("CreateStarting(%s): %v", id, err)
+		}
+	}
+	create("ses_starting", "codex")
+	create("ses_running", "codex")
+	if _, err := st.MarkRunning(ctx, "ses_running"); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+	create("ses_done", "codex")
+	if _, err := st.MarkRunning(ctx, "ses_done"); err != nil {
+		t.Fatalf("MarkRunning done: %v", err)
+	}
+	if _, err := st.MarkTerminated(ctx, "ses_done"); err != nil {
+		t.Fatalf("MarkTerminated done: %v", err)
+	}
+	create("ses_other", "claude")
+
+	count, err := st.CountActiveSessionsForAction(ctx, "codex")
+	if err != nil {
+		t.Fatalf("CountActiveSessionsForAction: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("active codex sessions = %d, want 2", count)
+	}
+	none, err := st.CountActiveSessionsForAction(ctx, "unused")
+	if err != nil {
+		t.Fatalf("CountActiveSessionsForAction unused: %v", err)
+	}
+	if none != 0 {
+		t.Fatalf("active unused sessions = %d, want 0", none)
 	}
 }
 
@@ -167,11 +304,13 @@ func TestOpenReopensExistingDatabase(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "state", "atc.db")
 	st := openTestStoreAt(t, dbPath)
+	seedWorkspace(t, st, "prj_main", "wsp_main")
 	if _, err := st.CreateStarting(ctx, CreateSessionInput{
 		ID:          "ses_persisted",
 		Action:      "codex",
 		Environment: "host-login-shell",
 		WorkingDir:  "/work",
+		WorkspaceID: "wsp_main",
 	}); err != nil {
 		t.Fatalf("CreateStarting: %v", err)
 	}
@@ -194,12 +333,14 @@ func TestMarkFailedStoresReasonAndCode(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
 	defer st.Close()
+	seedWorkspace(t, st, "prj_main", "wsp_main")
 
 	if _, err := st.CreateStarting(ctx, CreateSessionInput{
 		ID:          "ses_failed",
 		Action:      "codex",
 		Environment: "host-login-shell",
 		WorkingDir:  "/work",
+		WorkspaceID: "wsp_main",
 	}); err != nil {
 		t.Fatalf("CreateStarting: %v", err)
 	}
@@ -217,12 +358,14 @@ func TestMarkRunningClearsFailureFields(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
 	defer st.Close()
+	seedWorkspace(t, st, "prj_main", "wsp_main")
 
 	if _, err := st.CreateStarting(ctx, CreateSessionInput{
 		ID:          "ses_race",
 		Action:      "codex",
 		Environment: "host-login-shell",
 		WorkingDir:  "/work",
+		WorkspaceID: "wsp_main",
 	}); err != nil {
 		t.Fatalf("CreateStarting: %v", err)
 	}
@@ -243,6 +386,7 @@ func TestListOrderingStatusFilterAndArchivedDefault(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
 	defer st.Close()
+	seedWorkspace(t, st, "prj_main", "wsp_main")
 	clock := newTestClock(time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC))
 	st.now = clock.Now
 
@@ -253,6 +397,7 @@ func TestListOrderingStatusFilterAndArchivedDefault(t *testing.T) {
 			Action:      "codex",
 			Environment: "host-login-shell",
 			WorkingDir:  "/work",
+			WorkspaceID: "wsp_main",
 		}); err != nil {
 			t.Fatalf("CreateStarting(%s): %v", id, err)
 		}
@@ -303,6 +448,7 @@ func TestListOrdersSubSecondCreatesNewestFirst(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
 	defer st.Close()
+	seedWorkspace(t, st, "prj_main", "wsp_main")
 	// Timestamps 90ms apart share a whole second but differ in the fraction —
 	// the case a variable-width timestamp format mis-sorts under a lexicographic
 	// ORDER BY. Guards the fixed-width timestampLayout.
@@ -314,7 +460,7 @@ func TestListOrdersSubSecondCreatesNewestFirst(t *testing.T) {
 		return t
 	}
 	for _, id := range []string{"ses_first", "ses_second", "ses_third"} {
-		if _, err := st.CreateStarting(ctx, CreateSessionInput{ID: id, Action: "codex", Environment: "host-login-shell", WorkingDir: "/work"}); err != nil {
+		if _, err := st.CreateStarting(ctx, CreateSessionInput{ID: id, Action: "codex", Environment: "host-login-shell", WorkingDir: "/work", WorkspaceID: "wsp_main"}); err != nil {
 			t.Fatalf("CreateStarting(%s): %v", id, err)
 		}
 	}
@@ -329,6 +475,7 @@ func TestListBreaksCreatedAtTiesByInsertionOrder(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
 	defer st.Close()
+	seedWorkspace(t, st, "prj_main", "wsp_main")
 	// A frozen clock gives every record an identical created_at, so ordering
 	// must fall back to insertion order (rowid), newest first. Insertion order is
 	// deliberately not alphabetical so this would fail under the old `id DESC`
@@ -336,7 +483,7 @@ func TestListBreaksCreatedAtTiesByInsertionOrder(t *testing.T) {
 	frozen := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
 	st.now = func() time.Time { return frozen }
 	for _, id := range []string{"ses_c", "ses_a", "ses_b"} {
-		if _, err := st.CreateStarting(ctx, CreateSessionInput{ID: id, Action: "codex", Environment: "host-login-shell", WorkingDir: "/work"}); err != nil {
+		if _, err := st.CreateStarting(ctx, CreateSessionInput{ID: id, Action: "codex", Environment: "host-login-shell", WorkingDir: "/work", WorkspaceID: "wsp_main"}); err != nil {
 			t.Fatalf("CreateStarting(%s): %v", id, err)
 		}
 	}
@@ -351,6 +498,7 @@ func TestWithTxCommitsAndRollsBack(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
 	defer st.Close()
+	seedWorkspace(t, st, "prj_main", "wsp_main")
 
 	if err := st.WithTx(ctx, func(tx *Tx) error {
 		if _, err := tx.CreateStarting(ctx, CreateSessionInput{
@@ -358,6 +506,7 @@ func TestWithTxCommitsAndRollsBack(t *testing.T) {
 			Action:      "codex",
 			Environment: "host-login-shell",
 			WorkingDir:  "/work",
+			WorkspaceID: "wsp_main",
 		}); err != nil {
 			return err
 		}
@@ -382,6 +531,7 @@ func TestWithTxCommitsAndRollsBack(t *testing.T) {
 			Action:      "codex",
 			Environment: "host-login-shell",
 			WorkingDir:  "/work",
+			WorkspaceID: "wsp_main",
 		}); err != nil {
 			return err
 		}
@@ -399,6 +549,7 @@ func TestInvalidInputsReturnClearErrors(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
 	defer st.Close()
+	seedWorkspace(t, st, "prj_main", "wsp_main")
 
 	if _, err := st.CreateStarting(ctx, CreateSessionInput{
 		ID:          "ses_bad_params",
@@ -406,6 +557,7 @@ func TestInvalidInputsReturnClearErrors(t *testing.T) {
 		Environment: "host-login-shell",
 		Params:      json.RawMessage(`[]`),
 		WorkingDir:  "/work",
+		WorkspaceID: "wsp_main",
 	}); err == nil {
 		t.Fatal("CreateStarting accepted non-object params")
 	}
@@ -431,6 +583,19 @@ func openTestStoreAt(t *testing.T, path string) *Store {
 		t.Fatalf("Open: %v", err)
 	}
 	return st
+}
+
+// seedWorkspace creates the project/workspace pair session tests hang their
+// records on.
+func seedWorkspace(t *testing.T, st *Store, projectID, workspaceID string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := st.CreateProject(ctx, CreateProjectInput{ID: projectID, Name: projectID, WorkingDir: "/work"}); err != nil {
+		t.Fatalf("CreateProject(%s): %v", projectID, err)
+	}
+	if _, err := st.CreateWorkspace(ctx, CreateWorkspaceInput{ID: workspaceID, ProjectID: projectID, Name: workspaceID}); err != nil {
+		t.Fatalf("CreateWorkspace(%s): %v", workspaceID, err)
+	}
 }
 
 func assertSessionIDs(t *testing.T, sessions []Session, want []string) {

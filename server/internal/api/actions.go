@@ -15,6 +15,8 @@ type actionsResponse struct {
 
 type actionResponse struct {
 	Name string `json:"name"`
+	// Type is "action" or "agent"; immutable after creation.
+	Type string `json:"type"`
 	// Origin is the client affordance switch: custom -> Edit + Delete,
 	// modified -> Edit + Revert to default through DELETE /actions/{name},
 	// builtin -> Edit only.
@@ -28,6 +30,8 @@ type actionResponse struct {
 
 type actionDetailResponse struct {
 	Name string `json:"name"`
+	// Type is "action" or "agent"; immutable after creation.
+	Type string `json:"type"`
 	// Origin uses the same affordance mapping as actionResponse.
 	Origin      string                   `json:"origin"`
 	Enabled     bool                     `json:"enabled"`
@@ -41,6 +45,7 @@ type actionDetailResponse struct {
 
 type actionWriteRequest struct {
 	Name        string                       `json:"name,omitempty"`
+	Type        session.ActionType           `json:"type"`
 	Kind        string                       `json:"kind"`
 	Label       string                       `json:"label"`
 	Description string                       `json:"description"`
@@ -192,6 +197,7 @@ func actionDiscoveryResponse(action actionstore.Discovery) actionResponse {
 
 	return actionResponse{
 		Name:        discovery.Name,
+		Type:        string(discovery.Type),
 		Origin:      string(action.Origin),
 		Enabled:     !discovery.Disabled,
 		Label:       discovery.Label,
@@ -220,6 +226,7 @@ func actionDetail(name string, got session.Action, origin actionstore.Origin) ac
 	}
 	return actionDetailResponse{
 		Name:        name,
+		Type:        string(got.Type),
 		Origin:      string(origin),
 		Enabled:     !got.Disabled,
 		Label:       got.Label,
@@ -247,10 +254,9 @@ func paramResponses(specs map[string]session.ParamSpec) map[string]paramResponse
 }
 
 func (req actionWriteRequest) action() (session.Action, error) {
-	switch req.Kind {
-	case "", "command", "agent":
-	default:
-		return session.Action{}, fmt.Errorf("%w: unsupported legacy kind %q", actionstore.ErrInvalidAction, req.Kind)
+	actionType, err := session.ResolveActionType(req.Type, req.Kind)
+	if err != nil {
+		return session.Action{}, fmt.Errorf("%w: %v", actionstore.ErrInvalidAction, err)
 	}
 	if req.Command != "" && req.Bin != "" && req.Command != req.Bin {
 		return session.Action{}, fmt.Errorf("%w: command %q conflicts with legacy bin %q", actionstore.ErrInvalidAction, req.Command, req.Bin)
@@ -260,6 +266,7 @@ func (req actionWriteRequest) action() (session.Action, error) {
 		command = req.Bin
 	}
 	return session.Action{
+		Type:        actionType,
 		Label:       req.Label,
 		Description: req.Description,
 		Command:     command,
@@ -283,6 +290,8 @@ func writeActionError(w http.ResponseWriter, err error) {
 	case errors.Is(err, actionstore.ErrDuplicate),
 		errors.Is(err, actionstore.ErrBuiltinRemoval):
 		writeError(w, http.StatusConflict, "action_conflict", err.Error())
+	case errors.Is(err, actionstore.ErrActionInUse):
+		writeError(w, http.StatusConflict, "action_in_use", err.Error())
 	case errors.Is(err, actionstore.ErrNotFound):
 		writeError(w, http.StatusNotFound, "action_not_found", err.Error())
 	case errors.Is(err, actionstore.ErrInvalidAction):

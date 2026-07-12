@@ -14,7 +14,7 @@ import (
 
 func fsHandler(t *testing.T) http.Handler {
 	t.Helper()
-	return Routes(diagnostics.DefaultDiagnostics(), nil, nil, nil, fs.NewService(nil))
+	return Routes(diagnostics.DefaultDiagnostics(), nil, nil, nil, nil, fs.NewService(nil))
 }
 
 func decodeErrorBody(t *testing.T, body *json.Decoder) (code, message string) {
@@ -201,7 +201,7 @@ func TestFSListErrorCodes(t *testing.T) {
 }
 
 func TestFSRoutesRequireService(t *testing.T) {
-	handler := Routes(diagnostics.DefaultDiagnostics(), nil, nil, nil, nil)
+	handler := Routes(diagnostics.DefaultDiagnostics(), nil, nil, nil, nil, nil)
 	rec := do(t, handler, http.MethodGet, "/fs/list?path=/", "")
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500 (%s)", rec.Code, rec.Body)

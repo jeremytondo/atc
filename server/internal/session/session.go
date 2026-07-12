@@ -14,6 +14,7 @@ import (
 
 	"github.com/jeremytondo/atc/internal/project"
 	"github.com/jeremytondo/atc/internal/store"
+	"github.com/jeremytondo/atc/internal/workspace"
 	"github.com/jeremytondo/atc/internal/zmx"
 )
 
@@ -72,26 +73,26 @@ func (e *LaunchError) Unwrap() error {
 	return e.Err
 }
 
-// StartInput is the accepted shape for starting a new session. Exactly one of
-// WorkingDir and ProjectID must be set; the API rejects the combination
-// before the domain sees it.
+// StartInput is the accepted shape for starting a new session. WorkspaceID
+// is required; the session launches in the workspace's project working
+// directory. An empty Action launches the Interactive Shell, which accepts
+// neither Params nor Prompt.
 type StartInput struct {
 	Action      string
 	Environment string
 	Params      map[string]any
-	WorkingDir  string
 	Prompt      string
 	Name        string
-	// ProjectID scopes the session to a project, inheriting its working
-	// directory.
-	ProjectID string
+	// WorkspaceID scopes the session to a workspace and is required.
+	WorkspaceID string
 }
 
 // Session is atc's full domain model for a session. API list/detail
 // serializers decide which fields are exposed on each endpoint.
 type Session struct {
-	ID            string
-	Name          string
+	ID   string
+	Name string
+	// Action is the launch action name; empty means the Interactive Shell.
 	Action        string
 	Environment   string
 	Params        map[string]any
@@ -100,21 +101,28 @@ type Session struct {
 	Status        Status
 	FailureReason string
 	FailureCode   string
-	ProjectID     string
-	Project       *ProjectRef
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	TerminatedAt  *time.Time
-	ArchivedAt    *time.Time
-	Attachable    bool
+	WorkspaceID   string
+	Workspace     *WorkspaceRef
+	// Project is the derived project reference, reached through the
+	// workspace, kept so clients that group sessions by project keep working.
+	Project      *ProjectRef
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	TerminatedAt *time.Time
+	ArchivedAt   *time.Time
+	Attachable   bool
 }
 
-// ProjectRef is the project slice carried on project-scoped sessions.
+// WorkspaceRef is the workspace slice carried on sessions.
+type WorkspaceRef struct {
+	ID   string
+	Name string
+}
+
+// ProjectRef is the derived project slice carried on sessions.
 type ProjectRef struct {
-	ID         string
-	Name       string
-	WorkingDir string
-	ArchivedAt *time.Time
+	ID   string
+	Name string
 }
 
 // Multiplexer is the slice of internal/zmx the session domain depends on. It is
@@ -132,10 +140,11 @@ type ActionLoader interface {
 	Load(ctx context.Context) (ActionRegistry, error)
 }
 
-// ProjectResolver resolves the project a start request references. It is an
-// interface (following the ActionLoader precedent) so tests can fake it.
-type ProjectResolver interface {
-	ResolveForStart(ctx context.Context, id string) (project.Project, error)
+// WorkspaceResolver resolves the workspace a start request references to the
+// validated working directory the session launches in. It is an interface
+// (following the ActionLoader precedent) so tests can fake it.
+type WorkspaceResolver interface {
+	ResolveForStart(ctx context.Context, id string) (string, error)
 }
 
 // Service implements session operations on top of durable metadata and a
@@ -145,18 +154,18 @@ type Service struct {
 	mux          Multiplexer
 	actions      ActionLoader
 	environments EnvironmentRegistry
-	projects     ProjectResolver
+	workspaces   WorkspaceResolver
 	logger       *slog.Logger
 }
 
 // NewService returns a Service backed by st and mux that launches configured
-// actions in configured environments. A nil projects resolver rejects
-// project-scoped starts; a nil logger uses slog.Default.
-func NewService(st *store.Store, mux Multiplexer, actions ActionLoader, environments EnvironmentRegistry, projects ProjectResolver, logger *slog.Logger) *Service {
+// actions in configured environments. A nil workspaces resolver rejects all
+// starts; a nil logger uses slog.Default.
+func NewService(st *store.Store, mux Multiplexer, actions ActionLoader, environments EnvironmentRegistry, workspaces WorkspaceResolver, logger *slog.Logger) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{store: st, mux: mux, actions: actions, environments: environments, projects: projects, logger: logger}
+	return &Service{store: st, mux: mux, actions: actions, environments: environments, workspaces: workspaces, logger: logger}
 }
 
 // Environments returns configured launch environments with client-safe metadata.
@@ -164,23 +173,43 @@ func (s *Service) Environments(ctx context.Context) []EnvironmentDiscovery {
 	return s.environments.Discover(ctx)
 }
 
-// Start validates, records, launches, and returns a new distinct session.
+// Start validates, records, launches, and returns a new distinct session. An
+// empty Action launches the Interactive Shell: the host user's shell run
+// through the selected environment without a command payload.
 func (s *Service) Start(ctx context.Context, input StartInput) (Session, error) {
-	actions, err := s.actions.Load(ctx)
-	if err != nil {
-		return Session{}, err
-	}
-	inner, accepted, err := actions.buildCommand(input.Action, input.Params, input.Prompt)
-	if err != nil {
-		return Session{}, err
-	}
 	environment, environmentName, err := s.environments.resolve(input.Environment)
 	if err != nil {
 		return Session{}, err
 	}
-	argv, err := environment.Command(inner)
-	if err != nil {
-		return Session{}, err
+	var argv []string
+	accepted := map[string]any{}
+	if input.Action == "" {
+		// The Interactive Shell takes no command payload, so params and
+		// prompt have nothing to apply to (ADR 0004).
+		if len(input.Params) > 0 {
+			return Session{}, fmt.Errorf("%w: params require an action", ErrInvalidParam)
+		}
+		if input.Prompt != "" {
+			return Session{}, fmt.Errorf("%w: prompt requires an action", ErrInvalidParam)
+		}
+		argv, err = environment.InteractiveCommand()
+		if err != nil {
+			return Session{}, err
+		}
+	} else {
+		actions, err := s.actions.Load(ctx)
+		if err != nil {
+			return Session{}, err
+		}
+		inner, acceptedParams, err := actions.buildCommand(input.Action, input.Params, input.Prompt)
+		if err != nil {
+			return Session{}, err
+		}
+		accepted = acceptedParams
+		argv, err = environment.Command(inner)
+		if err != nil {
+			return Session{}, err
+		}
 	}
 	workingDir, err := s.resolveStartDir(ctx, input)
 	if err != nil {
@@ -204,7 +233,7 @@ func (s *Service) Start(ctx context.Context, input StartInput) (Session, error) 
 		Params:      params,
 		WorkingDir:  workingDir,
 		Prompt:      input.Prompt,
-		ProjectID:   input.ProjectID,
+		WorkspaceID: input.WorkspaceID,
 	})
 	if err != nil {
 		return Session{}, translateStoreErr(err)
@@ -233,37 +262,38 @@ func (s *Service) Start(ctx context.Context, input StartInput) (Session, error) 
 	return domainSession(running, true)
 }
 
-// resolveStartDir returns the directory a start launches in: the validated
-// explicit WorkingDir for unscoped starts, or the referenced project's
-// directory (snapshotted onto the session record) for project-scoped starts.
+// resolveStartDir resolves the referenced workspace to its project's working
+// directory (snapshotted onto the session record). The guarded insert
+// re-checks the workspace atomically; this resolution exists to fail fast
+// with precise errors and to revalidate the directory on disk.
 func (s *Service) resolveStartDir(ctx context.Context, input StartInput) (string, error) {
-	if input.ProjectID == "" {
-		if err := project.ValidateWorkingDir(input.WorkingDir); err != nil {
-			return "", err
-		}
-		return input.WorkingDir, nil
+	if input.WorkspaceID == "" {
+		return "", fmt.Errorf("%w: workspaceId is required", workspace.ErrInvalidWorkspace)
 	}
-	if s.projects == nil {
-		return "", fmt.Errorf("%w: %s", project.ErrProjectNotFound, input.ProjectID)
+	if s.workspaces == nil {
+		return "", fmt.Errorf("%w: %s", workspace.ErrWorkspaceNotFound, input.WorkspaceID)
 	}
-	resolved, err := s.projects.ResolveForStart(ctx, input.ProjectID)
-	if err != nil {
-		return "", err
-	}
-	return resolved.WorkingDir, nil
+	return s.workspaces.ResolveForStart(ctx, input.WorkspaceID)
+}
+
+// ListScope optionally restricts a session list to one workspace or to one
+// project's workspaces.
+type ListScope struct {
+	WorkspaceID string
+	ProjectID   string
 }
 
 // List returns persisted sessions newest-first, reconciling running-session
 // liveness when the multiplexer can be queried. Starting records are owned by
-// the in-flight Start call and are never resolved by read paths. A non-empty
-// projectID restricts the list to that project's sessions.
-func (s *Service) List(ctx context.Context, includeArchived bool, statusFilter Status, projectID string) ([]Session, error) {
+// the in-flight Start call and are never resolved by read paths.
+func (s *Service) List(ctx context.Context, includeArchived bool, statusFilter Status, scope ListScope) ([]Session, error) {
 	if statusFilter != "" && !validStatus(statusFilter) {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidStatus, statusFilter)
 	}
 	records, err := s.store.List(ctx, store.ListFilter{
 		IncludeArchived: includeArchived,
-		ProjectID:       projectID,
+		WorkspaceID:     scope.WorkspaceID,
+		ProjectID:       scope.ProjectID,
 	})
 	if err != nil {
 		return nil, translateStoreErr(err)
@@ -434,6 +464,37 @@ func (s *Service) Archive(ctx context.Context, id string) (Session, error) {
 	return domainSession(archived, false)
 }
 
+// Unarchive returns an archived session to default lists, mirroring project
+// unarchive semantics: it clears archivedAt and is a no-op for an unarchived
+// session.
+func (s *Service) Unarchive(ctx context.Context, id string) (Session, error) {
+	record, err := s.store.MarkUnarchived(ctx, id)
+	if err != nil {
+		return Session{}, translateStoreErr(err)
+	}
+	return domainSession(record, false)
+}
+
+// Delete removes a session's metadata. An active session is terminated
+// first; a stop failure aborts the delete with the metadata intact. Files
+// are never touched.
+func (s *Service) Delete(ctx context.Context, id string) error {
+	record, err := s.store.Get(ctx, id)
+	if err != nil {
+		return translateStoreErr(err)
+	}
+	if record.Status == StatusStarting || record.Status == StatusRunning {
+		if _, err := s.Terminate(ctx, id); err != nil {
+			return err
+		}
+	}
+	if err := s.store.DeleteSession(ctx, id); err != nil {
+		return translateStoreErr(err)
+	}
+	s.logger.Info("session deleted", "id", id)
+	return nil
+}
+
 // Reconcile performs the startup pass over starting/running records. A
 // multiplexer liveness failure is logged and leaves stored state untouched.
 func (s *Service) Reconcile(ctx context.Context) error {
@@ -564,14 +625,13 @@ func domainSession(record store.Session, live bool) (Session, error) {
 			return Session{}, fmt.Errorf("decode session params for %s: %w", record.ID, err)
 		}
 	}
+	var workspaceRef *WorkspaceRef
+	if record.Workspace != nil {
+		workspaceRef = &WorkspaceRef{ID: record.Workspace.ID, Name: record.Workspace.Name}
+	}
 	var projectRef *ProjectRef
 	if record.Project != nil {
-		projectRef = &ProjectRef{
-			ID:         record.Project.ID,
-			Name:       record.Project.Name,
-			WorkingDir: record.Project.WorkingDir,
-			ArchivedAt: record.Project.ArchivedAt,
-		}
+		projectRef = &ProjectRef{ID: record.Project.ID, Name: record.Project.Name}
 	}
 	return Session{
 		ID:            record.ID,
@@ -584,7 +644,8 @@ func domainSession(record store.Session, live bool) (Session, error) {
 		Status:        record.Status,
 		FailureReason: record.FailureReason,
 		FailureCode:   record.FailureCode,
-		ProjectID:     record.ProjectID,
+		WorkspaceID:   record.WorkspaceID,
+		Workspace:     workspaceRef,
 		Project:       projectRef,
 		CreatedAt:     record.CreatedAt,
 		UpdatedAt:     record.UpdatedAt,
@@ -609,12 +670,14 @@ func translateStoreErr(err error) error {
 	switch {
 	case errors.Is(err, store.ErrSessionNotFound):
 		return fmt.Errorf("%w: %v", ErrSessionNotFound, err)
-	// The store's guarded session insert reports the project state it saw;
-	// re-home those on the project sentinels the API layer maps.
-	case errors.Is(err, store.ErrProjectNotFound):
-		return fmt.Errorf("%w: %v", project.ErrProjectNotFound, err)
-	case errors.Is(err, store.ErrProjectArchived):
-		return fmt.Errorf("%w: %v", project.ErrProjectArchived, err)
+	case errors.Is(err, store.ErrSessionActive):
+		return fmt.Errorf("%w: %v", ErrSessionLive, err)
+	// The store's guarded session insert reports the workspace state it saw;
+	// re-home those on the workspace sentinels the API layer maps.
+	case errors.Is(err, store.ErrWorkspaceNotFound):
+		return fmt.Errorf("%w: %v", workspace.ErrWorkspaceNotFound, err)
+	case errors.Is(err, store.ErrWorkspaceArchived):
+		return fmt.Errorf("%w: %v", workspace.ErrWorkspaceArchived, err)
 	}
 	return err
 }

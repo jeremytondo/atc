@@ -12,7 +12,7 @@ import (
 )
 
 func TestLoadAbsentFileReturnsDefaults(t *testing.T) {
-	store := NewStore(filepath.Join(t.TempDir(), "actions.json"), testDefaults())
+	store := NewStore(filepath.Join(t.TempDir(), "actions.json"), testDefaults(), nil)
 
 	got, err := store.Load(context.Background())
 	if err != nil {
@@ -31,7 +31,7 @@ func TestLoadMergesFileOverDefaults(t *testing.T) {
     "custom": {"command":"echo","args":["hello"],"params":{"dry-run":{"type":"bool","flag":"--dry-run"}}}
   }
 }`)
-	store := NewStore(path, testDefaults())
+	store := NewStore(path, testDefaults(), nil)
 
 	got, err := store.Load(context.Background())
 	if err != nil {
@@ -51,7 +51,7 @@ func TestLoadMergesFileOverDefaults(t *testing.T) {
 func TestLoadAcceptsLegacyBinAndKind(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "actions.json")
 	writeFile(t, path, `{"actions":{"lazygit":{"kind":"command","bin":"lazygit"}}}`)
-	store := NewStore(path, testDefaults())
+	store := NewStore(path, testDefaults(), nil)
 
 	got, err := store.Load(context.Background())
 	if err != nil {
@@ -78,7 +78,7 @@ func TestLoadInvalidFileErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "actions.json")
 			writeFile(t, path, tt.contents)
-			store := NewStore(path, testDefaults())
+			store := NewStore(path, testDefaults(), nil)
 			if _, err := store.Load(context.Background()); err == nil {
 				t.Fatal("Load err = nil, want error")
 			}
@@ -89,7 +89,7 @@ func TestLoadInvalidFileErrors(t *testing.T) {
 func TestGetReportsOrigin(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "actions.json")
 	writeFile(t, path, `{"actions":{"codex":{"command":"/opt/codex","prompt":{}}}}`)
-	store := NewStore(path, testDefaults())
+	store := NewStore(path, testDefaults(), nil)
 
 	_, origin, err := store.Get(context.Background(), "claude")
 	if err != nil {
@@ -114,7 +114,7 @@ func TestGetReportsOrigin(t *testing.T) {
 func TestCreateRejectsDuplicateName(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "actions.json")
 	writeFile(t, path, `{"actions":{"custom":{"command":"echo"}}}`)
-	store := NewStore(path, testDefaults())
+	store := NewStore(path, testDefaults(), nil)
 
 	action := session.Action{Command: "echo"}
 	if err := store.Create(context.Background(), "claude", action); !errors.Is(err, ErrDuplicate) {
@@ -127,7 +127,7 @@ func TestCreateRejectsDuplicateName(t *testing.T) {
 
 func TestUpdateOverridesBuiltinAndCreateCustom(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "actions.json")
-	store := NewStore(path, testDefaults())
+	store := NewStore(path, testDefaults(), nil)
 
 	if err := store.Update(context.Background(), "codex", session.Action{
 		Command: "/opt/codex",
@@ -160,7 +160,7 @@ func TestUpdateOverridesBuiltinAndCreateCustom(t *testing.T) {
 
 func TestUpdateEqualDefaultDropsOverlay(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "actions.json")
-	store := NewStore(path, testDefaults())
+	store := NewStore(path, testDefaults(), nil)
 	defaultCodex := session.Action{
 		Command: "codex",
 		Prompt:  &session.PromptSpec{},
@@ -209,7 +209,7 @@ func TestUpdateEqualDefaultDropsOverlay(t *testing.T) {
 
 func TestDeleteRevertsOverrideAndRejectsBareBuiltin(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "actions.json")
-	store := NewStore(path, testDefaults())
+	store := NewStore(path, testDefaults(), nil)
 	if err := store.Update(context.Background(), "codex", session.Action{
 		Command: "/opt/codex",
 		Prompt:  &session.PromptSpec{},
@@ -238,7 +238,7 @@ func TestDeleteRevertsOverrideAndRejectsBareBuiltin(t *testing.T) {
 
 func TestSetEnabledTogglesBuiltinWithoutChangingOrigin(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "actions.json")
-	store := NewStore(path, testDefaults())
+	store := NewStore(path, testDefaults(), nil)
 
 	if err := store.SetEnabled(context.Background(), "codex", false); err != nil {
 		t.Fatalf("SetEnabled false: %v", err)
@@ -271,7 +271,7 @@ func TestSetEnabledTogglesBuiltinWithoutChangingOrigin(t *testing.T) {
 
 func TestSetEnabledKeepsCustomizationOriginModified(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "actions.json")
-	store := NewStore(path, testDefaults())
+	store := NewStore(path, testDefaults(), nil)
 	if err := store.Update(context.Background(), "codex", session.Action{
 		Command: "/opt/codex",
 		Prompt:  &session.PromptSpec{},
@@ -294,7 +294,7 @@ func TestSetEnabledKeepsCustomizationOriginModified(t *testing.T) {
 
 func TestSetEnabledCustomAndMissing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "actions.json")
-	store := NewStore(path, testDefaults())
+	store := NewStore(path, testDefaults(), nil)
 	if err := store.Update(context.Background(), "custom", session.Action{Command: "echo"}); err != nil {
 		t.Fatalf("Update custom: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestSlugify(t *testing.T) {
 }
 
 func TestWriteValidation(t *testing.T) {
-	store := NewStore(filepath.Join(t.TempDir(), "actions.json"), testDefaults())
+	store := NewStore(filepath.Join(t.TempDir(), "actions.json"), testDefaults(), nil)
 	tests := []struct {
 		name   string
 		action session.Action
@@ -358,7 +358,7 @@ func TestWriteValidation(t *testing.T) {
 func TestWriteUsesTemporaryFileRename(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "actions.json")
-	store := NewStore(path, testDefaults())
+	store := NewStore(path, testDefaults(), nil)
 
 	if err := store.Update(context.Background(), "custom", session.Action{Command: "echo"}); err != nil {
 		t.Fatalf("Update: %v", err)

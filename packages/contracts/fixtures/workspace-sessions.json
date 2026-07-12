@@ -1,0 +1,28 @@
+{
+  "routes": [
+    "GET /workspaces/{id}/sessions"
+  ],
+  "response": {
+    "sessions": [
+      {
+        "id": "ses_fixture01",
+        "name": "Fix the login bug",
+        "action": "claude",
+        "environment": "zsh",
+        "workingDir": "/home/dev/projects/atelier",
+        "status": "running",
+        "attachable": true,
+        "createdAt": "2026-07-09T12:34:56.789Z",
+        "updatedAt": "2026-07-09T12:35:00Z",
+        "workspace": {
+          "id": "wsp_fixture01",
+          "name": "Login bug"
+        },
+        "project": {
+          "id": "prj_fixture01",
+          "name": "Atelier"
+        }
+      }
+    ]
+  }
+}

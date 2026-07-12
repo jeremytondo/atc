@@ -9,16 +9,16 @@ import (
 
 	"github.com/jeremytondo/atc/internal/project"
 	"github.com/jeremytondo/atc/internal/session"
+	"github.com/jeremytondo/atc/internal/workspace"
 )
 
 type startRequest struct {
+	WorkspaceID string         `json:"workspaceId"`
 	Action      string         `json:"action"`
 	Environment string         `json:"environment"`
 	Params      map[string]any `json:"params"`
-	WorkingDir  string         `json:"workingDir"`
 	Prompt      string         `json:"prompt"`
 	Name        string         `json:"name"`
-	ProjectID   string         `json:"projectId"`
 }
 
 type sendTextRequest struct {
@@ -36,50 +36,58 @@ type SessionListResponse struct {
 	Sessions []SessionListItem `json:"sessions"`
 }
 
-// SessionListItem is the wire shape of one session in list responses.
+// SessionListItem is the wire shape of one session in list responses. Action
+// is omitted for Interactive Shell sessions (a null action on the wire).
 type SessionListItem struct {
-	ID            string          `json:"id"`
-	Name          string          `json:"name,omitempty"`
-	Action        string          `json:"action"`
-	Environment   string          `json:"environment"`
-	WorkingDir    string          `json:"workingDir"`
-	Status        string          `json:"status"`
-	Attachable    bool            `json:"attachable"`
-	FailureReason string          `json:"failureReason,omitempty"`
-	FailureCode   string          `json:"failureCode,omitempty"`
-	CreatedAt     string          `json:"createdAt"`
-	UpdatedAt     string          `json:"updatedAt"`
-	TerminatedAt  *string         `json:"terminatedAt,omitempty"`
-	ArchivedAt    *string         `json:"archivedAt,omitempty"`
-	Project       *SessionProject `json:"project,omitempty"`
+	ID            string            `json:"id"`
+	Name          string            `json:"name,omitempty"`
+	Action        string            `json:"action,omitempty"`
+	Environment   string            `json:"environment"`
+	WorkingDir    string            `json:"workingDir"`
+	Status        string            `json:"status"`
+	Attachable    bool              `json:"attachable"`
+	FailureReason string            `json:"failureReason,omitempty"`
+	FailureCode   string            `json:"failureCode,omitempty"`
+	CreatedAt     string            `json:"createdAt"`
+	UpdatedAt     string            `json:"updatedAt"`
+	TerminatedAt  *string           `json:"terminatedAt,omitempty"`
+	ArchivedAt    *string           `json:"archivedAt,omitempty"`
+	Workspace     *SessionWorkspace `json:"workspace,omitempty"`
+	Project       *SessionProject   `json:"project,omitempty"`
 }
 
-// SessionProject is the project object nested on project-scoped sessions.
+// SessionWorkspace is the workspace object nested on sessions.
+type SessionWorkspace struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// SessionProject is the derived project object nested on sessions, kept so
+// clients that group by project keep working.
 type SessionProject struct {
-	ID         string  `json:"id"`
-	Name       string  `json:"name"`
-	WorkingDir string  `json:"workingDir"`
-	ArchivedAt *string `json:"archivedAt,omitempty"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // SessionDetail is the wire shape of session detail responses.
 type SessionDetail struct {
-	ID            string          `json:"id"`
-	Name          string          `json:"name,omitempty"`
-	Action        string          `json:"action"`
-	Environment   string          `json:"environment"`
-	Params        map[string]any  `json:"params"`
-	WorkingDir    string          `json:"workingDir"`
-	Prompt        string          `json:"prompt,omitempty"`
-	Status        string          `json:"status"`
-	Attachable    bool            `json:"attachable"`
-	FailureReason string          `json:"failureReason,omitempty"`
-	FailureCode   string          `json:"failureCode,omitempty"`
-	CreatedAt     string          `json:"createdAt"`
-	UpdatedAt     string          `json:"updatedAt"`
-	TerminatedAt  *string         `json:"terminatedAt,omitempty"`
-	ArchivedAt    *string         `json:"archivedAt,omitempty"`
-	Project       *SessionProject `json:"project,omitempty"`
+	ID            string            `json:"id"`
+	Name          string            `json:"name,omitempty"`
+	Action        string            `json:"action,omitempty"`
+	Environment   string            `json:"environment"`
+	Params        map[string]any    `json:"params"`
+	WorkingDir    string            `json:"workingDir"`
+	Prompt        string            `json:"prompt,omitempty"`
+	Status        string            `json:"status"`
+	Attachable    bool              `json:"attachable"`
+	FailureReason string            `json:"failureReason,omitempty"`
+	FailureCode   string            `json:"failureCode,omitempty"`
+	CreatedAt     string            `json:"createdAt"`
+	UpdatedAt     string            `json:"updatedAt"`
+	TerminatedAt  *string           `json:"terminatedAt,omitempty"`
+	ArchivedAt    *string           `json:"archivedAt,omitempty"`
+	Workspace     *SessionWorkspace `json:"workspace,omitempty"`
+	Project       *SessionProject   `json:"project,omitempty"`
 }
 
 func (routes apiRoutes) startSession(w http.ResponseWriter, r *http.Request) {
@@ -90,29 +98,19 @@ func (routes apiRoutes) startSession(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.Action == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request", "action is required")
+	if strings.TrimSpace(req.WorkspaceID) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "workspaceId is required")
 		return
 	}
-	hasWorkingDir := strings.TrimSpace(req.WorkingDir) != ""
-	hasProject := strings.TrimSpace(req.ProjectID) != ""
-	if hasWorkingDir && hasProject {
-		writeError(w, http.StatusBadRequest, "invalid_request", "workingDir and projectId are mutually exclusive; a project session inherits the project's directory")
-		return
-	}
-	if !hasWorkingDir && !hasProject {
-		writeError(w, http.StatusBadRequest, "invalid_request", "workingDir or projectId is required")
-		return
-	}
-
+	// action is optional: omitted, the server launches the Interactive Shell.
+	// params and prompt are rejected by the domain when action is omitted.
 	started, err := routes.sessions.Start(r.Context(), session.StartInput{
+		WorkspaceID: req.WorkspaceID,
 		Action:      req.Action,
 		Environment: req.Environment,
 		Params:      req.Params,
-		WorkingDir:  req.WorkingDir,
 		Prompt:      req.Prompt,
 		Name:        req.Name,
-		ProjectID:   req.ProjectID,
 	})
 	if err != nil {
 		writeSessionError(w, err)
@@ -131,7 +129,7 @@ func (routes apiRoutes) listSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	statusFilter := session.Status(r.URL.Query().Get("status"))
-	sessions, err := routes.sessions.List(r.Context(), includeArchived, statusFilter, "")
+	sessions, err := routes.sessions.List(r.Context(), includeArchived, statusFilter, session.ListScope{})
 	if err != nil {
 		writeSessionError(w, err)
 		return
@@ -213,6 +211,29 @@ func (routes apiRoutes) archiveSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, detailResponse(archived))
 }
 
+func (routes apiRoutes) unarchiveSession(w http.ResponseWriter, r *http.Request) {
+	if !routes.requireSessions(w) {
+		return
+	}
+	unarchived, err := routes.sessions.Unarchive(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeSessionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, detailResponse(unarchived))
+}
+
+func (routes apiRoutes) deleteSession(w http.ResponseWriter, r *http.Request) {
+	if !routes.requireSessions(w) {
+		return
+	}
+	if err := routes.sessions.Delete(r.Context(), r.PathValue("id")); err != nil {
+		writeSessionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct{}{})
+}
+
 func (routes apiRoutes) requireSessions(w http.ResponseWriter) bool {
 	if routes.sessions != nil {
 		return true
@@ -244,8 +265,14 @@ func writeSessionError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_params", err.Error())
 	case errors.Is(err, session.ErrInvalidWorkingDir):
 		writeError(w, http.StatusBadRequest, "invalid_working_dir", err.Error())
-	// project_not_found is a 400 on start (mirroring unknown_action): the
-	// request body, not the URL, named the missing project.
+	// workspace_not_found is a 400 on start (mirroring unknown_action): the
+	// request body, not the URL, named the missing workspace.
+	case errors.Is(err, workspace.ErrWorkspaceNotFound):
+		writeError(w, http.StatusBadRequest, "workspace_not_found", err.Error())
+	case errors.Is(err, workspace.ErrInvalidWorkspace):
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+	case errors.Is(err, workspace.ErrWorkspaceArchived):
+		writeError(w, http.StatusConflict, "workspace_archived", err.Error())
 	case errors.Is(err, project.ErrProjectNotFound):
 		writeError(w, http.StatusBadRequest, "project_not_found", err.Error())
 	case errors.Is(err, project.ErrProjectArchived):
@@ -285,6 +312,7 @@ func listItemResponse(s session.Session) SessionListItem {
 		UpdatedAt:     formatTime(s.UpdatedAt),
 		TerminatedAt:  formatOptionalTime(s.TerminatedAt),
 		ArchivedAt:    formatOptionalTime(s.ArchivedAt),
+		Workspace:     sessionWorkspaceResponse(s.Workspace),
 		Project:       sessionProjectResponse(s.Project),
 	}
 }
@@ -306,20 +334,23 @@ func detailResponse(s session.Session) SessionDetail {
 		UpdatedAt:     formatTime(s.UpdatedAt),
 		TerminatedAt:  formatOptionalTime(s.TerminatedAt),
 		ArchivedAt:    formatOptionalTime(s.ArchivedAt),
+		Workspace:     sessionWorkspaceResponse(s.Workspace),
 		Project:       sessionProjectResponse(s.Project),
 	}
+}
+
+func sessionWorkspaceResponse(ref *session.WorkspaceRef) *SessionWorkspace {
+	if ref == nil {
+		return nil
+	}
+	return &SessionWorkspace{ID: ref.ID, Name: ref.Name}
 }
 
 func sessionProjectResponse(ref *session.ProjectRef) *SessionProject {
 	if ref == nil {
 		return nil
 	}
-	return &SessionProject{
-		ID:         ref.ID,
-		Name:       ref.Name,
-		WorkingDir: ref.WorkingDir,
-		ArchivedAt: formatOptionalTime(ref.ArchivedAt),
-	}
+	return &SessionProject{ID: ref.ID, Name: ref.Name}
 }
 
 func formatTime(t time.Time) string {
