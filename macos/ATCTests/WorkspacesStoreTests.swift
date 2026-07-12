@@ -119,7 +119,8 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
     }
 
     /// Failing the sessions fetch flips the whole connection unreachable
-    /// (reachability derives from the projects + sessions refreshes).
+    /// (reachability requires every fetch in the combined refresh to
+    /// succeed).
     var failSessions: Bool {
         get { lock.withLock { _failSessions } }
         set { lock.withLock { _failSessions = newValue } }

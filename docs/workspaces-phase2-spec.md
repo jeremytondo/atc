@@ -65,8 +65,9 @@ merge → `scheduleRefresh`). It fetches `client.workspaces(projectID: nil,
 includeArchived: true)` — one call per Connection, exactly what the Dashboard
 needs — and exposes `create`, `rename`, `archive`, `unarchive`, `delete`.
 
-`ConnectionRuntime.refresh()` fetches projects, workspaces, and sessions
-concurrently; `reachability` derivation is unchanged.
+`ConnectionRuntime.refresh()` fetches projects, workspaces, sessions, and
+actions concurrently; a Connection is reachable iff the whole combined
+refresh succeeded.
 
 ### Archived filtering moves to the view layer
 

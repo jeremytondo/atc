@@ -80,19 +80,17 @@ final class ConnectionRuntime: Identifiable {
         pollTask = nil
     }
 
-    /// One combined refresh of all four stores; reachability reflects the
-    /// outcome. The derivation deliberately stays projects + sessions:
-    /// actions are excluded so a registry hiccup doesn't flag the whole
-    /// Connection red, and workspaces are excluded so a server predating
-    /// the workspace routes still reads as reachable. The requests
-    /// interleave on I/O.
+    /// One combined refresh of all four stores; the Connection is
+    /// reachable iff the whole refresh succeeded. The requests interleave
+    /// on I/O.
     func refresh() async {
         async let projectsDone: Void = projects.refresh()
         async let sessionsDone: Void = sessions.refresh()
         async let workspacesDone: Void = workspaces.refresh()
         async let actionsDone: Void = actions.refresh()
         _ = await (projectsDone, sessionsDone, workspacesDone, actionsDone)
-        reachability = (projects.lastError == nil && sessions.lastError == nil)
+        reachability = (projects.lastError == nil && sessions.lastError == nil
+            && workspaces.lastError == nil && actions.lastError == nil)
             ? .connected
             : .unreachable
     }
