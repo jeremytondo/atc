@@ -91,6 +91,19 @@ enum ConnectionURL {
         parse(raw)?.urlString
     }
 
+    /// Local/remote context for the Dashboard's Connection sections: a
+    /// loopback host reads "Local"; anything else reads as the remote host.
+    static func contextLabel(for urlString: String) -> String {
+        guard let origin = parse(urlString) else { return urlString }
+        // URLComponents may keep an IPv6 host's brackets ("[::1]").
+        let host = origin.host.lowercased()
+            .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+            return "Local"
+        }
+        return origin.host
+    }
+
     /// Whether `candidate` (a raw or normalized URL) duplicates any of
     /// `records` — same lowercased host and same effective port, scheme
     /// ignored. `excludingID`, when set, is skipped (a record never conflicts

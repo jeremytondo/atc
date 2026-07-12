@@ -4,10 +4,10 @@ import Testing
 import ATCAPI
 @testable import ATC
 
-/// Hosts the project-first sidebar and the create sheets in a real window
-/// and pumps the run loop — catches List/DisclosureGroup diff crashes
+/// Hosts the Dashboard and the creation sheets in a real window and pumps
+/// the run loop — catches List diff crashes and invalid Picker selections
 /// previews can't attribute (same rationale as PickerHostingSmokeTest).
-@Suite("Project UI hosting smoke")
+@Suite("Dashboard and sheet hosting smoke")
 struct ProjectUIHostingSmokeTest {
     private func pump(seconds: TimeInterval) {
         RunLoop.main.run(until: Date(timeIntervalSinceNow: seconds))
@@ -29,48 +29,40 @@ struct ProjectUIHostingSmokeTest {
     /// instead of asserting right after one refresh.
     private func waitForData(_ runtime: ConnectionRuntime) async {
         for _ in 0..<100 {
-            if !runtime.projects.projects.isEmpty && !runtime.sessions.sessions.isEmpty { return }
+            if !runtime.projects.projects.isEmpty
+                && !runtime.workspaces.workspaces.isEmpty
+                && !runtime.sessions.sessions.isEmpty { return }
             try? await Task.sleep(for: .milliseconds(20))
         }
     }
 
-    @Test("sidebar renders projects with nested sessions without crashing")
-    func hostSidebar() async throws {
+    private func dashboard(_ appModel: AppModel) -> some View {
+        DashboardView(onOpenWorkspace: { _ in }, onCreateWorkspace: { _ in }, onCreateProject: {})
+            .environment(appModel)
+    }
+
+    @Test("dashboard renders one populated connection without crashing")
+    func hostDashboard() async throws {
         let appModel = AppModel.preview()
         let runtime = try #require(appModel.runtimes.first)
         await waitForData(runtime)
         #expect(!runtime.projects.projects.isEmpty)
-        #expect(!runtime.sessions.sessions.isEmpty)
-        host(
-            ProjectSidebarView(
-                selection: .constant(nil),
-                searchText: "",
-                connectedRefs: [],
-                newSessionContext: .constant(nil)
-            )
-            .environment(appModel),
-            width: 280, height: 520
-        )
+        #expect(!runtime.workspaces.workspaces.isEmpty)
+        host(dashboard(appModel), width: 700, height: 560)
     }
 
-    @Test("sidebar renders filtered by search without crashing")
-    func hostSidebarSearching() async throws {
-        let appModel = AppModel.preview()
-        if let runtime = appModel.runtimes.first { await waitForData(runtime) }
-        host(
-            ProjectSidebarView(
-                selection: .constant(nil),
-                searchText: "atelier",
-                connectedRefs: [],
-                newSessionContext: .constant(nil)
-            )
-            .environment(appModel),
-            width: 280, height: 520
-        )
+    @Test("dashboard renders two connections without crashing")
+    func hostDashboardTwoConnections() async throws {
+        let appModel = AppModel.preview(connections: [
+            (name: "Workstation", client: MockATCClient()),
+            (name: "Laptop", client: MockATCClient()),
+        ])
+        for runtime in appModel.runtimes { await waitForData(runtime) }
+        host(dashboard(appModel), width: 700, height: 560)
     }
 
-    @Test("sidebar renders the no-connections empty state without crashing")
-    func hostSidebarNoConnections() async throws {
+    @Test("dashboard renders the no-connections empty state without crashing")
+    func hostDashboardNoConnections() async throws {
         let suite = "ProjectUIHostingSmokeTest.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defaults.removePersistentDomain(forName: suite)
@@ -79,16 +71,7 @@ struct ProjectUIHostingSmokeTest {
             clientFactory: { _ in MockATCClient() }
         )
         #expect(appModel.runtimes.isEmpty)
-        host(
-            ProjectSidebarView(
-                selection: .constant(nil),
-                searchText: "",
-                connectedRefs: [],
-                newSessionContext: .constant(nil)
-            )
-            .environment(appModel),
-            width: 280, height: 520
-        )
+        host(dashboard(appModel), width: 700, height: 560)
     }
 
     @Test("create-project sheet hosts without crashing")
@@ -99,28 +82,37 @@ struct ProjectUIHostingSmokeTest {
         )
     }
 
-    @Test("create-project sheet with two connections hosts without crashing")
-    func hostCreateProjectMultiConnection() async throws {
-        host(
-            CreateProjectSheet()
-                .environment(AppModel.preview(connections: [
-                    (name: "Workstation", client: MockATCClient()),
-                    (name: "Laptop", client: MockATCClient()),
-                ]))
-        )
-    }
-
-    @Test("create-session sheet loads actions without crashing")
-    func hostCreateSession() async throws {
+    @Test("create-workspace sheet hosts in all three contexts without crashing")
+    func hostCreateWorkspace() async throws {
         let appModel = AppModel.preview()
         let runtime = try #require(appModel.runtimes.first)
         await waitForData(runtime)
-        let project = try #require(runtime.projects.projects.first)
+        let ref = ProjectRef(connectionID: runtime.id, projectID: "prj_atelier")
         host(
-            CreateSessionSheet(context: NewSessionContext(
-                connectionID: runtime.id, project: project
-            ))
-            .environment(appModel)
+            CreateWorkspaceSheet(context: CreateWorkspaceContext(mode: .fixed(ref)))
+                .environment(appModel)
         )
+        host(
+            CreateWorkspaceSheet(context: CreateWorkspaceContext(mode: .preselected(ref)))
+                .environment(appModel)
+        )
+        host(
+            CreateWorkspaceSheet(context: CreateWorkspaceContext(mode: .free))
+                .environment(appModel)
+        )
+    }
+
+    @Test("new-session and new-terminal sheets host without crashing")
+    func hostStartSessionSheets() async throws {
+        let appModel = AppModel.preview()
+        let runtime = try #require(appModel.runtimes.first)
+        await waitForData(runtime)
+        // Actions arrive with the poll cycle; wait so the picker has data.
+        for _ in 0..<100 where runtime.actions.actions.isEmpty {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        let ref = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
+        host(StartWorkspaceSessionSheet(kind: .agentSession, workspaceRef: ref).environment(appModel))
+        host(StartWorkspaceSessionSheet(kind: .terminal, workspaceRef: ref).environment(appModel))
     }
 }

@@ -1,0 +1,103 @@
+import Foundation
+import ATCAPI
+
+/// The Dashboard's grouping across Connections, computed once per render
+/// (mirrors the old `SidebarGroups` pattern). Ordering rules:
+///
+/// - Sections follow Connection creation order (the runtimes array).
+/// - Project cards follow each Connection's server ordering; archived
+///   Projects appear only when `showArchived`.
+/// - Workspace rows are newest-created-first within their card; archived
+///   Workspaces appear only when `showArchived`.
+///
+/// Session inputs are joined by workspace ID to gate Archive (no active
+/// sessions) and to fill the delete confirmation's local-store counts.
+struct DashboardGroups {
+    struct ConnectionInput {
+        let connection: ConnectionRecord
+        let projects: [Project]
+        let workspaces: [Workspace]
+        let sessions: [Session]
+    }
+
+    struct WorkspaceRow: Identifiable {
+        let ref: WorkspaceRef
+        let workspace: Workspace
+        /// Any known session is `starting`/`running` — gates Archive.
+        let hasActiveSessions: Bool
+        /// Local-store counts for the delete confirmation.
+        let sessionCount: Int
+        let activeSessionCount: Int
+        var id: WorkspaceRef { ref }
+    }
+
+    struct ProjectCard: Identifiable {
+        let ref: ProjectRef
+        let project: Project
+        let rows: [WorkspaceRow]
+        /// Counts every Workspace, including ones hidden by the archived
+        /// filter — gates Delete Project (zero required).
+        let totalWorkspaceCount: Int
+        /// Any unarchived Workspace left — gates Archive Project.
+        let hasUnarchivedWorkspaces: Bool
+        var id: ProjectRef { ref }
+    }
+
+    struct Section: Identifiable {
+        let connectionID: UUID
+        let connectionName: String
+        /// Local/remote context ("Local" or the remote host).
+        let contextLabel: String
+        let cards: [ProjectCard]
+        var id: UUID { connectionID }
+    }
+
+    private(set) var sections: [Section] = []
+
+    /// True when no section has any card (drives the all-empty overlay).
+    var isEmpty: Bool { sections.allSatisfy(\.cards.isEmpty) }
+
+    init(inputs: [ConnectionInput], showArchived: Bool) {
+        for input in inputs {
+            let workspacesByProject = Dictionary(grouping: input.workspaces, by: \.projectId)
+            let sessionsByWorkspace = Dictionary(grouping: input.sessions, by: { $0.workspace?.id })
+            var cards: [ProjectCard] = []
+            for project in input.projects {
+                if project.isArchived && !showArchived { continue }
+                let all = workspacesByProject[project.id] ?? []
+                let rows = all
+                    .filter { showArchived || !$0.isArchived }
+                    .sorted { $0.createdAt > $1.createdAt }
+                    .map { workspace in
+                        let members = sessionsByWorkspace[workspace.id] ?? []
+                        let active = members.filter {
+                            $0.status == .starting || $0.status == .running
+                        }
+                        return WorkspaceRow(
+                            ref: WorkspaceRef(
+                                connectionID: input.connection.id,
+                                workspaceID: workspace.id
+                            ),
+                            workspace: workspace,
+                            hasActiveSessions: !active.isEmpty,
+                            sessionCount: members.count,
+                            activeSessionCount: active.count
+                        )
+                    }
+                cards.append(ProjectCard(
+                    ref: ProjectRef(connectionID: input.connection.id, projectID: project.id),
+                    project: project,
+                    rows: rows,
+                    totalWorkspaceCount: all.count,
+                    hasUnarchivedWorkspaces: all.contains { !$0.isArchived }
+                ))
+            }
+            sections.append(Section(
+                connectionID: input.connection.id,
+                connectionName: input.connection.name,
+                contextLabel: ConnectionURL.contextLabel(for: input.connection.urlString),
+                cards: cards
+            ))
+        }
+    }
+}

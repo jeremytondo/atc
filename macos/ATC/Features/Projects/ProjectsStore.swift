@@ -19,21 +19,19 @@ final class ProjectsStore {
         }
     }
 
+    /// Always includes archived projects; surfaces filter locally (the
+    /// Dashboard's Show Archived toggle).
     private(set) var projects: [Project] = []
     private(set) var isLoading = false
     private(set) var hasLoadedOnce = false
     var lastError: String?
-    var includeArchived = false {
-        didSet { scheduleRefresh() }
-    }
 
     /// Monotonic token: a slow in-flight refresh must not clobber the
-    /// result of a newer one (e.g. a stale includeArchived=true response
-    /// landing after the toggle turned off).
+    /// result of a newer one.
     private var refreshGeneration = 0
 
-    /// The one owned follow-up refresh (post-mutation or filter change);
-    /// superseded follow-ups are cancelled instead of piling up.
+    /// The one owned follow-up refresh (post-mutation); superseded
+    /// follow-ups are cancelled instead of piling up.
     private var followUpRefresh: Task<Void, Never>?
 
     init(client: any ATCClient) {
@@ -54,7 +52,7 @@ final class ProjectsStore {
             }
         }
         do {
-            let fetched = try await client.projects(includeArchived: includeArchived)
+            let fetched = try await client.projects(includeArchived: true)
             guard generation == refreshGeneration else { return }
             projects = fetched
             lastError = nil
@@ -106,18 +104,21 @@ final class ProjectsStore {
         return project
     }
 
+    /// Deletes a project record (server-allowed only once it has zero
+    /// workspaces). Removes the row locally on success instead of merging.
+    func delete(id: String) async throws {
+        try await client.deleteProject(id: id)
+        projects.removeAll { $0.id == id }
+        scheduleRefresh()
+    }
+
     func project(id: String) -> Project? {
         projects.first { $0.id == id }
     }
 
     private func merge(_ project: Project) {
         if let index = projects.firstIndex(where: { $0.id == project.id }) {
-            // A just-archived project drops out of the default filter.
-            if project.isArchived && !includeArchived {
-                projects.remove(at: index)
-            } else {
-                projects[index] = project
-            }
+            projects[index] = project
         } else {
             projects.insert(project, at: 0)
         }

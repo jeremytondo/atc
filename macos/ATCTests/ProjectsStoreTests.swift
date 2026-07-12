@@ -12,26 +12,13 @@ import ATCAPI
 /// refreshes from resurrecting pre-mutation fixtures mid-test.
 @Suite("ProjectsStore")
 struct ProjectsStoreTests {
-    @Test("refresh loads active projects only by default")
-    func refreshFiltersArchived() async throws {
+    @Test("refresh always loads archived projects too; views filter locally")
+    func refreshIncludesArchived() async throws {
         let store = ProjectsStore(client: MockATCClient())
         await store.refresh()
         #expect(store.hasLoadedOnce)
         #expect(store.lastError == nil)
-        #expect(store.projects.count == 2)
-        #expect(store.projects.allSatisfy { !$0.isArchived })
-    }
-
-    @Test("includeArchived surfaces archived projects")
-    func includeArchived() async throws {
-        let store = ProjectsStore(client: MockATCClient())
-        // didSet fires its own unawaited refresh, which may supersede an
-        // explicitly awaited one — so wait for convergence instead.
-        store.includeArchived = true
-        for _ in 0..<200 where store.projects.count != 3 {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(store.projects.count == 3)
+        #expect(store.projects.count == 4)
         #expect(store.projects.contains { $0.id == "prj_scratch" && $0.isArchived })
     }
 
@@ -46,12 +33,21 @@ struct ProjectsStoreTests {
         #expect(store.projects.contains { $0.id == first.id })
     }
 
-    @Test("archive drops the project from the default filter")
-    func archiveDrops() async throws {
+    @Test("archive keeps the project in the list; views hide it locally")
+    func archiveKeepsRow() async throws {
         let store = ProjectsStore(client: StatefulProjectsClient())
         await store.refresh()
         let target = try #require(store.projects.first)
         try await store.archive(id: target.id)
+        #expect(store.project(id: target.id)?.isArchived == true)
+    }
+
+    @Test("delete removes the project row locally")
+    func deleteRemoves() async throws {
+        let store = ProjectsStore(client: StatefulProjectsClient())
+        await store.refresh()
+        let target = try #require(store.projects.first)
+        try await store.delete(id: target.id)
         #expect(!store.projects.contains { $0.id == target.id })
     }
 
@@ -226,6 +222,15 @@ final class StatefulProjectsClient: ATCClient, @unchecked Sendable {
         try mutate(id) { $0.archivedAt = nil }
     }
 
+    func deleteProject(id: String) async throws {
+        try withState { state in
+            guard state.contains(where: { $0.id == id }) else {
+                throw ATCError.api(code: "project_not_found", message: id, sessionID: nil)
+            }
+            state.removeAll { $0.id == id }
+        }
+    }
+
     private func mutate(_ id: String, _ change: (inout Project) -> Void) throws -> Project {
         try withState { state in
             guard let index = state.firstIndex(where: { $0.id == id }) else {
@@ -259,7 +264,6 @@ final class StatefulProjectsClient: ATCClient, @unchecked Sendable {
     func environments() async throws -> [ATCEnvironment] { [] }
     func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing { throw ATCError.badStatus(500) }
     func projectSessions(projectID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session] { [] }
-    func deleteProject(id: String) async throws { throw ATCError.badStatus(500) }
     func workspaces(projectID: String?, includeArchived: Bool) async throws -> [Workspace] { [] }
     func workspace(id: String) async throws -> Workspace { throw ATCError.badStatus(500) }
     func createWorkspace(projectID: String, name: String) async throws -> Workspace { throw ATCError.badStatus(500) }
