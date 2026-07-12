@@ -1,171 +1,178 @@
-# Keyboard Shortcuts Plan
+# Configurable Keyboard Shortcuts and Leader Key MVP Brief
 
-Status: Draft
+This brief supersedes the earlier fixed-shortcut plan. The MVP now prioritizes configurable, terminal-safe command routing; the command palette and sidebar-local Vim navigation are deferred.
 
-## Goals
+## Background
 
-atc should be comfortable to drive from the keyboard while preserving
-the Terminal Session as the primary typing surface. Defaults should combine
-macOS and IDE conventions with Vim-flavored navigation where it fits the native
-UI.
+atc should be comfortable to operate from the keyboard even when an embedded terminal has focus. It needs a useful set of compiled defaults while allowing users to override or disable them in `config.toml`.
 
-The first version should provide useful defaults, a command palette, and a
-keyboard shortcuts reference. It should not include user-configurable
-keybindings yet.
+The shortcut system should follow Ghostty's general model: stable application commands, trigger-to-command bindings, defaults layered with user configuration, one resolved keymap, centralized input dispatch, and native menus sourced from the same configuration. atc will add an explicit leader-key concept for concise, discoverable command sequences.
 
-## Product Rules
+Ghostty is the primary reference implementation for keybinding syntax, layering, sequence semantics, menu synchronization, and configuration behavior. When this brief does not specify an edge case, the MVP follows Ghostty where its behavior fits atc. Any deviation must be deliberate and documented—particularly where Ghostty can assume a focused terminal but atc must also support native app controls. When Ghostty's behavior does not transfer cleanly, atc chooses the simplest predictable behavior consistent with its terminal-safety rules.
 
-- Terminal Session focus sends ordinary typed keys to the terminal.
-- App-level Command-key shortcuts may work while a Terminal Session has focus.
-- Command aliases should share one command path whether invoked from a menu,
-  toolbar, keyboard shortcut, Atelier Command Sequence, or command palette.
-- `Cmd-K` starts an Atelier Command Sequence. The user releases `Cmd-K`, then
-  presses an unmodified next key that targets atc rather than the
-  terminal.
-- Atelier Command Sequence letters are case-insensitive. Documentation may display
-  them uppercase for readability, but Shift should not be required.
-- Documentation should display Atelier Command Sequences with a comma, such as
-  `Cmd-K, N`, to make the sequence clear.
-- Keeping Command held for the next key is not part of the Atelier Command
-  Sequence. It should be treated as a normal macOS Command-key shortcut.
-- An unmatched Atelier Command Sequence is swallowed, reports no matching command,
-  and does not forward the key to the Terminal Session.
-- The Atelier Command Sequence times out after about two seconds.
-- Pressing `Cmd-K` immediately shows a compact non-modal hint with common next
-  keys.
-- Unknown next keys show a brief visual "no command" indication. Sequence
-  timeout and explicit cancellation are silent.
-- `Esc` cancels an active Atelier Command Sequence and is not sent to the
-  terminal while the sequence is active.
-- Outside an active Atelier Command Sequence, `Esc` belongs to the focused
-  Terminal Session.
-- Modal sheets and forms suspend global shortcuts and Atelier Command Sequences
-  for v1. Their keyboard behavior should stay limited to normal text editing,
-  default actions, and cancellation.
-- Native menu and context-menu keyboard handling owns the keyboard while menus
-  are open.
+Unlike a modal editor, atc cannot reserve ordinary unmodified keys globally because embedded terminals must receive normal input immediately. The default leader will therefore be a modified key that temporarily enters a short-lived command sequence.
 
-## Default Shortcuts
+## Objective
 
-| Action | Shortcut |
-| --- | --- |
-| New Terminal Session | `Cmd-N`, `Cmd-K, N` |
-| New Project | `Shift-Cmd-N` |
-| Refresh Projects and Sessions | `Cmd-R`, `Cmd-K, R` |
-| Focus Sidebar | `Cmd-1`, `Cmd-K, 1` |
-| Focus Terminal | `Cmd-2`, `Cmd-K, 2` |
-| Toggle Inspector | `Cmd-I` |
-| Open Command Palette | `Shift-Cmd-P`, `Cmd-K, P` |
-| Show Keyboard Shortcuts | `Shift-Cmd-?`, `Cmd-K, ?` |
-| Open Settings | `Cmd-,` |
+Establish the base command and keybinding architecture, then prove it with a small set of configurable direct shortcuts and leader sequences that work reliably while the embedded terminal has focus.
 
-New Terminal Session uses the nearest Project context:
+## MVP Experience
 
-- If sidebar focus is on a Project, create the Terminal Session in that Project.
-- If sidebar focus is on a Terminal Session, create the new Terminal Session in
-  that Terminal Session's Project.
-- If the Terminal Session has focus, use the selected Terminal Session's
-  Project.
-- If there is no Project context, the command is disabled or does nothing.
+- Direct defaults:
+  - `Cmd-B`: Toggle Sidebar
+  - `Cmd-N`: New Session in the active Workspace
+  - `Cmd-R`: Refresh Projects, Workspaces, and Sessions
+- `Cmd-K` activates leader mode from normal app contexts, including when an embedded terminal has focus.
+- Leader mode displays a compact, non-modal hint generated from the resolved keymap. Available continuations show their key and command title; unavailable continuations remain visible but dimmed with the same short reason used by unavailable-command feedback.
+- Initial leader sequences:
+  - `Cmd-K, B`: Toggle Sidebar
+  - `Cmd-K, N`: New Session in the active Workspace
+  - `Cmd-K, R`: Refresh Projects, Workspaces, and Sessions
+- `Esc` cancels an active leader sequence.
+- An unmatched continuation is consumed, briefly indicates that no command matched, and is not sent to the terminal.
+- Leader mode expires silently after approximately two seconds.
+- Outside leader mode, ordinary terminal input—including `Esc`—continues to work unchanged.
 
-Refresh Projects and Sessions invokes the same command path as the toolbar
-Refresh action. Shortcut aliases should not define separate refresh behavior.
+## Command Model
 
-`Cmd-F`, `Cmd-P`, `Cmd-T`, `Cmd-L`, and `Cmd-W` are intentionally unassigned
-for atc-specific behavior in v1.
+Commands have stable identifiers independent of their shortcuts and UI locations. Initial identifiers include:
 
-## Sidebar Navigation
+- `view.toggle-sidebar`
+- `session.new`
+- `terminal.new`
+- `project.new`
+- `workspace.new`
+- `data.refresh`
+- `configuration.reload`
 
-Sidebar Vim-style navigation applies only while sidebar rows have focus. It
-does not apply while typing in search, rename, create, or settings fields.
+Each command has a descriptor containing its title, category, default bindings, menu placement, availability rules, and execution behavior. Menus, toolbars, direct shortcuts, leader sequences, and future command-palette entries invoke the same command path.
 
-| Key | Behavior |
-| --- | --- |
-| `j` / Down Arrow | Move the Focused Sidebar Row down |
-| `k` / Up Arrow | Move the Focused Sidebar Row up |
-| `h` / Left Arrow on expanded Project | Collapse Project |
-| `h` / Left Arrow on Terminal Session | Move focus to parent Project |
-| `l` / Right Arrow on collapsed Project | Expand Project |
-| `l` / Right Arrow on expanded Project | Move focus to first visible child session, if any |
-| `l` / Right Arrow on Terminal Session | Select/open Terminal Session |
-| `Enter` on Project | Expand/collapse Project |
-| `Enter` on Terminal Session | Select/open Terminal Session |
-| `/` | Focus sidebar search |
-| `Esc` in sidebar search | Clear query first; a second `Esc` returns focus to sidebar rows |
+Command availability is evaluated against the focused window context. `session.new` opens the same Agent Action selection flow as the visible New Session control and is unavailable without an active Workspace. `terminal.new`, `workspace.new`, and `project.new` represent their corresponding visible creation actions but have no compiled bindings in this MVP. Menus and toolbar controls display unavailable commands as disabled. Invoking an unavailable command through a configured binding consumes the event, executes nothing, and shows brief non-modal feedback explaining the required context; the keystroke is never sent to the embedded terminal.
 
-Sidebar navigation does not wrap at the top or bottom. If filtering removes the
-focused row, focus falls back to the first visible row. If there are no visible
-rows, sidebar navigation keys do nothing.
+### Native Menu Placement
 
-`gg`, `G`, `o`, `Space`, bare creation shortcuts, bare rename shortcuts, and
-destructive shortcuts are not included in v1 sidebar navigation.
+- **File**: New Project, New Workspace, New Session, and New Terminal.
+- **View**: Toggle Sidebar and Refresh.
+- **atc application menu**: Reload Configuration, near Settings.
 
-## Command Palette
+Unavailable creation commands remain visible but disabled. Each menu item invokes its command identifier through the registry rather than owning separate behavior.
 
-`Shift-Cmd-P` opens a minimal command palette from normal app contexts,
-including Terminal Session focus. `Cmd-K, P` is an alias through the Atelier
-Command Sequence.
+## Configuration Model
 
-The palette should list implemented app commands only. It should not introduce
-hidden functionality that is unavailable elsewhere in the UI.
+Configuration maps triggers to command identifiers, matching Ghostty's trigger-oriented model:
 
-Initial commands:
+atc reads configuration from `$XDG_CONFIG_HOME/atc/config.toml`, falling back to `~/.config/atc/config.toml` when `XDG_CONFIG_HOME` is unset. The MVP does not search additional locations.
 
-- New Terminal Session
-- New Project
-- Refresh Projects and Sessions
-- Focus Sidebar
-- Focus Terminal
-- Toggle Inspector
-- Show Keyboard Shortcuts
-- Open Settings
+```toml
+[keyboard]
+leader = "cmd+k"
+leader_timeout_ms = 1800
+clear_default_keybindings = false
 
-Contextually unavailable commands may remain visible but dimmed. Any reason
-shown for a disabled command should be short and unobtrusive.
+[keybindings]
+"cmd+b" = "view.toggle-sidebar"
+"leader>b" = "view.toggle-sidebar"
+"cmd+n" = "session.new"
+"leader>n" = "session.new"
+"cmd+r" = "data.refresh"
+"leader>r" = "data.refresh"
+```
 
-When the palette opens, its text input should be focused. Arrow keys and
-`Ctrl-N` / `Ctrl-P` may navigate results while the input remains focused.
-`Enter` runs the selected command. `Esc` closes the palette. Bare `j/k` should
-not navigate while the search field is focused.
+The symbolic `leader` token expands to the configured leader before the resolved keymap is built. The `>` character separates steps in a sequence, following Ghostty's notation.
 
-## Keyboard Shortcuts Reference
+`leader_timeout_ms` defaults to `1800` and accepts a positive integer number of milliseconds. A missing value uses the default; zero, negative, or non-integer values invalidate the candidate configuration with an actionable diagnostic.
 
-`Shift-Cmd-?` and `Cmd-K, ?` open a dedicated keyboard shortcuts reference. The
-reference should also be reachable from the command palette.
+The leader setting does not reserve a key by itself. Leader mode activates only when the resolved keymap contains at least one sequence under the expanded leader prefix; otherwise that key passes through normally and no hint is shown.
 
-The shortcuts reference should show all v1 shortcuts grouped by context:
+Compiled defaults use the same internal trigger-to-command representation. User configuration is layered over those defaults:
 
-- Global
-- Atelier Command Sequences
-- Sidebar
-- Terminal
-- Sheets and Forms
+- An omitted trigger retains its compiled default.
+- A user entry replaces the command assigned to the same trigger.
+- Assigning `"unbind"` removes that trigger.
+- `clear_default_keybindings = true` starts from an empty keymap.
+- Multiple triggers may invoke the same command.
+- A trigger resolves to only one command.
+- A trigger cannot resolve as both a direct command and a sequence prefix. This conflict invalidates the candidate keymap, including when leader expansion introduces it; diagnostics identify the trigger and require the user to unbind the direct shortcut or choose another leader.
+- Direct bindings and the configured leader must include at least one of `cmd`, `ctrl`, or `option`; `shift` alone does not qualify. Unmodified printable keys are accepted only as continuations after an active leader prefix. Bare and function-key direct bindings are deferred beyond the MVP.
+- A direct binding or leader that conflicts with a fixed non-registry macOS menu shortcut is invalid. The MVP does not replace standard application, Settings, editing, window, or terminal-native menu shortcuts; diagnostics identify the protected command and conflicting trigger.
+- The most recently configured eligible direct binding for a command appears as its native menu shortcut. "Most recently configured" means later in `config.toml`, so the loader preserves keybinding source order rather than collapsing entries into an unordered dictionary. Removing it falls back to another remaining eligible direct binding. Leader sequences are not eligible for menu display.
+- Unknown commands, invalid triggers, and ambiguous configuration produce useful diagnostics.
+- Invalid configuration must not prevent launch; atc retains the last valid keymap or safe compiled defaults.
 
-Intentional aliases should be shown explicitly. Menu-backed commands should
-show their menu paths. Sidebar-local keys should be documented as local
-interaction keys rather than menu commands.
+Example targeted override:
 
-## Menu Placement
+```toml
+[keybindings]
+"cmd+b" = "unbind"
+"cmd+shift+b" = "view.toggle-sidebar"
+```
 
-- File > New Terminal Session
-- File > New Project
-- View > Command Palette...
-- View > Refresh Projects and Sessions
-- View > Focus Sidebar
-- View > Focus Terminal
-- View > Toggle Inspector
-- Help > Keyboard Shortcuts
-- App menu > Settings
+## Architecture Requirements
 
-Settings should also be available in the command palette.
+- A command registry owns stable command metadata, availability, and execution.
+- A configuration store loads compiled defaults, applies user entries, validates them, and publishes an immutable resolved keymap.
+- All bindings are represented as key sequences internally; a direct shortcut is a one-step sequence.
+- The resolved keymap uses a prefix tree so direct shortcuts and shared sequence prefixes use the same lookup path.
+- A per-window keyboard router resolves events before the focused terminal consumes them.
+- The router forwards every unrelated event unchanged while no sequence is pending.
+- Single-stroke macOS shortcuts use native menu command handling where practical.
+- Native menu shortcut labels are synchronized from the resolved keymap rather than hard-coded separately.
+- Toolbar buttons and future palette entries invoke command identifiers directly rather than simulating shortcuts.
+- Pending leader and presentation state are scoped to the active window rather than stored in the application domain model.
+- Reloading configuration atomically replaces the resolved keymap, updates menus, and cancels any pending sequence.
+- The terminal integration remains behind its existing containment boundary so keyboard routing does not spread Ghostty-specific types throughout the app.
 
-## Explicit Non-Goals
+## Input Routing and Terminal Safety
 
-- User-configurable keybindings.
-- A settings file for shortcuts.
-- A full keybinding engine.
-- Conflict detection or remapping UI.
-- File quick-open or project/session quick-switch shortcuts.
-- Terminal buffer search.
-- Destructive lifecycle shortcuts for archiving, terminating, or deleting.
-- Disconnect shortcuts or command-palette actions.
+The MVP uses a local `NSEvent` key-down monitor owned by each atc window because the packaged `TerminalSurfaceView` constructs its Ghostty `NSView` internally. The monitor filters events to its key window and intercepts a configured sequence prefix, any event received while a sequence is pending, and direct bindings whose commands are currently unavailable. It is installed when the window becomes active and removed when that window closes; it does not require subclassing or modifying the packaged terminal view. Available one-step shortcuts continue through native menu key-equivalent handling.
+
+- Recognized direct shortcut: execute its command and consume the event.
+- Recognized leader prefix: consume it and enter the pending state.
+- Recognized continuation: execute its command and consume it.
+- Continuations, including modified keys, are resolved only within the pending sequence; they are not retried against the root keymap.
+- Unknown continuation: consume it, end the sequence, and show a brief no-match indication. This deliberately differs from Ghostty, which flushes an invalid sequence to the terminal; atc never leaks an activated leader sequence into terminal input.
+- `Esc` while pending: consume it and cancel.
+- Sequence timeout: cancel silently and forward nothing.
+- App or window focus loss: cancel the sequence.
+- While idle, unrelated keyboard events pass through unchanged.
+
+Leader activation, recognized continuations, cancellation, and unmatched continuations are never sent over the terminal connection. The MVP must not require macOS Accessibility permission or monitor input outside atc.
+
+## Configuration Reload and Diagnostics
+
+Configuration reload is an atomic operation:
+
+1. Read and parse `config.toml`.
+2. Expand symbolic leader bindings.
+3. Validate triggers, command identifiers, and conflicts.
+4. Build a complete resolved keymap.
+5. Replace the active keymap only when it is valid.
+6. Synchronize native menu shortcuts.
+7. Cancel any pending leader sequence.
+8. Report actionable diagnostics.
+
+atc loads configuration at launch. The MVP also provides an always-available Reload Configuration command in the native menu, backed by `configuration.reload`. It has no compiled shortcut or leader binding. Automatic file watching is not required.
+
+Every configuration failure is written to the system log with the configuration path and precise parse or validation diagnostics. The active window also shows one dismissible, non-modal notice explaining that configuration was not loaded and whether atc retained the previous keymap or restored compiled defaults. Failures do not present blocking alerts or one notice per diagnostic.
+
+## Non-Goals
+
+- A graphical keybinding editor.
+- A command palette or keyboard-shortcuts reference UI.
+- Sequences longer than the leader plus one continuation key.
+- Sidebar-local Vim navigation such as `j`, `k`, `h`, and `l`.
+- Automatic config file watching.
+- Global shortcuts that work while another application is active.
+- A bare, unmodified leader such as Space.
+- Ghostty-style global, all-surface, unconsumed, or catch-all binding flags.
+- Chained commands, physical-key bindings, or named key tables for full modal behavior.
+
+## Success Criteria
+
+- Users can toggle the sidebar with both `Cmd-B` and `Cmd-K, B` while the terminal has focus.
+- Normal terminal keystrokes are unaffected when no shortcut or sequence is active.
+- Initial bindings can be remapped, unbound, or cleared through `config.toml` without code changes.
+- Menus display the resolved direct shortcuts, and toolbar/menu invocations execute the same commands as keyboard bindings.
+- Unavailable commands are handled consistently and never leak shortcut input into the terminal.
+- Invalid configuration preserves a working keymap and produces a useful diagnostic.
+- Automated tests cover trigger parsing, default layering, replacement and unbinding, leader expansion, command availability, menu shortcut selection, sequence timeout and cancellation, unmatched keys, reload, and terminal event forwarding.
