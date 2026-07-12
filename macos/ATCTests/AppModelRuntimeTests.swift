@@ -287,18 +287,30 @@ struct AppModelRuntimeTests {
         #expect(model.runtimes.count == 1)
     }
 
-    @Test("includeArchived propagates to every runtime's stores, including rebuilt ones")
-    func includeArchivedPropagates() throws {
+    @Test("deleting a connection clears an open workspace pointing into it")
+    func deleteClearsOpenWorkspace() throws {
         let (model, _) = makeModel()
         let a = try model.addConnection(name: "A", urlString: "http://a:1", token: "")
-        try model.addConnection(name: "B", urlString: "http://b:1", token: "")
-        model.includeArchived = true
-        for runtime in model.runtimes {
-            #expect(runtime.projects.includeArchived)
-            #expect(runtime.sessions.includeArchived)
-        }
-        // A rebuilt runtime inherits the current filter.
-        try model.updateConnection(id: a.id, name: "A", urlString: "http://a:9", token: "")
-        #expect(model.runtime(id: a.id)!.projects.includeArchived)
+        let b = try model.addConnection(name: "B", urlString: "http://b:1", token: "")
+        model.openWorkspace = WorkspaceRef(connectionID: a.id, workspaceID: "wsp_parser")
+        model.removeConnection(id: b.id)
+        #expect(model.openWorkspace != nil)
+        model.removeConnection(id: a.id)
+        #expect(model.openWorkspace == nil)
+    }
+
+    @Test("runtime refresh loads workspaces and actions alongside projects and sessions")
+    func refreshLoadsWorkspacesAndActions() async throws {
+        let (model, _) = makeModel()
+        let a = try model.addConnection(name: "A", urlString: "http://a:1", token: "")
+        let runtime = model.runtime(id: a.id)!
+        runtime.stopPolling()
+        await runtime.refresh()
+        #expect(!runtime.workspaces.workspaces.isEmpty)
+        #expect(!runtime.actions.actions.isEmpty)
+        // Archived rows are always fetched; filtering is view-local now.
+        #expect(runtime.workspaces.workspaces.contains { $0.isArchived })
+        #expect(runtime.projects.projects.contains { $0.isArchived })
+        #expect(runtime.sessions.sessions.contains { $0.isArchived })
     }
 }

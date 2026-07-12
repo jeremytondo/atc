@@ -18,21 +18,19 @@ final class SessionsStore {
         }
     }
 
+    /// Always includes archived sessions; surfaces filter locally (the
+    /// Workspace shell's Archived toggle).
     private(set) var sessions: [Session] = []
     private(set) var isLoading = false
     private(set) var hasLoadedOnce = false
     var lastError: String?
-    var includeArchived = false {
-        didSet { scheduleRefresh() }
-    }
 
     /// Monotonic token: a slow in-flight refresh must not clobber the
-    /// result of a newer one (e.g. a stale includeArchived=true response
-    /// landing after the toggle turned off).
+    /// result of a newer one.
     private var refreshGeneration = 0
 
-    /// The one owned follow-up refresh (post-mutation or filter change);
-    /// superseded follow-ups are cancelled instead of piling up.
+    /// The one owned follow-up refresh (post-mutation); superseded
+    /// follow-ups are cancelled instead of piling up.
     private var followUpRefresh: Task<Void, Never>?
 
     init(client: any ATCClient) {
@@ -53,9 +51,7 @@ final class SessionsStore {
             }
         }
         do {
-            // Always fetch archived too when toggled; the server filters,
-            // the view groups.
-            let fetched = try await client.sessions(includeArchived: includeArchived, status: nil)
+            let fetched = try await client.sessions(includeArchived: true, status: nil)
             guard generation == refreshGeneration else { return }
             sessions = fetched
             lastError = nil
@@ -99,6 +95,23 @@ final class SessionsStore {
         return detail
     }
 
+    @discardableResult
+    func unarchive(id: String) async throws -> SessionDetail {
+        let detail = try await client.unarchiveSession(id: id)
+        merge(detail)
+        scheduleRefresh()
+        return detail
+    }
+
+    /// Deletes a session's metadata (the server terminates it first if
+    /// active — files are never touched). Removes the row locally on
+    /// success instead of merging.
+    func delete(id: String) async throws {
+        try await client.deleteSession(id: id)
+        sessions.removeAll { $0.id == id }
+        scheduleRefresh()
+    }
+
     func session(id: String) -> Session? {
         sessions.first { $0.id == id }
     }
@@ -106,12 +119,7 @@ final class SessionsStore {
     private func merge(_ detail: SessionDetail) {
         let session = detail.asSession
         if let index = sessions.firstIndex(where: { $0.id == session.id }) {
-            // A just-archived session drops out of the default filter.
-            if session.isArchived && !includeArchived {
-                sessions.remove(at: index)
-            } else {
-                sessions[index] = session
-            }
+            sessions[index] = session
         } else {
             sessions.insert(session, at: 0)
         }

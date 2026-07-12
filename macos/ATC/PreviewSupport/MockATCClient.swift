@@ -69,9 +69,18 @@ nonisolated struct MockATCClient: ATCClient {
             updatedAt: Date(timeIntervalSinceNow: -200000),
             archivedAt: Date(timeIntervalSinceNow: -100000)
         ),
+        // Active project with zero workspaces, for the Dashboard's inline
+        // "New Workspace" empty row.
+        Project(
+            id: "prj_notes",
+            name: "Notes",
+            workingDir: "/home/dev/Documents",
+            createdAt: Date(timeIntervalSinceNow: -250000),
+            updatedAt: Date(timeIntervalSinceNow: -250000)
+        ),
     ]
 
-    /// Stable-ID workspace fixtures, two per active project.
+    /// Stable-ID workspace fixtures; one archived for filter coverage.
     var mockWorkspaces: [Workspace] = [
         Workspace(
             id: "wsp_parser",
@@ -93,6 +102,14 @@ nonisolated struct MockATCClient: ATCClient {
             name: "Spike",
             createdAt: Date(timeIntervalSinceNow: -150000),
             updatedAt: Date(timeIntervalSinceNow: -30)
+        ),
+        Workspace(
+            id: "wsp_archived",
+            projectId: "prj_atelier",
+            name: "Old experiment",
+            createdAt: Date(timeIntervalSinceNow: -400000),
+            updatedAt: Date(timeIntervalSinceNow: -300000),
+            archivedAt: Date(timeIntervalSinceNow: -300000)
         ),
     ]
 
@@ -153,6 +170,62 @@ nonisolated struct MockATCClient: ATCClient {
             updatedAt: Date(timeIntervalSinceNow: -86400),
             terminatedAt: Date(timeIntervalSinceNow: -86400),
             workspace: MockATCClient.refactorRef,
+            project: MockATCClient.atelierRef
+        ),
+        // Interactive Shell (nil action) → classified as a Terminal.
+        Session(
+            id: "ses_shell",
+            action: nil,
+            environment: "host-login-shell",
+            workingDir: "/home/dev/Projects/atelier",
+            status: .running,
+            attachable: true,
+            createdAt: Date(timeIntervalSinceNow: -1800),
+            updatedAt: Date(timeIntervalSinceNow: -120),
+            workspace: MockATCClient.parserRef,
+            project: MockATCClient.atelierRef
+        ),
+        // General (non-agent) action → classified as a Terminal.
+        Session(
+            id: "ses_lazygit",
+            action: "lazygit",
+            environment: "host-login-shell",
+            workingDir: "/home/dev/Projects/atelier",
+            status: .running,
+            attachable: true,
+            createdAt: Date(timeIntervalSinceNow: -900),
+            updatedAt: Date(timeIntervalSinceNow: -60),
+            workspace: MockATCClient.parserRef,
+            project: MockATCClient.atelierRef
+        ),
+        // Action deleted after the session ended (unresolvable) → Terminal.
+        Session(
+            id: "ses_ghost",
+            action: "ghost",
+            environment: "host-login-shell",
+            workingDir: "/home/dev/Projects/atelier",
+            status: .terminated,
+            attachable: false,
+            createdAt: Date(timeIntervalSinceNow: -50000),
+            updatedAt: Date(timeIntervalSinceNow: -49000),
+            terminatedAt: Date(timeIntervalSinceNow: -49000),
+            workspace: MockATCClient.refactorRef,
+            project: MockATCClient.atelierRef
+        ),
+        // Archived agent session, behind the shell's Archived filter.
+        Session(
+            id: "ses_archived",
+            name: "Abandoned attempt",
+            action: "claude",
+            environment: "host-login-shell",
+            workingDir: "/home/dev/Projects/atelier",
+            status: .terminated,
+            attachable: false,
+            createdAt: Date(timeIntervalSinceNow: -200000),
+            updatedAt: Date(timeIntervalSinceNow: -190000),
+            terminatedAt: Date(timeIntervalSinceNow: -195000),
+            archivedAt: Date(timeIntervalSinceNow: -190000),
+            workspace: MockATCClient.parserRef,
             project: MockATCClient.atelierRef
         ),
     ]
@@ -554,12 +627,12 @@ nonisolated final class MockActionRegistry: @unchecked Sendable {
     /// Codex carries synthetic params so param-rendering UI has a fixture.
     private let builtins: [String: ATCAction] = [
         "claude": ATCAction(
-            name: "claude", origin: "builtin", enabled: true,
+            name: "claude", type: "agent", origin: "builtin", enabled: true,
             label: "Claude", description: "Claude Code CLI",
             command: "claude", args: [], prompt: .init()
         ),
         "codex": ATCAction(
-            name: "codex", origin: "builtin", enabled: true,
+            name: "codex", type: "agent", origin: "builtin", enabled: true,
             label: "Codex", description: "OpenAI Codex CLI",
             command: "codex", args: [], prompt: .init(),
             params: [

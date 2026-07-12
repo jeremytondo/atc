@@ -2,7 +2,7 @@ import SwiftUI
 import ATCAPI
 
 /// Drill-down folder picker over the server's `/api/fs`. Presented as a
-/// nested sheet from `CreateSessionSheet`; commits the *viewed* directory
+/// nested sheet from `CreateProjectSheet`; commits the *viewed* directory
 /// (never the highlighted row) via `onChoose`.
 struct RemoteFolderPickerSheet: View {
     @Environment(\.dismiss) private var dismiss

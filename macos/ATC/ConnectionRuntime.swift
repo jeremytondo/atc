@@ -16,6 +16,12 @@ struct ProjectRef: Hashable {
     let projectID: String
 }
 
+/// Composite identity for a workspace (see `SessionRef`).
+struct WorkspaceRef: Hashable {
+    let connectionID: UUID
+    let workspaceID: String
+}
+
 /// Everything the app runs for one configured Connection: one client and one
 /// pair of stores, polling on the existing cadence. `AppModel` builds and
 /// tears these down as the Connection list changes; the stores themselves
@@ -28,8 +34,9 @@ final class ConnectionRuntime: Identifiable {
     let client: any ATCClient
     let projects: ProjectsStore
     let sessions: SessionsStore
-    /// Not part of the poll cycle — actions change only when edited, so the
-    /// settings editor and pickers refresh this on demand.
+    let workspaces: WorkspacesStore
+    /// Part of the poll cycle so session classification (agent vs terminal)
+    /// and the creation sheets never depend on stale on-demand data.
     let actions: ActionsStore
 
     /// Outcome of the most recent combined refresh: gray until one
@@ -46,6 +53,7 @@ final class ConnectionRuntime: Identifiable {
         self.client = client
         self.projects = ProjectsStore(client: client)
         self.sessions = SessionsStore(client: client)
+        self.workspaces = WorkspacesStore(client: client)
         self.actions = ActionsStore(client: client)
     }
 
@@ -72,13 +80,17 @@ final class ConnectionRuntime: Identifiable {
         pollTask = nil
     }
 
-    /// One combined refresh of both stores; reachability reflects the
-    /// outcome. The two requests interleave on I/O.
+    /// One combined refresh of all four stores; the Connection is
+    /// reachable iff the whole refresh succeeded. The requests interleave
+    /// on I/O.
     func refresh() async {
         async let projectsDone: Void = projects.refresh()
         async let sessionsDone: Void = sessions.refresh()
-        _ = await (projectsDone, sessionsDone)
-        reachability = (projects.lastError == nil && sessions.lastError == nil)
+        async let workspacesDone: Void = workspaces.refresh()
+        async let actionsDone: Void = actions.refresh()
+        _ = await (projectsDone, sessionsDone, workspacesDone, actionsDone)
+        reachability = (projects.lastError == nil && sessions.lastError == nil
+            && workspaces.lastError == nil && actions.lastError == nil)
             ? .connected
             : .unreachable
     }

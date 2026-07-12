@@ -8,14 +8,19 @@ struct SessionRowView: View {
     /// Rows nested under a project inherit its directory, so they show
     /// recency instead of repeating the path.
     var showsWorkingDir = true
+    /// Overrides for callers that resolve names against the action
+    /// registry (the Workspace shell); nil falls back to the session's own
+    /// labels.
+    var title: String?
+    var caption: String?
 
     var body: some View {
         HStack {
             StatusBadge(session: session)
             VStack(alignment: .leading, spacing: 2) {
-                Text(session.displayName)
+                Text(title ?? session.displayName)
                     .lineLimit(1)
-                Text(caption)
+                Text(caption ?? defaultCaption)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -32,7 +37,7 @@ struct SessionRowView: View {
         .padding(.vertical, 2)
     }
 
-    private var caption: String {
+    private var defaultCaption: String {
         if showsWorkingDir { return session.workingDir }
         return "\(session.actionLabel) · \(session.updatedAt.formatted(.relative(presentation: .named)))"
     }
