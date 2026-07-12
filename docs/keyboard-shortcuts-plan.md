@@ -12,6 +12,8 @@ Ghostty is the primary reference implementation for keybinding syntax, layering,
 
 Unlike a modal editor, atc cannot reserve ordinary unmodified keys globally because embedded terminals must receive normal input immediately. The default leader will therefore be a modified key that temporarily enters a short-lived command sequence.
 
+The current app exposes several commands through SwiftUI menu key equivalents, but the embedded Ghostty view participates in `performKeyEquivalent` before those menu actions. When Ghostty recognizes the same binding, it can consume the event while the terminal is focused and the atc command never runs. Native menu shortcuts therefore remain useful for display and standard macOS discoverability, but they are not a reliable input-routing boundary for terminal-safe application commands.
+
 ## Objective
 
 Establish the base command and keybinding architecture, then prove it with a small set of configurable direct shortcuts and leader sequences that work reliably while the embedded terminal has focus.
@@ -115,8 +117,8 @@ Example targeted override:
 - The resolved keymap uses a prefix tree so direct shortcuts and shared sequence prefixes use the same lookup path.
 - A per-window keyboard router resolves events before the focused terminal consumes them.
 - The router forwards every unrelated event unchanged while no sequence is pending.
-- Single-stroke macOS shortcuts use native menu command handling where practical.
 - Native menu shortcut labels are synchronized from the resolved keymap rather than hard-coded separately.
+- Native menu key equivalents are not relied upon to route registered atc bindings while a terminal has focus.
 - Toolbar buttons and future palette entries invoke command identifiers directly rather than simulating shortcuts.
 - Pending leader and presentation state are scoped to the active window rather than stored in the application domain model.
 - Reloading configuration atomically replaces the resolved keymap, updates menus, and cancels any pending sequence.
@@ -124,7 +126,9 @@ Example targeted override:
 
 ## Input Routing and Terminal Safety
 
-The MVP uses a local `NSEvent` key-down monitor owned by each atc window because the packaged `TerminalSurfaceView` constructs its Ghostty `NSView` internally. The monitor filters events to its key window and intercepts a configured sequence prefix, any event received while a sequence is pending, and direct bindings whose commands are currently unavailable. It is installed when the window becomes active and removed when that window closes; it does not require subclassing or modifying the packaged terminal view. Available one-step shortcuts continue through native menu key-equivalent handling.
+The MVP uses a local `NSEvent` key-down monitor owned by each atc window because the packaged `TerminalSurfaceView` constructs its Ghostty `NSView` internally. The monitor filters events to its key window and resolves every registered atc binding before the focused responder can consume it. It intercepts recognized direct bindings, configured sequence prefixes, and every event received while a sequence is pending. It is installed when the window becomes active and removed when that window closes; it does not require subclassing or modifying the packaged terminal view.
+
+Native menus continue to display the resolved eligible direct binding and invoke the same command identifiers, but they are not responsible for delivering those bindings. This avoids depending on responder-chain ordering or on whether Ghostty also defines a matching shortcut.
 
 - Recognized direct shortcut: execute its command and consume the event.
 - Recognized leader prefix: consume it and enter the pending state.
@@ -137,6 +141,17 @@ The MVP uses a local `NSEvent` key-down monitor owned by each atc window because
 - While idle, unrelated keyboard events pass through unchanged.
 
 Leader activation, recognized continuations, cancellation, and unmatched continuations are never sent over the terminal connection. The MVP must not require macOS Accessibility permission or monitor input outside atc.
+
+## Implementation Sequence
+
+DEV-38 is the first architectural slice of this brief rather than a terminal-specific shortcut workaround:
+
+1. Centralize the actions currently exposed by `AppCommands` behind their stable command identifiers so menus and keyboard routing execute the same behavior.
+2. Add the per-window keyboard router with compiled bindings and make the existing direct shortcuts work while the terminal has focus.
+3. Verify that recognized atc bindings are consumed exactly once and unrelated terminal input is forwarded unchanged.
+4. Add configuration layering, the resolved keymap, leader sequences, menu synchronization, reload, diagnostics, and hint presentation without replacing the routing seam established by DEV-38.
+
+The pre-MVP app currently assigns `Cmd-T` to New Terminal even though this brief gives `terminal.new` no compiled binding. The DEV-38 slice should preserve that existing shortcut while repairing routing so it does not mix a bug fix with a default-keymap change. The configurable-keybindings MVP must then deliberately confirm whether `Cmd-T` remains a compiled default or is removed as currently specified.
 
 ## Configuration Reload and Diagnostics
 
@@ -173,6 +188,7 @@ Every configuration failure is written to the system log with the configuration 
 - Normal terminal keystrokes are unaffected when no shortcut or sequence is active.
 - Initial bindings can be remapped, unbound, or cleared through `config.toml` without code changes.
 - Menus display the resolved direct shortcuts, and toolbar/menu invocations execute the same commands as keyboard bindings.
+- Registered direct shortcuts execute exactly once while an embedded terminal has focus, even when Ghostty defines the same binding.
 - Unavailable commands are handled consistently and never leak shortcut input into the terminal.
 - Invalid configuration preserves a working keymap and produces a useful diagnostic.
 - Automated tests cover trigger parsing, default layering, replacement and unbinding, leader expansion, command availability, menu shortcut selection, sequence timeout and cancellation, unmatched keys, reload, and terminal event forwarding.
