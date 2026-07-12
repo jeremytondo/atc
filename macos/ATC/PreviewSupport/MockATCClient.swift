@@ -9,7 +9,11 @@ extension AppModel {
         let defaults = UserDefaults(suiteName: "preview.appmodel.\(UUID().uuidString)")!
         let store = ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore())
         _ = try? store.add(name: "Workstation", urlString: "http://workstation.example:7331", token: "")
-        return AppModel(connections: store, clientFactory: { _ in client })
+        return AppModel(
+            connections: store,
+            clientFactory: { _ in client },
+            terminalRecoveryMonitor: .disabled()
+        )
     }
 
     /// Preview/test fixture with several Connections, each backed by its own
@@ -30,7 +34,11 @@ extension AppModel {
                 clientsByID[record.id] = connection.client
             }
         }
-        return AppModel(connections: store, clientFactory: { clientsByID[$0.id] ?? MockATCClient() })
+        return AppModel(
+            connections: store,
+            clientFactory: { clientsByID[$0.id] ?? MockATCClient() },
+            terminalRecoveryMonitor: .disabled()
+        )
     }
 }
 

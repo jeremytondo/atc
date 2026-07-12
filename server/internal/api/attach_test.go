@@ -296,6 +296,68 @@ func TestAttachClosesPTYWhenClientDisconnects(t *testing.T) {
 	}
 }
 
+func TestAttachPingReapsDeadClient(t *testing.T) {
+	oldInterval, oldTimeout := attachPingInterval, attachPingTimeout
+	attachPingInterval, attachPingTimeout = 10*time.Millisecond, 50*time.Millisecond
+	t.Cleanup(func() { attachPingInterval, attachPingTimeout = oldInterval, oldTimeout })
+
+	pty := newPipePTY()
+	mux := &fakeMux{attachPTY: pty}
+	conn, srv := dialAttach(t, mux, "ses_attach")
+	defer srv.Close()
+	defer conn.CloseNow()
+
+	// A client that never reads never answers pings — the same signature as
+	// a peer that vanished without closing TCP. The bridge must reap it even
+	// though the PTY is silent and no write ever arms the write timeout.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if pty.isClosed() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("bridge was not reaped after unanswered pings")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestAttachPingKeepsHealthyClientAttached(t *testing.T) {
+	oldInterval, oldTimeout := attachPingInterval, attachPingTimeout
+	attachPingInterval, attachPingTimeout = 10*time.Millisecond, 500*time.Millisecond
+	t.Cleanup(func() { attachPingInterval, attachPingTimeout = oldInterval, oldTimeout })
+
+	pty := newPipePTY()
+	mux := &fakeMux{attachPTY: pty}
+	conn, srv := dialAttach(t, mux, "ses_attach")
+	defer srv.Close()
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	// Reading is what lets the client library answer pings; hold a read open
+	// across many ping cycles, then confirm the bridge still delivers.
+	readCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, data, err := conn.Read(readCtx)
+		if err == nil && string(data) != "still here" {
+			err = errors.New("unexpected payload " + string(data))
+		}
+		done <- err
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	if _, err := pty.toClientIn.Write([]byte("still here")); err != nil {
+		t.Fatalf("pty write: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if pty.isClosed() {
+		t.Fatal("ping loop tore down a healthy client")
+	}
+}
+
 func TestAttachClosesWithSessionEndedWhenPTYEnds(t *testing.T) {
 	pty := newPipePTY()
 	mux := &fakeMux{attachPTY: pty}

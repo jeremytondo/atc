@@ -33,10 +33,14 @@ final class AppModel {
     private(set) var terminals: [SessionRef: TerminalSessionController] = [:]
 
     private let clientFactory: (ConnectionRecord) -> any ATCClient
+    private let terminalControllerFactory: (String, any ATCClient) -> TerminalSessionController
+    private let terminalRecoveryMonitor: TerminalRecoveryMonitor
 
     init(
         connections: ConnectionsStore? = nil,
-        clientFactory: ((ConnectionRecord) -> any ATCClient)? = nil
+        clientFactory: ((ConnectionRecord) -> any ATCClient)? = nil,
+        terminalControllerFactory: ((String, any ATCClient) -> TerminalSessionController)? = nil,
+        terminalRecoveryMonitor: TerminalRecoveryMonitor? = nil
     ) {
         self.connections = connections ?? ConnectionsStore()
         self.clientFactory = clientFactory ?? { record in
@@ -45,11 +49,19 @@ final class AppModel {
             let url = URL(string: record.urlString)!
             return HTTPATCClient(server: ATCServer(baseURL: url, token: record.token))
         }
+        self.terminalControllerFactory = terminalControllerFactory ?? { sessionID, client in
+            TerminalSessionController(sessionID: sessionID, client: client)
+        }
+        self.terminalRecoveryMonitor = terminalRecoveryMonitor ?? TerminalRecoveryMonitor()
         for record in self.connections.connections {
             if let runtime = makeRuntime(record) {
                 runtimes.append(runtime)
             }
         }
+        self.terminalRecoveryMonitor.onRecovery = { [weak self] in
+            self?.recoverTerminalsAfterInterruption()
+        }
+        self.terminalRecoveryMonitor.start()
     }
 
     // MARK: - Runtime access
@@ -148,12 +160,21 @@ final class AppModel {
         guard session.attachable,
               terminals[ref] == nil,
               let runtime = runtime(id: connectionID) else { return }
-        terminals[ref] = TerminalSessionController(sessionID: session.id, client: runtime.client)
+        terminals[ref] = terminalControllerFactory(session.id, runtime.client)
     }
 
     func disconnectTerminal(ref: SessionRef) {
         terminals[ref]?.disconnect()
         terminals.removeValue(forKey: ref)
+    }
+
+    /// Wake and path recovery are app-wide signals. A controller decides
+    /// whether it is still expected to be live; ended sessions and explicit
+    /// disconnects therefore remain stopped.
+    func recoverTerminalsAfterInterruption() {
+        for controller in terminals.values {
+            controller.recoverAfterInterruption()
+        }
     }
 
     // MARK: - Private

@@ -46,6 +46,11 @@ struct TerminalStatusBanner: View {
             }
         case .connected:
             EmptyView()
+        case .reconnecting:
+            banner {
+                ProgressView().controlSize(.small)
+                Text("Reconnecting…")
+            }
         case .ended(.sessionEnded):
             banner {
                 Image(systemName: "checkmark.circle")
