@@ -31,6 +31,10 @@ var (
 	// ErrSessionActive is returned when a delete is rejected because the
 	// session is still starting or running.
 	ErrSessionActive = errors.New("session is active")
+	// ErrSessionNotStarting is returned when a starting-only transition
+	// (MarkRunning, MarkFailed) finds the session already settled, which
+	// means a concurrent Terminate or Delete won the race.
+	ErrSessionNotStarting = errors.New("session is not starting")
 	// ErrProjectNotFound is returned when a project id does not exist.
 	ErrProjectNotFound = errors.New("project not found")
 	// ErrProjectArchived is returned when a write references an archived
@@ -223,12 +227,15 @@ func (s *Store) CreateStarting(ctx context.Context, input CreateSessionInput) (S
 	return s.queries().CreateStarting(ctx, input)
 }
 
-// MarkRunning records a successful launch.
+// MarkRunning records a successful launch. It only settles a starting
+// record; a session settled concurrently returns ErrSessionNotStarting.
 func (s *Store) MarkRunning(ctx context.Context, id string) (Session, error) {
 	return s.queries().MarkRunning(ctx, id)
 }
 
-// MarkFailed records a failed launch with a safe reason and machine code.
+// MarkFailed records a failed launch with a safe reason and machine code. It
+// only settles a starting record; a session settled concurrently returns
+// ErrSessionNotStarting.
 func (s *Store) MarkFailed(ctx context.Context, id, reason, code string) (Session, error) {
 	return s.queries().MarkFailed(ctx, id, reason, code)
 }
@@ -409,15 +416,15 @@ func (q queries) classifyWorkspaceGuardFailure(ctx context.Context, workspaceID 
 
 func (q queries) MarkRunning(ctx context.Context, id string) (Session, error) {
 	now := q.nowUTC()
-	return q.updateOne(ctx, id, "mark running", `
+	return q.settleStarting(ctx, id, "mark running", `
 	UPDATE sessions
 	SET status = ?,
 		failure_reason = NULL,
 		failure_code = NULL,
 		updated_at = ?
-	WHERE id = ?
+	WHERE id = ? AND status = ?
 	RETURNING`+sessionColumnsSQL,
-		StatusRunning, formatTime(now), id,
+		StatusRunning, formatTime(now), id, StatusStarting,
 	)
 }
 
@@ -429,13 +436,26 @@ func (q queries) MarkFailed(ctx context.Context, id, reason, code string) (Sessi
 		return Session{}, errors.New("mark session failed: failure code is required")
 	}
 	now := q.nowUTC()
-	return q.updateOne(ctx, id, "mark failed", `
+	return q.settleStarting(ctx, id, "mark failed", `
 	UPDATE sessions
 	SET status = ?, failure_reason = ?, failure_code = ?, updated_at = ?
-	WHERE id = ?
+	WHERE id = ? AND status = ?
 	RETURNING`+sessionColumnsSQL,
-		StatusFailed, reason, code, formatTime(now), id,
+		StatusFailed, reason, code, formatTime(now), id, StatusStarting,
 	)
+}
+
+// settleStarting runs a starting-only transition and separates "the session
+// does not exist" from "the session exists but was settled concurrently", so
+// an in-flight Start can tell it lost the record to a Terminate or Delete.
+func (q queries) settleStarting(ctx context.Context, id, action, query string, args ...any) (Session, error) {
+	session, err := q.updateOne(ctx, id, action, query, args...)
+	if errors.Is(err, ErrSessionNotFound) {
+		if _, getErr := q.Get(ctx, id); getErr == nil {
+			return Session{}, fmt.Errorf("%w: %s", ErrSessionNotStarting, id)
+		}
+	}
+	return session, err
 }
 
 func (q queries) MarkTerminated(ctx context.Context, id string) (Session, error) {

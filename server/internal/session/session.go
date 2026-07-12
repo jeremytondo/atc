@@ -22,9 +22,13 @@ const (
 	// CodeLaunchFailed is stored and returned when the multiplexer launch fails
 	// after a durable session record exists.
 	CodeLaunchFailed = "launch_failed"
+	// CodeActionRemoved is stored and returned when the action was deleted
+	// between command resolution and launch.
+	CodeActionRemoved = "action_removed"
 
 	launchFailedReason      = "action failed to launch"
 	startupIncompleteReason = "session startup did not complete"
+	actionRemovedReason     = "action was removed while the session was starting"
 )
 
 // Status is the persisted lifecycle state for a session.
@@ -239,11 +243,31 @@ func (s *Service) Start(ctx context.Context, input StartInput) (Session, error) 
 		return Session{}, translateStoreErr(err)
 	}
 
+	if input.Action != "" {
+		// Action deletion counts active sessions and removes the definition
+		// under one lock. Re-resolving here, after this session's starting row
+		// exists, means either the delete already saw this row and was
+		// rejected, or the delete finished first and the action is gone.
+		if err := s.requireActionStillExists(ctx, record.ID, input.Action); err != nil {
+			return Session{}, err
+		}
+	}
+
 	name := zmx.NameForID(record.ID)
 	s.logger.Info("starting session", "id", record.ID, "zmx_name", name, "dir", workingDir, "action", input.Action, "environment", environmentName)
 	if err := s.mux.Start(ctx, name, workingDir, argv); err != nil {
 		s.logger.Error("session launch failed", "id", record.ID, "zmx_name", name, "action", input.Action, "environment", environmentName, "err", err)
 		failed, markErr := s.store.MarkFailed(ctx, record.ID, launchFailedReason, CodeLaunchFailed)
+		if errors.Is(markErr, store.ErrSessionNotStarting) || errors.Is(markErr, store.ErrSessionNotFound) {
+			// The record was terminated or deleted while starting; the launch
+			// failed anyway, so there is nothing live to clean up.
+			return Session{}, &LaunchError{
+				SessionID:   record.ID,
+				FailureCode: CodeLaunchFailed,
+				Message:     launchFailedReason,
+				Err:         err,
+			}
+		}
 		if markErr != nil {
 			return Session{}, fmt.Errorf("record launch failure for session %s: %w", record.ID, markErr)
 		}
@@ -256,10 +280,42 @@ func (s *Service) Start(ctx context.Context, input StartInput) (Session, error) 
 	}
 
 	running, err := s.store.MarkRunning(ctx, record.ID)
+	if errors.Is(err, store.ErrSessionNotStarting) || errors.Is(err, store.ErrSessionNotFound) {
+		// A Terminate or Delete settled the record while this launch was in
+		// flight; the launch must not outlive that decision.
+		if termErr := s.mux.Terminate(ctx, name); termErr != nil {
+			s.logger.Error("terminate for settled starting session failed", "id", record.ID, "zmx_name", name, "err", termErr)
+		}
+		return Session{}, fmt.Errorf("%w: %s: session was terminated while starting", ErrSessionNotLive, record.ID)
+	}
 	if err != nil {
-		return Session{}, err
+		return Session{}, translateStoreErr(err)
 	}
 	return domainSession(running, true)
+}
+
+// requireActionStillExists re-resolves an action after the starting row is
+// durable and settles the record as failed when the action was deleted in the
+// window between command resolution and the insert. Any recheck failure
+// settles the record so no row is left starting with no launch in flight.
+func (s *Service) requireActionStillExists(ctx context.Context, sessionID, actionName string) error {
+	registry, loadErr := s.actions.Load(ctx)
+	if loadErr == nil {
+		if _, ok := registry[actionName]; ok {
+			return nil
+		}
+	}
+	reason, code := actionRemovedReason, CodeActionRemoved
+	if loadErr != nil {
+		reason, code = startupIncompleteReason, CodeLaunchFailed
+	}
+	if _, markErr := s.store.MarkFailed(ctx, sessionID, reason, code); markErr != nil && !errors.Is(markErr, store.ErrSessionNotStarting) {
+		return fmt.Errorf("record startup failure for session %s: %w", sessionID, markErr)
+	}
+	if loadErr != nil {
+		return loadErr
+	}
+	return fmt.Errorf("%w %q: removed while the session was starting", ErrUnknownAction, actionName)
 }
 
 // resolveStartDir resolves the referenced workspace to its project's working
@@ -393,7 +449,9 @@ func (s *Service) Attach(ctx context.Context, id string, rows, cols uint16) (zmx
 
 // Terminate requests the multiplexer stop any live terminal for id and records
 // the terminal as no longer reachable. It is idempotent for settled non-live
-// records; starting records remain owned by the in-flight Start call.
+// records and settles active (starting or running) records; an in-flight
+// Start that loses its record to a Terminate detects that through the
+// starting-only MarkRunning transition and tears down its own launch.
 func (s *Service) Terminate(ctx context.Context, id string) (Session, error) {
 	record, err := s.store.Get(ctx, id)
 	if err != nil {
@@ -401,9 +459,6 @@ func (s *Service) Terminate(ctx context.Context, id string) (Session, error) {
 	}
 	if record.Status == StatusFailed || record.Status == StatusTerminated {
 		return domainSession(record, false)
-	}
-	if record.Status == StatusStarting {
-		return Session{}, fmt.Errorf("%w: %s", ErrSessionNotLive, id)
 	}
 
 	live, err := s.isLive(ctx, id)
@@ -418,9 +473,6 @@ func (s *Service) Terminate(ctx context.Context, id string) (Session, error) {
 		}
 	}
 
-	if record.Status != StatusRunning {
-		return Session{}, fmt.Errorf("%w: %s", ErrSessionNotLive, id)
-	}
 	record, err = s.store.MarkTerminated(ctx, id)
 	if err != nil {
 		return Session{}, translateStoreErr(err)

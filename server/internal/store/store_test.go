@@ -354,7 +354,7 @@ func TestMarkFailedStoresReasonAndCode(t *testing.T) {
 	}
 }
 
-func TestMarkRunningClearsFailureFields(t *testing.T) {
+func TestMarkRunningAndMarkFailedOnlySettleStartingSessions(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
 	defer st.Close()
@@ -369,16 +369,28 @@ func TestMarkRunningClearsFailureFields(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateStarting: %v", err)
 	}
-	if _, err := st.MarkFailed(ctx, "ses_race", "session startup did not complete", "launch_failed"); err != nil {
-		t.Fatalf("MarkFailed: %v", err)
+	if _, err := st.MarkTerminated(ctx, "ses_race"); err != nil {
+		t.Fatalf("MarkTerminated: %v", err)
 	}
 
-	running, err := st.MarkRunning(ctx, "ses_race")
-	if err != nil {
-		t.Fatalf("MarkRunning: %v", err)
+	// A session settled by a concurrent Terminate or Delete must not be
+	// resurrected by the in-flight Start's transitions.
+	if _, err := st.MarkRunning(ctx, "ses_race"); !errors.Is(err, ErrSessionNotStarting) {
+		t.Fatalf("MarkRunning err = %v, want ErrSessionNotStarting", err)
 	}
-	if running.Status != StatusRunning || running.FailureReason != "" || running.FailureCode != "" {
-		t.Fatalf("running session = %+v, want running with no failure fields", running)
+	if _, err := st.MarkFailed(ctx, "ses_race", "session startup did not complete", "launch_failed"); !errors.Is(err, ErrSessionNotStarting) {
+		t.Fatalf("MarkFailed err = %v, want ErrSessionNotStarting", err)
+	}
+	if _, err := st.MarkRunning(ctx, "ses_missing"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("MarkRunning missing err = %v, want ErrSessionNotFound", err)
+	}
+
+	stored, err := st.Get(ctx, "ses_race")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if stored.Status != StatusTerminated {
+		t.Fatalf("status = %s, want terminated", stored.Status)
 	}
 }
 

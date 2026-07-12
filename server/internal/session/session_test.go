@@ -22,6 +22,9 @@ type fakeMux struct {
 	startArgv           []string
 	startErr            error
 	startCalls          int
+	// startHook runs after a successful launch, before Start returns, so
+	// tests can interleave a concurrent settle with an in-flight Start.
+	startHook func()
 
 	sendName    string
 	sendPayload []byte
@@ -45,6 +48,9 @@ func (f *fakeMux) Start(_ context.Context, name, dir string, argv []string) erro
 		return f.startErr
 	}
 	f.sessions = append(f.sessions, zmx.Session{Name: name, StartDir: dir, Cmd: strings.Join(argv, " ")})
+	if f.startHook != nil {
+		f.startHook()
+	}
 	return nil
 }
 
@@ -129,6 +135,12 @@ func newService(t *testing.T, mux Multiplexer) (*Service, *store.Store) {
 
 func newServiceWithResolver(t *testing.T, mux Multiplexer, resolver *fakeResolver) (*Service, *store.Store, *fakeResolver) {
 	t.Helper()
+	svc, st := newServiceWithActions(t, mux, testActions(), resolver)
+	return svc, st, resolver
+}
+
+func newServiceWithActions(t *testing.T, mux Multiplexer, actions ActionLoader, resolver *fakeResolver) (*Service, *store.Store) {
+	t.Helper()
 	st, err := store.Open(t.TempDir() + "/atc.db")
 	if err != nil {
 		t.Fatalf("Open store: %v", err)
@@ -141,7 +153,7 @@ func newServiceWithResolver(t *testing.T, mux Multiplexer, resolver *fakeResolve
 	if _, err := st.CreateWorkspace(ctx, store.CreateWorkspaceInput{ID: testWorkspaceID, ProjectID: "prj_test", Name: "Test workspace"}); err != nil {
 		t.Fatalf("CreateWorkspace: %v", err)
 	}
-	return NewService(st, mux, testActions(), testEnvironments(), resolver, nil), st, resolver
+	return NewService(st, mux, actions, testEnvironments(), resolver, nil), st
 }
 
 func testEnvironments() EnvironmentRegistry {
@@ -615,35 +627,20 @@ func TestStartingOperationsDoNotResolveInFlightSession(t *testing.T) {
 			},
 		},
 		{
-			name: "terminate",
-			run: func(svc *Service, id string) error {
-				_, err := svc.Terminate(context.Background(), id)
-				return err
-			},
-		},
-		{
 			name: "archive",
 			run: func(svc *Service, id string) error {
 				_, err := svc.Archive(context.Background(), id)
 				return err
 			},
 		},
-		{
-			name: "delete",
-			run: func(svc *Service, id string) error {
-				return svc.Delete(context.Background(), id)
-			},
-		},
 	}
 
 	for _, live := range []bool{false, true} {
-		live := live
 		liveName := "not-live"
 		if live {
 			liveName = "live"
 		}
 		for _, tt := range tests {
-			tt := tt
 			t.Run(liveName+"/"+tt.name, func(t *testing.T) {
 				mux := &fakeMux{}
 				svc, st := newService(t, mux)
@@ -664,6 +661,126 @@ func TestStartingOperationsDoNotResolveInFlightSession(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// Starting sessions are active per the lifecycle contract: terminate and
+// delete settle them instead of rejecting them, killing the multiplexer
+// terminal when one is already live.
+func TestTerminateAndDeleteSettleStartingSession(t *testing.T) {
+	for _, live := range []bool{false, true} {
+		liveName := "not-live"
+		if live {
+			liveName = "live"
+		}
+		t.Run(liveName+"/terminate", func(t *testing.T) {
+			mux := &fakeMux{}
+			svc, st := newService(t, mux)
+			seedStarting(t, st, "ses_inflight")
+			if live {
+				mux.sessions = []zmx.Session{{Name: zmx.NameForID("ses_inflight")}}
+			}
+
+			terminated, err := svc.Terminate(context.Background(), "ses_inflight")
+			if err != nil {
+				t.Fatalf("Terminate: %v", err)
+			}
+			if terminated.Status != StatusTerminated || terminated.TerminatedAt == nil {
+				t.Fatalf("terminated = %+v, want terminated", terminated)
+			}
+			wantTerminateCalls := 0
+			if live {
+				wantTerminateCalls = 1
+			}
+			if mux.terminateCalls != wantTerminateCalls {
+				t.Fatalf("terminateCalls = %d, want %d", mux.terminateCalls, wantTerminateCalls)
+			}
+		})
+		t.Run(liveName+"/delete", func(t *testing.T) {
+			mux := &fakeMux{}
+			svc, st := newService(t, mux)
+			seedStarting(t, st, "ses_inflight")
+			if live {
+				mux.sessions = []zmx.Session{{Name: zmx.NameForID("ses_inflight")}}
+			}
+
+			if err := svc.Delete(context.Background(), "ses_inflight"); err != nil {
+				t.Fatalf("Delete: %v", err)
+			}
+			if _, err := st.Get(context.Background(), "ses_inflight"); !errors.Is(err, store.ErrSessionNotFound) {
+				t.Fatalf("Get after delete err = %v, want ErrSessionNotFound", err)
+			}
+		})
+	}
+}
+
+// A Terminate that settles the record between the multiplexer launch and
+// MarkRunning must win: Start tears down its own launch instead of
+// resurrecting the session.
+func TestStartTearsDownLaunchSettledConcurrently(t *testing.T) {
+	mux := &fakeMux{}
+	svc, st := newService(t, mux)
+	mux.startHook = func() {
+		records, err := st.List(context.Background(), store.ListFilter{})
+		if err != nil || len(records) != 1 {
+			t.Fatalf("List during start: %v (%d records)", err, len(records))
+		}
+		if _, err := st.MarkTerminated(context.Background(), records[0].ID); err != nil {
+			t.Fatalf("MarkTerminated during start: %v", err)
+		}
+	}
+
+	_, err := svc.Start(context.Background(), StartInput{Action: "claude", WorkspaceID: testWorkspaceID})
+	if !errors.Is(err, ErrSessionNotLive) {
+		t.Fatalf("Start err = %v, want ErrSessionNotLive", err)
+	}
+	if mux.terminateCalls != 1 {
+		t.Fatalf("terminateCalls = %d, want 1", mux.terminateCalls)
+	}
+	records, err := st.List(context.Background(), store.ListFilter{})
+	if err != nil || len(records) != 1 {
+		t.Fatalf("List: %v (%d records)", err, len(records))
+	}
+	if records[0].Status != StatusTerminated {
+		t.Fatalf("status = %s, want terminated", records[0].Status)
+	}
+}
+
+// fakeActionLoader returns successive registries on successive loads so tests
+// can delete an action between Start's command resolution and its post-insert
+// re-resolution.
+type fakeActionLoader struct {
+	registries []ActionRegistry
+	calls      int
+}
+
+func (f *fakeActionLoader) Load(ctx context.Context) (ActionRegistry, error) {
+	i := f.calls
+	f.calls++
+	if i >= len(f.registries) {
+		i = len(f.registries) - 1
+	}
+	return f.registries[i].Load(ctx)
+}
+
+func TestStartFailsWhenActionDeletedBeforeLaunch(t *testing.T) {
+	mux := &fakeMux{}
+	loader := &fakeActionLoader{registries: []ActionRegistry{testActions(), {}}}
+	svc, st := newServiceWithActions(t, mux, loader, &fakeResolver{dir: t.TempDir()})
+
+	_, err := svc.Start(context.Background(), StartInput{Action: "claude", WorkspaceID: testWorkspaceID})
+	if !errors.Is(err, ErrUnknownAction) {
+		t.Fatalf("Start err = %v, want ErrUnknownAction", err)
+	}
+	if mux.startCalls != 0 {
+		t.Fatalf("startCalls = %d, want 0", mux.startCalls)
+	}
+	records, listErr := st.List(context.Background(), store.ListFilter{})
+	if listErr != nil || len(records) != 1 {
+		t.Fatalf("List: %v (%d records)", listErr, len(records))
+	}
+	if records[0].Status != StatusFailed || records[0].FailureCode != CodeActionRemoved {
+		t.Fatalf("record = status %s code %s, want failed/%s", records[0].Status, records[0].FailureCode, CodeActionRemoved)
 	}
 }
 

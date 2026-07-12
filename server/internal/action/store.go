@@ -297,6 +297,13 @@ func (s *Store) equalsDefault(name string, action session.Action) bool {
 }
 
 func (s *Store) loadWithSources(ctx context.Context) (session.ActionRegistry, map[string]Source, error) {
+	// Reads take the same lock as writes so session start's post-insert
+	// re-resolution serializes against Delete's count-then-remove critical
+	// section: a load that still sees an action happened before the delete,
+	// so the delete's active-session count sees the inserted session row.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	fileActions, err := s.readFileActions(ctx)
 	if err != nil {
 		return nil, nil, err

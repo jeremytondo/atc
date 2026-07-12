@@ -155,6 +155,11 @@ struct CreateSessionSheet: View {
                     projectID: project.id,
                     name: newWorkspaceName.trimmingCharacters(in: .whitespaces)
                 )
+                // Select the created workspace so a failed session start
+                // retries against it instead of creating a duplicate.
+                workspaces.append(created)
+                selectedWorkspaceID = created.id
+                newWorkspaceName = ""
                 workspaceID = created.id
             } else {
                 workspaceID = selectedWorkspaceID
