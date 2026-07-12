@@ -85,6 +85,31 @@ filter). `AppModel.includeArchived` and its fan-out are deleted.
 - All wrappers follow the existing mutate-merge-refresh shape; `delete`
   removes the row locally on success instead of merging.
 
+### Attachment budget
+
+Today every Session the user has ever selected stays attached — one WebSocket
+plus one Ghostty surface — for the life of the app run, with no eviction.
+Workspaces make that unbounded set grow much faster, and each invisible
+attached surface keeps parsing streamed output it cannot display.
+
+`AppModel` therefore gains an LRU **attachment budget** over the
+`terminals` registry (default 12, a constant — not user-facing
+configuration):
+
+- Selecting a Session marks its ref most-recently-used; attaching one past
+  the budget evicts the least-recently-used ref through the existing
+  `disconnectTerminal` path.
+- The currently selected Session and Sessions belonging to the open Workspace
+  are never evicted; if pinned refs alone exceed the budget, the budget is
+  simply exceeded until the Workspace closes (correctness over the cap).
+- Selecting an evicted Session reattaches through the existing
+  `attachIfNeeded` + replay-reset path — the same experience as today's
+  reconnect, paid only on cold Sessions.
+
+The Dashboard-cover architecture (Section 1) is unaffected: it governs which
+attached surfaces stay *mounted*; the budget bounds what is *attached* in the
+first place.
+
 ### Session classification
 
 A Session is displayed as a **Session** (agent) or **Terminal** by joining
@@ -286,6 +311,11 @@ tests):
   `ProjectsStoreTests`; new `SessionsStore.unarchive/delete` and
   `ProjectsStore.delete` wrappers; runtime refresh includes workspaces and
   actions.
+- **Attachment budget**: attaching past the budget evicts the
+  least-recently-used ref; the selected Session and open-Workspace Sessions
+  are never evicted (including the pinned-refs-exceed-budget case);
+  reselecting an evicted Session reattaches; eviction goes through the
+  standard disconnect path (no leaked controllers).
 - **Flows (ScriptableClient)**: create-Workspace-then-open from each of the
   three command contexts; Workspace delete failure (scripted stop error)
   leaves rows intact and surfaces the error; open-Workspace deletion routes
@@ -306,7 +336,8 @@ Each step leaves `mise run macos:test` (and the aggregate `check`) green and
 is a jj checkpoint:
 
 1. Data layer: `WorkspacesStore`, runtime refresh (workspaces + actions),
-   store wrappers, archived-filtering simplification, mock fixture growth.
+   store wrappers, archived-filtering simplification, the attachment budget,
+   mock fixture growth.
 2. Navigation skeleton: `WorkspaceRef`, route state, `RootView` ZStack with a
    placeholder Dashboard listing openable Workspaces — the app is usable
    end-to-end from here on.
@@ -329,6 +360,11 @@ Decisions made while drafting this spec, for review:
 - The Dashboard is an opaque cover over a persistently mounted Workspace
   shell, generalizing the existing `TerminalPane` cover pattern, so terminal
   surfaces and WebSockets survive Dashboard round-trips without replay.
+- Attached terminals are bounded by an LRU attachment budget instead of
+  accumulating for the app run's lifetime; the selected Session and the open
+  Workspace's Sessions are pinned, and evicted Sessions revive through the
+  existing reconnect/replay path. A hard workspace-scoped disconnect-on-switch
+  was rejected because it would make every Workspace switch pay a replay.
 - Session-vs-Terminal classification is a client-side join against the
   Actions registry with a Terminal fallback for unresolvable Actions; no
   action-type snapshot is added to the Session contract.
