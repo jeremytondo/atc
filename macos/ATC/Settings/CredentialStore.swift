@@ -4,7 +4,12 @@ import Security
 /// Storage for Connection bearer tokens, keyed by the Connection's stable
 /// UUID. Tokens live here instead of inside the JSON-encoded connection list
 /// so they never sit in plain app preferences.
-protocol CredentialStore {
+///
+/// Nonisolated: these are thread-safe utility wrappers with no main-thread
+/// dependency, and the default-MainActor isolation would otherwise make the
+/// `KeychainCredentialStore()` default argument on `ConnectionsStore.init`
+/// an isolation violation under Swift 6.
+nonisolated protocol CredentialStore {
     func token(for id: UUID) -> String?
     /// Stores (or, for an empty token, removes) the token. Returns whether
     /// the store now durably holds that state — callers keep their previous
@@ -17,7 +22,8 @@ protocol CredentialStore {
 /// Keychain-backed store: one generic-password item per Connection in the
 /// user's login keychain. The login keychain (rather than the data-protection
 /// keychain) keeps unsigned developer builds working; both encrypt at rest.
-final class KeychainCredentialStore: CredentialStore {
+/// `SecItem*` calls are thread-safe, so the type carries no isolation.
+nonisolated final class KeychainCredentialStore: CredentialStore {
     private let service: String
 
     init(service: String = "ElevenIdeas.atc.connection-token") {
@@ -64,8 +70,9 @@ final class KeychainCredentialStore: CredentialStore {
 }
 
 /// Dictionary-backed store for tests and previews, so neither ever touches
-/// the real keychain.
-final class InMemoryCredentialStore: CredentialStore {
+/// the real keychain. Nonisolated and non-Sendable: single-context use only,
+/// which the compiler enforces at any isolation boundary.
+nonisolated final class InMemoryCredentialStore: CredentialStore {
     private var tokens: [UUID: String] = [:]
 
     func token(for id: UUID) -> String? {
