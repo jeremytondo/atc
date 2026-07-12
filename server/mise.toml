@@ -50,6 +50,15 @@ run = "go vet ./..."
 
 # --- Building blocks (composed by the entrypoints above) ---
 
+# web:check/web:test/web:build share web:install as a dependency instead of
+# each running pnpm install themselves: mise runs tasks in parallel, and two
+# concurrent installs into the same node_modules race and fail (ENOTDIR).
+# A shared dependency runs exactly once per invocation.
+[tasks."web:install"]
+description = "Install web dependencies from the lockfile"
+dir = "web"
+run = "pnpm install --frozen-lockfile"
+
 [tasks."web:dev"]
 description = "Run the SvelteKit dev server alone"
 dir = "web"
@@ -58,17 +67,20 @@ run = "pnpm install && pnpm dev"
 [tasks."web:check"]
 description = "Type-check the SvelteKit app (svelte-check)"
 dir = "web"
-run = "pnpm install --frozen-lockfile && pnpm check"
+depends = ["web:install"]
+run = "pnpm check"
 
 [tasks."web:test"]
 description = "Run web unit/contract tests (vitest)"
 dir = "web"
-run = "pnpm install --frozen-lockfile && pnpm test"
+depends = ["web:install"]
+run = "pnpm test"
 
 [tasks."web:build"]
 description = "Build the SvelteKit web app"
 dir = "web"
-run = "pnpm install --frozen-lockfile && pnpm build"
+depends = ["web:install"]
+run = "pnpm build"
 
 [tasks."assets:stage"]
 description = "Copy the web build into the Go embed directory (required: go:embed can't reach ../web/build)"
