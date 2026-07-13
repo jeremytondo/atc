@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import ATCAPI
 
@@ -12,8 +13,6 @@ struct DashboardView: View {
     var onCreateProject: () -> Void
 
     @State private var showArchived = false
-    /// Keyboard focus for arrow-key navigation; Return opens it.
-    @State private var focusedWorkspace: WorkspaceRef?
     @State private var renamingWorkspace: DashboardGroups.WorkspaceRow?
     @State private var renamingProject: DashboardGroups.ProjectCard?
     @State private var renameDraft = ""
@@ -22,7 +21,7 @@ struct DashboardView: View {
     @State private var actionError: String?
 
     var body: some View {
-        // One pass over the runtimes per render; the List indexes into it.
+        // One pass over the runtimes per render; sections reuse the result.
         let groups = DashboardGroups(
             inputs: appModel.runtimes.map {
                 DashboardGroups.ConnectionInput(
@@ -34,51 +33,40 @@ struct DashboardView: View {
             },
             showArchived: showArchived
         )
-        List(selection: $focusedWorkspace) {
-            ForEach(groups.sections) { section in
-                Section {
-                    ForEach(section.cards) { card in
-                        projectCard(card, reachable: canMutate(section.connectionID))
-                    }
-                    if section.cards.isEmpty {
-                        Text("No projects")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-                } header: {
-                    connectionHeader(section)
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 34) {
+                ForEach(groups.sections) { section in
+                    connectionSection(section)
                 }
             }
+            .frame(maxWidth: 1_280, alignment: .leading)
+            .padding(.horizontal, 36)
+            .padding(.vertical, 32)
+            .frame(maxWidth: .infinity, alignment: .top)
         }
-        .onKeyPress(.return) {
-            guard let ref = focusedWorkspace, canMutate(ref.connectionID) else {
-                return .ignored
-            }
-            onOpenWorkspace(ref)
-            return .handled
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            HStack {
-                Text("Workspaces")
-                    .font(.headline)
-                Spacer()
-                Toggle("Show Archived", isOn: $showArchived)
-                    .toggleStyle(.checkbox)
-                Button("New Project…") { onCreateProject() }
-                    .disabled(!appModel.runtimes.contains {
-                        appModel.canMutate(connectionID: $0.id)
-                    })
-                Button {
-                    Task { await appModel.refreshAll() }
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Menu {
+                    Toggle("Show Archived", isOn: $showArchived)
+                    Divider()
+                    Button("Refresh", systemImage: "arrow.clockwise") {
+                        Task { await appModel.refreshAll() }
+                    }
                 } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    Label("Dashboard Options", systemImage: "ellipsis.circle")
                 }
                 .labelStyle(.iconOnly)
-                .help("Refresh projects, workspaces, and sessions")
+                .help("Dashboard options")
+
+                Button {
+                    onCreateProject()
+                } label: {
+                    Label("New Project", systemImage: "plus")
+                }
+                .labelStyle(.iconOnly)
+                .disabled(!canCreateProject)
+                .help("New project")
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(.bar)
         }
         .overlay {
             if appModel.runtimes.isEmpty {
@@ -175,29 +163,66 @@ struct DashboardView: View {
 
     // MARK: - Connection section
 
-    @ViewBuilder
-    private func connectionHeader(_ section: DashboardGroups.Section) -> some View {
+    private func connectionSection(_ section: DashboardGroups.Section) -> some View {
         let reachability = appModel.reachability(of: section.connectionID)
-        HStack(spacing: 6) {
-            Circle()
-                .fill(reachability.color)
-                .frame(width: 7, height: 7)
-            Text(section.connectionName)
-            Text(section.contextLabel)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if reachability == .unreachable {
-                Image(systemName: "cable.connector.slash")
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 9) {
+                Circle()
+                    .fill(reachability.color)
+                    .frame(width: 9, height: 9)
+                    .shadow(color: reachability.color.opacity(0.45), radius: 5)
+
+                Text(section.connectionName)
+                    .font(.title3.weight(.semibold))
+
+                Text(section.contextLabel == "Local" ? "LOCAL" : "REMOTE")
+                    .font(.caption2.monospaced().weight(.semibold))
                     .foregroundStyle(.secondary)
-                Button("Retry") {
-                    if let runtime = appModel.runtime(id: section.connectionID) {
-                        Task { await runtime.refresh() }
-                    }
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 5))
+
+                if section.contextLabel != "Local" {
+                    Text("·  \(section.contextLabel)")
+                        .foregroundStyle(.tertiary)
                 }
-                .buttonStyle(.link)
-                .font(.caption)
+
+                Text("·  \(projectCountLabel(section.cards.count))")
+                    .foregroundStyle(.tertiary)
+
+                Spacer()
+
+                if reachability == .unreachable {
+                    Button("Retry", systemImage: "arrow.clockwise") {
+                        if let runtime = appModel.runtime(id: section.connectionID) {
+                            Task { await runtime.refresh() }
+                        }
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .help("Retry \(section.connectionName)")
+                }
             }
-            Spacer()
+
+            VStack(spacing: 14) {
+                ForEach(section.cards) { card in
+                    projectCard(card, reachable: canMutate(section.connectionID))
+                }
+
+                if section.cards.isEmpty {
+                    Text("No projects")
+                        .font(.callout)
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, minHeight: 72, alignment: .center)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(
+                                    Color(nsColor: .separatorColor),
+                                    style: StrokeStyle(lineWidth: 1, dash: [5, 4])
+                                )
+                        }
+                }
+            }
         }
     }
 
@@ -205,52 +230,114 @@ struct DashboardView: View {
 
     @ViewBuilder
     private func projectCard(_ card: DashboardGroups.ProjectCard, reachable: Bool) -> some View {
-        let project = card.project
-        Group {
-            HStack(spacing: 6) {
-                Label {
-                    Text(project.name)
-                        .lineLimit(1)
-                } icon: {
-                    Image(systemName: project.isArchived ? "archivebox" : "folder")
-                }
-                Text(project.workingDir)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.head)
-                Spacer(minLength: 4)
-                if !project.isArchived {
-                    Button {
-                        onCreateWorkspace(card.ref)
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .disabled(!reachable)
-                    .help("New workspace in \(project.name)")
-                }
-            }
-            .opacity(project.isArchived ? 0.5 : 1)
-            .contextMenu { projectMenu(card, reachable: reachable) }
+        if card.rows.isEmpty && !card.project.isArchived {
+            emptyProjectCard(card, reachable: reachable)
+        } else {
+            VStack(spacing: 0) {
+                projectHeader(card, reachable: reachable)
 
-            ForEach(card.rows) { row in
-                workspaceRow(row, project: project, reachable: reachable)
+                if !card.rows.isEmpty {
+                    Divider()
+                    ForEach(Array(card.rows.enumerated()), id: \.element.id) { index, row in
+                        workspaceRow(row, reachable: reachable)
+                        if index < card.rows.count - 1 {
+                            Divider()
+                        }
+                    }
+                }
             }
-            if card.rows.isEmpty && !project.isArchived {
-                // Quiet inline row, not a full empty-state panel.
+            .background(Color(nsColor: .controlBackgroundColor), in: cardShape)
+            .overlay {
+                cardShape.stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+            }
+            .clipShape(cardShape)
+            .opacity(card.project.isArchived ? 0.55 : 1)
+        }
+    }
+
+    private func projectHeader(
+        _ card: DashboardGroups.ProjectCard,
+        reachable: Bool
+    ) -> some View {
+        HStack(spacing: 10) {
+            Text(card.project.name)
+                .font(.headline)
+                .lineLimit(1)
+
+            Text(card.project.workingDir)
+                .font(.callout.monospaced())
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .truncationMode(.head)
+
+            if card.project.isArchived {
+                Text("Archived")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.quaternary, in: Capsule())
+            }
+
+            Spacer(minLength: 12)
+
+            if !card.project.isArchived {
                 Button {
                     onCreateWorkspace(card.ref)
                 } label: {
                     Label("New Workspace", systemImage: "plus")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .labelStyle(.iconOnly)
+                        .frame(width: 22, height: 22)
                 }
-                .buttonStyle(.plain)
-                .padding(.leading, 24)
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
                 .disabled(!reachable)
+                .help("New workspace in \(card.project.name)")
             }
+        }
+        .padding(.horizontal, 18)
+        .frame(minHeight: 54)
+        .contentShape(Rectangle())
+        .contextMenu { projectMenu(card, reachable: reachable) }
+    }
+
+    private func emptyProjectCard(
+        _ card: DashboardGroups.ProjectCard,
+        reachable: Bool
+    ) -> some View {
+        HStack(spacing: 10) {
+            Text(card.project.name)
+                .font(.headline)
+                .lineLimit(1)
+
+            Text(card.project.workingDir)
+                .font(.callout.monospaced())
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .truncationMode(.head)
+
+            Text("No workspaces yet")
+                .font(.callout)
+                .foregroundStyle(.tertiary)
+                .italic()
+
+            Spacer(minLength: 12)
+
+            Button("New Workspace", systemImage: "plus") {
+                onCreateWorkspace(card.ref)
+            }
+            .buttonStyle(.bordered)
+            .disabled(!reachable)
+        }
+        .padding(.horizontal, 18)
+        .frame(minHeight: 72)
+        .contentShape(Rectangle())
+        .contextMenu { projectMenu(card, reachable: reachable) }
+        .overlay {
+            cardShape.stroke(
+                Color(nsColor: .separatorColor),
+                style: StrokeStyle(lineWidth: 1, dash: [5, 4])
+            )
         }
     }
 
@@ -297,34 +384,48 @@ struct DashboardView: View {
     @ViewBuilder
     private func workspaceRow(
         _ row: DashboardGroups.WorkspaceRow,
-        project: Project,
         reachable: Bool
     ) -> some View {
         let workspace = row.workspace
-        HStack(spacing: 6) {
-            Image(systemName: "square.on.square")
-                .foregroundStyle(.secondary)
-                .font(.caption)
-            Text(workspace.name)
-                .lineLimit(1)
-            if workspace.isArchived {
-                Text("Archived")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(.quaternary.opacity(0.5), in: Capsule())
+        Button {
+            onOpenWorkspace(row.ref)
+        } label: {
+            HStack(spacing: 12) {
+                Circle()
+                    .fill(row.hasActiveSessions ? Color.green : Color.clear)
+                    .frame(width: 8, height: 8)
+                    .overlay {
+                        if !row.hasActiveSessions {
+                            Circle().stroke(.tertiary, lineWidth: 2)
+                        }
+                    }
+
+                Text(workspace.name)
+                    .font(.body.monospaced())
+                    .lineLimit(1)
+
+                if workspace.isArchived {
+                    Text("Archived")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.quaternary, in: Capsule())
+                }
+
+                Spacer()
+
+                Text(workspaceStatus(row))
+                    .font(.callout)
+                    .foregroundStyle(.tertiary)
             }
-            Spacer()
+            .padding(.horizontal, 18)
+            .frame(minHeight: 48)
+            .contentShape(Rectangle())
         }
-        .padding(.leading, 20)
+        .buttonStyle(.plain)
+        .disabled(!reachable)
         .opacity(workspace.isArchived ? 0.5 : 1)
-        .tag(row.ref)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            focusedWorkspace = row.ref
-            if reachable { onOpenWorkspace(row.ref) }
-        }
         .contextMenu {
             Button("Open", systemImage: "arrow.up.forward.square") {
                 onOpenWorkspace(row.ref)
@@ -396,6 +497,23 @@ struct DashboardView: View {
     }
 
     // MARK: - Helpers
+
+    private var cardShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+    }
+
+    private var canCreateProject: Bool {
+        appModel.runtimes.contains { appModel.canMutate(connectionID: $0.id) }
+    }
+
+    private func projectCountLabel(_ count: Int) -> String {
+        "\(count) \(count == 1 ? "project" : "projects")"
+    }
+
+    private func workspaceStatus(_ row: DashboardGroups.WorkspaceRow) -> String {
+        if row.hasActiveSessions { return "active now" }
+        return row.workspace.updatedAt.formatted(.relative(presentation: .numeric))
+    }
 
     private func canMutate(_ connectionID: UUID) -> Bool {
         appModel.canMutate(connectionID: connectionID)

@@ -34,7 +34,7 @@ This implementation MUST:
 This implementation MUST NOT:
 
 - Change server, CLI, web, SQLite, or `ATCAPI` contracts.
-- Redesign Dashboard cards, Session or Terminal content, terminal rendering, creation sheets, lifecycle actions, or file browsing.
+- Redesign Session or Terminal content, terminal rendering, creation sheets, lifecycle actions, or file browsing.
 - Add Project-detail or Connection-detail destinations.
 - Add multi-window support.
 - Add Navigator or Workspace-switching command IDs, menu commands, or keyboard shortcuts.
@@ -242,7 +242,8 @@ Archived Projects and Workspaces MUST NOT appear in the Projects Navigator. Dash
 
 ### 6.3 Workspace Navigator
 
-- The Workspace Navigator MUST reuse the existing Workspace-scoped Sessions and Terminals sections, search, creation actions, classification, ordering, row display, context menus, and Show Archived behavior.
+- The Workspace Navigator MUST reuse the existing Workspace-scoped Sessions and Terminals sections, creation actions, classification, ordering, row display, context menus, and Show Archived behavior.
+- The Workspace Navigator MUST NOT include session search. The row count is intentionally small enough to scan directly, and the sidebar should avoid controls without a demonstrated need.
 - Its contents MUST derive from the Active Workspace, never from a Workspace identity captured by a replaced view hierarchy.
 - When the Active Workspace changes, the Navigator MUST update its rows without changing `selectedNavigator`.
 - A disconnected Active Workspace retains cached rows and a visible disconnected state; network-dependent actions are disabled.
@@ -262,6 +263,11 @@ Archived Projects and Workspaces MUST NOT appear in the Projects Navigator. Dash
 - Dashboard MUST remain the existing app-wide Project and Workspace management surface.
 - It MUST render as `.dashboard` inside `MainContentHost`, not as an opaque root cover.
 - Its existing Connection sections, creation flows, archived filter, lifecycle actions, and empty states remain in scope and SHOULD be moved with minimal behavioral change.
+- Connection sections MUST use a restrained, full-width hierarchy: Connection identity and reachability, followed by Project groups containing Workspace rows.
+- Project groups with Workspaces SHOULD use a rounded system content surface with aligned header and row separators. Empty Projects SHOULD use a lighter dashed treatment with one explicit New Workspace action.
+- Workspace rows SHOULD show only name, activity state, and recency in the default presentation. Lifecycle and management actions remain in context menus.
+- Dashboard chrome MUST stay minimal. New Project remains a primary toolbar action; archived visibility and refresh belong in one secondary options menu.
+- Dashboard content MUST use system colors, typography, controls, and spacing so it adapts to appearance and accessibility settings. Custom glass effects are not permitted.
 - Dashboard's Show Archived control remains the only native macOS place to reveal archived Projects and Workspaces.
 - Selecting or showing Dashboard MUST NOT clear the Active Workspace, change Navigator, disconnect terminals, or disable Workspace commands solely because Dashboard is visible.
 - Dashboard MAY activate an archived Workspace for review; creation remains disabled while that Workspace is active.
@@ -275,7 +281,7 @@ All entry points MUST call one shared Workspace activation operation. This inclu
 For a target `WorkspaceRef`, activation MUST:
 
 1. Validate that the connection-qualified Workspace still exists in the current store.
-2. Treat activation of the already Active Workspace as idempotent and preserve current content and inspector state.
+2. Treat activation of the already Active Workspace as idempotent while Workspace content is visible. From Dashboard, the same action restores that Workspace's remembered content so its row and the Workspace Switcher provide a way back.
 3. Set `activeWorkspace` to the target.
 4. Preserve `selectedNavigator`.
 5. Close the inspector when the target differs from the previous Active Workspace.
@@ -403,7 +409,7 @@ Every app launch MUST begin with:
 - Dashboard selected in main content.
 - No Active Workspace.
 - Inspector closed.
-- Navigator searches, filters, and disclosure state reset.
+- Navigator filters and disclosure state reset.
 
 Only the connection-qualified last Session/Terminal selection per Workspace persists across launches. SwiftUI MAY restore native inspector column width, but the app MUST NOT persist inspector presentation.
 
@@ -449,6 +455,7 @@ The implementation is complete when all of the following are true:
 - Projects Navigator shows Dashboard plus correctly ordered unarchived Projects and Workspaces, without Connection rows or archived records.
 - Project rows expand/collapse without creating a Project-detail destination.
 - Projects Navigator and Workspace Switcher use the same activation operation.
+- Workspace Navigator contains no session search field.
 - Workspace activation preserves Navigator, closes inspector, and restores only valid remembered content.
 - Switching Workspace never presents content from the previous Workspace under the new context.
 - Disconnection preserves Active Workspace; confirmed removal clears it and returns to Projects Navigator plus Dashboard.

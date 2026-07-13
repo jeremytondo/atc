@@ -7,7 +7,6 @@ struct WorkspaceNavigatorView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(WindowState.self) private var windowState
 
-    @State private var searchText = ""
     @State private var showArchivedSessions = false
     @State private var actionError: String?
     @State private var deletingSession: Row?
@@ -47,7 +46,6 @@ struct WorkspaceNavigatorView: View {
             )
         }
         .listStyle(.sidebar)
-        .searchable(text: $searchText, placement: .sidebar, prompt: "Search sessions")
         .safeAreaInset(edge: .bottom, spacing: 0) {
             HStack {
                 Toggle("Show Archived", isOn: $showArchivedSessions)
@@ -154,7 +152,9 @@ struct WorkspaceNavigatorView: View {
         Binding(
             get: { windowState.selectedSession },
             set: { ref in
-                if let ref { _ = windowState.selectSession(ref, in: appModel) }
+                if let ref, ref != windowState.selectedSession {
+                    _ = windowState.selectSession(ref, in: appModel)
+                }
             }
         )
     }
@@ -191,12 +191,8 @@ struct WorkspaceNavigatorView: View {
                 if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
                 return $0.id < $1.id
             }
-            .compactMap { session in
+            .map { session in
                 let title = SessionKind.displayName(session: session, actions: actions)
-                if !searchText.isEmpty,
-                   !title.localizedCaseInsensitiveContains(searchText) {
-                    return nil
-                }
                 let label = SessionKind.actionLabel(session: session, actions: actions)
                 return Row(
                     ref: SessionRef(connectionID: ref.connectionID, sessionID: session.id),

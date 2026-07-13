@@ -59,9 +59,6 @@ struct WorkspaceSwitcher: View {
                 } else {
                     Text(presentation.label)
                 }
-                Image(systemName: "chevron.down")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             }
         }
         .help(presentation.help)

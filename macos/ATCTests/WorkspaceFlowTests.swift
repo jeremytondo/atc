@@ -117,6 +117,22 @@ struct WorkspaceFlowTests {
         #expect(state.isInspectorPresented)
     }
 
+    @Test("reselecting the Active Workspace returns from Dashboard")
+    func activeWorkspaceReturnsFromDashboard() async throws {
+        let (model, runtime) = try await makeLoadedModel()
+        let state = WindowState()
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
+        let selected = SessionRef(connectionID: runtime.id, sessionID: "ses_running")
+        #expect(state.activateWorkspace(workspace, in: model))
+        #expect(state.selectSession(selected, in: model))
+
+        state.showDashboard()
+        #expect(state.activateWorkspace(workspace, in: model))
+
+        #expect(state.activeWorkspace == workspace)
+        #expect(state.selectedContent == .session(selected))
+    }
+
     @Test("cross-Workspace and cross-Connection session selections are rejected")
     func invalidSelectionsRejected() async throws {
         let (model, runtime) = try await makeLoadedModel()

@@ -17,9 +17,9 @@ enum NavigatorID: String, CaseIterable, Sendable {
 
     var systemImage: String {
         switch self {
-        case .projects: "square.grid.2x2"
+        case .projects: "folder"
         case .workspace: "rectangle.stack"
-        case .file: "doc"
+        case .file: "doc.text"
         }
     }
 }
@@ -88,7 +88,9 @@ final class WindowState {
               runtime.workspaces.workspace(id: ref.workspaceID) != nil
         else { return false }
 
-        if activeWorkspace == ref { return true }
+        // Re-selecting the current Workspace is normally idempotent, but from
+        // Dashboard it is also the expected way back into that Workspace.
+        if activeWorkspace == ref, selectedContent != .dashboard { return true }
 
         let sessionsCurrent = runtime.sessions.hasLoadedOnce && runtime.sessions.lastError == nil
         let restored = sessionsCurrent

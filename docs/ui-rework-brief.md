@@ -39,7 +39,7 @@ The left sidebar includes an Xcode-style navigator selector at the top. Selectin
 The initial Navigators are:
 
 - **Projects Navigator:** Displays the Dashboard followed by a flat app-wide list of unarchived Projects with their unarchived Workspaces nested beneath them. The plural name reflects its multi-Project scope. Connections are not Navigator rows; each Project row shows its Connection name and status as secondary context so same-named Projects remain distinguishable. Archived Projects and Workspaces are managed from the Dashboard and MUST NOT appear in this Navigator.
-- **Workspace Navigator:** Displays agent sessions and terminals belonging to the active workspace. Its existing Show Archived control remains the macOS access point for archived Sessions and Terminals until a separate archive-management surface exists.
+- **Workspace Navigator:** Displays agent sessions and terminals belonging to the active workspace without a search field. Its Show Archived control remains the macOS access point for archived Sessions and Terminals until a separate archive-management surface exists.
 - **File Navigator:** Reserves the future active-workspace file tree. In this implementation its selector is visible, disabled when no workspace is active, and selectable when a workspace is active. Its sidebar shows a restrained `File navigation is not available yet` empty state and does not replace the main content. This stub MUST NOT add file APIs, tree state, or fake file data.
 
 Selecting an item within a navigator opens or focuses that item in the main content area.

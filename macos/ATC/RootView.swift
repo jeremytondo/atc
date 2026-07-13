@@ -17,8 +17,8 @@ struct RootView: View {
                     inspectorContent
                 }
         }
-        .navigationTitle(activeWorkspace?.name ?? "atc")
-        .navigationSubtitle(activeProject?.name ?? "")
+        .navigationTitle("atc")
+        .navigationSubtitle(activeRuntime?.record.name ?? "")
         .toolbar {
             if windowState.selectedContent != .dashboard {
                 ToolbarItem(placement: .navigation) {
@@ -27,6 +27,7 @@ struct RootView: View {
                     } label: {
                         Label("Dashboard", systemImage: "chevron.left")
                     }
+                    .labelStyle(.iconOnly)
                     .help("Show Dashboard")
                     .keyboardShortcut(.upArrow, modifiers: .command)
                 }
@@ -34,9 +35,11 @@ struct RootView: View {
             ToolbarItem(placement: .principal) {
                 WorkspaceSwitcher()
             }
-            if windowState.activeWorkspace != nil {
+            if windowState.activeWorkspace != nil,
+               windowState.selectedContent != .dashboard {
                 ToolbarItemGroup {
                     WorkspaceActionsMenu()
+                        .labelStyle(.iconOnly)
                 }
             }
         }
@@ -101,16 +104,6 @@ struct RootView: View {
 
     private var activeRuntime: ConnectionRuntime? {
         windowState.activeWorkspace.flatMap { appModel.runtime(id: $0.connectionID) }
-    }
-
-    private var activeWorkspace: Workspace? {
-        guard let ref = windowState.activeWorkspace else { return nil }
-        return activeRuntime?.workspaces.workspace(id: ref.workspaceID)
-    }
-
-    private var activeProject: Project? {
-        guard let activeWorkspace else { return nil }
-        return activeRuntime?.projects.project(id: activeWorkspace.projectId)
     }
 
     private var workspaceEmptyActions: SessionContentView.EmptyStateActions? {

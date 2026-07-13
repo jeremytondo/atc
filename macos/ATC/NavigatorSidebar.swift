@@ -27,7 +27,7 @@ struct NavigatorSelector: View {
     @Binding var selection: NavigatorID
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 6) {
             ForEach(NavigatorSelectorOption.all(
                 hasActiveWorkspace: windowState.activeWorkspace != nil
             )) { option in
@@ -35,10 +35,14 @@ struct NavigatorSelector: View {
                     selection = option.id
                 } label: {
                     Image(systemName: option.id.systemImage)
-                        .frame(width: 28, height: 24)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(
+                            selection == option.id ? Color.white : Color.secondary
+                        )
+                        .frame(width: 30, height: 26)
                         .background(
-                            selection == option.id ? Color.accentColor.opacity(0.18) : .clear,
-                            in: RoundedRectangle(cornerRadius: 5)
+                            selection == option.id ? Color.accentColor : .clear,
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
                         )
                 }
                 .buttonStyle(.plain)
@@ -48,9 +52,8 @@ struct NavigatorSelector: View {
             }
             Spacer()
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(.bar)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
     }
 }
 
@@ -92,19 +95,9 @@ struct ProjectsNavigatorView: View {
                 sessions: $0.sessions.sessions
             )
         })
-        List {
-            Button {
-                windowState.showDashboard()
-            } label: {
-                Label("Dashboard", systemImage: "square.grid.2x2")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .listRowBackground(
-                windowState.selectedContent == .dashboard
-                    ? Color.accentColor.opacity(0.16) : Color.clear
-            )
+        List(selection: selectionBinding) {
+            Label("Dashboard", systemImage: "rectangle.3.group")
+                .tag(ProjectsNavigatorSelection.dashboard)
 
             ForEach(groups.projects) { group in
                 DisclosureGroup(isExpanded: expansionBinding(for: group.ref)) {
@@ -266,25 +259,17 @@ struct ProjectsNavigatorView: View {
         in group: ProjectsNavigatorGroups.ProjectGroup
     ) -> some View {
         let enabled = group.reachability == .connected
-        return Button {
-            windowState.focusedWorkspace = row.ref
-            _ = windowState.activateWorkspace(row.ref, in: appModel)
-        } label: {
-            HStack {
-                Image(systemName: "square.on.square")
-                    .foregroundStyle(.secondary)
-                Text(row.workspace.name).lineLimit(1)
-                Spacer()
-            }
-            .contentShape(Rectangle())
+        return HStack(spacing: 7) {
+            Image(systemName: "square.on.square")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(row.workspace.name).lineLimit(1)
+            Spacer()
         }
-        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .tag(ProjectsNavigatorSelection.workspace(row.ref))
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.55)
-        .listRowBackground(
-            windowState.activeWorkspace == row.ref
-                ? Color.accentColor.opacity(0.16) : Color.clear
-        )
         .contextMenu {
             Button("Open", systemImage: "arrow.up.forward.square") {
                 _ = windowState.activateWorkspace(row.ref, in: appModel)
@@ -322,6 +307,31 @@ struct ProjectsNavigatorView: View {
         )
     }
 
+    private var selectionBinding: Binding<ProjectsNavigatorSelection?> {
+        Binding(
+            get: {
+                if windowState.selectedContent == .dashboard { return .dashboard }
+                return windowState.activeWorkspace.map(ProjectsNavigatorSelection.workspace)
+            },
+            set: { selection in
+                switch selection {
+                case .dashboard:
+                    if windowState.selectedContent != .dashboard {
+                        windowState.showDashboard()
+                    }
+                case .workspace(let ref):
+                    if windowState.activeWorkspace != ref
+                        || windowState.selectedContent == .dashboard {
+                        windowState.focusedWorkspace = ref
+                        _ = windowState.activateWorkspace(ref, in: appModel)
+                    }
+                case nil:
+                    break
+                }
+            }
+        )
+    }
+
     private func canMutate(_ connectionID: UUID) -> Bool {
         appModel.canMutate(connectionID: connectionID)
     }
@@ -339,6 +349,11 @@ struct ProjectsNavigatorView: View {
             catch { actionError = error.localizedDescription }
         }
     }
+}
+
+private enum ProjectsNavigatorSelection: Hashable {
+    case dashboard
+    case workspace(WorkspaceRef)
 }
 
 struct FileNavigatorView: View {
