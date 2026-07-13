@@ -27,33 +27,21 @@ struct NavigatorSelector: View {
     @Binding var selection: NavigatorID
 
     var body: some View {
-        HStack(spacing: 6) {
+        Picker("Navigator", selection: $selection) {
             ForEach(NavigatorSelectorOption.all(
                 hasActiveWorkspace: windowState.activeWorkspace != nil
             )) { option in
-                Button {
-                    selection = option.id
-                } label: {
-                    Image(systemName: option.id.systemImage)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(
-                            selection == option.id ? Color.white : Color.secondary
-                        )
-                        .frame(width: 30, height: 26)
-                        .background(
-                            selection == option.id ? Color.accentColor : .clear,
-                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        )
-                }
-                .buttonStyle(.plain)
-                .disabled(!option.isEnabled)
-                .help(option.help)
-                .accessibilityLabel(option.id.label)
+                Image(systemName: option.id.systemImage)
+                    .accessibilityLabel(option.id.label)
+                    .help(option.help)
+                    .tag(option.id)
+                    .selectionDisabled(!option.isEnabled)
             }
-            Spacer()
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .pickerStyle(.palette)
+        .labelsHidden()
+        .padding(.horizontal, Spacing.md)
+        .padding(.vertical, Spacing.xs)
     }
 }
 
