@@ -108,7 +108,7 @@ struct ProjectsNavigatorView: View {
                         Text("No workspaces")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
-                            .padding(.leading, 8)
+                            .padding(.leading, Spacing.sm)
                     }
                 } label: {
                     projectRow(group)
@@ -210,11 +210,11 @@ struct ProjectsNavigatorView: View {
     }
 
     private func projectRow(_ group: ProjectsNavigatorGroups.ProjectGroup) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: Spacing.sm) {
             Image(systemName: "folder")
             VStack(alignment: .leading, spacing: 1) {
                 Text(group.project.name).lineLimit(1)
-                HStack(spacing: 4) {
+                HStack(spacing: Spacing.xs) {
                     Circle()
                         .fill(group.reachability.color)
                         .frame(width: 6, height: 6)
@@ -259,7 +259,7 @@ struct ProjectsNavigatorView: View {
         in group: ProjectsNavigatorGroups.ProjectGroup
     ) -> some View {
         let enabled = group.reachability == .connected
-        return HStack(spacing: 7) {
+        return HStack(spacing: Spacing.sm) {
             Image(systemName: "square.on.square")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -269,7 +269,7 @@ struct ProjectsNavigatorView: View {
         .contentShape(Rectangle())
         .tag(ProjectsNavigatorSelection.workspace(row.ref))
         .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.55)
+        .opacity(enabled ? 1 : Dimming.archived)
         .contextMenu {
             Button("Open", systemImage: "arrow.up.forward.square") {
                 _ = windowState.activateWorkspace(row.ref, in: appModel)

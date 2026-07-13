@@ -115,7 +115,7 @@ struct CreateProjectSheet: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(!canSubmit)
             }
-            .padding(12)
+            .padding(Spacing.md)
         }
         .frame(width: 460, height: 290)
         .onAppear { draft.preselectFirst(in: appModel.runtimes) }

@@ -7,7 +7,7 @@ struct StatusBadge: View {
     var showLabel = false
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: Spacing.xs) {
             Circle()
                 .fill(color)
                 .frame(width: 8, height: 8)

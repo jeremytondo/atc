@@ -57,7 +57,7 @@ struct ConnectionsSettingsView: View {
         VStack(spacing: 0) {
             List(selection: $target) {
                 ForEach(store.connections) { record in
-                    HStack(spacing: 8) {
+                    HStack(spacing: Spacing.sm) {
                         Circle()
                             .fill(appModel.reachability(of: record.id).color)
                             .frame(width: 8, height: 8)
@@ -195,7 +195,7 @@ private struct ConnectionEditorView: View {
                     }
                 }
                 Section {
-                    HStack(spacing: 8) {
+                    HStack(spacing: Spacing.sm) {
                         Button("Test Connection") { testConnection() }
                             .disabled(!canTest)
                         if testState == .testing {
@@ -230,7 +230,7 @@ private struct ConnectionEditorView: View {
                     .keyboardShortcut(.defaultAction)
                     .disabled(!hasChanges)
             }
-            .padding(12)
+            .padding(Spacing.md)
         }
         .task(id: target) { seed() }
         .onChange(of: name) { invalidateTest() }

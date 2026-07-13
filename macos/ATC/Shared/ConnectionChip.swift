@@ -8,7 +8,7 @@ struct ConnectionChip: View {
     let reachability: Reachability
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: Spacing.xs) {
             Circle()
                 .fill(reachability.color)
                 .frame(width: 6, height: 6)

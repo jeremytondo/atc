@@ -112,7 +112,7 @@ struct StartWorkspaceSessionSheet: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(!canSubmit)
             }
-            .padding(12)
+            .padding(Spacing.md)
         }
         .frame(width: 380, height: 250)
         .onAppear { preselect() }

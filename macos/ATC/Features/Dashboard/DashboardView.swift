@@ -34,14 +34,14 @@ struct DashboardView: View {
             showArchived: showArchived
         )
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 34) {
+            LazyVStack(alignment: .leading, spacing: Spacing.xxl) {
                 ForEach(groups.sections) { section in
                     connectionSection(section)
                 }
             }
             .frame(maxWidth: 1_280, alignment: .leading)
-            .padding(.horizontal, 36)
-            .padding(.vertical, 32)
+            .padding(.horizontal, Spacing.xxl)
+            .padding(.vertical, Spacing.xxl)
             .frame(maxWidth: .infinity, alignment: .top)
         }
         .toolbar {
@@ -165,8 +165,8 @@ struct DashboardView: View {
 
     private func connectionSection(_ section: DashboardGroups.Section) -> some View {
         let reachability = appModel.reachability(of: section.connectionID)
-        return VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 9) {
+        return VStack(alignment: .leading, spacing: Spacing.md) {
+            HStack(spacing: Spacing.sm) {
                 Circle()
                     .fill(reachability.color)
                     .frame(width: 9, height: 9)
@@ -204,7 +204,7 @@ struct DashboardView: View {
                 }
             }
 
-            VStack(spacing: 14) {
+            VStack(spacing: Spacing.md) {
                 ForEach(section.cards) { card in
                     projectCard(card, reachable: canMutate(section.connectionID))
                 }
@@ -215,7 +215,7 @@ struct DashboardView: View {
                         .foregroundStyle(.tertiary)
                         .frame(maxWidth: .infinity, minHeight: 72, alignment: .center)
                         .overlay {
-                            RoundedRectangle(cornerRadius: 12)
+                            RoundedRectangle(cornerRadius: Radius.card)
                                 .stroke(
                                     Color(nsColor: .separatorColor),
                                     style: StrokeStyle(lineWidth: 1, dash: [5, 4])
@@ -251,7 +251,7 @@ struct DashboardView: View {
                 cardShape.stroke(Color(nsColor: .separatorColor), lineWidth: 1)
             }
             .clipShape(cardShape)
-            .opacity(card.project.isArchived ? 0.55 : 1)
+            .opacity(card.project.isArchived ? Dimming.archived : 1)
         }
     }
 
@@ -259,7 +259,7 @@ struct DashboardView: View {
         _ card: DashboardGroups.ProjectCard,
         reachable: Bool
     ) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: Spacing.sm) {
             Text(card.project.name)
                 .font(.headline)
                 .lineLimit(1)
@@ -279,7 +279,7 @@ struct DashboardView: View {
                     .background(.quaternary, in: Capsule())
             }
 
-            Spacer(minLength: 12)
+            Spacer(minLength: Spacing.md)
 
             if !card.project.isArchived {
                 Button {
@@ -295,7 +295,7 @@ struct DashboardView: View {
                 .help("New workspace in \(card.project.name)")
             }
         }
-        .padding(.horizontal, 18)
+        .padding(.horizontal, Spacing.lg)
         .frame(minHeight: 54)
         .contentShape(Rectangle())
         .contextMenu { projectMenu(card, reachable: reachable) }
@@ -305,7 +305,7 @@ struct DashboardView: View {
         _ card: DashboardGroups.ProjectCard,
         reachable: Bool
     ) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: Spacing.sm) {
             Text(card.project.name)
                 .font(.headline)
                 .lineLimit(1)
@@ -321,7 +321,7 @@ struct DashboardView: View {
                 .foregroundStyle(.tertiary)
                 .italic()
 
-            Spacer(minLength: 12)
+            Spacer(minLength: Spacing.md)
 
             Button("New Workspace", systemImage: "plus") {
                 onCreateWorkspace(card.ref)
@@ -329,7 +329,7 @@ struct DashboardView: View {
             .buttonStyle(.bordered)
             .disabled(!reachable)
         }
-        .padding(.horizontal, 18)
+        .padding(.horizontal, Spacing.lg)
         .frame(minHeight: 72)
         .contentShape(Rectangle())
         .contextMenu { projectMenu(card, reachable: reachable) }
@@ -390,7 +390,7 @@ struct DashboardView: View {
         Button {
             onOpenWorkspace(row.ref)
         } label: {
-            HStack(spacing: 12) {
+            HStack(spacing: Spacing.md) {
                 Circle()
                     .fill(row.hasActiveSessions ? Color.green : Color.clear)
                     .frame(width: 8, height: 8)
@@ -419,13 +419,13 @@ struct DashboardView: View {
                     .font(.callout)
                     .foregroundStyle(.tertiary)
             }
-            .padding(.horizontal, 18)
+            .padding(.horizontal, Spacing.lg)
             .frame(minHeight: 48)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!reachable)
-        .opacity(workspace.isArchived ? 0.5 : 1)
+        .opacity(workspace.isArchived ? Dimming.archived : 1)
         .contextMenu {
             Button("Open", systemImage: "arrow.up.forward.square") {
                 onOpenWorkspace(row.ref)
@@ -499,7 +499,7 @@ struct DashboardView: View {
     // MARK: - Helpers
 
     private var cardShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
+        RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
     }
 
     private var canCreateProject: Bool {

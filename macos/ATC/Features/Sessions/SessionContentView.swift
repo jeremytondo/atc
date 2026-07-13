@@ -142,7 +142,7 @@ struct SessionHeaderBar: View {
     }
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Spacing.md) {
             StatusBadge(session: session, showLabel: true)
             Text(displayName)
                 .font(.headline)
@@ -197,8 +197,8 @@ struct SessionHeaderBar: View {
             }
             .help("Show session metadata")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, Spacing.md)
+        .padding(.vertical, Spacing.sm)
         .confirmationDialog(
             "Stop “\(displayName)”?",
             isPresented: $confirmStop

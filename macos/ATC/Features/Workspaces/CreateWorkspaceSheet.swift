@@ -96,7 +96,7 @@ struct CreateWorkspaceSheet: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(!canSubmit)
             }
-            .padding(12)
+            .padding(Spacing.md)
         }
         .frame(width: 420, height: 240)
         .onAppear {

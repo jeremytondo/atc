@@ -53,8 +53,8 @@ struct WorkspaceNavigatorView: View {
                     .font(.caption)
                 Spacer()
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, Spacing.xs)
             .background(.bar)
         }
         .confirmationDialog(
