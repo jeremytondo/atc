@@ -192,6 +192,10 @@ struct SessionHeaderBar: View {
             }
             .help("Show session metadata")
         }
+        // The trailing actions read as one toolbar row: icon-only,
+        // borderless, discoverable through their .help strings.
+        .buttonStyle(.borderless)
+        .labelStyle(.iconOnly)
         .padding(.horizontal, Spacing.md)
         .padding(.vertical, Spacing.sm)
         .confirmationDialog(
