@@ -75,27 +75,13 @@ struct ConnectionsSettingsView: View {
                 }
             }
             Divider()
-            HStack(spacing: 2) {
-                Button {
-                    target = .new
-                } label: {
-                    Image(systemName: "plus")
-                        .frame(width: 24, height: 20)
-                }
-                .help("Add a connection")
-                Button {
-                    confirmDelete = true
-                } label: {
-                    Image(systemName: "minus")
-                        .frame(width: 24, height: 20)
-                }
-                .help("Remove the selected connection")
-                .disabled(selectedExistingID == nil)
-                Spacer()
-            }
-            .buttonStyle(.borderless)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            ListEditorBar(
+                addHelp: "Add a connection",
+                removeHelp: "Remove the selected connection",
+                canRemove: selectedExistingID != nil,
+                onAdd: { target = .new },
+                onRemove: { confirmDelete = true }
+            )
         }
     }
 

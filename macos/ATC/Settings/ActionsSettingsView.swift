@@ -49,7 +49,7 @@ struct ActionsSettingsView: View {
                 Divider()
                 HStack(spacing: 0) {
                     master
-                        .frame(width: 260)
+                        .frame(width: 240)
                     Divider()
                     detail
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -157,27 +157,13 @@ struct ActionsSettingsView: View {
                 }
             }
             Divider()
-            HStack(spacing: 2) {
-                Button {
-                    target = .new
-                } label: {
-                    Image(systemName: "plus")
-                        .frame(width: 24, height: 20)
-                }
-                .help("Add an action")
-                Button {
-                    confirmRemove = true
-                } label: {
-                    Image(systemName: "minus")
-                        .frame(width: 24, height: 20)
-                }
-                .help(minusHelp)
-                .disabled(selectedAction == nil || selectedAction?.isBuiltin == true)
-                Spacer()
-            }
-            .buttonStyle(.borderless)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            ListEditorBar(
+                addHelp: "Add an action",
+                removeHelp: minusHelp,
+                canRemove: selectedAction != nil && selectedAction?.isBuiltin != true,
+                onAdd: { target = .new },
+                onRemove: { confirmRemove = true }
+            )
         }
     }
 

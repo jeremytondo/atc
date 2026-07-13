@@ -12,7 +12,7 @@ struct SettingsHostingSmokeTest {
         RunLoop.main.run(until: Date(timeIntervalSinceNow: seconds))
     }
 
-    private func host(_ view: some View, width: CGFloat = 700, height: CGFloat = 450) {
+    private func host(_ view: some View, width: CGFloat = 720, height: CGFloat = 500) {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: width, height: height),
             styleMask: [.titled], backing: .buffered, defer: false
@@ -62,8 +62,7 @@ struct SettingsHostingSmokeTest {
         let store = makeStore(seeded: true)
         host(
             ActionsSettingsView()
-                .environment(AppModel(connections: store, clientFactory: { _ in MockATCClient() })),
-            width: 760, height: 540
+                .environment(AppModel(connections: store, clientFactory: { _ in MockATCClient() }))
         )
     }
 
@@ -72,8 +71,7 @@ struct SettingsHostingSmokeTest {
         let store = makeStore(seeded: false)
         host(
             ActionsSettingsView()
-                .environment(AppModel(connections: store, clientFactory: { _ in MockATCClient() })),
-            width: 760, height: 540
+                .environment(AppModel(connections: store, clientFactory: { _ in MockATCClient() }))
         )
     }
 }
