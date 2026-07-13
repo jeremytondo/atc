@@ -42,63 +42,49 @@ struct CreateWorkspaceSheet: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Form {
+        SheetScaffold(
+            title: "New Workspace",
+            systemImage: "square.on.square",
+            primaryLabel: "Create Workspace",
+            isBusy: isSubmitting,
+            canSubmit: canSubmit,
+            onCancel: { dismiss() },
+            onSubmit: { Task { await submit() } }
+        ) {
+            Section {
+                if isProjectFixed {
+                    LabeledContent("Project") {
+                        Text(fixedProjectName)
+                    }
+                } else {
+                    Picker("Project", selection: $selectedProject) {
+                        if selectedProject == nil {
+                            Text("Select Project").tag(nil as ProjectRef?)
+                        }
+                        ForEach(projectChoices, id: \.ref) { choice in
+                            Text(showsConnectionNames
+                                ? "\(choice.project.name) — \(choice.connectionName)"
+                                : choice.project.name)
+                                .tag(choice.ref as ProjectRef?)
+                        }
+                    }
+                }
+                TextField("Name", text: $name, prompt: Text("What are you working on?"))
+            } footer: {
+                Text("The workspace uses its project's directory on the workstation.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let message = submitError ?? availabilityError {
                 Section {
-                    if isProjectFixed {
-                        LabeledContent("Project") {
-                            Text(fixedProjectName)
-                        }
-                    } else {
-                        Picker("Project", selection: $selectedProject) {
-                            if selectedProject == nil {
-                                Text("Select Project").tag(nil as ProjectRef?)
-                            }
-                            ForEach(projectChoices, id: \.ref) { choice in
-                                Text(showsConnectionNames
-                                    ? "\(choice.project.name) — \(choice.connectionName)"
-                                    : choice.project.name)
-                                    .tag(choice.ref as ProjectRef?)
-                            }
-                        }
-                    }
-                    TextField("Name", text: $name, prompt: Text("What are you working on?"))
-                } footer: {
-                    Text("The workspace uses its project's directory on the workstation.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                if let message = submitError ?? availabilityError {
-                    Section {
-                        Label(message, systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.red)
-                            .font(.callout)
-                    }
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.red)
+                        .font(.callout)
                 }
             }
-            .formStyle(.grouped)
-
-            Divider()
-            HStack {
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Spacer()
-                Button {
-                    Task { await submit() }
-                } label: {
-                    if isSubmitting {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Text("Create Workspace")
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(!canSubmit)
-            }
-            .padding(Spacing.md)
         }
-        .frame(width: 420, height: 240)
+        .frame(width: 460, height: 280)
         .onAppear {
             switch context.mode {
             case .fixed(let ref), .preselected(let ref):

@@ -66,55 +66,34 @@ struct StartWorkspaceSessionSheet: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Form {
-                Section {
-                    picker
-                    TextField("Name (optional)", text: $name)
-                } header: {
-                    Label {
-                        Text(kind == .agentSession ? "New Session" : "New Terminal")
-                    } icon: {
-                        Image(systemName: kind == .agentSession ? "sparkles" : "terminal")
-                    }
-                    .font(.headline)
-                }
+        SheetScaffold(
+            title: kind == .agentSession ? "New Session" : "New Terminal",
+            systemImage: kind == .agentSession ? "sparkles" : "terminal",
+            primaryLabel: "Start",
+            isBusy: isSubmitting,
+            canSubmit: canSubmit,
+            onCancel: { dismiss() },
+            onSubmit: { Task { await submit() } }
+        ) {
+            Section {
+                picker
+                TextField("Name (optional)", text: $name)
+            }
 
-                if let message = submitError ?? availabilityError ?? loadError {
-                    Section {
-                        Label(message, systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.red)
-                            .font(.callout)
-                        if loadError != nil {
-                            Button("Retry") {
-                                Task { await actionsStore?.refresh() }
-                            }
+            if let message = submitError ?? availabilityError ?? loadError {
+                Section {
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.red)
+                        .font(.callout)
+                    if loadError != nil {
+                        Button("Retry") {
+                            Task { await actionsStore?.refresh() }
                         }
                     }
                 }
             }
-            .formStyle(.grouped)
-
-            Divider()
-            HStack {
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Spacer()
-                Button {
-                    Task { await submit() }
-                } label: {
-                    if isSubmitting {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Text("Start")
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(!canSubmit)
-            }
-            .padding(Spacing.md)
         }
-        .frame(width: 380, height: 250)
+        .frame(width: 460, height: 280)
         .onAppear { preselect() }
         .onChange(of: choices.map(\.name)) { preselect() }
     }

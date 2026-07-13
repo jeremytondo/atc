@@ -52,72 +52,58 @@ struct CreateProjectSheet: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Form {
+        SheetScaffold(
+            title: "New Project",
+            systemImage: "folder.badge.plus",
+            primaryLabel: "Create Project",
+            isBusy: isSubmitting,
+            canSubmit: canSubmit,
+            onCancel: { dismiss() },
+            onSubmit: { Task { await submit() } }
+        ) {
+            Section {
+                Picker("Connection", selection: Binding(
+                    get: { draft.connectionID },
+                    set: { draft.selectConnection($0) }
+                )) {
+                    // The selection is nil until onAppear preselects (and
+                    // always when no Connections exist); keep a matching
+                    // tag so AppKit doesn't log an invalid selection.
+                    if selectedRuntime == nil {
+                        Text(appModel.runtimes.isEmpty ? "No Connections" : "Select Connection")
+                            .tag(draft.connectionID)
+                    }
+                    ForEach(appModel.runtimes) { runtime in
+                        Text(runtime.record.name).tag(runtime.id as UUID?)
+                    }
+                }
+                TextField("Name", text: $draft.name, prompt: Text("My Project"))
+                HStack {
+                    TextField("Directory", text: $draft.workingDir, prompt: Text("/path/on/the/server"))
+                        .autocorrectionDisabled()
+                    Button {
+                        showFolderPicker = true
+                    } label: {
+                        Image(systemName: "folder")
+                    }
+                    .disabled(selectedRuntime == nil)
+                    .help("Browse folders on the server")
+                }
+            } footer: {
+                Text("Sessions started in this project run in its directory on the workstation.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let message = submitError {
                 Section {
-                    Picker("Connection", selection: Binding(
-                        get: { draft.connectionID },
-                        set: { draft.selectConnection($0) }
-                    )) {
-                        // The selection is nil until onAppear preselects (and
-                        // always when no Connections exist); keep a matching
-                        // tag so AppKit doesn't log an invalid selection.
-                        if selectedRuntime == nil {
-                            Text(appModel.runtimes.isEmpty ? "No Connections" : "Select Connection")
-                                .tag(draft.connectionID)
-                        }
-                        ForEach(appModel.runtimes) { runtime in
-                            Text(runtime.record.name).tag(runtime.id as UUID?)
-                        }
-                    }
-                    TextField("Name", text: $draft.name, prompt: Text("My Project"))
-                    HStack {
-                        TextField("Directory", text: $draft.workingDir, prompt: Text("/path/on/the/server"))
-                            .autocorrectionDisabled()
-                        Button {
-                            showFolderPicker = true
-                        } label: {
-                            Image(systemName: "folder")
-                        }
-                        .disabled(selectedRuntime == nil)
-                        .help("Browse folders on the server")
-                    }
-                } footer: {
-                    Text("Sessions started in this project run in its directory on the workstation.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                if let message = submitError {
-                    Section {
-                        Label(message, systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.red)
-                            .font(.callout)
-                    }
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.red)
+                        .font(.callout)
                 }
             }
-            .formStyle(.grouped)
-
-            Divider()
-            HStack {
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Spacer()
-                Button {
-                    Task { await submit() }
-                } label: {
-                    if isSubmitting {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Text("Create Project")
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(!canSubmit)
-            }
-            .padding(Spacing.md)
         }
-        .frame(width: 460, height: 290)
+        .frame(width: 460, height: 300)
         .onAppear { draft.preselectFirst(in: appModel.runtimes) }
         .sheet(isPresented: $showFolderPicker) {
             if let runtime = selectedRuntime {
