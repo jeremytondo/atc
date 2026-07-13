@@ -200,13 +200,6 @@ final class WindowState {
         selectionMemory.forget(ref)
     }
 
-    func handleConnectionRemoved(_ connectionID: UUID) {
-        selectionMemory.forget(connectionID: connectionID)
-        if activeWorkspace?.connectionID == connectionID, let activeWorkspace {
-            handleActiveWorkspaceGone(activeWorkspace)
-        }
-    }
-
     func toggleSidebar() {
         columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
     }
