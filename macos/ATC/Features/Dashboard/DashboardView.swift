@@ -151,14 +151,7 @@ struct DashboardView: View {
                 Text(DeleteConfirmation.projectMessage(name: card.project.name))
             }
         }
-        .alert("Action Failed", isPresented: Binding(
-            get: { actionError != nil },
-            set: { if !$0 { actionError = nil } }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(actionError ?? "")
-        }
+        .actionErrorAlert($actionError)
     }
 
     // MARK: - Connection section

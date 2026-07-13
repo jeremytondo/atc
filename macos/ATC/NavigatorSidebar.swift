@@ -199,14 +199,7 @@ struct ProjectsNavigatorView: View {
                 ))
             }
         }
-        .alert("Action Failed", isPresented: Binding(
-            get: { actionError != nil },
-            set: { if !$0 { actionError = nil } }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(actionError ?? "")
-        }
+        .actionErrorAlert($actionError)
     }
 
     private func projectRow(_ group: ProjectsNavigatorGroups.ProjectGroup) -> some View {

@@ -73,14 +73,7 @@ struct WorkspaceNavigatorView: View {
                 Text(DeleteConfirmation.sessionMessage(displayName: row.title))
             }
         }
-        .alert("Workspace Action Failed", isPresented: Binding(
-            get: { actionError != nil },
-            set: { if !$0 { actionError = nil } }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(actionError ?? "")
-        }
+        .actionErrorAlert($actionError, title: "Workspace Action Failed")
     }
 
     @ViewBuilder
@@ -311,14 +304,7 @@ struct WorkspaceActionsMenu: View {
                 ))
             }
         }
-        .alert("Workspace Action Failed", isPresented: Binding(
-            get: { actionError != nil },
-            set: { if !$0 { actionError = nil } }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(actionError ?? "")
-        }
+        .actionErrorAlert($actionError, title: "Workspace Action Failed")
     }
 
     private var ref: WorkspaceRef? { windowState.activeWorkspace }

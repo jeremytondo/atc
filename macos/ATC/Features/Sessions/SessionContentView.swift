@@ -227,14 +227,7 @@ struct SessionHeaderBar: View {
         } message: {
             Text(DeleteConfirmation.sessionMessage(displayName: displayName))
         }
-        .alert("Session Action Failed", isPresented: Binding(
-            get: { actionError != nil },
-            set: { if !$0 { actionError = nil } }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(actionError ?? "")
-        }
+        .actionErrorAlert($actionError, title: "Session Action Failed")
     }
 
     /// Failure (stop error, 502) leaves the session and surfaces the alert.
