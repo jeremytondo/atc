@@ -69,6 +69,7 @@ struct WorkspaceNavigatorView: View {
             Button("Delete Session", role: .destructive) {
                 if let row = deletingSession { deleteSession(row) }
             }
+            .disabled(!isConnected)
         } message: {
             if let row = deletingSession {
                 Text(DeleteConfirmation.sessionMessage(displayName: row.title))
@@ -127,14 +128,18 @@ struct WorkspaceNavigatorView: View {
         if session.isArchived {
             Button("Unarchive", systemImage: "archivebox") {
                 if let store = runtime?.sessions {
-                    run { try await store.unarchive(id: session.id) }
+                    run(on: row.ref.connectionID) {
+                        try await store.unarchive(id: session.id)
+                    }
                 }
             }
             .disabled(!isConnected)
         } else if session.status == .terminated || session.status == .failed {
             Button("Archive", systemImage: "archivebox") {
                 if let store = runtime?.sessions {
-                    run { try await store.archive(id: session.id) }
+                    run(on: row.ref.connectionID) {
+                        try await store.archive(id: session.id)
+                    }
                 }
             }
             .disabled(!isConnected)
@@ -204,7 +209,7 @@ struct WorkspaceNavigatorView: View {
 
     private func deleteSession(_ row: Row) {
         guard let store = runtime?.sessions else { return }
-        run {
+        run(on: row.ref.connectionID) {
             try await store.delete(id: row.session.id)
             appModel.disconnectTerminal(ref: row.ref)
             if windowState.selectedSession == row.ref {
@@ -213,8 +218,15 @@ struct WorkspaceNavigatorView: View {
         }
     }
 
-    private func run(_ operation: @escaping () async throws -> Void) {
+    private func run(
+        on connectionID: UUID,
+        _ operation: @escaping () async throws -> Void
+    ) {
         Task {
+            guard appModel.canMutate(connectionID: connectionID) else {
+                actionError = "The connection is unavailable."
+                return
+            }
             do { try await operation() }
             catch { actionError = error.localizedDescription }
         }
@@ -245,15 +257,21 @@ struct WorkspaceActionsMenu: View {
             if let workspace {
                 if workspace.isArchived {
                     Button("Unarchive Workspace", systemImage: "archivebox") {
-                        if let store = runtime?.workspaces {
-                            run { try await store.unarchive(id: workspace.id) }
+                        if let runtime {
+                            let store = runtime.workspaces
+                            run(on: runtime.id) {
+                                try await store.unarchive(id: workspace.id)
+                            }
                         }
                     }
                     .disabled(!isConnected)
                 } else {
                     Button("Archive Workspace", systemImage: "archivebox") {
-                        if let store = runtime?.workspaces {
-                            run { try await store.archive(id: workspace.id) }
+                        if let runtime {
+                            let store = runtime.workspaces
+                            run(on: runtime.id) {
+                                try await store.archive(id: workspace.id)
+                            }
                         }
                     }
                     .disabled(!isConnected || workspaceSessions.contains(where: \.isActive))
@@ -271,12 +289,15 @@ struct WorkspaceActionsMenu: View {
         .alert("Rename Workspace", isPresented: $renaming) {
             TextField("Name", text: $renameDraft)
             Button("Rename") {
-                if let workspace, let store = runtime?.workspaces {
+                if let workspace, let runtime {
+                    let store = runtime.workspaces
                     let name = renameDraft.trimmingCharacters(in: .whitespaces)
-                    run { try await store.rename(id: workspace.id, name: name) }
+                    run(on: runtime.id) {
+                        try await store.rename(id: workspace.id, name: name)
+                    }
                 }
             }
-            .disabled(renameDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+            .disabled(renameDraft.trimmingCharacters(in: .whitespaces).isEmpty || !isConnected)
             Button("Cancel", role: .cancel) {}
         }
         .confirmationDialog(
@@ -284,6 +305,7 @@ struct WorkspaceActionsMenu: View {
             isPresented: $confirmDelete
         ) {
             Button("Delete Workspace", role: .destructive) { deleteWorkspace() }
+                .disabled(!isConnected)
         } message: {
             if let workspace {
                 Text(DeleteConfirmation.workspaceMessage(
@@ -319,14 +341,21 @@ struct WorkspaceActionsMenu: View {
 
     private func deleteWorkspace() {
         guard let ref, let store = runtime?.workspaces else { return }
-        run {
+        run(on: ref.connectionID) {
             try await store.delete(id: ref.workspaceID)
             windowState.forgetSelection(for: ref)
         }
     }
 
-    private func run(_ operation: @escaping () async throws -> Void) {
+    private func run(
+        on connectionID: UUID,
+        _ operation: @escaping () async throws -> Void
+    ) {
         Task {
+            guard appModel.canMutate(connectionID: connectionID) else {
+                actionError = "The connection is unavailable."
+                return
+            }
             do { try await operation() }
             catch { actionError = error.localizedDescription }
         }

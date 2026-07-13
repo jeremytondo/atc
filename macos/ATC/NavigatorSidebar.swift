@@ -132,10 +132,15 @@ struct ProjectsNavigatorView: View {
                 if let group = renamingProject,
                    let store = appModel.runtime(id: group.ref.connectionID)?.projects {
                     let name = renameDraft.trimmingCharacters(in: .whitespaces)
-                    run { try await store.rename(id: group.project.id, name: name) }
+                    run(on: group.ref.connectionID) {
+                        try await store.rename(id: group.project.id, name: name)
+                    }
                 }
             }
-            .disabled(renameDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+            .disabled(
+                renameDraft.trimmingCharacters(in: .whitespaces).isEmpty
+                    || !(renamingProject.map { canMutate($0.ref.connectionID) } ?? false)
+            )
             Button("Cancel", role: .cancel) {}
         }
         .alert("Rename Workspace", isPresented: Binding(
@@ -147,10 +152,15 @@ struct ProjectsNavigatorView: View {
                 if let row = renamingWorkspace,
                    let store = appModel.runtime(id: row.ref.connectionID)?.workspaces {
                     let name = renameDraft.trimmingCharacters(in: .whitespaces)
-                    run { try await store.rename(id: row.workspace.id, name: name) }
+                    run(on: row.ref.connectionID) {
+                        try await store.rename(id: row.workspace.id, name: name)
+                    }
                 }
             }
-            .disabled(renameDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+            .disabled(
+                renameDraft.trimmingCharacters(in: .whitespaces).isEmpty
+                    || !(renamingWorkspace.map { canMutate($0.ref.connectionID) } ?? false)
+            )
             Button("Cancel", role: .cancel) {}
         }
         .confirmationDialog(
@@ -163,9 +173,12 @@ struct ProjectsNavigatorView: View {
             Button("Delete Project", role: .destructive) {
                 if let group = deletingProject,
                    let store = appModel.runtime(id: group.ref.connectionID)?.projects {
-                    run { try await store.delete(id: group.project.id) }
+                    run(on: group.ref.connectionID) {
+                        try await store.delete(id: group.project.id)
+                    }
                 }
             }
+            .disabled(!(deletingProject.map { canMutate($0.ref.connectionID) } ?? false))
         }
         .confirmationDialog(
             "Delete Workspace “\(deletingWorkspace?.workspace.name ?? "")”?",
@@ -177,12 +190,13 @@ struct ProjectsNavigatorView: View {
             Button("Delete Workspace", role: .destructive) {
                 if let row = deletingWorkspace,
                    let store = appModel.runtime(id: row.ref.connectionID)?.workspaces {
-                    run {
+                    run(on: row.ref.connectionID) {
                         try await store.delete(id: row.workspace.id)
                         windowState.forgetSelection(for: row.ref)
                     }
                 }
             }
+            .disabled(!(deletingWorkspace.map { canMutate($0.ref.connectionID) } ?? false))
         } message: {
             if let row = deletingWorkspace {
                 Text(DeleteConfirmation.workspaceMessage(
@@ -233,7 +247,9 @@ struct ProjectsNavigatorView: View {
             Divider()
             Button("Archive Project", systemImage: "archivebox") {
                 if let store = appModel.runtime(id: group.ref.connectionID)?.projects {
-                    run { try await store.archive(id: group.project.id) }
+                    run(on: group.ref.connectionID) {
+                        try await store.archive(id: group.project.id)
+                    }
                 }
             }
             .disabled(group.reachability != .connected || group.hasUnarchivedWorkspaces)
@@ -282,7 +298,9 @@ struct ProjectsNavigatorView: View {
             Divider()
             Button("Archive", systemImage: "archivebox") {
                 if let store = appModel.runtime(id: row.ref.connectionID)?.workspaces {
-                    run { try await store.archive(id: row.workspace.id) }
+                    run(on: row.ref.connectionID) {
+                        try await store.archive(id: row.workspace.id)
+                    }
                 }
             }
             .disabled(!enabled || row.hasActiveSessions)
@@ -304,8 +322,19 @@ struct ProjectsNavigatorView: View {
         )
     }
 
-    private func run(_ operation: @escaping () async throws -> Void) {
+    private func canMutate(_ connectionID: UUID) -> Bool {
+        appModel.canMutate(connectionID: connectionID)
+    }
+
+    private func run(
+        on connectionID: UUID,
+        _ operation: @escaping () async throws -> Void
+    ) {
         Task {
+            guard canMutate(connectionID) else {
+                actionError = "The connection is unavailable."
+                return
+            }
             do { try await operation() }
             catch { actionError = error.localizedDescription }
         }
