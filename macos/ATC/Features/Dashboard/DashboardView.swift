@@ -38,7 +38,7 @@ struct DashboardView: View {
             ForEach(groups.sections) { section in
                 Section {
                     ForEach(section.cards) { card in
-                        projectCard(card, reachable: isReachable(section.connectionID))
+                        projectCard(card, reachable: canMutate(section.connectionID))
                     }
                     if section.cards.isEmpty {
                         Text("No projects")
@@ -51,7 +51,7 @@ struct DashboardView: View {
             }
         }
         .onKeyPress(.return) {
-            guard let ref = focusedWorkspace, isReachable(ref.connectionID) else {
+            guard let ref = focusedWorkspace, canMutate(ref.connectionID) else {
                 return .ignored
             }
             onOpenWorkspace(ref)
@@ -65,7 +65,9 @@ struct DashboardView: View {
                 Toggle("Show Archived", isOn: $showArchived)
                     .toggleStyle(.checkbox)
                 Button("New Project…") { onCreateProject() }
-                    .disabled(appModel.runtimes.isEmpty)
+                    .disabled(!appModel.runtimes.contains {
+                        appModel.canMutate(connectionID: $0.id)
+                    })
                 Button {
                     Task { await appModel.refreshAll() }
                 } label: {
@@ -96,7 +98,10 @@ struct DashboardView: View {
                     run { try await store.rename(id: row.workspace.id, name: trimmed) }
                 }
             }
-            .disabled(renameDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+            .disabled(
+                renameDraft.trimmingCharacters(in: .whitespaces).isEmpty
+                    || !(renamingWorkspace.map { canMutate($0.ref.connectionID) } ?? false)
+            )
             Button("Cancel", role: .cancel) {}
         }
         .alert("Rename Project", isPresented: Binding(
@@ -111,7 +116,10 @@ struct DashboardView: View {
                     run { try await store.rename(id: card.project.id, name: trimmed) }
                 }
             }
-            .disabled(renameDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+            .disabled(
+                renameDraft.trimmingCharacters(in: .whitespaces).isEmpty
+                    || !(renamingProject.map { canMutate($0.ref.connectionID) } ?? false)
+            )
             Button("Cancel", role: .cancel) {}
         }
         .confirmationDialog(
@@ -126,6 +134,7 @@ struct DashboardView: View {
                     deleteWorkspace(row)
                 }
             }
+            .disabled(!(deletingWorkspace.map { canMutate($0.ref.connectionID) } ?? false))
         } message: {
             if let row = deletingWorkspace {
                 Text(DeleteConfirmation.workspaceMessage(
@@ -148,6 +157,7 @@ struct DashboardView: View {
                     run { try await store.delete(id: card.project.id) }
                 }
             }
+            .disabled(!(deletingProject.map { canMutate($0.ref.connectionID) } ?? false))
         } message: {
             if let card = deletingProject {
                 Text(DeleteConfirmation.projectMessage(name: card.project.name))
@@ -256,6 +266,7 @@ struct DashboardView: View {
                 renameDraft = project.name
                 renamingProject = card
             }
+            .disabled(!reachable)
             Divider()
             // Mirrors the server rule: archive only once every Workspace
             // is archived. A stale view still gets the 409 via the alert.
@@ -264,19 +275,20 @@ struct DashboardView: View {
                     run { try await store.archive(id: project.id) }
                 }
             }
-            .disabled(card.hasUnarchivedWorkspaces)
+            .disabled(!reachable || card.hasUnarchivedWorkspaces)
         } else {
             Button("Unarchive Project", systemImage: "archivebox") {
                 if let store = appModel.runtime(id: card.ref.connectionID)?.projects {
                     run { try await store.unarchive(id: project.id) }
                 }
             }
+            .disabled(!reachable)
         }
         Divider()
         Button("Delete Project…", systemImage: "trash", role: .destructive) {
             deletingProject = card
         }
-        .disabled(card.totalWorkspaceCount > 0)
+        .disabled(!reachable || card.totalWorkspaceCount > 0)
         .help(card.totalWorkspaceCount > 0 ? "Delete all Workspaces first" : "")
     }
 
@@ -322,6 +334,7 @@ struct DashboardView: View {
                 renameDraft = workspace.name
                 renamingWorkspace = row
             }
+            .disabled(!reachable)
             Divider()
             if workspace.isArchived {
                 Button("Unarchive", systemImage: "archivebox") {
@@ -329,6 +342,7 @@ struct DashboardView: View {
                         run { try await store.unarchive(id: workspace.id) }
                     }
                 }
+                .disabled(!reachable)
             } else {
                 // Mirrors the server rule: no archiving with active sessions.
                 Button("Archive", systemImage: "archivebox") {
@@ -336,12 +350,13 @@ struct DashboardView: View {
                         run { try await store.archive(id: workspace.id) }
                     }
                 }
-                .disabled(row.hasActiveSessions)
+                .disabled(!reachable || row.hasActiveSessions)
             }
             Divider()
             Button("Delete…", systemImage: "trash", role: .destructive) {
                 deletingWorkspace = row
             }
+            .disabled(!reachable)
         }
     }
 
@@ -367,6 +382,9 @@ struct DashboardView: View {
             Text("Create a project to start working in a codebase.")
         } actions: {
             Button("New Project") { onCreateProject() }
+                .disabled(!appModel.runtimes.contains {
+                    appModel.canMutate(connectionID: $0.id)
+                })
         }
         .background()
     }
@@ -379,8 +397,8 @@ struct DashboardView: View {
 
     // MARK: - Helpers
 
-    private func isReachable(_ connectionID: UUID) -> Bool {
-        appModel.reachability(of: connectionID) != .unreachable
+    private func canMutate(_ connectionID: UUID) -> Bool {
+        appModel.canMutate(connectionID: connectionID)
     }
 
     private func workspacesStore(for connectionID: UUID) -> WorkspacesStore? {

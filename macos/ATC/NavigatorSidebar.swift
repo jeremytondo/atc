@@ -28,28 +28,46 @@ struct NavigatorSelector: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            ForEach(NavigatorID.allCases, id: \.self) { navigator in
-                let enabled = navigator == .projects || windowState.activeWorkspace != nil
+            ForEach(NavigatorSelectorOption.all(
+                hasActiveWorkspace: windowState.activeWorkspace != nil
+            )) { option in
                 Button {
-                    selection = navigator
+                    selection = option.id
                 } label: {
-                    Image(systemName: navigator.systemImage)
+                    Image(systemName: option.id.systemImage)
                         .frame(width: 28, height: 24)
                         .background(
-                            selection == navigator ? Color.accentColor.opacity(0.18) : .clear,
+                            selection == option.id ? Color.accentColor.opacity(0.18) : .clear,
                             in: RoundedRectangle(cornerRadius: 5)
                         )
                 }
                 .buttonStyle(.plain)
-                .disabled(!enabled)
-                .help(enabled ? navigator.label : "Requires an Active Workspace")
-                .accessibilityLabel(navigator.label)
+                .disabled(!option.isEnabled)
+                .help(option.help)
+                .accessibilityLabel(option.id.label)
             }
             Spacer()
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
         .background(.bar)
+    }
+}
+
+struct NavigatorSelectorOption: Identifiable, Equatable {
+    let id: NavigatorID
+    let isEnabled: Bool
+    let help: String
+
+    static func all(hasActiveWorkspace: Bool) -> [NavigatorSelectorOption] {
+        NavigatorID.allCases.map { navigator in
+            let enabled = navigator == .projects || hasActiveWorkspace
+            return NavigatorSelectorOption(
+                id: navigator,
+                isEnabled: enabled,
+                help: enabled ? navigator.label : "Requires an Active Workspace"
+            )
+        }
     }
 }
 
@@ -295,9 +313,11 @@ struct ProjectsNavigatorView: View {
 }
 
 struct FileNavigatorView: View {
+    static let unavailableMessage = "File navigation is not available yet"
+
     var body: some View {
         ContentUnavailableView(
-            "File navigation is not available yet",
+            Self.unavailableMessage,
             systemImage: "doc"
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)

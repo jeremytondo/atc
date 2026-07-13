@@ -15,6 +15,14 @@ struct WorkspaceSwitcher: View {
                 sessions: $0.sessions.sessions
             )
         })
+        let presentation = activeContext.map {
+            WorkspaceSwitcherPresentation(
+                project: $0.project,
+                workspace: $0.workspace,
+                connectionName: $0.runtime.record.name,
+                reachability: $0.runtime.reachability
+            )
+        } ?? .noActiveWorkspace
         Menu {
             if let context = activeContext, context.workspace.isArchived {
                 Section("Current Workspace") {
@@ -46,18 +54,18 @@ struct WorkspaceSwitcher: View {
                     Circle()
                         .fill(context.runtime.reachability.color)
                         .frame(width: 7, height: 7)
-                    Text("\(context.project.name) › \(context.workspace.name)")
+                    Text(presentation.label)
                         .lineLimit(1)
                 } else {
-                    Text("Select Workspace…")
+                    Text(presentation.label)
                 }
                 Image(systemName: "chevron.down")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
-        .help(helpText)
-        .accessibilityLabel(helpText)
+        .help(presentation.help)
+        .accessibilityLabel(presentation.help)
     }
 
     private var activeContext: (
@@ -72,11 +80,35 @@ struct WorkspaceSwitcher: View {
         else { return nil }
         return (runtime, project, workspace)
     }
+}
 
-    private var helpText: String {
-        guard let context = activeContext else { return "Select an Active Workspace" }
-        let status = context.runtime.reachability == .connected ? "Connected" : "Disconnected"
-        let archived = context.workspace.isArchived ? ", Archived" : ""
-        return "\(context.project.name) › \(context.workspace.name), \(context.runtime.record.name), \(status)\(archived)"
+struct WorkspaceSwitcherPresentation: Equatable {
+    let label: String
+    let help: String
+    let isArchived: Bool
+
+    static let noActiveWorkspace = WorkspaceSwitcherPresentation(
+        label: "Select Workspace…",
+        help: "Select an Active Workspace",
+        isArchived: false
+    )
+
+    private init(label: String, help: String, isArchived: Bool) {
+        self.label = label
+        self.help = help
+        self.isArchived = isArchived
+    }
+
+    init(
+        project: Project,
+        workspace: Workspace,
+        connectionName: String,
+        reachability: Reachability
+    ) {
+        label = "\(project.name) › \(workspace.name)"
+        let status = reachability == .connected ? "Connected" : "Disconnected"
+        let archived = workspace.isArchived ? ", Archived" : ""
+        help = "\(label), \(connectionName), \(status)\(archived)"
+        isArchived = workspace.isArchived
     }
 }

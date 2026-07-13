@@ -22,8 +22,8 @@ struct WindowNavigationSnapshot: Equatable {
         }
 
         let id: UUID
-        let workspacesLoaded: Bool
-        let sessionsLoaded: Bool
+        let workspacesCurrent: Bool
+        let sessionsCurrent: Bool
         let workspaces: [WorkspaceRecord]
         let sessions: [SessionRecord]
     }
@@ -99,6 +99,29 @@ final class AppModel {
         runtime(id: id)?.reachability ?? .unknown
     }
 
+    /// Network-backed mutations are only offered after the Connection's
+    /// latest combined refresh succeeded. Unknown and unreachable runtimes
+    /// are read-only until polling establishes a current model again.
+    func canMutate(connectionID: UUID) -> Bool {
+        runtime(id: connectionID)?.reachability == .connected
+    }
+
+    func canCreateWorkspace(in ref: ProjectRef) -> Bool {
+        guard canMutate(connectionID: ref.connectionID),
+              let project = runtime(id: ref.connectionID)?.projects.project(id: ref.projectID)
+        else { return false }
+        return !project.isArchived
+    }
+
+    func canStartSession(in ref: WorkspaceRef) -> Bool {
+        guard canMutate(connectionID: ref.connectionID),
+              let workspace = runtime(id: ref.connectionID)?.workspaces.workspace(
+                id: ref.workspaceID
+              )
+        else { return false }
+        return !workspace.isArchived
+    }
+
     func session(for ref: SessionRef) -> Session? {
         runtime(id: ref.connectionID)?.sessions.session(id: ref.sessionID)
     }
@@ -109,8 +132,10 @@ final class AppModel {
         WindowNavigationSnapshot(connections: runtimes.map { runtime in
             WindowNavigationSnapshot.Connection(
                 id: runtime.id,
-                workspacesLoaded: runtime.workspaces.hasLoadedOnce,
-                sessionsLoaded: runtime.sessions.hasLoadedOnce,
+                workspacesCurrent: runtime.workspaces.hasLoadedOnce
+                    && runtime.workspaces.lastError == nil,
+                sessionsCurrent: runtime.sessions.hasLoadedOnce
+                    && runtime.sessions.lastError == nil,
                 workspaces: runtime.workspaces.workspaces.map {
                     .init(id: $0.id, projectID: $0.projectId, isArchived: $0.isArchived)
                 },

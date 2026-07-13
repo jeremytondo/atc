@@ -82,7 +82,8 @@ struct RootView: View {
 
     @ViewBuilder
     private var inspectorContent: some View {
-        if let ref = visibleSessionRef,
+        if windowState.hasInspectorTarget(in: appModel),
+           let ref = visibleSessionRef,
            let session = visibleSession,
            let client = appModel.runtime(id: ref.connectionID)?.client {
             SessionDetailView(session: session, client: client)

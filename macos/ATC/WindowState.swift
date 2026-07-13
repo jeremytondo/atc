@@ -75,6 +75,11 @@ final class WindowState {
         )
     }
 
+    func hasInspectorTarget(in appModel: AppModel) -> Bool {
+        guard case .session(let ref) = selectedContent else { return false }
+        return appModel.session(for: ref) != nil && appModel.runtime(id: ref.connectionID) != nil
+    }
+
     /// The single Workspace activation transition used by every entry point.
     /// A missing target is rejected without changing the current window.
     @discardableResult
@@ -85,14 +90,15 @@ final class WindowState {
 
         if activeWorkspace == ref { return true }
 
-        let restored = runtime.sessions.hasLoadedOnce
+        let sessionsCurrent = runtime.sessions.hasLoadedOnce && runtime.sessions.lastError == nil
+        let restored = sessionsCurrent
             ? validRememberedSelection(for: ref, in: runtime.sessions.sessions)
             : nil
 
         activeWorkspace = ref
         selectedContent = restored.map(MainContentSelection.session) ?? .workspace(ref)
         isInspectorPresented = false
-        pendingRestore = runtime.sessions.hasLoadedOnce ? nil : ref
+        pendingRestore = sessionsCurrent ? nil : ref
 
         if let restored, let session = appModel.session(for: restored), session.attachable {
             appModel.attachIfNeeded(
@@ -115,7 +121,11 @@ final class WindowState {
         else { return false }
 
         selectedContent = .session(ref)
-        selectionMemory.remember(sessionID: ref.sessionID, for: activeWorkspace)
+        if session.isArchived {
+            selectionMemory.forget(activeWorkspace)
+        } else {
+            selectionMemory.remember(sessionID: ref.sessionID, for: activeWorkspace)
+        }
         if session.attachable {
             appModel.attachIfNeeded(
                 to: session,
@@ -149,13 +159,15 @@ final class WindowState {
             handleActiveWorkspaceGone(activeWorkspace)
             return
         }
-        guard runtime.workspaces.hasLoadedOnce else { return }
+        guard runtime.workspaces.hasLoadedOnce, runtime.workspaces.lastError == nil else { return }
         guard runtime.workspaces.workspace(id: activeWorkspace.workspaceID) != nil else {
             handleActiveWorkspaceGone(activeWorkspace)
             return
         }
 
-        if pendingRestore == activeWorkspace, runtime.sessions.hasLoadedOnce {
+        if pendingRestore == activeWorkspace,
+           runtime.sessions.hasLoadedOnce,
+           runtime.sessions.lastError == nil {
             pendingRestore = nil
             if selectedContent == .workspace(activeWorkspace),
                let restored = validRememberedSelection(
@@ -174,7 +186,8 @@ final class WindowState {
         }
 
         guard case .session(let selected) = selectedContent,
-              runtime.sessions.hasLoadedOnce
+              runtime.sessions.hasLoadedOnce,
+              runtime.sessions.lastError == nil
         else { return }
         let session = appModel.session(for: selected)
         if selected.connectionID != activeWorkspace.connectionID
@@ -205,24 +218,24 @@ final class WindowState {
     }
 
     func canStartSession(in appModel: AppModel) -> Bool {
-        guard let activeWorkspace,
-              let runtime = appModel.runtime(id: activeWorkspace.connectionID),
-              runtime.reachability == .connected,
-              let workspace = runtime.workspaces.workspace(id: activeWorkspace.workspaceID),
-              !workspace.isArchived
-        else { return false }
-        return true
+        activeWorkspace.map { appModel.canStartSession(in: $0) } ?? false
     }
 
     func presentCreateWorkspace(in appModel: AppModel) {
         if let activeWorkspace,
            let runtime = appModel.runtime(id: activeWorkspace.connectionID),
-           runtime.reachability == .connected,
            let workspace = runtime.workspaces.workspace(id: activeWorkspace.workspaceID),
-           let project = runtime.projects.project(id: workspace.projectId),
-           !project.isArchived {
+           let project = runtime.projects.project(id: workspace.projectId) {
+            let projectRef = ProjectRef(
+                connectionID: activeWorkspace.connectionID,
+                projectID: project.id
+            )
+            guard appModel.canCreateWorkspace(in: projectRef) else {
+                createWorkspaceContext = CreateWorkspaceContext(mode: .free)
+                return
+            }
             createWorkspaceContext = CreateWorkspaceContext(mode: .preselected(
-                ProjectRef(connectionID: activeWorkspace.connectionID, projectID: project.id)
+                projectRef
             ))
         } else {
             createWorkspaceContext = CreateWorkspaceContext(mode: .free)

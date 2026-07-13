@@ -55,6 +55,16 @@ struct StartWorkspaceSessionSheet: View {
         return store.lastError
     }
 
+    private var availabilityError: String? {
+        guard runtime != nil else {
+            return "This workspace's connection is no longer configured."
+        }
+        guard appModel.canStartSession(in: workspaceRef) else {
+            return "This workspace is archived or its connection is unavailable."
+        }
+        return nil
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Form {
@@ -70,7 +80,7 @@ struct StartWorkspaceSessionSheet: View {
                     .font(.headline)
                 }
 
-                if let message = submitError ?? loadError {
+                if let message = submitError ?? availabilityError ?? loadError {
                     Section {
                         Label(message, systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.red)
@@ -142,7 +152,7 @@ struct StartWorkspaceSessionSheet: View {
     }
 
     private var canSubmit: Bool {
-        guard !isSubmitting, runtime != nil else { return false }
+        guard !isSubmitting, appModel.canStartSession(in: workspaceRef) else { return false }
         switch kind {
         case .agentSession: return selectedAction != nil
         case .terminal: return isInteractiveShell || selectedAction != nil
@@ -150,7 +160,10 @@ struct StartWorkspaceSessionSheet: View {
     }
 
     private func submit() async {
-        guard let runtime else { return }
+        guard appModel.canStartSession(in: workspaceRef), let runtime else {
+            submitError = "This workspace is archived or its connection is unavailable."
+            return
+        }
         isSubmitting = true
         defer { isSubmitting = false }
         do {

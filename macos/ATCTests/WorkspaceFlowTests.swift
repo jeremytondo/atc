@@ -195,6 +195,74 @@ struct WorkspaceFlowTests {
         #expect(selectionMemory.sessionID(for: refactor) == nil)
     }
 
+    @Test("selecting archived content never writes restoration memory")
+    func archivedSelectionIsNotRemembered() async throws {
+        let (model, runtime) = try await makeLoadedModel()
+        let (selectionMemory, _) = memory()
+        let state = WindowState(selectionMemory: selectionMemory)
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
+        let archived = SessionRef(connectionID: runtime.id, sessionID: "ses_archived")
+
+        #expect(state.activateWorkspace(workspace, in: model))
+        #expect(state.selectSession(archived, in: model))
+        #expect(state.selectedContent == .session(archived))
+        #expect(selectionMemory.sessionID(for: workspace) == nil)
+    }
+
+    @Test("a failed first Workspace load after rebuild preserves window context")
+    func failedWorkspaceLoadAfterRebuildPreservesContext() async throws {
+        let client = StatefulWorkspacesClient()
+        let (model, runtime) = try await makeLoadedModel(client: client)
+        let (selectionMemory, _) = memory()
+        let state = WindowState(selectionMemory: selectionMemory)
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_a")
+        #expect(state.activateWorkspace(workspace, in: model))
+
+        client.failWorkspaces = true
+        try model.updateConnection(
+            id: runtime.id, name: "A", urlString: "http://a:2", token: ""
+        )
+        let rebuilt = try #require(model.runtime(id: runtime.id))
+        rebuilt.stopPolling()
+        await rebuilt.refresh()
+        state.reconcile(in: model)
+
+        #expect(rebuilt.workspaces.hasLoadedOnce)
+        #expect(rebuilt.workspaces.lastError != nil)
+        #expect(state.activeWorkspace == workspace)
+
+        client.failWorkspaces = false
+        await rebuilt.refresh()
+        state.reconcile(in: model)
+        #expect(state.activeWorkspace == workspace)
+    }
+
+    @Test("failed first Sessions load preserves memory and restores after recovery")
+    func failedSessionsLoadPreservesPendingRestore() async throws {
+        let client = StatefulWorkspacesClient()
+        client.failSessions = true
+        let model = makeModel(client: client)
+        let record = try model.addConnection(name: "A", urlString: "http://a:1", token: "")
+        let runtime = try #require(model.runtime(id: record.id))
+        runtime.stopPolling()
+        await runtime.refresh()
+
+        let (selectionMemory, _) = memory()
+        let state = WindowState(selectionMemory: selectionMemory)
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_a")
+        selectionMemory.remember(sessionID: "ses_running", for: workspace)
+        #expect(state.activateWorkspace(workspace, in: model))
+        #expect(state.selectedContent == .workspace(workspace))
+        #expect(selectionMemory.sessionID(for: workspace) == "ses_running")
+
+        client.failSessions = false
+        await runtime.refresh()
+        state.reconcile(in: model)
+        #expect(state.selectedContent == .session(
+            SessionRef(connectionID: runtime.id, sessionID: "ses_running")
+        ))
+    }
+
     @Test("unresolved and disconnected stores preserve the Active Workspace")
     func unresolvedAndDisconnectedPreserveWorkspace() async throws {
         let client = StatefulWorkspacesClient()
@@ -298,6 +366,32 @@ struct WorkspaceFlowTests {
         #expect(state.createWorkspaceContext?.mode == .preselected(
             ProjectRef(connectionID: runtime.id, projectID: "prj_atelier")
         ))
+    }
+
+    @Test("captured creation targets revalidate reachability and archive state")
+    func mutationTargetsRevalidate() async throws {
+        let client = StatefulWorkspacesClient()
+        let (model, runtime) = try await makeLoadedModel(client: client)
+        let project = ProjectRef(connectionID: runtime.id, projectID: "prj_one")
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_a")
+
+        #expect(model.canMutate(connectionID: runtime.id))
+        #expect(model.canCreateWorkspace(in: project))
+        #expect(model.canStartSession(in: workspace))
+
+        client.failSessions = true
+        await runtime.refresh()
+        #expect(!model.canMutate(connectionID: runtime.id))
+        #expect(!model.canCreateWorkspace(in: project))
+        #expect(!model.canStartSession(in: workspace))
+
+        client.failSessions = false
+        await runtime.refresh()
+        #expect(model.canCreateWorkspace(in: project))
+        #expect(model.canStartSession(in: workspace))
+
+        try await runtime.workspaces.archive(id: workspace.workspaceID)
+        #expect(!model.canStartSession(in: workspace))
     }
 
     @Test("selection memory is Connection-qualified and discards the obsolete map")

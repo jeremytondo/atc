@@ -125,4 +125,42 @@ struct ShellHostingSmokeTest {
         ))
         host(RootView().environment(appModel).environment(windowState))
     }
+
+    @Test("Navigator and Dashboard transitions retain the hosted terminal surface")
+    func navigatorTransitionsRetainTerminal() async throws {
+        let appModel = AppModel.preview()
+        let runtime = try #require(appModel.runtimes.first)
+        await waitForData(runtime)
+        let windowState = WindowState()
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
+        let session = SessionRef(connectionID: runtime.id, sessionID: "ses_running")
+        #expect(windowState.activateWorkspace(workspace, in: appModel))
+        #expect(windowState.selectSession(session, in: appModel))
+        let terminal = try #require(appModel.terminals[session])
+        #expect(windowState.hasInspectorTarget(in: appModel))
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        window.contentView = NSHostingView(
+            rootView: RootView().environment(appModel).environment(windowState)
+        )
+        window.orderFront(nil)
+
+        for navigator in NavigatorID.allCases {
+            windowState.selectedNavigator = navigator
+            pump(seconds: 0.15)
+            #expect(windowState.selectedContent == .session(session))
+            #expect(appModel.terminals[session] === terminal)
+            #expect(windowState.hasInspectorTarget(in: appModel))
+        }
+
+        windowState.showDashboard()
+        pump(seconds: 0.15)
+        #expect(windowState.activeWorkspace == workspace)
+        #expect(appModel.terminals[session] === terminal)
+        #expect(!windowState.hasInspectorTarget(in: appModel))
+        window.orderOut(nil)
+    }
 }

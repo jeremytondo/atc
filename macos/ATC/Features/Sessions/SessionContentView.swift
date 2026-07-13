@@ -116,6 +116,10 @@ struct SessionHeaderBar: View {
         appModel.terminals[sessionRef]?.isActivelyAttached == true
     }
 
+    private var canMutate: Bool {
+        appModel.canMutate(connectionID: sessionRef.connectionID)
+    }
+
     private var canStop: Bool {
         session.status == .running || session.status == .starting
     }
@@ -167,23 +171,26 @@ struct SessionHeaderBar: View {
                 Button("Stop", systemImage: "stop.circle") {
                     confirmStop = true
                 }
+                .disabled(!canMutate)
                 .help("Terminate this session")
             }
             if session.isArchived {
                 Button("Unarchive", systemImage: "archivebox") {
                     Task { await run { try await sessionsStore?.unarchive(id: session.id) } }
                 }
+                .disabled(!canMutate)
                 .help("Unarchive this session")
             } else {
                 Button("Archive", systemImage: "archivebox") {
                     confirmArchive = true
                 }
-                .disabled(!canArchive)
+                .disabled(!canArchive || !canMutate)
                 .help(canArchive ? "Archive this session" : "Stop the session before archiving")
             }
             Button("Delete", systemImage: "trash") {
                 confirmDelete = true
             }
+            .disabled(!canMutate)
             .help("Delete this session")
             Button("Info", systemImage: "sidebar.trailing") {
                 showInspector.toggle()
@@ -199,6 +206,7 @@ struct SessionHeaderBar: View {
             Button("Stop Session", role: .destructive) {
                 Task { await run { try await sessionsStore?.terminate(id: session.id) } }
             }
+            .disabled(!canMutate)
         } message: {
             Text("The process will be terminated. The session record is kept until archived.")
         }
@@ -209,6 +217,7 @@ struct SessionHeaderBar: View {
             Button("Archive Session") {
                 Task { await run { try await sessionsStore?.archive(id: session.id) } }
             }
+            .disabled(!canMutate)
         } message: {
             Text("Archived sessions are hidden behind the archived filter.")
         }
@@ -219,6 +228,7 @@ struct SessionHeaderBar: View {
             Button("Delete Session", role: .destructive) {
                 Task { await deleteSession() }
             }
+            .disabled(!canMutate)
         } message: {
             Text(DeleteConfirmation.sessionMessage(displayName: displayName))
         }

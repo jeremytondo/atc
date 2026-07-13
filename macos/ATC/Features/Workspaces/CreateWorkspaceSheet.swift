@@ -69,7 +69,7 @@ struct CreateWorkspaceSheet: View {
                         .foregroundStyle(.secondary)
                 }
 
-                if let message = submitError {
+                if let message = submitError ?? availabilityError {
                     Section {
                         Label(message, systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.red)
@@ -118,13 +118,25 @@ struct CreateWorkspaceSheet: View {
 
     private var canSubmit: Bool {
         !isSubmitting
-            && selectedProject != nil
+            && (selectedProject.map { appModel.canCreateWorkspace(in: $0) } ?? false)
             && !name.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private var availabilityError: String? {
+        guard let selectedProject else { return nil }
+        guard appModel.canCreateWorkspace(in: selectedProject) else {
+            return "This project is archived or its connection is unavailable."
+        }
+        return nil
     }
 
     private func submit() async {
         guard let ref = selectedProject,
-              let runtime = appModel.runtime(id: ref.connectionID) else { return }
+              appModel.canCreateWorkspace(in: ref),
+              let runtime = appModel.runtime(id: ref.connectionID) else {
+            submitError = "This project is archived or its connection is unavailable."
+            return
+        }
         isSubmitting = true
         defer { isSubmitting = false }
         do {
