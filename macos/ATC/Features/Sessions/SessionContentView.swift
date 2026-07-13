@@ -21,24 +21,24 @@ struct SessionContentView: View {
     let selectedSession: Session?
     var emptyState: EmptyStateActions?
 
-    @State private var showInspector = false
+    @Environment(WindowState.self) private var windowState
 
     var body: some View {
         VStack(spacing: 0) {
             if let ref = selectedRef, let session = selectedSession {
-                SessionHeaderBar(sessionRef: ref, session: session, showInspector: $showInspector)
+                SessionHeaderBar(
+                    sessionRef: ref,
+                    session: session,
+                    showInspector: Binding(
+                        get: { windowState.isInspectorPresented },
+                        set: { windowState.isInspectorPresented = $0 }
+                    )
+                )
                 Divider()
             }
             ZStack {
                 TerminalPane(visibleRef: selectedRef)
                 cover
-            }
-        }
-        .inspector(isPresented: $showInspector) {
-            if let ref = selectedRef, let session = selectedSession,
-               let client = appModel.runtime(id: ref.connectionID)?.client {
-                SessionDetailView(session: session, client: client)
-                    .inspectorColumnWidth(min: 260, ideal: 320)
             }
         }
     }
@@ -61,7 +61,11 @@ struct SessionContentView: View {
                     Text("The session is running on the server.")
                 } actions: {
                     Button("Connect") {
-                        appModel.attachIfNeeded(to: session, connectionID: ref.connectionID)
+                        appModel.attachIfNeeded(
+                            to: session,
+                            connectionID: ref.connectionID,
+                            retentionContext: windowState.retentionContext
+                        )
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -98,6 +102,7 @@ struct SessionContentView: View {
 /// Compact header: name, action label, status, session actions.
 struct SessionHeaderBar: View {
     @Environment(AppModel.self) private var appModel
+    @Environment(WindowState.self) private var windowState
     let sessionRef: SessionRef
     let session: Session
     @Binding var showInspector: Bool
@@ -180,12 +185,10 @@ struct SessionHeaderBar: View {
                 confirmDelete = true
             }
             .help("Delete this session")
-            if isConnected {
-                Button("Info", systemImage: "sidebar.trailing") {
-                    showInspector.toggle()
-                }
-                .help("Show session metadata")
+            Button("Info", systemImage: "sidebar.trailing") {
+                showInspector.toggle()
             }
+            .help("Show session metadata")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -234,8 +237,8 @@ struct SessionHeaderBar: View {
         await run {
             try await sessionsStore?.delete(id: session.id)
             appModel.disconnectTerminal(ref: sessionRef)
-            if appModel.selection == sessionRef {
-                appModel.selection = nil
+            if windowState.selectedSession == sessionRef {
+                windowState.showWorkspaceEmpty()
             }
         }
     }

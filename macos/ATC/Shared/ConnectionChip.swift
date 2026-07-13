@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Neutral chip naming the Connection a row belongs to, with the
-/// reachability dot. Shared by the Dashboard and the Workspace shell; the
+/// reachability dot. Shared by Dashboard and Workspace-scoped UI; the
 /// chip never uses color to identify the Connection.
 struct ConnectionChip: View {
     let name: String

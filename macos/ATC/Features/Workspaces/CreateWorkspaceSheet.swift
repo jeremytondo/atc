@@ -9,7 +9,7 @@ struct CreateWorkspaceSheet: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
     let context: CreateWorkspaceContext
-    /// Called with the new Workspace's ref so the window routes to the shell.
+    /// Called with the new Workspace's ref so the window activates it.
     var onCreated: (WorkspaceRef) -> Void = { _ in }
 
     @State private var selectedProject: ProjectRef?

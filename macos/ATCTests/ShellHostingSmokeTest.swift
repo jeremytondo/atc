@@ -4,12 +4,9 @@ import Testing
 import ATCAPI
 @testable import ATC
 
-/// Hosts the full window root (Dashboard cover, Workspace shell with
-/// NavigationSplitView + sidebar List + searchable + detail) in a real
-/// window and pumps the run loop. This is the hierarchy the app boots
-/// into, so it's where launch-time AppKit warnings (reentrant NSTableView
-/// delegate operations, invalid Picker selections) surface under a
-/// controlled model instead of the developer's live state.
+/// Hosts the full stable split-view window in a real window and pumps the
+/// run loop. This is the hierarchy the app boots into, so launch-time AppKit
+/// warnings surface under a controlled model instead of live user state.
 @Suite("Shell hosting smoke")
 struct ShellHostingSmokeTest {
     private func pump(seconds: TimeInterval) {
@@ -52,47 +49,47 @@ struct ShellHostingSmokeTest {
         host(RootView().environment(appModel).environment(WindowState()))
     }
 
-    @Test("root view hosts the Workspace shell after opening a workspace")
-    func hostRootWithOpenWorkspace() async throws {
+    @Test("root view hosts Workspace content inside the stable split view")
+    func hostRootWithActiveWorkspace() async throws {
         let appModel = AppModel.preview()
         let runtime = try #require(appModel.runtimes.first)
         await waitForData(runtime)
         let windowState = WindowState()
-        windowState.openWorkspace(
+        #expect(windowState.activateWorkspace(
             WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser"),
             in: appModel
-        )
+        ))
         host(RootView().environment(appModel).environment(windowState))
-        #expect(windowState.route == .workspace)
+        #expect(windowState.activeWorkspace?.workspaceID == "wsp_parser")
+        #expect(windowState.selectedContent != .dashboard)
     }
 
-    @Test("dashboard covers a mounted shell without tearing it down")
-    func hostRootDashboardCoveringShell() async throws {
+    @Test("Dashboard remains a main-content destination with an Active Workspace")
+    func hostDashboardWithActiveWorkspace() async throws {
         let appModel = AppModel.preview()
         let runtime = try #require(appModel.runtimes.first)
         await waitForData(runtime)
         let windowState = WindowState()
-        windowState.openWorkspace(
+        #expect(windowState.activateWorkspace(
             WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser"),
             in: appModel
-        )
+        ))
         windowState.showDashboard()
         host(RootView().environment(appModel).environment(windowState))
-        // The shell stays mounted (openWorkspace survives the cover).
-        #expect(windowState.hasOpenedWorkspaceShell)
-        #expect(appModel.openWorkspace != nil)
+        #expect(windowState.selectedContent == .dashboard)
+        #expect(windowState.activeWorkspace != nil)
     }
 
-    @Test("removing the open workspace's connection routes back to the dashboard")
-    func removedConnectionRoutesBack() async throws {
+    @Test("removing the Active Workspace's Connection returns to Dashboard")
+    func removedConnectionReturnsToDashboard() async throws {
         let appModel = AppModel.preview()
         let runtime = try #require(appModel.runtimes.first)
         await waitForData(runtime)
         let windowState = WindowState()
-        windowState.openWorkspace(
+        #expect(windowState.activateWorkspace(
             WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser"),
             in: appModel
-        )
+        ))
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
@@ -103,19 +100,18 @@ struct ShellHostingSmokeTest {
         )
         window.orderFront(nil)
         pump(seconds: 0.5)
-        #expect(windowState.route == .workspace)
+        #expect(windowState.activeWorkspace != nil)
 
-        // Teardown nils openWorkspace before the view sees the change; the
-        // route must still fall back to the Dashboard.
+        // Window reconciliation observes the AppModel's store projection.
         appModel.removeConnection(id: runtime.id)
         pump(seconds: 0.5)
         window.orderOut(nil)
-        #expect(windowState.route == .dashboard)
-        #expect(appModel.openWorkspace == nil)
+        #expect(windowState.selectedContent == .dashboard)
+        #expect(windowState.activeWorkspace == nil)
     }
 
-    @Test("workspace shell hosts an empty workspace with creation actions")
-    func hostShellEmptyWorkspace() async throws {
+    @Test("main content hosts an empty Workspace with creation actions")
+    func hostEmptyWorkspace() async throws {
         // prj_notes has zero workspaces; wsp_refactor has sessions — use a
         // workspace whose sessions are filtered to nothing instead: open
         // the archived workspace, which owns no sessions in the fixtures.
@@ -123,10 +119,10 @@ struct ShellHostingSmokeTest {
         let runtime = try #require(appModel.runtimes.first)
         await waitForData(runtime)
         let windowState = WindowState()
-        windowState.openWorkspace(
+        #expect(windowState.activateWorkspace(
             WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_archived"),
             in: appModel
-        )
+        ))
         host(RootView().environment(appModel).environment(windowState))
     }
 }

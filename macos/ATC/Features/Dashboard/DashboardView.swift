@@ -1,10 +1,8 @@
 import SwiftUI
 import ATCAPI
 
-/// The launch surface: every Connection's Projects and Workspaces, for
-/// finding, creating, and opening Workspaces. Rendered as an opaque cover
-/// over the (possibly mounted) Workspace shell; opening a Workspace routes
-/// the window to the shell without tearing this down.
+/// App-wide Project and Workspace management rendered as a main-content
+/// destination inside the stable window split view.
 struct DashboardView: View {
     @Environment(AppModel.self) private var appModel
     /// Opens a Workspace in the shell.
@@ -393,7 +391,7 @@ struct DashboardView: View {
         run {
             guard let store = workspacesStore(for: row.ref.connectionID) else { return }
             try await store.delete(id: row.workspace.id)
-            WorkspaceSelectionMemory().forget(workspaceID: row.workspace.id)
+            WorkspaceSelectionMemory().forget(row.ref)
         }
     }
 

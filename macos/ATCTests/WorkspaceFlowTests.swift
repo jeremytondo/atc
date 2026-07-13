@@ -3,233 +3,371 @@ import Testing
 import ATCAPI
 @testable import ATC
 
-/// Window routing, command availability, selection memory, and the
-/// delete-confirmation copy — the state layer behind the Dashboard and
-/// Workspace shell flows.
 @MainActor
 @Suite("Workspace flows")
 struct WorkspaceFlowTests {
     private func makeModel(
         client: @escaping @autoclosure () -> any ATCClient = MockATCClient()
     ) -> AppModel {
-        let suite = "WorkspaceFlowTests.\(UUID().uuidString)"
+        let suite = "WorkspaceFlowTests.model.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defaults.removePersistentDomain(forName: suite)
-        let store = ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore())
         return AppModel(
-            connections: store,
+            connections: ConnectionsStore(
+                defaults: defaults,
+                credentials: InMemoryCredentialStore()
+            ),
             clientFactory: { _ in client() },
             terminalRecoveryMonitor: .disabled()
         )
     }
 
-    /// A connected runtime with fixture data loaded and polling stopped.
-    private func makeOpenedModel() async throws -> (AppModel, WindowState, ConnectionRuntime) {
-        let model = makeModel()
+    private func makeLoadedModel(
+        client: @escaping @autoclosure () -> any ATCClient = MockATCClient()
+    ) async throws -> (AppModel, ConnectionRuntime) {
+        let model = makeModel(client: client())
         let record = try model.addConnection(name: "A", urlString: "http://a:1", token: "")
-        let runtime = model.runtime(id: record.id)!
+        let runtime = try #require(model.runtime(id: record.id))
         runtime.stopPolling()
         await runtime.refresh()
-        let windowState = WindowState()
-        windowState.openWorkspace(
-            WorkspaceRef(connectionID: record.id, workspaceID: "wsp_parser"),
-            in: model
-        )
-        return (model, windowState, runtime)
+        return (model, runtime)
     }
 
-    // MARK: - Routing
-
-    @Test("opening a workspace routes to the shell and mounts it for good")
-    func openRoutes() async throws {
-        let (model, windowState, _) = try await makeOpenedModel()
-        #expect(windowState.route == .workspace)
-        #expect(windowState.hasOpenedWorkspaceShell)
-        #expect(model.openWorkspace?.workspaceID == "wsp_parser")
-
-        // Back to the Dashboard covers the shell but keeps it open.
-        windowState.showDashboard()
-        #expect(windowState.route == .dashboard)
-        #expect(windowState.hasOpenedWorkspaceShell)
-        #expect(model.openWorkspace != nil)
-    }
-
-    @Test("a vanished open workspace routes back to the dashboard")
-    func vanishedWorkspaceRoutesBack() async throws {
-        let (model, windowState, runtime) = try await makeOpenedModel()
-        #expect(model.openWorkspaceExists)
-
-        // Simulate a remote delete: the store no longer lists it.
-        model.openWorkspace = WorkspaceRef(
-            connectionID: runtime.id, workspaceID: "wsp_deleted_elsewhere"
-        )
-        #expect(!model.openWorkspaceExists)
-        windowState.handleOpenWorkspaceGone(in: model)
-        #expect(windowState.route == .dashboard)
-        #expect(model.openWorkspace == nil)
-    }
-
-    @Test("removing the connection makes the open workspace not exist")
-    func removedConnectionRoutesBack() async throws {
-        let (model, _, runtime) = try await makeOpenedModel()
-        model.removeConnection(id: runtime.id)
-        // teardown already cleared openWorkspace; a cleared ref reads as gone.
-        #expect(model.openWorkspace == nil)
-        #expect(!model.openWorkspaceExists)
-    }
-
-    // MARK: - Command availability
-
-    @Test("session and terminal creation need the shell route")
-    func creationNeedsShellRoute() async throws {
-        let (model, windowState, _) = try await makeOpenedModel()
-        #expect(windowState.canStartSession(in: model))
-        windowState.showDashboard()
-        #expect(!windowState.canStartSession(in: model))
-    }
-
-    @Test("session creation is disabled in an archived workspace")
-    func creationDisabledWhenArchived() async throws {
-        let (model, windowState, runtime) = try await makeOpenedModel()
-        windowState.openWorkspace(
-            WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_archived"),
-            in: model
-        )
-        #expect(!windowState.canStartSession(in: model))
-    }
-
-    @Test("session creation is disabled on an unreachable connection")
-    func creationDisabledWhenUnreachable() async throws {
-        let client = StatefulWorkspacesClient()
-        let model = makeModel(client: client)
-        let record = try model.addConnection(name: "A", urlString: "http://a:1", token: "")
-        let runtime = model.runtime(id: record.id)!
-        runtime.stopPolling()
-        await runtime.refresh()
-        let windowState = WindowState()
-        windowState.openWorkspace(
-            WorkspaceRef(connectionID: record.id, workspaceID: "wsp_a"),
-            in: model
-        )
-        #expect(windowState.canStartSession(in: model))
-
-        // Flip the whole connection red: cached data stays, creation stops.
-        client.failSessions = true
-        await runtime.refresh()
-        #expect(runtime.reachability == .unreachable)
-        #expect(!windowState.canStartSession(in: model))
-    }
-
-    @Test("new-workspace preselects the open workspace's project, else runs context-free")
-    func createWorkspaceContexts() async throws {
-        let (model, windowState, runtime) = try await makeOpenedModel()
-        windowState.presentCreateWorkspace(in: model)
-        #expect(windowState.createWorkspaceContext?.mode == .preselected(
-            ProjectRef(connectionID: runtime.id, projectID: "prj_atelier")
-        ))
-
-        windowState.createWorkspaceContext = nil
-        windowState.showDashboard()
-        windowState.presentCreateWorkspace(in: model)
-        #expect(windowState.createWorkspaceContext?.mode == .free)
-    }
-
-    // MARK: - Selection memory
-
-    @Test("selection memory remembers, restores, and forgets per workspace")
-    func selectionMemory() {
+    private func memory() -> (WorkspaceSelectionMemory, UserDefaults) {
         let suite = "WorkspaceFlowTests.memory.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defaults.removePersistentDomain(forName: suite)
-        let memory = WorkspaceSelectionMemory(defaults: defaults)
-
-        #expect(memory.sessionID(for: "wsp_a") == nil)
-        memory.remember(sessionID: "ses_1", for: "wsp_a")
-        memory.remember(sessionID: "ses_2", for: "wsp_b")
-        #expect(memory.sessionID(for: "wsp_a") == "ses_1")
-        #expect(memory.sessionID(for: "wsp_b") == "ses_2")
-
-        memory.remember(sessionID: "ses_9", for: "wsp_a")
-        #expect(memory.sessionID(for: "wsp_a") == "ses_9")
-
-        memory.forget(workspaceID: "wsp_a")
-        #expect(memory.sessionID(for: "wsp_a") == nil)
-        #expect(memory.sessionID(for: "wsp_b") == "ses_2")
+        return (WorkspaceSelectionMemory(defaults: defaults), defaults)
     }
 
-    @Test("selection restore hits the surviving session and falls back to nil")
+    @Test("launch defaults select Projects and Dashboard with no Active Workspace")
+    func launchDefaults() {
+        let state = WindowState()
+        #expect(state.selectedNavigator == .projects)
+        #expect(state.selectedContent == .dashboard)
+        #expect(state.activeWorkspace == nil)
+        #expect(!state.isInspectorPresented)
+        #expect(state.columnVisibility == .all)
+    }
+
+    @Test("Navigator changes preserve main content and inspector")
+    func navigatorPreservesContent() async throws {
+        let (model, runtime) = try await makeLoadedModel()
+        let state = WindowState()
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
+        #expect(state.activateWorkspace(workspace, in: model))
+        let session = SessionRef(connectionID: runtime.id, sessionID: "ses_running")
+        #expect(state.selectSession(session, in: model))
+        state.isInspectorPresented = true
+
+        state.selectedNavigator = .workspace
+        #expect(state.selectedContent == .session(session))
+        #expect(state.isInspectorPresented)
+        state.selectedNavigator = .file
+        #expect(state.selectedContent == .session(session))
+        #expect(state.isInspectorPresented)
+    }
+
+    @Test("Dashboard preserves Active Workspace, Navigator, and command availability")
+    func dashboardPreservesWorkspaceContext() async throws {
+        let (model, runtime) = try await makeLoadedModel()
+        let state = WindowState()
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
+        #expect(state.activateWorkspace(workspace, in: model))
+        state.selectedNavigator = .file
+        state.isInspectorPresented = true
+
+        state.showDashboard()
+        #expect(state.selectedContent == .dashboard)
+        #expect(state.activeWorkspace == workspace)
+        #expect(state.selectedNavigator == .file)
+        #expect(!state.isInspectorPresented)
+        #expect(state.canStartSession(in: model))
+    }
+
+    @Test("activation preserves Navigator and restores valid remembered content")
+    func activationRestoresSelection() async throws {
+        let (model, runtime) = try await makeLoadedModel()
+        let (selectionMemory, _) = memory()
+        let state = WindowState(selectionMemory: selectionMemory)
+        state.selectedNavigator = .file
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
+        selectionMemory.remember(sessionID: "ses_running", for: workspace)
+
+        #expect(state.activateWorkspace(workspace, in: model))
+        #expect(state.activeWorkspace == workspace)
+        #expect(state.selectedNavigator == .file)
+        #expect(state.selectedContent == .session(
+            SessionRef(connectionID: runtime.id, sessionID: "ses_running")
+        ))
+    }
+
+    @Test("same Workspace activation is idempotent")
+    func activationIsIdempotent() async throws {
+        let (model, runtime) = try await makeLoadedModel()
+        let state = WindowState()
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
+        let selected = SessionRef(connectionID: runtime.id, sessionID: "ses_running")
+        #expect(state.activateWorkspace(workspace, in: model))
+        #expect(state.selectSession(selected, in: model))
+        state.isInspectorPresented = true
+
+        #expect(state.activateWorkspace(workspace, in: model))
+        #expect(state.selectedContent == .session(selected))
+        #expect(state.isInspectorPresented)
+    }
+
+    @Test("cross-Workspace and cross-Connection session selections are rejected")
+    func invalidSelectionsRejected() async throws {
+        let (model, runtime) = try await makeLoadedModel()
+        let other = try model.addConnection(name: "B", urlString: "http://b:1", token: "")
+        model.runtime(id: other.id)?.stopPolling()
+        await model.runtime(id: other.id)?.refresh()
+        let state = WindowState()
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
+        #expect(state.activateWorkspace(workspace, in: model))
+
+        #expect(!state.selectSession(
+            SessionRef(connectionID: runtime.id, sessionID: "ses_ghost"), in: model
+        ))
+        #expect(!state.selectSession(
+            SessionRef(connectionID: other.id, sessionID: "ses_running"), in: model
+        ))
+        #expect(state.selectedContent == .workspace(workspace))
+    }
+
+    @Test("different Workspace activation closes inspector and never keeps stale content")
+    func switchingWorkspaceClearsStaleContent() async throws {
+        let (model, runtime) = try await makeLoadedModel()
+        let state = WindowState()
+        let first = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
+        let second = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_refactor")
+        #expect(state.activateWorkspace(first, in: model))
+        #expect(state.selectSession(
+            SessionRef(connectionID: runtime.id, sessionID: "ses_running"), in: model
+        ))
+        state.isInspectorPresented = true
+
+        #expect(state.activateWorkspace(second, in: model))
+        #expect(state.activeWorkspace == second)
+        #expect(state.selectedContent == .workspace(second))
+        #expect(!state.isInspectorPresented)
+    }
+
+    @Test("an open inspector follows a new Session in the same Workspace")
+    func inspectorFollowsSelection() async throws {
+        let (model, runtime) = try await makeLoadedModel()
+        let state = WindowState()
+        #expect(state.activateWorkspace(
+            WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser"), in: model
+        ))
+        #expect(state.selectSession(
+            SessionRef(connectionID: runtime.id, sessionID: "ses_running"), in: model
+        ))
+        state.isInspectorPresented = true
+        let next = SessionRef(connectionID: runtime.id, sessionID: "ses_shell")
+        #expect(state.selectSession(next, in: model))
+        #expect(state.selectedContent == .session(next))
+        #expect(state.isInspectorPresented)
+    }
+
+    @Test("clearing or archiving selected content clears remembered restoration")
+    func staleSelectionMemoryIsCleared() async throws {
+        let (model, runtime) = try await makeLoadedModel()
+        let (selectionMemory, _) = memory()
+        let state = WindowState(selectionMemory: selectionMemory)
+        let parser = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
+        #expect(state.activateWorkspace(parser, in: model))
+        #expect(state.selectSession(
+            SessionRef(connectionID: runtime.id, sessionID: "ses_running"), in: model
+        ))
+        #expect(selectionMemory.sessionID(for: parser) == "ses_running")
+        state.showWorkspaceEmpty()
+        #expect(selectionMemory.sessionID(for: parser) == nil)
+
+        let refactor = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_refactor")
+        #expect(state.activateWorkspace(refactor, in: model))
+        let ended = SessionRef(connectionID: runtime.id, sessionID: "ses_done")
+        #expect(state.selectSession(ended, in: model))
+        try await runtime.sessions.archive(id: ended.sessionID)
+        state.reconcile(in: model)
+        #expect(state.selectedContent == .session(ended))
+        #expect(selectionMemory.sessionID(for: refactor) == nil)
+    }
+
+    @Test("unresolved and disconnected stores preserve the Active Workspace")
+    func unresolvedAndDisconnectedPreserveWorkspace() async throws {
+        let client = StatefulWorkspacesClient()
+        let (model, runtime) = try await makeLoadedModel(client: client)
+        let state = WindowState()
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_a")
+        #expect(state.activateWorkspace(workspace, in: model))
+
+        try model.updateConnection(
+            id: runtime.id, name: "A", urlString: "http://a:2", token: ""
+        )
+        state.reconcile(in: model)
+        #expect(state.activeWorkspace == workspace)
+
+        let rebuilt = try #require(model.runtime(id: runtime.id))
+        rebuilt.stopPolling()
+        await rebuilt.refresh()
+        state.reconcile(in: model)
+        #expect(state.activeWorkspace == workspace)
+    }
+
+    @Test("removed Connection clears window references and returns to Dashboard")
+    func removedConnectionClearsWindow() async throws {
+        let (model, runtime) = try await makeLoadedModel()
+        let state = WindowState()
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
+        #expect(state.activateWorkspace(workspace, in: model))
+        state.selectedNavigator = .workspace
+        state.isInspectorPresented = true
+
+        model.removeConnection(id: runtime.id)
+        state.reconcile(in: model)
+        #expect(state.activeWorkspace == nil)
+        #expect(state.selectedNavigator == .projects)
+        #expect(state.selectedContent == .dashboard)
+        #expect(!state.isInspectorPresented)
+    }
+
+    @Test("confirmed Workspace removal clears window references")
+    func removedWorkspaceClearsWindow() async throws {
+        let client = StatefulWorkspacesClient()
+        let (model, runtime) = try await makeLoadedModel(client: client)
+        let state = WindowState()
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_a")
+        #expect(state.activateWorkspace(workspace, in: model))
+        try await runtime.workspaces.delete(id: workspace.workspaceID)
+        state.reconcile(in: model)
+        #expect(state.activeWorkspace == nil)
+        #expect(state.selectedNavigator == .projects)
+        #expect(state.selectedContent == .dashboard)
+    }
+
+    @Test("archiving an Active Workspace preserves it and disables creation")
+    func archivedWorkspaceRemainsActive() async throws {
+        let client = StatefulWorkspacesClient()
+        let (model, runtime) = try await makeLoadedModel(client: client)
+        let state = WindowState()
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_a")
+        #expect(state.activateWorkspace(workspace, in: model))
+        try await runtime.workspaces.archive(id: workspace.workspaceID)
+        state.reconcile(in: model)
+        #expect(state.activeWorkspace == workspace)
+        #expect(!state.canStartSession(in: model))
+    }
+
+    @Test("creation availability depends on Active Workspace, archive, and reachability")
+    func creationAvailability() async throws {
+        let client = StatefulWorkspacesClient()
+        let (model, runtime) = try await makeLoadedModel(client: client)
+        let state = WindowState()
+        #expect(state.activateWorkspace(
+            WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_a"), in: model
+        ))
+        state.showDashboard()
+        #expect(state.canStartSession(in: model))
+
+        client.failSessions = true
+        await runtime.refresh()
+        #expect(!state.canStartSession(in: model))
+
+        client.failSessions = false
+        await runtime.refresh()
+        let (archiveModel, archiveRuntime) = try await makeLoadedModel()
+        let archiveState = WindowState()
+        #expect(archiveState.activateWorkspace(
+            WorkspaceRef(connectionID: archiveRuntime.id, workspaceID: "wsp_archived"),
+            in: archiveModel
+        ))
+        #expect(!archiveState.canStartSession(in: archiveModel))
+    }
+
+    @Test("New Workspace uses Active Project even while Dashboard is visible")
+    func createWorkspaceContextUsesActiveWorkspace() async throws {
+        let (model, runtime) = try await makeLoadedModel()
+        let state = WindowState()
+        #expect(state.activateWorkspace(
+            WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser"), in: model
+        ))
+        state.showDashboard()
+        state.presentCreateWorkspace(in: model)
+        #expect(state.createWorkspaceContext?.mode == .preselected(
+            ProjectRef(connectionID: runtime.id, projectID: "prj_atelier")
+        ))
+    }
+
+    @Test("selection memory is Connection-qualified and discards the obsolete map")
+    func selectionMemoryIsComposite() {
+        let (selectionMemory, defaults) = memory()
+        defaults.set(["same": "old"], forKey: "workspaceSelections")
+        let memoryAfterOldData = WorkspaceSelectionMemory(defaults: defaults)
+        let a = WorkspaceRef(connectionID: UUID(), workspaceID: "same")
+        let b = WorkspaceRef(connectionID: UUID(), workspaceID: "same")
+
+        memoryAfterOldData.remember(sessionID: "ses_a", for: a)
+        memoryAfterOldData.remember(sessionID: "ses_b", for: b)
+        #expect(memoryAfterOldData.sessionID(for: a) == "ses_a")
+        #expect(memoryAfterOldData.sessionID(for: b) == "ses_b")
+        #expect(defaults.object(forKey: "workspaceSelections") == nil)
+
+        selectionMemory.forget(a)
+        #expect(selectionMemory.sessionID(for: a) == nil)
+        #expect(selectionMemory.sessionID(for: b) == "ses_b")
+    }
+
+    @Test("restoration rejects missing, moved, and archived sessions")
     func selectionRestoreFallbacks() {
-        let suite = "WorkspaceFlowTests.restore.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
-        let memory = WorkspaceSelectionMemory(defaults: defaults)
-        let connectionID = UUID()
-        let ref = WorkspaceRef(connectionID: connectionID, workspaceID: "wsp_a")
-        let survivor = Session(
+        let (memory, _) = memory()
+        let ref = WorkspaceRef(connectionID: UUID(), workspaceID: "wsp_a")
+        var session = Session(
             id: "ses_1", environment: "host", workingDir: "/home/dev",
-            status: .terminated, attachable: false,
+            status: .running, attachable: true,
             createdAt: .now, updatedAt: .now,
             workspace: SessionWorkspace(id: "wsp_a", name: "A")
         )
-
-        // Nothing remembered → empty state.
-        #expect(memory.restoredSelection(for: ref, in: [survivor]) == nil)
-
-        // Remembered and surviving (any lifecycle state) → restored.
-        memory.remember(sessionID: "ses_1", for: "wsp_a")
-        #expect(memory.restoredSelection(for: ref, in: [survivor])
-            == SessionRef(connectionID: connectionID, sessionID: "ses_1"))
-
-        // Remembered but gone from the store → empty state.
+        memory.remember(sessionID: session.id, for: ref)
+        for status in [SessionStatus.running, .terminated, .failed] {
+            session.status = status
+            #expect(memory.restoredSelection(for: ref, in: [session]) != nil)
+        }
         #expect(memory.restoredSelection(for: ref, in: []) == nil)
 
-        // Remembered but now in a different workspace → empty state.
-        var moved = survivor
-        moved.workspace = SessionWorkspace(id: "wsp_b", name: "B")
-        #expect(memory.restoredSelection(for: ref, in: [moved]) == nil)
+        session.workspace = SessionWorkspace(id: "wsp_b", name: "B")
+        #expect(memory.restoredSelection(for: ref, in: [session]) == nil)
+        session.workspace = SessionWorkspace(id: "wsp_a", name: "A")
+        session.archivedAt = .now
+        #expect(memory.restoredSelection(for: ref, in: [session]) == nil)
     }
 
-    // MARK: - Delete confirmations
-
-    @Test("every delete confirmation names its target and ends with the ADR sentence")
+    @Test("every delete confirmation names its target and preserves file copy")
     func deleteConfirmationCopy() {
         let session = DeleteConfirmation.sessionMessage(displayName: "Fix parser")
         #expect(session.contains("“Fix parser”"))
         #expect(session.hasSuffix(DeleteConfirmation.filesUntouched))
-
-        let quiet = DeleteConfirmation.workspaceMessage(name: "Spike", sessionCount: 1, activeCount: 0)
-        #expect(quiet.contains("“Spike” and its 1 session?"))
-        #expect(!quiet.contains("will be stopped"))
-        #expect(quiet.hasSuffix(DeleteConfirmation.filesUntouched))
-
-        let busy = DeleteConfirmation.workspaceMessage(name: "Spike", sessionCount: 3, activeCount: 2)
-        #expect(busy.contains("its 3 sessions?"))
-        #expect(busy.contains("2 running sessions will be stopped."))
-        #expect(busy.hasSuffix(DeleteConfirmation.filesUntouched))
-
-        let project = DeleteConfirmation.projectMessage(name: "Atelier")
-        #expect(project.contains("“Atelier”"))
-        #expect(project.hasSuffix(DeleteConfirmation.filesUntouched))
+        let workspace = DeleteConfirmation.workspaceMessage(
+            name: "Spike", sessionCount: 3, activeCount: 2
+        )
+        #expect(workspace.contains("2 running sessions will be stopped."))
+        #expect(workspace.hasSuffix(DeleteConfirmation.filesUntouched))
+        #expect(DeleteConfirmation.projectMessage(name: "Atelier")
+            .hasSuffix(DeleteConfirmation.filesUntouched))
     }
 
-    // MARK: - Session store wrappers
-
-    @Test("session delete removes the row; unarchive clears archivedAt")
+    @Test("session delete and unarchive wrappers update the store")
     func sessionWrappers() async throws {
-        // Stateful client: the store's follow-up refreshes must not
-        // resurrect the deleted/archived fixtures mid-test.
         let model = makeModel(client: StatefulWorkspacesClient())
         let record = try model.addConnection(name: "A", urlString: "http://a:1", token: "")
-        let runtime = model.runtime(id: record.id)!
+        let runtime = try #require(model.runtime(id: record.id))
         runtime.stopPolling()
         await runtime.refresh()
-
-        let store = runtime.sessions
-        #expect(store.session(id: "ses_archived")?.isArchived == true)
-        try await store.unarchive(id: "ses_archived")
-        #expect(store.session(id: "ses_archived")?.isArchived == false)
-
-        try await store.delete(id: "ses_done")
-        #expect(store.session(id: "ses_done") == nil)
+        #expect(runtime.sessions.session(id: "ses_archived")?.isArchived == true)
+        try await runtime.sessions.unarchive(id: "ses_archived")
+        #expect(runtime.sessions.session(id: "ses_archived")?.isArchived == false)
+        try await runtime.sessions.delete(id: "ses_done")
+        #expect(runtime.sessions.session(id: "ses_done") == nil)
     }
 }

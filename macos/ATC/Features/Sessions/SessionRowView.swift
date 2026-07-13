@@ -9,7 +9,7 @@ struct SessionRowView: View {
     /// recency instead of repeating the path.
     var showsWorkingDir = true
     /// Overrides for callers that resolve names against the action
-    /// registry (the Workspace shell); nil falls back to the session's own
+    /// registry (the Workspace Navigator); nil falls back to the session's own
     /// labels.
     var title: String?
     var caption: String?

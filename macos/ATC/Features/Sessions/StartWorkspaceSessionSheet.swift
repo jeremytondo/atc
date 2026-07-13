@@ -1,7 +1,7 @@
 import SwiftUI
 import ATCAPI
 
-/// The New Session / New Terminal sheet, always scoped to the active open
+/// The New Session / New Terminal sheet, always scoped to the Active
 /// Workspace. New Session picks among enabled Agent Actions; New Terminal
 /// offers the Interactive Shell (default) plus enabled general Actions. No
 /// prompt field, no params UI, no Environment picker — the server default
@@ -14,7 +14,7 @@ struct StartWorkspaceSessionSheet: View {
     @Environment(\.dismiss) private var dismiss
     let kind: StartSessionKind
     let workspaceRef: WorkspaceRef
-    /// Called with the new session's ref so the shell can select it.
+    /// Called with the new Session's ref so the window can select it.
     var onStarted: (SessionRef) -> Void = { _ in }
 
     @State private var selectedActionName = ""

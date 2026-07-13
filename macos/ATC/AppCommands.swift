@@ -10,7 +10,8 @@ struct AppCommands: Commands {
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            // session.new / terminal.new: need an active open Workspace.
+            // Availability is based on the Active Workspace, independent of
+            // the visible Navigator or main-content destination.
             Button("New Session") {
                 windowState.startSessionKind = .agentSession
             }
@@ -41,12 +42,11 @@ struct AppCommands: Commands {
         }
 
         CommandGroup(after: .sidebar) {
-            // view.toggle-sidebar: only meaningful in the Workspace shell.
+            // The stable root split view makes this meaningful everywhere.
             Button("Toggle Sidebar") {
                 windowState.toggleSidebar()
             }
             .keyboardShortcut("b", modifiers: .command)
-            .disabled(windowState.route != .workspace)
 
             // data.refresh: always available.
             Button("Refresh") {
