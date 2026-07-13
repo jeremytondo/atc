@@ -9,9 +9,7 @@ struct ConnectionChip: View {
 
     var body: some View {
         HStack(spacing: Spacing.xs) {
-            Circle()
-                .fill(reachability.color)
-                .frame(width: 6, height: 6)
+            StatusDot(color: reachability.color, size: .inline)
             Text(name)
                 .font(.caption2)
                 .foregroundStyle(.secondary)

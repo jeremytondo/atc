@@ -129,7 +129,7 @@ struct ActionsSettingsView: View {
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                         .lineLimit(1)
-                                    ActionOriginBadge(origin: action.origin)
+                                    TagBadge(text: Self.originLabel(action.origin))
                                 }
                             }
                             .opacity(action.enabled ? 1 : Dimming.archived)
@@ -207,6 +207,15 @@ struct ActionsSettingsView: View {
         let generation: Int
     }
 
+    /// Where an action's definition comes from, for its list badge.
+    private static func originLabel(_ origin: String) -> String {
+        switch origin {
+        case "builtin": "Built-in"
+        case "modified": "Modified"
+        default: "Custom"
+        }
+    }
+
     // MARK: Mutations
 
     private var removePrompt: String {
@@ -255,28 +264,6 @@ struct ActionsSettingsView: View {
             } catch {
                 store.lastError = error.localizedDescription
             }
-        }
-    }
-}
-
-/// Small capsule showing where an action's definition comes from.
-private struct ActionOriginBadge: View {
-    let origin: String
-
-    var body: some View {
-        Text(label)
-            .font(.caption2.weight(.medium))
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(.quaternary, in: Capsule())
-            .foregroundStyle(.secondary)
-    }
-
-    private var label: String {
-        switch origin {
-        case "builtin": "Built-in"
-        case "modified": "Modified"
-        default: "Custom"
         }
     }
 }

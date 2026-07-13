@@ -215,9 +215,7 @@ struct ProjectsNavigatorView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(group.project.name).lineLimit(1)
                 HStack(spacing: Spacing.xs) {
-                    Circle()
-                        .fill(group.reachability.color)
-                        .frame(width: 6, height: 6)
+                    StatusDot(color: group.reachability.color, size: .inline)
                     Text(group.connectionName)
                 }
                 .font(.caption2)

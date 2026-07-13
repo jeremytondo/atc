@@ -149,12 +149,7 @@ struct SessionHeaderBar: View {
                 .lineLimit(1)
             // What launched the session: "Claude", "Terminal", a custom
             // Action label.
-            Text(SessionKind.actionLabel(session: session, actions: actions))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(.quaternary.opacity(0.5), in: Capsule())
+            TagBadge(text: SessionKind.actionLabel(session: session, actions: actions))
             Text(session.workingDir)
                 .font(.caption)
                 .foregroundStyle(.secondary)

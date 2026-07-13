@@ -58,9 +58,7 @@ struct ConnectionsSettingsView: View {
             List(selection: $target) {
                 ForEach(store.connections) { record in
                     HStack(spacing: Spacing.sm) {
-                        Circle()
-                            .fill(appModel.reachability(of: record.id).color)
-                            .frame(width: 8, height: 8)
+                        StatusDot(color: appModel.reachability(of: record.id).color)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(record.name)
                                 .font(.headline)

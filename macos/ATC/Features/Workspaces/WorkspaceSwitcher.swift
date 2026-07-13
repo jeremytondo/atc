@@ -49,11 +49,9 @@ struct WorkspaceSwitcher: View {
                 Text("No Workspaces")
             }
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: Spacing.sm) {
                 if let context = activeContext {
-                    Circle()
-                        .fill(context.runtime.reachability.color)
-                        .frame(width: 7, height: 7)
+                    StatusDot(color: context.runtime.reachability.color)
                     Text(presentation.label)
                         .lineLimit(1)
                 } else {

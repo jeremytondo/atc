@@ -167,20 +167,15 @@ struct DashboardView: View {
         let reachability = appModel.reachability(of: section.connectionID)
         return VStack(alignment: .leading, spacing: Spacing.md) {
             HStack(spacing: Spacing.sm) {
-                Circle()
-                    .fill(reachability.color)
-                    .frame(width: 9, height: 9)
-                    .shadow(color: reachability.color.opacity(0.45), radius: 5)
+                StatusDot(color: reachability.color)
 
                 Text(section.connectionName)
                     .font(.title3.weight(.semibold))
 
-                Text(section.contextLabel == "Local" ? "LOCAL" : "REMOTE")
-                    .font(.caption2.monospaced().weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 5))
+                TagBadge(
+                    text: section.contextLabel == "Local" ? "LOCAL" : "REMOTE",
+                    monospaced: true
+                )
 
                 if section.contextLabel != "Local" {
                     Text("·  \(section.contextLabel)")
@@ -271,12 +266,7 @@ struct DashboardView: View {
                 .truncationMode(.head)
 
             if card.project.isArchived {
-                Text("Archived")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(.quaternary, in: Capsule())
+                TagBadge(text: "Archived")
             }
 
             Spacer(minLength: Spacing.md)
@@ -391,26 +381,14 @@ struct DashboardView: View {
             onOpenWorkspace(row.ref)
         } label: {
             HStack(spacing: Spacing.md) {
-                Circle()
-                    .fill(row.hasActiveSessions ? Color.green : Color.clear)
-                    .frame(width: 8, height: 8)
-                    .overlay {
-                        if !row.hasActiveSessions {
-                            Circle().stroke(.tertiary, lineWidth: 2)
-                        }
-                    }
+                StatusDot(color: .green, hollow: !row.hasActiveSessions)
 
                 Text(workspace.name)
                     .font(.body.monospaced())
                     .lineLimit(1)
 
                 if workspace.isArchived {
-                    Text("Archived")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(.quaternary, in: Capsule())
+                    TagBadge(text: "Archived")
                 }
 
                 Spacer()
