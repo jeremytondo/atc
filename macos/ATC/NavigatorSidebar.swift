@@ -83,6 +83,7 @@ struct ProjectsNavigatorView: View {
     @State private var actionError: String?
 
     var body: some View {
+        @Bindable var windowState = windowState
         let groups = ProjectsNavigatorGroups(inputs: appModel.runtimes.map {
             .init(
                 connection: $0.record,
@@ -92,20 +93,25 @@ struct ProjectsNavigatorView: View {
                 sessions: $0.sessions.sessions
             )
         })
-        List(selection: selectionBinding) {
-            Section {
-                NavigatorRow(
-                    isSelected: windowState.selectedContent == .dashboard,
-                    action: { windowState.showDashboard() }
-                ) {
-                    NavigatorIconLabel(title: "Dashboard", systemImage: "rectangle.3.group")
-                } actions: {
-                    EmptyView()
-                }
-                .tag(ProjectsNavigatorSelection.dashboard)
+        List {
+            NavigatorRow(
+                isSelected: windowState.selectedContent == .dashboard,
+                action: { windowState.showDashboard() }
+            ) { _ in
+                NavigatorIconLabel(title: "Dashboard", systemImage: "rectangle.3.group")
+            } actions: {
+                EmptyView()
             }
 
-            Section {
+            NavigatorDisclosureHeader(
+                title: "Projects",
+                isExpanded: $windowState.isProjectsSectionExpanded,
+                addHelp: "New project",
+                isAddEnabled: true,
+                onAdd: { windowState.isCreateProjectPresented = true }
+            )
+
+            if windowState.isProjectsSectionExpanded {
                 ForEach(groups.projects) { group in
                     projectRow(group)
                     ForEach(group.workspaces) { row in
@@ -121,8 +127,6 @@ struct ProjectsNavigatorView: View {
                             .navigatorListRow()
                     }
                 }
-            } header: {
-                NavigatorSectionHeader(title: "Projects")
             }
         }
         .navigatorList()
@@ -221,32 +225,34 @@ struct ProjectsNavigatorView: View {
                     windowState.expandedProjects.insert(group.ref)
                 }
             }
-        ) {
+        ) { isHovering in
             HStack(spacing: Spacing.sm) {
                 Image(systemName: windowState.expandedProjects.contains(group.ref) ? "folder.fill" : "folder")
-                    .frame(width: NavigatorMetrics.iconWidth)
+                    .frame(width: NavigatorMetrics.iconWidth, alignment: .leading)
                     .foregroundStyle(.secondary)
                 Text(group.project.name)
                     .lineLimit(1)
                 Spacer(minLength: Spacing.sm)
-                HStack(spacing: Spacing.xs) {
-                    Text(group.connectionName)
-                        .lineLimit(1)
-                    StatusDot(color: group.reachability.color, size: .inline)
+                if !isHovering {
+                    HStack(spacing: Spacing.xs) {
+                        Text(group.connectionName)
+                            .lineLimit(1)
+                        StatusDot(color: group.reachability.color, size: .inline)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
             }
         } actions: {
+            NavigatorActionMenu(systemImage: "ellipsis", help: "Project actions") {
+                projectMenu(group)
+            }
             NavigatorActionButton(
                 systemImage: "plus",
                 help: "New workspace",
                 isEnabled: group.reachability == .connected
             ) {
                 windowState.createWorkspaceContext = .init(mode: .fixed(group.ref))
-            }
-            NavigatorActionMenu(systemImage: "ellipsis", help: "Project actions") {
-                projectMenu(group)
             }
         }
         .contextMenu { projectMenu(group) }
@@ -293,18 +299,10 @@ struct ProjectsNavigatorView: View {
             action: {
                 _ = windowState.activateWorkspace(row.ref, in: appModel)
             }
-        ) {
+        ) { _ in
             Text(row.workspace.name)
                 .lineLimit(1)
         } actions: {
-            NavigatorActionMenu(systemImage: "plus", help: "Start in this workspace") {
-                Button("New Session", systemImage: "plus.bubble") {
-                    presentStart(.agentSession, in: row.ref)
-                }
-                Button("New Terminal", systemImage: "terminal") {
-                    presentStart(.terminal, in: row.ref)
-                }
-            }
             NavigatorActionButton(
                 systemImage: "archivebox",
                 help: row.hasActiveSessions ? "Stop active sessions before archiving" : "Archive workspace",
@@ -313,7 +311,6 @@ struct ProjectsNavigatorView: View {
                 archiveWorkspace(row)
             }
         }
-        .tag(ProjectsNavigatorSelection.workspace(row.ref))
         .opacity(enabled ? 1 : Dimming.archived)
         .contextMenu { workspaceMenu(row, enabled: enabled) }
     }
@@ -352,13 +349,6 @@ struct ProjectsNavigatorView: View {
         .disabled(!enabled)
     }
 
-    private func presentStart(_ kind: StartSessionKind, in ref: WorkspaceRef) {
-        guard windowState.activateWorkspace(ref, in: appModel),
-              appModel.canStartSession(in: ref)
-        else { return }
-        windowState.startSessionKind = kind
-    }
-
     private func archiveWorkspace(_ row: ProjectsNavigatorGroups.WorkspaceRow) {
         guard let store = appModel.runtime(id: row.ref.connectionID)?.workspaces else { return }
         run(on: row.ref.connectionID) {
@@ -366,28 +356,11 @@ struct ProjectsNavigatorView: View {
         }
     }
 
-    private var selectionBinding: Binding<ProjectsNavigatorSelection?> {
-        Binding(
-            get: {
-                if windowState.selectedContent == .dashboard { return .dashboard }
-                return windowState.activeWorkspace.map(ProjectsNavigatorSelection.workspace)
-            },
-            set: { selection in
-                switch selection {
-                case .dashboard:
-                    if windowState.selectedContent != .dashboard {
-                        windowState.showDashboard()
-                    }
-                case .workspace(let ref):
-                    if windowState.activeWorkspace != ref
-                        || windowState.selectedContent == .dashboard {
-                        _ = windowState.activateWorkspace(ref, in: appModel)
-                    }
-                case nil:
-                    break
-                }
-            }
-        )
+    private func presentStart(_ kind: StartSessionKind, in ref: WorkspaceRef) {
+        guard windowState.activateWorkspace(ref, in: appModel),
+              appModel.canStartSession(in: ref)
+        else { return }
+        windowState.startSessionKind = kind
     }
 
     private func canMutate(_ connectionID: UUID) -> Bool {
@@ -407,11 +380,6 @@ struct ProjectsNavigatorView: View {
             catch { actionError = error.localizedDescription }
         }
     }
-}
-
-private enum ProjectsNavigatorSelection: Hashable {
-    case dashboard
-    case workspace(WorkspaceRef)
 }
 
 struct FileNavigatorView: View {

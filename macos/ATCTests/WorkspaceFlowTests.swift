@@ -48,6 +48,9 @@ struct WorkspaceFlowTests {
         #expect(state.activeWorkspace == nil)
         #expect(!state.isInspectorPresented)
         #expect(state.columnVisibility == .all)
+        #expect(state.isProjectsSectionExpanded)
+        #expect(state.isSessionsSectionExpanded)
+        #expect(state.isTerminalsSectionExpanded)
     }
 
     @Test("Navigator changes preserve main content and inspector")

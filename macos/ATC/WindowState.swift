@@ -48,6 +48,9 @@ final class WindowState {
     var columnVisibility: NavigationSplitViewVisibility = .all
     var isInspectorPresented = false
 
+    var isProjectsSectionExpanded = true
+    var isSessionsSectionExpanded = true
+    var isTerminalsSectionExpanded = true
     var expandedProjects: Set<ProjectRef> = []
 
     var isCreateProjectPresented = false

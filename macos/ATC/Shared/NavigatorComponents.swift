@@ -6,6 +6,7 @@ enum NavigatorMetrics {
     static let rowHeight: CGFloat = 28
     static let iconWidth: CGFloat = 18
     static let actionSize: CGFloat = 22
+    static let rowVerticalInset: CGFloat = 1
     static let nestedIndent: CGFloat = iconWidth + Spacing.sm
 }
 
@@ -16,7 +17,7 @@ struct NavigatorRow<Content: View, Actions: View>: View {
     let isEnabled: Bool
     let leadingIndent: CGFloat
     let action: () -> Void
-    let content: Content
+    let content: (Bool) -> Content
     let actions: Actions
 
     @State private var isHovering = false
@@ -26,21 +27,21 @@ struct NavigatorRow<Content: View, Actions: View>: View {
         isEnabled: Bool = true,
         leadingIndent: CGFloat = 0,
         action: @escaping () -> Void,
-        @ViewBuilder content: () -> Content,
+        @ViewBuilder content: @escaping (Bool) -> Content,
         @ViewBuilder actions: () -> Actions
     ) {
         self.isSelected = isSelected
         self.isEnabled = isEnabled
         self.leadingIndent = leadingIndent
         self.action = action
-        self.content = content()
+        self.content = content
         self.actions = actions()
     }
 
     var body: some View {
         HStack(spacing: Spacing.xs) {
             Button(action: action) {
-                content
+                content(isHovering)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
             }
@@ -57,14 +58,10 @@ struct NavigatorRow<Content: View, Actions: View>: View {
         .padding(.leading, leadingIndent)
         .frame(minHeight: NavigatorMetrics.rowHeight)
         .foregroundStyle(isEnabled ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
-        .background {
-            if isHovering && !isSelected && isEnabled {
-                RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
-                    .fill(.quaternary)
-            }
-        }
+        .navigatorSurface(isActive: isSelected || (isHovering && isEnabled))
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .navigatorListRow()
     }
 }
@@ -76,7 +73,7 @@ struct NavigatorIconLabel: View {
     var body: some View {
         HStack(spacing: Spacing.sm) {
             Image(systemName: systemImage)
-                .frame(width: NavigatorMetrics.iconWidth)
+                .frame(width: NavigatorMetrics.iconWidth, alignment: .leading)
                 .foregroundStyle(.secondary)
             Text(title)
                 .lineLimit(1)
@@ -134,15 +131,48 @@ struct NavigatorActionMenu<Content: View>: View {
     }
 }
 
-struct NavigatorSectionHeader: View {
+struct NavigatorDisclosureHeader: View {
     let title: String
+    @Binding var isExpanded: Bool
+    let addHelp: String
+    let isAddEnabled: Bool
+    let onAdd: () -> Void
+
+    @State private var isHovering = false
 
     var body: some View {
-        Text(title)
-            .font(.headline)
-            .foregroundStyle(.secondary)
-            .textCase(nil)
-            .padding(.top, Spacing.sm)
+        HStack(spacing: Spacing.xs) {
+            Button {
+                isExpanded.toggle()
+            } label: {
+                HStack(spacing: Spacing.xs) {
+                    Text(title)
+                        .font(.headline)
+                    if isHovering {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isHovering {
+                NavigatorActionButton(
+                    systemImage: "plus",
+                    help: addHelp,
+                    isEnabled: isAddEnabled,
+                    action: onAdd
+                )
+            }
+        }
+        .frame(minHeight: NavigatorMetrics.rowHeight)
+        .foregroundStyle(.secondary)
+        .navigatorSurface(isActive: isHovering)
+        .contentShape(Rectangle())
+        .onHover { isHovering = $0 }
+        .navigatorListRow(top: Spacing.sm)
     }
 }
 
@@ -152,12 +182,25 @@ extension View {
             .environment(\.defaultMinListRowHeight, NavigatorMetrics.rowHeight)
     }
 
-    func navigatorListRow() -> some View {
+    func navigatorListRow(
+        top: CGFloat = NavigatorMetrics.rowVerticalInset,
+        bottom: CGFloat = NavigatorMetrics.rowVerticalInset
+    ) -> some View {
         listRowInsets(EdgeInsets(
-            top: 1,
+            top: top,
             leading: Spacing.sm,
-            bottom: 1,
+            bottom: bottom,
             trailing: Spacing.sm
         ))
+        .listRowBackground(Color.clear)
+    }
+
+    func navigatorSurface(isActive: Bool) -> some View {
+        background {
+            if isActive {
+                RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                    .fill(.quaternary)
+            }
+        }
     }
 }
