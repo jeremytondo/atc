@@ -18,7 +18,6 @@ struct WindowNavigationSnapshot: Equatable {
             let workspaceID: String?
             let isArchived: Bool
             let attachable: Bool
-            let status: String
         }
 
         let id: UUID
@@ -150,8 +149,7 @@ final class AppModel {
                         id: $0.id,
                         workspaceID: $0.workspace?.id,
                         isArchived: $0.isArchived,
-                        attachable: $0.attachable,
-                        status: String(describing: $0.status)
+                        attachable: $0.attachable
                     )
                 }
             )
@@ -311,7 +309,7 @@ final class AppModel {
         guard let activeWorkspace = retentionContext.activeWorkspace,
               activeWorkspace.connectionID == ref.connectionID
         else { return false }
-        return session(for: ref)?.workspace?.id == activeWorkspace.workspaceID
+        return session(for: ref)?.belongs(to: activeWorkspace) == true
     }
 
     // MARK: - Private

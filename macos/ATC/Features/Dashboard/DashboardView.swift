@@ -11,8 +11,12 @@ struct DashboardView: View {
     /// Presents the create-Workspace sheet fixed to a Project.
     var onCreateWorkspace: (ProjectRef) -> Void
     var onCreateProject: () -> Void
+    /// Clears window selection memory for a deleted Workspace.
+    var onWorkspaceDeleted: (WorkspaceRef) -> Void
 
     @State private var showArchived = false
+    /// Keyboard focus over workspace rows: arrows move, Return opens.
+    @State private var focusedWorkspace: WorkspaceRef?
     @State private var renamingWorkspace: DashboardGroups.WorkspaceRow?
     @State private var renamingProject: DashboardGroups.ProjectCard?
     @State private var renameDraft = ""
@@ -33,16 +37,23 @@ struct DashboardView: View {
             },
             showArchived: showArchived
         )
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: Spacing.xxl) {
-                ForEach(groups.sections) { section in
-                    connectionSection(section)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: Spacing.xxl) {
+                    ForEach(groups.sections) { section in
+                        connectionSection(section)
+                    }
                 }
+                .frame(maxWidth: 1_280, alignment: .leading)
+                .padding(.horizontal, Spacing.xxl)
+                .padding(.vertical, Spacing.xxl)
+                .frame(maxWidth: .infinity, alignment: .top)
             }
-            .frame(maxWidth: 1_280, alignment: .leading)
-            .padding(.horizontal, Spacing.xxl)
-            .padding(.vertical, Spacing.xxl)
-            .frame(maxWidth: .infinity, alignment: .top)
+            .focusable()
+            .focusEffectDisabled()
+            .onKeyPress(.downArrow) { moveFocus(1, through: groups.workspaceRefs, proxy: proxy) }
+            .onKeyPress(.upArrow) { moveFocus(-1, through: groups.workspaceRefs, proxy: proxy) }
+            .onKeyPress(.return) { openFocusedWorkspace() }
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
@@ -83,7 +94,9 @@ struct DashboardView: View {
             Button("Rename") {
                 if let row = renamingWorkspace, let store = workspacesStore(for: row.ref.connectionID) {
                     let trimmed = renameDraft.trimmingCharacters(in: .whitespaces)
-                    run { try await store.rename(id: row.workspace.id, name: trimmed) }
+                    appModel.run(on: row.ref.connectionID, reporting: $actionError) {
+                        try await store.rename(id: row.workspace.id, name: trimmed)
+                    }
                 }
             }
             .disabled(
@@ -101,7 +114,9 @@ struct DashboardView: View {
                 if let card = renamingProject,
                    let store = appModel.runtime(id: card.ref.connectionID)?.projects {
                     let trimmed = renameDraft.trimmingCharacters(in: .whitespaces)
-                    run { try await store.rename(id: card.project.id, name: trimmed) }
+                    appModel.run(on: card.ref.connectionID, reporting: $actionError) {
+                        try await store.rename(id: card.project.id, name: trimmed)
+                    }
                 }
             }
             .disabled(
@@ -142,7 +157,9 @@ struct DashboardView: View {
             Button("Delete Project", role: .destructive) {
                 if let card = deletingProject,
                    let store = appModel.runtime(id: card.ref.connectionID)?.projects {
-                    run { try await store.delete(id: card.project.id) }
+                    appModel.run(on: card.ref.connectionID, reporting: $actionError) {
+                        try await store.delete(id: card.project.id)
+                    }
                 }
             }
             .disabled(!(deletingProject.map { canMutate($0.ref.connectionID) } ?? false))
@@ -194,7 +211,13 @@ struct DashboardView: View {
 
             VStack(spacing: Spacing.md) {
                 ForEach(section.cards) { card in
-                    projectCard(card, reachable: canMutate(section.connectionID))
+                    projectCard(
+                        card,
+                        reachable: canMutate(section.connectionID),
+                        // Opening is local navigation over cached data; only
+                        // a confirmed-unreachable Connection blocks it.
+                        canOpen: reachability != .unreachable
+                    )
                 }
 
                 if section.cards.isEmpty {
@@ -217,7 +240,11 @@ struct DashboardView: View {
     // MARK: - Project card
 
     @ViewBuilder
-    private func projectCard(_ card: DashboardGroups.ProjectCard, reachable: Bool) -> some View {
+    private func projectCard(
+        _ card: DashboardGroups.ProjectCard,
+        reachable: Bool,
+        canOpen: Bool
+    ) -> some View {
         if card.rows.isEmpty && !card.project.isArchived {
             emptyProjectCard(card, reachable: reachable)
         } else {
@@ -227,7 +254,8 @@ struct DashboardView: View {
                 if !card.rows.isEmpty {
                     Divider()
                     ForEach(Array(card.rows.enumerated()), id: \.element.id) { index, row in
-                        workspaceRow(row, reachable: reachable)
+                        workspaceRow(row, reachable: reachable, canOpen: canOpen)
+                            .id(row.ref)
                         if index < card.rows.count - 1 {
                             Divider()
                         }
@@ -342,14 +370,18 @@ struct DashboardView: View {
             // is archived. A stale view still gets the 409 via the alert.
             Button("Archive Project", systemImage: "archivebox") {
                 if let store = appModel.runtime(id: card.ref.connectionID)?.projects {
-                    run { try await store.archive(id: project.id) }
+                    appModel.run(on: card.ref.connectionID, reporting: $actionError) {
+                        try await store.archive(id: project.id)
+                    }
                 }
             }
             .disabled(!reachable || card.hasUnarchivedWorkspaces)
         } else {
             Button("Unarchive Project", systemImage: "archivebox") {
                 if let store = appModel.runtime(id: card.ref.connectionID)?.projects {
-                    run { try await store.unarchive(id: project.id) }
+                    appModel.run(on: card.ref.connectionID, reporting: $actionError) {
+                        try await store.unarchive(id: project.id)
+                    }
                 }
             }
             .disabled(!reachable)
@@ -367,7 +399,8 @@ struct DashboardView: View {
     @ViewBuilder
     private func workspaceRow(
         _ row: DashboardGroups.WorkspaceRow,
-        reachable: Bool
+        reachable: Bool,
+        canOpen: Bool
     ) -> some View {
         let workspace = row.workspace
         Button {
@@ -395,13 +428,18 @@ struct DashboardView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(!reachable)
+        .background(
+            focusedWorkspace == row.ref
+                ? Color(nsColor: .quaternarySystemFill)
+                : .clear
+        )
+        .disabled(!canOpen)
         .opacity(workspace.isArchived ? Dimming.archived : 1)
         .contextMenu {
             Button("Open", systemImage: "arrow.up.forward.square") {
                 onOpenWorkspace(row.ref)
             }
-            .disabled(!reachable)
+            .disabled(!canOpen)
             Button("Rename…", systemImage: "pencil") {
                 renameDraft = workspace.name
                 renamingWorkspace = row
@@ -411,7 +449,9 @@ struct DashboardView: View {
             if workspace.isArchived {
                 Button("Unarchive", systemImage: "archivebox") {
                     if let store = workspacesStore(for: row.ref.connectionID) {
-                        run { try await store.unarchive(id: workspace.id) }
+                        appModel.run(on: row.ref.connectionID, reporting: $actionError) {
+                            try await store.unarchive(id: workspace.id)
+                        }
                     }
                 }
                 .disabled(!reachable)
@@ -419,7 +459,9 @@ struct DashboardView: View {
                 // Mirrors the server rule: no archiving with active sessions.
                 Button("Archive", systemImage: "archivebox") {
                     if let store = workspacesStore(for: row.ref.connectionID) {
-                        run { try await store.archive(id: workspace.id) }
+                        appModel.run(on: row.ref.connectionID, reporting: $actionError) {
+                            try await store.archive(id: workspace.id)
+                        }
                     }
                 }
                 .disabled(!reachable || row.hasActiveSessions)
@@ -490,31 +532,48 @@ struct DashboardView: View {
         appModel.canMutate(connectionID: connectionID)
     }
 
+    // MARK: - Keyboard navigation
+
+    private func moveFocus(
+        _ delta: Int,
+        through refs: [WorkspaceRef],
+        proxy: ScrollViewProxy
+    ) -> KeyPress.Result {
+        guard !refs.isEmpty else { return .ignored }
+        let current = focusedWorkspace.flatMap { refs.firstIndex(of: $0) }
+        let next = current.map { max(0, min(refs.count - 1, $0 + delta)) }
+            ?? (delta > 0 ? 0 : refs.count - 1)
+        focusedWorkspace = refs[next]
+        proxy.scrollTo(refs[next])
+        return .handled
+    }
+
+    private func openFocusedWorkspace() -> KeyPress.Result {
+        guard let focusedWorkspace else { return .ignored }
+        onOpenWorkspace(focusedWorkspace)
+        return .handled
+    }
+
     private func workspacesStore(for connectionID: UUID) -> WorkspacesStore? {
         appModel.runtime(id: connectionID)?.workspaces
     }
 
     private func deleteWorkspace(_ row: DashboardGroups.WorkspaceRow) {
-        run {
-            guard let store = workspacesStore(for: row.ref.connectionID) else { return }
+        guard let store = workspacesStore(for: row.ref.connectionID) else { return }
+        appModel.run(on: row.ref.connectionID, reporting: $actionError) {
             try await store.delete(id: row.workspace.id)
-            WorkspaceSelectionMemory().forget(row.ref)
-        }
-    }
-
-    private func run(_ operation: @escaping () async throws -> Void) {
-        Task {
-            do {
-                try await operation()
-            } catch {
-                actionError = error.localizedDescription
-            }
+            onWorkspaceDeleted(row.ref)
         }
     }
 }
 
 #Preview {
-    DashboardView(onOpenWorkspace: { _ in }, onCreateWorkspace: { _ in }, onCreateProject: {})
+    DashboardView(
+        onOpenWorkspace: { _ in },
+        onCreateWorkspace: { _ in },
+        onCreateProject: {},
+        onWorkspaceDeleted: { _ in }
+    )
         .environment(AppModel.preview())
         .preferredColorScheme(.dark)
 }

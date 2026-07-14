@@ -171,7 +171,9 @@ struct SessionHeaderBar: View {
             }
             if session.isArchived {
                 Button("Unarchive", systemImage: "archivebox") {
-                    Task { await run { try await sessionsStore?.unarchive(id: session.id) } }
+                    appModel.run(on: sessionRef.connectionID, reporting: $actionError) {
+                        try await sessionsStore?.unarchive(id: session.id)
+                    }
                 }
                 .disabled(!canMutate)
                 .help("Unarchive this session")
@@ -203,7 +205,9 @@ struct SessionHeaderBar: View {
             isPresented: $confirmStop
         ) {
             Button("Stop Session", role: .destructive) {
-                Task { await run { try await sessionsStore?.terminate(id: session.id) } }
+                appModel.run(on: sessionRef.connectionID, reporting: $actionError) {
+                    try await sessionsStore?.terminate(id: session.id)
+                }
             }
             .disabled(!canMutate)
         } message: {
@@ -214,7 +218,9 @@ struct SessionHeaderBar: View {
             isPresented: $confirmArchive
         ) {
             Button("Archive Session") {
-                Task { await run { try await sessionsStore?.archive(id: session.id) } }
+                appModel.run(on: sessionRef.connectionID, reporting: $actionError) {
+                    try await sessionsStore?.archive(id: session.id)
+                }
             }
             .disabled(!canMutate)
         } message: {
@@ -225,7 +231,7 @@ struct SessionHeaderBar: View {
             isPresented: $confirmDelete
         ) {
             Button("Delete Session", role: .destructive) {
-                Task { await deleteSession() }
+                deleteSession()
             }
             .disabled(!canMutate)
         } message: {
@@ -235,21 +241,13 @@ struct SessionHeaderBar: View {
     }
 
     /// Failure (stop error, 502) leaves the session and surfaces the alert.
-    private func deleteSession() async {
-        await run {
+    private func deleteSession() {
+        appModel.run(on: sessionRef.connectionID, reporting: $actionError) {
             try await sessionsStore?.delete(id: session.id)
             appModel.disconnectTerminal(ref: sessionRef)
             if windowState.selectedSession == sessionRef {
                 windowState.showWorkspaceEmpty()
             }
-        }
-    }
-
-    private func run(_ operation: () async throws -> Void) async {
-        do {
-            try await operation()
-        } catch {
-            actionError = error.localizedDescription
         }
     }
 }

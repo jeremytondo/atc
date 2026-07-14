@@ -86,15 +86,7 @@ struct ProjectsNavigatorView: View {
 
     var body: some View {
         @Bindable var windowState = windowState
-        let groups = ProjectsNavigatorGroups(inputs: appModel.runtimes.map {
-            .init(
-                connection: $0.record,
-                reachability: $0.reachability,
-                projects: $0.projects.projects,
-                workspaces: $0.workspaces.workspaces,
-                sessions: $0.sessions.sessions
-            )
-        })
+        let groups = ProjectsNavigatorGroups(runtimes: appModel.runtimes)
         List {
             NavigatorRow(
                 isSelected: windowState.selectedContent == .dashboard,
@@ -116,17 +108,17 @@ struct ProjectsNavigatorView: View {
             if windowState.isProjectsSectionExpanded {
                 ForEach(groups.projects) { group in
                     projectRow(group)
-                    ForEach(group.workspaces) { row in
-                        if windowState.expandedProjects.contains(group.ref) {
+                    if windowState.expandedProjects.contains(group.ref) {
+                        ForEach(group.workspaces) { row in
                             workspaceRow(row, in: group)
                         }
-                    }
-                    if windowState.expandedProjects.contains(group.ref), group.workspaces.isEmpty {
-                        Text("No workspaces")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                            .padding(.leading, NavigatorMetrics.nestedIndent)
-                            .navigatorListRow()
+                        if group.workspaces.isEmpty {
+                            Text("No workspaces")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                                .padding(.leading, NavigatorMetrics.nestedIndent)
+                                .navigatorListRow()
+                        }
                     }
                 }
             }
@@ -141,7 +133,7 @@ struct ProjectsNavigatorView: View {
                 if let group = renamingProject,
                    let store = appModel.runtime(id: group.ref.connectionID)?.projects {
                     let name = renameDraft.trimmingCharacters(in: .whitespaces)
-                    run(on: group.ref.connectionID) {
+                    appModel.run(on: group.ref.connectionID, reporting: $actionError) {
                         try await store.rename(id: group.project.id, name: name)
                     }
                 }
@@ -161,7 +153,7 @@ struct ProjectsNavigatorView: View {
                 if let row = renamingWorkspace,
                    let store = appModel.runtime(id: row.ref.connectionID)?.workspaces {
                     let name = renameDraft.trimmingCharacters(in: .whitespaces)
-                    run(on: row.ref.connectionID) {
+                    appModel.run(on: row.ref.connectionID, reporting: $actionError) {
                         try await store.rename(id: row.workspace.id, name: name)
                     }
                 }
@@ -182,7 +174,7 @@ struct ProjectsNavigatorView: View {
             Button("Delete Project", role: .destructive) {
                 if let group = deletingProject,
                    let store = appModel.runtime(id: group.ref.connectionID)?.projects {
-                    run(on: group.ref.connectionID) {
+                    appModel.run(on: group.ref.connectionID, reporting: $actionError) {
                         try await store.delete(id: group.project.id)
                     }
                 }
@@ -199,7 +191,7 @@ struct ProjectsNavigatorView: View {
             Button("Delete Workspace", role: .destructive) {
                 if let row = deletingWorkspace,
                    let store = appModel.runtime(id: row.ref.connectionID)?.workspaces {
-                    run(on: row.ref.connectionID) {
+                    appModel.run(on: row.ref.connectionID, reporting: $actionError) {
                         try await store.delete(id: row.workspace.id)
                         windowState.forgetSelection(for: row.ref)
                     }
@@ -274,7 +266,7 @@ struct ProjectsNavigatorView: View {
         Divider()
         Button("Archive Project", systemImage: "archivebox") {
             if let store = appModel.runtime(id: group.ref.connectionID)?.projects {
-                run(on: group.ref.connectionID) {
+                appModel.run(on: group.ref.connectionID, reporting: $actionError) {
                     try await store.archive(id: group.project.id)
                 }
             }
@@ -353,7 +345,7 @@ struct ProjectsNavigatorView: View {
 
     private func archiveWorkspace(_ row: ProjectsNavigatorGroups.WorkspaceRow) {
         guard let store = appModel.runtime(id: row.ref.connectionID)?.workspaces else { return }
-        run(on: row.ref.connectionID) {
+        appModel.run(on: row.ref.connectionID, reporting: $actionError) {
             try await store.archive(id: row.workspace.id)
         }
     }
@@ -367,20 +359,6 @@ struct ProjectsNavigatorView: View {
 
     private func canMutate(_ connectionID: UUID) -> Bool {
         appModel.canMutate(connectionID: connectionID)
-    }
-
-    private func run(
-        on connectionID: UUID,
-        _ operation: @escaping () async throws -> Void
-    ) {
-        Task {
-            guard canMutate(connectionID) else {
-                actionError = "The connection is unavailable."
-                return
-            }
-            do { try await operation() }
-            catch { actionError = error.localizedDescription }
-        }
     }
 }
 

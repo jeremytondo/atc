@@ -125,7 +125,7 @@ final class WindowState {
         guard let activeWorkspace,
               activeWorkspace.connectionID == ref.connectionID,
               let session = appModel.session(for: ref),
-              session.workspace?.id == activeWorkspace.workspaceID
+              session.belongs(to: activeWorkspace)
         else { return false }
 
         selectedContent = .session(ref)
@@ -199,7 +199,7 @@ final class WindowState {
         else { return }
         let session = appModel.session(for: selected)
         if selected.connectionID != activeWorkspace.connectionID
-            || session?.workspace?.id != activeWorkspace.workspaceID {
+            || session?.belongs(to: activeWorkspace) != true {
             selectionMemory.forget(activeWorkspace)
             selectedContent = .workspace(activeWorkspace)
             isInspectorPresented = false

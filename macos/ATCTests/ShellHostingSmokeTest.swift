@@ -38,7 +38,7 @@ struct ShellHostingSmokeTest {
         let appModel = AppModel.preview()
         let runtime = try #require(appModel.runtimes.first)
         await waitForData(runtime)
-        host(RootView().environment(appModel).environment(WindowState()))
+        host(RootView().environment(appModel).environment(WindowState.ephemeral()))
     }
 
     @Test("root view hosts with data arriving after first render")
@@ -46,7 +46,7 @@ struct ShellHostingSmokeTest {
         // The app's real launch order: the window is up before the first
         // poll returns, then rows insert into the live List.
         let appModel = AppModel.preview()
-        host(RootView().environment(appModel).environment(WindowState()))
+        host(RootView().environment(appModel).environment(WindowState.ephemeral()))
     }
 
     @Test("root view hosts Workspace content inside the stable split view")
@@ -54,7 +54,7 @@ struct ShellHostingSmokeTest {
         let appModel = AppModel.preview()
         let runtime = try #require(appModel.runtimes.first)
         await waitForData(runtime)
-        let windowState = WindowState()
+        let windowState = WindowState.ephemeral()
         #expect(windowState.activateWorkspace(
             WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser"),
             in: appModel
@@ -69,7 +69,7 @@ struct ShellHostingSmokeTest {
         let appModel = AppModel.preview()
         let runtime = try #require(appModel.runtimes.first)
         await waitForData(runtime)
-        let windowState = WindowState()
+        let windowState = WindowState.ephemeral()
         #expect(windowState.activateWorkspace(
             WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser"),
             in: appModel
@@ -85,7 +85,7 @@ struct ShellHostingSmokeTest {
         let appModel = AppModel.preview()
         let runtime = try #require(appModel.runtimes.first)
         await waitForData(runtime)
-        let windowState = WindowState()
+        let windowState = WindowState.ephemeral()
         #expect(windowState.activateWorkspace(
             WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser"),
             in: appModel
@@ -118,7 +118,7 @@ struct ShellHostingSmokeTest {
         let appModel = AppModel.preview()
         let runtime = try #require(appModel.runtimes.first)
         await waitForData(runtime)
-        let windowState = WindowState()
+        let windowState = WindowState.ephemeral()
         #expect(windowState.activateWorkspace(
             WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_archived"),
             in: appModel
@@ -131,7 +131,7 @@ struct ShellHostingSmokeTest {
         let appModel = AppModel.preview()
         let runtime = try #require(appModel.runtimes.first)
         await waitForData(runtime)
-        let windowState = WindowState()
+        let windowState = WindowState.ephemeral()
         let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
         let session = SessionRef(connectionID: runtime.id, sessionID: "ses_running")
         #expect(windowState.activateWorkspace(workspace, in: appModel))

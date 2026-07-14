@@ -76,7 +76,8 @@ struct RootView: View {
                     onCreateWorkspace: { ref in
                         windowState.createWorkspaceContext = .init(mode: .fixed(ref))
                     },
-                    onCreateProject: { windowState.isCreateProjectPresented = true }
+                    onCreateProject: { windowState.isCreateProjectPresented = true },
+                    onWorkspaceDeleted: { windowState.forgetSelection(for: $0) }
                 )
                 .background()
             }
@@ -111,9 +112,7 @@ struct RootView: View {
               ref == windowState.activeWorkspace,
               let runtime = appModel.runtime(id: ref.connectionID)
         else { return nil }
-        let isEmpty = !runtime.sessions.sessions.contains {
-            $0.workspace?.id == ref.workspaceID
-        }
+        let isEmpty = !runtime.sessions.sessions.contains { $0.belongs(to: ref) }
         guard isEmpty else { return nil }
         return .init(
             newSession: { windowState.startSessionKind = .agentSession },

@@ -13,13 +13,9 @@ struct WorkspaceSelectionMemory {
 
     private let defaults: UserDefaults
     private static let key = "workspaceSelections.v2"
-    private static let obsoleteKey = "workspaceSelections"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        // The v1 map used bare server Workspace IDs and is ambiguous across
-        // Connections. Discard it instead of guessing a migration.
-        defaults.removeObject(forKey: Self.obsoleteKey)
     }
 
     func sessionID(for ref: WorkspaceRef) -> String? {

@@ -62,6 +62,11 @@ struct DashboardGroups {
     /// True when no section has any visible card.
     var isEmpty: Bool { sections.allSatisfy(\.cards.isEmpty) }
 
+    /// Visible Workspace refs in display order, for keyboard navigation.
+    var workspaceRefs: [WorkspaceRef] {
+        sections.flatMap { $0.cards.flatMap { $0.rows.map(\.ref) } }
+    }
+
     init(inputs: [ConnectionInput], showArchived: Bool) {
         for input in inputs {
             totalProjectCount += input.projects.count
@@ -73,7 +78,7 @@ struct DashboardGroups {
                 let all = workspacesByProject[project.id] ?? []
                 let rows = all
                     .filter { showArchived || !$0.isArchived }
-                    .sorted { $0.createdAt > $1.createdAt }
+                    .sortedNewestFirst()
                     .map { workspace in
                         let members = sessionsByWorkspace[workspace.id] ?? []
                         let active = members.filter {

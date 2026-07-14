@@ -6,15 +6,7 @@ struct WorkspaceSwitcher: View {
     @Environment(WindowState.self) private var windowState
 
     var body: some View {
-        let groups = ProjectsNavigatorGroups(inputs: appModel.runtimes.map {
-            .init(
-                connection: $0.record,
-                reachability: $0.reachability,
-                projects: $0.projects.projects,
-                workspaces: $0.workspaces.workspaces,
-                sessions: $0.sessions.sessions
-            )
-        })
+        let groups = ProjectsNavigatorGroups(runtimes: appModel.runtimes)
         let presentation = activeContext.map {
             WorkspaceSwitcherPresentation(
                 project: $0.project,

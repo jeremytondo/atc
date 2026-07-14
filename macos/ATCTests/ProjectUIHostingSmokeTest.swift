@@ -37,7 +37,12 @@ struct ProjectUIHostingSmokeTest {
     }
 
     private func dashboard(_ appModel: AppModel) -> some View {
-        DashboardView(onOpenWorkspace: { _ in }, onCreateWorkspace: { _ in }, onCreateProject: {})
+        DashboardView(
+            onOpenWorkspace: { _ in },
+            onCreateWorkspace: { _ in },
+            onCreateProject: {},
+            onWorkspaceDeleted: { _ in }
+        )
             .environment(appModel)
     }
 
@@ -79,7 +84,7 @@ struct ProjectUIHostingSmokeTest {
         let appModel = AppModel.preview()
         let runtime = try #require(appModel.runtimes.first)
         await waitForData(runtime)
-        let state = WindowState()
+        let state = WindowState.ephemeral()
         let sidebar = NavigatorSidebar()
             .environment(appModel)
             .environment(state)

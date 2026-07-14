@@ -34,6 +34,20 @@ struct ProjectsNavigatorGroups {
 
     let projects: [ProjectGroup]
 
+    /// The one projection from live runtimes shared by the Projects
+    /// Navigator and the Workspace Switcher.
+    init(runtimes: [ConnectionRuntime]) {
+        self.init(inputs: runtimes.map {
+            Input(
+                connection: $0.record,
+                reachability: $0.reachability,
+                projects: $0.projects.projects,
+                workspaces: $0.workspaces.workspaces,
+                sessions: $0.sessions.sessions
+            )
+        })
+    }
+
     init(inputs: [Input]) {
         projects = inputs.flatMap { input -> [ProjectGroup] in
             let allWorkspaces = Dictionary(grouping: input.workspaces, by: \.projectId)
@@ -43,10 +57,7 @@ struct ProjectsNavigatorGroups {
                 let all = allWorkspaces[project.id] ?? []
                 let rows = all
                     .filter { !$0.isArchived }
-                    .sorted {
-                        if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
-                        return $0.id < $1.id
-                    }
+                    .sortedNewestFirst()
                     .map { workspace in
                         let members = sessions[workspace.id] ?? []
                         return WorkspaceRow(

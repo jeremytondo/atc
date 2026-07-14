@@ -42,7 +42,7 @@ struct WorkspaceFlowTests {
 
     @Test("launch defaults select Projects and Dashboard with no Active Workspace")
     func launchDefaults() {
-        let state = WindowState()
+        let state = WindowState.ephemeral()
         #expect(state.selectedNavigator == .projects)
         #expect(state.selectedContent == .dashboard)
         #expect(state.activeWorkspace == nil)
@@ -56,7 +56,7 @@ struct WorkspaceFlowTests {
     @Test("Navigator changes preserve main content and inspector")
     func navigatorPreservesContent() async throws {
         let (model, runtime) = try await makeLoadedModel()
-        let state = WindowState()
+        let state = WindowState.ephemeral()
         let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
         #expect(state.activateWorkspace(workspace, in: model))
         let session = SessionRef(connectionID: runtime.id, sessionID: "ses_running")
@@ -74,7 +74,7 @@ struct WorkspaceFlowTests {
     @Test("Dashboard preserves Active Workspace, Navigator, and command availability")
     func dashboardPreservesWorkspaceContext() async throws {
         let (model, runtime) = try await makeLoadedModel()
-        let state = WindowState()
+        let state = WindowState.ephemeral()
         let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
         #expect(state.activateWorkspace(workspace, in: model))
         state.selectedNavigator = .file
@@ -112,7 +112,7 @@ struct WorkspaceFlowTests {
     @Test("same Workspace activation is idempotent")
     func activationIsIdempotent() async throws {
         let (model, runtime) = try await makeLoadedModel()
-        let state = WindowState()
+        let state = WindowState.ephemeral()
         let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
         let selected = SessionRef(connectionID: runtime.id, sessionID: "ses_running")
         #expect(state.activateWorkspace(workspace, in: model))
@@ -127,7 +127,7 @@ struct WorkspaceFlowTests {
     @Test("reselecting the Active Workspace returns from Dashboard")
     func activeWorkspaceReturnsFromDashboard() async throws {
         let (model, runtime) = try await makeLoadedModel()
-        let state = WindowState()
+        let state = WindowState.ephemeral()
         let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
         let selected = SessionRef(connectionID: runtime.id, sessionID: "ses_running")
         #expect(state.activateWorkspace(workspace, in: model))
@@ -146,7 +146,7 @@ struct WorkspaceFlowTests {
         let other = try model.addConnection(name: "B", urlString: "http://b:1", token: "")
         model.runtime(id: other.id)?.stopPolling()
         await model.runtime(id: other.id)?.refresh()
-        let state = WindowState()
+        let state = WindowState.ephemeral()
         let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
         #expect(state.activateWorkspace(workspace, in: model))
 
@@ -162,7 +162,7 @@ struct WorkspaceFlowTests {
     @Test("different Workspace activation closes inspector and never keeps stale content")
     func switchingWorkspaceClearsStaleContent() async throws {
         let (model, runtime) = try await makeLoadedModel()
-        let state = WindowState()
+        let state = WindowState.ephemeral()
         let first = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
         let second = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_refactor")
         #expect(state.activateWorkspace(first, in: model))
@@ -180,7 +180,7 @@ struct WorkspaceFlowTests {
     @Test("an open inspector follows a new Session in the same Workspace")
     func inspectorFollowsSelection() async throws {
         let (model, runtime) = try await makeLoadedModel()
-        let state = WindowState()
+        let state = WindowState.ephemeral()
         #expect(state.activateWorkspace(
             WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser"), in: model
         ))
@@ -328,7 +328,7 @@ struct WorkspaceFlowTests {
     func unresolvedAndDisconnectedPreserveWorkspace() async throws {
         let client = StatefulWorkspacesClient()
         let (model, runtime) = try await makeLoadedModel(client: client)
-        let state = WindowState()
+        let state = WindowState.ephemeral()
         let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_a")
         #expect(state.activateWorkspace(workspace, in: model))
 
@@ -348,7 +348,7 @@ struct WorkspaceFlowTests {
     @Test("removed Connection clears window references and returns to Dashboard")
     func removedConnectionClearsWindow() async throws {
         let (model, runtime) = try await makeLoadedModel()
-        let state = WindowState()
+        let state = WindowState.ephemeral()
         let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
         #expect(state.activateWorkspace(workspace, in: model))
         state.selectedNavigator = .workspace
@@ -366,7 +366,7 @@ struct WorkspaceFlowTests {
     func removedWorkspaceClearsWindow() async throws {
         let client = StatefulWorkspacesClient()
         let (model, runtime) = try await makeLoadedModel(client: client)
-        let state = WindowState()
+        let state = WindowState.ephemeral()
         let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_a")
         #expect(state.activateWorkspace(workspace, in: model))
         try await runtime.workspaces.delete(id: workspace.workspaceID)
@@ -380,7 +380,7 @@ struct WorkspaceFlowTests {
     func archivedWorkspaceRemainsActive() async throws {
         let client = StatefulWorkspacesClient()
         let (model, runtime) = try await makeLoadedModel(client: client)
-        let state = WindowState()
+        let state = WindowState.ephemeral()
         let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_a")
         #expect(state.activateWorkspace(workspace, in: model))
         try await runtime.workspaces.archive(id: workspace.workspaceID)
@@ -393,7 +393,7 @@ struct WorkspaceFlowTests {
     func creationAvailability() async throws {
         let client = StatefulWorkspacesClient()
         let (model, runtime) = try await makeLoadedModel(client: client)
-        let state = WindowState()
+        let state = WindowState.ephemeral()
         #expect(state.activateWorkspace(
             WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_a"), in: model
         ))
@@ -407,7 +407,7 @@ struct WorkspaceFlowTests {
         client.failSessions = false
         await runtime.refresh()
         let (archiveModel, archiveRuntime) = try await makeLoadedModel()
-        let archiveState = WindowState()
+        let archiveState = WindowState.ephemeral()
         #expect(archiveState.activateWorkspace(
             WorkspaceRef(connectionID: archiveRuntime.id, workspaceID: "wsp_archived"),
             in: archiveModel
@@ -418,7 +418,7 @@ struct WorkspaceFlowTests {
     @Test("New Workspace uses Active Project even while Dashboard is visible")
     func createWorkspaceContextUsesActiveWorkspace() async throws {
         let (model, runtime) = try await makeLoadedModel()
-        let state = WindowState()
+        let state = WindowState.ephemeral()
         #expect(state.activateWorkspace(
             WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser"), in: model
         ))
@@ -455,19 +455,16 @@ struct WorkspaceFlowTests {
         #expect(!model.canStartSession(in: workspace))
     }
 
-    @Test("selection memory is Connection-qualified and discards the obsolete map")
+    @Test("selection memory is Connection-qualified")
     func selectionMemoryIsComposite() {
-        let (selectionMemory, defaults) = memory()
-        defaults.set(["same": "old"], forKey: "workspaceSelections")
-        let memoryAfterOldData = WorkspaceSelectionMemory(defaults: defaults)
+        let (selectionMemory, _) = memory()
         let a = WorkspaceRef(connectionID: UUID(), workspaceID: "same")
         let b = WorkspaceRef(connectionID: UUID(), workspaceID: "same")
 
-        memoryAfterOldData.remember(sessionID: "ses_a", for: a)
-        memoryAfterOldData.remember(sessionID: "ses_b", for: b)
-        #expect(memoryAfterOldData.sessionID(for: a) == "ses_a")
-        #expect(memoryAfterOldData.sessionID(for: b) == "ses_b")
-        #expect(defaults.object(forKey: "workspaceSelections") == nil)
+        selectionMemory.remember(sessionID: "ses_a", for: a)
+        selectionMemory.remember(sessionID: "ses_b", for: b)
+        #expect(selectionMemory.sessionID(for: a) == "ses_a")
+        #expect(selectionMemory.sessionID(for: b) == "ses_b")
 
         selectionMemory.forget(a)
         #expect(selectionMemory.sessionID(for: a) == nil)
