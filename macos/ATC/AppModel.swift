@@ -53,6 +53,12 @@ final class AppModel {
     /// LRU order over `terminals` keys, least-recently-used first.
     private var attachOrder: [SessionRef] = []
 
+    /// Refs whose terminals were torn down through `disconnectTerminal`.
+    /// Window reconciliation consults this so a Disconnect sticks instead
+    /// of being silently undone on the next store change; any explicit
+    /// attach clears the mark.
+    private var detachedRefs: Set<SessionRef> = []
+
     private let clientFactory: (ConnectionRecord) -> any ATCClient
     private let terminalControllerFactory: (String, any ATCClient) -> TerminalSessionController
     private let terminalRecoveryMonitor: TerminalRecoveryMonitor
@@ -232,6 +238,7 @@ final class AppModel {
         retentionContext: TerminalRetentionContext = .empty
     ) {
         let ref = SessionRef(connectionID: connectionID, sessionID: session.id)
+        detachedRefs.remove(ref)
         if terminals[ref] != nil {
             markRecentlyUsed(ref)
             return
@@ -252,6 +259,12 @@ final class AppModel {
         terminals[ref]?.disconnect()
         terminals.removeValue(forKey: ref)
         attachOrder.removeAll { $0 == ref }
+        detachedRefs.insert(ref)
+    }
+
+    /// Whether this ref was disconnected and never explicitly re-attached.
+    func isDetached(_ ref: SessionRef) -> Bool {
+        detachedRefs.contains(ref)
     }
 
     /// Wake and path recovery are app-wide signals. A controller decides
@@ -321,5 +334,8 @@ final class AppModel {
         for ref in terminals.keys where ref.connectionID == runtime.id {
             disconnectTerminal(ref: ref)
         }
+        // A teardown disconnect is infrastructure, not user intent: a
+        // rebuilt Connection may auto-reattach its selected session.
+        detachedRefs = detachedRefs.filter { $0.connectionID != runtime.id }
     }
 }

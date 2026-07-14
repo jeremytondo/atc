@@ -9,15 +9,31 @@ struct WorkspaceNavigatorView: View {
 
     @State private var actionError: String?
     @State private var deletingSession: Row?
+    @State private var showArchived = false
 
     private struct Row: Identifiable {
         let ref: SessionRef
         let session: Session
         let title: String
+        let caption: String
         var id: SessionRef { ref }
     }
 
     var body: some View {
+        if workspaceRef == nil {
+            ContentUnavailableView(
+                "No Active Workspace",
+                systemImage: "rectangle.stack",
+                description: Text("Open a workspace to see its sessions and terminals.")
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            navigatorContent
+        }
+    }
+
+    @ViewBuilder
+    private var navigatorContent: some View {
         @Bindable var windowState = windowState
         let rows = sidebarRows()
         let agents = rows.filter { kind(of: $0.session) == .agent }
@@ -54,6 +70,17 @@ struct WorkspaceNavigatorView: View {
             }
         }
         .navigatorList()
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            HStack {
+                Toggle("Show Archived", isOn: $showArchived)
+                    .toggleStyle(.checkbox)
+                    .font(.caption)
+                Spacer()
+            }
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, Spacing.sm)
+            .background(.bar)
+        }
         .confirmationDialog(
             "Delete Session “\(deletingSession?.title ?? "")”?",
             isPresented: Binding(
@@ -83,11 +110,16 @@ struct WorkspaceNavigatorView: View {
                 isSelected: windowState.selectedSession == row.ref,
                 action: { _ = windowState.selectSession(row.ref, in: appModel) }
             ) { _ in
-                Text(row.title)
-                    .lineLimit(1)
+                SessionRowView(
+                    session: row.session,
+                    isConnected: appModel.activelyAttachedRefs.contains(row.ref),
+                    title: row.title,
+                    caption: row.caption
+                )
             } actions: {
                 EmptyView()
             }
+            .opacity(row.session.isArchived ? Dimming.archived : 1)
             .contextMenu { sessionMenu(row) }
         }
         if rows.isEmpty {
@@ -101,7 +133,16 @@ struct WorkspaceNavigatorView: View {
     @ViewBuilder
     private func sessionMenu(_ row: Row) -> some View {
         let session = row.session
-        if session.status == .terminated || session.status == .failed {
+        if session.isArchived {
+            Button("Unarchive", systemImage: "archivebox") {
+                if let store = runtime?.sessions {
+                    run(on: row.ref.connectionID) {
+                        try await store.unarchive(id: session.id)
+                    }
+                }
+            }
+            .disabled(!isConnected)
+        } else if session.status == .terminated || session.status == .failed {
             Button("Archive", systemImage: "archivebox") {
                 if let store = runtime?.sessions {
                     run(on: row.ref.connectionID) {
@@ -140,21 +181,25 @@ struct WorkspaceNavigatorView: View {
         SessionKind.classify(session: session, actions: runtime?.actions.actions ?? [])
     }
 
+    /// Filtered, ordered sidebar rows: the Active Workspace's sessions,
+    /// newest-first, archived behind the footer toggle.
     private func sidebarRows() -> [Row] {
         guard let ref = workspaceRef else { return [] }
         let actions = runtime?.actions.actions ?? []
         return workspaceSessions()
-            .filter { !$0.isArchived }
+            .filter { showArchived || !$0.isArchived }
             .sorted {
                 if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
                 return $0.id < $1.id
             }
             .map { session in
-                let title = SessionKind.displayName(session: session, actions: actions)
+                let label = SessionKind.actionLabel(session: session, actions: actions)
+                let updated = session.updatedAt.formatted(.relative(presentation: .named))
                 return Row(
                     ref: SessionRef(connectionID: ref.connectionID, sessionID: session.id),
                     session: session,
-                    title: title
+                    title: SessionKind.displayName(session: session, actions: actions),
+                    caption: "\(label) · \(updated)"
                 )
             }
     }

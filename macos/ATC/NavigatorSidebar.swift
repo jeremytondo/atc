@@ -37,7 +37,9 @@ struct NavigatorSelector: View {
                     .accessibilityLabel(option.id.label)
                     .help(option.help)
                     .tag(option.id)
-                    .disabled(!option.isEnabled)
+                    // .disabled is inert on segmented picker options;
+                    // only .selectionDisabled actually blocks selection.
+                    .selectionDisabled(!option.isEnabled)
             }
         }
         .pickerStyle(.segmented)

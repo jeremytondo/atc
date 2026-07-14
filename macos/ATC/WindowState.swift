@@ -207,7 +207,10 @@ final class WindowState {
             if session.isArchived {
                 selectionMemory.forget(activeWorkspace)
             }
-            if session.attachable, appModel.terminals[selected] == nil {
+            // Never undo an explicit Disconnect: reconcile runs on every
+            // store change, not just selection changes.
+            if session.attachable, appModel.terminals[selected] == nil,
+               !appModel.isDetached(selected) {
                 appModel.attachIfNeeded(
                     to: session,
                     connectionID: selected.connectionID,
@@ -269,6 +272,9 @@ final class WindowState {
         selectedNavigator = .projects
         selectedContent = .dashboard
         isInspectorPresented = false
+        // The start-session sheet renders from the Active Workspace; left
+        // presented it would show an empty sheet with no way to cancel.
+        startSessionKind = nil
     }
 }
 

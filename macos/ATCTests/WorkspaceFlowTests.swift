@@ -218,6 +218,44 @@ struct WorkspaceFlowTests {
         #expect(selectionMemory.sessionID(for: refactor) == nil)
     }
 
+    @Test("explicit Disconnect is not undone by reconcile")
+    func disconnectSurvivesReconcile() async throws {
+        let (model, runtime) = try await makeLoadedModel()
+        let (selectionMemory, _) = memory()
+        let state = WindowState(selectionMemory: selectionMemory)
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
+        let selected = SessionRef(connectionID: runtime.id, sessionID: "ses_running")
+        #expect(state.activateWorkspace(workspace, in: model))
+        #expect(state.selectSession(selected, in: model))
+        #expect(model.terminals[selected] != nil)
+
+        model.disconnectTerminal(ref: selected)
+        state.reconcile(in: model)
+        #expect(model.terminals[selected] == nil)
+
+        // An explicit attach (Connect button, re-selection) reconnects and
+        // reconcile keeps it connected afterwards.
+        let session = try #require(model.session(for: selected))
+        model.attachIfNeeded(to: session, connectionID: selected.connectionID)
+        state.reconcile(in: model)
+        #expect(model.terminals[selected] != nil)
+    }
+
+    @Test("losing the Active Workspace dismisses the start-session sheet")
+    func startSheetDismissedWhenWorkspaceGone() async throws {
+        let (model, runtime) = try await makeLoadedModel()
+        let (selectionMemory, _) = memory()
+        let state = WindowState(selectionMemory: selectionMemory)
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
+        #expect(state.activateWorkspace(workspace, in: model))
+        state.startSessionKind = .agentSession
+
+        model.removeConnection(id: runtime.id)
+        state.reconcile(in: model)
+        #expect(state.activeWorkspace == nil)
+        #expect(state.startSessionKind == nil)
+    }
+
     @Test("selecting archived content never writes restoration memory")
     func archivedSelectionIsNotRemembered() async throws {
         let (model, runtime) = try await makeLoadedModel()
