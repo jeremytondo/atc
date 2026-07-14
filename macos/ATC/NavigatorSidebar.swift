@@ -8,7 +8,6 @@ struct NavigatorSidebar: View {
         @Bindable var windowState = windowState
         VStack(spacing: 0) {
             NavigatorSelector(selection: $windowState.selectedNavigator)
-            Divider()
             switch windowState.selectedNavigator {
             case .projects:
                 ProjectsNavigatorView()
@@ -22,26 +21,64 @@ struct NavigatorSidebar: View {
     }
 }
 
+/// Xcode-style navigator bar: borderless icon buttons spread across the
+/// sidebar width, with an accent-filled rounded rect behind the selection.
 struct NavigatorSelector: View {
     @Environment(WindowState.self) private var windowState
     @Binding var selection: NavigatorID
 
     var body: some View {
-        Picker("Navigator", selection: $selection) {
+        HStack(spacing: 0) {
             ForEach(NavigatorSelectorOption.all(
                 hasActiveWorkspace: windowState.activeWorkspace != nil
             )) { option in
-                Image(systemName: option.id.systemImage)
-                    .accessibilityLabel(option.id.label)
-                    .help(option.help)
-                    .tag(option.id)
-                    .selectionDisabled(!option.isEnabled)
+                NavigatorSelectorButton(option: option, selection: $selection)
             }
         }
-        .pickerStyle(.palette)
-        .labelsHidden()
-        .padding(.horizontal, Spacing.md)
+        .padding(.horizontal, Spacing.sm)
         .padding(.vertical, Spacing.xs)
+    }
+}
+
+private struct NavigatorSelectorButton: View {
+    let option: NavigatorSelectorOption
+    @Binding var selection: NavigatorID
+    @State private var isHovering = false
+
+    private var isSelected: Bool { selection == option.id }
+
+    var body: some View {
+        Button {
+            selection = option.id
+        } label: {
+            Image(systemName: option.id.systemImage)
+                .foregroundStyle(symbolStyle)
+                .frame(width: 28, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                        .fill(backgroundStyle)
+                )
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!option.isEnabled)
+        .onHover { isHovering = $0 }
+        .accessibilityLabel(option.id.label)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .help(option.help)
+    }
+
+    private var symbolStyle: AnyShapeStyle {
+        if isSelected { return AnyShapeStyle(.white) }
+        if !option.isEnabled { return AnyShapeStyle(.quaternary) }
+        return AnyShapeStyle(.secondary)
+    }
+
+    private var backgroundStyle: AnyShapeStyle {
+        if isSelected { return AnyShapeStyle(Color.accentColor) }
+        if isHovering && option.isEnabled { return AnyShapeStyle(.quaternary) }
+        return AnyShapeStyle(.clear)
     }
 }
 
