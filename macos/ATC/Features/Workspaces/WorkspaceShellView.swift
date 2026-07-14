@@ -25,38 +25,53 @@ struct WorkspaceNavigatorView: View {
         let terminals = rows.filter { kind(of: $0.session) == .terminal }
 
         List(selection: selectionBinding) {
+            Section {
+                NavigatorRow(
+                    isEnabled: canStartSession,
+                    action: { windowState.startSessionKind = .agentSession }
+                ) {
+                    NavigatorIconLabel(title: "New Session", systemImage: "plus.bubble")
+                } actions: {
+                    EmptyView()
+                }
+                NavigatorRow(
+                    isEnabled: canStartSession,
+                    action: { windowState.startSessionKind = .terminal }
+                ) {
+                    NavigatorIconLabel(title: "New Terminal", systemImage: "terminal")
+                } actions: {
+                    EmptyView()
+                }
+            }
+
             if runtime?.reachability == .unreachable {
-                Label("Disconnected", systemImage: "cable.connector.slash")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Section {
+                    Label("Disconnected", systemImage: "cable.connector.slash")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .navigatorListRow()
+                }
             }
             section(
                 title: "Sessions",
                 rows: agents,
-                emptyText: "No sessions",
-                newHelp: "New session",
-                onNew: { windowState.startSessionKind = .agentSession }
+                emptyText: "No sessions"
             )
             section(
                 title: "Terminals",
                 rows: terminals,
-                emptyText: "No terminals",
-                newHelp: "New terminal",
-                onNew: { windowState.startSessionKind = .terminal }
+                emptyText: "No terminals"
             )
-        }
-        .listStyle(.sidebar)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            HStack {
+
+            Section {
                 Toggle("Show Archived", isOn: $showArchivedSessions)
                     .toggleStyle(.checkbox)
                     .font(.caption)
-                Spacer()
+                    .frame(minHeight: NavigatorMetrics.rowHeight)
+                    .navigatorListRow()
             }
-            .padding(.horizontal, Spacing.md)
-            .padding(.vertical, Spacing.xs)
-            .background(.bar)
         }
+        .navigatorList()
         .confirmationDialog(
             "Delete Session “\(deletingSession?.title ?? "")”?",
             isPresented: Binding(
@@ -80,18 +95,33 @@ struct WorkspaceNavigatorView: View {
     private func section(
         title: String,
         rows: [Row],
-        emptyText: String,
-        newHelp: String,
-        onNew: @escaping () -> Void
+        emptyText: String
     ) -> some View {
         Section {
             ForEach(rows) { row in
-                SessionRowView(
-                    session: row.session,
-                    isConnected: appModel.activelyAttachedRefs.contains(row.ref),
-                    title: row.title,
-                    caption: row.caption
-                )
+                NavigatorRow(
+                    isSelected: windowState.selectedSession == row.ref,
+                    action: { _ = windowState.selectSession(row.ref, in: appModel) }
+                ) {
+                    SessionRowView(
+                        session: row.session,
+                        isConnected: appModel.activelyAttachedRefs.contains(row.ref),
+                        title: row.title,
+                        caption: row.caption
+                    )
+                } actions: {
+                    if canToggleArchive(row) {
+                        NavigatorActionButton(
+                            systemImage: row.session.isArchived ? "archivebox.fill" : "archivebox",
+                            help: row.session.isArchived ? "Unarchive session" : "Archive session"
+                        ) {
+                            toggleArchive(row)
+                        }
+                    }
+                    NavigatorActionMenu(systemImage: "ellipsis", help: "Session actions") {
+                        sessionMenu(row)
+                    }
+                }
                 .tag(row.ref)
                 .contextMenu { sessionMenu(row) }
             }
@@ -99,16 +129,26 @@ struct WorkspaceNavigatorView: View {
                 Text(emptyText)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
+                    .navigatorListRow()
             }
         } header: {
-            HStack {
-                Text(title)
-                Spacer()
-                Button(action: onNew) { Image(systemName: "plus") }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .disabled(!canStartSession)
-                    .help(newHelp)
+            NavigatorSectionHeader(title: title)
+        }
+    }
+
+    private func canToggleArchive(_ row: Row) -> Bool {
+        row.session.isArchived
+            || row.session.status == .terminated
+            || row.session.status == .failed
+    }
+
+    private func toggleArchive(_ row: Row) {
+        guard let store = runtime?.sessions else { return }
+        run(on: row.ref.connectionID) {
+            if row.session.isArchived {
+                try await store.unarchive(id: row.session.id)
+            } else {
+                try await store.archive(id: row.session.id)
             }
         }
     }

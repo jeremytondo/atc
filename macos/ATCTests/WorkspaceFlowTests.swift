@@ -97,6 +97,10 @@ struct WorkspaceFlowTests {
         #expect(state.activateWorkspace(workspace, in: model))
         #expect(state.activeWorkspace == workspace)
         #expect(state.selectedNavigator == .file)
+        #expect(state.expandedProjects.contains(ProjectRef(
+            connectionID: runtime.id,
+            projectID: "prj_atelier"
+        )))
         #expect(state.selectedContent == .session(
             SessionRef(connectionID: runtime.id, sessionID: "ses_running")
         ))

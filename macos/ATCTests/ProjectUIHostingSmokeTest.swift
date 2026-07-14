@@ -74,6 +74,28 @@ struct ProjectUIHostingSmokeTest {
         host(dashboard(appModel), width: 700, height: 560)
     }
 
+    @Test("all Navigator sidebar modes host without crashing")
+    func hostNavigatorSidebarModes() async throws {
+        let appModel = AppModel.preview()
+        let runtime = try #require(appModel.runtimes.first)
+        await waitForData(runtime)
+        let state = WindowState()
+        let sidebar = NavigatorSidebar()
+            .environment(appModel)
+            .environment(state)
+
+        host(sidebar, width: 280, height: 560)
+        let workspace = WorkspaceRef(
+            connectionID: runtime.id,
+            workspaceID: "wsp_parser"
+        )
+        #expect(state.activateWorkspace(workspace, in: appModel))
+        state.selectedNavigator = .workspace
+        host(sidebar, width: 280, height: 560)
+        state.selectedNavigator = .file
+        host(sidebar, width: 280, height: 560)
+    }
+
     @Test("create-project sheet hosts without crashing")
     func hostCreateProject() async throws {
         host(

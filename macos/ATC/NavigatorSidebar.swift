@@ -21,64 +21,36 @@ struct NavigatorSidebar: View {
     }
 }
 
-/// Xcode-style navigator bar: borderless icon buttons spread across the
-/// sidebar width, with an accent-filled rounded rect behind the selection.
+/// Native segmented navigation in an inset system surface, matching the
+/// hierarchy and interaction model of Xcode's Navigator selector.
 struct NavigatorSelector: View {
     @Environment(WindowState.self) private var windowState
     @Binding var selection: NavigatorID
 
     var body: some View {
-        HStack(spacing: 0) {
-            ForEach(NavigatorSelectorOption.all(
-                hasActiveWorkspace: windowState.activeWorkspace != nil
-            )) { option in
-                NavigatorSelectorButton(option: option, selection: $selection)
+        let options = NavigatorSelectorOption.all(
+            hasActiveWorkspace: windowState.activeWorkspace != nil
+        )
+        Picker("Navigator", selection: $selection) {
+            ForEach(options) { option in
+                Image(systemName: option.id.systemImage)
+                    .accessibilityLabel(option.id.label)
+                    .help(option.help)
+                    .tag(option.id)
+                    .disabled(!option.isEnabled)
             }
         }
-        .padding(.horizontal, Spacing.sm)
-        .padding(.vertical, Spacing.xs)
-    }
-}
-
-private struct NavigatorSelectorButton: View {
-    let option: NavigatorSelectorOption
-    @Binding var selection: NavigatorID
-    @State private var isHovering = false
-
-    private var isSelected: Bool { selection == option.id }
-
-    var body: some View {
-        Button {
-            selection = option.id
-        } label: {
-            Image(systemName: option.id.systemImage)
-                .foregroundStyle(symbolStyle)
-                .frame(width: 28, height: 22)
-                .background(
-                    RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
-                        .fill(backgroundStyle)
-                )
-                .frame(maxWidth: .infinity)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!option.isEnabled)
-        .onHover { isHovering = $0 }
-        .accessibilityLabel(option.id.label)
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-        .help(option.help)
-    }
-
-    private var symbolStyle: AnyShapeStyle {
-        if isSelected { return AnyShapeStyle(.white) }
-        if !option.isEnabled { return AnyShapeStyle(.quaternary) }
-        return AnyShapeStyle(.secondary)
-    }
-
-    private var backgroundStyle: AnyShapeStyle {
-        if isSelected { return AnyShapeStyle(Color.accentColor) }
-        if isHovering && option.isEnabled { return AnyShapeStyle(.quaternary) }
-        return AnyShapeStyle(.clear)
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .controlSize(.regular)
+        .tint(.accentColor)
+        .padding(2)
+        .background(.quaternary, in: RoundedRectangle(
+            cornerRadius: Radius.control,
+            style: .continuous
+        ))
+        .padding(.horizontal, Spacing.md)
+        .padding(.vertical, Spacing.sm)
     }
 }
 
@@ -121,26 +93,39 @@ struct ProjectsNavigatorView: View {
             )
         })
         List(selection: selectionBinding) {
-            Label("Dashboard", systemImage: "rectangle.3.group")
+            Section {
+                NavigatorRow(
+                    isSelected: windowState.selectedContent == .dashboard,
+                    action: { windowState.showDashboard() }
+                ) {
+                    NavigatorIconLabel(title: "Dashboard", systemImage: "rectangle.3.group")
+                } actions: {
+                    EmptyView()
+                }
                 .tag(ProjectsNavigatorSelection.dashboard)
+            }
 
-            ForEach(groups.projects) { group in
-                DisclosureGroup(isExpanded: expansionBinding(for: group.ref)) {
+            Section {
+                ForEach(groups.projects) { group in
+                    projectRow(group)
                     ForEach(group.workspaces) { row in
-                        workspaceRow(row, in: group)
+                        if windowState.expandedProjects.contains(group.ref) {
+                            workspaceRow(row, in: group)
+                        }
                     }
-                    if group.workspaces.isEmpty {
+                    if windowState.expandedProjects.contains(group.ref), group.workspaces.isEmpty {
                         Text("No workspaces")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
-                            .padding(.leading, Spacing.sm)
+                            .padding(.leading, NavigatorMetrics.nestedIndent)
+                            .navigatorListRow()
                     }
-                } label: {
-                    projectRow(group)
                 }
+            } header: {
+                NavigatorSectionHeader(title: "Projects")
             }
         }
-        .listStyle(.sidebar)
+        .navigatorList()
         .alert("Rename Project", isPresented: Binding(
             get: { renamingProject != nil },
             set: { if !$0 { renamingProject = nil } }
@@ -228,46 +213,70 @@ struct ProjectsNavigatorView: View {
     }
 
     private func projectRow(_ group: ProjectsNavigatorGroups.ProjectGroup) -> some View {
-        HStack(spacing: Spacing.sm) {
-            Image(systemName: "folder")
-            VStack(alignment: .leading, spacing: 1) {
-                Text(group.project.name).lineLimit(1)
-                HStack(spacing: Spacing.xs) {
-                    StatusDot(color: group.reachability.color, size: .inline)
-                    Text(group.connectionName)
+        NavigatorRow(
+            action: {
+                if windowState.expandedProjects.contains(group.ref) {
+                    windowState.expandedProjects.remove(group.ref)
+                } else {
+                    windowState.expandedProjects.insert(group.ref)
                 }
-                .font(.caption2)
+            }
+        ) {
+            HStack(spacing: Spacing.sm) {
+                Image(systemName: windowState.expandedProjects.contains(group.ref) ? "folder.fill" : "folder")
+                    .frame(width: NavigatorMetrics.iconWidth)
+                    .foregroundStyle(.secondary)
+                Text(group.project.name)
+                    .lineLimit(1)
+                Spacer(minLength: Spacing.sm)
+                HStack(spacing: Spacing.xs) {
+                    Text(group.connectionName)
+                        .lineLimit(1)
+                    StatusDot(color: group.reachability.color, size: .inline)
+                }
+                .font(.caption)
                 .foregroundStyle(.secondary)
             }
-            Spacer()
-        }
-        .contentShape(Rectangle())
-        .onTapGesture { windowState.focusedProject = group.ref }
-        .contextMenu {
-            Button("New Workspace…", systemImage: "plus") {
+        } actions: {
+            NavigatorActionButton(
+                systemImage: "plus",
+                help: "New workspace",
+                isEnabled: group.reachability == .connected
+            ) {
                 windowState.createWorkspaceContext = .init(mode: .fixed(group.ref))
             }
-            .disabled(group.reachability != .connected)
-            Button("Rename…", systemImage: "pencil") {
-                renameDraft = group.project.name
-                renamingProject = group
+            NavigatorActionMenu(systemImage: "ellipsis", help: "Project actions") {
+                projectMenu(group)
             }
-            .disabled(group.reachability != .connected)
-            Divider()
-            Button("Archive Project", systemImage: "archivebox") {
-                if let store = appModel.runtime(id: group.ref.connectionID)?.projects {
-                    run(on: group.ref.connectionID) {
-                        try await store.archive(id: group.project.id)
-                    }
+        }
+        .contextMenu { projectMenu(group) }
+    }
+
+    @ViewBuilder
+    private func projectMenu(_ group: ProjectsNavigatorGroups.ProjectGroup) -> some View {
+        Button("New Workspace…", systemImage: "plus") {
+            windowState.createWorkspaceContext = .init(mode: .fixed(group.ref))
+        }
+        .disabled(group.reachability != .connected)
+        Button("Rename…", systemImage: "pencil") {
+            renameDraft = group.project.name
+            renamingProject = group
+        }
+        .disabled(group.reachability != .connected)
+        Divider()
+        Button("Archive Project", systemImage: "archivebox") {
+            if let store = appModel.runtime(id: group.ref.connectionID)?.projects {
+                run(on: group.ref.connectionID) {
+                    try await store.archive(id: group.project.id)
                 }
             }
-            .disabled(group.reachability != .connected || group.hasUnarchivedWorkspaces)
-            Divider()
-            Button("Delete Project…", systemImage: "trash", role: .destructive) {
-                deletingProject = group
-            }
-            .disabled(group.reachability != .connected || group.totalWorkspaceCount > 0)
         }
+        .disabled(group.reachability != .connected || group.hasUnarchivedWorkspaces)
+        Divider()
+        Button("Delete Project…", systemImage: "trash", role: .destructive) {
+            deletingProject = group
+        }
+        .disabled(group.reachability != .connected || group.totalWorkspaceCount > 0)
     }
 
     private func workspaceRow(
@@ -275,52 +284,86 @@ struct ProjectsNavigatorView: View {
         in group: ProjectsNavigatorGroups.ProjectGroup
     ) -> some View {
         let enabled = group.reachability == .connected
-        return HStack(spacing: Spacing.sm) {
-            Image(systemName: "square.on.square")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(row.workspace.name).lineLimit(1)
-            Spacer()
-        }
-        .contentShape(Rectangle())
-        .tag(ProjectsNavigatorSelection.workspace(row.ref))
-        .disabled(!enabled)
-        .opacity(enabled ? 1 : Dimming.archived)
-        .contextMenu {
-            Button("Open", systemImage: "arrow.up.forward.square") {
+        let selected = windowState.selectedContent != .dashboard
+            && windowState.activeWorkspace == row.ref
+        return NavigatorRow(
+            isSelected: selected,
+            isEnabled: enabled,
+            leadingIndent: NavigatorMetrics.nestedIndent,
+            action: {
                 _ = windowState.activateWorkspace(row.ref, in: appModel)
             }
-            .disabled(!enabled)
-            Button("Rename…", systemImage: "pencil") {
-                renameDraft = row.workspace.name
-                renamingWorkspace = row
-            }
-            .disabled(!enabled)
-            Divider()
-            Button("Archive", systemImage: "archivebox") {
-                if let store = appModel.runtime(id: row.ref.connectionID)?.workspaces {
-                    run(on: row.ref.connectionID) {
-                        try await store.archive(id: row.workspace.id)
-                    }
+        ) {
+            Text(row.workspace.name)
+                .lineLimit(1)
+        } actions: {
+            NavigatorActionMenu(systemImage: "plus", help: "Start in this workspace") {
+                Button("New Session", systemImage: "plus.bubble") {
+                    presentStart(.agentSession, in: row.ref)
+                }
+                Button("New Terminal", systemImage: "terminal") {
+                    presentStart(.terminal, in: row.ref)
                 }
             }
-            .disabled(!enabled || row.hasActiveSessions)
-            Divider()
-            Button("Delete…", systemImage: "trash", role: .destructive) {
-                deletingWorkspace = row
+            NavigatorActionButton(
+                systemImage: "archivebox",
+                help: row.hasActiveSessions ? "Stop active sessions before archiving" : "Archive workspace",
+                isEnabled: !row.hasActiveSessions
+            ) {
+                archiveWorkspace(row)
             }
-            .disabled(!enabled)
         }
+        .tag(ProjectsNavigatorSelection.workspace(row.ref))
+        .opacity(enabled ? 1 : Dimming.archived)
+        .contextMenu { workspaceMenu(row, enabled: enabled) }
     }
 
-    private func expansionBinding(for ref: ProjectRef) -> Binding<Bool> {
-        Binding(
-            get: { windowState.expandedProjects.contains(ref) },
-            set: { expanded in
-                if expanded { windowState.expandedProjects.insert(ref) }
-                else { windowState.expandedProjects.remove(ref) }
-            }
-        )
+    @ViewBuilder
+    private func workspaceMenu(
+        _ row: ProjectsNavigatorGroups.WorkspaceRow,
+        enabled: Bool
+    ) -> some View {
+        Button("Open", systemImage: "arrow.up.forward.square") {
+            _ = windowState.activateWorkspace(row.ref, in: appModel)
+        }
+        .disabled(!enabled)
+        Button("New Session", systemImage: "plus.bubble") {
+            presentStart(.agentSession, in: row.ref)
+        }
+        .disabled(!enabled)
+        Button("New Terminal", systemImage: "terminal") {
+            presentStart(.terminal, in: row.ref)
+        }
+        .disabled(!enabled)
+        Divider()
+        Button("Rename…", systemImage: "pencil") {
+            renameDraft = row.workspace.name
+            renamingWorkspace = row
+        }
+        .disabled(!enabled)
+        Button("Archive", systemImage: "archivebox") {
+            archiveWorkspace(row)
+        }
+        .disabled(!enabled || row.hasActiveSessions)
+        Divider()
+        Button("Delete…", systemImage: "trash", role: .destructive) {
+            deletingWorkspace = row
+        }
+        .disabled(!enabled)
+    }
+
+    private func presentStart(_ kind: StartSessionKind, in ref: WorkspaceRef) {
+        guard windowState.activateWorkspace(ref, in: appModel),
+              appModel.canStartSession(in: ref)
+        else { return }
+        windowState.startSessionKind = kind
+    }
+
+    private func archiveWorkspace(_ row: ProjectsNavigatorGroups.WorkspaceRow) {
+        guard let store = appModel.runtime(id: row.ref.connectionID)?.workspaces else { return }
+        run(on: row.ref.connectionID) {
+            try await store.archive(id: row.workspace.id)
+        }
     }
 
     private var selectionBinding: Binding<ProjectsNavigatorSelection?> {
@@ -338,7 +381,6 @@ struct ProjectsNavigatorView: View {
                 case .workspace(let ref):
                     if windowState.activeWorkspace != ref
                         || windowState.selectedContent == .dashboard {
-                        windowState.focusedWorkspace = ref
                         _ = windowState.activateWorkspace(ref, in: appModel)
                     }
                 case nil:

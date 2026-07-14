@@ -49,8 +49,6 @@ final class WindowState {
     var isInspectorPresented = false
 
     var expandedProjects: Set<ProjectRef> = []
-    var focusedProject: ProjectRef?
-    var focusedWorkspace: WorkspaceRef?
 
     var isCreateProjectPresented = false
     var createWorkspaceContext: CreateWorkspaceContext?
@@ -85,8 +83,13 @@ final class WindowState {
     @discardableResult
     func activateWorkspace(_ ref: WorkspaceRef, in appModel: AppModel) -> Bool {
         guard let runtime = appModel.runtime(id: ref.connectionID),
-              runtime.workspaces.workspace(id: ref.workspaceID) != nil
+              let workspace = runtime.workspaces.workspace(id: ref.workspaceID)
         else { return false }
+
+        expandedProjects.insert(ProjectRef(
+            connectionID: ref.connectionID,
+            projectID: workspace.projectId
+        ))
 
         // Re-selecting the current Workspace is normally idempotent, but from
         // Dashboard it is also the expected way back into that Workspace.
