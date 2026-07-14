@@ -6,7 +6,9 @@ enum NavigatorMetrics {
     static let rowHeight: CGFloat = 28
     static let iconWidth: CGFloat = 18
     static let actionSize: CGFloat = 22
+    static let contentHorizontalPadding = Spacing.sm
     static let rowVerticalInset: CGFloat = 1
+    static let selectorToContentSpacing = Spacing.lg
     static let nestedIndent: CGFloat = iconWidth + Spacing.sm
 }
 
@@ -196,11 +198,12 @@ extension View {
     }
 
     func navigatorSurface(isActive: Bool) -> some View {
-        background {
-            if isActive {
-                RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
-                    .fill(.quaternary)
+        padding(.horizontal, NavigatorMetrics.contentHorizontalPadding)
+            .background {
+                if isActive {
+                    RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                        .fill(.quaternary)
+                }
             }
-        }
     }
 }

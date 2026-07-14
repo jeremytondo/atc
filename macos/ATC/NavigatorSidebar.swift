@@ -50,7 +50,7 @@ struct NavigatorSelector: View {
             style: .continuous
         ))
         .padding(.horizontal, Spacing.md)
-        .padding(.vertical, Spacing.sm)
+        .padding(.bottom, NavigatorMetrics.selectorToContentSpacing)
     }
 }
 
