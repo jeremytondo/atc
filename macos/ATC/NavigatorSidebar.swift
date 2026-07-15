@@ -21,6 +21,32 @@ struct NavigatorSidebar: View {
     }
 }
 
+extension NavigatorID {
+    var selectorLabel: String {
+        switch self {
+        case .projects: "Projects"
+        case .workspace: "Workspace"
+        case .file: "Files"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .projects: "Projects Navigator"
+        case .workspace: "Workspace Navigator"
+        case .file: "File Navigator"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .projects: "folder"
+        case .workspace: "rectangle.stack"
+        case .file: "doc.text"
+        }
+    }
+}
+
 /// Native segmented navigation in an inset system surface, matching the
 /// hierarchy and interaction model of Xcode's Navigator selector.
 struct NavigatorSelector: View {
@@ -33,7 +59,8 @@ struct NavigatorSelector: View {
         )
         Picker("Navigator", selection: $selection) {
             ForEach(options) { option in
-                Image(systemName: option.id.systemImage)
+                Label(option.id.selectorLabel, systemImage: option.id.systemImage)
+                    .labelStyle(.titleAndIcon)
                     .accessibilityLabel(option.id.label)
                     .help(option.help)
                     .tag(option.id)
@@ -44,13 +71,8 @@ struct NavigatorSelector: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .controlSize(.regular)
+        .controlSize(.large)
         .tint(.accentColor)
-        .padding(2)
-        .background(.quaternary, in: RoundedRectangle(
-            cornerRadius: Radius.control,
-            style: .continuous
-        ))
         .padding(.horizontal, Spacing.md)
         .padding(.bottom, NavigatorMetrics.selectorToContentSpacing)
     }

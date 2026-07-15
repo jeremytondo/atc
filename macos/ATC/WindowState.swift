@@ -6,22 +6,6 @@ enum NavigatorID: String, CaseIterable, Sendable {
     case projects
     case workspace
     case file
-
-    var label: String {
-        switch self {
-        case .projects: "Projects Navigator"
-        case .workspace: "Workspace Navigator"
-        case .file: "File Navigator"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .projects: "folder"
-        case .workspace: "rectangle.stack"
-        case .file: "doc.text"
-        }
-    }
 }
 
 enum MainContentSelection: Equatable, Sendable {
