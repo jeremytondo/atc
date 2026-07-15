@@ -151,7 +151,7 @@ DEV-38 is the first architectural slice of this brief rather than a terminal-spe
 3. Verify that recognized atc bindings are consumed exactly once and unrelated terminal input is forwarded unchanged.
 4. Add configuration layering, the resolved keymap, leader sequences, menu synchronization, reload, diagnostics, and hint presentation without replacing the routing seam established by DEV-38.
 
-The pre-MVP app currently assigns `Cmd-T` to New Terminal even though this brief gives `terminal.new` no compiled binding. The DEV-38 slice should preserve that existing shortcut while repairing routing so it does not mix a bug fix with a default-keymap change. The configurable-keybindings MVP must then deliberately confirm whether `Cmd-T` remains a compiled default or is removed as currently specified.
+The pre-MVP app already ships `Cmd-T` (New Terminal) and `Cmd-Shift-N` (New Workspace). The DEV-38 slice preserves both while repairing routing so it does not mix a bug fix with a default-keymap change. Resolved: both remain compiled defaults in the MVP — removing working shortcuts is a UX regression with no offsetting benefit now that a user can unbind them in `config.toml` (see the implementation spec's Resolved Decision 1). `project.new` stays menu-only.
 
 ## Configuration Reload and Diagnostics
 

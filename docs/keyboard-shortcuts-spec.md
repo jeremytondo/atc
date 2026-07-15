@@ -1,6 +1,6 @@
 # Configurable Keyboard Shortcuts Implementation Spec
 
-Status: Draft v1
+Status: Draft v2 — reconciled against the current `macos/` sources and the updated brief
 
 Scope: the command registry, configurable keybindings, per-window keyboard
 routing, leader sequences, and menu synchronization described in
@@ -112,7 +112,7 @@ this refactor changes no behavior:
 
 | Command | Perform | Availability (reason when unavailable) |
 |---|---|---|
-| `view.toggle-sidebar` | `windowState.toggleSidebar()` | `route == .workspace` — "Requires an open Workspace" |
+| `view.toggle-sidebar` | `windowState.toggleSidebar()` | always available — the stable root split view makes it meaningful everywhere |
 | `session.new` | `windowState.startSessionKind = .agentSession` | `windowState.canStartSession(in:)` — "Requires an open Workspace on a reachable Connection" |
 | `terminal.new` | `windowState.startSessionKind = .terminal` | same as `session.new` |
 | `workspace.new` | `windowState.presentCreateWorkspace(in:)` | `!appModel.runtimes.isEmpty` — "Requires a configured Connection" |
@@ -214,7 +214,8 @@ clear_default_keybindings = false # boolean
 Unknown keys inside `[keyboard]` produce a warning diagnostic and are
 ignored. Unknown top-level tables are ignored **without** diagnostics —
 `config.toml` is atc's general config file and other subsystems will add
-tables later.
+tables later. (The server reads the sibling `atc.toml` in the same
+directory; the two files never share keys.)
 
 ### Parser: a deliberate TOML subset
 
@@ -369,8 +370,9 @@ launch.
 projection of the registry — each item invokes `CommandRegistry.execute`
 and owns no behavior:
 
-- **File** (`CommandGroup(replacing: .newItem)`): New Project…, New
-  Workspace…, New Session, New Terminal.
+- **File** (`CommandGroup(replacing: .newItem)`): New Session, New
+  Terminal, then New Workspace…, New Project… — the shipped order and
+  divider, unchanged by the refactor.
 - **View** (`CommandGroup(after: .sidebar)`): Toggle Sidebar, Refresh.
 - **atc application menu** (`CommandGroup(after: .appSettings)`): Reload
   Configuration, adjacent to Settings.
@@ -534,12 +536,15 @@ All three are new lightweight SwiftUI views in
 
 ## 10. Removed and Replaced Code
 
-- `AppCommands.swift`: all seven hard-coded button closures and their
+- `AppCommands.swift`: all six hard-coded button closures and their
   static `.keyboardShortcut` literals are replaced by registry projection
   (§7). The behavior table in §2 is the contract that nothing user-visible
   changes in the refactor step.
 - No other code is removed. `WindowState.canStartSession(in:)` and
   `presentCreateWorkspace(in:)` are reused as-is by descriptors.
+- The Dashboard back button's `cmd+↑` toolbar shortcut in `RootView` stays
+  a plain SwiftUI key equivalent outside the registry: named keys are not
+  parseable triggers in the MVP, so no configuration can collide with it.
 
 ## 11. Test Plan
 
@@ -634,7 +639,7 @@ Steps 1–3 are DEV-38; the brief's numbered sequence maps onto them.
    bindings, but both shortcuts already shipped in `AppCommands`; removing
    working shortcuts is a UX regression with no offsetting benefit now that
    a user can `"cmd+t" = "unbind"` themselves. `project.new` remains
-   menu-only. Deviation from the brief's MVP binding list, documented here.
+   menu-only. The brief has been updated to record this decision.
 2. **Hand-written TOML subset over a dependency** — order preservation and
    line-precise diagnostics are requirements no ergonomic Swift TOML
    library guarantees, and the accepted grammar is deliberately tiny (§4).
