@@ -19,7 +19,7 @@ final class SessionsStore {
     }
 
     /// Always includes archived sessions; surfaces filter locally (the
-    /// Workspace shell's Archived toggle).
+    /// Workspace Navigator's Archived toggle).
     private(set) var sessions: [Session] = []
     private(set) var isLoading = false
     private(set) var hasLoadedOnce = false

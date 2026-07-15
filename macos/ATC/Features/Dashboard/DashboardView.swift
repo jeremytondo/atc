@@ -1,10 +1,9 @@
+import AppKit
 import SwiftUI
 import ATCAPI
 
-/// The launch surface: every Connection's Projects and Workspaces, for
-/// finding, creating, and opening Workspaces. Rendered as an opaque cover
-/// over the (possibly mounted) Workspace shell; opening a Workspace routes
-/// the window to the shell without tearing this down.
+/// App-wide Project and Workspace management rendered as a main-content
+/// destination inside the stable window split view.
 struct DashboardView: View {
     @Environment(AppModel.self) private var appModel
     /// Opens a Workspace in the shell.
@@ -12,9 +11,11 @@ struct DashboardView: View {
     /// Presents the create-Workspace sheet fixed to a Project.
     var onCreateWorkspace: (ProjectRef) -> Void
     var onCreateProject: () -> Void
+    /// Clears window selection memory for a deleted Workspace.
+    var onWorkspaceDeleted: (WorkspaceRef) -> Void
 
     @State private var showArchived = false
-    /// Keyboard focus for arrow-key navigation; Return opens it.
+    /// Keyboard focus over workspace rows: arrows move, Return opens.
     @State private var focusedWorkspace: WorkspaceRef?
     @State private var renamingWorkspace: DashboardGroups.WorkspaceRow?
     @State private var renamingProject: DashboardGroups.ProjectCard?
@@ -24,7 +25,7 @@ struct DashboardView: View {
     @State private var actionError: String?
 
     var body: some View {
-        // One pass over the runtimes per render; the List indexes into it.
+        // One pass over the runtimes per render; sections reuse the result.
         let groups = DashboardGroups(
             inputs: appModel.runtimes.map {
                 DashboardGroups.ConnectionInput(
@@ -36,49 +37,47 @@ struct DashboardView: View {
             },
             showArchived: showArchived
         )
-        List(selection: $focusedWorkspace) {
-            ForEach(groups.sections) { section in
-                Section {
-                    ForEach(section.cards) { card in
-                        projectCard(card, reachable: isReachable(section.connectionID))
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: Spacing.xxl) {
+                    ForEach(groups.sections) { section in
+                        connectionSection(section)
                     }
-                    if section.cards.isEmpty {
-                        Text("No projects")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-                } header: {
-                    connectionHeader(section)
                 }
+                .frame(maxWidth: 1_280, alignment: .leading)
+                .padding(.horizontal, Spacing.xxl)
+                .padding(.vertical, Spacing.xxl)
+                .frame(maxWidth: .infinity, alignment: .top)
             }
+            .focusable()
+            .focusEffectDisabled()
+            .onKeyPress(.downArrow) { moveFocus(1, through: groups.workspaceRefs, proxy: proxy) }
+            .onKeyPress(.upArrow) { moveFocus(-1, through: groups.workspaceRefs, proxy: proxy) }
+            .onKeyPress(.return) { openFocusedWorkspace() }
         }
-        .onKeyPress(.return) {
-            guard let ref = focusedWorkspace, isReachable(ref.connectionID) else {
-                return .ignored
-            }
-            onOpenWorkspace(ref)
-            return .handled
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            HStack {
-                Text("Workspaces")
-                    .font(.headline)
-                Spacer()
-                Toggle("Show Archived", isOn: $showArchived)
-                    .toggleStyle(.checkbox)
-                Button("New Project…") { onCreateProject() }
-                    .disabled(appModel.runtimes.isEmpty)
-                Button {
-                    Task { await appModel.refreshAll() }
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Menu {
+                    Toggle("Show Archived", isOn: $showArchived)
+                    Divider()
+                    Button("Refresh", systemImage: "arrow.clockwise") {
+                        Task { await appModel.refreshAll() }
+                    }
                 } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    Label("Dashboard Options", systemImage: "ellipsis.circle")
                 }
                 .labelStyle(.iconOnly)
-                .help("Refresh projects, workspaces, and sessions")
+                .help("Dashboard options")
+
+                Button {
+                    onCreateProject()
+                } label: {
+                    Label("New Project", systemImage: "plus")
+                }
+                .labelStyle(.iconOnly)
+                .disabled(!canCreateProject)
+                .help("New project")
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(.bar)
         }
         .overlay {
             if appModel.runtimes.isEmpty {
@@ -95,10 +94,15 @@ struct DashboardView: View {
             Button("Rename") {
                 if let row = renamingWorkspace, let store = workspacesStore(for: row.ref.connectionID) {
                     let trimmed = renameDraft.trimmingCharacters(in: .whitespaces)
-                    run { try await store.rename(id: row.workspace.id, name: trimmed) }
+                    appModel.run(on: row.ref.connectionID, reporting: $actionError) {
+                        try await store.rename(id: row.workspace.id, name: trimmed)
+                    }
                 }
             }
-            .disabled(renameDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+            .disabled(
+                renameDraft.trimmingCharacters(in: .whitespaces).isEmpty
+                    || !(renamingWorkspace.map { canMutate($0.ref.connectionID) } ?? false)
+            )
             Button("Cancel", role: .cancel) {}
         }
         .alert("Rename Project", isPresented: Binding(
@@ -110,10 +114,15 @@ struct DashboardView: View {
                 if let card = renamingProject,
                    let store = appModel.runtime(id: card.ref.connectionID)?.projects {
                     let trimmed = renameDraft.trimmingCharacters(in: .whitespaces)
-                    run { try await store.rename(id: card.project.id, name: trimmed) }
+                    appModel.run(on: card.ref.connectionID, reporting: $actionError) {
+                        try await store.rename(id: card.project.id, name: trimmed)
+                    }
                 }
             }
-            .disabled(renameDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+            .disabled(
+                renameDraft.trimmingCharacters(in: .whitespaces).isEmpty
+                    || !(renamingProject.map { canMutate($0.ref.connectionID) } ?? false)
+            )
             Button("Cancel", role: .cancel) {}
         }
         .confirmationDialog(
@@ -128,6 +137,7 @@ struct DashboardView: View {
                     deleteWorkspace(row)
                 }
             }
+            .disabled(!(deletingWorkspace.map { canMutate($0.ref.connectionID) } ?? false))
         } message: {
             if let row = deletingWorkspace {
                 Text(DeleteConfirmation.workspaceMessage(
@@ -147,102 +157,198 @@ struct DashboardView: View {
             Button("Delete Project", role: .destructive) {
                 if let card = deletingProject,
                    let store = appModel.runtime(id: card.ref.connectionID)?.projects {
-                    run { try await store.delete(id: card.project.id) }
+                    appModel.run(on: card.ref.connectionID, reporting: $actionError) {
+                        try await store.delete(id: card.project.id)
+                    }
                 }
             }
+            .disabled(!(deletingProject.map { canMutate($0.ref.connectionID) } ?? false))
         } message: {
             if let card = deletingProject {
                 Text(DeleteConfirmation.projectMessage(name: card.project.name))
             }
         }
-        .alert("Action Failed", isPresented: Binding(
-            get: { actionError != nil },
-            set: { if !$0 { actionError = nil } }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(actionError ?? "")
-        }
+        .actionErrorAlert($actionError)
     }
 
     // MARK: - Connection section
 
-    @ViewBuilder
-    private func connectionHeader(_ section: DashboardGroups.Section) -> some View {
+    private func connectionSection(_ section: DashboardGroups.Section) -> some View {
         let reachability = appModel.reachability(of: section.connectionID)
-        HStack(spacing: 6) {
-            Circle()
-                .fill(reachability.color)
-                .frame(width: 7, height: 7)
-            Text(section.connectionName)
-            Text(section.contextLabel)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if reachability == .unreachable {
-                Image(systemName: "cable.connector.slash")
-                    .foregroundStyle(.secondary)
-                Button("Retry") {
-                    if let runtime = appModel.runtime(id: section.connectionID) {
-                        Task { await runtime.refresh() }
-                    }
+        return VStack(alignment: .leading, spacing: Spacing.md) {
+            HStack(spacing: Spacing.sm) {
+                StatusDot(color: reachability.color)
+
+                Text(section.connectionName)
+                    .font(.title3.weight(.semibold))
+
+                TagBadge(
+                    text: section.contextLabel == "Local" ? "LOCAL" : "REMOTE",
+                    monospaced: true
+                )
+
+                if section.contextLabel != "Local" {
+                    Text("·  \(section.contextLabel)")
+                        .foregroundStyle(.tertiary)
                 }
-                .buttonStyle(.link)
-                .font(.caption)
+
+                Text("·  \(projectCountLabel(section.cards.count))")
+                    .foregroundStyle(.tertiary)
+
+                Spacer()
+
+                if reachability == .unreachable {
+                    Button("Retry", systemImage: "arrow.clockwise") {
+                        if let runtime = appModel.runtime(id: section.connectionID) {
+                            Task { await runtime.refresh() }
+                        }
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .help("Retry \(section.connectionName)")
+                }
             }
-            Spacer()
+
+            VStack(spacing: Spacing.md) {
+                ForEach(section.cards) { card in
+                    projectCard(
+                        card,
+                        reachable: canMutate(section.connectionID),
+                        // Opening is local navigation over cached data; only
+                        // a confirmed-unreachable Connection blocks it.
+                        canOpen: reachability != .unreachable
+                    )
+                }
+
+                if section.cards.isEmpty {
+                    Text("No projects")
+                        .font(.callout)
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, minHeight: 72, alignment: .center)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: Radius.card)
+                                .stroke(
+                                    Color(nsColor: .separatorColor),
+                                    style: StrokeStyle(lineWidth: 1, dash: [5, 4])
+                                )
+                        }
+                }
+            }
         }
     }
 
     // MARK: - Project card
 
     @ViewBuilder
-    private func projectCard(_ card: DashboardGroups.ProjectCard, reachable: Bool) -> some View {
-        let project = card.project
-        Group {
-            HStack(spacing: 6) {
-                Label {
-                    Text(project.name)
-                        .lineLimit(1)
-                } icon: {
-                    Image(systemName: project.isArchived ? "archivebox" : "folder")
-                }
-                Text(project.workingDir)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.head)
-                Spacer(minLength: 4)
-                if !project.isArchived {
-                    Button {
-                        onCreateWorkspace(card.ref)
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .disabled(!reachable)
-                    .help("New workspace in \(project.name)")
-                }
-            }
-            .opacity(project.isArchived ? 0.5 : 1)
-            .contextMenu { projectMenu(card, reachable: reachable) }
+    private func projectCard(
+        _ card: DashboardGroups.ProjectCard,
+        reachable: Bool,
+        canOpen: Bool
+    ) -> some View {
+        if card.rows.isEmpty && !card.project.isArchived {
+            emptyProjectCard(card, reachable: reachable)
+        } else {
+            VStack(spacing: 0) {
+                projectHeader(card, reachable: reachable)
 
-            ForEach(card.rows) { row in
-                workspaceRow(row, project: project, reachable: reachable)
+                if !card.rows.isEmpty {
+                    Divider()
+                    ForEach(Array(card.rows.enumerated()), id: \.element.id) { index, row in
+                        workspaceRow(row, reachable: reachable, canOpen: canOpen)
+                            .id(row.ref)
+                        if index < card.rows.count - 1 {
+                            Divider()
+                        }
+                    }
+                }
             }
-            if card.rows.isEmpty && !project.isArchived {
-                // Quiet inline row, not a full empty-state panel.
+            .background(Color(nsColor: .controlBackgroundColor), in: cardShape)
+            .overlay {
+                cardShape.stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+            }
+            .clipShape(cardShape)
+            .opacity(card.project.isArchived ? Dimming.archived : 1)
+        }
+    }
+
+    private func projectHeader(
+        _ card: DashboardGroups.ProjectCard,
+        reachable: Bool
+    ) -> some View {
+        HStack(spacing: Spacing.sm) {
+            Text(card.project.name)
+                .font(.headline)
+                .lineLimit(1)
+
+            Text(card.project.workingDir)
+                .font(.callout.monospaced())
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .truncationMode(.head)
+
+            if card.project.isArchived {
+                TagBadge(text: "Archived")
+            }
+
+            Spacer(minLength: Spacing.md)
+
+            if !card.project.isArchived {
                 Button {
                     onCreateWorkspace(card.ref)
                 } label: {
                     Label("New Workspace", systemImage: "plus")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .labelStyle(.iconOnly)
+                        .frame(width: 22, height: 22)
                 }
-                .buttonStyle(.plain)
-                .padding(.leading, 24)
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
                 .disabled(!reachable)
+                .help("New workspace in \(card.project.name)")
             }
+        }
+        .padding(.horizontal, Spacing.lg)
+        .frame(minHeight: 54)
+        .contentShape(Rectangle())
+        .contextMenu { projectMenu(card, reachable: reachable) }
+    }
+
+    private func emptyProjectCard(
+        _ card: DashboardGroups.ProjectCard,
+        reachable: Bool
+    ) -> some View {
+        HStack(spacing: Spacing.sm) {
+            Text(card.project.name)
+                .font(.headline)
+                .lineLimit(1)
+
+            Text(card.project.workingDir)
+                .font(.callout.monospaced())
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .truncationMode(.head)
+
+            Text("No workspaces yet")
+                .font(.callout)
+                .foregroundStyle(.tertiary)
+                .italic()
+
+            Spacer(minLength: Spacing.md)
+
+            Button("New Workspace", systemImage: "plus") {
+                onCreateWorkspace(card.ref)
+            }
+            .buttonStyle(.bordered)
+            .disabled(!reachable)
+        }
+        .padding(.horizontal, Spacing.lg)
+        .frame(minHeight: 72)
+        .contentShape(Rectangle())
+        .contextMenu { projectMenu(card, reachable: reachable) }
+        .overlay {
+            cardShape.stroke(
+                Color(nsColor: .separatorColor),
+                style: StrokeStyle(lineWidth: 1, dash: [5, 4])
+            )
         }
     }
 
@@ -258,27 +364,33 @@ struct DashboardView: View {
                 renameDraft = project.name
                 renamingProject = card
             }
+            .disabled(!reachable)
             Divider()
             // Mirrors the server rule: archive only once every Workspace
             // is archived. A stale view still gets the 409 via the alert.
             Button("Archive Project", systemImage: "archivebox") {
                 if let store = appModel.runtime(id: card.ref.connectionID)?.projects {
-                    run { try await store.archive(id: project.id) }
+                    appModel.run(on: card.ref.connectionID, reporting: $actionError) {
+                        try await store.archive(id: project.id)
+                    }
                 }
             }
-            .disabled(card.hasUnarchivedWorkspaces)
+            .disabled(!reachable || card.hasUnarchivedWorkspaces)
         } else {
             Button("Unarchive Project", systemImage: "archivebox") {
                 if let store = appModel.runtime(id: card.ref.connectionID)?.projects {
-                    run { try await store.unarchive(id: project.id) }
+                    appModel.run(on: card.ref.connectionID, reporting: $actionError) {
+                        try await store.unarchive(id: project.id)
+                    }
                 }
             }
+            .disabled(!reachable)
         }
         Divider()
         Button("Delete Project…", systemImage: "trash", role: .destructive) {
             deletingProject = card
         }
-        .disabled(card.totalWorkspaceCount > 0)
+        .disabled(!reachable || card.totalWorkspaceCount > 0)
         .help(card.totalWorkspaceCount > 0 ? "Delete all Workspaces first" : "")
     }
 
@@ -287,63 +399,78 @@ struct DashboardView: View {
     @ViewBuilder
     private func workspaceRow(
         _ row: DashboardGroups.WorkspaceRow,
-        project: Project,
-        reachable: Bool
+        reachable: Bool,
+        canOpen: Bool
     ) -> some View {
         let workspace = row.workspace
-        HStack(spacing: 6) {
-            Image(systemName: "square.on.square")
-                .foregroundStyle(.secondary)
-                .font(.caption)
-            Text(workspace.name)
-                .lineLimit(1)
-            if workspace.isArchived {
-                Text("Archived")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(.quaternary.opacity(0.5), in: Capsule())
+        Button {
+            onOpenWorkspace(row.ref)
+        } label: {
+            HStack(spacing: Spacing.md) {
+                StatusDot(color: .green, hollow: !row.hasActiveSessions)
+
+                Text(workspace.name)
+                    .font(.body.monospaced())
+                    .lineLimit(1)
+
+                if workspace.isArchived {
+                    TagBadge(text: "Archived")
+                }
+
+                Spacer()
+
+                Text(workspaceStatus(row))
+                    .font(.callout)
+                    .foregroundStyle(.tertiary)
             }
-            Spacer()
+            .padding(.horizontal, Spacing.lg)
+            .frame(minHeight: 48)
+            .contentShape(Rectangle())
         }
-        .padding(.leading, 20)
-        .opacity(workspace.isArchived ? 0.5 : 1)
-        .tag(row.ref)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            focusedWorkspace = row.ref
-            if reachable { onOpenWorkspace(row.ref) }
-        }
+        .buttonStyle(.plain)
+        .background(
+            focusedWorkspace == row.ref
+                ? Color(nsColor: .quaternarySystemFill)
+                : .clear
+        )
+        .disabled(!canOpen)
+        .opacity(workspace.isArchived ? Dimming.archived : 1)
         .contextMenu {
             Button("Open", systemImage: "arrow.up.forward.square") {
                 onOpenWorkspace(row.ref)
             }
-            .disabled(!reachable)
+            .disabled(!canOpen)
             Button("Rename…", systemImage: "pencil") {
                 renameDraft = workspace.name
                 renamingWorkspace = row
             }
+            .disabled(!reachable)
             Divider()
             if workspace.isArchived {
                 Button("Unarchive", systemImage: "archivebox") {
                     if let store = workspacesStore(for: row.ref.connectionID) {
-                        run { try await store.unarchive(id: workspace.id) }
+                        appModel.run(on: row.ref.connectionID, reporting: $actionError) {
+                            try await store.unarchive(id: workspace.id)
+                        }
                     }
                 }
+                .disabled(!reachable)
             } else {
                 // Mirrors the server rule: no archiving with active sessions.
                 Button("Archive", systemImage: "archivebox") {
                     if let store = workspacesStore(for: row.ref.connectionID) {
-                        run { try await store.archive(id: workspace.id) }
+                        appModel.run(on: row.ref.connectionID, reporting: $actionError) {
+                            try await store.archive(id: workspace.id)
+                        }
                     }
                 }
-                .disabled(row.hasActiveSessions)
+                .disabled(!reachable || row.hasActiveSessions)
             }
             Divider()
             Button("Delete…", systemImage: "trash", role: .destructive) {
                 deletingWorkspace = row
             }
+            .disabled(!reachable)
         }
     }
 
@@ -369,6 +496,9 @@ struct DashboardView: View {
             Text("Create a project to start working in a codebase.")
         } actions: {
             Button("New Project") { onCreateProject() }
+                .disabled(!appModel.runtimes.contains {
+                    appModel.canMutate(connectionID: $0.id)
+                })
         }
         .background()
     }
@@ -381,8 +511,47 @@ struct DashboardView: View {
 
     // MARK: - Helpers
 
-    private func isReachable(_ connectionID: UUID) -> Bool {
-        appModel.reachability(of: connectionID) != .unreachable
+    private var cardShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+    }
+
+    private var canCreateProject: Bool {
+        appModel.runtimes.contains { appModel.canMutate(connectionID: $0.id) }
+    }
+
+    private func projectCountLabel(_ count: Int) -> String {
+        "\(count) \(count == 1 ? "project" : "projects")"
+    }
+
+    private func workspaceStatus(_ row: DashboardGroups.WorkspaceRow) -> String {
+        if row.hasActiveSessions { return "active now" }
+        return row.workspace.updatedAt.formatted(.relative(presentation: .numeric))
+    }
+
+    private func canMutate(_ connectionID: UUID) -> Bool {
+        appModel.canMutate(connectionID: connectionID)
+    }
+
+    // MARK: - Keyboard navigation
+
+    private func moveFocus(
+        _ delta: Int,
+        through refs: [WorkspaceRef],
+        proxy: ScrollViewProxy
+    ) -> KeyPress.Result {
+        guard !refs.isEmpty else { return .ignored }
+        let current = focusedWorkspace.flatMap { refs.firstIndex(of: $0) }
+        let next = current.map { max(0, min(refs.count - 1, $0 + delta)) }
+            ?? (delta > 0 ? 0 : refs.count - 1)
+        focusedWorkspace = refs[next]
+        proxy.scrollTo(refs[next])
+        return .handled
+    }
+
+    private func openFocusedWorkspace() -> KeyPress.Result {
+        guard let focusedWorkspace else { return .ignored }
+        onOpenWorkspace(focusedWorkspace)
+        return .handled
     }
 
     private func workspacesStore(for connectionID: UUID) -> WorkspacesStore? {
@@ -390,26 +559,21 @@ struct DashboardView: View {
     }
 
     private func deleteWorkspace(_ row: DashboardGroups.WorkspaceRow) {
-        run {
-            guard let store = workspacesStore(for: row.ref.connectionID) else { return }
+        guard let store = workspacesStore(for: row.ref.connectionID) else { return }
+        appModel.run(on: row.ref.connectionID, reporting: $actionError) {
             try await store.delete(id: row.workspace.id)
-            WorkspaceSelectionMemory().forget(workspaceID: row.workspace.id)
-        }
-    }
-
-    private func run(_ operation: @escaping () async throws -> Void) {
-        Task {
-            do {
-                try await operation()
-            } catch {
-                actionError = error.localizedDescription
-            }
+            onWorkspaceDeleted(row.ref)
         }
     }
 }
 
 #Preview {
-    DashboardView(onOpenWorkspace: { _ in }, onCreateWorkspace: { _ in }, onCreateProject: {})
+    DashboardView(
+        onOpenWorkspace: { _ in },
+        onCreateWorkspace: { _ in },
+        onCreateProject: {},
+        onWorkspaceDeleted: { _ in }
+    )
         .environment(AppModel.preview())
         .preferredColorScheme(.dark)
 }

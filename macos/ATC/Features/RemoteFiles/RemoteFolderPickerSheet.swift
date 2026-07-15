@@ -41,7 +41,7 @@ struct RemoteFolderPickerSheet: View {
     // MARK: - Header (path field, Up, breadcrumbs, error)
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
             HStack {
                 TextField("Path", text: $browser.typedPath, prompt: Text("/path/on/the/server"))
                     .textFieldStyle(.roundedBorder)
@@ -51,7 +51,7 @@ struct RemoteFolderPickerSheet: View {
                     .onSubmit { Task { await browser.commitTypedPath() } }
                 Button("Go") { Task { await browser.commitTypedPath() } }
             }
-            HStack(spacing: 8) {
+            HStack(spacing: Spacing.sm) {
                 Button {
                     Task { await browser.goUp() }
                 } label: {
@@ -68,12 +68,12 @@ struct RemoteFolderPickerSheet: View {
                     .lineLimit(2)
             }
         }
-        .padding(12)
+        .padding(Spacing.md)
     }
 
     private var breadcrumbBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 3) {
+            HStack(spacing: Spacing.xs) {
                 let crumbs = browser.breadcrumbs
                 ForEach(Array(crumbs.enumerated()), id: \.element.path) { index, crumb in
                     if index > 0 {
@@ -110,7 +110,7 @@ struct RemoteFolderPickerSheet: View {
             .keyboardShortcut(.defaultAction)
             .disabled(browser.currentPath == nil)
         }
-        .padding(12)
+        .padding(Spacing.md)
     }
 }
 
@@ -140,15 +140,15 @@ private struct DirectoryListPane: View {
     var body: some View {
         VStack(spacing: 0) {
             if browser.listing?.truncated == true {
-                HStack(spacing: 6) {
+                HStack(spacing: Spacing.sm) {
                     Image(systemName: "exclamationmark.triangle")
                     Text("Listing truncated at 10,000 entries")
                 }
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+                .padding(.horizontal, Spacing.md)
+                .padding(.vertical, Spacing.xs)
                 Divider()
             }
             List(selection: $browser.highlightedPath) {

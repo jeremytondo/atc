@@ -5,19 +5,19 @@ import ATCAPI
 /// Composite identity for a session: local Connection ID plus the server's
 /// record ID. Selection, the terminal registry, and every cross-Connection
 /// reference use these — never a bare server ID.
-struct SessionRef: Hashable {
+struct SessionRef: Hashable, Sendable {
     let connectionID: UUID
     let sessionID: String
 }
 
 /// Composite identity for a project (see `SessionRef`).
-struct ProjectRef: Hashable {
+struct ProjectRef: Hashable, Sendable {
     let connectionID: UUID
     let projectID: String
 }
 
 /// Composite identity for a workspace (see `SessionRef`).
-struct WorkspaceRef: Hashable {
+struct WorkspaceRef: Hashable, Sendable {
     let connectionID: UUID
     let workspaceID: String
 }

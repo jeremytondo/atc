@@ -9,7 +9,7 @@ struct CreateWorkspaceSheet: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
     let context: CreateWorkspaceContext
-    /// Called with the new Workspace's ref so the window routes to the shell.
+    /// Called with the new Workspace's ref so the window activates it.
     var onCreated: (WorkspaceRef) -> Void = { _ in }
 
     @State private var selectedProject: ProjectRef?
@@ -42,63 +42,49 @@ struct CreateWorkspaceSheet: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Form {
+        SheetScaffold(
+            title: "New Workspace",
+            systemImage: "square.on.square",
+            primaryLabel: "Create Workspace",
+            isBusy: isSubmitting,
+            canSubmit: canSubmit,
+            onCancel: { dismiss() },
+            onSubmit: { Task { await submit() } }
+        ) {
+            Section {
+                if isProjectFixed {
+                    LabeledContent("Project") {
+                        Text(fixedProjectName)
+                    }
+                } else {
+                    Picker("Project", selection: $selectedProject) {
+                        if selectedProject == nil {
+                            Text("Select Project").tag(nil as ProjectRef?)
+                        }
+                        ForEach(projectChoices, id: \.ref) { choice in
+                            Text(showsConnectionNames
+                                ? "\(choice.project.name) — \(choice.connectionName)"
+                                : choice.project.name)
+                                .tag(choice.ref as ProjectRef?)
+                        }
+                    }
+                }
+                TextField("Name", text: $name, prompt: Text("What are you working on?"))
+            } footer: {
+                Text("The workspace uses its project's directory on the workstation.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let message = submitError ?? availabilityError {
                 Section {
-                    if isProjectFixed {
-                        LabeledContent("Project") {
-                            Text(fixedProjectName)
-                        }
-                    } else {
-                        Picker("Project", selection: $selectedProject) {
-                            if selectedProject == nil {
-                                Text("Select Project").tag(nil as ProjectRef?)
-                            }
-                            ForEach(projectChoices, id: \.ref) { choice in
-                                Text(showsConnectionNames
-                                    ? "\(choice.project.name) — \(choice.connectionName)"
-                                    : choice.project.name)
-                                    .tag(choice.ref as ProjectRef?)
-                            }
-                        }
-                    }
-                    TextField("Name", text: $name, prompt: Text("What are you working on?"))
-                } footer: {
-                    Text("The workspace uses its project's directory on the workstation.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                if let message = submitError {
-                    Section {
-                        Label(message, systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.red)
-                            .font(.callout)
-                    }
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.red)
+                        .font(.callout)
                 }
             }
-            .formStyle(.grouped)
-
-            Divider()
-            HStack {
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Spacer()
-                Button {
-                    Task { await submit() }
-                } label: {
-                    if isSubmitting {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Text("Create Workspace")
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(!canSubmit)
-            }
-            .padding(12)
         }
-        .frame(width: 420, height: 240)
+        .frame(width: 460, height: 280)
         .onAppear {
             switch context.mode {
             case .fixed(let ref), .preselected(let ref):
@@ -118,13 +104,25 @@ struct CreateWorkspaceSheet: View {
 
     private var canSubmit: Bool {
         !isSubmitting
-            && selectedProject != nil
+            && (selectedProject.map { appModel.canCreateWorkspace(in: $0) } ?? false)
             && !name.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private var availabilityError: String? {
+        guard let selectedProject else { return nil }
+        guard appModel.canCreateWorkspace(in: selectedProject) else {
+            return "This project is archived or its connection is unavailable."
+        }
+        return nil
     }
 
     private func submit() async {
         guard let ref = selectedProject,
-              let runtime = appModel.runtime(id: ref.connectionID) else { return }
+              appModel.canCreateWorkspace(in: ref),
+              let runtime = appModel.runtime(id: ref.connectionID) else {
+            submitError = "This project is archived or its connection is unavailable."
+            return
+        }
         isSubmitting = true
         defer { isSubmitting = false }
         do {

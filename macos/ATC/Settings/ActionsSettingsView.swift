@@ -49,7 +49,7 @@ struct ActionsSettingsView: View {
                 Divider()
                 HStack(spacing: 0) {
                     master
-                        .frame(width: 260)
+                        .frame(width: 240)
                     Divider()
                     detail
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -82,7 +82,7 @@ struct ActionsSettingsView: View {
     // MARK: Header
 
     private var header: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Spacing.md) {
             Picker("Connection", selection: $connectionID) {
                 // The selection is nil until onAppear picks the first runtime
                 // (and dangles if that Connection is deleted); keep a matching
@@ -108,8 +108,8 @@ struct ActionsSettingsView: View {
                     .truncationMode(.tail)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, Spacing.md)
+        .padding(.vertical, Spacing.sm)
     }
 
     // MARK: Master list
@@ -119,20 +119,20 @@ struct ActionsSettingsView: View {
             List(selection: $target) {
                 if let store = runtime?.actions {
                     ForEach(store.actions) { action in
-                        HStack(spacing: 8) {
+                        HStack(spacing: Spacing.sm) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(action.displayLabel)
                                     .font(.headline)
                                     .lineLimit(1)
-                                HStack(spacing: 6) {
+                                HStack(spacing: Spacing.sm) {
                                     Text(action.name)
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                         .lineLimit(1)
-                                    ActionOriginBadge(origin: action.origin)
+                                    TagBadge(text: Self.originLabel(action.origin))
                                 }
                             }
-                            .opacity(action.enabled ? 1 : 0.5)
+                            .opacity(action.enabled ? 1 : Dimming.archived)
                             Spacer()
                             Toggle("Enabled", isOn: enabledBinding(for: action))
                                 .toggleStyle(.switch)
@@ -157,27 +157,13 @@ struct ActionsSettingsView: View {
                 }
             }
             Divider()
-            HStack(spacing: 2) {
-                Button {
-                    target = .new
-                } label: {
-                    Image(systemName: "plus")
-                        .frame(width: 24, height: 20)
-                }
-                .help("Add an action")
-                Button {
-                    confirmRemove = true
-                } label: {
-                    Image(systemName: "minus")
-                        .frame(width: 24, height: 20)
-                }
-                .help(minusHelp)
-                .disabled(selectedAction == nil || selectedAction?.isBuiltin == true)
-                Spacer()
-            }
-            .buttonStyle(.borderless)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            ListEditorBar(
+                addHelp: "Add an action",
+                removeHelp: minusHelp,
+                canRemove: selectedAction != nil && selectedAction?.isBuiltin != true,
+                onAdd: { target = .new },
+                onRemove: { confirmRemove = true }
+            )
         }
     }
 
@@ -205,6 +191,15 @@ struct ActionsSettingsView: View {
         let connectionID: UUID
         let target: ActionEditorTarget
         let generation: Int
+    }
+
+    /// Where an action's definition comes from, for its list badge.
+    private static func originLabel(_ origin: String) -> String {
+        switch origin {
+        case "builtin": "Built-in"
+        case "modified": "Modified"
+        default: "Custom"
+        }
     }
 
     // MARK: Mutations
@@ -255,28 +250,6 @@ struct ActionsSettingsView: View {
             } catch {
                 store.lastError = error.localizedDescription
             }
-        }
-    }
-}
-
-/// Small capsule showing where an action's definition comes from.
-private struct ActionOriginBadge: View {
-    let origin: String
-
-    var body: some View {
-        Text(label)
-            .font(.caption2.weight(.medium))
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(.quaternary, in: Capsule())
-            .foregroundStyle(.secondary)
-    }
-
-    private var label: String {
-        switch origin {
-        case "builtin": "Built-in"
-        case "modified": "Modified"
-        default: "Custom"
         }
     }
 }
@@ -371,7 +344,7 @@ private struct ActionEditorView: View {
                         .font(.body.monospaced())
                         .frame(minHeight: 44, maxHeight: 88)
                         .scrollContentBackground(.hidden)
-                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 4))
+                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Radius.control))
                 }
                 .help("One argument per line")
             } header: {
@@ -423,7 +396,7 @@ private struct ActionEditorView: View {
     }
 
     private var bottomBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Spacing.sm) {
             if let submitError {
                 Label(submitError, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
@@ -437,7 +410,7 @@ private struct ActionEditorView: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(!canSubmit)
         }
-        .padding(12)
+        .padding(Spacing.md)
     }
 
     // MARK: Actions
@@ -496,8 +469,8 @@ private struct ActionParamEditor: View {
 
     var body: some View {
         GroupBox {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: Spacing.sm) {
+                HStack(spacing: Spacing.sm) {
                     TextField("Name", text: $param.name, prompt: Text("model"))
                         .fontDesign(.monospaced)
                         .autocorrectionDisabled()
@@ -538,7 +511,7 @@ private struct ActionParamEditor: View {
                     .autocorrectionDisabled()
                 TextField("Label", text: $param.label, prompt: Text("Model"))
             }
-            .padding(4)
+            .padding(Spacing.xs)
         }
     }
 }

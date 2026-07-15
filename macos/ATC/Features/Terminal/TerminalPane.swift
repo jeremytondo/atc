@@ -10,7 +10,9 @@ struct TerminalPane: View {
 
     var body: some View {
         ZStack {
-            Color(red: 0.117, green: 0.117, blue: 0.180) // Mocha base, behind surface padding
+            // Catppuccin Mocha base: pairs with the Ghostty surface theme,
+            // not app chrome — keep this literal out of the design tokens.
+            Color(red: 0.117, green: 0.117, blue: 0.180)
             ForEach(refs, id: \.self) { ref in
                 if let controller = appModel.terminals[ref] {
                     TerminalHostView(controller: controller, focus: $focusedTerminal)
@@ -75,11 +77,13 @@ struct TerminalStatusBanner: View {
     }
 
     private func banner(@ViewBuilder content: () -> some View) -> some View {
-        HStack(spacing: 8, content: content)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(.regularMaterial, in: Capsule())
+        HStack(spacing: Spacing.sm, content: content)
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, Spacing.sm)
+            // The app's one floating overlay — the only Liquid Glass call
+            // outside what system components provide for free.
+            .glassEffect()
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .padding(.top, 16)
+            .padding(.top, Spacing.lg)
     }
 }

@@ -21,24 +21,24 @@ struct SessionContentView: View {
     let selectedSession: Session?
     var emptyState: EmptyStateActions?
 
-    @State private var showInspector = false
+    @Environment(WindowState.self) private var windowState
 
     var body: some View {
         VStack(spacing: 0) {
             if let ref = selectedRef, let session = selectedSession {
-                SessionHeaderBar(sessionRef: ref, session: session, showInspector: $showInspector)
+                SessionHeaderBar(
+                    sessionRef: ref,
+                    session: session,
+                    showInspector: Binding(
+                        get: { windowState.isInspectorPresented },
+                        set: { windowState.isInspectorPresented = $0 }
+                    )
+                )
                 Divider()
             }
             ZStack {
                 TerminalPane(visibleRef: selectedRef)
                 cover
-            }
-        }
-        .inspector(isPresented: $showInspector) {
-            if let ref = selectedRef, let session = selectedSession,
-               let client = appModel.runtime(id: ref.connectionID)?.client {
-                SessionDetailView(session: session, client: client)
-                    .inspectorColumnWidth(min: 260, ideal: 320)
             }
         }
     }
@@ -61,7 +61,11 @@ struct SessionContentView: View {
                     Text("The session is running on the server.")
                 } actions: {
                     Button("Connect") {
-                        appModel.attachIfNeeded(to: session, connectionID: ref.connectionID)
+                        appModel.attachIfNeeded(
+                            to: session,
+                            connectionID: ref.connectionID,
+                            retentionContext: windowState.retentionContext
+                        )
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -98,6 +102,7 @@ struct SessionContentView: View {
 /// Compact header: name, action label, status, session actions.
 struct SessionHeaderBar: View {
     @Environment(AppModel.self) private var appModel
+    @Environment(WindowState.self) private var windowState
     let sessionRef: SessionRef
     let session: Session
     @Binding var showInspector: Bool
@@ -109,6 +114,10 @@ struct SessionHeaderBar: View {
 
     private var isConnected: Bool {
         appModel.terminals[sessionRef]?.isActivelyAttached == true
+    }
+
+    private var canMutate: Bool {
+        appModel.canMutate(connectionID: sessionRef.connectionID)
     }
 
     private var canStop: Bool {
@@ -133,19 +142,14 @@ struct SessionHeaderBar: View {
     }
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Spacing.md) {
             StatusBadge(session: session, showLabel: true)
             Text(displayName)
                 .font(.headline)
                 .lineLimit(1)
             // What launched the session: "Claude", "Terminal", a custom
             // Action label.
-            Text(SessionKind.actionLabel(session: session, actions: actions))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(.quaternary.opacity(0.5), in: Capsule())
+            TagBadge(text: SessionKind.actionLabel(session: session, actions: actions))
             Text(session.workingDir)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -162,40 +166,50 @@ struct SessionHeaderBar: View {
                 Button("Stop", systemImage: "stop.circle") {
                     confirmStop = true
                 }
+                .disabled(!canMutate)
                 .help("Terminate this session")
             }
             if session.isArchived {
                 Button("Unarchive", systemImage: "archivebox") {
-                    Task { await run { try await sessionsStore?.unarchive(id: session.id) } }
+                    appModel.run(on: sessionRef.connectionID, reporting: $actionError) {
+                        try await sessionsStore?.unarchive(id: session.id)
+                    }
                 }
+                .disabled(!canMutate)
                 .help("Unarchive this session")
             } else {
                 Button("Archive", systemImage: "archivebox") {
                     confirmArchive = true
                 }
-                .disabled(!canArchive)
+                .disabled(!canArchive || !canMutate)
                 .help(canArchive ? "Archive this session" : "Stop the session before archiving")
             }
             Button("Delete", systemImage: "trash") {
                 confirmDelete = true
             }
+            .disabled(!canMutate)
             .help("Delete this session")
-            if isConnected {
-                Button("Info", systemImage: "sidebar.trailing") {
-                    showInspector.toggle()
-                }
-                .help("Show session metadata")
+            Button("Info", systemImage: "sidebar.trailing") {
+                showInspector.toggle()
             }
+            .help("Show session metadata")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        // The trailing actions read as one toolbar row: icon-only,
+        // borderless, discoverable through their .help strings.
+        .buttonStyle(.borderless)
+        .labelStyle(.iconOnly)
+        .padding(.horizontal, Spacing.md)
+        .padding(.vertical, Spacing.sm)
         .confirmationDialog(
             "Stop “\(displayName)”?",
             isPresented: $confirmStop
         ) {
             Button("Stop Session", role: .destructive) {
-                Task { await run { try await sessionsStore?.terminate(id: session.id) } }
+                appModel.run(on: sessionRef.connectionID, reporting: $actionError) {
+                    try await sessionsStore?.terminate(id: session.id)
+                }
             }
+            .disabled(!canMutate)
         } message: {
             Text("The process will be terminated. The session record is kept until archived.")
         }
@@ -204,8 +218,11 @@ struct SessionHeaderBar: View {
             isPresented: $confirmArchive
         ) {
             Button("Archive Session") {
-                Task { await run { try await sessionsStore?.archive(id: session.id) } }
+                appModel.run(on: sessionRef.connectionID, reporting: $actionError) {
+                    try await sessionsStore?.archive(id: session.id)
+                }
             }
+            .disabled(!canMutate)
         } message: {
             Text("Archived sessions are hidden behind the archived filter.")
         }
@@ -214,37 +231,23 @@ struct SessionHeaderBar: View {
             isPresented: $confirmDelete
         ) {
             Button("Delete Session", role: .destructive) {
-                Task { await deleteSession() }
+                deleteSession()
             }
+            .disabled(!canMutate)
         } message: {
             Text(DeleteConfirmation.sessionMessage(displayName: displayName))
         }
-        .alert("Session Action Failed", isPresented: Binding(
-            get: { actionError != nil },
-            set: { if !$0 { actionError = nil } }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(actionError ?? "")
-        }
+        .actionErrorAlert($actionError, title: "Session Action Failed")
     }
 
     /// Failure (stop error, 502) leaves the session and surfaces the alert.
-    private func deleteSession() async {
-        await run {
+    private func deleteSession() {
+        appModel.run(on: sessionRef.connectionID, reporting: $actionError) {
             try await sessionsStore?.delete(id: session.id)
             appModel.disconnectTerminal(ref: sessionRef)
-            if appModel.selection == sessionRef {
-                appModel.selection = nil
+            if windowState.selectedSession == sessionRef {
+                windowState.showWorkspaceEmpty()
             }
-        }
-    }
-
-    private func run(_ operation: () async throws -> Void) async {
-        do {
-            try await operation()
-        } catch {
-            actionError = error.localizedDescription
         }
     }
 }

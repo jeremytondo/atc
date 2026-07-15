@@ -7,10 +7,8 @@ struct StatusBadge: View {
     var showLabel = false
 
     var body: some View {
-        HStack(spacing: 4) {
-            Circle()
-                .fill(color)
-                .frame(width: 8, height: 8)
+        HStack(spacing: Spacing.xs) {
+            StatusDot(color: color)
             if showLabel {
                 Text(label)
                     .font(.caption)

@@ -107,6 +107,7 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
     private let failAll: Bool
     private var _failDeletes = false
     private var _failSessions = false
+    private var _failWorkspaces = false
     /// Session mutations persist as overrides on the inner fixtures, so
     /// the store's follow-up refreshes converge instead of resurrecting
     /// pre-mutation state.
@@ -124,6 +125,11 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
     var failSessions: Bool {
         get { lock.withLock { _failSessions } }
         set { lock.withLock { _failSessions = newValue } }
+    }
+
+    var failWorkspaces: Bool {
+        get { lock.withLock { _failWorkspaces } }
+        set { lock.withLock { _failWorkspaces = newValue } }
     }
 
     private let projects = [
@@ -161,7 +167,8 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
     }
 
     func workspaces(projectID: String?, includeArchived: Bool) async throws -> [Workspace] {
-        try withState { state in
+        if failWorkspaces { throw ATCError.badStatus(500) }
+        return try withState { state in
             state.filter {
                 (projectID == nil || $0.projectId == projectID)
                     && (includeArchived || !$0.isArchived)
@@ -255,6 +262,10 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
             .filter { !overrides.deleted.contains($0.id) }
             .map { session in
                 var session = session
+                if session.id == "ses_running" {
+                    session.workspace = SessionWorkspace(id: "wsp_a", name: "Alpha")
+                    session.project = SessionProject(id: "prj_one", name: "One")
+                }
                 if overrides.unarchived.contains(session.id) {
                     session.archivedAt = nil
                 }

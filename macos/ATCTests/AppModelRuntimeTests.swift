@@ -206,26 +206,22 @@ struct AppModelRuntimeTests {
         #expect(model.runtime(id: a.id) !== runtime)
     }
 
-    @Test("deleting a connection removes its runtime and clears its selection")
-    func deleteClearsOwnSelection() throws {
+    @Test("deleting a connection removes only its runtime")
+    func deleteRemovesOwnRuntime() throws {
         let (model, _) = makeModel()
         let a = try model.addConnection(name: "A", urlString: "http://a:1", token: "")
         let b = try model.addConnection(name: "B", urlString: "http://b:1", token: "")
-        model.selection = SessionRef(connectionID: a.id, sessionID: "ses_running")
         model.removeConnection(id: a.id)
         #expect(model.runtimes.map(\.id) == [b.id])
-        #expect(model.selection == nil)
     }
 
-    @Test("deleting a connection keeps a selection on another connection")
-    func deleteKeepsForeignSelection() throws {
+    @Test("deleting a connection keeps the other runtime")
+    func deleteKeepsForeignRuntime() throws {
         let (model, _) = makeModel()
         let a = try model.addConnection(name: "A", urlString: "http://a:1", token: "")
         let b = try model.addConnection(name: "B", urlString: "http://b:1", token: "")
-        let kept = SessionRef(connectionID: b.id, sessionID: "ses_running")
-        model.selection = kept
         model.removeConnection(id: a.id)
-        #expect(model.selection == kept)
+        #expect(model.runtime(id: b.id) != nil)
     }
 
     @Test("reachability: unknown → connected → unreachable → connected")
@@ -287,16 +283,14 @@ struct AppModelRuntimeTests {
         #expect(model.runtimes.count == 1)
     }
 
-    @Test("deleting a connection clears an open workspace pointing into it")
-    func deleteClearsOpenWorkspace() throws {
+    @Test("navigation snapshot drops a deleted connection")
+    func snapshotDropsDeletedConnection() throws {
         let (model, _) = makeModel()
         let a = try model.addConnection(name: "A", urlString: "http://a:1", token: "")
         let b = try model.addConnection(name: "B", urlString: "http://b:1", token: "")
-        model.openWorkspace = WorkspaceRef(connectionID: a.id, workspaceID: "wsp_parser")
+        #expect(model.windowNavigationSnapshot().connections.map(\.id) == [a.id, b.id])
         model.removeConnection(id: b.id)
-        #expect(model.openWorkspace != nil)
-        model.removeConnection(id: a.id)
-        #expect(model.openWorkspace == nil)
+        #expect(model.windowNavigationSnapshot().connections.map(\.id) == [a.id])
     }
 
     @Test("runtime refresh loads workspaces and actions alongside projects and sessions")

@@ -1,7 +1,7 @@
 import SwiftUI
 import ATCAPI
 
-/// The New Session / New Terminal sheet, always scoped to the active open
+/// The New Session / New Terminal sheet, always scoped to the Active
 /// Workspace. New Session picks among enabled Agent Actions; New Terminal
 /// offers the Interactive Shell (default) plus enabled general Actions. No
 /// prompt field, no params UI, no Environment picker — the server default
@@ -14,7 +14,7 @@ struct StartWorkspaceSessionSheet: View {
     @Environment(\.dismiss) private var dismiss
     let kind: StartSessionKind
     let workspaceRef: WorkspaceRef
-    /// Called with the new session's ref so the shell can select it.
+    /// Called with the new Session's ref so the window can select it.
     var onStarted: (SessionRef) -> Void = { _ in }
 
     @State private var selectedActionName = ""
@@ -55,56 +55,45 @@ struct StartWorkspaceSessionSheet: View {
         return store.lastError
     }
 
-    var body: some View {
-        VStack(spacing: 0) {
-            Form {
-                Section {
-                    picker
-                    TextField("Name (optional)", text: $name)
-                } header: {
-                    Label {
-                        Text(kind == .agentSession ? "New Session" : "New Terminal")
-                    } icon: {
-                        Image(systemName: kind == .agentSession ? "sparkles" : "terminal")
-                    }
-                    .font(.headline)
-                }
+    private var availabilityError: String? {
+        guard runtime != nil else {
+            return "This workspace's connection is no longer configured."
+        }
+        guard appModel.canStartSession(in: workspaceRef) else {
+            return "This workspace is archived or its connection is unavailable."
+        }
+        return nil
+    }
 
-                if let message = submitError ?? loadError {
-                    Section {
-                        Label(message, systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.red)
-                            .font(.callout)
-                        if loadError != nil {
-                            Button("Retry") {
-                                Task { await actionsStore?.refresh() }
-                            }
+    var body: some View {
+        SheetScaffold(
+            title: kind == .agentSession ? "New Session" : "New Terminal",
+            systemImage: kind == .agentSession ? "sparkles" : "terminal",
+            primaryLabel: "Start",
+            isBusy: isSubmitting,
+            canSubmit: canSubmit,
+            onCancel: { dismiss() },
+            onSubmit: { Task { await submit() } }
+        ) {
+            Section {
+                picker
+                TextField("Name (optional)", text: $name)
+            }
+
+            if let message = submitError ?? availabilityError ?? loadError {
+                Section {
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.red)
+                        .font(.callout)
+                    if loadError != nil {
+                        Button("Retry") {
+                            Task { await actionsStore?.refresh() }
                         }
                     }
                 }
             }
-            .formStyle(.grouped)
-
-            Divider()
-            HStack {
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Spacer()
-                Button {
-                    Task { await submit() }
-                } label: {
-                    if isSubmitting {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Text("Start")
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(!canSubmit)
-            }
-            .padding(12)
         }
-        .frame(width: 380, height: 250)
+        .frame(width: 460, height: 280)
         .onAppear { preselect() }
         .onChange(of: choices.map(\.name)) { preselect() }
     }
@@ -142,7 +131,7 @@ struct StartWorkspaceSessionSheet: View {
     }
 
     private var canSubmit: Bool {
-        guard !isSubmitting, runtime != nil else { return false }
+        guard !isSubmitting, appModel.canStartSession(in: workspaceRef) else { return false }
         switch kind {
         case .agentSession: return selectedAction != nil
         case .terminal: return isInteractiveShell || selectedAction != nil
@@ -150,7 +139,10 @@ struct StartWorkspaceSessionSheet: View {
     }
 
     private func submit() async {
-        guard let runtime else { return }
+        guard appModel.canStartSession(in: workspaceRef), let runtime else {
+            submitError = "This workspace is archived or its connection is unavailable."
+            return
+        }
         isSubmitting = true
         defer { isSubmitting = false }
         do {

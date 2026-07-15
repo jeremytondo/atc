@@ -5,6 +5,31 @@ import ATCAPI
 
 private let logger = Logger(subsystem: "ElevenIdeas.atc", category: "appmodel")
 
+struct WindowNavigationSnapshot: Equatable {
+    struct Connection: Equatable {
+        struct WorkspaceRecord: Equatable {
+            let id: String
+            let projectID: String
+            let isArchived: Bool
+        }
+
+        struct SessionRecord: Equatable {
+            let id: String
+            let workspaceID: String?
+            let isArchived: Bool
+            let attachable: Bool
+        }
+
+        let id: UUID
+        let workspacesCurrent: Bool
+        let sessionsCurrent: Bool
+        let workspaces: [WorkspaceRecord]
+        let sessions: [SessionRecord]
+    }
+
+    let connections: [Connection]
+}
+
 /// Root domain model: owns the Connection list and one `ConnectionRuntime`
 /// per Connection. Aggregation across Connections happens above the
 /// per-runtime stores, in pure code (`DashboardGroups`).
@@ -13,24 +38,6 @@ final class AppModel {
     let connections: ConnectionsStore
     private(set) var runtimes: [ConnectionRuntime] = []
 
-    /// Sidebar selection. Lives here (not in a view) so deleting a
-    /// Connection can clear a selection that pointed into it. Selecting an
-    /// attached session marks it most-recently-used for the attachment
-    /// budget (cold sessions enter the order when they attach).
-    var selection: SessionRef? {
-        didSet {
-            if let selection, terminals[selection] != nil {
-                markRecentlyUsed(selection)
-            }
-        }
-    }
-
-    /// The Workspace mounted in the window's shell (stays set while the
-    /// Dashboard covers it). Lives here so the attachment budget can pin
-    /// its sessions and so store-driven cleanup (a remote delete) has one
-    /// owner; the window's route (Dashboard vs shell) stays view state.
-    var openWorkspace: WorkspaceRef?
-
     /// Live terminal attaches by composite ref. Connections and surfaces
     /// stay alive here while the user switches around the sidebar, bounded
     /// by `attachmentBudget`.
@@ -38,13 +45,18 @@ final class AppModel {
 
     /// Maximum simultaneously attached terminals (WebSocket + Ghostty
     /// surface each). Not user-facing configuration. Pinned refs — the
-    /// current selection and the open Workspace's sessions — are never
-    /// evicted, even if that means exceeding the budget until the
-    /// Workspace closes (correctness over the cap).
+    /// the selected Session and Active Workspace supplied by the window are
+    /// never evicted, even if that means temporarily exceeding the budget.
     let attachmentBudget: Int
 
     /// LRU order over `terminals` keys, least-recently-used first.
     private var attachOrder: [SessionRef] = []
+
+    /// Refs whose terminals were torn down through `disconnectTerminal`.
+    /// Window reconciliation consults this so a Disconnect sticks instead
+    /// of being silently undone on the next store change; any explicit
+    /// attach clears the mark.
+    private var detachedRefs: Set<SessionRef> = []
 
     private let clientFactory: (ConnectionRecord) -> any ATCClient
     private let terminalControllerFactory: (String, any ATCClient) -> TerminalSessionController
@@ -92,18 +104,56 @@ final class AppModel {
         runtime(id: id)?.reachability ?? .unknown
     }
 
+    /// Network-backed mutations are only offered after the Connection's
+    /// latest combined refresh succeeded. Unknown and unreachable runtimes
+    /// are read-only until polling establishes a current model again.
+    func canMutate(connectionID: UUID) -> Bool {
+        runtime(id: connectionID)?.reachability == .connected
+    }
+
+    func canCreateWorkspace(in ref: ProjectRef) -> Bool {
+        guard canMutate(connectionID: ref.connectionID),
+              let project = runtime(id: ref.connectionID)?.projects.project(id: ref.projectID)
+        else { return false }
+        return !project.isArchived
+    }
+
+    func canStartSession(in ref: WorkspaceRef) -> Bool {
+        guard canMutate(connectionID: ref.connectionID),
+              let workspace = runtime(id: ref.connectionID)?.workspaces.workspace(
+                id: ref.workspaceID
+              )
+        else { return false }
+        return !workspace.isArchived
+    }
+
     func session(for ref: SessionRef) -> Session? {
         runtime(id: ref.connectionID)?.sessions.session(id: ref.sessionID)
     }
 
-    /// Whether the open Workspace still exists: false once its Connection
-    /// is gone, or its workspaces store has loaded and no longer contains
-    /// it (deleted via web/CLI). Drives the window back to the Dashboard.
-    var openWorkspaceExists: Bool {
-        guard let ref = openWorkspace,
-              let runtime = runtime(id: ref.connectionID) else { return false }
-        return !runtime.workspaces.hasLoadedOnce
-            || runtime.workspaces.workspace(id: ref.workspaceID) != nil
+    /// A compact, value-semantic projection used by the window to reconcile
+    /// store-driven removals and delayed selection restoration.
+    func windowNavigationSnapshot() -> WindowNavigationSnapshot {
+        WindowNavigationSnapshot(connections: runtimes.map { runtime in
+            WindowNavigationSnapshot.Connection(
+                id: runtime.id,
+                workspacesCurrent: runtime.workspaces.hasLoadedOnce
+                    && runtime.workspaces.lastError == nil,
+                sessionsCurrent: runtime.sessions.hasLoadedOnce
+                    && runtime.sessions.lastError == nil,
+                workspaces: runtime.workspaces.workspaces.map {
+                    .init(id: $0.id, projectID: $0.projectId, isArchived: $0.isArchived)
+                },
+                sessions: runtime.sessions.sessions.map {
+                    .init(
+                        id: $0.id,
+                        workspaceID: $0.workspace?.id,
+                        isArchived: $0.isArchived,
+                        attachable: $0.attachable
+                    )
+                }
+            )
+        })
     }
 
     /// Refreshes every Connection concurrently so one unreachable server
@@ -169,9 +219,8 @@ final class AppModel {
         }
     }
 
-    /// Deletes a Connection locally: stops polling, disconnects its
-    /// terminals, clears a selection pointing into it. No server calls —
-    /// Projects and Sessions remain on the atc server.
+    /// Deletes a Connection locally and disconnects its terminals. Window
+    /// navigation references are reconciled by `WindowState`.
     func removeConnection(id: UUID) {
         connections.remove(id: id)
         guard let index = runtimes.firstIndex(where: { $0.id == id }) else { return }
@@ -181,8 +230,13 @@ final class AppModel {
 
     // MARK: - Terminal registry
 
-    func attachIfNeeded(to session: Session, connectionID: UUID) {
+    func attachIfNeeded(
+        to session: Session,
+        connectionID: UUID,
+        retentionContext: TerminalRetentionContext = .empty
+    ) {
         let ref = SessionRef(connectionID: connectionID, sessionID: session.id)
+        detachedRefs.remove(ref)
         if terminals[ref] != nil {
             markRecentlyUsed(ref)
             return
@@ -191,13 +245,24 @@ final class AppModel {
               let runtime = runtime(id: connectionID) else { return }
         terminals[ref] = terminalControllerFactory(session.id, runtime.client)
         markRecentlyUsed(ref)
-        evictOverBudget()
+        evictOverBudget(retentionContext: retentionContext)
+    }
+
+    func touchTerminal(_ ref: SessionRef) {
+        guard terminals[ref] != nil else { return }
+        markRecentlyUsed(ref)
     }
 
     func disconnectTerminal(ref: SessionRef) {
         terminals[ref]?.disconnect()
         terminals.removeValue(forKey: ref)
         attachOrder.removeAll { $0 == ref }
+        detachedRefs.insert(ref)
+    }
+
+    /// Whether this ref was disconnected and never explicitly re-attached.
+    func isDetached(_ ref: SessionRef) -> Bool {
+        detachedRefs.contains(ref)
     }
 
     /// Wake and path recovery are app-wide signals. A controller decides
@@ -223,24 +288,28 @@ final class AppModel {
     /// standard disconnect path. Pinned refs and the just-attached ref
     /// (the LRU tail) are skipped; if they alone exceed the budget, it is
     /// simply exceeded.
-    private func evictOverBudget() {
+    private func evictOverBudget(retentionContext: TerminalRetentionContext) {
         guard terminals.count > attachmentBudget else { return }
         // Ordering invariant: every terminals key was appended in
         // markRecentlyUsed, so attachOrder covers all candidates.
         let newest = attachOrder.last
         for ref in attachOrder where terminals.count > attachmentBudget {
-            if ref == newest || isPinned(ref) { continue }
+            if ref == newest || isPinned(ref, retentionContext: retentionContext) { continue }
             disconnectTerminal(ref: ref)
         }
     }
 
-    /// The current selection and the open Workspace's sessions are never
-    /// evicted. A session no longer in its store (deleted remotely) can't
-    /// be resolved to a workspace and is therefore evictable.
-    private func isPinned(_ ref: SessionRef) -> Bool {
-        if ref == selection { return true }
-        guard let openWorkspace, openWorkspace.connectionID == ref.connectionID else { return false }
-        return session(for: ref)?.workspace?.id == openWorkspace.workspaceID
+    /// Navigation state is window-owned, so eviction receives a derived
+    /// retention context instead of reading a duplicate mutable selection.
+    private func isPinned(
+        _ ref: SessionRef,
+        retentionContext: TerminalRetentionContext
+    ) -> Bool {
+        if ref == retentionContext.selectedSession { return true }
+        guard let activeWorkspace = retentionContext.activeWorkspace,
+              activeWorkspace.connectionID == ref.connectionID
+        else { return false }
+        return session(for: ref)?.belongs(to: activeWorkspace) == true
     }
 
     // MARK: - Private
@@ -263,11 +332,8 @@ final class AppModel {
         for ref in terminals.keys where ref.connectionID == runtime.id {
             disconnectTerminal(ref: ref)
         }
-        if selection?.connectionID == runtime.id {
-            selection = nil
-        }
-        if openWorkspace?.connectionID == runtime.id {
-            openWorkspace = nil
-        }
+        // A teardown disconnect is infrastructure, not user intent: a
+        // rebuilt Connection may auto-reattach its selected session.
+        detachedRefs = detachedRefs.filter { $0.connectionID != runtime.id }
     }
 }
