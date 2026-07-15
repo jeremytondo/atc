@@ -73,7 +73,7 @@ struct NavigatorSelector: View {
         .labelsHidden()
         .controlSize(.large)
         .tint(.accentColor)
-        .padding(.horizontal, Spacing.md)
+        .padding(.horizontal, NavigatorMetrics.horizontalPadding)
         .padding(.bottom, NavigatorMetrics.selectorToContentSpacing)
     }
 }

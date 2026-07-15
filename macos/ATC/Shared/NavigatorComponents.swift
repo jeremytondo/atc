@@ -6,7 +6,7 @@ enum NavigatorMetrics {
     static let rowHeight: CGFloat = 28
     static let iconWidth: CGFloat = 18
     static let actionSize: CGFloat = 22
-    static let rowHorizontalInset = Spacing.xs
+    static let horizontalPadding = Spacing.md
     static let contentHorizontalPadding = Spacing.sm
     static let rowVerticalInset: CGFloat = 1
     static let selectorToContentSpacing = Spacing.lg
@@ -182,6 +182,11 @@ struct NavigatorDisclosureHeader: View {
 extension View {
     func navigatorList() -> some View {
         listStyle(.sidebar)
+            .contentMargins(
+                .horizontal,
+                NavigatorMetrics.horizontalPadding,
+                for: .scrollContent
+            )
             .environment(\.defaultMinListRowHeight, NavigatorMetrics.rowHeight)
     }
 
@@ -191,9 +196,9 @@ extension View {
     ) -> some View {
         listRowInsets(EdgeInsets(
             top: top,
-            leading: NavigatorMetrics.rowHorizontalInset,
+            leading: 0,
             bottom: bottom,
-            trailing: NavigatorMetrics.rowHorizontalInset
+            trailing: 0
         ))
         .listRowBackground(Color.clear)
     }
