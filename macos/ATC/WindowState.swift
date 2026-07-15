@@ -41,6 +41,11 @@ final class WindowState {
     var createWorkspaceContext: CreateWorkspaceContext?
     var startSessionKind: StartSessionKind?
 
+    /// Advances for every explicit request to type in the selected Terminal
+    /// Session. Unlike `selectedSession`, this also changes when the user
+    /// re-selects the same sidebar row.
+    private(set) var terminalFocusRequest: UInt = 0
+
     @ObservationIgnored private let selectionMemory: WorkspaceSelectionMemory
     @ObservationIgnored private var pendingRestore: WorkspaceRef?
 
@@ -127,7 +132,15 @@ final class WindowState {
         } else {
             appModel.touchTerminal(ref)
         }
+        requestTerminalFocus()
         return true
+    }
+
+    /// Reasserts terminal focus after transient UI (notably a creation
+    /// sheet) has finished handing first-responder ownership back.
+    func requestTerminalFocus() {
+        guard selectedSession != nil else { return }
+        terminalFocusRequest &+= 1
     }
 
     func showDashboard() {

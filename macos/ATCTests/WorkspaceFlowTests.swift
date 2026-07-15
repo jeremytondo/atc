@@ -71,6 +71,42 @@ struct WorkspaceFlowTests {
         #expect(state.isInspectorPresented)
     }
 
+    @Test("selecting and reselecting a Session requests terminal focus")
+    func sessionSelectionRequestsTerminalFocus() async throws {
+        let (model, runtime) = try await makeLoadedModel()
+        let state = WindowState.ephemeral()
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
+        let session = SessionRef(connectionID: runtime.id, sessionID: "ses_running")
+        #expect(state.activateWorkspace(workspace, in: model))
+
+        #expect(state.terminalFocusRequest == 0)
+        #expect(state.selectSession(session, in: model))
+        let firstRequest = state.terminalFocusRequest
+        #expect(firstRequest > 0)
+
+        #expect(state.selectSession(session, in: model))
+        #expect(state.terminalFocusRequest > firstRequest)
+    }
+
+    @Test("dismissed transient UI can re-request focus for the selected Session")
+    func selectedSessionCanRequestFocusAgain() async throws {
+        let (model, runtime) = try await makeLoadedModel()
+        let state = WindowState.ephemeral()
+        #expect(state.activateWorkspace(
+            WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser"),
+            in: model
+        ))
+        #expect(state.selectSession(
+            SessionRef(connectionID: runtime.id, sessionID: "ses_running"),
+            in: model
+        ))
+        let selectionRequest = state.terminalFocusRequest
+
+        state.requestTerminalFocus()
+
+        #expect(state.terminalFocusRequest > selectionRequest)
+    }
+
     @Test("Dashboard preserves Active Workspace, Navigator, and command availability")
     func dashboardPreservesWorkspaceContext() async throws {
         let (model, runtime) = try await makeLoadedModel()

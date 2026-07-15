@@ -65,7 +65,9 @@ struct RootView: View {
                 _ = windowState.activateWorkspace(ref, in: appModel)
             }
         }
-        .sheet(item: $windowState.startSessionKind) { kind in
+        .sheet(item: $windowState.startSessionKind, onDismiss: {
+            windowState.requestTerminalFocus()
+        }) { kind in
             if let ref = windowState.activeWorkspace {
                 StartWorkspaceSessionSheet(kind: kind, workspaceRef: ref) { newRef in
                     _ = windowState.selectSession(newRef, in: appModel)
@@ -82,6 +84,7 @@ struct RootView: View {
             SessionContentView(
                 selectedRef: visibleSessionRef,
                 selectedSession: visibleSession,
+                terminalFocusRequest: windowState.terminalFocusRequest,
                 emptyState: workspaceEmptyActions
             )
             if windowState.selectedContent == .dashboard {
