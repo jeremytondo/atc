@@ -7,7 +7,6 @@ struct TerminalPane: View {
     @Environment(AppModel.self) private var appModel
     let visibleRef: SessionRef?
     let focusRequest: UInt
-    @FocusState private var focusedTerminal: SessionRef?
 
     var body: some View {
         ZStack {
@@ -17,27 +16,13 @@ struct TerminalPane: View {
             ForEach(refs, id: \.self) { ref in
                 if let controller = appModel.terminals[ref] {
                     TerminalHostView(
-                        ref: ref,
                         controller: controller,
-                        focus: $focusedTerminal
+                        isVisible: ref == visibleRef,
+                        focusRequest: focusRequest
                     )
-                        .opacity(ref == visibleRef ? 1 : 0)
-                        .allowsHitTesting(ref == visibleRef)
                 }
             }
         }
-        .onChange(of: focusTarget, initial: true) {
-            focusedTerminal = focusTarget.ref
-        }
-    }
-
-    /// Includes attachment availability so a just-created or explicitly
-    /// reconnected controller gets focus as soon as its surface exists.
-    private var focusTarget: TerminalFocusTarget {
-        TerminalFocusTarget(
-            ref: visibleRef.flatMap { appModel.terminals[$0] == nil ? nil : $0 },
-            request: focusRequest
-        )
     }
 
     private var refs: [SessionRef] {
@@ -45,11 +30,6 @@ struct TerminalPane: View {
             ($0.sessionID, $0.connectionID.uuidString) < ($1.sessionID, $1.connectionID.uuidString)
         }
     }
-}
-
-private struct TerminalFocusTarget: Equatable {
-    let ref: SessionRef?
-    let request: UInt
 }
 
 /// Phase-driven banner shown over the terminal.

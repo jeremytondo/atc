@@ -163,4 +163,52 @@ struct ShellHostingSmokeTest {
         #expect(!windowState.hasInspectorTarget(in: appModel))
         window.orderOut(nil)
     }
+
+    @Test("Session selection moves first-responder focus between terminal surfaces")
+    func sessionSelectionMovesTerminalFocus() async throws {
+        let appModel = AppModel.preview()
+        let runtime = try #require(appModel.runtimes.first)
+        await waitForData(runtime)
+        let windowState = WindowState.ephemeral()
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
+        let firstRef = SessionRef(connectionID: runtime.id, sessionID: "ses_running")
+        let secondRef = SessionRef(connectionID: runtime.id, sessionID: "ses_shell")
+        #expect(windowState.activateWorkspace(workspace, in: appModel))
+        #expect(windowState.selectSession(firstRef, in: appModel))
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        window.contentView = NSHostingView(
+            rootView: RootView(configStore: KeyboardConfigStore())
+                .environment(appModel)
+                .environment(windowState)
+        )
+        window.makeKeyAndOrderFront(nil)
+        pump(seconds: 0.5)
+
+        let first = try #require(appModel.terminals[firstRef])
+        #expect(first.viewState.isFocused)
+
+        #expect(windowState.selectSession(secondRef, in: appModel))
+        pump(seconds: 0.5)
+        let second = try #require(appModel.terminals[secondRef])
+        #expect(!first.viewState.isFocused)
+        #expect(second.viewState.isFocused)
+
+        #expect(windowState.selectSession(firstRef, in: appModel))
+        pump(seconds: 0.5)
+        #expect(first.viewState.isFocused)
+        #expect(!second.viewState.isFocused)
+
+        window.makeFirstResponder(nil)
+        pump(seconds: 0.1)
+        #expect(!first.viewState.isFocused)
+        #expect(windowState.selectSession(firstRef, in: appModel))
+        pump(seconds: 0.5)
+        #expect(first.viewState.isFocused)
+        #expect(!second.viewState.isFocused)
+        window.orderOut(nil)
+    }
 }
