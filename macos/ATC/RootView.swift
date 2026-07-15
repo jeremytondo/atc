@@ -3,13 +3,33 @@ import ATCAPI
 
 /// One stable window-root split view. Navigators replace only the leading
 /// column while the terminal stack remains mounted in the detail column.
+@MainActor
 struct RootView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(WindowState.self) private var windowState
+    private let configStore: KeyboardConfigStore
+
+    init(configStore: KeyboardConfigStore) {
+        self.configStore = configStore
+    }
+
+    init() {
+        self.configStore = KeyboardConfigStore()
+    }
 
     var body: some View {
+        KeyboardRoutingContainer(
+            appModel: appModel,
+            windowState: windowState,
+            configStore: configStore
+        ) {
+            rootContent
+        }
+    }
+
+    private var rootContent: some View {
         @Bindable var windowState = windowState
-        NavigationSplitView(columnVisibility: $windowState.columnVisibility) {
+        return NavigationSplitView(columnVisibility: $windowState.columnVisibility) {
             NavigatorSidebar()
         } detail: {
             mainContent

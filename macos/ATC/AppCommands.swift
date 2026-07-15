@@ -1,60 +1,64 @@
 import SwiftUI
 
-/// Menu placement from the keyboard-shortcuts brief. Each item is one
-/// closure-shaped command the future `session.new`/`workspace.new`/etc.
-/// registry entries will invoke — no per-menu logic. The full shortcut MVP
-/// (registry, config.toml, leader key) is a separate effort.
 struct AppCommands: Commands {
     let appModel: AppModel
     let windowState: WindowState
+    let configStore: KeyboardConfigStore
+
+    private var context: CommandContext {
+        CommandContext(
+            appModel: appModel,
+            windowState: windowState,
+            configStore: configStore
+        )
+    }
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            // Availability is based on the Active Workspace, independent of
-            // the visible Navigator or main-content destination.
-            Button("New Session") {
-                windowState.startSessionKind = .agentSession
-            }
-            .keyboardShortcut("n", modifiers: .command)
-            .disabled(!windowState.canStartSession(in: appModel))
-
-            Button("New Terminal") {
-                windowState.startSessionKind = .terminal
-            }
-            .keyboardShortcut("t", modifiers: .command)
-            .disabled(!windowState.canStartSession(in: appModel))
+            commandButton(.newSession)
+            commandButton(.newTerminal)
 
             Divider()
 
-            // workspace.new works everywhere; context-free without an
-            // implied Project. ⌘⇧N is reassigned here from New Project.
-            Button("New Workspace…") {
-                windowState.presentCreateWorkspace(in: appModel)
-            }
-            .keyboardShortcut("n", modifiers: [.command, .shift])
-            .disabled(appModel.runtimes.isEmpty)
-
-            // project.new: menu-only (its old ⌘⇧N now creates Workspaces).
-            Button("New Project…") {
-                windowState.isCreateProjectPresented = true
-            }
-            .disabled(appModel.runtimes.isEmpty)
+            commandButton(.newWorkspace)
+            commandButton(.newProject)
         }
 
         CommandGroup(after: .sidebar) {
-            // The stable root split view makes this meaningful everywhere.
-            Button("Toggle Sidebar") {
-                windowState.toggleSidebar()
-            }
-            .keyboardShortcut("b", modifiers: .command)
-
-            // data.refresh: always available.
-            Button("Refresh") {
-                Task { await appModel.refreshAll() }
-            }
-            .keyboardShortcut("r", modifiers: .command)
-
+            commandButton(.toggleSidebar)
+            commandButton(.refresh)
             Divider()
         }
+
+        CommandGroup(after: .appSettings) {
+            commandButton(.reloadConfiguration)
+        }
+    }
+
+    @ViewBuilder
+    private func commandButton(_ id: CommandID) -> some View {
+        let descriptor = CommandRegistry.descriptor(for: id)
+        let button = Button(descriptor.title) {
+            CommandRegistry.execute(id, context: context)
+        }
+        .disabled(!descriptor.availability(context).isAvailable)
+
+        if let shortcut = configStore.keymap.menuShortcuts[id]?.menuShortcut {
+            button.keyboardShortcut(shortcut.key, modifiers: shortcut.modifiers)
+        } else {
+            button
+        }
+    }
+}
+
+private extension KeyStroke {
+    var menuShortcut: (key: KeyEquivalent, modifiers: EventModifiers)? {
+        guard key.count == 1, let character = key.first else { return nil }
+        var eventModifiers: EventModifiers = []
+        if modifiers.contains(.command) { eventModifiers.insert(.command) }
+        if modifiers.contains(.control) { eventModifiers.insert(.control) }
+        if modifiers.contains(.option) { eventModifiers.insert(.option) }
+        if modifiers.contains(.shift) { eventModifiers.insert(.shift) }
+        return (KeyEquivalent(character), eventModifiers)
     }
 }
