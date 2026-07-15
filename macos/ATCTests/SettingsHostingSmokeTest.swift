@@ -8,10 +8,6 @@ import ATCAPI
 /// catching crashes previews can't attribute.
 @Suite("Settings UI hosting smoke")
 struct SettingsHostingSmokeTest {
-    private func pump(seconds: TimeInterval) {
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: seconds))
-    }
-
     private func host(_ view: some View, width: CGFloat = 720, height: CGFloat = 500) {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: width, height: height),

@@ -1,6 +1,9 @@
 import AppKit
+import OSLog
 import SwiftUI
 import GhosttyTerminal
+
+private let logger = Logger(subsystem: "ElevenIdeas.atc", category: "terminal")
 
 /// The one view that hosts a Ghostty surface. Each retained terminal owns an
 /// AppKit container so focus can be transferred directly between the actual
@@ -75,8 +78,12 @@ final class TerminalContainerView: NSView {
         if controllerID != newControllerID {
             controllerID = newControllerID
             hostingView.rootView = TerminalSurfaceView(context: controller.viewState)
+            // A replaced controller brings a fresh surface; treat it as a
+            // first appearance so a visible terminal regains focus.
+            wasVisible = false
         }
 
+        let becameHidden = wasVisible && !isVisible
         let shouldFocus = isVisible && (!wasVisible || lastFocusRequest != focusRequest)
         wasVisible = isVisible
         lastFocusRequest = focusRequest
@@ -85,7 +92,10 @@ final class TerminalContainerView: NSView {
 
         if !isVisible {
             cancelPendingFocus()
-            scheduleTerminalFocusResignation()
+            // Only the visible→hidden transition can leave this terminal as
+            // the stale first responder; steady-state hidden updates would
+            // just schedule no-op timers.
+            if becameHidden { scheduleTerminalFocusResignation() }
         } else if shouldFocus {
             focusResignTimer?.invalidate()
             focusResignTimer = nil
@@ -156,6 +166,9 @@ final class TerminalContainerView: NSView {
         guard focusAttempt < Self.focusRetryLimit else {
             wantsFocus = false
             focusRetryTimer = nil
+            logger.error(
+                "Abandoned terminal focus transfer after \(Self.focusRetryLimit) attempts; the surface never produced an input view"
+            )
             return
         }
         schedulePendingFocus()
@@ -182,11 +195,12 @@ final class TerminalContainerView: NSView {
         RunLoop.main.add(timer, forMode: .common)
     }
 
-    /// `TerminalSurfaceView` intentionally keeps its AppKit view internal.
-    /// This hosting hierarchy contains only that surface, so its sole
-    /// first-responder descendant is the terminal input view.
+    /// This hosting hierarchy contains exactly one Ghostty surface. Matching
+    /// its concrete input view type (rather than any first-responder-capable
+    /// view) keeps the transfer correct even if SwiftUI hosting or the
+    /// surface ever grows other focusable descendants.
     private func terminalInputView() -> NSView? {
-        hostingView.firstDescendant { $0.acceptsFirstResponder }
+        hostingView.firstDescendant { $0 is TerminalView }
     }
 }
 

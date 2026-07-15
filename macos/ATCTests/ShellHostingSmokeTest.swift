@@ -9,10 +9,6 @@ import ATCAPI
 /// warnings surface under a controlled model instead of live user state.
 @Suite("Shell hosting smoke")
 struct ShellHostingSmokeTest {
-    private func pump(seconds: TimeInterval) {
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: seconds))
-    }
-
     private func host(_ view: some View) {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
@@ -186,27 +182,30 @@ struct ShellHostingSmokeTest {
                 .environment(windowState)
         )
         window.makeKeyAndOrderFront(nil)
-        pump(seconds: 0.5)
 
+        // Condition-based waits: the focus transfer retries for up to a
+        // second while SwiftUI materializes the surface, so fixed pumps
+        // shorter than that budget would flake on a slow machine.
         let first = try #require(appModel.terminals[firstRef])
+        pump(until: { first.viewState.isFocused })
         #expect(first.viewState.isFocused)
 
         #expect(windowState.selectSession(secondRef, in: appModel))
-        pump(seconds: 0.5)
         let second = try #require(appModel.terminals[secondRef])
+        pump(until: { second.viewState.isFocused && !first.viewState.isFocused })
         #expect(!first.viewState.isFocused)
         #expect(second.viewState.isFocused)
 
         #expect(windowState.selectSession(firstRef, in: appModel))
-        pump(seconds: 0.5)
+        pump(until: { first.viewState.isFocused && !second.viewState.isFocused })
         #expect(first.viewState.isFocused)
         #expect(!second.viewState.isFocused)
 
         window.makeFirstResponder(nil)
-        pump(seconds: 0.1)
+        pump(until: { !first.viewState.isFocused })
         #expect(!first.viewState.isFocused)
         #expect(windowState.selectSession(firstRef, in: appModel))
-        pump(seconds: 0.5)
+        pump(until: { first.viewState.isFocused })
         #expect(first.viewState.isFocused)
         #expect(!second.viewState.isFocused)
         window.orderOut(nil)
