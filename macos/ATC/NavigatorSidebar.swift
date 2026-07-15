@@ -21,6 +21,32 @@ struct NavigatorSidebar: View {
     }
 }
 
+extension NavigatorID {
+    var selectorLabel: String {
+        switch self {
+        case .projects: "Projects"
+        case .workspace: "Workspace"
+        case .file: "Files"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .projects: "Projects Navigator"
+        case .workspace: "Workspace Navigator"
+        case .file: "File Navigator"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .projects: "folder"
+        case .workspace: "rectangle.stack"
+        case .file: "doc.text"
+        }
+    }
+}
+
 /// Native segmented navigation in an inset system surface, matching the
 /// hierarchy and interaction model of Xcode's Navigator selector.
 struct NavigatorSelector: View {
