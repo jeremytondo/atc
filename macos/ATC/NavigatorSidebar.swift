@@ -109,7 +109,7 @@ struct ProjectsNavigatorView: View {
     var body: some View {
         @Bindable var windowState = windowState
         let groups = ProjectsNavigatorGroups(runtimes: appModel.runtimes)
-        List {
+        NavigatorList {
             NavigatorRow(
                 isSelected: windowState.selectedContent == .dashboard,
                 action: { windowState.showDashboard() }
@@ -145,7 +145,6 @@ struct ProjectsNavigatorView: View {
                 }
             }
         }
-        .navigatorList()
         .alert("Rename Project", isPresented: Binding(
             get: { renamingProject != nil },
             set: { if !$0 { renamingProject = nil } }

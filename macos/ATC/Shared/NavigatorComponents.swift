@@ -13,6 +13,27 @@ enum NavigatorMetrics {
     static let nestedIndent: CGFloat = iconWidth + Spacing.sm
 }
 
+/// A Navigator-owned scrolling container. A native sidebar `List` applies
+/// outline-row margins outside our view hierarchy, which prevents custom row
+/// surfaces and hit targets from using the full available width.
+struct NavigatorList<Content: View>: View {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                content
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, NavigatorMetrics.horizontalPadding)
+        }
+    }
+}
+
 /// The standard interactive row used by all Navigators. Actions stay out of
 /// sight until hover while the primary hit target remains full width.
 struct NavigatorRow<Content: View, Actions: View>: View {
@@ -180,27 +201,13 @@ struct NavigatorDisclosureHeader: View {
 }
 
 extension View {
-    func navigatorList() -> some View {
-        listStyle(.sidebar)
-            .contentMargins(
-                .horizontal,
-                NavigatorMetrics.horizontalPadding,
-                for: .scrollContent
-            )
-            .environment(\.defaultMinListRowHeight, NavigatorMetrics.rowHeight)
-    }
-
     func navigatorListRow(
         top: CGFloat = NavigatorMetrics.rowVerticalInset,
         bottom: CGFloat = NavigatorMetrics.rowVerticalInset
     ) -> some View {
-        listRowInsets(EdgeInsets(
-            top: top,
-            leading: 0,
-            bottom: bottom,
-            trailing: 0
-        ))
-        .listRowBackground(Color.clear)
+        padding(.top, top)
+            .padding(.bottom, bottom)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     func navigatorSurface(isActive: Bool) -> some View {

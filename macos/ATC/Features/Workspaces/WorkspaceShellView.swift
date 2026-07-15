@@ -39,7 +39,7 @@ struct WorkspaceNavigatorView: View {
         let agents = rows.filter { kind(of: $0.session) == .agent }
         let terminals = rows.filter { kind(of: $0.session) == .terminal }
 
-        List {
+        NavigatorList {
             if runtime?.reachability == .unreachable {
                 Label("Disconnected", systemImage: "cable.connector.slash")
                     .font(.caption)
@@ -69,7 +69,6 @@ struct WorkspaceNavigatorView: View {
                 sessionRows(terminals, emptyText: "No terminals")
             }
         }
-        .navigatorList()
         .safeAreaInset(edge: .bottom, spacing: 0) {
             HStack {
                 Toggle("Show Archived", isOn: $showArchived)
