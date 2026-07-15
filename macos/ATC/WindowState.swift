@@ -7,6 +7,14 @@ enum NavigatorID: String, CaseIterable, Sendable {
     case workspace
     case file
 
+    var selectorLabel: String {
+        switch self {
+        case .projects: "Projects"
+        case .workspace: "Workspace"
+        case .file: "Files"
+        }
+    }
+
     var label: String {
         switch self {
         case .projects: "Projects Navigator"

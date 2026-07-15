@@ -8,6 +8,8 @@ import ATCAPI
 struct NavigationPresentationTests {
     @Test("Navigator selector exposes all states and Active Workspace gating")
     func navigatorSelectorStates() {
+        #expect(NavigatorID.allCases.map(\.selectorLabel) == ["Projects", "Workspace", "Files"])
+
         let unavailable = NavigatorSelectorOption.all(hasActiveWorkspace: false)
         #expect(unavailable.map(\.id) == [.projects, .workspace, .file])
         #expect(unavailable.map(\.isEnabled) == [true, false, false])

@@ -33,7 +33,8 @@ struct NavigatorSelector: View {
         )
         Picker("Navigator", selection: $selection) {
             ForEach(options) { option in
-                Image(systemName: option.id.systemImage)
+                Label(option.id.selectorLabel, systemImage: option.id.systemImage)
+                    .labelStyle(.titleAndIcon)
                     .accessibilityLabel(option.id.label)
                     .help(option.help)
                     .tag(option.id)
@@ -44,7 +45,7 @@ struct NavigatorSelector: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .controlSize(.regular)
+        .controlSize(.large)
         .tint(.accentColor)
         .padding(2)
         .background(.quaternary, in: RoundedRectangle(
