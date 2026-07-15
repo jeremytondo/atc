@@ -6,10 +6,32 @@ enum NavigatorMetrics {
     static let rowHeight: CGFloat = 28
     static let iconWidth: CGFloat = 18
     static let actionSize: CGFloat = 22
+    static let horizontalPadding = Spacing.sm
     static let contentHorizontalPadding = Spacing.sm
     static let rowVerticalInset: CGFloat = 1
     static let selectorToContentSpacing = Spacing.lg
     static let nestedIndent: CGFloat = iconWidth + Spacing.sm
+}
+
+/// A Navigator-owned scrolling container. A native sidebar `List` applies
+/// outline-row margins outside our view hierarchy, which prevents custom row
+/// surfaces and hit targets from using the full available width.
+struct NavigatorList<Content: View>: View {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                content
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, NavigatorMetrics.horizontalPadding)
+        }
+    }
 }
 
 /// The standard interactive row used by all Navigators. Actions stay out of
@@ -179,26 +201,18 @@ struct NavigatorDisclosureHeader: View {
 }
 
 extension View {
-    func navigatorList() -> some View {
-        listStyle(.sidebar)
-            .environment(\.defaultMinListRowHeight, NavigatorMetrics.rowHeight)
-    }
-
     func navigatorListRow(
         top: CGFloat = NavigatorMetrics.rowVerticalInset,
         bottom: CGFloat = NavigatorMetrics.rowVerticalInset
     ) -> some View {
-        listRowInsets(EdgeInsets(
-            top: top,
-            leading: Spacing.sm,
-            bottom: bottom,
-            trailing: Spacing.sm
-        ))
-        .listRowBackground(Color.clear)
+        padding(.top, top)
+            .padding(.bottom, bottom)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     func navigatorSurface(isActive: Bool) -> some View {
         padding(.horizontal, NavigatorMetrics.contentHorizontalPadding)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background {
                 if isActive {
                     RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
