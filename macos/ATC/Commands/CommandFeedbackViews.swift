@@ -16,17 +16,16 @@ struct CommandFeedbackOverlay: View {
                 .padding(.top, 8)
             }
 
-            VStack {
-                Spacer()
+            Group {
                 if let flash = router.flash {
                     RouterFlashView(flash: flash)
-                        .allowsHitTesting(false)
                 } else if router.pendingNode != nil {
                     CommandSequenceHintView()
-                        .allowsHitTesting(false)
                 }
             }
-            .padding(.bottom, 24)
+            .allowsHitTesting(false)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+            .padding([.bottom, .trailing], 24)
         }
     }
 }
