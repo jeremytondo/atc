@@ -15,7 +15,6 @@ struct WorkspaceNavigatorView: View {
         let ref: SessionRef
         let session: Session
         let title: String
-        let caption: String
         var id: SessionRef { ref }
     }
 
@@ -109,12 +108,8 @@ struct WorkspaceNavigatorView: View {
                 isSelected: windowState.selectedSession == row.ref,
                 action: { _ = windowState.selectSession(row.ref, in: appModel) }
             ) { _ in
-                SessionRowView(
-                    session: row.session,
-                    isConnected: appModel.activelyAttachedRefs.contains(row.ref),
-                    title: row.title,
-                    caption: row.caption
-                )
+                Text(row.title)
+                    .lineLimit(1)
             } actions: {
                 EmptyView()
             }
@@ -189,13 +184,10 @@ struct WorkspaceNavigatorView: View {
             .filter { showArchived || !$0.isArchived }
             .sortedNewestFirst()
             .map { session in
-                let label = SessionKind.actionLabel(session: session, actions: actions)
-                let updated = session.updatedAt.formatted(.relative(presentation: .named))
                 return Row(
                     ref: SessionRef(connectionID: ref.connectionID, sessionID: session.id),
                     session: session,
-                    title: SessionKind.displayName(session: session, actions: actions),
-                    caption: "\(label) · \(updated)"
+                    title: SessionKind.displayName(session: session, actions: actions)
                 )
             }
     }
