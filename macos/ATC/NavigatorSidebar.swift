@@ -47,11 +47,6 @@ struct NavigatorSelector: View {
         .labelsHidden()
         .controlSize(.large)
         .tint(.accentColor)
-        .padding(2)
-        .background(.quaternary, in: RoundedRectangle(
-            cornerRadius: Radius.control,
-            style: .continuous
-        ))
         .padding(.horizontal, Spacing.md)
         .padding(.bottom, NavigatorMetrics.selectorToContentSpacing)
     }
