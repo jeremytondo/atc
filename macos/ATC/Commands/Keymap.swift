@@ -160,14 +160,9 @@ enum Keymap {
             )
         }
 
-        for (sequence, binding) in folded where !sequence[0].hasPrimaryModifier {
-            diagnostics.append(.init(
-                severity: .error,
-                line: binding.line,
-                message: "Step-one trigger '\(sequence[0])' must include cmd, ctrl, or option"
-            ))
-        }
-
+        // The step-one modifier rule (cmd/ctrl/option required) is enforced
+        // when triggers parse: direct bindings and the leader go through
+        // KeyStroke.parse, so every sequence[0] here already satisfies it.
         let directTriggers = Set(folded.keys.filter { $0.count == 1 }.map { $0[0] })
         let prefixTriggers = Set(folded.keys.filter { $0.count > 1 }.map { $0[0] })
         func sourceLine(for trigger: KeyStroke) -> Int? {

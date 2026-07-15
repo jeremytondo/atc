@@ -7,15 +7,9 @@ import ATCAPI
 struct RootView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(WindowState.self) private var windowState
-    private let configStore: KeyboardConfigStore
-
-    init(configStore: KeyboardConfigStore) {
-        self.configStore = configStore
-    }
-
-    init() {
-        self.configStore = KeyboardConfigStore()
-    }
+    /// The one store ATCApp creates and loads; previews and hosting tests
+    /// pass an unloaded throwaway explicitly.
+    let configStore: KeyboardConfigStore
 
     var body: some View {
         KeyboardRoutingContainer(
@@ -143,7 +137,7 @@ struct RootView: View {
 }
 
 #Preview {
-    RootView()
+    RootView(configStore: KeyboardConfigStore())
         .environment(AppModel.preview())
         .environment(WindowState())
         .preferredColorScheme(.dark)

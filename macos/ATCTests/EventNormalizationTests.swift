@@ -41,6 +41,13 @@ struct EventNormalizationTests {
         ))
         #expect(KeyStroke.normalize(event: escape) == .escape)
 
+        // Held modifiers never produce a distinct escape stroke; a pending
+        // sequence cancels silently for shift+esc just like bare esc.
+        let shiftedEscape = try #require(event(
+            flags: .shift, characters: "\u{1b}", ignoringModifiers: "\u{1b}", keyCode: 53
+        ))
+        #expect(KeyStroke.normalize(event: shiftedEscape) == .escape)
+
         let functionCharacter = String(UnicodeScalar(NSF1FunctionKey)!)
         let function = try #require(event(
             flags: [],

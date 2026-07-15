@@ -92,6 +92,21 @@ struct KeyboardConfigParserTests {
         #expect(parsed.diagnostics[0].message.contains("future_setting"))
     }
 
+    @Test("malformed lines report errors without derailing the table")
+    func malformedLines() {
+        let parsed = KeyboardConfigParser.parse(#"""
+        top = "before any table"
+        [keyboard]
+        leader "cmd+k"
+        leader = "cmd+k
+        = "data.refresh"
+        leader = "cmd+k"
+        """#)
+        #expect(parsed.diagnostics.filter { $0.severity == .error }.map(\.line)
+            == [1, 3, 4, 5])
+        #expect(parsed.tables["keyboard"]?.map(\.line) == [6])
+    }
+
     @Test("empty text and blank comments produce an empty config")
     func emptyConfig() {
         #expect(KeyboardConfigParser.parse("").tables.isEmpty)

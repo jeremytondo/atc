@@ -103,7 +103,7 @@ struct KeyStroke: Hashable, Sendable, CustomStringConvertible {
         return .success(stroke)
     }
 
-    private static func isPrintable(_ scalar: UnicodeScalar) -> Bool {
+    static func isPrintable(_ scalar: UnicodeScalar) -> Bool {
         !CharacterSet.controlCharacters.contains(scalar)
             && !CharacterSet.illegalCharacters.contains(scalar)
             && !(0xF700...0xF8FF).contains(scalar.value)

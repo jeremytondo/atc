@@ -154,16 +154,16 @@ extension KeyStroke {
         if flags.contains(.option) { modifiers.insert(.option) }
         if flags.contains(.shift) { modifiers.insert(.shift) }
 
+        // Escape normalizes to the bare stroke regardless of held modifiers
+        // so a pending sequence always cancels silently.
         if event.keyCode == 53 {
-            return KeyStroke(key: "escape", modifiers: modifiers)
+            return .escape
         }
         guard let characters = event.characters(byApplyingModifiers: [])
                 ?? event.charactersIgnoringModifiers,
               characters.count == 1,
               let scalar = characters.lowercased().unicodeScalars.first,
-              !CharacterSet.controlCharacters.contains(scalar),
-              !CharacterSet.illegalCharacters.contains(scalar),
-              !(0xF700...0xF8FF).contains(scalar.value)
+              isPrintable(scalar)
         else { return nil }
         return KeyStroke(key: characters.lowercased(), modifiers: modifiers)
     }

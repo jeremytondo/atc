@@ -82,6 +82,9 @@ final class WindowKeyboardRouter {
     }
 
     private func handle(_ node: ResolvedKeymap.Node) -> Bool {
+        // A recognized binding supersedes lingering feedback; without this a
+        // fresh flash would hide the hint of a sequence started within 800 ms.
+        clearFlash()
         switch node {
         case .command(let command):
             cancel()
@@ -107,6 +110,13 @@ final class WindowKeyboardRouter {
             }
             self?.handleTimeout(generation: generation)
         }
+    }
+
+    private func clearFlash() {
+        flashToken += 1
+        flashTask?.cancel()
+        flashTask = nil
+        flash = nil
     }
 
     private func showFlash(_ message: String) {

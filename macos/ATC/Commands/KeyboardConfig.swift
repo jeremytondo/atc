@@ -138,10 +138,6 @@ enum KeyboardConfigParser {
                 continue
             }
 
-            guard recognizedTables.contains(table) else {
-                // Other subsystems own unknown tables in this shared config file.
-                continue
-            }
             if seen[table, default: []].contains(key) {
                 diagnostics.append(.init(
                     severity: .warning,

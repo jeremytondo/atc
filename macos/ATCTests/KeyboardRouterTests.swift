@@ -79,6 +79,18 @@ struct KeyboardRouterTests {
         #expect(router.pendingNode == nil)
     }
 
+    @Test("a lingering flash clears when a new sequence starts")
+    func flashClearsOnNewSequence() throws {
+        let router = WindowKeyboardRouter(keymap: try keymap()) { _ in .available }
+        #expect(router.handle(try stroke("cmd+k"), isRepeat: false))
+        #expect(router.handle(KeyStroke(key: "x", modifiers: []), isRepeat: false))
+        #expect(router.flash != nil)
+
+        #expect(router.handle(try stroke("cmd+k"), isRepeat: false))
+        #expect(router.flash == nil)
+        #expect(router.pendingNode != nil)
+    }
+
     @Test("escape and focus loss cancel pending sequences silently")
     func cancellation() throws {
         let router = WindowKeyboardRouter(keymap: try keymap()) { _ in .available }
