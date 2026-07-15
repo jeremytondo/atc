@@ -56,5 +56,5 @@ The current viewed remote directory that atc will use as a session working direc
 _Avoid_: Selected file, selected row
 
 **Atelier Command Sequence**:
-A keyboard sequence that starts with `Cmd-K`, waits for one unmodified next key, and targets atc itself, including when a Terminal Session has focus.
+A keyboard sequence that starts with the configured leader key (`Cmd-K` by default), waits for one continuation key (modified or unmodified), and targets atc itself, including when a Terminal Session has focus.
 _Avoid_: Leader key, terminal prefix, command chord

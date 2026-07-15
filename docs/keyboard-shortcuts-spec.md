@@ -517,7 +517,7 @@ the router (injected via environment) and the config store. Per
 `CONTEXT.md`, user-visible copy says **Command Sequence** — never "leader".
 
 - **Hint** (`CommandSequenceHintView`): while `state == .pending`, a
-  compact bottom-center HUD (thin material capsule) generated from the
+  compact bottom-trailing HUD (thin material capsule) generated from the
   pending node: one row per continuation, sorted by key, showing a keycap
   glyph and the command title. Unavailable continuations stay listed but
   dimmed, annotated with the descriptor's short reason — availability is
