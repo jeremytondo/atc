@@ -9,7 +9,7 @@ Related: [DEV-46](https://linear.app/elevenideas/issue/DEV-46/keyboard-shortcut-
 ## Purpose
 
 Give people a searchable, always-current reference for every configured atc
-keyboard shortcut without taking space from the terminal, competing with
+Keyboard Shortcut without taking space from the terminal, competing with
 Session Details, or duplicating keybinding configuration in the UI.
 
 ## Confirmed Decisions
@@ -20,8 +20,8 @@ Session Details, or duplicating keybinding configuration in the UI.
 - Use native SwiftUI window, menu, search, list, section, and empty-state
   behavior. The Linear screenshot is inspiration for content, not a layout
   requirement.
-- Provide fuzzy search and group the unfiltered and filtered results under
-  meaningful headings.
+- Provide simple searchable filtering and group the unfiltered and filtered
+  results under meaningful headings.
 
 ## Recommended Experience
 
@@ -35,18 +35,20 @@ Session Details, or duplicating keybinding configuration in the UI.
   behavior supplied by `UtilityWindow`.
 - A native search field receives focus when the window opens. Below it, a
   sectioned `List` shows command titles on the leading edge and their resolved
-  direct shortcuts or Command Sequences on the trailing edge.
-- A command with multiple configured bindings appears once with all of its
-  bindings. A two-step Command Sequence renders as two distinct key groups in
-  execution order rather than as one opaque string.
+  Keyboard Shortcuts on the trailing edge.
+- A command with multiple configured direct shortcuts appears once with all of
+  those shortcuts.
+- Command Sequences do not appear. They are a distinct interaction model, not
+  Keyboard Shortcuts.
 - With no query, commands use stable category and command ordering. With a
-  query, empty sections disappear and matches rank within their category.
+  query, empty sections disappear and matching rows preserve that ordering.
 - `ContentUnavailableView.search` handles a query with no matches. If the user
   clears every default binding, a separate empty state explains that no
   keyboard shortcuts are configured.
 - The window displays the active resolved keymap. Reloading `config.toml`
-  updates it immediately, including remaps, unbinds, a changed leader, and
-  `clear_default_keybindings`.
+  updates it immediately, including direct-shortcut remaps, unbinds, and
+  `clear_default_keybindings`. Changing the leader affects Command Sequences
+  only and therefore does not change this window.
 
 ## Command and Binding Model
 
@@ -56,42 +58,44 @@ The reference must not maintain a second hard-coded shortcut table.
 - Add a stable `CommandCategory` to `CommandDescriptor`. Category titles and
   ordering belong to command metadata so menus, this reference, and the future
   command palette do not invent separate organization schemes.
-- Add an ordered flat collection of `ResolvedBinding` values to
+- Add an ordered flat collection of `ResolvedShortcut` values to
   `ResolvedKeymap` alongside its routing tree and `menuShortcuts`. Each value
-  contains the resolved `KeySequence` and `CommandID`.
+  contains one resolved direct `KeyStroke` and `CommandID`.
 - Build that collection during keymap resolution, after defaults, user
-  replacements, unbinds, and leader expansion have been applied. Do not
-  reconstruct display data by walking the prefix tree.
-- Project resolved bindings into one reference item per bound command by
-  joining them with `CommandRegistry` metadata.
-- Exclude commands with no resolved binding. This is a shortcut reference, not
-  a catalog of every app command; menu-only and unbound commands remain
-  discoverable through their normal menus.
+  replacements, and unbinds have been applied. Exclude Command Sequences. Do
+  not reconstruct display data by walking the prefix tree.
+- Project resolved shortcuts into one reference item per directly bound command
+  by joining them with `CommandRegistry` metadata.
+- Exclude commands with no resolved direct shortcut, including commands bound
+  only through Command Sequences. This is a shortcut reference, not a catalog
+  of every app command; menu-only, sequence-only, and unbound commands remain
+  discoverable through their appropriate surfaces.
 - Reuse `KeyStroke.displayDescription` as the base display formatter and add a
-  sequence-level formatter that also provides a spoken accessibility label.
+  spoken accessibility label for each direct shortcut.
 
 Initial categories should cover the current registry without introducing
 feature-specific UI logic:
 
 - **Projects & Workspaces**: project and Workspace creation commands.
-- **Sessions**: Agent Session and Terminal Session commands.
+- **Sessions & Terminals**: Session and Terminal commands.
 - **View**: sidebar and other presentation commands.
 - **General**: app-wide operations such as refresh and configuration reload.
 
 Only categories containing at least one bound command are displayed.
 
-## Fuzzy Search
+## Search
 
-- Implement matching as a small, deterministic, Swift-only value type with no
-  production dependency.
-- Normalize case and diacritics, require query characters to occur in order,
-  and reward exact prefixes, word-boundary matches, and contiguous runs.
+- Use the same small atc-owned matcher as the Command Palette: first try a
+  case-insensitive substring, then fall back to matching the first letters of
+  words.
+- Return matching character positions for highlighting. Do not calculate fuzzy
+  scores or reorder results by perceived match quality.
 - Search command title, category title, stable command identifier, and both
-  human-readable and configuration-style binding text.
-- Keep matching independent of SwiftUI and of `CommandID` so DEV-37 can reuse
-  it for the command palette and session search without copying ranking logic.
-- Preserve stable command order as the tie-breaker so results do not jump
-  unpredictably while typing.
+  human-readable and configuration-style direct-shortcut text.
+- Keep matching independent of SwiftUI and `CommandID` so the reference and
+  Command Palette can reuse it without copying logic.
+- Preserve stable category and command order while filtering so results do not
+  jump unpredictably while typing.
 
 ## System Shape
 
@@ -101,13 +105,14 @@ Only categories containing at least one bound command are displayed.
 - **`AppCommands`**: Add the Help-menu `WindowVisibilityToggle` for the utility
   window. The existing registry-driven app commands remain unchanged.
 - **Command registry**: Own category metadata and stable presentation order.
-- **Keymap resolver**: Publish the final ordered bindings in addition to the
-  routing tree and selected menu equivalents.
-- **Shortcut reference model**: Join descriptors to resolved bindings, group
+- **Keymap resolver**: Publish the final ordered direct shortcuts in addition to
+  the routing tree and selected menu equivalents.
+- **Shortcut reference model**: Join descriptors to resolved shortcuts, group
   and order items, and expose filtered sections.
 - **Shortcut reference views**: Render the searchable native list, section
   headings, shortcut labels, accessibility descriptions, and empty states.
-- **Fuzzy matcher**: Provide reusable, UI-independent matching and scoring.
+- **Search matcher**: Provide the small shared, UI-independent substring and
+  word-initial matching behavior without an external dependency.
 
 The feature belongs under a focused macOS feature directory such as
 `macos/ATC/Features/KeyboardShortcuts/`. Generic matching may live in
@@ -117,9 +122,10 @@ generic but its file can remain with the feature.
 ## Implementation Sequence
 
 1. Extend command descriptors with categories and stable presentation order.
-2. Preserve the final ordered bindings in `ResolvedKeymap` and cover overrides,
-   unbinding, leader expansion, cleared defaults, and reload behavior in tests.
-3. Add the reference projection and fuzzy matcher with focused unit tests.
+2. Preserve the final ordered direct shortcuts in `ResolvedKeymap` and cover
+   overrides, unbinding, cleared defaults, sequence exclusion, and reload
+   behavior in tests.
+3. Add the reference projection and small matcher with focused unit tests.
 4. Build the sectioned, searchable `KeyboardShortcutsView` from the projection.
 5. Add the singleton `UtilityWindow` and Help-menu visibility toggle.
 6. Add hosting or presentation smoke coverage, then verify menu opening, window
@@ -129,7 +135,7 @@ generic but its file can remain with the feature.
 ## Accessibility and Keyboard Behavior
 
 - The window and every result must be navigable with Full Keyboard Access.
-- Shortcut symbols need spoken labels such as “Command K, then B”; VoiceOver
+- Shortcut symbols need spoken labels such as “Shift Command N”; VoiceOver
   must not receive only glyphs like `⌘` or `⇧`.
 - Search must not activate the main window's terminal keyboard router because
   the utility window is a separate key window.
@@ -143,25 +149,25 @@ generic but its file can remain with the feature.
 - Replacing native menu shortcut labels.
 - Executing commands from the reference list; DEV-46 is reference and search,
   not the DEV-37 command palette.
+- Showing Command Sequences; they are not Keyboard Shortcuts.
 - Adding a custom right-side overlay, sheet, popover, or second inspector.
-- Adding a third-party fuzzy-search dependency.
 
 ## Success Criteria
 
 - Help → Keyboard Shortcuts opens one reusable utility window and never alters
   the main window's inspector or navigation state.
-- The reference shows every and only currently resolved binding, grouped by
-  registry-owned categories.
-- Direct shortcuts, multiple bindings, and Command Sequences are legible and
-  accessible.
-- Fuzzy search returns useful, deterministic results and preserves headings.
+- The reference shows every and only currently resolved direct Keyboard
+  Shortcut, grouped by registry-owned categories.
+- Multiple direct shortcuts for one command are legible and accessible.
+- Commands bound only through Command Sequences do not appear.
+- Search returns useful, deterministic filtered results and preserves headings.
 - Reloading valid configuration updates the open window; invalid reloads keep
   showing the previous working keymap.
 - Clearing or unbinding defaults never leaves stale shortcut rows behind.
 - The window remains usable when the Dashboard or a terminal is active, and
   opening or closing it does not send keystrokes to the terminal.
-- Automated tests cover binding projection, ordering, grouping, fuzzy ranking,
-  empty states, and configuration changes.
+- Automated tests cover binding projection, ordering, grouping, search
+  filtering, empty states, and configuration changes.
 
 ## Open Question
 
