@@ -6,6 +6,7 @@ enum NavigatorMetrics {
     static let rowHeight: CGFloat = 28
     static let iconWidth: CGFloat = 18
     static let actionSize: CGFloat = 22
+    static let rowHorizontalInset = Spacing.xs
     static let contentHorizontalPadding = Spacing.sm
     static let rowVerticalInset: CGFloat = 1
     static let selectorToContentSpacing = Spacing.lg
@@ -190,9 +191,9 @@ extension View {
     ) -> some View {
         listRowInsets(EdgeInsets(
             top: top,
-            leading: Spacing.sm,
+            leading: NavigatorMetrics.rowHorizontalInset,
             bottom: bottom,
-            trailing: Spacing.sm
+            trailing: NavigatorMetrics.rowHorizontalInset
         ))
         .listRowBackground(Color.clear)
     }
