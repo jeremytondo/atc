@@ -16,10 +16,28 @@ enum CommandAvailability: Equatable {
     }
 }
 
+enum CommandCategory: CaseIterable, Sendable {
+    case general
+    case projectsAndWorkspaces
+    case sessionsAndTerminals
+    case view
+
+    var title: String {
+        switch self {
+        case .general: "General"
+        case .projectsAndWorkspaces: "Projects & Workspaces"
+        case .sessionsAndTerminals: "Sessions & Terminals"
+        case .view: "View"
+        }
+    }
+}
+
 @MainActor
 struct CommandDescriptor {
     let id: CommandID
     let title: String
+    let category: CommandCategory
+    var isPaletteEligible = true
     let availability: (CommandContext) -> CommandAvailability
     let perform: (CommandContext) -> Void
 }
@@ -30,19 +48,38 @@ enum CommandRegistry {
         "Requires an open Workspace on a reachable Connection"
     private static let connectionUnavailable = "Requires a configured Connection"
 
+    static var allDescriptors: [CommandDescriptor] {
+        CommandID.allCases.map(descriptor(for:))
+    }
+
     static func descriptor(for id: CommandID) -> CommandDescriptor {
         switch id {
         case .toggleSidebar:
             CommandDescriptor(
                 id: id,
                 title: "Toggle Sidebar",
+                category: .view,
                 availability: { _ in .available },
                 perform: { $0.windowState.toggleSidebar() }
+            )
+        case .toggleCommandPalette:
+            CommandDescriptor(
+                id: id,
+                title: "Toggle Command Palette",
+                category: .view,
+                isPaletteEligible: false,
+                availability: {
+                    $0.windowState.isSheetPresented
+                        ? .unavailable(reason: "Not available while a dialog is open")
+                        : .available
+                },
+                perform: { $0.windowState.isCommandPalettePresented.toggle() }
             )
         case .newSession:
             CommandDescriptor(
                 id: id,
                 title: "New Session",
+                category: .sessionsAndTerminals,
                 availability: sessionAvailability,
                 perform: { $0.windowState.startSessionKind = .agentSession }
             )
@@ -50,6 +87,7 @@ enum CommandRegistry {
             CommandDescriptor(
                 id: id,
                 title: "New Terminal",
+                category: .sessionsAndTerminals,
                 availability: sessionAvailability,
                 perform: { $0.windowState.startSessionKind = .terminal }
             )
@@ -57,6 +95,7 @@ enum CommandRegistry {
             CommandDescriptor(
                 id: id,
                 title: "New Project…",
+                category: .projectsAndWorkspaces,
                 availability: connectionAvailability,
                 perform: { $0.windowState.isCreateProjectPresented = true }
             )
@@ -64,6 +103,7 @@ enum CommandRegistry {
             CommandDescriptor(
                 id: id,
                 title: "New Workspace…",
+                category: .projectsAndWorkspaces,
                 availability: connectionAvailability,
                 perform: { $0.windowState.presentCreateWorkspace(in: $0.appModel) }
             )
@@ -71,6 +111,7 @@ enum CommandRegistry {
             CommandDescriptor(
                 id: id,
                 title: "Refresh",
+                category: .general,
                 availability: { _ in .available },
                 perform: { context in Task { await context.appModel.refreshAll() } }
             )
@@ -78,6 +119,7 @@ enum CommandRegistry {
             CommandDescriptor(
                 id: id,
                 title: "Reload Configuration",
+                category: .general,
                 availability: { _ in .available },
                 perform: { $0.configStore.reload() }
             )

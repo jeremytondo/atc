@@ -1,5 +1,6 @@
 enum CommandID: String, CaseIterable, Sendable {
     case toggleSidebar = "view.toggle-sidebar"
+    case toggleCommandPalette = "view.toggle-command-palette"
     case newSession = "session.new"
     case newTerminal = "terminal.new"
     case newProject = "project.new"

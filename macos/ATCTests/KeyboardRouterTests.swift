@@ -150,4 +150,35 @@ struct KeyboardRouterTests {
         let router = WindowKeyboardRouter(keymap: map) { _ in .available }
         #expect(!router.handle(try stroke("ctrl+j"), isRepeat: false))
     }
+
+    @Test("suspension forwards registered bindings until routing resumes")
+    func suspension() throws {
+        var isSuspended = true
+        var executions: [CommandID] = []
+        let router = WindowKeyboardRouter(keymap: try keymap()) {
+            executions.append($0)
+            return .available
+        }
+        router.isSuspended = { isSuspended }
+        let refresh = try stroke("cmd+r")
+
+        #expect(!router.handle(refresh, isRepeat: false))
+        #expect(executions.isEmpty)
+        isSuspended = false
+        #expect(router.handle(refresh, isRepeat: false))
+        #expect(executions == [.refresh])
+    }
+
+    @Test("external unavailable feedback uses the router flash lifecycle")
+    func showUnavailable() async throws {
+        let router = WindowKeyboardRouter(keymap: try keymap()) { _ in .available }
+        router.showUnavailable(reason: "Unavailable now")
+        #expect(router.flash == RouterFlash(message: "Unavailable now"))
+        // Awaiting releases the main actor so the router's clearing task can
+        // run; a run-loop pump would hold the actor and dead-lock the clear.
+        for _ in 0..<100 where router.flash != nil {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(router.flash == nil)
+    }
 }

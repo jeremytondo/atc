@@ -26,7 +26,19 @@ _Avoid_: Files Navigator, File browser Navigator
 
 **Workspace Switcher**:
 The toolbar control that identifies the Active Workspace as `Project › Workspace` and opens the app-wide Workspace selection menu. Its status indicator reflects the Active Workspace's Connection.
-_Avoid_: Workspace picker, Project picker, Breadcrumb
+_Avoid_: Project picker, Breadcrumb
+
+**Workspace Picker**:
+The keyboard-driven selection surface for finding and activating a Workspace from anywhere in a window. It is separate from the toolbar Workspace Switcher even though both change the Active Workspace.
+_Avoid_: Workspace Switcher, Workspace search
+
+**Keyboard Shortcut**:
+A one-step key binding that directly invokes an atc command, such as `Cmd-B`.
+_Avoid_: Command Sequence, key chord
+
+**Command Sequence**:
+A two-step atc interaction that begins with the configured leader and invokes a command after a continuation key, such as `Cmd-K, B`. A Command Sequence is not a Keyboard Shortcut.
+_Avoid_: Keyboard Shortcut, key chord, terminal prefix
 
 **Dashboard**:
 The app-wide main-content destination for viewing and managing work across Connections, Projects, and Workspaces. Showing the Dashboard does not clear the Active Workspace or change the selected Navigator.

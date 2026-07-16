@@ -55,6 +55,6 @@ _Avoid_: Selected row
 The current viewed remote directory that atc will use as a session working directory when the user confirms a folder picker.
 _Avoid_: Selected file, selected row
 
-**Atelier Command Sequence**:
-A keyboard sequence that starts with the configured leader key (`Cmd-K` by default), waits for one continuation key (modified or unmodified), and targets atc itself, including when a Terminal Session has focus.
-_Avoid_: Leader key, terminal prefix, command chord
+**Command Sequence**:
+A two-step atc interaction that starts with the configured leader (`Cmd-K` by default), waits for one continuation key (modified or unmodified), and targets atc itself, including when a Terminal Session has focus. A Command Sequence is not a Keyboard Shortcut.
+_Avoid_: Keyboard Shortcut, terminal prefix, command chord

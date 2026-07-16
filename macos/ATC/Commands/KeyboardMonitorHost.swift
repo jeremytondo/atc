@@ -3,9 +3,15 @@ import SwiftUI
 
 struct KeyboardMonitorHost: NSViewRepresentable {
     let router: WindowKeyboardRouter
+    let onDeactivate: () -> Void
+    let focusFallback: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(router: router)
+        Coordinator(
+            router: router,
+            onDeactivate: onDeactivate,
+            focusFallback: focusFallback
+        )
     }
 
     func makeNSView(context: Context) -> HostView {
@@ -18,6 +24,8 @@ struct KeyboardMonitorHost: NSViewRepresentable {
 
     func updateNSView(_ nsView: HostView, context: Context) {
         context.coordinator.router = router
+        context.coordinator.onDeactivate = onDeactivate
+        context.coordinator.focusFallback = focusFallback
         if nsView.window !== context.coordinator.hostWindow {
             context.coordinator.install(for: nsView.window)
         }
@@ -40,12 +48,20 @@ struct KeyboardMonitorHost: NSViewRepresentable {
     @MainActor
     final class Coordinator {
         var router: WindowKeyboardRouter
+        var onDeactivate: () -> Void
+        var focusFallback: () -> Void
         private(set) weak var hostWindow: NSWindow?
         private var monitor: Any?
         private var observers: [NSObjectProtocol] = []
 
-        init(router: WindowKeyboardRouter) {
+        init(
+            router: WindowKeyboardRouter,
+            onDeactivate: @escaping () -> Void,
+            focusFallback: @escaping () -> Void
+        ) {
             self.router = router
+            self.onDeactivate = onDeactivate
+            self.focusFallback = focusFallback
         }
 
         func install(for window: NSWindow?) {
@@ -60,7 +76,19 @@ struct KeyboardMonitorHost: NSViewRepresentable {
                       window.isKeyWindow,
                       let stroke = KeyStroke.normalize(event: event)
                 else { return event }
-                return self.router.handle(stroke, isRepeat: event.isARepeat) ? nil : event
+                let wasSuspended = self.router.isSuspended()
+                let handled = self.router.handle(stroke, isRepeat: event.isARepeat)
+                // The palette opener flips suspension synchronously, but the
+                // palette's focus accessor only mounts on the next SwiftUI
+                // commit; keystrokes already queued behind the opener would
+                // land in the still-focused terminal. Clearing focus at the
+                // flip closes that gap, stashing the responder so dismissal
+                // can still restore it.
+                if handled, !wasSuspended, self.router.isSuspended() {
+                    self.router.responderBeforeSuspension = window.firstResponder
+                    window.makeFirstResponder(nil)
+                }
+                return handled ? nil : event
             }
 
             let center = NotificationCenter.default
@@ -69,15 +97,40 @@ struct KeyboardMonitorHost: NSViewRepresentable {
                 object: window,
                 queue: .main
             ) { [weak self] _ in
-                MainActor.assumeIsolated { self?.router.cancel() }
+                MainActor.assumeIsolated {
+                    self?.router.cancel()
+                    self?.onDeactivate()
+                    self?.restoreOrphanedResponder()
+                }
             })
             observers.append(center.addObserver(
                 forName: NSApplication.didResignActiveNotification,
                 object: NSApp,
                 queue: .main
             ) { [weak self] _ in
-                MainActor.assumeIsolated { self?.router.cancel() }
+                MainActor.assumeIsolated {
+                    self?.router.cancel()
+                    self?.onDeactivate()
+                    self?.restoreOrphanedResponder()
+                }
             })
+        }
+
+        // Dismissal normally restores focus through the palette's window
+        // accessor, but deactivation can dismiss the palette before the
+        // accessor's first mount consumes the stash; the responder captured
+        // at the suspension flip would then stay lost.
+        private func restoreOrphanedResponder() {
+            guard let stashed = router.responderBeforeSuspension else { return }
+            router.responderBeforeSuspension = nil
+            if let window = hostWindow,
+               let view = stashed as? NSView,
+               view.window === window,
+               view.acceptsFirstResponder,
+               window.makeFirstResponder(view) {
+                return
+            }
+            focusFallback()
         }
 
         func stop() {
@@ -125,22 +178,38 @@ struct KeyboardRoutingContainer<Content: View>: View {
             windowState: windowState,
             configStore: configStore
         )
-        _router = State(initialValue: WindowKeyboardRouter(
+        let router = WindowKeyboardRouter(
             keymap: configStore.keymap,
             context: context
-        ))
+        )
+        router.isSuspended = { windowState.isCommandPalettePresented }
+        _router = State(initialValue: router)
     }
 
     var body: some View {
         content
             .overlay {
+                if windowState.isCommandPalettePresented {
+                    CommandPaletteView()
+                }
+            }
+            .overlay {
                 CommandFeedbackOverlay()
             }
             .environment(configStore)
             .environment(router)
-            .background(KeyboardMonitorHost(router: router))
+            .background(KeyboardMonitorHost(
+                router: router,
+                onDeactivate: { windowState.isCommandPalettePresented = false },
+                focusFallback: { windowState.requestTerminalFocus() }
+            ))
             .onChange(of: configStore.keymap.generation, initial: true) {
                 router.keymap = configStore.keymap
+            }
+            .onChange(of: windowState.isCommandPalettePresented) {
+                if windowState.isCommandPalettePresented {
+                    router.cancel()
+                }
             }
     }
 }

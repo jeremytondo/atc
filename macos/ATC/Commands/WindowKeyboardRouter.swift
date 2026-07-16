@@ -23,6 +23,11 @@ final class WindowKeyboardRouter {
         }
     }
 
+    @ObservationIgnored var isSuspended: @MainActor () -> Bool = { false }
+    /// The responder that held focus when suspension began. The key monitor
+    /// stashes it before clearing window focus so the palette can restore it
+    /// on dismissal; AnyObject keeps AppKit out of this file.
+    @ObservationIgnored weak var responderBeforeSuspension: AnyObject?
     @ObservationIgnored private let executeCommand: @MainActor (CommandID) -> CommandAvailability
     @ObservationIgnored private var timeoutTask: Task<Void, Never>?
     @ObservationIgnored private var flashTask: Task<Void, Never>?
@@ -48,6 +53,7 @@ final class WindowKeyboardRouter {
 
     @discardableResult
     func handle(_ stroke: KeyStroke, isRepeat: Bool) -> Bool {
+        guard !isSuspended() else { return false }
         switch state {
         case .idle:
             guard let node = keymap.root[stroke] else { return false }
@@ -79,6 +85,10 @@ final class WindowKeyboardRouter {
               case .pending = state
         else { return }
         cancel()
+    }
+
+    func showUnavailable(reason: String) {
+        showFlash(reason)
     }
 
     private func handle(_ node: ResolvedKeymap.Node) -> Bool {
