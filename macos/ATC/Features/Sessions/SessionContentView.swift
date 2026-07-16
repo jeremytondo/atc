@@ -19,6 +19,7 @@ struct SessionContentView: View {
     @Environment(AppModel.self) private var appModel
     let selectedRef: SessionRef?
     let selectedSession: Session?
+    let terminalFocusRequest: UInt
     var emptyState: EmptyStateActions?
 
     @Environment(WindowState.self) private var windowState
@@ -37,7 +38,10 @@ struct SessionContentView: View {
                 Divider()
             }
             ZStack {
-                TerminalPane(visibleRef: selectedRef)
+                TerminalPane(
+                    visibleRef: selectedRef,
+                    focusRequest: terminalFocusRequest
+                )
                 cover
             }
         }

@@ -9,10 +9,6 @@ import ATCAPI
 /// previews can't attribute (same rationale as PickerHostingSmokeTest).
 @Suite("Dashboard and sheet hosting smoke")
 struct ProjectUIHostingSmokeTest {
-    private func pump(seconds: TimeInterval) {
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: seconds))
-    }
-
     private func host(_ view: some View, width: CGFloat = 460, height: CGFloat = 480) {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: width, height: height),

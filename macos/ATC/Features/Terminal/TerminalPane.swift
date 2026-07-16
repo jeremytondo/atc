@@ -6,7 +6,7 @@ import SwiftUI
 struct TerminalPane: View {
     @Environment(AppModel.self) private var appModel
     let visibleRef: SessionRef?
-    @FocusState private var focusedTerminal: String?
+    let focusRequest: UInt
 
     var body: some View {
         ZStack {
@@ -15,14 +15,13 @@ struct TerminalPane: View {
             Color(red: 0.117, green: 0.117, blue: 0.180)
             ForEach(refs, id: \.self) { ref in
                 if let controller = appModel.terminals[ref] {
-                    TerminalHostView(controller: controller, focus: $focusedTerminal)
-                        .opacity(ref == visibleRef ? 1 : 0)
-                        .allowsHitTesting(ref == visibleRef)
+                    TerminalHostView(
+                        controller: controller,
+                        isVisible: ref == visibleRef,
+                        focusRequest: focusRequest
+                    )
                 }
             }
-        }
-        .onChange(of: visibleRef, initial: true) {
-            focusedTerminal = visibleRef?.sessionID
         }
     }
 

@@ -8,10 +8,6 @@ import ATCAPI
 /// actually lays out — catches row-diff crashes previews can't attribute.
 @Suite("RemoteFolderPickerSheet hosting smoke")
 struct PickerHostingSmokeTest {
-    private func pump(seconds: TimeInterval) {
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: seconds))
-    }
-
     @Test("sheet hosts, loads default directory without crashing")
     func hostAndNavigate() async throws {
         let sheet = RemoteFolderPickerSheet(client: MockATCClient()) { _ in }
