@@ -24,6 +24,15 @@ struct TriggerParsingTests {
         #expect(stroke.description == "cmd+opt+shift+n")
     }
 
+    @Test("spoken shortcuts name modifiers in glyph order")
+    func spokenDescription() {
+        #expect(KeyStroke(
+            key: "p",
+            modifiers: [.control, .option, .shift, .command]
+        ).spokenDescription == "Control Option Shift Command P")
+        #expect(KeyStroke.escape.spokenDescription == "Escape")
+    }
+
     @Test("sequence parsing reserves leader for step one")
     func sequences() throws {
         #expect(try ParsedKeySequence.parse("cmd+b").get()

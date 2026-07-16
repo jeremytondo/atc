@@ -150,4 +150,31 @@ struct KeyboardRouterTests {
         let router = WindowKeyboardRouter(keymap: map) { _ in .available }
         #expect(!router.handle(try stroke("ctrl+j"), isRepeat: false))
     }
+
+    @Test("suspension forwards registered bindings until routing resumes")
+    func suspension() throws {
+        var isSuspended = true
+        var executions: [CommandID] = []
+        let router = WindowKeyboardRouter(keymap: try keymap()) {
+            executions.append($0)
+            return .available
+        }
+        router.isSuspended = { isSuspended }
+        let refresh = try stroke("cmd+r")
+
+        #expect(!router.handle(refresh, isRepeat: false))
+        #expect(executions.isEmpty)
+        isSuspended = false
+        #expect(router.handle(refresh, isRepeat: false))
+        #expect(executions == [.refresh])
+    }
+
+    @Test("external unavailable feedback uses the router flash lifecycle")
+    func showUnavailable() throws {
+        let router = WindowKeyboardRouter(keymap: try keymap()) { _ in .available }
+        router.showUnavailable(reason: "Unavailable now")
+        #expect(router.flash == RouterFlash(message: "Unavailable now"))
+        pump(seconds: 0.9)
+        #expect(router.flash == nil)
+    }
 }

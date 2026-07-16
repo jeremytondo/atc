@@ -31,6 +31,7 @@ final class WindowState {
     private(set) var selectedContent: MainContentSelection = .dashboard
     var columnVisibility: NavigationSplitViewVisibility = .all
     var isInspectorPresented = false
+    var isCommandPalettePresented = false
 
     var isProjectsSectionExpanded = true
     var isSessionsSectionExpanded = true
@@ -40,6 +41,12 @@ final class WindowState {
     var isCreateProjectPresented = false
     var createWorkspaceContext: CreateWorkspaceContext?
     var startSessionKind: StartSessionKind?
+
+    var isSheetPresented: Bool {
+        isCreateProjectPresented
+            || createWorkspaceContext != nil
+            || startSessionKind != nil
+    }
 
     /// Advances for every explicit request to type in the selected Terminal
     /// Session. Unlike `selectedSession`, this also changes when the user

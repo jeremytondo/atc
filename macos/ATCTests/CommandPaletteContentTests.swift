@@ -5,6 +5,13 @@ import Testing
 @MainActor
 @Suite("Command palette content")
 struct CommandPaletteContentTests {
+    @Test("palette-ineligible commands never appear")
+    func eligibility() {
+        let fixture = makeFixture()
+        #expect(!rows(query: "", fixture: fixture).map(\.id)
+            .contains(.toggleCommandPalette))
+    }
+
     @Test("rows use stable alphabetical order for empty and filtered queries")
     func stableOrdering() throws {
         let fixture = makeFixture()

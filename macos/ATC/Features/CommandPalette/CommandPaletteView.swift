@@ -5,7 +5,7 @@ struct CommandPaletteView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(WindowState.self) private var windowState
     @Environment(KeyboardConfigStore.self) private var configStore
-    @Environment(\.dismiss) private var dismiss
+    @Environment(WindowKeyboardRouter.self) private var router
 
     @State private var query = ""
     @State private var selectedID: CommandID?
@@ -27,7 +27,7 @@ struct CommandPaletteView: View {
         ZStack(alignment: .top) {
             Color.clear
                 .contentShape(Rectangle())
-                .onTapGesture { dismiss() }
+                .onTapGesture { dismissPalette() }
 
             palettePanel(rows: rows, context: context)
                 .frame(maxWidth: 500)
@@ -37,7 +37,7 @@ struct CommandPaletteView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Command Palette")
         .accessibilityAddTraits(.isModal)
-        .onExitCommand { dismiss() }
+        .onExitCommand { dismissPalette() }
         .task { queryIsFocused = true }
         .onChange(of: query) {
             selectedID = query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -70,7 +70,7 @@ struct CommandPaletteView: View {
                     return moveSelection(-1, through: rows)
                 }
                 .onKeyPress(.escape) {
-                    dismiss()
+                    dismissPalette()
                     return .handled
                 }
 
@@ -179,7 +179,7 @@ struct CommandPaletteView: View {
             parts.append("Unavailable — \(reason)")
         }
         if let shortcut = row.shortcut {
-            parts.append(shortcut.displayDescription)
+            parts.append(shortcut.spokenDescription)
         }
         return parts.joined(separator: ", ")
     }
@@ -191,16 +191,25 @@ struct CommandPaletteView: View {
         guard let selectedID,
               let row = rows.first(where: { $0.id == selectedID })
         else {
-            dismiss()
+            dismissPalette()
             return
         }
         activate(row, context: context)
     }
 
     private func activate(_ row: CommandPaletteRow, context: CommandContext) {
-        guard row.availability.isAvailable else { return }
-        dismiss()
+        guard row.availability.isAvailable else {
+            if case .unavailable(let reason) = row.availability {
+                router.showUnavailable(reason: reason)
+            }
+            return
+        }
+        dismissPalette()
         CommandRegistry.execute(row.id, context: context)
+    }
+
+    private func dismissPalette() {
+        windowState.isCommandPalettePresented = false
     }
 
     private func moveSelection(

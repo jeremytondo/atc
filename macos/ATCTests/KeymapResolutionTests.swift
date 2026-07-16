@@ -21,6 +21,10 @@ struct KeymapResolutionTests {
         #expect(keymap.generation == 1)
         #expect(keymap.leaderTimeout == .milliseconds(1_800))
         #expect(command(at: try stroke("cmd+b"), in: keymap) == .toggleSidebar)
+        #expect(command(at: try stroke("cmd+shift+p"), in: keymap)
+            == .toggleCommandPalette)
+        let paletteShortcut = try stroke("cmd+shift+p")
+        #expect(keymap.menuShortcuts[.toggleCommandPalette] == paletteShortcut)
         #expect(command(at: try stroke("cmd+n"), in: keymap) == .newSession)
         #expect(command(at: try stroke("cmd+r"), in: keymap) == .refresh)
         #expect(command(at: try stroke("cmd+t"), in: keymap) == .newTerminal)
@@ -31,6 +35,25 @@ struct KeymapResolutionTests {
         #expect(command(in: leader[KeyStroke(key: "b", modifiers: [])]) == .toggleSidebar)
         #expect(command(in: leader[KeyStroke(key: "n", modifiers: [])]) == .newSession)
         #expect(command(in: leader[KeyStroke(key: "r", modifiers: [])]) == .refresh)
+    }
+
+    @Test("the palette binding can be rebound and unbound")
+    func paletteBindingLayering() throws {
+        let rebound = try resolve(#"""
+        [keybindings]
+        "ctrl+shift+p" = "view.toggle-command-palette"
+        """#)
+        #expect(command(at: try stroke("ctrl+shift+p"), in: rebound)
+            == .toggleCommandPalette)
+        let reboundShortcut = try stroke("ctrl+shift+p")
+        #expect(rebound.menuShortcuts[.toggleCommandPalette] == reboundShortcut)
+
+        let unbound = try resolve(#"""
+        [keybindings]
+        "cmd+shift+p" = "unbind"
+        """#)
+        #expect(unbound.root[try stroke("cmd+shift+p")] == nil)
+        #expect(unbound.menuShortcuts[.toggleCommandPalette] == nil)
     }
 
     @Test("user entries replace, unbind, and can rebind defaults")

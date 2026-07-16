@@ -37,6 +37,16 @@ struct KeyStroke: Hashable, Sendable, CustomStringConvertible {
         return value
     }
 
+    var spokenDescription: String {
+        var parts: [String] = []
+        if modifiers.contains(.control) { parts.append("Control") }
+        if modifiers.contains(.option) { parts.append("Option") }
+        if modifiers.contains(.shift) { parts.append("Shift") }
+        if modifiers.contains(.command) { parts.append("Command") }
+        parts.append(key == "escape" ? "Escape" : key.uppercased())
+        return parts.joined(separator: " ")
+    }
+
     var hasPrimaryModifier: Bool {
         !modifiers.intersection(.primary).isEmpty
     }

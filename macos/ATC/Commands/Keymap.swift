@@ -18,6 +18,7 @@ enum Keymap {
 
     static let compiledDefaults: [(sequence: String, command: CommandID)] = [
         ("cmd+b", .toggleSidebar), ("leader>b", .toggleSidebar),
+        ("cmd+shift+p", .toggleCommandPalette),
         ("cmd+n", .newSession), ("leader>n", .newSession),
         ("cmd+r", .refresh), ("leader>r", .refresh),
         ("cmd+t", .newTerminal),

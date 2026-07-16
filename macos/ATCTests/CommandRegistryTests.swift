@@ -55,7 +55,8 @@ struct CommandRegistryTests {
     @Test("descriptor enumeration is complete, unique, and stable")
     func descriptors() {
         let expectedIDs = [
-            "view.toggle-sidebar", "session.new", "terminal.new", "project.new",
+            "view.toggle-sidebar", "view.toggle-command-palette", "session.new",
+            "terminal.new", "project.new",
             "workspace.new", "data.refresh", "configuration.reload",
         ]
         let descriptors = CommandRegistry.allDescriptors
@@ -64,7 +65,8 @@ struct CommandRegistryTests {
         #expect(descriptors.map(\.id) == CommandID.allCases)
         #expect(Set(descriptors.map { $0.id.rawValue }).count == descriptors.count)
         #expect(descriptors.allSatisfy { !$0.title.isEmpty })
-        #expect(descriptors.allSatisfy(\.isPaletteEligible))
+        #expect(descriptors.filter { !$0.isPaletteEligible }.map(\.id)
+            == [.toggleCommandPalette])
     }
 
     @Test("categories use the shared presentation order and assignments")
@@ -76,6 +78,7 @@ struct CommandRegistryTests {
             ($0.id, $0.category)
         }) == [
             .toggleSidebar: .view,
+            .toggleCommandPalette: .view,
             .newSession: .sessionsAndTerminals,
             .newTerminal: .sessionsAndTerminals,
             .newProject: .projectsAndWorkspaces,
@@ -83,6 +86,40 @@ struct CommandRegistryTests {
             .refresh: .general,
             .reloadConfiguration: .general,
         ])
+    }
+
+    @Test("the palette opener toggles and is unavailable for every sheet driver")
+    func paletteOpener() {
+        let model = makeModel()
+        let state = WindowState.ephemeral()
+        let context = makeContext(model: model, state: state)
+        let descriptor = CommandRegistry.descriptor(for: .toggleCommandPalette)
+        let unavailable = CommandAvailability.unavailable(
+            reason: "Not available while a dialog is open"
+        )
+
+        #expect(descriptor.availability(context) == .available)
+        CommandRegistry.execute(.toggleCommandPalette, context: context)
+        #expect(state.isCommandPalettePresented)
+        CommandRegistry.execute(.toggleCommandPalette, context: context)
+        #expect(!state.isCommandPalettePresented)
+
+        state.isCreateProjectPresented = true
+        #expect(state.isSheetPresented)
+        #expect(descriptor.availability(context) == unavailable)
+        state.isCreateProjectPresented = false
+
+        state.createWorkspaceContext = .init(mode: .free)
+        #expect(state.isSheetPresented)
+        #expect(descriptor.availability(context) == unavailable)
+        state.createWorkspaceContext = nil
+
+        state.startSessionKind = .terminal
+        #expect(state.isSheetPresented)
+        #expect(descriptor.availability(context) == unavailable)
+        state.startSessionKind = nil
+        #expect(!state.isSheetPresented)
+        #expect(descriptor.availability(context) == .available)
     }
 
     @Test("availability follows the complete command truth table")

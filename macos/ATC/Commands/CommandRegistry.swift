@@ -62,6 +62,19 @@ enum CommandRegistry {
                 availability: { _ in .available },
                 perform: { $0.windowState.toggleSidebar() }
             )
+        case .toggleCommandPalette:
+            CommandDescriptor(
+                id: id,
+                title: "Toggle Command Palette",
+                category: .view,
+                isPaletteEligible: false,
+                availability: {
+                    $0.windowState.isSheetPresented
+                        ? .unavailable(reason: "Not available while a dialog is open")
+                        : .available
+                },
+                perform: { $0.windowState.isCommandPalettePresented.toggle() }
+            )
         case .newSession:
             CommandDescriptor(
                 id: id,
