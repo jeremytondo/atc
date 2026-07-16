@@ -38,7 +38,10 @@ struct CommandPaletteView: View {
         .accessibilityLabel("Command Palette")
         .accessibilityAddTraits(.isModal)
         .onExitCommand { dismissPalette() }
-        .task { queryIsFocused = true }
+        .background(PaletteWindowAccessor(
+            onAttach: { queryIsFocused = true },
+            fallback: { windowState.requestTerminalFocus() }
+        ))
         .onChange(of: query) {
             selectedID = query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? nil
@@ -75,6 +78,7 @@ struct CommandPaletteView: View {
                 }
 
             Divider()
+
             resultList(rows: rows, context: context)
         }
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 11))
@@ -225,5 +229,79 @@ struct CommandPaletteView: View {
         }
         self.selectedID = rows[(index + offset + rows.count) % rows.count].id
         return .handled
+    }
+}
+
+private struct PaletteWindowAccessor: NSViewRepresentable {
+    let onAttach: @MainActor () -> Void
+    let fallback: @MainActor () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onAttach: onAttach, fallback: fallback)
+    }
+
+    func makeNSView(context: Context) -> HostView {
+        let view = HostView()
+        view.onWindowChange = { [weak coordinator = context.coordinator] window in
+            coordinator?.attach(to: window)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: HostView, context: Context) {
+        context.coordinator.onAttach = onAttach
+        context.coordinator.fallback = fallback
+        if nsView.window !== context.coordinator.hostWindow {
+            context.coordinator.attach(to: nsView.window)
+        }
+    }
+
+    static func dismantleNSView(_ nsView: HostView, coordinator: Coordinator) {
+        nsView.onWindowChange = nil
+        coordinator.restore()
+    }
+
+    final class HostView: NSView {
+        var onWindowChange: ((NSWindow?) -> Void)?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            onWindowChange?(window)
+        }
+    }
+
+    @MainActor
+    final class Coordinator {
+        var onAttach: @MainActor () -> Void
+        var fallback: @MainActor () -> Void
+        private(set) weak var hostWindow: NSWindow?
+        private weak var previousResponder: NSResponder?
+
+        init(
+            onAttach: @escaping @MainActor () -> Void,
+            fallback: @escaping @MainActor () -> Void
+        ) {
+            self.onAttach = onAttach
+            self.fallback = fallback
+        }
+
+        func attach(to window: NSWindow?) {
+            guard let window, window !== hostWindow else { return }
+            hostWindow = window
+            previousResponder = window.firstResponder
+            window.makeFirstResponder(nil)
+            Task { @MainActor [weak self] in self?.onAttach() }
+        }
+
+        func restore() {
+            guard let window = hostWindow else { return }
+            if let view = previousResponder as? NSView,
+               view.window === window,
+               view.acceptsFirstResponder,
+               window.makeFirstResponder(view) {
+                return
+            }
+            fallback()
+        }
     }
 }

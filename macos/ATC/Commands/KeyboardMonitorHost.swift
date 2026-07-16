@@ -3,9 +3,10 @@ import SwiftUI
 
 struct KeyboardMonitorHost: NSViewRepresentable {
     let router: WindowKeyboardRouter
+    let onDeactivate: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(router: router)
+        Coordinator(router: router, onDeactivate: onDeactivate)
     }
 
     func makeNSView(context: Context) -> HostView {
@@ -18,6 +19,7 @@ struct KeyboardMonitorHost: NSViewRepresentable {
 
     func updateNSView(_ nsView: HostView, context: Context) {
         context.coordinator.router = router
+        context.coordinator.onDeactivate = onDeactivate
         if nsView.window !== context.coordinator.hostWindow {
             context.coordinator.install(for: nsView.window)
         }
@@ -40,12 +42,14 @@ struct KeyboardMonitorHost: NSViewRepresentable {
     @MainActor
     final class Coordinator {
         var router: WindowKeyboardRouter
+        var onDeactivate: () -> Void
         private(set) weak var hostWindow: NSWindow?
         private var monitor: Any?
         private var observers: [NSObjectProtocol] = []
 
-        init(router: WindowKeyboardRouter) {
+        init(router: WindowKeyboardRouter, onDeactivate: @escaping () -> Void) {
             self.router = router
+            self.onDeactivate = onDeactivate
         }
 
         func install(for window: NSWindow?) {
@@ -69,14 +73,20 @@ struct KeyboardMonitorHost: NSViewRepresentable {
                 object: window,
                 queue: .main
             ) { [weak self] _ in
-                MainActor.assumeIsolated { self?.router.cancel() }
+                MainActor.assumeIsolated {
+                    self?.router.cancel()
+                    self?.onDeactivate()
+                }
             })
             observers.append(center.addObserver(
                 forName: NSApplication.didResignActiveNotification,
                 object: NSApp,
                 queue: .main
             ) { [weak self] _ in
-                MainActor.assumeIsolated { self?.router.cancel() }
+                MainActor.assumeIsolated {
+                    self?.router.cancel()
+                    self?.onDeactivate()
+                }
             })
         }
 
@@ -125,22 +135,36 @@ struct KeyboardRoutingContainer<Content: View>: View {
             windowState: windowState,
             configStore: configStore
         )
-        _router = State(initialValue: WindowKeyboardRouter(
+        let router = WindowKeyboardRouter(
             keymap: configStore.keymap,
             context: context
-        ))
+        )
+        router.isSuspended = { windowState.isCommandPalettePresented }
+        _router = State(initialValue: router)
     }
 
     var body: some View {
         content
             .overlay {
+                if windowState.isCommandPalettePresented {
+                    CommandPaletteView()
+                }
+            }
+            .overlay {
                 CommandFeedbackOverlay()
             }
             .environment(configStore)
             .environment(router)
-            .background(KeyboardMonitorHost(router: router))
+            .background(KeyboardMonitorHost(router: router) {
+                windowState.isCommandPalettePresented = false
+            })
             .onChange(of: configStore.keymap.generation, initial: true) {
                 router.keymap = configStore.keymap
+            }
+            .onChange(of: windowState.isCommandPalettePresented) {
+                if windowState.isCommandPalettePresented {
+                    router.cancel()
+                }
             }
     }
 }

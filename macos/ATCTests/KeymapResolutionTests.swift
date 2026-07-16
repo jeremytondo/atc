@@ -24,7 +24,8 @@ struct KeymapResolutionTests {
         #expect(command(at: try stroke("cmd+shift+p"), in: keymap)
             == .toggleCommandPalette)
         let paletteShortcut = try stroke("cmd+shift+p")
-        #expect(keymap.menuShortcuts[.toggleCommandPalette] == paletteShortcut)
+        #expect(keymap.menuShortcuts[.toggleCommandPalette]
+            == paletteShortcut)
         #expect(command(at: try stroke("cmd+n"), in: keymap) == .newSession)
         #expect(command(at: try stroke("cmd+r"), in: keymap) == .refresh)
         #expect(command(at: try stroke("cmd+t"), in: keymap) == .newTerminal)
@@ -46,7 +47,8 @@ struct KeymapResolutionTests {
         #expect(command(at: try stroke("ctrl+shift+p"), in: rebound)
             == .toggleCommandPalette)
         let reboundShortcut = try stroke("ctrl+shift+p")
-        #expect(rebound.menuShortcuts[.toggleCommandPalette] == reboundShortcut)
+        #expect(rebound.menuShortcuts[.toggleCommandPalette]
+            == reboundShortcut)
 
         let unbound = try resolve(#"""
         [keybindings]
