@@ -4,9 +4,14 @@ import SwiftUI
 struct KeyboardMonitorHost: NSViewRepresentable {
     let router: WindowKeyboardRouter
     let onDeactivate: () -> Void
+    let focusFallback: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(router: router, onDeactivate: onDeactivate)
+        Coordinator(
+            router: router,
+            onDeactivate: onDeactivate,
+            focusFallback: focusFallback
+        )
     }
 
     func makeNSView(context: Context) -> HostView {
@@ -20,6 +25,7 @@ struct KeyboardMonitorHost: NSViewRepresentable {
     func updateNSView(_ nsView: HostView, context: Context) {
         context.coordinator.router = router
         context.coordinator.onDeactivate = onDeactivate
+        context.coordinator.focusFallback = focusFallback
         if nsView.window !== context.coordinator.hostWindow {
             context.coordinator.install(for: nsView.window)
         }
@@ -43,13 +49,19 @@ struct KeyboardMonitorHost: NSViewRepresentable {
     final class Coordinator {
         var router: WindowKeyboardRouter
         var onDeactivate: () -> Void
+        var focusFallback: () -> Void
         private(set) weak var hostWindow: NSWindow?
         private var monitor: Any?
         private var observers: [NSObjectProtocol] = []
 
-        init(router: WindowKeyboardRouter, onDeactivate: @escaping () -> Void) {
+        init(
+            router: WindowKeyboardRouter,
+            onDeactivate: @escaping () -> Void,
+            focusFallback: @escaping () -> Void
+        ) {
             self.router = router
             self.onDeactivate = onDeactivate
+            self.focusFallback = focusFallback
         }
 
         func install(for window: NSWindow?) {
@@ -88,6 +100,7 @@ struct KeyboardMonitorHost: NSViewRepresentable {
                 MainActor.assumeIsolated {
                     self?.router.cancel()
                     self?.onDeactivate()
+                    self?.restoreOrphanedResponder()
                 }
             })
             observers.append(center.addObserver(
@@ -98,8 +111,26 @@ struct KeyboardMonitorHost: NSViewRepresentable {
                 MainActor.assumeIsolated {
                     self?.router.cancel()
                     self?.onDeactivate()
+                    self?.restoreOrphanedResponder()
                 }
             })
+        }
+
+        // Dismissal normally restores focus through the palette's window
+        // accessor, but deactivation can dismiss the palette before the
+        // accessor's first mount consumes the stash; the responder captured
+        // at the suspension flip would then stay lost.
+        private func restoreOrphanedResponder() {
+            guard let stashed = router.responderBeforeSuspension else { return }
+            router.responderBeforeSuspension = nil
+            if let window = hostWindow,
+               let view = stashed as? NSView,
+               view.window === window,
+               view.acceptsFirstResponder,
+               window.makeFirstResponder(view) {
+                return
+            }
+            focusFallback()
         }
 
         func stop() {
@@ -167,9 +198,11 @@ struct KeyboardRoutingContainer<Content: View>: View {
             }
             .environment(configStore)
             .environment(router)
-            .background(KeyboardMonitorHost(router: router) {
-                windowState.isCommandPalettePresented = false
-            })
+            .background(KeyboardMonitorHost(
+                router: router,
+                onDeactivate: { windowState.isCommandPalettePresented = false },
+                focusFallback: { windowState.requestTerminalFocus() }
+            ))
             .onChange(of: configStore.keymap.generation, initial: true) {
                 router.keymap = configStore.keymap
             }

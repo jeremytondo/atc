@@ -109,6 +109,58 @@ struct CommandPaletteHostingSmokeTest {
         #expect(window.firstResponder === previousResponder)
         window.orderOut(nil)
     }
+
+    @Test("deactivation before the palette mounts restores the stashed responder")
+    func restoresResponderWhenDeactivationBeatsMounting() {
+        let store = KeyboardConfigStore(
+            configURL: FileManager.default.temporaryDirectory
+                .appending(path: UUID().uuidString)
+        )
+        let appModel = AppModel.preview()
+        let windowState = WindowState.ephemeral()
+        let router = WindowKeyboardRouter(
+            keymap: store.keymap,
+            context: CommandContext(
+                appModel: appModel,
+                windowState: windowState,
+                configStore: store
+            )
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        let probe = FocusProbeView(frame: .zero)
+        window.contentView?.addSubview(probe)
+        window.makeKeyAndOrderFront(nil)
+        #expect(window.makeFirstResponder(probe))
+
+        let coordinator = KeyboardMonitorHost.Coordinator(
+            router: router,
+            onDeactivate: { windowState.isCommandPalettePresented = false },
+            focusFallback: {}
+        )
+        coordinator.install(for: window)
+
+        // Simulate the keyboard opener mid-flight: suspension has flipped and
+        // the key monitor stashed the responder and cleared focus, but the
+        // palette's window accessor has not mounted yet.
+        windowState.isCommandPalettePresented = true
+        router.responderBeforeSuspension = probe
+        window.makeFirstResponder(nil)
+
+        NotificationCenter.default.post(
+            name: NSWindow.didResignKeyNotification,
+            object: window
+        )
+        pump(until: { window.firstResponder === probe })
+
+        #expect(!windowState.isCommandPalettePresented)
+        #expect(window.firstResponder === probe)
+        #expect(router.responderBeforeSuspension == nil)
+        coordinator.stop()
+        window.orderOut(nil)
+    }
 }
 
 private final class FocusProbeView: NSView {

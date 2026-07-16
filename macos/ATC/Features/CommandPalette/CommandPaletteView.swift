@@ -47,9 +47,20 @@ struct CommandPaletteView: View {
             fallback: { windowState.requestTerminalFocus() }
         ))
         .onChange(of: query) {
-            selectedID = query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? nil
-                : rows.first?.id
+            let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            selectedID = trimmed.isEmpty ? nil : rows.first?.id
+            if !trimmed.isEmpty, rows.isEmpty {
+                AccessibilityNotification.Announcement("No matching commands").post()
+            }
+        }
+        // Keyboard focus stays on the query field while arrows move the
+        // selection, so VoiceOver never lands on the rows; announce the
+        // active row instead.
+        .onChange(of: selectedID) {
+            guard let selectedID,
+                  let row = rows.first(where: { $0.id == selectedID })
+            else { return }
+            AccessibilityNotification.Announcement(accessibilityLabel(for: row)).post()
         }
     }
 
