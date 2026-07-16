@@ -170,11 +170,15 @@ struct KeyboardRouterTests {
     }
 
     @Test("external unavailable feedback uses the router flash lifecycle")
-    func showUnavailable() throws {
+    func showUnavailable() async throws {
         let router = WindowKeyboardRouter(keymap: try keymap()) { _ in .available }
         router.showUnavailable(reason: "Unavailable now")
         #expect(router.flash == RouterFlash(message: "Unavailable now"))
-        pump(seconds: 0.9)
+        // Awaiting releases the main actor so the router's clearing task can
+        // run; a run-loop pump would hold the actor and dead-lock the clear.
+        for _ in 0..<100 where router.flash != nil {
+            try await Task.sleep(for: .milliseconds(50))
+        }
         #expect(router.flash == nil)
     }
 }

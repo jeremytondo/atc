@@ -64,11 +64,11 @@ struct CommandPaletteView: View {
                 .onSubmit { activateSelection(in: rows, context: context) }
                 .onKeyPress(.downArrow) { moveSelection(1, through: rows) }
                 .onKeyPress(.upArrow) { moveSelection(-1, through: rows) }
-                .onKeyPress("n") { press in
+                .onKeyPress(keys: ["n"], phases: .down) { press in
                     guard press.modifiers == .control else { return .ignored }
                     return moveSelection(1, through: rows)
                 }
-                .onKeyPress("p") { press in
+                .onKeyPress(keys: ["p"], phases: .down) { press in
                     guard press.modifiers == .control else { return .ignored }
                     return moveSelection(-1, through: rows)
                 }
