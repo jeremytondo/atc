@@ -52,17 +52,37 @@ struct CommandRegistryTests {
         return (makeContext(model: model, state: state), runtime)
     }
 
-    @Test("descriptors expose stable ids and titles")
+    @Test("descriptor enumeration is complete, unique, and stable")
     func descriptors() {
-        #expect(CommandID.allCases.map(\.rawValue) == [
+        let expectedIDs = [
             "view.toggle-sidebar", "session.new", "terminal.new", "project.new",
             "workspace.new", "data.refresh", "configuration.reload",
+        ]
+        let descriptors = CommandRegistry.allDescriptors
+
+        #expect(CommandID.allCases.map(\.rawValue) == expectedIDs)
+        #expect(descriptors.map(\.id) == CommandID.allCases)
+        #expect(Set(descriptors.map { $0.id.rawValue }).count == descriptors.count)
+        #expect(descriptors.allSatisfy { !$0.title.isEmpty })
+        #expect(descriptors.allSatisfy(\.isPaletteEligible))
+    }
+
+    @Test("categories use the shared presentation order and assignments")
+    func categories() {
+        #expect(CommandCategory.allCases.map(\.title) == [
+            "General", "Projects & Workspaces", "Sessions & Terminals", "View",
         ])
-        for id in CommandID.allCases {
-            let descriptor = CommandRegistry.descriptor(for: id)
-            #expect(descriptor.id == id)
-            #expect(!descriptor.title.isEmpty)
-        }
+        #expect(Dictionary(uniqueKeysWithValues: CommandRegistry.allDescriptors.map {
+            ($0.id, $0.category)
+        }) == [
+            .toggleSidebar: .view,
+            .newSession: .sessionsAndTerminals,
+            .newTerminal: .sessionsAndTerminals,
+            .newProject: .projectsAndWorkspaces,
+            .newWorkspace: .projectsAndWorkspaces,
+            .refresh: .general,
+            .reloadConfiguration: .general,
+        ])
     }
 
     @Test("availability follows the complete command truth table")
