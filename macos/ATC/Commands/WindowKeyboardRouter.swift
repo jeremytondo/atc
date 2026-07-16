@@ -24,6 +24,10 @@ final class WindowKeyboardRouter {
     }
 
     @ObservationIgnored var isSuspended: @MainActor () -> Bool = { false }
+    /// The responder that held focus when suspension began. The key monitor
+    /// stashes it before clearing window focus so the palette can restore it
+    /// on dismissal; AnyObject keeps AppKit out of this file.
+    @ObservationIgnored weak var responderBeforeSuspension: AnyObject?
     @ObservationIgnored private let executeCommand: @MainActor (CommandID) -> CommandAvailability
     @ObservationIgnored private var timeoutTask: Task<Void, Never>?
     @ObservationIgnored private var flashTask: Task<Void, Never>?

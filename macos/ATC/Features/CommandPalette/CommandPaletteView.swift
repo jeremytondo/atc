@@ -39,6 +39,10 @@ struct CommandPaletteView: View {
         .accessibilityAddTraits(.isModal)
         .onExitCommand { dismissPalette() }
         .background(PaletteWindowAccessor(
+            takeCapturedResponder: {
+                defer { router.responderBeforeSuspension = nil }
+                return router.responderBeforeSuspension as? NSResponder
+            },
             onAttach: { queryIsFocused = true },
             fallback: { windowState.requestTerminalFocus() }
         ))
@@ -99,7 +103,6 @@ struct CommandPaletteView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, minHeight: 44)
-                .accessibilityHidden(true)
         } else {
             ScrollViewReader { proxy in
                 ScrollView {
@@ -233,11 +236,16 @@ struct CommandPaletteView: View {
 }
 
 private struct PaletteWindowAccessor: NSViewRepresentable {
+    let takeCapturedResponder: @MainActor () -> NSResponder?
     let onAttach: @MainActor () -> Void
     let fallback: @MainActor () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onAttach: onAttach, fallback: fallback)
+        Coordinator(
+            takeCapturedResponder: takeCapturedResponder,
+            onAttach: onAttach,
+            fallback: fallback
+        )
     }
 
     func makeNSView(context: Context) -> HostView {
@@ -249,6 +257,7 @@ private struct PaletteWindowAccessor: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: HostView, context: Context) {
+        context.coordinator.takeCapturedResponder = takeCapturedResponder
         context.coordinator.onAttach = onAttach
         context.coordinator.fallback = fallback
         if nsView.window !== context.coordinator.hostWindow {
@@ -272,15 +281,18 @@ private struct PaletteWindowAccessor: NSViewRepresentable {
 
     @MainActor
     final class Coordinator {
+        var takeCapturedResponder: @MainActor () -> NSResponder?
         var onAttach: @MainActor () -> Void
         var fallback: @MainActor () -> Void
         private(set) weak var hostWindow: NSWindow?
         private weak var previousResponder: NSResponder?
 
         init(
+            takeCapturedResponder: @escaping @MainActor () -> NSResponder?,
             onAttach: @escaping @MainActor () -> Void,
             fallback: @escaping @MainActor () -> Void
         ) {
+            self.takeCapturedResponder = takeCapturedResponder
             self.onAttach = onAttach
             self.fallback = fallback
         }
@@ -288,7 +300,10 @@ private struct PaletteWindowAccessor: NSViewRepresentable {
         func attach(to window: NSWindow?) {
             guard let window, window !== hostWindow else { return }
             hostWindow = window
-            previousResponder = window.firstResponder
+            // A keyboard-opened palette already had its focus cleared (and
+            // the responder stashed) by the key monitor; a menu-opened one
+            // still holds the responder to capture here.
+            previousResponder = takeCapturedResponder() ?? window.firstResponder
             window.makeFirstResponder(nil)
             Task { @MainActor [weak self] in self?.onAttach() }
         }

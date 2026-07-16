@@ -64,7 +64,19 @@ struct KeyboardMonitorHost: NSViewRepresentable {
                       window.isKeyWindow,
                       let stroke = KeyStroke.normalize(event: event)
                 else { return event }
-                return self.router.handle(stroke, isRepeat: event.isARepeat) ? nil : event
+                let wasSuspended = self.router.isSuspended()
+                let handled = self.router.handle(stroke, isRepeat: event.isARepeat)
+                // The palette opener flips suspension synchronously, but the
+                // palette's focus accessor only mounts on the next SwiftUI
+                // commit; keystrokes already queued behind the opener would
+                // land in the still-focused terminal. Clearing focus at the
+                // flip closes that gap, stashing the responder so dismissal
+                // can still restore it.
+                if handled, !wasSuspended, self.router.isSuspended() {
+                    self.router.responderBeforeSuspension = window.firstResponder
+                    window.makeFirstResponder(nil)
+                }
+                return handled ? nil : event
             }
 
             let center = NotificationCenter.default
