@@ -62,6 +62,12 @@ struct CommandPaletteView: View {
                 AccessibilityNotification.Announcement("No matching results").post()
             }
         }
+        // Store refreshes can change the rows without a query change; a
+        // selection that no longer resolves falls back to the standard rule.
+        .onChange(of: rows.map(\.id)) {
+            if let selectedID, rows.contains(where: { $0.id == selectedID }) { return }
+            resetSelection(for: rows)
+        }
         // Keyboard focus stays on the query field while arrows move the
         // selection, so VoiceOver never lands on the rows; announce the
         // active row instead.
@@ -134,13 +140,30 @@ struct CommandPaletteView: View {
                     }
                     .padding(5)
                 }
-                .frame(height: min(200, CGFloat(rows.count * 42 + 10)))
+                .frame(height: min(200, rows.reduce(CGFloat(10)) {
+                    $0 + estimatedRowHeight(for: $1)
+                }))
                 .onChange(of: selectedID) {
                     if let selectedID {
                         proxy.scrollTo(selectedID, anchor: .center)
                     }
                 }
             }
+        }
+    }
+
+    /// Shrink-to-fit estimates only: workspace rows carry a context caption
+    /// and unavailable rows an inline reason line, so a short list is not
+    /// initially clipped. The 200 pt cap and the scroll view absorb any
+    /// estimate error on longer lists.
+    private func estimatedRowHeight(for result: PaletteResult) -> CGFloat {
+        switch result {
+        case .command(let row):
+            row.availability.isAvailable ? 42 : 56
+        case .workspace(let row):
+            row.availability.isAvailable ? 56 : 70
+        case .session:
+            42
         }
     }
 
@@ -296,11 +319,16 @@ struct CommandPaletteView: View {
                 }
                 return
             }
-            dismissForNavigation()
-            windowState.activateWorkspace(row.ref, in: appModel)
+            // Dismiss only on success: a target that vanished between
+            // projection and activation fails closed in WindowState, and the
+            // recomputed rows drop it in the same turn.
+            if windowState.activateWorkspace(row.ref, in: appModel) {
+                dismissForNavigation()
+            }
         case .session(let row):
-            dismissForNavigation()
-            windowState.selectSession(row.ref, in: appModel)
+            if windowState.selectSession(row.ref, in: appModel) {
+                dismissForNavigation()
+            }
         }
     }
 

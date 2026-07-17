@@ -223,10 +223,11 @@ One flat list, no section headers; result types are identified per row:
   the caption style the shortcut glyphs use — explicit text, not a type
   icon.
 
-The row-height estimate feeding the list's max-height calculation stays a
-single approximation; two-line Workspace rows are close enough to the
-existing 42 pt figure that the ~200 pt cap and shrink-to-fit behavior are
-unchanged (verified visually in build step 3).
+The row-height estimate feeding the list's max-height calculation is
+per-type: one-line command and session rows keep the existing 42 pt figure,
+Workspace rows add height for their context caption, and unavailable rows
+add height for the inline reason, so a short list of taller rows is not
+initially clipped. The ~200 pt cap and shrink-to-fit behavior are unchanged.
 
 ## 5. Interaction and Activation
 
@@ -242,17 +243,21 @@ Activation is one code path for Return and click, per result type:
 |---|---|
 | Command, available | Unchanged: dismiss, then `CommandRegistry.execute` |
 | Command, unavailable | Unchanged: stay open, `router.showUnavailable(reason:)` |
-| Workspace, available | Dismiss (navigation rule below), then `windowState.activateWorkspace(ref, in: appModel)` |
+| Workspace, available | `windowState.activateWorkspace(ref, in: appModel)`; dismiss on success (navigation rule below) |
 | Workspace, unavailable | Stay open; `router.showUnavailable(reason: "Requires a reachable Connection")` |
-| Session / Terminal | Dismiss (navigation rule below), then `windowState.selectSession(ref, in: appModel)` |
+| Session / Terminal | `windowState.selectSession(ref, in: appModel)`; dismiss on success (navigation rule below) |
 
-Every selection is one-shot: the palette dismisses before navigation runs,
-in the same MainActor turn. Navigating within a newly activated Workspace
-means reopening the palette. Both `WindowState` transitions validate their
-target and fail closed; a `false` return (the target vanished between
-projection and activation) leaves the window unchanged with no error UI —
-the same silent rejection every other navigation surface gets (Resolved
-Decision 4).
+Every successful navigation selection is one-shot: activation and dismissal
+run in the same MainActor turn, and navigating within a newly activated
+Workspace means reopening the palette. Unavailable results keep the palette
+open and flash their reason (table above). Both `WindowState` transitions
+validate their target and fail closed; a `false` return (the target
+vanished between projection and activation) leaves the window unchanged and
+keeps the palette open with no error UI — the recomputed result list drops
+the vanished target in the same turn (Resolved Decision 4). Selection
+follows the rows: when a store refresh changes the result identities under
+an unchanged query, a selection that no longer resolves resets by the
+standard rule, so Return never acts on a row that is no longer displayed.
 
 ### Focus on navigation dismissal
 
@@ -294,8 +299,10 @@ The container label stays `Command Palette`; the field label becomes
 ## 7. Test Plan
 
 All in `macos/ATCTests` (Swift Testing). The pure candidate builders take
-plain inputs (`ProjectsNavigatorGroups.Input` arrays, `[Session]`,
-`[ATCAction]`), so the navigation tests need no async store loading; the
+plain inputs — `workspaceResults` a `ProjectsNavigatorGroups` value built
+from `ProjectsNavigatorGroups.Input` arrays, `sessionResults` plain
+`[Session]` and `[ATCAction]` arrays — so the navigation tests need no
+async store loading; the
 existing `CommandPaletteContentTests` fixture keeps covering the
 context-reading entry point.
 
@@ -347,8 +354,8 @@ render in the hosting environment.
 **Manual checks** (build step 3 exit list):
 
 - Type a Workspace name from another Project: the row shows
-  `Project · Connection`; Return activates it, the palette closes first,
-  and the remembered content (or empty state) restores.
+  `Project · Connection`; Return activates it, the palette closes, and the
+  remembered content (or empty state) restores.
 - From the Dashboard, select the Active Workspace by name: the window
   returns to its remembered content.
 - Select a Terminal by display name: the palette closes and keyboard focus
@@ -414,9 +421,10 @@ instruction; the brief has been updated to match where it conflicted.
    content), with `requestTerminalFocus()` as the unchanged fallback.
 4. **A navigation target that disappears between projection and activation
    is rejected silently.** `activateWorkspace`/`selectSession` already fail
-   closed; the palette has dismissed by then and adds no error UI. Store
-   polling makes the window microscopic, and every other surface behaves
-   the same way. The brief was silent.
+   closed; the palette dismisses only on a successful activation, so a
+   rejected one keeps it open without error UI while the recomputed rows
+   drop the vanished target. Store polling makes the window microscopic,
+   and every other surface behaves the same way. The brief was silent.
 5. **"Alphabetical" is the command bucket's plain lowercased Unicode
    comparison,** not the localized comparison `ProjectsNavigatorGroups`
    uses for Project groups — one ordering rule inside the palette beats two,

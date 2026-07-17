@@ -20,8 +20,10 @@ Choosing a Workspace activates it and restores its remembered content using the
 same behavior as the Projects Navigator and toolbar Workspace Switcher. Choosing
 a Session or Terminal selects it through the existing window navigation path,
 attaches when appropriate, and moves keyboard focus into its terminal.
-Every selection is a one-shot action: the palette dismisses before navigation.
-To navigate within a newly activated Workspace, the user reopens the palette.
+Every successful navigation selection is a one-shot action: the palette
+dismisses as part of activation, so navigating within a newly activated
+Workspace means reopening the palette. Activating an unavailable Workspace
+result keeps the palette open and reports the reason.
 
 ## Recommended Direction
 
@@ -94,8 +96,8 @@ To navigate within a newly activated Workspace, the user reopens the palette.
 - Replace command-only copy with the query placeholder
   `Search commands and navigation…`, the empty state `No matching results`, and
   the accessibility label `Palette search`.
-- Dismiss before navigation, then restore focus to the selected Session or
-  Terminal.
+- Dismiss on successful navigation, with focus restored to the selected
+  Session or Terminal.
 - Keep Workspace results whose Connection is not connected (unreachable, or
   not yet checked) visible and keyboard-selectable, but unavailable — the same
   rule the Workspace Switcher uses to disable rows. Return or click keeps the
