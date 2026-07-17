@@ -213,7 +213,11 @@ struct CommandPaletteView: View {
             }
         case .workspace(let row):
             VStack(alignment: .leading, spacing: 2) {
-                highlightedTitle(row.title, ranges: row.matchedRanges)
+                typedTitle(
+                    "Workspace",
+                    title: row.title,
+                    ranges: row.matchedRanges
+                )
                     .font(.callout)
                 Text("\(row.projectName) · \(row.connectionName)")
                     .font(.caption)
@@ -222,10 +226,25 @@ struct CommandPaletteView: View {
             }
             Spacer(minLength: 12)
         case .session(let row):
-            highlightedTitle(row.title, ranges: row.matchedRanges)
+            typedTitle(
+                row.kind == .agent ? "Session" : "Terminal",
+                title: row.title,
+                ranges: row.matchedRanges
+            )
                 .font(.callout)
             Spacer(minLength: 12)
-            trailingLabel(row.kind == .agent ? "Session" : "Terminal")
+        }
+    }
+
+    private func typedTitle(
+        _ type: String,
+        title: String,
+        ranges: [Range<String.Index>]
+    ) -> some View {
+        HStack(spacing: 0) {
+            Text("\(type): ")
+                .foregroundStyle(.secondary)
+            highlightedTitle(title, ranges: ranges)
         }
     }
 

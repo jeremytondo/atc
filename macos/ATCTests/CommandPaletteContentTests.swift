@@ -6,6 +6,19 @@ import ATCAPI
 @MainActor
 @Suite("Command palette content")
 struct CommandPaletteContentTests {
+    @Test("type keywords require a complete three-character-or-longer prefix")
+    func typeKeywordBoundaries() {
+        #expect(PaletteTypeKeyword.match("se") == nil)
+        for query in ["ses", "sess", "sessions"] {
+            #expect(PaletteTypeKeyword.match(query) == .sessions)
+        }
+        #expect(PaletteTypeKeyword.match("sessionsx") == nil)
+        #expect(PaletteTypeKeyword.match("session parser") == nil)
+        #expect(PaletteTypeKeyword.match("SES") == .sessions)
+        #expect(PaletteTypeKeyword.match("Ter") == .terminals)
+        #expect(PaletteTypeKeyword.match(" \n work \t") == .workspaces)
+    }
+
     @Test("palette-ineligible commands never appear")
     func eligibility() {
         let fixture = makeFixture()
@@ -121,6 +134,74 @@ struct CommandPaletteContentTests {
         #expect(projected.compactMap(\.sessionRow).map {
             "\($0.title):\($0.ref.sessionID)"
         } == ["Alpha:ses_b", "same:ses_a", "Same:ses_z"])
+    }
+
+    @Test("keyword expansion keeps bucket and alphabetical ordering")
+    func keywordBucketOrdering() async throws {
+        var client = MockATCClient()
+        client.mockProjects = [paletteProject("project", name: "Project")]
+        client.mockWorkspaces = [
+            paletteWorkspace("wsp_z", project: "project", name: "Session Zoo"),
+            paletteWorkspace("wsp_a", project: "project", name: "Session Alpha"),
+        ]
+        client.mockSessions = [
+            paletteSession(
+                "ses_z", name: "Zulu", action: "claude", workspace: "wsp_a"
+            ),
+            paletteSession(
+                "ses_a", name: "Alpha", action: "claude", workspace: "wsp_a"
+            ),
+            paletteSession("terminal", name: "Shell Tools", workspace: "wsp_a"),
+        ]
+        let fixture = try await makeLiveFixture(client: client, workspaceID: "wsp_a")
+        let projected = results(query: "ses", fixture: fixture)
+
+        #expect(projected.compactMap(\.commandRow).map(\.title) == ["New Session"])
+        #expect(projected.compactMap(\.workspaceRow).map(\.title) == [
+            "Session Alpha", "Session Zoo",
+        ])
+        #expect(projected.compactMap(\.sessionRow).map(\.title) == ["Alpha", "Zulu"])
+        #expect(projected.map { result in
+            switch result {
+            case .command: "command"
+            case .workspace: "workspace"
+            case .session: "session"
+            }
+        } == ["command", "workspace", "workspace", "session", "session"])
+    }
+
+    @Test("type expansion is additive and preserves title matches without duplicates")
+    func keywordAdditivityAndDeduplication() async throws {
+        var client = MockATCClient()
+        client.mockProjects = [paletteProject("project", name: "Project")]
+        client.mockWorkspaces = [
+            paletteWorkspace("workspace", project: "project", name: "Workspace")
+        ]
+        client.mockSessions = [
+            paletteSession(
+                "title-match", name: "Terminal cleanup", workspace: "workspace"
+            ),
+            paletteSession(
+                "category-only", name: "Shell tools", workspace: "workspace"
+            ),
+            paletteSession(
+                "agent", name: "Agent work", action: "claude", workspace: "workspace"
+            ),
+        ]
+        let fixture = try await makeLiveFixture(client: client, workspaceID: "workspace")
+        let projected = results(query: "ter", fixture: fixture)
+        let sessionRows = projected.compactMap(\.sessionRow)
+
+        #expect(projected.compactMap(\.commandRow).map(\.title).contains("New Terminal"))
+        #expect(sessionRows.map(\.ref.sessionID) == ["category-only", "title-match"])
+        #expect(sessionRows.filter { $0.ref.sessionID == "title-match" }.count == 1)
+        let titleMatch = try #require(sessionRows.first {
+            $0.ref.sessionID == "title-match"
+        })
+        #expect(titleMatch.matchedRanges.map { String(titleMatch.title[$0]) } == ["Ter"])
+        #expect(try #require(sessionRows.first {
+            $0.ref.sessionID == "category-only"
+        }).matchedRanges.isEmpty)
     }
 
     @Test("no Active Workspace omits Sessions and an unmatched query is empty")
@@ -332,6 +413,37 @@ struct CommandPaletteWorkspaceResultTests {
         #expect(Set(projected.map(\.connectionName)) == ["First", "Second"])
     }
 
+    @Test("Workspace keywords include every unarchived Workspace across Connections")
+    func keywordExpansionAcrossConnections() {
+        let projected = results(query: "  WoR  ", inputs: [
+            input(
+                connection: paletteConnection(1, name: "First"),
+                projects: [paletteProject("p1", name: "Atlas")],
+                workspaces: [
+                    paletteWorkspace("alpha", project: "p1", name: "Alpha"),
+                    paletteWorkspace(
+                        "archived", project: "p1", name: "Archived", archived: true
+                    ),
+                ]
+            ),
+            input(
+                connection: paletteConnection(2, name: "Second"),
+                projects: [paletteProject("p2", name: "Beacon")],
+                workspaces: [
+                    paletteWorkspace("beta", project: "p2", name: "Beta")
+                ],
+                reachability: .unreachable
+            ),
+        ])
+
+        #expect(projected.map(\.ref.workspaceID) == ["alpha", "beta"])
+        #expect(projected.allSatisfy { $0.matchedRanges.isEmpty })
+        #expect(projected[0].availability == .available)
+        #expect(projected[1].availability == .unavailable(
+            reason: "Requires a reachable Connection"
+        ))
+    }
+
     @Test("only connected Workspaces are available")
     func availability() {
         let projected = results(query: "Workspace", inputs: [
@@ -459,6 +571,51 @@ struct CommandPaletteSessionResultTests {
         #expect(byID["agent"]?.kind == .agent)
         #expect(byID["tool"]?.title == "LazyGit")
         #expect(byID["tool"]?.kind == .terminal)
+    }
+
+    @Test("Session and Terminal keywords expand only their classified kind")
+    func keywordExpansionByKind() {
+        let active = WorkspaceRef(connectionID: connectionID, workspaceID: "active")
+        let candidates = [
+            paletteSession(
+                "agent-failed", name: "Agent Failed", action: "claude",
+                workspace: "active", status: .failed
+            ),
+            paletteSession(
+                "agent-terminated", name: "Finished Agent", action: "claude",
+                workspace: "active", status: .terminated
+            ),
+            paletteSession(
+                "shell-starting", name: "Shell Starting",
+                workspace: "active", status: .starting
+            ),
+            paletteSession(
+                "action-terminated", name: "Tool Done", action: "lazygit",
+                workspace: "active", status: .terminated
+            ),
+            paletteSession(
+                "unresolved-running", name: "Unknown Action", action: "missing",
+                workspace: "active", status: .running
+            ),
+            paletteSession(
+                "other-workspace", name: "Other Agent", action: "claude",
+                workspace: "other"
+            ),
+            paletteSession(
+                "archived", name: "Archived Agent", action: "claude",
+                workspace: "active", archived: true
+            ),
+        ]
+
+        let sessions = results(query: "ses", active: active, sessions: candidates)
+        #expect(sessions.map(\.ref.sessionID) == ["agent-failed", "agent-terminated"])
+        #expect(sessions.allSatisfy { $0.kind == .agent && $0.matchedRanges.isEmpty })
+
+        let terminals = results(query: "ter", active: active, sessions: candidates)
+        #expect(terminals.map(\.ref.sessionID) == [
+            "shell-starting", "action-terminated", "unresolved-running",
+        ])
+        #expect(terminals.allSatisfy { $0.kind == .terminal && $0.matchedRanges.isEmpty })
     }
 
     @Test("hidden Action, status, and raw identifiers never match")

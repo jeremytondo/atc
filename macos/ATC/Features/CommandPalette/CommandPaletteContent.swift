@@ -47,6 +47,28 @@ struct SessionResult: Identifiable {
     var id: PaletteResultID { .session(ref) }
 }
 
+enum PaletteTypeKeyword: CaseIterable, Equatable {
+    case sessions
+    case terminals
+    case workspaces
+
+    static func match(_ query: String) -> PaletteTypeKeyword? {
+        let query = query
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard query.count >= 3 else { return nil }
+        return allCases.first { $0.keyword.hasPrefix(query) }
+    }
+
+    private var keyword: String {
+        switch self {
+        case .sessions: "sessions"
+        case .terminals: "terminals"
+        case .workspaces: "workspaces"
+        }
+    }
+}
+
 @MainActor
 enum CommandPaletteContent {
     static func results(
@@ -81,10 +103,12 @@ enum CommandPaletteContent {
         query: String,
         groups: ProjectsNavigatorGroups
     ) -> [WorkspaceResult] {
-        groups.projects.flatMap { group in
+        let expandsWorkspaces = PaletteTypeKeyword.match(query) == .workspaces
+        return groups.projects.flatMap { group in
             group.workspaces.compactMap { row in
                 let titleMatch = QueryMatcher.match(query, in: row.workspace.name)
-                guard titleMatch != nil
+                guard expandsWorkspaces
+                    || titleMatch != nil
                     || QueryMatcher.match(query, in: group.project.name) != nil
                     || QueryMatcher.match(query, in: group.connectionName) != nil
                 else { return nil }
@@ -108,18 +132,28 @@ enum CommandPaletteContent {
         sessions: [Session],
         actions: [ATCAction]
     ) -> [SessionResult] {
-        sessions.compactMap { session in
+        let keyword = PaletteTypeKeyword.match(query)
+        return sessions.compactMap { session in
             guard session.belongs(to: activeWorkspace), !session.isArchived else { return nil }
             let title = SessionKind.displayName(session: session, actions: actions)
-            guard let match = QueryMatcher.match(query, in: title) else { return nil }
+            let kind = SessionKind.classify(session: session, actions: actions)
+            let titleMatch = QueryMatcher.match(query, in: title)
+            let expandsKind: Bool
+            switch kind {
+            case .agent:
+                expandsKind = keyword == .sessions
+            case .terminal:
+                expandsKind = keyword == .terminals
+            }
+            guard titleMatch != nil || expandsKind else { return nil }
             return SessionResult(
                 ref: SessionRef(
                     connectionID: activeWorkspace.connectionID,
                     sessionID: session.id
                 ),
                 title: title,
-                kind: SessionKind.classify(session: session, actions: actions),
-                matchedRanges: match.ranges
+                kind: kind,
+                matchedRanges: titleMatch?.ranges ?? []
             )
         }.sorted(by: sessionComesFirst)
     }
