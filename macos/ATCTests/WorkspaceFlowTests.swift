@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 import ATCAPI
 @testable import ATC
@@ -230,7 +231,7 @@ struct WorkspaceFlowTests {
         #expect(state.isInspectorPresented)
     }
 
-    @Test("clearing or archiving selected content clears remembered restoration")
+    @Test("clearing selected content clears remembered restoration")
     func staleSelectionMemoryIsCleared() async throws {
         let (model, runtime) = try await makeLoadedModel()
         let (selectionMemory, _) = memory()
@@ -244,14 +245,6 @@ struct WorkspaceFlowTests {
         state.showWorkspaceEmpty()
         #expect(selectionMemory.sessionID(for: parser) == nil)
 
-        let refactor = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_refactor")
-        #expect(state.activateWorkspace(refactor, in: model))
-        let ended = SessionRef(connectionID: runtime.id, sessionID: "ses_done")
-        #expect(state.selectSession(ended, in: model))
-        try await runtime.sessions.archive(id: ended.sessionID)
-        state.reconcile(in: model)
-        #expect(state.selectedContent == .session(ended))
-        #expect(selectionMemory.sessionID(for: refactor) == nil)
     }
 
     @Test("explicit Disconnect is not undone by reconcile")
@@ -277,6 +270,82 @@ struct WorkspaceFlowTests {
         #expect(model.terminals[selected] != nil)
     }
 
+    @Test("Live to Ended refresh tears down interaction and preserves selection")
+    func liveToEndedRefresh() async throws {
+        let client = StatefulWorkspacesClient()
+        let (model, runtime) = try await makeLoadedModel(client: client)
+        let state = WindowState.ephemeral()
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_a")
+        let selected = SessionRef(connectionID: runtime.id, sessionID: "ses_running")
+        #expect(state.activateWorkspace(workspace, in: model))
+        #expect(state.selectSession(selected, in: model))
+        #expect(model.terminals[selected] != nil)
+
+        client.endSession(id: selected.sessionID)
+        await runtime.sessions.refresh()
+        model.reconcileTerminalLifecycle()
+        state.reconcile(in: model)
+
+        #expect(model.session(for: selected)?.status == .ended)
+        #expect(model.terminals[selected] == nil)
+        #expect(state.selectedContent == .session(selected))
+    }
+
+    @Test("failed session refresh preserves last-known Live state and interaction")
+    func failedRefreshPreservesLiveState() async throws {
+        let client = StatefulWorkspacesClient()
+        let (model, runtime) = try await makeLoadedModel(client: client)
+        let state = WindowState.ephemeral()
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_a")
+        let selected = SessionRef(connectionID: runtime.id, sessionID: "ses_running")
+        #expect(state.activateWorkspace(workspace, in: model))
+        #expect(state.selectSession(selected, in: model))
+
+        client.failSessions = true
+        await runtime.sessions.refresh()
+        model.reconcileTerminalLifecycle()
+        state.reconcile(in: model)
+
+        #expect(runtime.sessions.lastError != nil)
+        #expect(model.session(for: selected)?.status == .live)
+        #expect(model.terminals[selected] != nil)
+        #expect(state.selectedContent == .session(selected))
+    }
+
+    @Test("session_ended error reconciles without becoming a generic failure")
+    func staleInteractionReconciles() async throws {
+        let client = StatefulWorkspacesClient()
+        let (model, runtime) = try await makeLoadedModel(client: client)
+        let state = WindowState.ephemeral()
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_a")
+        let selected = SessionRef(connectionID: runtime.id, sessionID: "ses_running")
+        #expect(state.activateWorkspace(workspace, in: model))
+        #expect(state.selectSession(selected, in: model))
+
+        client.endSession(id: selected.sessionID)
+        var actionError: String? = "old error"
+        let errorBinding = Binding<String?>(
+            get: { actionError },
+            set: { actionError = $0 }
+        )
+        model.run(on: runtime.id, reporting: errorBinding) {
+            throw ATCError.api(
+                code: "session_ended",
+                message: "session has ended",
+                sessionID: selected.sessionID
+            )
+        }
+        for _ in 0..<100 where model.session(for: selected)?.status != .ended {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        state.reconcile(in: model)
+
+        #expect(actionError == nil)
+        #expect(model.session(for: selected)?.status == .ended)
+        #expect(model.terminals[selected] == nil)
+        #expect(state.selectedContent == .session(selected))
+    }
+
     @Test("losing the Active Workspace dismisses the start-session sheet")
     func startSheetDismissedWhenWorkspaceGone() async throws {
         let (model, runtime) = try await makeLoadedModel()
@@ -292,18 +361,19 @@ struct WorkspaceFlowTests {
         #expect(state.startSessionKind == nil)
     }
 
-    @Test("selecting archived content never writes restoration memory")
-    func archivedSelectionIsNotRemembered() async throws {
+    @Test("selecting an Ended session writes restoration memory")
+    func endedSelectionIsRemembered() async throws {
         let (model, runtime) = try await makeLoadedModel()
         let (selectionMemory, _) = memory()
         let state = WindowState(selectionMemory: selectionMemory)
         let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
-        let archived = SessionRef(connectionID: runtime.id, sessionID: "ses_archived")
+        let ended = SessionRef(connectionID: runtime.id, sessionID: "ses_archived")
 
         #expect(state.activateWorkspace(workspace, in: model))
-        #expect(state.selectSession(archived, in: model))
-        #expect(state.selectedContent == .session(archived))
-        #expect(selectionMemory.sessionID(for: workspace) == nil)
+        #expect(state.selectSession(ended, in: model))
+        #expect(state.selectedContent == .session(ended))
+        #expect(selectionMemory.sessionID(for: workspace) == "ses_archived")
+        #expect(model.terminals[ended] == nil)
     }
 
     @Test("a failed first Workspace load after rebuild preserves window context")
@@ -507,18 +577,18 @@ struct WorkspaceFlowTests {
         #expect(selectionMemory.sessionID(for: b) == "ses_b")
     }
 
-    @Test("restoration rejects missing, moved, and archived sessions")
+    @Test("restoration accepts Live and Ended sessions but rejects missing or moved sessions")
     func selectionRestoreFallbacks() {
         let (memory, _) = memory()
         let ref = WorkspaceRef(connectionID: UUID(), workspaceID: "wsp_a")
         var session = Session(
             id: "ses_1", environment: "host", workingDir: "/home/dev",
-            status: .running, attachable: true,
+            status: .live,
             createdAt: .now, updatedAt: .now,
             workspace: SessionWorkspace(id: "wsp_a", name: "A")
         )
         memory.remember(sessionID: session.id, for: ref)
-        for status in [SessionStatus.running, .terminated, .failed] {
+        for status in [SessionStatus.live, .ended] {
             session.status = status
             #expect(memory.restoredSelection(for: ref, in: [session]) != nil)
         }
@@ -527,15 +597,17 @@ struct WorkspaceFlowTests {
         session.workspace = SessionWorkspace(id: "wsp_b", name: "B")
         #expect(memory.restoredSelection(for: ref, in: [session]) == nil)
         session.workspace = SessionWorkspace(id: "wsp_a", name: "A")
-        session.archivedAt = .now
-        #expect(memory.restoredSelection(for: ref, in: [session]) == nil)
+        #expect(memory.restoredSelection(for: ref, in: [session]) != nil)
     }
 
     @Test("every delete confirmation names its target and preserves file copy")
     func deleteConfirmationCopy() {
-        let session = DeleteConfirmation.sessionMessage(displayName: "Fix parser")
-        #expect(session.contains("“Fix parser”"))
-        #expect(session.hasSuffix(DeleteConfirmation.filesUntouched))
+        let live = DeleteConfirmation.sessionMessage(displayName: "Fix parser", status: .live)
+        #expect(live.contains("running process will end"))
+        #expect(live.hasSuffix(DeleteConfirmation.filesUntouched))
+        let ended = DeleteConfirmation.sessionMessage(displayName: "Fix parser", status: .ended)
+        #expect(ended.contains("permanently removed"))
+        #expect(ended.hasSuffix(DeleteConfirmation.filesUntouched))
         let workspace = DeleteConfirmation.workspaceMessage(
             name: "Spike", sessionCount: 3, activeCount: 2
         )
@@ -545,16 +617,13 @@ struct WorkspaceFlowTests {
             .hasSuffix(DeleteConfirmation.filesUntouched))
     }
 
-    @Test("session delete and unarchive wrappers update the store")
+    @Test("session delete wrapper updates the store")
     func sessionWrappers() async throws {
         let model = makeModel(client: StatefulWorkspacesClient())
         let record = try model.addConnection(name: "A", urlString: "http://a:1", token: "")
         let runtime = try #require(model.runtime(id: record.id))
         runtime.stopPolling()
         await runtime.refresh()
-        #expect(runtime.sessions.session(id: "ses_archived")?.isArchived == true)
-        try await runtime.sessions.unarchive(id: "ses_archived")
-        #expect(runtime.sessions.session(id: "ses_archived")?.isArchived == false)
         try await runtime.sessions.delete(id: "ses_done")
         #expect(runtime.sessions.session(id: "ses_done") == nil)
     }

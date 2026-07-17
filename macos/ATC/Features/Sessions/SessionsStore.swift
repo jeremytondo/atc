@@ -18,8 +18,7 @@ final class SessionsStore {
         }
     }
 
-    /// Always includes archived sessions; surfaces filter locally (the
-    /// Workspace Navigator's Archived toggle).
+    /// Complete server list, including both Live and Ended sessions.
     private(set) var sessions: [Session] = []
     private(set) var isLoading = false
     private(set) var hasLoadedOnce = false
@@ -51,7 +50,7 @@ final class SessionsStore {
             }
         }
         do {
-            let fetched = try await client.sessions(includeArchived: true, status: nil)
+            let fetched = try await client.sessions(status: nil)
             guard generation == refreshGeneration else { return }
             sessions = fetched
             lastError = nil
@@ -79,32 +78,8 @@ final class SessionsStore {
         return detail
     }
 
-    @discardableResult
-    func terminate(id: String) async throws -> SessionDetail {
-        let detail = try await client.terminateSession(id: id)
-        merge(detail)
-        scheduleRefresh()
-        return detail
-    }
-
-    @discardableResult
-    func archive(id: String) async throws -> SessionDetail {
-        let detail = try await client.archiveSession(id: id)
-        merge(detail)
-        scheduleRefresh()
-        return detail
-    }
-
-    @discardableResult
-    func unarchive(id: String) async throws -> SessionDetail {
-        let detail = try await client.unarchiveSession(id: id)
-        merge(detail)
-        scheduleRefresh()
-        return detail
-    }
-
-    /// Deletes a session's metadata (the server terminates it first if
-    /// active — files are never touched). Removes the row locally on
+    /// Deletes a session's metadata (the server ends it first if Live —
+    /// files are never touched). Removes the row locally on
     /// success instead of merging.
     func delete(id: String) async throws {
         try await client.deleteSession(id: id)
@@ -114,6 +89,14 @@ final class SessionsStore {
 
     func session(id: String) -> Session? {
         sessions.first { $0.id == id }
+    }
+
+    /// Applies the server's authoritative stale-interaction result without
+    /// waiting for the next poll. A follow-up refresh fills in server time.
+    func reconcileEnded(id: String) {
+        guard let index = sessions.firstIndex(where: { $0.id == id }) else { return }
+        sessions[index].status = .ended
+        scheduleRefresh()
     }
 
     private func merge(_ detail: SessionDetail) {

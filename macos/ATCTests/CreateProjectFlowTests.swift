@@ -27,13 +27,10 @@ private nonisolated final class RecordingClient: ATCClient, @unchecked Sendable 
     // Everything else is a straight passthrough.
     func health() async throws -> Health { try await inner.health() }
     func version() async throws -> Version { try await inner.version() }
-    func sessions(includeArchived: Bool, status: SessionStatus?) async throws -> [Session] {
-        try await inner.sessions(includeArchived: includeArchived, status: status)
+    func sessions(status: SessionStatus?) async throws -> [Session] {
+        try await inner.sessions(status: status)
     }
     func session(id: String) async throws -> SessionDetail { try await inner.session(id: id) }
-    func terminateSession(id: String) async throws -> SessionDetail { try await inner.terminateSession(id: id) }
-    func archiveSession(id: String) async throws -> SessionDetail { try await inner.archiveSession(id: id) }
-    func unarchiveSession(id: String) async throws -> SessionDetail { try await inner.unarchiveSession(id: id) }
     func deleteSession(id: String) async throws { try await inner.deleteSession(id: id) }
     func sendText(sessionID: String, text: String) async throws {}
     func sendKey(sessionID: String, key: String) async throws {}
@@ -62,8 +59,8 @@ private nonisolated final class RecordingClient: ATCClient, @unchecked Sendable 
     }
     func archiveProject(id: String) async throws -> Project { try await inner.archiveProject(id: id) }
     func unarchiveProject(id: String) async throws -> Project { try await inner.unarchiveProject(id: id) }
-    func projectSessions(projectID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session] {
-        try await inner.projectSessions(projectID: projectID, includeArchived: includeArchived, status: status)
+    func projectSessions(projectID: String, status: SessionStatus?) async throws -> [Session] {
+        try await inner.projectSessions(projectID: projectID, status: status)
     }
     func deleteProject(id: String) async throws { try await inner.deleteProject(id: id) }
     func workspaces(projectID: String?, includeArchived: Bool) async throws -> [Workspace] {
@@ -79,8 +76,8 @@ private nonisolated final class RecordingClient: ATCClient, @unchecked Sendable 
     func archiveWorkspace(id: String) async throws -> Workspace { try await inner.archiveWorkspace(id: id) }
     func unarchiveWorkspace(id: String) async throws -> Workspace { try await inner.unarchiveWorkspace(id: id) }
     func deleteWorkspace(id: String) async throws { try await inner.deleteWorkspace(id: id) }
-    func workspaceSessions(workspaceID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session] {
-        try await inner.workspaceSessions(workspaceID: workspaceID, includeArchived: includeArchived, status: status)
+    func workspaceSessions(workspaceID: String, status: SessionStatus?) async throws -> [Session] {
+        try await inner.workspaceSessions(workspaceID: workspaceID, status: status)
     }
     func attachURL(sessionID: String) -> URL { inner.attachURL(sessionID: sessionID) }
     func attachHeaders() -> [String: String] { inner.attachHeaders() }

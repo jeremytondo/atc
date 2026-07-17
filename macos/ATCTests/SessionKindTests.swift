@@ -16,7 +16,7 @@ struct SessionKindTests {
     private func session(name: String? = nil, action: String?) -> Session {
         Session(
             id: "ses_x", name: name, action: action, environment: "host",
-            workingDir: "/home/dev", status: .running, attachable: true,
+            workingDir: "/home/dev", status: .live,
             createdAt: .now, updatedAt: .now
         )
     }

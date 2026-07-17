@@ -104,7 +104,7 @@ final class WindowState {
         isInspectorPresented = false
         pendingRestore = sessionsCurrent ? nil : ref
 
-        if let restored, let session = appModel.session(for: restored), session.attachable {
+        if let restored, let session = appModel.session(for: restored), session.status == .live {
             appModel.attachIfNeeded(
                 to: session,
                 connectionID: restored.connectionID,
@@ -125,12 +125,8 @@ final class WindowState {
         else { return false }
 
         selectedContent = .session(ref)
-        if session.isArchived {
-            selectionMemory.forget(activeWorkspace)
-        } else {
-            selectionMemory.remember(sessionID: ref.sessionID, for: activeWorkspace)
-        }
-        if session.attachable {
+        selectionMemory.remember(sessionID: ref.sessionID, for: activeWorkspace)
+        if session.status == .live {
             appModel.attachIfNeeded(
                 to: session,
                 connectionID: ref.connectionID,
@@ -187,7 +183,7 @@ final class WindowState {
                     in: runtime.sessions.sessions
                ) {
                 selectedContent = .session(restored)
-                if let session = appModel.session(for: restored), session.attachable {
+                if let session = appModel.session(for: restored), session.status == .live {
                     appModel.attachIfNeeded(
                         to: session,
                         connectionID: restored.connectionID,
@@ -208,18 +204,17 @@ final class WindowState {
             selectedContent = .workspace(activeWorkspace)
             isInspectorPresented = false
         } else if let session {
-            if session.isArchived {
-                selectionMemory.forget(activeWorkspace)
-            }
             // Never undo an explicit Disconnect: reconcile runs on every
             // store change, not just selection changes.
-            if session.attachable, appModel.terminals[selected] == nil,
+            if session.status == .live, appModel.terminals[selected] == nil,
                !appModel.isDetached(selected) {
                 appModel.attachIfNeeded(
                     to: session,
                     connectionID: selected.connectionID,
                     retentionContext: retentionContext
                 )
+            } else if session.status == .ended, appModel.terminals[selected] != nil {
+                appModel.disconnectTerminal(ref: selected)
             }
         }
     }

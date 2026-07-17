@@ -284,7 +284,7 @@ struct TerminalReconnectTests {
         let runtime = try #require(model.runtime(id: record.id))
         runtime.stopPolling()
         await runtime.refresh()
-        let session = try #require(runtime.sessions.sessions.first { $0.attachable })
+        let session = try #require(runtime.sessions.sessions.first { $0.status == .live })
         model.attachIfNeeded(to: session, connectionID: record.id)
         let ref = SessionRef(connectionID: record.id, sessionID: session.id)
         let controller = try #require(model.terminals[ref])

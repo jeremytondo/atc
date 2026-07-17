@@ -74,6 +74,7 @@ final class TerminalSessionController: Identifiable {
     let sessionID: String
     let viewState: TerminalViewState
     private(set) var phase: Phase = .connecting
+    @ObservationIgnored var onSessionEnded: (() -> Void)?
 
     var id: String { sessionID }
 
@@ -233,6 +234,9 @@ final class TerminalSessionController: Identifiable {
                 retryAttempt = 0
                 cancelRetry()
                 phase = .ended(reason)
+                if reason == .sessionEnded {
+                    onSessionEnded?()
+                }
             }
         }
     }

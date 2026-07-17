@@ -18,12 +18,12 @@ private let projectFixture = Data(#"""
 
 /// A session detail carrying nested workspace and derived project references.
 private let sessionWithProjectFixture = Data(#"""
-{"id":"ses_scoped","action":"claude","environment":"host-login-shell","workingDir":"/home/dev/Projects/atelier","status":"running","attachable":true,"createdAt":"2026-07-05T12:00:00Z","updatedAt":"2026-07-05T12:00:00Z","workspace":{"id":"wsp_login","name":"Login bug"},"project":{"id":"prj_atelier","name":"Atelier"}}
+{"id":"ses_scoped","action":"claude","environment":"host-login-shell","workingDir":"/home/dev/Projects/atelier","status":"live","createdAt":"2026-07-05T12:00:00Z","updatedAt":"2026-07-05T12:00:00Z","workspace":{"id":"wsp_login","name":"Login bug"},"project":{"id":"prj_atelier","name":"Atelier"}}
 """#.utf8)
 
 /// A session detail with no refs (defensive: the server always sends both).
 private let sessionWithoutProjectFixture = Data(#"""
-{"id":"ses_unscoped","action":"codex","environment":"host-login-shell","workingDir":"/tmp","status":"running","attachable":true,"createdAt":"2026-07-05T12:00:00Z","updatedAt":"2026-07-05T12:00:00Z"}
+{"id":"ses_unscoped","action":"codex","environment":"host-login-shell","workingDir":"/tmp","status":"live","createdAt":"2026-07-05T12:00:00Z","updatedAt":"2026-07-05T12:00:00Z"}
 """#.utf8)
 
 @Suite("Project decoding")

@@ -6,13 +6,10 @@ import Foundation
 public protocol ATCClient: Sendable {
     func health() async throws -> Health
     func version() async throws -> Version
-    func sessions(includeArchived: Bool, status: SessionStatus?) async throws -> [Session]
+    func sessions(status: SessionStatus?) async throws -> [Session]
     func session(id: String) async throws -> SessionDetail
     func startSession(_ request: StartSessionRequest) async throws -> SessionDetail
-    func terminateSession(id: String) async throws -> SessionDetail
-    func archiveSession(id: String) async throws -> SessionDetail
-    func unarchiveSession(id: String) async throws -> SessionDetail
-    /// Deletes a session's metadata, terminating it first if active. Files
+    /// Deletes a session's metadata, ending it first if Live. Files
     /// are never touched.
     func deleteSession(id: String) async throws
     func sendText(sessionID: String, text: String) async throws
@@ -35,7 +32,7 @@ public protocol ATCClient: Sendable {
     func unarchiveProject(id: String) async throws -> Project
     /// Deletes a project record; allowed only once it has zero workspaces.
     func deleteProject(id: String) async throws
-    func projectSessions(projectID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session]
+    func projectSessions(projectID: String, status: SessionStatus?) async throws -> [Session]
     /// Lists workspaces newest-first; a nil `projectID` spans every project.
     func workspaces(projectID: String?, includeArchived: Bool) async throws -> [Workspace]
     func workspace(id: String) async throws -> Workspace
@@ -43,10 +40,10 @@ public protocol ATCClient: Sendable {
     func renameWorkspace(id: String, name: String) async throws -> Workspace
     func archiveWorkspace(id: String) async throws -> Workspace
     func unarchiveWorkspace(id: String) async throws -> Workspace
-    /// Deletes a workspace and its sessions' metadata, stopping active
-    /// sessions first. Files are never touched.
+    /// Deletes a workspace and its sessions' metadata, ending Live sessions
+    /// first. Files are never touched.
     func deleteWorkspace(id: String) async throws
-    func workspaceSessions(workspaceID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session]
+    func workspaceSessions(workspaceID: String, status: SessionStatus?) async throws -> [Session]
 
     /// WebSocket URL for `GET /api/sessions/{id}/attach`.
     func attachURL(sessionID: String) -> URL
@@ -56,7 +53,7 @@ public protocol ATCClient: Sendable {
 
 public extension ATCClient {
     func sessions() async throws -> [Session] {
-        try await sessions(includeArchived: false, status: nil)
+        try await sessions(status: nil)
     }
 
     func listDirectory(path: String) async throws -> DirectoryListing {
@@ -68,7 +65,7 @@ public extension ATCClient {
     }
 
     func projectSessions(projectID: String) async throws -> [Session] {
-        try await projectSessions(projectID: projectID, includeArchived: false, status: nil)
+        try await projectSessions(projectID: projectID, status: nil)
     }
 
     func workspaces(projectID: String? = nil) async throws -> [Workspace] {
@@ -76,6 +73,6 @@ public extension ATCClient {
     }
 
     func workspaceSessions(workspaceID: String) async throws -> [Session] {
-        try await workspaceSessions(workspaceID: workspaceID, includeArchived: false, status: nil)
+        try await workspaceSessions(workspaceID: workspaceID, status: nil)
     }
 }

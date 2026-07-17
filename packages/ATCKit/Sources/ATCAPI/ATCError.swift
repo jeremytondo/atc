@@ -32,6 +32,12 @@ extension ATCError: LocalizedError {
         if case .api(let code, _, _) = self { return code }
         return nil
     }
+
+    /// The related session ID, when the server sent one.
+    public var sessionID: String? {
+        if case .api(_, _, let sessionID) = self { return sessionID }
+        return nil
+    }
 }
 
 /// Wire format of atc server error responses.

@@ -525,20 +525,18 @@ struct CommandPaletteSessionResultTests {
         ),
     ]
 
-    @Test("only the Active Workspace's unarchived Sessions appear")
+    @Test("the Active Workspace's Live and Ended Sessions appear")
     func workspaceAndArchiveFiltering() {
         let active = WorkspaceRef(connectionID: connectionID, workspaceID: "active")
         let projected = results(query: "", active: active, sessions: [
             paletteSession("active", name: "Active", workspace: "active"),
             paletteSession("other", name: "Other", workspace: "other"),
-            paletteSession(
-                "archived", name: "Archived", workspace: "active", archived: true
-            ),
+            paletteSession("ended", name: "Ended", workspace: "active", status: .ended),
         ])
-        #expect(projected.map(\.ref.sessionID) == ["active"])
+        #expect(projected.map(\.ref.sessionID) == ["active", "ended"])
     }
 
-    @Test("an archived Active Workspace still yields unarchived Sessions")
+    @Test("an archived Active Workspace still yields its Sessions")
     func archivedActiveWorkspace() {
         let archivedWorkspace = WorkspaceRef(
             connectionID: connectionID,
@@ -579,31 +577,27 @@ struct CommandPaletteSessionResultTests {
         let candidates = [
             paletteSession(
                 "agent-failed", name: "Agent Failed", action: "claude",
-                workspace: "active", status: .failed
+                workspace: "active", status: .ended
             ),
             paletteSession(
                 "agent-terminated", name: "Finished Agent", action: "claude",
-                workspace: "active", status: .terminated
+                workspace: "active", status: .ended
             ),
             paletteSession(
                 "shell-starting", name: "Shell Starting",
-                workspace: "active", status: .starting
+                workspace: "active", status: .live
             ),
             paletteSession(
                 "action-terminated", name: "Tool Done", action: "lazygit",
-                workspace: "active", status: .terminated
+                workspace: "active", status: .ended
             ),
             paletteSession(
                 "unresolved-running", name: "Unknown Action", action: "missing",
-                workspace: "active", status: .running
+                workspace: "active", status: .live
             ),
             paletteSession(
                 "other-workspace", name: "Other Agent", action: "claude",
                 workspace: "other"
-            ),
-            paletteSession(
-                "archived", name: "Archived Agent", action: "claude",
-                workspace: "active", archived: true
             ),
         ]
 
@@ -662,7 +656,7 @@ struct CommandPaletteSessionResultTests {
         let active = WorkspaceRef(connectionID: connectionID, workspaceID: "active")
         let session = paletteSession(
             "raw-identifier", name: "Public Name", action: "claude",
-            workspace: "active", status: .failed
+            workspace: "active", status: .ended
         )
         for query in ["claude", "failed", "raw-identifier"] {
             #expect(results(query: query, active: active, sessions: [session]).isEmpty)
@@ -867,8 +861,7 @@ private func paletteSession(
     name: String? = nil,
     action: String? = nil,
     workspace: String,
-    archived: Bool = false,
-    status: SessionStatus = .running
+    status: SessionStatus = .live
 ) -> Session {
     Session(
         id: id,
@@ -877,10 +870,8 @@ private func paletteSession(
         environment: "host",
         workingDir: "/tmp",
         status: status,
-        attachable: false,
         createdAt: .now,
         updatedAt: .now,
-        archivedAt: archived ? .now : nil,
         workspace: SessionWorkspace(id: workspace, name: workspace)
     )
 }

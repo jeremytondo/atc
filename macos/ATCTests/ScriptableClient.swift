@@ -31,24 +31,15 @@ nonisolated final class ScriptableClient: ATCClient, @unchecked Sendable {
 
     func health() async throws -> Health { try await gate(); return try await inner.health() }
     func version() async throws -> Version { try await gate(); return try await inner.version() }
-    func sessions(includeArchived: Bool, status: SessionStatus?) async throws -> [Session] {
+    func sessions(status: SessionStatus?) async throws -> [Session] {
         try await gate()
-        return try await inner.sessions(includeArchived: includeArchived, status: status)
+        return try await inner.sessions(status: status)
     }
     func session(id: String) async throws -> SessionDetail {
         try await gate(); return try await inner.session(id: id)
     }
     func startSession(_ request: StartSessionRequest) async throws -> SessionDetail {
         try await gate(); return try await inner.startSession(request)
-    }
-    func terminateSession(id: String) async throws -> SessionDetail {
-        try await gate(); return try await inner.terminateSession(id: id)
-    }
-    func archiveSession(id: String) async throws -> SessionDetail {
-        try await gate(); return try await inner.archiveSession(id: id)
-    }
-    func unarchiveSession(id: String) async throws -> SessionDetail {
-        try await gate(); return try await inner.unarchiveSession(id: id)
     }
     func deleteSession(id: String) async throws {
         try await gate(); try await inner.deleteSession(id: id)
@@ -93,10 +84,10 @@ nonisolated final class ScriptableClient: ATCClient, @unchecked Sendable {
     func unarchiveProject(id: String) async throws -> Project {
         try await gate(); return try await inner.unarchiveProject(id: id)
     }
-    func projectSessions(projectID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session] {
+    func projectSessions(projectID: String, status: SessionStatus?) async throws -> [Session] {
         try await gate()
         return try await inner.projectSessions(
-            projectID: projectID, includeArchived: includeArchived, status: status
+            projectID: projectID, status: status
         )
     }
     func deleteProject(id: String) async throws {
@@ -124,10 +115,10 @@ nonisolated final class ScriptableClient: ATCClient, @unchecked Sendable {
     func deleteWorkspace(id: String) async throws {
         try await gate(); try await inner.deleteWorkspace(id: id)
     }
-    func workspaceSessions(workspaceID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session] {
+    func workspaceSessions(workspaceID: String, status: SessionStatus?) async throws -> [Session] {
         try await gate()
         return try await inner.workspaceSessions(
-            workspaceID: workspaceID, includeArchived: includeArchived, status: status
+            workspaceID: workspaceID, status: status
         )
     }
     func attachURL(sessionID: String) -> URL { inner.attachURL(sessionID: sessionID) }
