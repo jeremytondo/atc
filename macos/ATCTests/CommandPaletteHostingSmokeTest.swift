@@ -39,6 +39,44 @@ struct CommandPaletteHostingSmokeTest {
         window.orderOut(nil)
     }
 
+    @Test("palette hosts heterogeneous results for an Active Workspace")
+    func hostHeterogeneousPalette() async throws {
+        let store = KeyboardConfigStore(
+            configURL: FileManager.default.temporaryDirectory
+                .appending(path: UUID().uuidString)
+        )
+        let appModel = AppModel.preview()
+        await appModel.refreshAll()
+        let windowState = WindowState.ephemeral()
+        let connectionID = try #require(appModel.runtimes.first?.id)
+        #expect(windowState.activateWorkspace(
+            WorkspaceRef(connectionID: connectionID, workspaceID: "wsp_parser"),
+            in: appModel
+        ))
+        let router = WindowKeyboardRouter(
+            keymap: store.keymap,
+            context: CommandContext(
+                appModel: appModel,
+                windowState: windowState,
+                configStore: store
+            )
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        window.contentView = NSHostingView(
+            rootView: CommandPaletteView(initialQuery: "parser")
+                .environment(appModel)
+                .environment(windowState)
+                .environment(store)
+                .environment(router)
+        )
+        window.makeKeyAndOrderFront(nil)
+        pump(seconds: 0.5)
+        window.orderOut(nil)
+    }
+
     @Test("routing container mounts the presented palette without crashing")
     func hostIntegratedPalette() {
         let store = KeyboardConfigStore(
