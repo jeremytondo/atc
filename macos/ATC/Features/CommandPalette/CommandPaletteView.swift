@@ -227,7 +227,7 @@ struct CommandPaletteView: View {
             Spacer(minLength: 12)
         case .session(let row):
             typedTitle(
-                row.kind == .agent ? "Session" : "Terminal",
+                row.kind.paletteTypeLabel,
                 title: row.title,
                 ranges: row.matchedRanges
             )
@@ -236,16 +236,17 @@ struct CommandPaletteView: View {
         }
     }
 
+    /// One flowing Text so a long name wraps as a unit with its prefix. The
+    /// prefix is dropped when the name already is the type label — an unnamed
+    /// shell reads "Terminal", not "Terminal: Terminal".
     private func typedTitle(
         _ type: String,
         title: String,
         ranges: [Range<String.Index>]
-    ) -> some View {
-        HStack(spacing: 0) {
-            Text("\(type): ")
-                .foregroundStyle(.secondary)
-            highlightedTitle(title, ranges: ranges)
-        }
+    ) -> Text {
+        let name = highlightedTitle(title, ranges: ranges)
+        guard title != type else { return name }
+        return Text("\(type): ").foregroundStyle(.secondary) + name
     }
 
     @ViewBuilder
@@ -294,7 +295,10 @@ struct CommandPaletteView: View {
                 parts.append("Unavailable — \(reason)")
             }
         case .session(let row):
-            parts = [row.title, row.kind == .agent ? "Session" : "Terminal"]
+            parts = [row.title]
+            if row.title != row.kind.paletteTypeLabel {
+                parts.append(row.kind.paletteTypeLabel)
+            }
         }
         return parts.joined(separator: ", ")
     }
@@ -381,6 +385,16 @@ struct CommandPaletteView: View {
         }
         self.selectedID = rows[(index + offset + rows.count) % rows.count].id
         return .handled
+    }
+}
+
+private extension SessionKind {
+    /// The one palette type label, shared by the row prefix and VoiceOver.
+    var paletteTypeLabel: String {
+        switch self {
+        case .agent: "Session"
+        case .terminal: "Terminal"
+        }
     }
 }
 

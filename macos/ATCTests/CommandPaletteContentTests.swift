@@ -618,6 +618,45 @@ struct CommandPaletteSessionResultTests {
         #expect(terminals.allSatisfy { $0.kind == .terminal && $0.matchedRanges.isEmpty })
     }
 
+    @Test("cross-kind title matches stay additive under keyword expansion")
+    func crossKindTitleMatches() throws {
+        let active = WorkspaceRef(connectionID: connectionID, workspaceID: "active")
+        let candidates = [
+            paletteSession("shell", name: "Session log", workspace: "active"),
+            paletteSession(
+                "agent", name: "Terminate run", action: "claude", workspace: "active"
+            ),
+        ]
+
+        let bySessionKeyword = results(query: "ses", active: active, sessions: candidates)
+        #expect(bySessionKeyword.map(\.ref.sessionID) == ["shell", "agent"])
+        let titleMatched = try #require(bySessionKeyword.first)
+        #expect(titleMatched.kind == .terminal)
+        #expect(titleMatched.matchedRanges.map {
+            String(titleMatched.title[$0])
+        } == ["Ses"])
+        #expect(try #require(bySessionKeyword.last).matchedRanges.isEmpty)
+
+        let byTerminalKeyword = results(query: "ter", active: active, sessions: candidates)
+        #expect(byTerminalKeyword.map(\.ref.sessionID) == ["shell", "agent"])
+        #expect(try #require(byTerminalKeyword.first).matchedRanges.isEmpty)
+        let agentMatch = try #require(byTerminalKeyword.last)
+        #expect(agentMatch.kind == .agent)
+        #expect(agentMatch.matchedRanges.map { String(agentMatch.title[$0]) } == ["Ter"])
+    }
+
+    @Test("a two-character keyword prefix never expands")
+    func shortPrefixDoesNotExpand() {
+        let active = WorkspaceRef(connectionID: connectionID, workspaceID: "active")
+        let projected = results(query: "se", active: active, sessions: [
+            paletteSession("shell", name: "Session log", workspace: "active"),
+            paletteSession(
+                "agent", name: "Unrelated", action: "claude", workspace: "active"
+            ),
+        ])
+        #expect(projected.map(\.ref.sessionID) == ["shell"])
+    }
+
     @Test("hidden Action, status, and raw identifiers never match")
     func hiddenFieldsDoNotMatch() {
         let active = WorkspaceRef(connectionID: connectionID, workspaceID: "active")
@@ -713,18 +752,27 @@ struct CommandPaletteScaleTests {
             connectionID: paletteConnectionID(1),
             workspaceID: "active"
         )
+        let sessions = (0..<2_000).map {
+            paletteSession(
+                "session-\($0)", name: "Scale Session \($0)",
+                workspace: active.workspaceID
+            )
+        }
         let sessionResults = CommandPaletteContent.sessionResults(
             query: "Scale",
             activeWorkspace: active,
-            sessions: (0..<2_000).map {
-                paletteSession(
-                    "session-\($0)", name: "Scale Session \($0)",
-                    workspace: active.workspaceID
-                )
-            },
+            sessions: sessions,
             actions: []
         )
         #expect(sessionResults.count == 2_000)
+
+        let keywordResults = CommandPaletteContent.sessionResults(
+            query: "ter",
+            activeWorkspace: active,
+            sessions: sessions,
+            actions: []
+        )
+        #expect(keywordResults.count == 2_000)
     }
 }
 

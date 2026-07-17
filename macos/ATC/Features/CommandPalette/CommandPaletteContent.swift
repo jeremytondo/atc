@@ -47,6 +47,11 @@ struct SessionResult: Identifiable {
     var id: PaletteResultID { .session(ref) }
 }
 
+/// A whole-query type keyword: a trimmed query of three or more characters
+/// that is a case-insensitive prefix of one plural keyword ("sessions",
+/// "terminals", "workspaces") lists every target of that type, additively
+/// with ordinary matching. Anything else — shorter, longer than the keyword,
+/// or a composed query like "session parser" — matches only by title.
 enum PaletteTypeKeyword: CaseIterable, Equatable {
     case sessions
     case terminals
