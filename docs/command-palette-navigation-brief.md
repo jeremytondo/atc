@@ -96,10 +96,11 @@ To navigate within a newly activated Workspace, the user reopens the palette.
   the accessibility label `Palette search`.
 - Dismiss before navigation, then restore focus to the selected Session or
   Terminal.
-- Keep Workspace results whose Connection is unreachable visible and
-  keyboard-selectable, but unavailable. Return or click keeps the palette open
-  and reports a concise Connection-unavailable reason through the palette's
-  existing unavailable-command feedback path.
+- Keep Workspace results whose Connection is not connected (unreachable, or
+  not yet checked) visible and keyboard-selectable, but unavailable — the same
+  rule the Workspace Switcher uses to disable rows. Return or click keeps the
+  palette open and reports a concise Connection-unavailable reason through the
+  palette's existing unavailable-command feedback path.
 - When there is no Active Workspace, omit Session and Terminal candidates
   without adding a passive informational row. Show one generic no-results state
   only when the entire filtered list is empty.
