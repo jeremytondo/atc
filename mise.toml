@@ -47,4 +47,4 @@ xcodebuild test \
 
 [tasks."macos:release-dev"]
 description = "Build and publish a notarized dev DMG to GitHub Releases"
-run = "scripts/release-dev.sh --upload"
+run = "ATC_NOTARY_PROFILE=ateliercode-notary scripts/release-dev.sh --upload"
