@@ -44,3 +44,7 @@ xcodebuild test \
   -destination platform=macOS \
   CODE_SIGNING_ALLOWED=NO
 """
+
+[tasks."macos:release-dev"]
+description = "Build and publish a notarized dev DMG to GitHub Releases"
+run = "scripts/release-dev.sh --upload"
