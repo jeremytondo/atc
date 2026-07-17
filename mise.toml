@@ -44,3 +44,7 @@ xcodebuild test \
   -destination platform=macOS \
   CODE_SIGNING_ALLOWED=NO
 """
+
+[tasks."macos:release-dev"]
+description = "Build and publish a notarized dev DMG to GitHub Releases"
+run = "ATC_NOTARY_PROFILE=ateliercode-notary scripts/release-dev.sh --upload"
