@@ -42,3 +42,6 @@ CMUX (https://github.com/manaflow-ai/cmux): Agentic coding focused terminal base
 
 When starting sub agents or running workflows, be smart about which agents to choose in order to save on token cost. Use agents like Opus, Sonnet, Terra, or Luna when it makes sense. Always review and check their work.
 
+## Using Linear
+
+When doing work in Linear, always work within the atc team: https://linear.app/elevenideas/team/ATC.
