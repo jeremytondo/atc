@@ -271,18 +271,41 @@ func (s *Service) Start(ctx context.Context, input StartInput) (Session, error) 
 	}
 
 	live, err := s.store.PromoteToLive(ctx, record.ID)
-	if errors.Is(err, store.ErrSessionNotStarting) || errors.Is(err, store.ErrSessionNotFound) {
+	switch {
+	case errors.Is(err, store.ErrSessionNotStarting):
+		// The provisional record settled concurrently. Startup reconciliation
+		// may have promoted it after seeing the process alive; that Live
+		// record is this launch's outcome and the process must keep running.
+		if settled, getErr := s.store.Get(ctx, record.ID); getErr == nil && settled.Status == store.StatusLive {
+			return domainSession(settled)
+		}
+		fallthrough
+	case errors.Is(err, store.ErrSessionNotFound):
 		// Workspace deletion removed the provisional record while this launch
 		// was in flight; the process must not outlive that decision.
-		if termErr := s.mux.Terminate(ctx, name); termErr != nil {
-			s.logger.Error("terminate for settled starting session failed", "id", record.ID, "zmx_name", name, "err", termErr)
-		}
+		s.terminateAbandonedLaunch(ctx, record.ID, name)
 		return Session{}, fmt.Errorf("%w: %s", ErrSessionNotFound, record.ID)
-	}
-	if err != nil {
+	case err != nil:
+		// The process launched but the promotion write failed. The caller
+		// receives a failure, so neither the process nor the provisional
+		// record may survive it.
+		s.terminateAbandonedLaunch(ctx, record.ID, name)
+		if deleteErr := s.store.DeleteStarting(ctx, record.ID); deleteErr != nil &&
+			!errors.Is(deleteErr, store.ErrSessionNotStarting) && !errors.Is(deleteErr, store.ErrSessionNotFound) {
+			s.logger.Error("remove unpromoted launch attempt failed", "id", record.ID, "err", deleteErr)
+		}
 		return Session{}, translateStoreErr(err)
 	}
 	return domainSession(live)
+}
+
+// terminateAbandonedLaunch stops a process whose launch will be reported as
+// failed. Termination failure is logged only: the record-side outcome is
+// already decided and reconciliation removes stragglers at next startup.
+func (s *Service) terminateAbandonedLaunch(ctx context.Context, id, name string) {
+	if err := s.mux.Terminate(ctx, name); err != nil {
+		s.logger.Error("terminate abandoned launch failed", "id", id, "zmx_name", name, "err", err)
+	}
 }
 
 // requireActionStillExists re-resolves an action after the provisional row is
@@ -475,6 +498,11 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 func (s *Service) End(ctx context.Context, id string) error {
 	for {
 		record, err := s.store.Get(ctx, id)
+		if errors.Is(err, store.ErrSessionNotFound) {
+			// A concurrent delete already removed the record; the
+			// postcondition (no active session) holds.
+			return nil
+		}
 		if err != nil {
 			return translateStoreErr(err)
 		}

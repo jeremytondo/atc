@@ -41,15 +41,28 @@ import {
 
 // Compile-time contract checks: a fixture field the types can't represent
 // (or a required type field the fixtures lack) fails svelte-check.
+
+// Narrows a fixture's status string against the closed contract vocabulary,
+// so an invalid fixture value fails the test run instead of being cast
+// through.
+const sessionStatuses = ['live', 'ended'] as const satisfies readonly SessionListItem['status'][];
+function sessionStatus(value: string): SessionListItem['status'] {
+  const status = sessionStatuses.find((candidate) => candidate === value);
+  if (!status) {
+    throw new Error(`fixture session status ${JSON.stringify(value)} is not in the contract`);
+  }
+  return status;
+}
+
 const sessionsContract = {
   sessions: sessionsList.response.sessions.map((session) => ({
     ...session,
-    status: session.status as SessionListItem['status']
+    status: sessionStatus(session.status)
   }))
 } satisfies { sessions: SessionListItem[] };
 const sessionStartContract = {
   ...sessionStart.response,
-  status: sessionStart.response.status as SessionDetail['status']
+  status: sessionStatus(sessionStart.response.status)
 } satisfies SessionDetail;
 sessionStart.request satisfies StartSessionRequest;
 projectsList.response satisfies { projects: Project[] };
@@ -59,7 +72,7 @@ workspaceCreate.response satisfies Workspace;
 const workspaceSessionsContract = {
   sessions: workspaceSessions.response.sessions.map((session) => ({
     ...session,
-    status: session.status as SessionListItem['status']
+    status: sessionStatus(session.status)
   }))
 } satisfies { sessions: SessionListItem[] };
 // actions-list is checked at runtime only: TS normalizes the two actions'

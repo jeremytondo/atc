@@ -271,10 +271,20 @@ change. Reset one local instance with explicit, resolved names and paths:
    `$XDG_STATE_HOME/atc/atc.db` (or `$HOME/.local/state/atc/atc.db`). For
    example, after resolving it, record the exact path as
    `resolved_db=/Users/alice/.local/state/atc/atc.db`.
-3. Run `zmx list`. ATC-owned names use `atc-` followed by 32 hexadecimal
-   characters. Remove only exact names shown for this ATC instance, for
-   example `zmx kill atc-0123456789abcdef0123456789abcdef`; repeat with each
-   exact name instead of using a wildcard.
+3. Enumerate the ZMX sessions owned by this database. A record's ZMX name is
+   derived deterministically from its session id (`atc-` plus the first 32
+   hex characters of the id's SHA-256), so the selected database is the
+   source of truth:
+
+   ```sh
+   sqlite3 "$resolved_db" 'SELECT id FROM sessions;' | while IFS= read -r id; do
+     printf 'atc-%.32s\n' "$(printf '%s' "$id" | shasum -a 256 | cut -c1-64)"
+   done
+   ```
+
+   Run `zmx kill <name>` for each printed name. Any other name in
+   `zmx list` — including other `atc-` names — belongs to a different ATC
+   instance; leave it alone.
 4. Verify the database variable is the exact file from step 2, then remove
    only that file: `test "$resolved_db" = "/Users/alice/.local/state/atc/atc.db" && rm -- "$resolved_db"`.
 5. Restart the server. It creates the current schema from scratch.

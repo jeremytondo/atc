@@ -242,6 +242,45 @@ func TestStartPromotionLostRaceTerminatesLaunchedProcess(t *testing.T) {
 	}
 }
 
+func TestStartConcurrentPromotionKeepsLiveSession(t *testing.T) {
+	mux := &fakeMux{}
+	svc, st := newService(t, mux)
+	mux.startHook = func() {
+		records, err := st.ListAll(context.Background(), store.ListFilter{})
+		if err != nil || len(records) != 1 {
+			t.Fatalf("records during start = %+v err=%v", records, err)
+		}
+		if _, err := st.PromoteToLive(context.Background(), records[0].ID); err != nil {
+			t.Fatalf("PromoteToLive: %v", err)
+		}
+	}
+	started, err := svc.Start(context.Background(), StartInput{Action: "codex", WorkspaceID: testWorkspaceID})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if started.Status != StatusLive || mux.terminateCalls != 0 {
+		t.Fatalf("started=%+v terminateCalls=%d", started, mux.terminateCalls)
+	}
+	assertStoredStatus(t, st, started.ID, store.StatusLive)
+}
+
+func TestStartPromotionPersistenceFailureTerminatesLaunchedProcess(t *testing.T) {
+	mux := &fakeMux{}
+	svc, st := newService(t, mux)
+	mux.startHook = func() {
+		if err := st.Close(); err != nil {
+			t.Fatalf("Close store: %v", err)
+		}
+	}
+	_, err := svc.Start(context.Background(), StartInput{Action: "codex", WorkspaceID: testWorkspaceID})
+	if err == nil || errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("err = %v, want a persistence failure", err)
+	}
+	if mux.terminateCalls != 1 {
+		t.Fatalf("terminateCalls = %d, want the launched process terminated", mux.terminateCalls)
+	}
+}
+
 func TestListAndReadExcludeProvisionalAndReconcileMissingLive(t *testing.T) {
 	mux := &fakeMux{}
 	svc, st := newService(t, mux)
@@ -447,6 +486,13 @@ func TestInternalEndRemovesProvisionalAndEndsLive(t *testing.T) {
 		t.Fatalf("End live: %v", err)
 	}
 	assertStoredStatus(t, st, "ses_live", store.StatusEnded)
+}
+
+func TestInternalEndTreatsMissingRecordAsEnded(t *testing.T) {
+	svc, _ := newService(t, &fakeMux{})
+	if err := svc.End(context.Background(), "ses_gone"); err != nil {
+		t.Fatalf("End missing session: %v", err)
+	}
 }
 
 func TestStatusVocabulary(t *testing.T) {

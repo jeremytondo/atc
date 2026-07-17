@@ -1,4 +1,10 @@
 > Archived: superseded by `docs/plans/sessions-actions-environments.md` and `docs/specs/sessions-actions-environments.md`.
+>
+> **Lifecycle amendment (2026-07):** this plan predates the live/ended
+> Session lifecycle (ATC-29). `MarkRunning`/`MarkTerminated` became
+> `PromoteToLive`/`MarkEnded`, and `MarkFailed`/`MarkArchived` were removed:
+> failed launches leave no Session and archiving no longer exists. The text
+> below is preserved as originally written.
 
 # Backend Agent Sessions — implementation playbook
 
@@ -98,8 +104,8 @@ imports it yet).
   `params` (JSON TEXT), `working_dir`, `prompt`, `status`, `failure_reason`,
   `failure_code`, `created_at`/`updated_at`/`terminated_at`/`archived_at` (RFC3339 UTC
   or unix; convert at the boundary).
-- CRUD/queries used by the domain: `CreateStarting`, `PromoteToLive`, `MarkFailed(reason,
-  code)`, `MarkEnded`, `MarkArchived`, `Get(id)`, `List(filter)` (non-archived
+- CRUD/queries used by the domain: `CreateStarting`, `MarkRunning`, `MarkFailed(reason,
+  code)`, `MarkTerminated`, `MarkArchived`, `Get(id)`, `List(filter)` (non-archived
   default, optional status filter, `created_at DESC`), plus a transaction seam for the
   start record→result update (§7.1.2).
 
@@ -131,7 +137,7 @@ restarts.
   params, workingDir, prompt, status, failureReason/Code, timestamps, `attachable`).
 - `Start(ctx, StartInput)`: validate (agent exists → params → prompt-placement if
   prompt → workingDir non-empty), `store.CreateStarting`, build command via registry,
-  `zmx.Start(NameForID(id), dir, cmd)`, then `PromoteToLive` (return full session) or
+  `zmx.Start(NameForID(id), dir, cmd)`, then `MarkRunning` (return full session) or
   `MarkFailed` + return a typed launch error carrying `failureCode`+`sessionId`
   (§7.2.3, §9.2).
 - `List(includeArchived, statusFilter)`, `Read(id)`: load from store, reconcile

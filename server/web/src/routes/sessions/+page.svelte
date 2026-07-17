@@ -70,6 +70,9 @@
   }
 
   async function remove(s: SessionListItem) {
+    // One deletion at a time: overlapping requests would fight over busyId
+    // and could reload the list out of order.
+    if (busyId) return;
     const label = s.name?.trim() || s.id;
     const effect =
       s.status === 'live'
@@ -162,7 +165,7 @@
               {#if s.status === 'live'}
                 <a class="btn xs" href={`/sessions/${encodeURIComponent(s.id)}`}>Open</a>
               {/if}
-              <button class="btn xs" onclick={() => remove(s)} disabled={busyId === s.id}
+              <button class="btn xs" onclick={() => remove(s)} disabled={busyId !== ''}
                 >Delete</button
               >
             </div>
