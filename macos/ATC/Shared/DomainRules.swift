@@ -22,6 +22,8 @@ extension Sequence where Element: CreatedOrdered {
 }
 
 extension Session {
+    var isActive: Bool { status == .live }
+
     /// Whether this Session belongs to the Workspace. Server IDs are only
     /// unique within a Connection, so callers compare same-Connection refs.
     func belongs(to ref: WorkspaceRef) -> Bool {

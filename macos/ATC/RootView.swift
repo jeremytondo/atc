@@ -75,6 +75,7 @@ struct RootView: View {
             }
         }
         .onChange(of: appModel.windowNavigationSnapshot(), initial: true) {
+            appModel.reconcileTerminalLifecycle()
             windowState.reconcile(in: appModel)
         }
     }
@@ -107,7 +108,7 @@ struct RootView: View {
            let ref = visibleSessionRef,
            let session = visibleSession,
            let client = appModel.runtime(id: ref.connectionID)?.client {
-            SessionDetailView(session: session, client: client)
+            SessionDetailView(sessionRef: ref, session: session, client: client)
                 .inspectorColumnWidth(min: 260, ideal: 320)
         }
     }

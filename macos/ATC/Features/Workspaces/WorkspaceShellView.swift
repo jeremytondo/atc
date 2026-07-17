@@ -9,7 +9,6 @@ struct WorkspaceNavigatorView: View {
 
     @State private var actionError: String?
     @State private var deletingSession: Row?
-    @State private var showArchived = false
 
     private struct Row: Identifiable {
         let ref: SessionRef
@@ -68,17 +67,6 @@ struct WorkspaceNavigatorView: View {
                 sessionRows(terminals, emptyText: "No terminals")
             }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            HStack {
-                Toggle("Show Archived", isOn: $showArchived)
-                    .toggleStyle(.checkbox)
-                    .font(.caption)
-                Spacer()
-            }
-            .padding(.horizontal, Spacing.md)
-            .padding(.vertical, Spacing.sm)
-            .background(.bar)
-        }
         .confirmationDialog(
             "Delete Session “\(deletingSession?.title ?? "")”?",
             isPresented: Binding(
@@ -92,7 +80,10 @@ struct WorkspaceNavigatorView: View {
             .disabled(!isConnected)
         } message: {
             if let row = deletingSession {
-                Text(DeleteConfirmation.sessionMessage(displayName: row.title))
+                Text(DeleteConfirmation.sessionMessage(
+                    displayName: row.title,
+                    status: row.session.status
+                ))
             }
         }
         .actionErrorAlert($actionError, title: "Workspace Action Failed")
@@ -113,7 +104,6 @@ struct WorkspaceNavigatorView: View {
             } actions: {
                 EmptyView()
             }
-            .opacity(row.session.isArchived ? Dimming.archived : 1)
             .contextMenu { sessionMenu(row) }
         }
         if rows.isEmpty {
@@ -126,26 +116,6 @@ struct WorkspaceNavigatorView: View {
 
     @ViewBuilder
     private func sessionMenu(_ row: Row) -> some View {
-        let session = row.session
-        if session.isArchived {
-            Button("Unarchive", systemImage: "archivebox") {
-                if let store = runtime?.sessions {
-                    appModel.run(on: row.ref.connectionID, reporting: $actionError) {
-                        try await store.unarchive(id: session.id)
-                    }
-                }
-            }
-            .disabled(!isConnected)
-        } else if session.status == .terminated || session.status == .failed {
-            Button("Archive", systemImage: "archivebox") {
-                if let store = runtime?.sessions {
-                    appModel.run(on: row.ref.connectionID, reporting: $actionError) {
-                        try await store.archive(id: session.id)
-                    }
-                }
-            }
-            .disabled(!isConnected)
-        }
         Button("Delete…", systemImage: "trash", role: .destructive) {
             deletingSession = row
         }
@@ -175,13 +145,11 @@ struct WorkspaceNavigatorView: View {
         SessionKind.classify(session: session, actions: runtime?.actions.actions ?? [])
     }
 
-    /// Filtered, ordered sidebar rows: the Active Workspace's sessions,
-    /// newest-first, archived behind the footer toggle.
+    /// Ordered sidebar rows: the Active Workspace's sessions, newest-first.
     private func sidebarRows() -> [Row] {
         guard let ref = workspaceRef else { return [] }
         let actions = runtime?.actions.actions ?? []
         return workspaceSessions()
-            .filter { showArchived || !$0.isArchived }
             .sortedNewestFirst()
             .map { session in
                 return Row(
@@ -193,14 +161,7 @@ struct WorkspaceNavigatorView: View {
     }
 
     private func deleteSession(_ row: Row) {
-        guard let store = runtime?.sessions else { return }
-        appModel.run(on: row.ref.connectionID, reporting: $actionError) {
-            try await store.delete(id: row.session.id)
-            appModel.disconnectTerminal(ref: row.ref)
-            if windowState.selectedSession == row.ref {
-                windowState.showWorkspaceEmpty()
-            }
-        }
+        appModel.deleteSession(ref: row.ref, windowState: windowState, reporting: $actionError)
     }
 }
 
@@ -310,8 +271,4 @@ struct WorkspaceActionsMenu: View {
             windowState.forgetSelection(for: ref)
         }
     }
-}
-
-extension Session {
-    var isActive: Bool { status == .starting || status == .running }
 }

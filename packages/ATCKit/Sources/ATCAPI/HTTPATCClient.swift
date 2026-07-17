@@ -22,11 +22,8 @@ public struct HTTPATCClient: ATCClient {
         try await get("version")
     }
 
-    public func sessions(includeArchived: Bool, status: SessionStatus?) async throws -> [Session] {
+    public func sessions(status: SessionStatus?) async throws -> [Session] {
         var query: [URLQueryItem] = []
-        if includeArchived {
-            query.append(URLQueryItem(name: "includeArchived", value: "true"))
-        }
         if let status {
             query.append(URLQueryItem(name: "status", value: status.rawValue))
         }
@@ -40,18 +37,6 @@ public struct HTTPATCClient: ATCClient {
 
     public func startSession(_ request: StartSessionRequest) async throws -> SessionDetail {
         try await post("sessions/start", body: request)
-    }
-
-    public func terminateSession(id: String) async throws -> SessionDetail {
-        try await post("sessions/\(id)/terminate")
-    }
-
-    public func archiveSession(id: String) async throws -> SessionDetail {
-        try await post("sessions/\(id)/archive")
-    }
-
-    public func unarchiveSession(id: String) async throws -> SessionDetail {
-        try await post("sessions/\(id)/unarchive")
     }
 
     public func deleteSession(id: String) async throws {
@@ -182,13 +167,9 @@ public struct HTTPATCClient: ATCClient {
 
     public func workspaceSessions(
         workspaceID: String,
-        includeArchived: Bool,
         status: SessionStatus?
     ) async throws -> [Session] {
         var query: [URLQueryItem] = []
-        if includeArchived {
-            query.append(URLQueryItem(name: "includeArchived", value: "true"))
-        }
         if let status {
             query.append(URLQueryItem(name: "status", value: status.rawValue))
         }
@@ -198,13 +179,9 @@ public struct HTTPATCClient: ATCClient {
 
     public func projectSessions(
         projectID: String,
-        includeArchived: Bool,
         status: SessionStatus?
     ) async throws -> [Session] {
         var query: [URLQueryItem] = []
-        if includeArchived {
-            query.append(URLQueryItem(name: "includeArchived", value: "true"))
-        }
         if let status {
             query.append(URLQueryItem(name: "status", value: status.rawValue))
         }

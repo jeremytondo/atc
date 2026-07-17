@@ -1,10 +1,8 @@
 import Foundation
 
 public enum SessionStatus: String, Codable, Sendable, CaseIterable, Hashable {
-    case starting
-    case running
-    case failed
-    case terminated
+    case live
+    case ended
 }
 
 /// Workspace reference nested on sessions.
@@ -39,13 +37,8 @@ public struct Session: Codable, Sendable, Hashable, Identifiable {
     public var environment: String
     public var workingDir: String
     public var status: SessionStatus
-    public var attachable: Bool
-    public var failureReason: String?
-    public var failureCode: String?
     public var createdAt: Date
     public var updatedAt: Date
-    public var terminatedAt: Date?
-    public var archivedAt: Date?
     /// The workspace this session belongs to.
     public var workspace: SessionWorkspace?
     /// The workspace's project, derived server-side.
@@ -58,13 +51,8 @@ public struct Session: Codable, Sendable, Hashable, Identifiable {
         environment: String,
         workingDir: String,
         status: SessionStatus,
-        attachable: Bool,
-        failureReason: String? = nil,
-        failureCode: String? = nil,
         createdAt: Date,
         updatedAt: Date,
-        terminatedAt: Date? = nil,
-        archivedAt: Date? = nil,
         workspace: SessionWorkspace? = nil,
         project: SessionProject? = nil
     ) {
@@ -74,19 +62,11 @@ public struct Session: Codable, Sendable, Hashable, Identifiable {
         self.environment = environment
         self.workingDir = workingDir
         self.status = status
-        self.attachable = attachable
-        self.failureReason = failureReason
-        self.failureCode = failureCode
         self.createdAt = createdAt
         self.updatedAt = updatedAt
-        self.terminatedAt = terminatedAt
-        self.archivedAt = archivedAt
         self.workspace = workspace
         self.project = project
     }
-
-    /// Archived is not a status — it's a non-null `archivedAt`.
-    public var isArchived: Bool { archivedAt != nil }
 
     /// Human label for what the session launched: the action name, or
     /// "Shell" for the Interactive Shell.
@@ -99,8 +79,7 @@ public struct Session: Codable, Sendable, Hashable, Identifiable {
     }
 }
 
-/// `GET /api/sessions/{id}` and the response of start/terminate/archive/
-/// unarchive.
+/// `GET /api/sessions/{id}` and the response of starting a session.
 public struct SessionDetail: Codable, Sendable, Hashable, Identifiable {
     public var id: String
     public var name: String?
@@ -111,22 +90,15 @@ public struct SessionDetail: Codable, Sendable, Hashable, Identifiable {
     public var workingDir: String
     public var prompt: String?
     public var status: SessionStatus
-    public var attachable: Bool
-    public var failureReason: String?
-    public var failureCode: String?
     public var createdAt: Date
     public var updatedAt: Date
-    public var terminatedAt: Date?
-    public var archivedAt: Date?
     /// The workspace this session belongs to.
     public var workspace: SessionWorkspace?
     /// The workspace's project, derived server-side.
     public var project: SessionProject?
 
-    public var isArchived: Bool { archivedAt != nil }
-
-    /// The list-shaped projection of this detail, for merging into a
-    /// sessions array after a mutation.
+    /// The list-shaped projection of this detail, for merging a get/start
+    /// response into a sessions array.
     public var asSession: Session {
         Session(
             id: id,
@@ -135,13 +107,8 @@ public struct SessionDetail: Codable, Sendable, Hashable, Identifiable {
             environment: environment,
             workingDir: workingDir,
             status: status,
-            attachable: attachable,
-            failureReason: failureReason,
-            failureCode: failureCode,
             createdAt: createdAt,
             updatedAt: updatedAt,
-            terminatedAt: terminatedAt,
-            archivedAt: archivedAt,
             workspace: workspace,
             project: project
         )

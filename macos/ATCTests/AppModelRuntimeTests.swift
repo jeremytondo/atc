@@ -170,9 +170,9 @@ struct AppModelRuntimeTests {
         await runtime.refresh()
         #expect(!runtime.workspaces.workspaces.isEmpty)
         #expect(!runtime.actions.actions.isEmpty)
-        // Archived rows are always fetched; filtering is view-local now.
+        // Project and Workspace archives are fetched; Sessions include both states.
         #expect(runtime.workspaces.workspaces.contains { $0.isArchived })
         #expect(runtime.projects.projects.contains { $0.isArchived })
-        #expect(runtime.sessions.sessions.contains { $0.isArchived })
+        #expect(runtime.sessions.sessions.contains { $0.status == .ended })
     }
 }

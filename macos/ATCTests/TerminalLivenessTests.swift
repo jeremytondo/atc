@@ -31,7 +31,7 @@ struct TerminalLivenessTests {
         for _ in 0..<100 where runtime.sessions.sessions.isEmpty {
             try await Task.sleep(for: .milliseconds(20))
         }
-        let session = try #require(runtime.sessions.sessions.first { $0.attachable })
+        let session = try #require(runtime.sessions.sessions.first { $0.status == .live })
         let ref = SessionRef(connectionID: runtime.id, sessionID: session.id)
 
         appModel.attachIfNeeded(to: session, connectionID: runtime.id)
@@ -50,6 +50,29 @@ struct TerminalLivenessTests {
     }
 
     @MainActor
+    @Test("a socket-reported session end reconciles the store and removes the terminal")
+    func socketEndReconcilesStoreAndRemovesTerminal() async throws {
+        let appModel = AppModel.preview()
+        let runtime = try #require(appModel.runtimes.first)
+        for _ in 0..<100 where runtime.sessions.sessions.isEmpty {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let session = try #require(runtime.sessions.sessions.first { $0.status == .live })
+        let ref = SessionRef(connectionID: runtime.id, sessionID: session.id)
+
+        appModel.attachIfNeeded(to: session, connectionID: runtime.id)
+        let controller = try #require(appModel.terminals[ref])
+
+        // The controller reporting an authoritative end (409 stale attach or
+        // a normal WebSocket closure) must flip the stored session to Ended
+        // and tear the terminal down so input is impossible.
+        controller.onSessionEnded?()
+        let reconciled = try #require(runtime.sessions.sessions.first { $0.id == session.id })
+        #expect(reconciled.status == .ended)
+        #expect(appModel.terminals[ref] == nil)
+    }
+
+    @MainActor
     @Test("explicit disconnect removes the controller from the registry")
     func explicitDisconnectRemoves() async throws {
         let appModel = AppModel.preview()
@@ -57,7 +80,7 @@ struct TerminalLivenessTests {
         for _ in 0..<100 where runtime.sessions.sessions.isEmpty {
             try await Task.sleep(for: .milliseconds(20))
         }
-        let session = try #require(runtime.sessions.sessions.first { $0.attachable })
+        let session = try #require(runtime.sessions.sessions.first { $0.status == .live })
         let ref = SessionRef(connectionID: runtime.id, sessionID: session.id)
 
         appModel.attachIfNeeded(to: session, connectionID: runtime.id)

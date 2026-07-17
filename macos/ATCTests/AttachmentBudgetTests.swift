@@ -42,7 +42,7 @@ struct AttachmentBudgetTests {
     private func session(_ id: String, workspace: String? = nil) -> Session {
         Session(
             id: id, environment: "host", workingDir: "/home/dev",
-            status: .running, attachable: true,
+            status: .live,
             createdAt: .now, updatedAt: .now,
             workspace: workspace.map { SessionWorkspace(id: $0, name: $0) }
         )

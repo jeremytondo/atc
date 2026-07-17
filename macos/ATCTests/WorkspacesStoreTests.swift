@@ -72,7 +72,7 @@ struct WorkspacesStoreTests {
         #expect(store.workspace(id: target.id) == nil)
     }
 
-    @Test("a failed delete (scripted stop error) leaves every row intact")
+    @Test("a failed delete leaves every row intact")
     func failedDeleteKeepsRows() async throws {
         let client = StatefulWorkspacesClient()
         client.failDeletes = true
@@ -108,11 +108,9 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
     private var _failDeletes = false
     private var _failSessions = false
     private var _failWorkspaces = false
-    /// Session mutations persist as overrides on the inner fixtures, so
-    /// the store's follow-up refreshes converge instead of resurrecting
-    /// pre-mutation state.
+    /// Session deletes persist so follow-up refreshes converge.
     private var deletedSessions: Set<String> = []
-    private var unarchivedSessions: Set<String> = []
+    private var endedSessions: Set<String> = []
 
     var failDeletes: Bool {
         get { lock.withLock { _failDeletes } }
@@ -130,6 +128,10 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
     var failWorkspaces: Bool {
         get { lock.withLock { _failWorkspaces } }
         set { lock.withLock { _failWorkspaces = newValue } }
+    }
+
+    func endSession(id: String) {
+        lock.withLock { _ = endedSessions.insert(id) }
     }
 
     private let projects = [
@@ -255,38 +257,27 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
 
     func health() async throws -> Health { try await inner.health() }
     func version() async throws -> Version { try await inner.version() }
-    func sessions(includeArchived: Bool, status: SessionStatus?) async throws -> [Session] {
+    func sessions(status: SessionStatus?) async throws -> [Session] {
         if failAll || failSessions { throw ATCError.badStatus(500) }
-        let overrides = lock.withLock { (deleted: deletedSessions, unarchived: unarchivedSessions) }
-        return try await inner.sessions(includeArchived: true, status: status)
-            .filter { !overrides.deleted.contains($0.id) }
+        let overrides = lock.withLock { (deletedSessions, endedSessions) }
+        return try await inner.sessions(status: status)
+            .filter { !overrides.0.contains($0.id) }
             .map { session in
                 var session = session
                 if session.id == "ses_running" {
                     session.workspace = SessionWorkspace(id: "wsp_a", name: "Alpha")
                     session.project = SessionProject(id: "prj_one", name: "One")
                 }
-                if overrides.unarchived.contains(session.id) {
-                    session.archivedAt = nil
+                if overrides.1.contains(session.id) {
+                    session.status = .ended
                 }
                 return session
             }
-            .filter { includeArchived || !$0.isArchived }
+            .filter { status == nil || $0.status == status }
     }
     func session(id: String) async throws -> SessionDetail { try await inner.session(id: id) }
     func startSession(_ request: StartSessionRequest) async throws -> SessionDetail {
         try await inner.startSession(request)
-    }
-    func terminateSession(id: String) async throws -> SessionDetail {
-        try await inner.terminateSession(id: id)
-    }
-    func archiveSession(id: String) async throws -> SessionDetail {
-        try await inner.archiveSession(id: id)
-    }
-    func unarchiveSession(id: String) async throws -> SessionDetail {
-        let detail = try await inner.unarchiveSession(id: id)
-        lock.withLock { _ = unarchivedSessions.insert(id) }
-        return detail
     }
     func deleteSession(id: String) async throws {
         try await inner.deleteSession(id: id)
@@ -321,12 +312,12 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
     }
     func archiveProject(id: String) async throws -> Project { try await inner.archiveProject(id: id) }
     func unarchiveProject(id: String) async throws -> Project { try await inner.unarchiveProject(id: id) }
-    func projectSessions(projectID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session] {
-        try await inner.projectSessions(projectID: projectID, includeArchived: includeArchived, status: status)
+    func projectSessions(projectID: String, status: SessionStatus?) async throws -> [Session] {
+        try await inner.projectSessions(projectID: projectID, status: status)
     }
     func deleteProject(id: String) async throws { try await inner.deleteProject(id: id) }
-    func workspaceSessions(workspaceID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session] {
-        try await inner.workspaceSessions(workspaceID: workspaceID, includeArchived: includeArchived, status: status)
+    func workspaceSessions(workspaceID: String, status: SessionStatus?) async throws -> [Session] {
+        try await inner.workspaceSessions(workspaceID: workspaceID, status: status)
     }
     func attachURL(sessionID: String) -> URL { inner.attachURL(sessionID: sessionID) }
     func attachHeaders() -> [String: String] { inner.attachHeaders() }

@@ -16,8 +16,7 @@ struct WindowNavigationSnapshot: Equatable {
         struct SessionRecord: Equatable {
             let id: String
             let workspaceID: String?
-            let isArchived: Bool
-            let attachable: Bool
+            let status: SessionStatus
         }
 
         let id: UUID
@@ -148,8 +147,7 @@ final class AppModel {
                     .init(
                         id: $0.id,
                         workspaceID: $0.workspace?.id,
-                        isArchived: $0.isArchived,
-                        attachable: $0.attachable
+                        status: $0.status
                     )
                 }
             )
@@ -241,9 +239,13 @@ final class AppModel {
             markRecentlyUsed(ref)
             return
         }
-        guard session.attachable,
+        guard session.status == .live,
               let runtime = runtime(id: connectionID) else { return }
-        terminals[ref] = terminalControllerFactory(session.id, runtime.client)
+        let controller = terminalControllerFactory(session.id, runtime.client)
+        controller.onSessionEnded = { [weak self] in
+            self?.reconcileEndedSession(ref)
+        }
+        terminals[ref] = controller
         markRecentlyUsed(ref)
         evictOverBudget(retentionContext: retentionContext)
     }
@@ -272,6 +274,34 @@ final class AppModel {
         for controller in terminals.values {
             controller.recoverAfterInterruption()
         }
+    }
+
+    /// Tears down interaction for sessions the latest successful poll says
+    /// are Ended or deleted. Failed refreshes are deliberately ignored so
+    /// connection loss never manufactures a lifecycle transition.
+    func reconcileTerminalLifecycle() {
+        for ref in Array(terminals.keys) {
+            guard let runtime = runtime(id: ref.connectionID),
+                  runtime.sessions.hasLoadedOnce,
+                  runtime.sessions.lastError == nil
+            else { continue }
+            guard runtime.sessions.session(id: ref.sessionID)?.status == .live else {
+                disconnectTerminal(ref: ref)
+                continue
+            }
+        }
+    }
+
+    /// Central stale-interaction reconciliation. Returns true when the
+    /// error is the expected `session_ended` response and was consumed.
+    @discardableResult
+    func handleSessionInteractionError(_ error: any Error, connectionID: UUID) -> Bool {
+        guard let error = error as? ATCError,
+              error.apiCode == "session_ended",
+              let sessionID = error.sessionID
+        else { return false }
+        reconcileEndedSession(SessionRef(connectionID: connectionID, sessionID: sessionID))
+        return true
     }
 
     // MARK: - Attachment budget
@@ -310,6 +340,13 @@ final class AppModel {
               activeWorkspace.connectionID == ref.connectionID
         else { return false }
         return session(for: ref)?.belongs(to: activeWorkspace) == true
+    }
+
+    private func reconcileEndedSession(_ ref: SessionRef) {
+        runtime(id: ref.connectionID)?.sessions.reconcileEnded(id: ref.sessionID)
+        if terminals[ref] != nil {
+            disconnectTerminal(ref: ref)
+        }
     }
 
     // MARK: - Private

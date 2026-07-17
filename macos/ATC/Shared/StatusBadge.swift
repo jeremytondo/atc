@@ -19,16 +19,11 @@ struct StatusBadge: View {
     }
 
     private var color: Color {
-        if session.isArchived { return .gray.opacity(0.5) }
         switch session.status {
-        case .running: return .green
-        case .starting: return .yellow
-        case .failed: return .red
-        case .terminated: return .gray
+        case .live: return .green
+        case .ended: return .gray
         }
     }
 
-    private var label: String {
-        session.isArchived ? "archived" : session.status.rawValue
-    }
+    private var label: String { session.status.rawValue.capitalized }
 }
