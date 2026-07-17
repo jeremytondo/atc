@@ -11,20 +11,27 @@ import (
 	"github.com/jeremytondo/atc/internal/store"
 )
 
-// fakeStopper is a faked SessionStopper recording terminate calls. When err
+// fakeEnder is a faked SessionEnder recording end calls. When err
 // is set the first call fails.
-type fakeStopper struct {
-	st      *store.Store
-	err     error
-	stopped []string
+type fakeEnder struct {
+	st    *store.Store
+	err   error
+	ended []string
 }
 
-func (f *fakeStopper) Terminate(ctx context.Context, id string) error {
+func (f *fakeEnder) End(ctx context.Context, id string) error {
 	if f.err != nil {
 		return f.err
 	}
-	f.stopped = append(f.stopped, id)
-	if _, err := f.st.MarkTerminated(ctx, id); err != nil {
+	f.ended = append(f.ended, id)
+	record, err := f.st.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if record.Status == store.StatusStarting {
+		return f.st.DeleteStarting(ctx, id)
+	}
+	if _, err := f.st.MarkEnded(ctx, id); err != nil {
 		return err
 	}
 	return nil
@@ -47,7 +54,7 @@ func seedProject(t *testing.T, st *store.Store, id, dir string) {
 	}
 }
 
-func seedSession(t *testing.T, st *store.Store, id, workspaceID string, running bool) {
+func seedSession(t *testing.T, st *store.Store, id, workspaceID string, live bool) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := st.CreateStarting(ctx, store.CreateSessionInput{
@@ -55,9 +62,9 @@ func seedSession(t *testing.T, st *store.Store, id, workspaceID string, running 
 	}); err != nil {
 		t.Fatalf("CreateStarting(%s): %v", id, err)
 	}
-	if running {
-		if _, err := st.MarkRunning(ctx, id); err != nil {
-			t.Fatalf("MarkRunning(%s): %v", id, err)
+	if live {
+		if _, err := st.PromoteToLive(ctx, id); err != nil {
+			t.Fatalf("PromoteToLive(%s): %v", id, err)
 		}
 	}
 }
@@ -113,19 +120,19 @@ func TestDeleteStopsActiveSessionsThenRemovesMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	seedSession(t, st, "ses_running", ws.ID, true)
+	seedSession(t, st, "ses_live", ws.ID, true)
 	seedSession(t, st, "ses_done", ws.ID, true)
-	if _, err := st.MarkTerminated(ctx, "ses_done"); err != nil {
-		t.Fatalf("MarkTerminated: %v", err)
+	if _, err := st.MarkEnded(ctx, "ses_done"); err != nil {
+		t.Fatalf("MarkEnded: %v", err)
 	}
 
-	stopper := &fakeStopper{st: st}
-	if err := svc.Delete(ctx, ws.ID, stopper); err != nil {
+	ender := &fakeEnder{st: st}
+	if err := svc.Delete(ctx, ws.ID, ender); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	// Only the active session is stopped; settled sessions are left alone.
-	if len(stopper.stopped) != 1 || stopper.stopped[0] != "ses_running" {
-		t.Fatalf("stopped = %v, want only ses_running", stopper.stopped)
+	// Only the Live Session is ended; Ended Sessions are left alone.
+	if len(ender.ended) != 1 || ender.ended[0] != "ses_live" {
+		t.Fatalf("ended = %v, want only ses_live", ender.ended)
 	}
 	if _, err := svc.Get(ctx, ws.ID); !errors.Is(err, ErrWorkspaceNotFound) {
 		t.Fatalf("Get after delete err = %v, want ErrWorkspaceNotFound", err)
@@ -135,7 +142,7 @@ func TestDeleteStopsActiveSessionsThenRemovesMetadata(t *testing.T) {
 	}
 }
 
-func TestDeleteStopFailureAbortsWithMetadataIntact(t *testing.T) {
+func TestDeleteEndFailureAbortsWithMetadataIntact(t *testing.T) {
 	ctx := context.Background()
 	svc, st := newTestService(t)
 	seedProject(t, st, "prj_home", "/work")
@@ -145,10 +152,10 @@ func TestDeleteStopFailureAbortsWithMetadataIntact(t *testing.T) {
 	}
 	seedSession(t, st, "ses_stuck", ws.ID, true)
 
-	stopper := &fakeStopper{st: st, err: errors.New("zmx kill failed")}
-	err = svc.Delete(ctx, ws.ID, stopper)
-	if !errors.Is(err, ErrSessionStopFailed) {
-		t.Fatalf("Delete err = %v, want ErrSessionStopFailed", err)
+	ender := &fakeEnder{st: st, err: errors.New("zmx kill failed")}
+	err = svc.Delete(ctx, ws.ID, ender)
+	if !errors.Is(err, ErrSessionEndFailed) {
+		t.Fatalf("Delete err = %v, want ErrSessionEndFailed", err)
 	}
 	// Nothing was deleted: workspace and session rows are intact.
 	if _, err := svc.Get(ctx, ws.ID); err != nil {
@@ -158,7 +165,7 @@ func TestDeleteStopFailureAbortsWithMetadataIntact(t *testing.T) {
 		t.Fatalf("session lost after aborted delete: %v", err)
 	}
 
-	if err := svc.Delete(ctx, "wsp_missing", stopper); !errors.Is(err, ErrWorkspaceNotFound) {
+	if err := svc.Delete(ctx, "wsp_missing", ender); !errors.Is(err, ErrWorkspaceNotFound) {
 		t.Fatalf("delete missing err = %v, want ErrWorkspaceNotFound", err)
 	}
 }
@@ -217,8 +224,8 @@ func TestArchiveUnarchiveRulesSurfaceDomainErrors(t *testing.T) {
 	if _, err := svc.Archive(ctx, ws.ID); !errors.Is(err, ErrWorkspaceHasActiveSessions) {
 		t.Fatalf("archive err = %v, want ErrWorkspaceHasActiveSessions", err)
 	}
-	if _, err := st.MarkTerminated(ctx, "ses_live"); err != nil {
-		t.Fatalf("MarkTerminated: %v", err)
+	if _, err := st.MarkEnded(ctx, "ses_live"); err != nil {
+		t.Fatalf("MarkEnded: %v", err)
 	}
 	if _, err := svc.Archive(ctx, ws.ID); err != nil {
 		t.Fatalf("Archive: %v", err)

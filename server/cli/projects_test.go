@@ -271,11 +271,11 @@ func TestSessionsListWithProjectUsesProjectRoute(t *testing.T) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/projects/prj_123/sessions" {
 			t.Fatalf("request = %s %s, want GET /api/projects/prj_123/sessions", r.Method, r.URL.Path)
 		}
-		if got := r.URL.Query().Get("status"); got != "running" {
-			t.Fatalf("status query = %q, want running", got)
+		if got := r.URL.Query().Get("status"); got != "live" {
+			t.Fatalf("status query = %q, want live", got)
 		}
-		if got := r.URL.Query().Get("includeArchived"); got != "true" {
-			t.Fatalf("includeArchived query = %q, want true", got)
+		if got := r.URL.Query().Get("includeArchived"); got != "" {
+			t.Fatalf("includeArchived query = %q, want absent", got)
 		}
 		_, _ = w.Write([]byte(body))
 	})
@@ -283,7 +283,7 @@ func TestSessionsListWithProjectUsesProjectRoute(t *testing.T) {
 	cmd := sessionsCommand(lookup)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"list", "--project", "prj_123", "--status", "running", "--include-archived", "-o", "json"})
+	cmd.SetArgs([]string{"list", "--project", "prj_123", "--status", "live", "-o", "json"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute returned error: %v", err)
@@ -296,7 +296,7 @@ func TestSessionsListWithProjectUsesProjectRoute(t *testing.T) {
 func TestSessionsShowPrintsProjectFields(t *testing.T) {
 	lookup := testRuntimeLookup(t)
 	serveUnixAPI(t, lookup, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"id":"ses_show","action":"codex","environment":"host-login-shell","params":{},"workingDir":"/repo","status":"running","attachable":true,"createdAt":"2026-07-07T15:04:05Z","updatedAt":"2026-07-07T15:04:06Z","project":{"id":"prj_123","name":"atc","workingDir":"/repo"}}`))
+		_, _ = w.Write([]byte(`{"id":"ses_show","action":"codex","environment":"host-login-shell","params":{},"workingDir":"/repo","status":"live","createdAt":"2026-07-07T15:04:05Z","updatedAt":"2026-07-07T15:04:06Z","project":{"id":"prj_123","name":"atc","workingDir":"/repo"}}`))
 	})
 
 	cmd := sessionsCommand(lookup)

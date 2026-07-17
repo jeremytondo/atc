@@ -2,6 +2,11 @@
 
 > **Terminology note (2026-07):** This ADR predates the atc rename. "atc" is now the atc server (`atc`).
 
+> **Lifecycle amendment (2026-07):** SQLite retains Session identity and the
+> `live | ended` lifecycle. Launch failures, lifecycle timestamps, and Session
+> archive state are no longer persisted; a provisional Launch Attempt is
+> deleted unless it becomes Live.
+
 atc will use a local SQLite database for atc-owned application state,
 starting with the persistent session registry. Earlier specs deliberately
 avoided persistence for the terminal-session proof loop, but the next backend

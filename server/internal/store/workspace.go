@@ -138,7 +138,7 @@ func (s *Store) RenameWorkspace(ctx context.Context, id, name string) (Workspace
 
 // ArchiveWorkspace archives a workspace. Archiving an archived workspace is a
 // no-op that returns the current record. A workspace with a starting or
-// running session cannot be archived; the check and the update share one
+// live session cannot be archived; the check and the update share one
 // transaction so a session starting concurrently cannot slip through.
 func (s *Store) ArchiveWorkspace(ctx context.Context, id string) (Workspace, error) {
 	var archived Workspace
@@ -205,7 +205,7 @@ func (s *Store) UnarchiveWorkspace(ctx context.Context, id string) (Workspace, e
 // DeleteWorkspace removes a workspace and all of its session rows in one
 // transaction. The active-session re-check inside the transaction is the
 // whole concurrency story for deletion: a session start that committed after
-// the caller stopped everything makes the delete fail with
+// the caller ended everything makes the delete fail with
 // ErrWorkspaceHasActiveSessions and the user retries. Files are never
 // touched.
 func (s *Store) DeleteWorkspace(ctx context.Context, id string) error {
@@ -234,7 +234,7 @@ func (q queries) countActiveWorkspaceSessions(ctx context.Context, workspaceID s
 	var active int
 	if err := q.runner.QueryRowContext(ctx, `
 	SELECT count(*) FROM sessions WHERE workspace_id = ? AND status IN (?, ?)`,
-		workspaceID, StatusStarting, StatusRunning,
+		workspaceID, StatusStarting, StatusLive,
 	).Scan(&active); err != nil {
 		return 0, fmt.Errorf("count active sessions for workspace %s: %w", workspaceID, err)
 	}

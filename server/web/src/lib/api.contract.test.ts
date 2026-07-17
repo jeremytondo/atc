@@ -41,14 +41,27 @@ import {
 
 // Compile-time contract checks: a fixture field the types can't represent
 // (or a required type field the fixtures lack) fails svelte-check.
-sessionsList.response satisfies { sessions: SessionListItem[] };
-sessionStart.response satisfies SessionDetail;
+const sessionsContract = {
+  sessions: sessionsList.response.sessions.map((session) => ({
+    ...session,
+    status: session.status as SessionListItem['status']
+  }))
+} satisfies { sessions: SessionListItem[] };
+const sessionStartContract = {
+  ...sessionStart.response,
+  status: sessionStart.response.status as SessionDetail['status']
+} satisfies SessionDetail;
 sessionStart.request satisfies StartSessionRequest;
 projectsList.response satisfies { projects: Project[] };
 projectCreate.response satisfies Project;
 workspacesList.response satisfies { workspaces: Workspace[] };
 workspaceCreate.response satisfies Workspace;
-workspaceSessions.response satisfies { sessions: SessionListItem[] };
+const workspaceSessionsContract = {
+  sessions: workspaceSessions.response.sessions.map((session) => ({
+    ...session,
+    status: session.status as SessionListItem['status']
+  }))
+} satisfies { sessions: SessionListItem[] };
 // actions-list is checked at runtime only: TS normalizes the two actions'
 // differing `params` literals into phantom `key?: undefined` members that a
 // Record index signature rejects.
@@ -76,7 +89,7 @@ afterEach(() => {
 
 describe('api client unwraps fixture responses', () => {
   it('listSessions returns the sessions array', async () => {
-    mockFetch(sessionsList.response);
+	mockFetch(sessionsContract);
     const sessions = await listSessions();
     expect(sessions.map((s) => s.id)).toEqual(['ses_fixture01', 'ses_fixture02']);
     expect(sessions[0].project?.id).toBe('prj_fixture01');
@@ -86,9 +99,9 @@ describe('api client unwraps fixture responses', () => {
   });
 
   it('startSession returns the session detail', async () => {
-    mockFetch(sessionStart.response);
+	mockFetch(sessionStartContract);
     const detail = await startSession(sessionStart.request);
-    expect(detail.status).toBe('running');
+	expect(detail.status).toBe('live');
     expect(detail.params).toEqual({ model: 'opus' });
     expect(detail.workspace?.id).toBe('wsp_fixture01');
   });
@@ -108,7 +121,7 @@ describe('api client unwraps fixture responses', () => {
   });
 
   it('listWorkspaceSessions returns the sessions array', async () => {
-    mockFetch(workspaceSessions.response);
+	mockFetch(workspaceSessionsContract);
     const sessions = await listWorkspaceSessions('wsp_fixture01');
     expect(sessions).toHaveLength(1);
     expect(sessions[0].workspace?.id).toBe('wsp_fixture01');

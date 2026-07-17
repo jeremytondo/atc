@@ -2,6 +2,10 @@
 
 > **Terminology note (2026-07):** This ADR predates the atc rename. "atc" is now the atc server (`atc`).
 
+> **Lifecycle amendment (2026-07):** The atc-owned identity remains, but failed
+> starts no longer create Sessions and Sessions no longer archive. Public
+> lifecycle is `live | ended`.
+
 Supersedes [ADR 0002](0002-session-identity-in-zmx-name.md).
 
 atc sessions will expose a stable atc-owned `Session.id` as their public

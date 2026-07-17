@@ -153,7 +153,7 @@ func TestStartSessionReturnsFullSession(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	if !strings.HasPrefix(resp.ID, "ses_") || resp.Name != "Review" || resp.Action != "codex" || resp.Environment != "host-login-shell" ||
-		resp.WorkingDir != env.workDir || resp.Prompt != "review this" || resp.Status != "running" || !resp.Attachable {
+		resp.WorkingDir != env.workDir || resp.Prompt != "review this" || resp.Status != "live" {
 		t.Fatalf("response = %+v", resp)
 	}
 	if resp.Params["model"] != "gpt-5" {
@@ -188,8 +188,8 @@ func TestStartSessionWithoutActionLaunchesInteractiveShell(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.Action != "" || resp.Status != "running" {
-		t.Fatalf("response = %+v, want running interactive shell", resp)
+	if resp.Action != "" || resp.Status != "live" {
+		t.Fatalf("response = %+v, want live interactive shell", resp)
 	}
 	// The wire form of an interactive shell session omits action entirely.
 	if strings.Contains(rec.Body.String(), `"action"`) {
@@ -230,7 +230,7 @@ func TestStartSessionValidationErrors(t *testing.T) {
 			if mux.lastStart.name != "" {
 				t.Fatalf("start called: %+v", mux.lastStart)
 			}
-			records, err := env.store.List(context.Background(), store.ListFilter{IncludeArchived: true})
+			records, err := env.store.ListAll(context.Background(), store.ListFilter{})
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
@@ -254,7 +254,7 @@ func TestStartSessionRejectsArchivedWorkspace(t *testing.T) {
 	assertErrorCode(t, rec, "workspace_archived")
 }
 
-func TestStartSessionLaunchFailureReturnsSessionID(t *testing.T) {
+func TestStartSessionLaunchFailureReturnsSessionIDAndLeavesNoRecord(t *testing.T) {
 	mux := &fakeMux{startErr: errors.New("zmx failed")}
 	h, st := newHandler(t, mux)
 	rec := do(t, h, http.MethodPost, "/sessions/start", `{"action":"claude","workspaceId":"`+testWorkspaceID+`"}`)
@@ -273,12 +273,8 @@ func TestStartSessionLaunchFailureReturnsSessionID(t *testing.T) {
 	if resp.Error != "launch_failed" || resp.Message != "action failed to launch" || resp.SessionID == "" {
 		t.Fatalf("error response = %+v", resp)
 	}
-	stored, err := st.Get(context.Background(), resp.SessionID)
-	if err != nil {
-		t.Fatalf("Get failed record: %v", err)
-	}
-	if stored.Status != store.StatusFailed || stored.FailureCode != "launch_failed" {
-		t.Fatalf("stored = %+v", stored)
+	if _, err := st.Get(context.Background(), resp.SessionID); !errors.Is(err, store.ErrSessionNotFound) {
+		t.Fatalf("Get failed launch record err = %v, want not found", err)
 	}
 }
 
@@ -286,7 +282,7 @@ func TestListSessionsOmitsPromptAndParamsAndFiltersStatus(t *testing.T) {
 	mux := &fakeMux{}
 	h, st := newHandler(t, mux)
 	seedRunning(t, st, "ses_old", "Old")
-	seedFailed(t, st, "ses_failed")
+	seedEnded(t, st, "ses_ended", "Ended")
 	seedRunning(t, st, "ses_live", "Live")
 	mux.sessions = []zmx.Session{{Name: zmx.NameForID("ses_live")}}
 
@@ -310,16 +306,16 @@ func TestListSessionsOmitsPromptAndParamsAndFiltersStatus(t *testing.T) {
 		}
 	}
 
-	rec = do(t, h, http.MethodGet, "/sessions?status=failed", "")
+	rec = do(t, h, http.MethodGet, "/sessions?status=ended", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body)
 	}
-	var failed SessionListResponse
-	if err := json.NewDecoder(rec.Body).Decode(&failed); err != nil {
-		t.Fatalf("decode failed list: %v", err)
+	var ended SessionListResponse
+	if err := json.NewDecoder(rec.Body).Decode(&ended); err != nil {
+		t.Fatalf("decode ended list: %v", err)
 	}
-	if len(failed.Sessions) != 1 || failed.Sessions[0].ID != "ses_failed" {
-		t.Fatalf("failed list = %+v", failed.Sessions)
+	if len(ended.Sessions) != 2 {
+		t.Fatalf("ended list = %+v", ended.Sessions)
 	}
 
 	rec = do(t, h, http.MethodGet, "/sessions?status=bogus", "")
@@ -343,7 +339,7 @@ func TestReadSessionIncludesPromptParamsAndWorkspace(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp.ID != "ses_detail" || resp.Name != "Detail" || resp.Action != "codex" || resp.Environment != "host-login-shell" || resp.Prompt != "hello" || resp.Params["model"] != "gpt-5" || !resp.Attachable {
+	if resp.ID != "ses_detail" || resp.Name != "Detail" || resp.Action != "codex" || resp.Environment != "host-login-shell" || resp.Prompt != "hello" || resp.Params["model"] != "gpt-5" {
 		t.Fatalf("detail = %+v", resp)
 	}
 	if resp.Workspace == nil || resp.Workspace.ID != testWorkspaceID {
@@ -392,7 +388,13 @@ func TestInputErrorsMapToCodes(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("dead status = %d, want 409 (%s)", rec.Code, rec.Body)
 	}
-	assertErrorCode(t, rec, "session_not_live")
+	var endedError errorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&endedError); err != nil {
+		t.Fatalf("decode ended error: %v", err)
+	}
+	if endedError.Error != "session_ended" || endedError.SessionID != "ses_dead" {
+		t.Fatalf("ended error = %+v", endedError)
+	}
 
 	rec = do(t, h, http.MethodPost, "/sessions/ses_dead/send-key", `{"key":"f1"}`)
 	if rec.Code != http.StatusBadRequest {
@@ -401,74 +403,23 @@ func TestInputErrorsMapToCodes(t *testing.T) {
 	assertErrorCode(t, rec, "invalid_request")
 }
 
-func TestTerminateAndArchive(t *testing.T) {
-	mux := &fakeMux{}
-	h, st := newHandler(t, mux)
-	seedRunning(t, st, "ses_live", "Live")
-	seedRunning(t, st, "ses_dead", "Dead")
-	mux.sessions = []zmx.Session{{Name: zmx.NameForID("ses_live")}}
-
-	rec := do(t, h, http.MethodPost, "/sessions/ses_live/archive", "")
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("archive live status = %d, want 409", rec.Code)
+func TestProvisionalRecordsAreNotPublic(t *testing.T) {
+	h, st := newHandler(t, &fakeMux{})
+	if _, err := st.CreateStarting(context.Background(), store.CreateSessionInput{
+		ID: "ses_starting", Action: "codex", Environment: "host-login-shell", WorkingDir: "/work", WorkspaceID: testWorkspaceID,
+	}); err != nil {
+		t.Fatalf("CreateStarting: %v", err)
 	}
-	assertErrorCode(t, rec, "session_live")
-
-	rec = do(t, h, http.MethodPost, "/sessions/ses_live/terminate", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("terminate status = %d, want 200 (%s)", rec.Code, rec.Body)
+	for _, request := range []struct {
+		method string
+		path   string
+	}{{http.MethodGet, "/sessions/ses_starting"}, {http.MethodDelete, "/sessions/ses_starting"}} {
+		rec := do(t, h, request.method, request.path, "")
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s %s status = %d, want 404", request.method, request.path, rec.Code)
+		}
+		assertErrorCode(t, rec, "session_not_found")
 	}
-	if mux.lastTerminate != zmx.NameForID("ses_live") {
-		t.Fatalf("terminate name = %q", mux.lastTerminate)
-	}
-
-	rec = do(t, h, http.MethodPost, "/sessions/ses_live/send-text", `{"text":"hello"}`)
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("post-terminate send status = %d, want 409", rec.Code)
-	}
-
-	rec = do(t, h, http.MethodPost, "/sessions/ses_dead/archive", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("archive dead status = %d, want 200 (%s)", rec.Code, rec.Body)
-	}
-	rec = do(t, h, http.MethodGet, "/sessions", "")
-	if strings.Contains(rec.Body.String(), "ses_dead") {
-		t.Fatalf("default list includes archived session: %s", rec.Body)
-	}
-	rec = do(t, h, http.MethodGet, "/sessions?includeArchived=true", "")
-	if !strings.Contains(rec.Body.String(), "ses_dead") {
-		t.Fatalf("includeArchived list omitted archived session: %s", rec.Body)
-	}
-}
-
-func TestUnarchiveSessionRoute(t *testing.T) {
-	mux := &fakeMux{}
-	h, st := newHandler(t, mux)
-	seedRunning(t, st, "ses_done", "Done")
-	if _, err := st.MarkTerminated(context.Background(), "ses_done"); err != nil {
-		t.Fatalf("MarkTerminated: %v", err)
-	}
-	if _, err := st.MarkArchived(context.Background(), "ses_done"); err != nil {
-		t.Fatalf("MarkArchived: %v", err)
-	}
-
-	rec := do(t, h, http.MethodPost, "/sessions/ses_done/unarchive", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body)
-	}
-	var resp SessionDetail
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp.ArchivedAt != nil {
-		t.Fatalf("archivedAt = %v, want cleared", resp.ArchivedAt)
-	}
-
-	rec = do(t, h, http.MethodPost, "/sessions/ses_missing/unarchive", "")
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("missing status = %d, want 404", rec.Code)
-	}
-	assertErrorCode(t, rec, "session_not_found")
 }
 
 func TestDeleteSessionRoute(t *testing.T) {
@@ -496,7 +447,7 @@ func TestDeleteSessionRoute(t *testing.T) {
 	assertErrorCode(t, rec, "session_not_found")
 }
 
-func TestDeleteSessionStopFailureKeepsMetadata(t *testing.T) {
+func TestDeleteSessionTerminateFailureKeepsMetadata(t *testing.T) {
 	mux := &fakeMux{terminateErr: errors.New("zmx kill failed")}
 	h, st := newHandler(t, mux)
 	seedRunning(t, st, "ses_live", "Live")
@@ -522,6 +473,9 @@ func TestOldRoutesAreRemoved(t *testing.T) {
 		{http.MethodPost, "/sessions/key", `{"name":"atc:item:DEV-1","key":"enter"}`},
 		{http.MethodGet, "/sessions/attach?name=atc:item:DEV-1", ""},
 		{http.MethodGet, "/agents", ""},
+		{http.MethodPost, "/sessions/ses_123/terminate", ""},
+		{http.MethodPost, "/sessions/ses_123/archive", ""},
+		{http.MethodPost, "/sessions/ses_123/unarchive", ""},
 	} {
 		rec := do(t, h, tt.method, tt.path, tt.body)
 		if rec.Code != http.StatusNotFound {
@@ -553,24 +507,16 @@ func seedRunning(t *testing.T, st *store.Store, id, name string) {
 	}); err != nil {
 		t.Fatalf("CreateStarting(%s): %v", id, err)
 	}
-	if _, err := st.MarkRunning(context.Background(), id); err != nil {
-		t.Fatalf("MarkRunning(%s): %v", id, err)
+	if _, err := st.PromoteToLive(context.Background(), id); err != nil {
+		t.Fatalf("PromoteToLive(%s): %v", id, err)
 	}
 }
 
-func seedFailed(t *testing.T, st *store.Store, id string) {
+func seedEnded(t *testing.T, st *store.Store, id, name string) {
 	t.Helper()
-	if _, err := st.CreateStarting(context.Background(), store.CreateSessionInput{
-		ID:          id,
-		Action:      "codex",
-		Environment: "host-login-shell",
-		WorkingDir:  "/work",
-		WorkspaceID: testWorkspaceID,
-	}); err != nil {
-		t.Fatalf("CreateStarting(%s): %v", id, err)
-	}
-	if _, err := st.MarkFailed(context.Background(), id, "action failed to launch", "launch_failed"); err != nil {
-		t.Fatalf("MarkFailed(%s): %v", id, err)
+	seedRunning(t, st, id, name)
+	if _, err := st.MarkEnded(context.Background(), id); err != nil {
+		t.Fatalf("MarkEnded(%s): %v", id, err)
 	}
 }
 

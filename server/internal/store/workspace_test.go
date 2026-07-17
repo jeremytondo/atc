@@ -42,7 +42,7 @@ func TestWorkspaceMigrationDestroysSessionsPreservesProjects(t *testing.T) {
 	}
 	if _, err := db.Exec(`
 	INSERT INTO sessions (id, action, environment, params, working_dir, status, project_id, created_at, updated_at)
-	VALUES ('ses_old', 'codex', 'host-login-shell', '{}', '/work', 'terminated', 'prj_keep', '2026-01-01T00:00:00.000000000Z', '2026-01-01T00:00:00.000000000Z')`); err != nil {
+	VALUES ('ses_old', 'codex', 'host-login-shell', '{}', '/work', 'ended', 'prj_keep', '2026-01-01T00:00:00.000000000Z', '2026-01-01T00:00:00.000000000Z')`); err != nil {
 		t.Fatalf("insert 0002 session: %v", err)
 	}
 	if err := db.Close(); err != nil {
@@ -237,15 +237,15 @@ func TestArchiveWorkspaceBlockedByActiveSessions(t *testing.T) {
 		t.Fatalf("CreateStarting: %v", err)
 	}
 
-	// Blocked while the session is starting, then running.
+	// Blocked while the record is provisional, then while the Session is Live.
 	if _, err := st.ArchiveWorkspace(ctx, "wsp_busy"); !errors.Is(err, ErrWorkspaceHasActiveSessions) {
 		t.Fatalf("archive with starting session err = %v, want ErrWorkspaceHasActiveSessions", err)
 	}
-	if _, err := st.MarkRunning(ctx, "ses_active"); err != nil {
-		t.Fatalf("MarkRunning: %v", err)
+	if _, err := st.PromoteToLive(ctx, "ses_active"); err != nil {
+		t.Fatalf("PromoteToLive: %v", err)
 	}
 	if _, err := st.ArchiveWorkspace(ctx, "wsp_busy"); !errors.Is(err, ErrWorkspaceHasActiveSessions) {
-		t.Fatalf("archive with running session err = %v, want ErrWorkspaceHasActiveSessions", err)
+		t.Fatalf("archive with Live Session err = %v, want ErrWorkspaceHasActiveSessions", err)
 	}
 	got, err := st.GetWorkspace(ctx, "wsp_busy")
 	if err != nil {
@@ -255,12 +255,9 @@ func TestArchiveWorkspaceBlockedByActiveSessions(t *testing.T) {
 		t.Fatalf("workspace archived despite active session: %+v", got)
 	}
 
-	// Terminated (even archived) sessions do not block.
-	if _, err := st.MarkTerminated(ctx, "ses_active"); err != nil {
-		t.Fatalf("MarkTerminated: %v", err)
-	}
-	if _, err := st.MarkArchived(ctx, "ses_active"); err != nil {
-		t.Fatalf("MarkArchived: %v", err)
+	// Ended Sessions do not block.
+	if _, err := st.MarkEnded(ctx, "ses_active"); err != nil {
+		t.Fatalf("MarkEnded: %v", err)
 	}
 	archived, err := st.ArchiveWorkspace(ctx, "wsp_busy")
 	if err != nil {
@@ -311,8 +308,8 @@ func TestDeleteWorkspaceGuardsAndCascades(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateStarting: %v", err)
 	}
-	if _, err := st.MarkRunning(ctx, "ses_live"); err != nil {
-		t.Fatalf("MarkRunning: %v", err)
+	if _, err := st.PromoteToLive(ctx, "ses_live"); err != nil {
+		t.Fatalf("PromoteToLive: %v", err)
 	}
 
 	// The transactional re-check rejects deletion while a session is active,
@@ -327,8 +324,8 @@ func TestDeleteWorkspaceGuardsAndCascades(t *testing.T) {
 		t.Fatalf("workspace lost by rejected delete: %v", err)
 	}
 
-	if _, err := st.MarkTerminated(ctx, "ses_live"); err != nil {
-		t.Fatalf("MarkTerminated: %v", err)
+	if _, err := st.MarkEnded(ctx, "ses_live"); err != nil {
+		t.Fatalf("MarkEnded: %v", err)
 	}
 	if err := st.DeleteWorkspace(ctx, "wsp_doomed"); err != nil {
 		t.Fatalf("DeleteWorkspace: %v", err)
@@ -423,6 +420,9 @@ func TestSessionWorkspaceHydrationAndFilters(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateStarting other: %v", err)
 	}
+	if _, err := st.PromoteToLive(ctx, "ses_other"); err != nil {
+		t.Fatalf("PromoteToLive other: %v", err)
+	}
 
 	// Reads hydrate through the join.
 	got, err := st.Get(ctx, "ses_scoped")
@@ -434,12 +434,12 @@ func TestSessionWorkspaceHydrationAndFilters(t *testing.T) {
 	}
 
 	// Writes hydrate too, so status transitions keep the refs visible.
-	running, err := st.MarkRunning(ctx, "ses_scoped")
+	live, err := st.PromoteToLive(ctx, "ses_scoped")
 	if err != nil {
-		t.Fatalf("MarkRunning: %v", err)
+		t.Fatalf("PromoteToLive: %v", err)
 	}
-	if running.Workspace == nil || running.Workspace.Name != "Homework" || running.Project == nil || running.Project.Name != "Home" {
-		t.Fatalf("running refs = workspace %+v project %+v", running.Workspace, running.Project)
+	if live.Workspace == nil || live.Workspace.Name != "Homework" || live.Project == nil || live.Project.Name != "Home" {
+		t.Fatalf("Live refs = workspace %+v project %+v", live.Workspace, live.Project)
 	}
 
 	// Workspace and project filtering restrict the list.

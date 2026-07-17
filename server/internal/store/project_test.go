@@ -62,8 +62,11 @@ func TestArchiveProjectBlockedByUnarchivedWorkspaces(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateStarting: %v", err)
 	}
-	if _, err := st.MarkFailed(ctx, "ses_done", "launch failed", "launch_failed"); err != nil {
-		t.Fatalf("MarkFailed: %v", err)
+	if _, err := st.PromoteToLive(ctx, "ses_done"); err != nil {
+		t.Fatalf("PromoteToLive: %v", err)
+	}
+	if _, err := st.MarkEnded(ctx, "ses_done"); err != nil {
+		t.Fatalf("MarkEnded: %v", err)
 	}
 	if _, err := st.ArchiveWorkspace(ctx, "wsp_open"); err != nil {
 		t.Fatalf("ArchiveWorkspace: %v", err)

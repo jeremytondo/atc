@@ -135,7 +135,7 @@ func (routes apiRoutes) deleteWorkspace(w http.ResponseWriter, r *http.Request) 
 	if !routes.requireWorkspaces(w) || !routes.requireSessions(w) {
 		return
 	}
-	err := routes.workspaces.Delete(r.Context(), r.PathValue("id"), sessionTerminator{routes.sessions})
+	err := routes.workspaces.Delete(r.Context(), r.PathValue("id"), sessionEnder{routes.sessions})
 	if err != nil {
 		writeWorkspaceError(w, err)
 		return
@@ -150,18 +150,13 @@ func (routes apiRoutes) listWorkspaceSessions(w http.ResponseWriter, r *http.Req
 	if !routes.requireWorkspaces(w) || !routes.requireSessions(w) {
 		return
 	}
-	includeArchived, err := boolQuery(r, "includeArchived")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
 	got, err := routes.workspaces.Get(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeWorkspaceError(w, err)
 		return
 	}
 	statusFilter := session.Status(r.URL.Query().Get("status"))
-	sessions, err := routes.sessions.List(r.Context(), includeArchived, statusFilter, session.ListScope{WorkspaceID: got.ID})
+	sessions, err := routes.sessions.List(r.Context(), statusFilter, session.ListScope{WorkspaceID: got.ID})
 	if err != nil {
 		writeSessionError(w, err)
 		return
@@ -173,15 +168,14 @@ func (routes apiRoutes) listWorkspaceSessions(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, SessionListResponse{Sessions: items})
 }
 
-// sessionTerminator adapts the session service to the workspace domain's
-// SessionStopper slice.
-type sessionTerminator struct {
+// sessionEnder adapts the session service to the workspace domain's internal
+// SessionEnder slice.
+type sessionEnder struct {
 	sessions *session.Service
 }
 
-func (t sessionTerminator) Terminate(ctx context.Context, id string) error {
-	_, err := t.sessions.Terminate(ctx, id)
-	return err
+func (e sessionEnder) End(ctx context.Context, id string) error {
+	return e.sessions.End(ctx, id)
 }
 
 func (routes apiRoutes) requireWorkspaces(w http.ResponseWriter) bool {
@@ -204,10 +198,10 @@ func writeWorkspaceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "workspace_archived", err.Error())
 	case errors.Is(err, workspace.ErrWorkspaceHasActiveSessions):
 		writeError(w, http.StatusConflict, "workspace_has_active_sessions", err.Error())
-	// A session that could not be stopped is a multiplexer failure, surfaced
+	// A session that could not be ended is a multiplexer failure, surfaced
 	// as 502 like launch failures; no metadata has been deleted.
-	case errors.Is(err, workspace.ErrSessionStopFailed):
-		writeError(w, http.StatusBadGateway, "session_stop_failed", err.Error())
+	case errors.Is(err, workspace.ErrSessionEndFailed):
+		writeError(w, http.StatusBadGateway, "session_end_failed", err.Error())
 	case errors.Is(err, project.ErrProjectNotFound):
 		writeError(w, http.StatusNotFound, "project_not_found", err.Error())
 	case errors.Is(err, project.ErrProjectArchived):

@@ -29,11 +29,10 @@ var (
 	// ErrSessionNotFound is returned when a session id does not exist.
 	ErrSessionNotFound = errors.New("session not found")
 	// ErrSessionActive is returned when a delete is rejected because the
-	// session is still starting or running.
+	// session is still starting or live.
 	ErrSessionActive = errors.New("session is active")
 	// ErrSessionNotStarting is returned when a starting-only transition
-	// (MarkRunning, MarkFailed) finds the session already settled, which
-	// means a concurrent Terminate or Delete won the race.
+	// (PromoteToLive, DeleteStarting) finds the session already settled.
 	ErrSessionNotStarting = errors.New("session is not starting")
 	// ErrProjectNotFound is returned when a project id does not exist.
 	ErrProjectNotFound = errors.New("project not found")
@@ -52,23 +51,22 @@ var (
 	// archived workspace.
 	ErrWorkspaceArchived = errors.New("workspace is archived")
 	// ErrWorkspaceHasActiveSessions is returned when a workspace archive or
-	// delete is rejected because the workspace still has a starting or
-	// running session.
+	// delete is rejected because the workspace still has a starting or live
+	// session.
 	ErrWorkspaceHasActiveSessions = errors.New("workspace has active sessions")
 	// ErrInvalidStatus is returned when a status value is outside the session
 	// status vocabulary.
 	ErrInvalidStatus = errors.New("invalid session status")
 )
 
-// Status is the persisted lifecycle state for a session. Archived state
-// is represented by ArchivedAt, not by a status value.
-type Status string
+// RecordStatus is the internal persisted lifecycle for a session record.
+// Starting is provisional and must never serialize as a public Session.
+type RecordStatus string
 
 const (
-	StatusStarting   Status = "starting"
-	StatusRunning    Status = "running"
-	StatusFailed     Status = "failed"
-	StatusTerminated Status = "terminated"
+	StatusStarting RecordStatus = "starting"
+	StatusLive     RecordStatus = "live"
+	StatusEnded    RecordStatus = "ended"
 )
 
 // Session is one persisted atc-owned session record. It is an internal
@@ -78,23 +76,19 @@ type Session struct {
 	ID   string
 	Name string
 	// Action is the launch action name; empty means the Interactive Shell.
-	Action        string
-	Environment   string
-	Params        json.RawMessage
-	WorkingDir    string
-	Prompt        string
-	Status        Status
-	FailureReason string
-	FailureCode   string
-	WorkspaceID   string
-	Workspace     *SessionWorkspace
+	Action      string
+	Environment string
+	Params      json.RawMessage
+	WorkingDir  string
+	Prompt      string
+	Status      RecordStatus
+	WorkspaceID string
+	Workspace   *SessionWorkspace
 	// Project is the derived project reference, reached through the session's
 	// workspace, kept so clients that group sessions by project keep working.
-	Project      *SessionProject
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	TerminatedAt *time.Time
-	ArchivedAt   *time.Time
+	Project   *SessionProject
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // SessionWorkspace is the workspace slice hydrated onto sessions, loaded
@@ -126,11 +120,10 @@ type CreateSessionInput struct {
 	WorkspaceID string
 }
 
-// ListFilter controls session list queries. Archived sessions are hidden by
-// default; Status, WorkspaceID, and ProjectID are optional.
+// ListFilter controls session list queries. Status, WorkspaceID, and ProjectID
+// are optional.
 type ListFilter struct {
-	IncludeArchived bool
-	Status          Status
+	Status RecordStatus
 	// WorkspaceID restricts the list to one workspace's sessions when set.
 	WorkspaceID string
 	// ProjectID restricts the list to sessions whose workspace belongs to the
@@ -227,44 +220,30 @@ func (s *Store) CreateStarting(ctx context.Context, input CreateSessionInput) (S
 	return s.queries().CreateStarting(ctx, input)
 }
 
-// MarkRunning records a successful launch. It only settles a starting
+// PromoteToLive records a successful launch. It only settles a starting
 // record; a session settled concurrently returns ErrSessionNotStarting.
-func (s *Store) MarkRunning(ctx context.Context, id string) (Session, error) {
-	return s.queries().MarkRunning(ctx, id)
+func (s *Store) PromoteToLive(ctx context.Context, id string) (Session, error) {
+	return s.queries().PromoteToLive(ctx, id)
 }
 
-// MarkFailed records a failed launch with a safe reason and machine code. It
-// only settles a starting record; a session settled concurrently returns
-// ErrSessionNotStarting.
-func (s *Store) MarkFailed(ctx context.Context, id, reason, code string) (Session, error) {
-	return s.queries().MarkFailed(ctx, id, reason, code)
+// DeleteStarting removes a provisional launch attempt. It never removes a
+// public Session.
+func (s *Store) DeleteStarting(ctx context.Context, id string) error {
+	return s.queries().DeleteStarting(ctx, id)
 }
 
-// MarkTerminated marks a session terminated and sets terminatedAt once.
-func (s *Store) MarkTerminated(ctx context.Context, id string) (Session, error) {
-	return s.queries().MarkTerminated(ctx, id)
+// MarkEnded moves a live record to ended. It is idempotent for an already
+// ended record and never changes a provisional record.
+func (s *Store) MarkEnded(ctx context.Context, id string) (Session, error) {
+	return s.queries().MarkEnded(ctx, id)
 }
 
-// MarkArchived archives a session without changing its status.
-func (s *Store) MarkArchived(ctx context.Context, id string) (Session, error) {
-	return s.queries().MarkArchived(ctx, id)
-}
-
-// MarkUnarchived reactivates an archived session. Unarchiving an unarchived
-// session is a no-op that returns the current record.
-func (s *Store) MarkUnarchived(ctx context.Context, id string) (Session, error) {
-	return s.queries().MarkUnarchived(ctx, id)
-}
-
-// DeleteSession removes a session's metadata row. Deleting a starting or
-// running session is rejected; the guard and the delete are one statement so
+// DeleteSession removes a session's metadata row. Deleting a starting or live
+// session is rejected; the guard and the delete are one statement so
 // nothing can slip between them. Files are never touched.
 func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	q := s.queries()
-	result, err := q.runner.ExecContext(ctx, `
-	DELETE FROM sessions WHERE id = ? AND status NOT IN (?, ?)`,
-		id, StatusStarting, StatusRunning,
-	)
+	result, err := q.runner.ExecContext(ctx, `DELETE FROM sessions WHERE id = ? AND status = ?`, id, StatusEnded)
 	if err != nil {
 		return fmt.Errorf("delete session %s: %w", id, err)
 	}
@@ -281,13 +260,13 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	return fmt.Errorf("%w: %s", ErrSessionActive, id)
 }
 
-// CountActiveSessionsForAction reports how many starting or running sessions
+// CountActiveSessionsForAction reports how many starting or live sessions
 // reference the named action, so action deletion can be guarded.
 func (s *Store) CountActiveSessionsForAction(ctx context.Context, action string) (int, error) {
 	var active int
 	if err := s.queries().runner.QueryRowContext(ctx, `
 	SELECT count(*) FROM sessions WHERE action = ? AND status IN (?, ?)`,
-		action, StatusStarting, StatusRunning,
+		action, StatusStarting, StatusLive,
 	).Scan(&active); err != nil {
 		return 0, fmt.Errorf("count active sessions for action %s: %w", action, err)
 	}
@@ -299,30 +278,23 @@ func (s *Store) Get(ctx context.Context, id string) (Session, error) {
 	return s.queries().Get(ctx, id)
 }
 
-// List loads sessions newest-first. Archived records are excluded unless
-// IncludeArchived is true.
+// List loads public sessions newest-first, excluding provisional records.
 func (s *Store) List(ctx context.Context, filter ListFilter) ([]Session, error) {
 	return s.queries().List(ctx, filter)
+}
+
+// ListAll loads every record, including provisional launch attempts, for
+// reconciliation and workspace lifecycle operations.
+func (s *Store) ListAll(ctx context.Context, filter ListFilter) ([]Session, error) {
+	return s.queries().list(ctx, filter, true)
 }
 
 func (tx *Tx) CreateStarting(ctx context.Context, input CreateSessionInput) (Session, error) {
 	return tx.q.CreateStarting(ctx, input)
 }
 
-func (tx *Tx) MarkRunning(ctx context.Context, id string) (Session, error) {
-	return tx.q.MarkRunning(ctx, id)
-}
-
-func (tx *Tx) MarkFailed(ctx context.Context, id, reason, code string) (Session, error) {
-	return tx.q.MarkFailed(ctx, id, reason, code)
-}
-
-func (tx *Tx) MarkTerminated(ctx context.Context, id string) (Session, error) {
-	return tx.q.MarkTerminated(ctx, id)
-}
-
-func (tx *Tx) MarkArchived(ctx context.Context, id string) (Session, error) {
-	return tx.q.MarkArchived(ctx, id)
+func (tx *Tx) PromoteToLive(ctx context.Context, id string) (Session, error) {
+	return tx.q.PromoteToLive(ctx, id)
 }
 
 func (tx *Tx) Get(ctx context.Context, id string) (Session, error) {
@@ -414,40 +386,39 @@ func (q queries) classifyWorkspaceGuardFailure(ctx context.Context, workspaceID 
 	}
 }
 
-func (q queries) MarkRunning(ctx context.Context, id string) (Session, error) {
+func (q queries) PromoteToLive(ctx context.Context, id string) (Session, error) {
 	now := q.nowUTC()
-	return q.settleStarting(ctx, id, "mark running", `
+	return q.settleStarting(ctx, id, "promote to live", `
 	UPDATE sessions
-	SET status = ?,
-		failure_reason = NULL,
-		failure_code = NULL,
-		updated_at = ?
+	SET status = ?, updated_at = ?
 	WHERE id = ? AND status = ?
 	RETURNING`+sessionColumnsSQL,
-		StatusRunning, formatTime(now), id, StatusStarting,
+		StatusLive, formatTime(now), id, StatusStarting,
 	)
 }
 
-func (q queries) MarkFailed(ctx context.Context, id, reason, code string) (Session, error) {
-	if strings.TrimSpace(reason) == "" {
-		return Session{}, errors.New("mark session failed: failure reason is required")
+func (q queries) DeleteStarting(ctx context.Context, id string) error {
+	result, err := q.runner.ExecContext(ctx, `DELETE FROM sessions WHERE id = ? AND status = ?`, id, StatusStarting)
+	if err != nil {
+		return fmt.Errorf("delete provisional session %s: %w", id, err)
 	}
-	if strings.TrimSpace(code) == "" {
-		return Session{}, errors.New("mark session failed: failure code is required")
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete provisional session %s: %w", id, err)
 	}
-	now := q.nowUTC()
-	return q.settleStarting(ctx, id, "mark failed", `
-	UPDATE sessions
-	SET status = ?, failure_reason = ?, failure_code = ?, updated_at = ?
-	WHERE id = ? AND status = ?
-	RETURNING`+sessionColumnsSQL,
-		StatusFailed, reason, code, formatTime(now), id, StatusStarting,
-	)
+	if affected > 0 {
+		return nil
+	}
+	if _, err := q.Get(ctx, id); err == nil {
+		return fmt.Errorf("%w: %s", ErrSessionNotStarting, id)
+	} else {
+		return err
+	}
 }
 
 // settleStarting runs a starting-only transition and separates "the session
 // does not exist" from "the session exists but was settled concurrently", so
-// an in-flight Start can tell it lost the record to a Terminate or Delete.
+// an in-flight Start can tell it lost the provisional record concurrently.
 func (q queries) settleStarting(ctx context.Context, id, action, query string, args ...any) (Session, error) {
 	session, err := q.updateOne(ctx, id, action, query, args...)
 	if errors.Is(err, ErrSessionNotFound) {
@@ -458,41 +429,22 @@ func (q queries) settleStarting(ctx context.Context, id, action, query string, a
 	return session, err
 }
 
-func (q queries) MarkTerminated(ctx context.Context, id string) (Session, error) {
+func (q queries) MarkEnded(ctx context.Context, id string) (Session, error) {
 	now := q.nowUTC()
-	return q.updateOne(ctx, id, "mark terminated", `
+	record, err := q.updateOne(ctx, id, "mark ended", `
 	UPDATE sessions
 	SET status = ?,
-		terminated_at = COALESCE(terminated_at, ?),
-		updated_at = CASE WHEN terminated_at IS NULL THEN ? ELSE updated_at END
-	WHERE id = ?
+		updated_at = CASE WHEN status = ? THEN ? ELSE updated_at END
+	WHERE id = ? AND status IN (?, ?)
 	RETURNING`+sessionColumnsSQL,
-		StatusTerminated, formatTime(now), formatTime(now), id,
+		StatusEnded, StatusLive, formatTime(now), id, StatusLive, StatusEnded,
 	)
-}
-
-func (q queries) MarkArchived(ctx context.Context, id string) (Session, error) {
-	now := q.nowUTC()
-	return q.updateOne(ctx, id, "mark archived", `
-	UPDATE sessions
-	SET archived_at = COALESCE(archived_at, ?),
-		updated_at = CASE WHEN archived_at IS NULL THEN ? ELSE updated_at END
-	WHERE id = ?
-	RETURNING`+sessionColumnsSQL,
-		formatTime(now), formatTime(now), id,
-	)
-}
-
-func (q queries) MarkUnarchived(ctx context.Context, id string) (Session, error) {
-	now := q.nowUTC()
-	return q.updateOne(ctx, id, "mark unarchived", `
-	UPDATE sessions
-	SET updated_at = CASE WHEN archived_at IS NOT NULL THEN ? ELSE updated_at END,
-		archived_at = NULL
-	WHERE id = ?
-	RETURNING`+sessionColumnsSQL,
-		formatTime(now), id,
-	)
+	if errors.Is(err, ErrSessionNotFound) {
+		if existing, getErr := q.Get(ctx, id); getErr == nil && existing.Status == StatusStarting {
+			return Session{}, fmt.Errorf("%w: %s", ErrSessionActive, id)
+		}
+	}
+	return record, err
 }
 
 func (q queries) Get(ctx context.Context, id string) (Session, error) {
@@ -507,14 +459,19 @@ func (q queries) Get(ctx context.Context, id string) (Session, error) {
 }
 
 func (q queries) List(ctx context.Context, filter ListFilter) ([]Session, error) {
+	return q.list(ctx, filter, false)
+}
+
+func (q queries) list(ctx context.Context, filter ListFilter, includeStarting bool) ([]Session, error) {
 	if filter.Status != "" && !filter.Status.valid() {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidStatus, filter.Status)
 	}
 
-	clauses := make([]string, 0, 3)
+	clauses := make([]string, 0, 4)
 	args := make([]any, 0, 2)
-	if !filter.IncludeArchived {
-		clauses = append(clauses, "s.archived_at IS NULL")
+	if !includeStarting {
+		clauses = append(clauses, "s.status != ?")
+		args = append(args, StatusStarting)
 	}
 	if filter.Status != "" {
 		clauses = append(clauses, "s.status = ?")
@@ -611,13 +568,9 @@ const sessionColumnsSQL = `
 		working_dir,
 		COALESCE(prompt, ''),
 		status,
-		COALESCE(failure_reason, ''),
-		COALESCE(failure_code, ''),
 		workspace_id,
 		created_at,
-		updated_at,
-		terminated_at,
-		archived_at`
+		updated_at`
 
 const sessionJoinColumnsSQL = `
 		s.id,
@@ -628,13 +581,9 @@ const sessionJoinColumnsSQL = `
 		s.working_dir,
 		COALESCE(s.prompt, ''),
 		s.status,
-		COALESCE(s.failure_reason, ''),
-		COALESCE(s.failure_code, ''),
 		s.workspace_id,
 		s.created_at,
 		s.updated_at,
-		s.terminated_at,
-		s.archived_at,
 		w.name,
 		p.id,
 		p.name`
@@ -672,7 +621,6 @@ func scanSessionColumns(row scanner, extra ...any) (Session, error) {
 	var session Session
 	var params string
 	var createdAt, updatedAt string
-	var terminatedAt, archivedAt sql.NullString
 	dests := []any{
 		&session.ID,
 		&session.Name,
@@ -682,13 +630,9 @@ func scanSessionColumns(row scanner, extra ...any) (Session, error) {
 		&session.WorkingDir,
 		&session.Prompt,
 		&session.Status,
-		&session.FailureReason,
-		&session.FailureCode,
 		&session.WorkspaceID,
 		&createdAt,
 		&updatedAt,
-		&terminatedAt,
-		&archivedAt,
 	}
 	if err := row.Scan(append(dests, extra...)...); err != nil {
 		return Session{}, err
@@ -702,14 +646,6 @@ func scanSessionColumns(row scanner, extra ...any) (Session, error) {
 	session.UpdatedAt, err = parseTime(updatedAt)
 	if err != nil {
 		return Session{}, fmt.Errorf("parse updated_at: %w", err)
-	}
-	session.TerminatedAt, err = parseOptionalTime(terminatedAt)
-	if err != nil {
-		return Session{}, fmt.Errorf("parse terminated_at: %w", err)
-	}
-	session.ArchivedAt, err = parseOptionalTime(archivedAt)
-	if err != nil {
-		return Session{}, fmt.Errorf("parse archived_at: %w", err)
 	}
 	session.Params = json.RawMessage(params)
 	return session, nil
@@ -800,9 +736,9 @@ func parseOptionalTime(raw sql.NullString) (*time.Time, error) {
 	return &t, nil
 }
 
-func (s Status) valid() bool {
+func (s RecordStatus) valid() bool {
 	switch s {
-	case StatusStarting, StatusRunning, StatusFailed, StatusTerminated:
+	case StatusStarting, StatusLive, StatusEnded:
 		return true
 	default:
 		return false

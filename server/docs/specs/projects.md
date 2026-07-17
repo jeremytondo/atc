@@ -2,6 +2,11 @@
 
 Source brief: `docs/ideas/projects.md`. Implementation plan: `docs/plans/projects.md`.
 
+> **Lifecycle amendment (2026-07-17):** ATC-2 replaced the public Session
+> lifecycle with `live | ended`. Session lists include both states by default,
+> accept only an optional `status=live|ended` filter, and no longer support
+> Session archival. Project archival behavior described here is unchanged.
+
 ## Scope
 
 Projects are atc-owned records that name one workstation directory and
@@ -153,8 +158,9 @@ Start behavior:
   `project_id` and the inherited directory as the Session's `working_dir`
   snapshot. Archived Project → `ErrProjectArchived`. Vanished/invalid
   directory → `ErrInvalidWorkingDir`.
-- Everything else about Session start (Action, Environment, name, prompt,
-  params, launch, failure recording) is unchanged.
+- Everything else about Session start (Action, Environment, name, prompt, and
+  params) is unchanged. Launch failures return structured API errors and leave
+  no public Session record.
 
 `session.Service.List` gains a project filter (threaded to
 `store.ListFilter.ProjectID`) used only by the project-scoped listing route.
@@ -170,13 +176,14 @@ GET   /projects/{id}
 PATCH /projects/{id}
 POST  /projects/{id}/archive
 POST  /projects/{id}/unarchive
-GET   /projects/{id}/sessions        ?includeArchived=<bool>&status=<status>
+GET   /projects/{id}/sessions        ?status=<live|ended>
 ```
 
 There is no `?projectId=` filter on `GET /sessions`;
 `GET /projects/{id}/sessions` is the single project-scoped listing route. It
 returns the same `{"sessions": [...]}` shape as `GET /sessions`, supports the
-same `includeArchived` and `status` params, and returns 404
+same optional `status=live|ended` filter, includes all Live and Ended Sessions
+by default, and returns 404
 `project_not_found` for an unknown Project — a clear error instead of a
 silently empty list.
 
@@ -273,8 +280,8 @@ Session command changes:
   (cobra `MarkFlagsMutuallyExclusive`). When `--project` is set the cwd
   default for `--dir` does NOT apply and no `workingDir` is sent.
 - `atc sessions list --project <id>`: calls
-  `GET /projects/{id}/sessions`, combinable with `--status` and
-  `--include-archived`. (Addition beyond the brief: the API supports
+  `GET /projects/{id}/sessions`, with `--status` accepting only `live` or
+  `ended`. (Addition beyond the brief: the API supports
   project-scoped listing, so the CLI exposes it.)
 - `sessions show` text output prints `project` fields when present; the
   `sessions list` text columns are unchanged.
@@ -291,8 +298,8 @@ hand-rolled CSS + `$state`/`onMount` patterns:
   is out of scope for this version (deferred).
 - `/projects/[id]` — Project detail: record fields, rename (same editor in
   rename mode, name only), archive/unarchive buttons, the Project's Sessions
-  via `GET /projects/{id}/sessions` with an include-archived toggle
-  (archived hidden by default), and a **Start Session** form: Action select
+  via `GET /projects/{id}/sessions` with Live and Ended shown together, and a
+  **Start Session** form: Action select
   (enabled Actions from `GET /actions`), Environment select
   (`GET /environments`), optional Session name and prompt, and param inputs
   rendered from the selected Action's params spec. Submits
@@ -303,10 +310,10 @@ Supporting changes:
 - `api.ts` gains `Project` types and `listProjects`, `getProject`,
   `createProject`, `renameProject`, `archiveProject`, `unarchiveProject`,
   `listProjectSessions`; `SessionListItem`/`SessionDetail` gain the optional
-  `project` object; `listSessions` gains `includeArchived`.
+  `project` object; Session list methods accept an optional `live | ended`
+  status filter.
 - Sessions page retrofit (minimal): each Session row shows its Project name
-  linking to `/projects/[id]`, and the page gains the include-archived
-  control the API already supports.
+  linking to `/projects/[id]`; Live and Ended Sessions are shown together.
 - The reference/Try-it console gains the Project endpoints: `endpoints.ts`'s
   method union widens to include `PATCH` and the Try-it request builder
   handles it like `POST`.

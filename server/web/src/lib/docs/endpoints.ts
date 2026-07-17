@@ -47,7 +47,7 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'POST',
     path: '/api/sessions/start',
     title: 'Start session',
-    desc: 'Launch a persistent terminal in a workspace. The session runs in the workspace project’s working directory. Omit action to launch the Interactive Shell (the host user’s shell); params and prompt require an action. The launch is synchronous: the response is the new session, already running and attachable.',
+	desc: 'Launch a persistent terminal in a workspace. The session runs in the workspace project’s working directory. Omit action to launch the Interactive Shell (the host user’s shell); params and prompt require an action. The launch is synchronous: the response is the new Live Session.',
     params: [
       {
         name: 'workspaceId',
@@ -80,7 +80,7 @@ export const ENDPOINTS: Endpoint[] = [
       { key: 'name', label: 'name', kind: 'text', placeholder: 'optional' },
       { key: 'prompt', label: 'prompt', kind: 'textarea', placeholder: 'optional starting prompt…' }
     ],
-    returns: '{\n  "id": "ses_8f3a2c",\n  "status": "running",\n  "action": "codex",\n  "attachable": true\n}',
+	returns: '{\n  "id": "ses_8f3a2c",\n  "status": "live",\n  "action": "codex"\n}',
     cli: {
       cmd: 'atc sessions start',
       example: 'atc sessions start \\\n  --workspace wsp_8f3a2c --action codex'
@@ -92,18 +92,14 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'GET',
     path: '/api/sessions',
     title: 'List sessions',
-    desc: 'Return all unarchived sessions. Filter by status or include archived ones with query params.',
-    params: [
-      { name: 'includeArchived', type: 'bool', desc: 'Include archived sessions.' },
-      { name: 'status', type: 'string', desc: 'Filter by status.' }
-    ],
+	desc: 'Return all Live and Ended Sessions. Provisional launch attempts are never returned.',
+	params: [{ name: 'status', type: 'enum', desc: 'Optional live or ended filter.' }],
     fields: [
-      { key: 'includeArchived', label: 'includeArchived', kind: 'select', options: ['false', 'true'] },
       {
         key: 'status',
         label: 'status',
         kind: 'select',
-        options: ['(any)', 'running', 'starting', 'failed', 'terminated']
+		options: ['(any)', 'live', 'ended']
       }
     ],
     returns: '{ "sessions": [ … ] }',
@@ -118,7 +114,7 @@ export const ENDPOINTS: Endpoint[] = [
     desc: 'Fetch full detail for one session, including its params and prompt.',
     params: [{ name: 'id', type: 'string', required: true, desc: 'Session id (path).' }],
     fields: [{ key: 'id', label: 'id', kind: 'text', placeholder: 'ses_…', required: true }],
-    returns: '{ "id": "ses_…", "status": "running", … }',
+	returns: '{ "id": "ses_…", "status": "live", … }',
     cli: { cmd: 'atc sessions show', example: 'atc sessions show ses_8f3a2c' }
   },
   {
@@ -158,48 +154,12 @@ export const ENDPOINTS: Endpoint[] = [
     cli: { cmd: 'atc sessions send-key', example: 'atc sessions send-key ses_8f3a2c enter' }
   },
   {
-    key: 'terminate',
-    group: 'Sessions',
-    method: 'POST',
-    path: '/api/sessions/{id}/terminate',
-    title: 'Terminate session',
-    desc: 'Stop a running session. It then becomes archivable.',
-    params: [{ name: 'id', type: 'string', required: true, desc: 'Session id (path).' }],
-    fields: [{ key: 'id', label: 'id', kind: 'text', placeholder: 'ses_…', required: true }],
-    returns: '{ "id": "ses_…", "status": "terminated" }',
-    cli: { cmd: 'atc sessions terminate', example: 'atc sessions terminate ses_8f3a2c' }
-  },
-  {
-    key: 'archiveSession',
-    group: 'Sessions',
-    method: 'POST',
-    path: '/api/sessions/{id}/archive',
-    title: 'Archive session',
-    desc: 'Hide a settled session from default lists. Live sessions cannot be archived.',
-    params: [{ name: 'id', type: 'string', required: true, desc: 'Session id (path).' }],
-    fields: [{ key: 'id', label: 'id', kind: 'text', placeholder: 'ses_…', required: true }],
-    returns: '{ "id": "ses_…", "archivedAt": "…" }',
-    cli: { cmd: 'atc sessions archive', example: 'atc sessions archive ses_8f3a2c' }
-  },
-  {
-    key: 'unarchiveSession',
-    group: 'Sessions',
-    method: 'POST',
-    path: '/api/sessions/{id}/unarchive',
-    title: 'Unarchive session',
-    desc: 'Return an archived session to default lists. Idempotent.',
-    params: [{ name: 'id', type: 'string', required: true, desc: 'Session id (path).' }],
-    fields: [{ key: 'id', label: 'id', kind: 'text', placeholder: 'ses_…', required: true }],
-    returns: '{ "id": "ses_…", "status": "terminated" }',
-    cli: { cmd: 'atc sessions unarchive', example: 'atc sessions unarchive ses_8f3a2c' }
-  },
-  {
     key: 'deleteSession',
     group: 'Sessions',
     method: 'DELETE',
     path: '/api/sessions/{id}',
     title: 'Delete session',
-    desc: 'Stop the session if it is active, then remove its metadata record. Files on disk are never touched.',
+	desc: 'Delete a Session. A Live process is ended before its record is removed; an Ended Session only has its record removed. Files on disk are never touched.',
     params: [{ name: 'id', type: 'string', required: true, desc: 'Session id (path).' }],
     fields: [{ key: 'id', label: 'id', kind: 'text', placeholder: 'ses_…', required: true }],
     returns: '{}',
@@ -280,7 +240,7 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'POST',
     path: '/api/workspaces/{id}/archive',
     title: 'Archive workspace',
-    desc: 'Hide a workspace from default lists and block new session starts in it. Fails with 409 workspace_has_active_sessions while the workspace has a starting or running session. Idempotent.',
+	desc: 'Hide a workspace from default lists and block new Session starts in it. Fails with 409 workspace_has_active_sessions while the workspace has a provisional launch attempt or Live Session. Idempotent.',
     params: [{ name: 'id', type: 'string', required: true, desc: 'Workspace id (path).' }],
     fields: [{ key: 'id', label: 'id', kind: 'text', placeholder: 'wsp_…', required: true }],
     returns: '{ "id": "wsp_…", "archivedAt": "…" }',
@@ -304,7 +264,7 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'DELETE',
     path: '/api/workspaces/{id}',
     title: 'Delete workspace',
-    desc: 'Stop the workspace’s active sessions, then remove the workspace and all of its session metadata in one transaction. A stop failure aborts the delete (502); a session started concurrently fails it with 409 — retry. Files on disk are never touched.',
+    desc: 'End the workspace’s active sessions, then remove the workspace and all of its session metadata in one transaction. An end failure aborts the delete (502); a session started concurrently fails it with 409 — retry. Files on disk are never touched.',
     params: [{ name: 'id', type: 'string', required: true, desc: 'Workspace id (path).' }],
     fields: [{ key: 'id', label: 'id', kind: 'text', placeholder: 'wsp_…', required: true }],
     returns: '{}',
@@ -316,20 +276,18 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'GET',
     path: '/api/workspaces/{id}/sessions',
     title: 'List workspace sessions',
-    desc: 'Return one workspace’s sessions, same shape and filters as the sessions list. Unknown workspaces are a 404.',
+	desc: 'Return one workspace’s Live and Ended Sessions. Unknown workspaces are a 404.',
     params: [
       { name: 'id', type: 'string', required: true, desc: 'Workspace id (path).' },
-      { name: 'includeArchived', type: 'bool', desc: 'Include archived sessions.' },
-      { name: 'status', type: 'string', desc: 'Filter by status.' }
+	  { name: 'status', type: 'enum', desc: 'Optional live or ended filter.' }
     ],
     fields: [
       { key: 'id', label: 'id', kind: 'text', placeholder: 'wsp_…', required: true },
-      { key: 'includeArchived', label: 'includeArchived', kind: 'select', options: ['false', 'true'] },
       {
         key: 'status',
         label: 'status',
         kind: 'select',
-        options: ['(any)', 'running', 'starting', 'failed', 'terminated']
+		options: ['(any)', 'live', 'ended']
       }
     ],
     returns: '{ "sessions": [ … ] }',
@@ -453,20 +411,18 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'GET',
     path: '/api/projects/{id}/sessions',
     title: 'List project sessions',
-    desc: 'Return one project’s sessions, same shape and filters as the sessions list. Unknown projects are a 404.',
+	desc: 'Return one project’s Live and Ended Sessions. Unknown projects are a 404.',
     params: [
       { name: 'id', type: 'string', required: true, desc: 'Project id (path).' },
-      { name: 'includeArchived', type: 'bool', desc: 'Include archived sessions.' },
-      { name: 'status', type: 'string', desc: 'Filter by status.' }
+	  { name: 'status', type: 'enum', desc: 'Optional live or ended filter.' }
     ],
     fields: [
       { key: 'id', label: 'id', kind: 'text', placeholder: 'prj_…', required: true },
-      { key: 'includeArchived', label: 'includeArchived', kind: 'select', options: ['false', 'true'] },
       {
         key: 'status',
         label: 'status',
         kind: 'select',
-        options: ['(any)', 'running', 'starting', 'failed', 'terminated']
+		options: ['(any)', 'live', 'ended']
       }
     ],
     returns: '{ "sessions": [ … ] }',
@@ -558,7 +514,7 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'DELETE',
     path: '/api/actions/{name}',
     title: 'Delete action',
-    desc: 'Delete a custom action, or revert a modified built-in to its default. Deleting a custom action is rejected with 409 action_in_use while a starting or running session references it.',
+	desc: 'Delete a custom action, or revert a modified built-in to its default. Deleting a custom action is rejected with 409 action_in_use while a provisional launch attempt or Live Session references it.',
     params: [{ name: 'name', type: 'string', required: true, desc: 'Action name (path).' }],
     fields: [{ key: 'name', label: 'name', kind: 'text', placeholder: 'my-agent', required: true }],
     returns: '{}'

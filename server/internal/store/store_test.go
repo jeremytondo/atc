@@ -31,6 +31,22 @@ func TestOpenCreatesParentAndMigrates(t *testing.T) {
 	if sessionsTable != 1 {
 		t.Fatalf("sessions table count = %d, want 1", sessionsTable)
 	}
+	for _, removed := range []string{"failure_reason", "failure_code", "terminated_at", "archived_at"} {
+		var count int
+		if err := st.db.QueryRow(`SELECT count(*) FROM pragma_table_info('sessions') WHERE name = ?`, removed).Scan(&count); err != nil {
+			t.Fatalf("query removed column %s: %v", removed, err)
+		}
+		if count != 0 {
+			t.Fatalf("removed session column %s still exists", removed)
+		}
+	}
+	var archiveIndex int
+	if err := st.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'sessions_archived_at_idx'`).Scan(&archiveIndex); err != nil {
+		t.Fatalf("query removed session archive index: %v", err)
+	}
+	if archiveIndex != 0 {
+		t.Fatal("sessions_archived_at_idx still exists")
+	}
 
 	var foreignKeys int
 	if err := st.db.QueryRow(`PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
@@ -82,7 +98,7 @@ func TestOpenDoesNotChmodExistingParent(t *testing.T) {
 	}
 }
 
-func TestCreateStartingAndTransitionsRoundTrip(t *testing.T) {
+func TestCreateStartingPromoteAndEndRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
 	defer st.Close()
@@ -116,67 +132,38 @@ func TestCreateStartingAndTransitionsRoundTrip(t *testing.T) {
 		t.Fatalf("timestamps = created %s updated %s, want equal non-zero", created.CreatedAt, created.UpdatedAt)
 	}
 
-	running, err := st.MarkRunning(ctx, created.ID)
+	live, err := st.PromoteToLive(ctx, created.ID)
 	if err != nil {
-		t.Fatalf("MarkRunning: %v", err)
+		t.Fatalf("PromoteToLive: %v", err)
 	}
-	if running.Status != StatusRunning {
-		t.Fatalf("status = %s, want %s", running.Status, StatusRunning)
+	if live.Status != StatusLive {
+		t.Fatalf("status = %s, want %s", live.Status, StatusLive)
 	}
-	if !running.UpdatedAt.After(created.UpdatedAt) {
-		t.Fatalf("updatedAt = %s, want after %s", running.UpdatedAt, created.UpdatedAt)
+	if !live.UpdatedAt.After(created.UpdatedAt) {
+		t.Fatalf("updatedAt = %s, want after %s", live.UpdatedAt, created.UpdatedAt)
 	}
 
-	terminated, err := st.MarkTerminated(ctx, created.ID)
+	ended, err := st.MarkEnded(ctx, created.ID)
 	if err != nil {
-		t.Fatalf("MarkTerminated: %v", err)
+		t.Fatalf("MarkEnded: %v", err)
 	}
-	if terminated.Status != StatusTerminated {
-		t.Fatalf("status = %s, want %s", terminated.Status, StatusTerminated)
+	if ended.Status != StatusEnded {
+		t.Fatalf("status = %s, want %s", ended.Status, StatusEnded)
 	}
-	if terminated.TerminatedAt == nil {
-		t.Fatal("terminatedAt is nil")
-	}
-	terminatedAgain, err := st.MarkTerminated(ctx, created.ID)
+	endedAgain, err := st.MarkEnded(ctx, created.ID)
 	if err != nil {
-		t.Fatalf("MarkTerminated again: %v", err)
+		t.Fatalf("MarkEnded again: %v", err)
 	}
-	if !terminatedAgain.UpdatedAt.Equal(terminated.UpdatedAt) {
-		t.Fatalf("second terminate updatedAt = %s, want preserved %s", terminatedAgain.UpdatedAt, terminated.UpdatedAt)
-	}
-
-	archived, err := st.MarkArchived(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("MarkArchived: %v", err)
-	}
-	if archived.Status != StatusTerminated {
-		t.Fatalf("archived status = %s, want preserved %s", archived.Status, StatusTerminated)
-	}
-	if archived.ArchivedAt == nil {
-		t.Fatal("archivedAt is nil")
-	}
-
-	unarchived, err := st.MarkUnarchived(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("MarkUnarchived: %v", err)
-	}
-	if unarchived.ArchivedAt != nil || !unarchived.UpdatedAt.After(archived.UpdatedAt) {
-		t.Fatalf("unarchived = %+v", unarchived)
-	}
-	unarchivedAgain, err := st.MarkUnarchived(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("MarkUnarchived again: %v", err)
-	}
-	if unarchivedAgain.ArchivedAt != nil || !unarchivedAgain.UpdatedAt.Equal(unarchived.UpdatedAt) {
-		t.Fatalf("second unarchive = %+v, want unchanged %+v", unarchivedAgain, unarchived)
+	if !endedAgain.UpdatedAt.Equal(ended.UpdatedAt) {
+		t.Fatalf("second end updatedAt = %s, want preserved %s", endedAgain.UpdatedAt, ended.UpdatedAt)
 	}
 
 	got, err := st.Get(ctx, created.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if !reflect.DeepEqual(got, unarchived) {
-		t.Fatalf("Get = %+v, want %+v", got, unarchived)
+	if !reflect.DeepEqual(got, ended) {
+		t.Fatalf("Get = %+v, want %+v", got, ended)
 	}
 }
 
@@ -236,14 +223,14 @@ func TestDeleteSessionRemovesSettledAndRejectsActive(t *testing.T) {
 	if err := st.DeleteSession(ctx, "ses_doomed"); !errors.Is(err, ErrSessionActive) {
 		t.Fatalf("delete starting session err = %v, want ErrSessionActive", err)
 	}
-	if _, err := st.MarkRunning(ctx, "ses_doomed"); err != nil {
-		t.Fatalf("MarkRunning: %v", err)
+	if _, err := st.PromoteToLive(ctx, "ses_doomed"); err != nil {
+		t.Fatalf("PromoteToLive: %v", err)
 	}
 	if err := st.DeleteSession(ctx, "ses_doomed"); !errors.Is(err, ErrSessionActive) {
-		t.Fatalf("delete running session err = %v, want ErrSessionActive", err)
+		t.Fatalf("delete Live Session err = %v, want ErrSessionActive", err)
 	}
-	if _, err := st.MarkTerminated(ctx, "ses_doomed"); err != nil {
-		t.Fatalf("MarkTerminated: %v", err)
+	if _, err := st.MarkEnded(ctx, "ses_doomed"); err != nil {
+		t.Fatalf("MarkEnded: %v", err)
 	}
 	if err := st.DeleteSession(ctx, "ses_doomed"); err != nil {
 		t.Fatalf("DeleteSession: %v", err)
@@ -271,16 +258,16 @@ func TestCountActiveSessionsForAction(t *testing.T) {
 		}
 	}
 	create("ses_starting", "codex")
-	create("ses_running", "codex")
-	if _, err := st.MarkRunning(ctx, "ses_running"); err != nil {
-		t.Fatalf("MarkRunning: %v", err)
+	create("ses_live", "codex")
+	if _, err := st.PromoteToLive(ctx, "ses_live"); err != nil {
+		t.Fatalf("PromoteToLive: %v", err)
 	}
 	create("ses_done", "codex")
-	if _, err := st.MarkRunning(ctx, "ses_done"); err != nil {
-		t.Fatalf("MarkRunning done: %v", err)
+	if _, err := st.PromoteToLive(ctx, "ses_done"); err != nil {
+		t.Fatalf("PromoteToLive done: %v", err)
 	}
-	if _, err := st.MarkTerminated(ctx, "ses_done"); err != nil {
-		t.Fatalf("MarkTerminated done: %v", err)
+	if _, err := st.MarkEnded(ctx, "ses_done"); err != nil {
+		t.Fatalf("MarkEnded done: %v", err)
 	}
 	create("ses_other", "claude")
 
@@ -329,14 +316,14 @@ func TestOpenReopensExistingDatabase(t *testing.T) {
 	}
 }
 
-func TestMarkFailedStoresReasonAndCode(t *testing.T) {
+func TestDeleteStartingRemovesOnlyProvisionalRecords(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
 	defer st.Close()
 	seedWorkspace(t, st, "prj_main", "wsp_main")
 
 	if _, err := st.CreateStarting(ctx, CreateSessionInput{
-		ID:          "ses_failed",
+		ID:          "ses_provisional",
 		Action:      "codex",
 		Environment: "host-login-shell",
 		WorkingDir:  "/work",
@@ -345,16 +332,15 @@ func TestMarkFailedStoresReasonAndCode(t *testing.T) {
 		t.Fatalf("CreateStarting: %v", err)
 	}
 
-	failed, err := st.MarkFailed(ctx, "ses_failed", "action failed to launch", "launch_failed")
-	if err != nil {
-		t.Fatalf("MarkFailed: %v", err)
+	if err := st.DeleteStarting(ctx, "ses_provisional"); err != nil {
+		t.Fatalf("DeleteStarting: %v", err)
 	}
-	if failed.Status != StatusFailed || failed.FailureReason != "action failed to launch" || failed.FailureCode != "launch_failed" {
-		t.Fatalf("failed session = %+v", failed)
+	if _, err := st.Get(ctx, "ses_provisional"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("Get after DeleteStarting = %v, want ErrSessionNotFound", err)
 	}
 }
 
-func TestMarkRunningAndMarkFailedOnlySettleStartingSessions(t *testing.T) {
+func TestStartingOnlyOperationsDoNotResurrectSettledSessions(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
 	defer st.Close()
@@ -369,32 +355,35 @@ func TestMarkRunningAndMarkFailedOnlySettleStartingSessions(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateStarting: %v", err)
 	}
-	if _, err := st.MarkTerminated(ctx, "ses_race"); err != nil {
-		t.Fatalf("MarkTerminated: %v", err)
+	if _, err := st.PromoteToLive(ctx, "ses_race"); err != nil {
+		t.Fatalf("PromoteToLive: %v", err)
+	}
+	if _, err := st.MarkEnded(ctx, "ses_race"); err != nil {
+		t.Fatalf("MarkEnded: %v", err)
 	}
 
-	// A session settled by a concurrent Terminate or Delete must not be
+	// A session settled by a concurrent End or Delete must not be
 	// resurrected by the in-flight Start's transitions.
-	if _, err := st.MarkRunning(ctx, "ses_race"); !errors.Is(err, ErrSessionNotStarting) {
-		t.Fatalf("MarkRunning err = %v, want ErrSessionNotStarting", err)
+	if _, err := st.PromoteToLive(ctx, "ses_race"); !errors.Is(err, ErrSessionNotStarting) {
+		t.Fatalf("PromoteToLive err = %v, want ErrSessionNotStarting", err)
 	}
-	if _, err := st.MarkFailed(ctx, "ses_race", "session startup did not complete", "launch_failed"); !errors.Is(err, ErrSessionNotStarting) {
-		t.Fatalf("MarkFailed err = %v, want ErrSessionNotStarting", err)
+	if err := st.DeleteStarting(ctx, "ses_race"); !errors.Is(err, ErrSessionNotStarting) {
+		t.Fatalf("DeleteStarting err = %v, want ErrSessionNotStarting", err)
 	}
-	if _, err := st.MarkRunning(ctx, "ses_missing"); !errors.Is(err, ErrSessionNotFound) {
-		t.Fatalf("MarkRunning missing err = %v, want ErrSessionNotFound", err)
+	if _, err := st.PromoteToLive(ctx, "ses_missing"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("PromoteToLive missing err = %v, want ErrSessionNotFound", err)
 	}
 
 	stored, err := st.Get(ctx, "ses_race")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if stored.Status != StatusTerminated {
-		t.Fatalf("status = %s, want terminated", stored.Status)
+	if stored.Status != StatusEnded {
+		t.Fatalf("status = %s, want ended", stored.Status)
 	}
 }
 
-func TestListOrderingStatusFilterAndArchivedDefault(t *testing.T) {
+func TestListExcludesStartingAndFiltersPublicStatuses(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
 	defer st.Close()
@@ -416,20 +405,17 @@ func TestListOrderingStatusFilterAndArchivedDefault(t *testing.T) {
 	}
 
 	create("ses_old")
-	if _, err := st.MarkRunning(ctx, "ses_old"); err != nil {
-		t.Fatalf("MarkRunning old: %v", err)
+	if _, err := st.PromoteToLive(ctx, "ses_old"); err != nil {
+		t.Fatalf("PromoteToLive old: %v", err)
 	}
 	create("ses_middle")
-	if _, err := st.MarkFailed(ctx, "ses_middle", "launch failed", "launch_failed"); err != nil {
-		t.Fatalf("MarkFailed middle: %v", err)
+	if _, err := st.PromoteToLive(ctx, "ses_middle"); err != nil {
+		t.Fatalf("PromoteToLive middle: %v", err)
 	}
-	create("ses_new_archived")
-	if _, err := st.MarkRunning(ctx, "ses_new_archived"); err != nil {
-		t.Fatalf("MarkRunning new: %v", err)
+	if _, err := st.MarkEnded(ctx, "ses_middle"); err != nil {
+		t.Fatalf("MarkEnded middle: %v", err)
 	}
-	if _, err := st.MarkArchived(ctx, "ses_new_archived"); err != nil {
-		t.Fatalf("MarkArchived new: %v", err)
-	}
+	create("ses_provisional")
 
 	defaultList, err := st.List(ctx, ListFilter{})
 	if err != nil {
@@ -437,23 +423,23 @@ func TestListOrderingStatusFilterAndArchivedDefault(t *testing.T) {
 	}
 	assertSessionIDs(t, defaultList, []string{"ses_middle", "ses_old"})
 
-	running, err := st.List(ctx, ListFilter{Status: StatusRunning})
+	live, err := st.List(ctx, ListFilter{Status: StatusLive})
 	if err != nil {
-		t.Fatalf("List running: %v", err)
+		t.Fatalf("List Live: %v", err)
 	}
-	assertSessionIDs(t, running, []string{"ses_old"})
+	assertSessionIDs(t, live, []string{"ses_old"})
 
-	withArchived, err := st.List(ctx, ListFilter{IncludeArchived: true})
+	ended, err := st.List(ctx, ListFilter{Status: StatusEnded})
 	if err != nil {
-		t.Fatalf("List include archived: %v", err)
+		t.Fatalf("List ended: %v", err)
 	}
-	assertSessionIDs(t, withArchived, []string{"ses_new_archived", "ses_middle", "ses_old"})
+	assertSessionIDs(t, ended, []string{"ses_middle"})
 
-	archivedRunning, err := st.List(ctx, ListFilter{IncludeArchived: true, Status: StatusRunning})
+	all, err := st.ListAll(ctx, ListFilter{})
 	if err != nil {
-		t.Fatalf("List archived running: %v", err)
+		t.Fatalf("ListAll: %v", err)
 	}
-	assertSessionIDs(t, archivedRunning, []string{"ses_new_archived", "ses_old"})
+	assertSessionIDs(t, all, []string{"ses_provisional", "ses_middle", "ses_old"})
 }
 
 func TestListOrdersSubSecondCreatesNewestFirst(t *testing.T) {
@@ -474,6 +460,9 @@ func TestListOrdersSubSecondCreatesNewestFirst(t *testing.T) {
 	for _, id := range []string{"ses_first", "ses_second", "ses_third"} {
 		if _, err := st.CreateStarting(ctx, CreateSessionInput{ID: id, Action: "codex", Environment: "host-login-shell", WorkingDir: "/work", WorkspaceID: "wsp_main"}); err != nil {
 			t.Fatalf("CreateStarting(%s): %v", id, err)
+		}
+		if _, err := st.PromoteToLive(ctx, id); err != nil {
+			t.Fatalf("PromoteToLive(%s): %v", id, err)
 		}
 	}
 	list, err := st.List(ctx, ListFilter{})
@@ -497,6 +486,9 @@ func TestListBreaksCreatedAtTiesByInsertionOrder(t *testing.T) {
 	for _, id := range []string{"ses_c", "ses_a", "ses_b"} {
 		if _, err := st.CreateStarting(ctx, CreateSessionInput{ID: id, Action: "codex", Environment: "host-login-shell", WorkingDir: "/work", WorkspaceID: "wsp_main"}); err != nil {
 			t.Fatalf("CreateStarting(%s): %v", id, err)
+		}
+		if _, err := st.PromoteToLive(ctx, id); err != nil {
+			t.Fatalf("PromoteToLive(%s): %v", id, err)
 		}
 	}
 	list, err := st.List(ctx, ListFilter{})
@@ -522,7 +514,7 @@ func TestWithTxCommitsAndRollsBack(t *testing.T) {
 		}); err != nil {
 			return err
 		}
-		_, err := tx.MarkRunning(ctx, "ses_committed")
+		_, err := tx.PromoteToLive(ctx, "ses_committed")
 		return err
 	}); err != nil {
 		t.Fatalf("WithTx commit: %v", err)
@@ -532,8 +524,8 @@ func TestWithTxCommitsAndRollsBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get committed: %v", err)
 	}
-	if committed.Status != StatusRunning {
-		t.Fatalf("committed status = %s, want %s", committed.Status, StatusRunning)
+	if committed.Status != StatusLive {
+		t.Fatalf("committed status = %s, want %s", committed.Status, StatusLive)
 	}
 
 	rollbackErr := errors.New("rollback")
@@ -574,12 +566,12 @@ func TestInvalidInputsReturnClearErrors(t *testing.T) {
 		t.Fatal("CreateStarting accepted non-object params")
 	}
 
-	if _, err := st.List(ctx, ListFilter{Status: Status("bogus")}); !errors.Is(err, ErrInvalidStatus) {
+	if _, err := st.List(ctx, ListFilter{Status: RecordStatus("bogus")}); !errors.Is(err, ErrInvalidStatus) {
 		t.Fatalf("List invalid status err = %v, want ErrInvalidStatus", err)
 	}
 
-	if _, err := st.MarkRunning(ctx, "ses_missing"); !errors.Is(err, ErrSessionNotFound) {
-		t.Fatalf("MarkRunning missing err = %v, want ErrSessionNotFound", err)
+	if _, err := st.PromoteToLive(ctx, "ses_missing"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("PromoteToLive missing err = %v, want ErrSessionNotFound", err)
 	}
 }
 

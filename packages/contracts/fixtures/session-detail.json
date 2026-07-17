@@ -1,23 +1,14 @@
 {
-  "routes": [
-    "GET /sessions/{id}",
-    "POST /sessions/{id}/terminate",
-    "POST /sessions/{id}/archive"
-  ],
+  "routes": ["GET /sessions/{id}"],
   "response": {
     "id": "ses_fixture02",
-    "name": "Broken launch",
+	"name": "Ended shell",
     "environment": "zsh",
     "params": {},
     "workingDir": "/home/dev/projects/experiment",
-    "status": "failed",
-    "attachable": false,
-    "failureReason": "zmx exited before the session became ready",
-    "failureCode": "launch_failed",
+	"status": "ended",
     "createdAt": "2026-07-08T10:00:00Z",
-    "updatedAt": "2026-07-08T10:00:05Z",
-    "terminatedAt": "2026-07-08T10:00:05Z",
-    "archivedAt": "2026-07-08T11:00:00Z",
+	"updatedAt": "2026-07-08T10:00:05Z",
     "workspace": {
       "id": "wsp_fixture02",
       "name": "Experiment shell"

@@ -61,9 +61,6 @@ func (routes apiRoutes) endpoints() map[string]http.HandlerFunc {
 		"GET /sessions/{id}":              routes.readSession,
 		"POST /sessions/{id}/send-text":   routes.sendText,
 		"POST /sessions/{id}/send-key":    routes.sendKey,
-		"POST /sessions/{id}/terminate":   routes.terminateSession,
-		"POST /sessions/{id}/archive":     routes.archiveSession,
-		"POST /sessions/{id}/unarchive":   routes.unarchiveSession,
 		"DELETE /sessions/{id}":           routes.deleteSession,
 		"GET /sessions/{id}/attach":       routes.attachSession,
 	}

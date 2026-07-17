@@ -105,14 +105,9 @@ export type SessionListItem = {
   action?: string;
   environment: string;
   workingDir: string;
-  status: string;
-  attachable: boolean;
-  failureReason?: string;
-  failureCode?: string;
+  status: 'live' | 'ended';
   createdAt: string;
   updatedAt: string;
-  terminatedAt?: string;
-  archivedAt?: string;
   workspace?: SessionWorkspace;
   project?: SessionProject;
 };
@@ -230,9 +225,9 @@ export async function listEnvironments(): Promise<Environment[]> {
 }
 
 export async function listSessions(
-  opts: { includeArchived?: boolean } = {}
+  opts: { status?: 'live' | 'ended' } = {}
 ): Promise<SessionListItem[]> {
-  const qs = opts.includeArchived ? '?includeArchived=true' : '';
+  const qs = opts.status ? `?status=${opts.status}` : '';
   const res = await apiFetch(`/api/sessions${qs}`);
   const body = (await res.json()) as { sessions?: SessionListItem[] };
   return body.sessions ?? [];
@@ -243,19 +238,8 @@ export async function startSession(body: StartSessionRequest): Promise<SessionDe
   return (await res.json()) as SessionDetail;
 }
 
-export async function terminateSession(id: string): Promise<void> {
-  await apiFetch(`/api/sessions/${encodeURIComponent(id)}/terminate`, { method: 'POST' });
-}
-
-export async function archiveSession(id: string): Promise<void> {
-  await apiFetch(`/api/sessions/${encodeURIComponent(id)}/archive`, { method: 'POST' });
-}
-
-export async function unarchiveSession(id: string): Promise<void> {
-  await apiFetch(`/api/sessions/${encodeURIComponent(id)}/unarchive`, { method: 'POST' });
-}
-
-// deleteSession stops the session if it is active, then removes its metadata.
+// deleteSession ends a Live process before removing its record; an Ended
+// Session only has its record removed.
 // Files on disk are never touched.
 export async function deleteSession(id: string): Promise<void> {
   await apiFetch(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
@@ -305,10 +289,10 @@ export async function deleteProject(id: string): Promise<void> {
 }
 
 export async function listProjectSessions(
-  id: string,
-  opts: { includeArchived?: boolean } = {}
+	id: string,
+	opts: { status?: 'live' | 'ended' } = {}
 ): Promise<SessionListItem[]> {
-  const qs = opts.includeArchived ? '?includeArchived=true' : '';
+	const qs = opts.status ? `?status=${opts.status}` : '';
   const res = await apiFetch(`/api/projects/${encodeURIComponent(id)}/sessions${qs}`);
   const body = (await res.json()) as { sessions?: SessionListItem[] };
   return body.sessions ?? [];
@@ -366,9 +350,9 @@ export async function deleteWorkspace(id: string): Promise<void> {
 
 export async function listWorkspaceSessions(
   id: string,
-  opts: { includeArchived?: boolean } = {}
+  opts: { status?: 'live' | 'ended' } = {}
 ): Promise<SessionListItem[]> {
-  const qs = opts.includeArchived ? '?includeArchived=true' : '';
+  const qs = opts.status ? `?status=${opts.status}` : '';
   const res = await apiFetch(`/api/workspaces/${encodeURIComponent(id)}/sessions${qs}`);
   const body = (await res.json()) as { sessions?: SessionListItem[] };
   return body.sessions ?? [];

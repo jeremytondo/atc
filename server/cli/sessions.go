@@ -34,9 +34,6 @@ func sessionsCommand(lookup envLookup) *cobra.Command {
 	cmd.AddCommand(sessionsAttachCommand(lookup))
 	cmd.AddCommand(sessionsSendTextCommand(lookup))
 	cmd.AddCommand(sessionsSendKeyCommand(lookup))
-	cmd.AddCommand(sessionsTerminateCommand(lookup))
-	cmd.AddCommand(sessionsArchiveCommand(lookup))
-	cmd.AddCommand(sessionsUnarchiveCommand(lookup))
 	cmd.AddCommand(sessionsDeleteCommand(lookup))
 	return cmd
 }
@@ -106,7 +103,6 @@ func sessionsStartCommand(lookup envLookup) *cobra.Command {
 
 func sessionsListCommand(lookup envLookup) *cobra.Command {
 	var output, status, projectID, workspaceID string
-	var includeArchived bool
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -116,13 +112,13 @@ func sessionsListCommand(lookup envLookup) *cobra.Command {
 			if err := validateOutput(output); err != nil {
 				return err
 			}
+			if err := validateSessionStatus(status); err != nil {
+				return err
+			}
 
 			query := url.Values{}
 			if status != "" {
 				query.Set("status", status)
-			}
-			if includeArchived {
-				query.Set("includeArchived", "true")
 			}
 			endpoint := "sessions"
 			if workspaceID != "" {
@@ -148,16 +144,15 @@ func sessionsListCommand(lookup envLookup) *cobra.Command {
 				return fmt.Errorf("decode response: %w", err)
 			}
 			for _, s := range resp.Sessions {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%t\t%s\t%s\n", s.ID, s.Status, s.Action, s.Environment, s.Attachable, s.WorkingDir, s.Name)
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\t%s\n", s.ID, s.Status, s.Action, s.Environment, s.WorkingDir, s.Name)
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVarP(&output, "output", "o", outputText, "Output format: text or json")
-	cmd.Flags().StringVar(&status, "status", "", "Filter sessions by status")
+	cmd.Flags().StringVar(&status, "status", "", "Filter sessions by status: live or ended")
 	cmd.Flags().StringVar(&projectID, "project", "", "List only one project's sessions")
 	cmd.Flags().StringVar(&workspaceID, "workspace", "", "List only one workspace's sessions")
-	cmd.Flags().BoolVar(&includeArchived, "include-archived", false, "Include archived sessions")
 	cmd.MarkFlagsMutuallyExclusive("project", "workspace")
 	return cmd
 }
@@ -228,28 +223,10 @@ func sessionsSendKeyCommand(lookup envLookup) *cobra.Command {
 	})
 }
 
-func sessionsTerminateCommand(lookup envLookup) *cobra.Command {
-	return resourceActionCommand(lookup, "terminate <id>", "Terminate a live session", 1, func(id string, args []string) (string, any) {
-		return sessionEndpoint(id, "terminate"), struct{}{}
-	})
-}
-
-func sessionsArchiveCommand(lookup envLookup) *cobra.Command {
-	return resourceActionCommand(lookup, "archive <id>", "Archive a non-live session", 1, func(id string, args []string) (string, any) {
-		return sessionEndpoint(id, "archive"), struct{}{}
-	})
-}
-
-func sessionsUnarchiveCommand(lookup envLookup) *cobra.Command {
-	return resourceActionCommand(lookup, "unarchive <id>", "Unarchive a session", 1, func(id string, args []string) (string, any) {
-		return sessionEndpoint(id, "unarchive"), struct{}{}
-	})
-}
-
 func sessionsDeleteCommand(lookup envLookup) *cobra.Command {
 	return &cobra.Command{
 		Use:   "delete <id>",
-		Short: "Delete a session: stops it if active and removes its metadata",
+		Short: "Delete a session (ends Live processes; removes Live or Ended records)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := commandAPIClient(cmd, lookup)
@@ -322,6 +299,15 @@ func validateOutput(output string) error {
 	}
 }
 
+func validateSessionStatus(status string) error {
+	switch status {
+	case "", "live", "ended":
+		return nil
+	default:
+		return fmt.Errorf("invalid session status %q: want live or ended", status)
+	}
+}
+
 func writeRawJSON(cmd *cobra.Command, body []byte) error {
 	if _, err := cmd.OutOrStdout().Write(body); err != nil {
 		return err
@@ -354,7 +340,6 @@ func writeSessionDetailText(cmd *cobra.Command, s api.SessionDetail) error {
 	fmt.Fprintf(out, "action\t%s\n", action)
 	fmt.Fprintf(out, "environment\t%s\n", s.Environment)
 	fmt.Fprintf(out, "workingDir\t%s\n", s.WorkingDir)
-	fmt.Fprintf(out, "attachable\t%t\n", s.Attachable)
 	if s.Workspace != nil {
 		fmt.Fprintf(out, "workspace\t%s\n", s.Workspace.ID)
 		fmt.Fprintf(out, "workspaceName\t%s\n", s.Workspace.Name)
@@ -372,18 +357,6 @@ func writeSessionDetailText(cmd *cobra.Command, s api.SessionDetail) error {
 	fmt.Fprintf(out, "params\t%s\n", params)
 	fmt.Fprintf(out, "createdAt\t%s\n", s.CreatedAt)
 	fmt.Fprintf(out, "updatedAt\t%s\n", s.UpdatedAt)
-	if s.TerminatedAt != nil {
-		fmt.Fprintf(out, "terminatedAt\t%s\n", *s.TerminatedAt)
-	}
-	if s.ArchivedAt != nil {
-		fmt.Fprintf(out, "archivedAt\t%s\n", *s.ArchivedAt)
-	}
-	if s.FailureCode != "" {
-		fmt.Fprintf(out, "failureCode\t%s\n", s.FailureCode)
-	}
-	if s.FailureReason != "" {
-		fmt.Fprintf(out, "failureReason\t%s\n", s.FailureReason)
-	}
 	return nil
 }
 

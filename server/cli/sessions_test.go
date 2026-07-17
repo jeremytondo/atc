@@ -36,7 +36,7 @@ func TestSessionsStartPostsWorkspaceShape(t *testing.T) {
 		if !ok || params["model"] != "gpt-5-codex" {
 			t.Fatalf("params = %#v, want model param", req["params"])
 		}
-		_, _ = w.Write([]byte(`{"id":"ses_123","action":"codex","environment":"host-login-shell","params":{"model":"gpt-5-codex"},"workingDir":"/repo","prompt":"review","status":"running","attachable":true,"createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z","workspace":{"id":"wsp_123","name":"Review"}}`))
+		_, _ = w.Write([]byte(`{"id":"ses_123","action":"codex","environment":"host-login-shell","params":{"model":"gpt-5-codex"},"workingDir":"/repo","prompt":"review","status":"live","createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z","workspace":{"id":"wsp_123","name":"Review"}}`))
 	})
 
 	cmd := sessionsCommand(lookup)
@@ -47,7 +47,7 @@ func TestSessionsStartPostsWorkspaceShape(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
-	if got := out.String(); got != "ses_123\trunning\n" {
+	if got := out.String(); got != "ses_123\tlive\n" {
 		t.Fatalf("output = %q, want id and status", got)
 	}
 }
@@ -69,7 +69,7 @@ func TestSessionsStartWithoutActionOmitsActionAndParams(t *testing.T) {
 		if _, ok := req["params"]; ok {
 			t.Fatalf("request = %#v, want no params", req)
 		}
-		_, _ = w.Write([]byte(`{"id":"ses_123","environment":"host-login-shell","params":{},"workingDir":"/repo","status":"running","attachable":true,"createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z","workspace":{"id":"wsp_123","name":"Shell"}}`))
+		_, _ = w.Write([]byte(`{"id":"ses_123","environment":"host-login-shell","params":{},"workingDir":"/repo","status":"live","createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z","workspace":{"id":"wsp_123","name":"Shell"}}`))
 	})
 
 	cmd := sessionsCommand(lookup)
@@ -80,7 +80,7 @@ func TestSessionsStartWithoutActionOmitsActionAndParams(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
-	if got := out.String(); got != "ses_123\trunning\n" {
+	if got := out.String(); got != "ses_123\tlive\n" {
 		t.Fatalf("output = %q, want id and status", got)
 	}
 }
@@ -97,16 +97,16 @@ func TestSessionsStartRequiresWorkspace(t *testing.T) {
 
 func TestSessionsListJSONUsesQuery(t *testing.T) {
 	lookup := testRuntimeLookup(t)
-	body := `{"sessions":[{"id":"ses_123","action":"codex","environment":"host-login-shell","workingDir":"/repo","status":"running","attachable":true,"createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z"}]}`
+	body := `{"sessions":[{"id":"ses_123","action":"codex","environment":"host-login-shell","workingDir":"/repo","status":"live","createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z"}]}`
 	serveUnixAPI(t, lookup, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/sessions" {
 			t.Fatalf("request = %s %s, want GET /api/sessions", r.Method, r.URL.Path)
 		}
-		if got := r.URL.Query().Get("status"); got != "running" {
-			t.Fatalf("status query = %q, want running", got)
+		if got := r.URL.Query().Get("status"); got != "live" {
+			t.Fatalf("status query = %q, want live", got)
 		}
-		if got := r.URL.Query().Get("includeArchived"); got != "true" {
-			t.Fatalf("includeArchived query = %q, want true", got)
+		if got := r.URL.Query().Get("includeArchived"); got != "" {
+			t.Fatalf("includeArchived query = %q, want absent", got)
 		}
 		_, _ = w.Write([]byte(body))
 	})
@@ -114,7 +114,7 @@ func TestSessionsListJSONUsesQuery(t *testing.T) {
 	cmd := sessionsCommand(lookup)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"list", "--status", "running", "--include-archived", "-o", "json"})
+	cmd.SetArgs([]string{"list", "--status", "live", "-o", "json"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute returned error: %v", err)
@@ -130,7 +130,7 @@ func TestSessionsShowTextIncludesFullDetail(t *testing.T) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/sessions/ses_show" {
 			t.Fatalf("request = %s %s, want GET /api/sessions/ses_show", r.Method, r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"id":"ses_show","name":"Review","action":"codex","environment":"host-login-shell","params":{"model":"gpt-5-codex"},"workingDir":"/repo","prompt":"review","status":"running","attachable":true,"createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z"}`))
+		_, _ = w.Write([]byte(`{"id":"ses_show","name":"Review","action":"codex","environment":"host-login-shell","params":{"model":"gpt-5-codex"},"workingDir":"/repo","prompt":"review","status":"live","createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z"}`))
 	})
 
 	cmd := sessionsCommand(lookup)
@@ -174,24 +174,6 @@ func TestSessionActionsPostResourceRoutes(t *testing.T) {
 			path:     "/api/sessions/ses_123/send-key",
 			wantBody: `{"key":"enter"}`,
 		},
-		{
-			name:     "terminate",
-			args:     []string{"terminate", "ses_123"},
-			path:     "/api/sessions/ses_123/terminate",
-			wantBody: `{}`,
-		},
-		{
-			name:     "archive",
-			args:     []string{"archive", "ses_123"},
-			path:     "/api/sessions/ses_123/archive",
-			wantBody: `{}`,
-		},
-		{
-			name:     "unarchive",
-			args:     []string{"unarchive", "ses_123"},
-			path:     "/api/sessions/ses_123/unarchive",
-			wantBody: `{}`,
-		},
 	}
 
 	for _, tt := range tests {
@@ -223,6 +205,18 @@ func TestSessionActionsPostResourceRoutes(t *testing.T) {
 				t.Fatalf("output = %q, want affected id", got)
 			}
 		})
+	}
+}
+
+func TestRemovedSessionCommandsAndFlagsAreRejected(t *testing.T) {
+	for _, args := range [][]string{{"terminate", "ses_123"}, {"archive", "ses_123"}, {"unarchive", "ses_123"}, {"list", "--include-archived"}, {"list", "--status", "starting"}} {
+		cmd := sessionsCommand(testRuntimeLookup(t))
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err == nil {
+			t.Fatalf("Execute(%v) succeeded", args)
+		}
 	}
 }
 
