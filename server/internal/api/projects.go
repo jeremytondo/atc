@@ -148,18 +148,13 @@ func (routes apiRoutes) listProjectSessions(w http.ResponseWriter, r *http.Reque
 	if !routes.requireProjects(w) || !routes.requireSessions(w) {
 		return
 	}
-	includeArchived, err := boolQuery(r, "includeArchived")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
 	got, err := routes.projects.Get(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeProjectError(w, err)
 		return
 	}
 	statusFilter := session.Status(r.URL.Query().Get("status"))
-	sessions, err := routes.sessions.List(r.Context(), includeArchived, statusFilter, session.ListScope{ProjectID: got.ID})
+	sessions, err := routes.sessions.List(r.Context(), statusFilter, session.ListScope{ProjectID: got.ID})
 	if err != nil {
 		writeSessionError(w, err)
 		return

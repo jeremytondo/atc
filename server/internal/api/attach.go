@@ -259,7 +259,7 @@ func decodeResizeMessage(data []byte) (uint16, uint16, bool) {
 }
 
 func closeAttachError(conn *websocket.Conn, err error) {
-	if errors.Is(err, session.ErrSessionNotFound) || errors.Is(err, session.ErrSessionNotLive) {
+	if errors.Is(err, session.ErrSessionNotFound) || errors.Is(err, session.ErrSessionEnded) {
 		closeSessionEnded(conn)
 		return
 	}

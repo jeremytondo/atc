@@ -259,6 +259,38 @@ is still changing. If a local development database fails to migrate after
 pulling schema changes, delete the configured state DB and let atc recreate
 it.
 
+### Development reset
+
+The Session lifecycle schema is intentionally a breaking pre-production
+change. Reset one local instance with explicit, resolved names and paths:
+
+1. Stop that instance (`go run ./cmd/atc stop`, or stop its foreground
+   process).
+2. Resolve its database path using the normal precedence: `ATC_DB_PATH`, then
+   `[store].db_path` in the selected config, then
+   `$XDG_STATE_HOME/atc/atc.db` (or `$HOME/.local/state/atc/atc.db`). For
+   example, after resolving it, record the exact path as
+   `resolved_db=/Users/alice/.local/state/atc/atc.db`.
+3. Enumerate the ZMX sessions owned by this database. A record's ZMX name is
+   derived deterministically from its session id (`atc-` plus the first 32
+   hex characters of the id's SHA-256), so the selected database is the
+   source of truth:
+
+   ```sh
+   sqlite3 "$resolved_db" 'SELECT id FROM sessions;' | while IFS= read -r id; do
+     printf 'atc-%.32s\n' "$(printf '%s' "$id" | shasum -a 256 | cut -c1-64)"
+   done
+   ```
+
+   Run `zmx kill <name>` for each printed name. Any other name in
+   `zmx list` — including other `atc-` names — belongs to a different ATC
+   instance; leave it alone.
+4. Verify the database variable is the exact file from step 2, then remove
+   only that file: `test "$resolved_db" = "/Users/alice/.local/state/atc/atc.db" && rm -- "$resolved_db"`.
+5. Restart the server. It creates the current schema from scratch.
+
+Do not use recursive deletion or broad `atc-*` globs for this reset.
+
 The config file applies to background mode too: `atc start` forwards an explicit `--config` path to the detached service so it resolves the same file.
 
 Actions are managed in `actions.json` beside `atc.toml` by default, or at
@@ -388,18 +420,17 @@ it:
 ```sh
 go run ./cmd/atc actions list
 go run ./cmd/atc environments list
-go run ./cmd/atc sessions start --action codex --env host-login-shell --dir .
+go run ./cmd/atc sessions start --workspace <id> --action codex --env host-login-shell
 go run ./cmd/atc sessions list
 go run ./cmd/atc sessions show <id>
 go run ./cmd/atc sessions attach <id>
 go run ./cmd/atc sessions send-text <id> "hello"
 go run ./cmd/atc sessions send-key <id> enter
-go run ./cmd/atc sessions terminate <id>
-go run ./cmd/atc sessions archive <id>
+go run ./cmd/atc sessions delete <id>
 ```
 
 Discovery, start, list, and show commands accept `--output json` for scripting.
-If `--dir` is omitted, `sessions start` uses the current working directory.
+Sessions always inherit the referenced Workspace's Project working directory.
 The current named keys for `sessions send-key` are `enter`, `ctrl-c`, and
 `escape`.
 
@@ -455,21 +486,21 @@ go run ./cmd/atc sessions start --help
 go run ./cmd/atc sessions send-text --help
 ```
 
-Projects name a workstation directory and group sessions. Create one, start a
-session in it (the session inherits the project's directory), and list its
-sessions:
+Projects name a workstation directory; Workspaces group Sessions inside it.
+Create both, start a Session (which inherits the Project directory), and list
+it:
 
 ```sh
 go run ./cmd/atc projects create --name "atc" --dir ~/Projects/atc
-go run ./cmd/atc sessions start --action claude --project <id>
-go run ./cmd/atc sessions list --project <id>
+go run ./cmd/atc workspaces create --project <project-id> --name "Feature"
+go run ./cmd/atc sessions start --action claude --workspace <workspace-id>
+go run ./cmd/atc sessions list --workspace <workspace-id>
 ```
 
-Projects are renamed with `projects rename` and archived (never deleted) with
-`projects archive`/`projects unarchive`; archived projects cannot start new
-sessions, and a project with a starting or running session cannot be archived
-(the API returns 409 `project_has_active_sessions`). The same operations are
-available over the API under `/api/projects`.
+Projects and Workspaces retain their existing archive behavior. A Workspace
+with a provisional launch attempt or Live Session cannot be archived; Ended
+Sessions do not block it. Session Delete is the sole user-requested Session
+lifecycle action.
 
 ## Tests
 

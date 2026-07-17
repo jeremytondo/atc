@@ -12,13 +12,13 @@ use for these concepts.
 **Session**:
 A persistent wrapper around a zmx session, created from an Action or the
 server-selected Interactive Shell in a Workspace working directory, then living
-independently of the atc service. atc starts it,
-injects input, and can re-attach to it later; it does not own its foreground
-process. Its atc identity is independent of its multiplexer handle. Chosen
+independently of the atc service. Its public lifecycle is Live or Ended; the
+provisional Launch Attempt used during startup is not a Session. atc starts it,
+injects input, and can re-attach while it is Live. Its atc identity is
+independent of its multiplexer handle. Chosen
 over "Run"/"Agent Run" deliberately, despite "session" being the underlying zmx
-term. Archive hides a stopped Session while retaining its metadata and is
-reversible through unarchive; delete stops it when necessary and removes only
-atc metadata.
+term. Delete ends a Live process when necessary and removes its atc record;
+there is no Session archive lifecycle.
 _Avoid_: terminal, tab, pane, job, task, run, agent run.
 
 **Action**:
@@ -28,6 +28,12 @@ placement, and optional typed params. An Action is either a general Action or
 an Agent Action; its type is fixed when it is created. A custom Action cannot
 be deleted while it has active Sessions.
 _Avoid_: raw command, arbitrary command, harness.
+
+**Launch Attempt**:
+The internal provisional record created immediately before zmx launch. It
+protects launch/deletion races and is either promoted to a Live Session or
+deleted. It is never returned by Session APIs.
+_Avoid_: starting Session, pending Session.
 
 **Agent Action**:
 An Action typed to launch an Agent. It may later declare Agent integration
@@ -84,8 +90,8 @@ An atc-owned task context within one Project. In the initial version, a
 Workspace uses the Project Working Directory, owns its Sessions, persists after
 they end, and may be archived only when it has no active Sessions. Its name is
 user-owned, renameable, and need not be unique. Deleting a Workspace never
-changes its working directory or other filesystem state, but stops and deletes
-all of its associated Sessions only after every stop succeeds. Archive is
+changes its working directory or other filesystem state, but ends and deletes
+all of its associated Sessions only after every end succeeds. Archive is
 reversible through unarchive.
 _Avoid_: checkout, worktree, disposable session group
 

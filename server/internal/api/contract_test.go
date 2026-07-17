@@ -50,7 +50,6 @@ var responseTypes = map[string]func() any{
 	"sessions-list":      func() any { return &SessionListResponse{} },
 	"session-start":      func() any { return &SessionDetail{} },
 	"session-detail":     func() any { return &SessionDetail{} },
-	"session-unarchive":  func() any { return &SessionDetail{} },
 	"session-delete":     func() any { return &struct{}{} },
 	"session-send-text":  func() any { return &struct{}{} },
 	"session-send-key":   func() any { return &struct{}{} },

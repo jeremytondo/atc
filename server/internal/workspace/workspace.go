@@ -29,12 +29,12 @@ var (
 	// archived workspace.
 	ErrWorkspaceArchived = errors.New("workspace is archived")
 	// ErrWorkspaceHasActiveSessions is returned when an archive or delete is
-	// rejected because the workspace still has a starting or running session.
+	// rejected because the workspace still has a provisional or Live record.
 	ErrWorkspaceHasActiveSessions = errors.New("workspace has active sessions")
-	// ErrSessionStopFailed is returned when a delete aborts because one of the
-	// workspace's active sessions could not be stopped. No metadata has been
+	// ErrSessionEndFailed is returned when a delete aborts because one of the
+	// workspace's active sessions could not be ended. No metadata has been
 	// deleted when it is returned.
-	ErrSessionStopFailed = errors.New("session stop failed")
+	ErrSessionEndFailed = errors.New("session end failed")
 )
 
 // Workspace is atc's domain model for a workspace. Name is renameable; a
@@ -48,12 +48,12 @@ type Workspace struct {
 	ArchivedAt *time.Time
 }
 
-// SessionStopper is the slice of the session service that workspace deletion
-// depends on: stopping one active session. It is an interface so the domain
+// SessionEnder is the slice of the session service that workspace deletion
+// depends on: ending one active record. It is an interface so the domain
 // can be tested with a fake, and so this package never imports the session
 // package (which imports this one for start resolution).
-type SessionStopper interface {
-	Terminate(ctx context.Context, id string) error
+type SessionEnder interface {
+	End(ctx context.Context, id string) error
 }
 
 // Service implements workspace operations on top of durable metadata.
@@ -139,7 +139,7 @@ func (s *Service) Rename(ctx context.Context, id, name string) (Workspace, error
 
 // Archive hides a workspace from default lists and blocks new session starts.
 // Archiving an archived workspace is a no-op returning the current record. A
-// workspace with a starting or running session cannot be archived.
+// workspace with a provisional or Live record cannot be archived.
 func (s *Service) Archive(ctx context.Context, id string) (Workspace, error) {
 	record, err := s.store.ArchiveWorkspace(ctx, id)
 	if err != nil {
@@ -159,28 +159,28 @@ func (s *Service) Unarchive(ctx context.Context, id string) (Workspace, error) {
 	return domainWorkspace(record), nil
 }
 
-// Delete removes a workspace and its session metadata, stopping active
-// sessions first. Deletion deliberately has no intermediate state: the first
-// stop failure aborts the whole delete with ErrSessionStopFailed and no
-// metadata has been deleted (stops already performed are not rolled back;
-// stopping is safe to repeat). The store's final transaction re-checks for
+// Delete removes a workspace and its session metadata, ending active sessions
+// first. Deletion deliberately has no intermediate state: the first end failure
+// aborts the whole delete with ErrSessionEndFailed and no metadata has been
+// deleted (ends already performed are not rolled back; ending is safe to
+// repeat). The store's final transaction re-checks for
 // active sessions, so a session start that slips in concurrently fails the
 // delete with ErrWorkspaceHasActiveSessions and the user retries. Files are
 // never touched.
-func (s *Service) Delete(ctx context.Context, id string, stopper SessionStopper) error {
+func (s *Service) Delete(ctx context.Context, id string, ender SessionEnder) error {
 	if _, err := s.store.GetWorkspace(ctx, id); err != nil {
 		return translateStoreErr(err)
 	}
-	sessions, err := s.store.List(ctx, store.ListFilter{WorkspaceID: id, IncludeArchived: true})
+	sessions, err := s.store.ListAll(ctx, store.ListFilter{WorkspaceID: id})
 	if err != nil {
 		return translateStoreErr(err)
 	}
 	for _, record := range sessions {
-		if record.Status != store.StatusStarting && record.Status != store.StatusRunning {
+		if record.Status != store.StatusStarting && record.Status != store.StatusLive {
 			continue
 		}
-		if err := stopper.Terminate(ctx, record.ID); err != nil {
-			return fmt.Errorf("%w: session %s: %v", ErrSessionStopFailed, record.ID, err)
+		if err := ender.End(ctx, record.ID); err != nil {
+			return fmt.Errorf("%w: session %s: %v", ErrSessionEndFailed, record.ID, err)
 		}
 	}
 	if err := s.store.DeleteWorkspace(ctx, id); err != nil {

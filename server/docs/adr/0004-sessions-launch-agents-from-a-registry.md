@@ -2,6 +2,10 @@
 
 > **Terminology note (2026-07):** This ADR predates the atc rename. "atc" is now the atc server (`atc`), and `atc.toml` is now `atc.toml`.
 
+> **Lifecycle amendment (2026-07):** Sessions now expose only `live | ended`.
+> Provisional launch attempts and Session archive behavior mentioned below are
+> no longer part of the public Session model; failed launches leave no Session.
+
 Supersedes [ADR 0003](0003-sessions-run-arbitrary-commands.md).
 
 ADR 0004 is intentionally edited in place as a living record for the launch

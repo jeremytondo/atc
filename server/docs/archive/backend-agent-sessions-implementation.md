@@ -1,4 +1,10 @@
 > Archived: superseded by `docs/plans/sessions-actions-environments.md` and `docs/specs/sessions-actions-environments.md`.
+>
+> **Lifecycle amendment (2026-07):** this plan predates the live/ended
+> Session lifecycle (ATC-29). `MarkRunning`/`MarkTerminated` became
+> `PromoteToLive`/`MarkEnded`, and `MarkFailed`/`MarkArchived` were removed:
+> failed launches leave no Session and archiving no longer exists. The text
+> below is preserved as originally written.
 
 # Backend Agent Sessions — implementation playbook
 

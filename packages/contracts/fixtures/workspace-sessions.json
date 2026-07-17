@@ -10,8 +10,7 @@
         "action": "claude",
         "environment": "zsh",
         "workingDir": "/home/dev/projects/atelier",
-        "status": "running",
-        "attachable": true,
+        "status": "live",
         "createdAt": "2026-07-09T12:34:56.789Z",
         "updatedAt": "2026-07-09T12:35:00Z",
         "workspace": {

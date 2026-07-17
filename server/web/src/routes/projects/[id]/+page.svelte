@@ -15,6 +15,7 @@
     archiveWorkspace,
     unarchiveWorkspace,
     deleteWorkspace,
+    deleteSession,
     listWorkspaceSessions,
     sessionActionLabel,
     messageFromError,
@@ -35,8 +36,8 @@
   let error = $state('');
   let busy = $state(false);
   let busyWorkspaceId = $state('');
-  let includeArchived = $state(false);
   let includeArchivedWorkspaces = $state(false);
+  let busySessionId = $state('');
 
   let renameOpen = $state(false);
   let saving = $state(false);
@@ -54,10 +55,8 @@
     return (
       (
         {
-          running: 'var(--dc-green)',
-          starting: 'var(--dc-amber)',
-          terminated: 'var(--dc-dim)',
-          failed: 'var(--dc-red)'
+          live: 'var(--dc-green)',
+          ended: 'var(--dc-dim)'
         } as Record<string, string>
       )[status] ?? 'var(--dc-dim)'
     );
@@ -77,7 +76,7 @@
   }
 
   async function loadSessions() {
-    sessions = await listProjectSessions(projectId, { includeArchived });
+    sessions = await listProjectSessions(projectId);
   }
 
   async function loadWorkspaces() {
@@ -98,11 +97,6 @@
     } finally {
       loading = false;
     }
-  }
-
-  function toggleArchivedSessions() {
-    includeArchived = !includeArchived;
-    void loadSessions().catch((e) => (error = messageFromError(e)));
   }
 
   function toggleArchivedWorkspaces() {
@@ -229,8 +223,8 @@
       // message rather than blocking the delete.
       let sessionNote = 'Its session history is removed';
       try {
-        const affected = await listWorkspaceSessions(ws.id, { includeArchived: true });
-        sessionNote = `${affected.length} session${affected.length === 1 ? '' : 's'} will be stopped and removed`;
+        const affected = await listWorkspaceSessions(ws.id);
+        sessionNote = `${affected.length} session${affected.length === 1 ? '' : 's'} will be ended if Live and removed`;
       } catch {
         // Deliberately non-fatal: the confirmation still states the effect.
       }
@@ -245,6 +239,28 @@
       error = messageFromError(e);
     } finally {
       busyWorkspaceId = '';
+    }
+  }
+
+  async function removeSession(s: SessionListItem) {
+    // One deletion at a time: overlapping requests would fight over
+    // busySessionId and could reload the list out of order.
+    if (busySessionId) return;
+    const label = s.name?.trim() || s.id;
+    const effect =
+      s.status === 'live'
+        ? 'The running process will end and the session record will be removed.'
+        : 'The session record will be permanently removed.';
+    if (!confirm(`Delete session "${label}"?\n\n${effect} Files on disk are not touched.`)) return;
+    busySessionId = s.id;
+    error = '';
+    try {
+      await deleteSession(s.id);
+      await loadSessions();
+    } catch (e) {
+      error = messageFromError(e);
+    } finally {
+      busySessionId = '';
     }
   }
 
@@ -372,15 +388,7 @@
       </div>
     {/if}
 
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-      <div class="seclabel" style="margin:0">Sessions</div>
-      <label
-        style="display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--dc-mut);cursor:pointer"
-      >
-        <input type="checkbox" checked={includeArchived} onchange={toggleArchivedSessions} />
-        Show archived
-      </label>
-    </div>
+    <div class="seclabel">Sessions</div>
     {#if sessions.length === 0}
       <div class="card" style="padding:20px;text-align:center;color:var(--dc-mut);font-size:13px">
         No sessions in this project yet. Open a workspace to start one.
@@ -410,7 +418,12 @@
               <span class="badge" style="color:var(--dc-dim)">{s.status}</span>
               <span class="stime">{timeAgo(s.createdAt)}</span>
               <div class="iacts">
-                <a class="btn xs" href={`/sessions/${encodeURIComponent(s.id)}`}>Open</a>
+                {#if s.status === 'live'}
+                  <a class="btn xs" href={`/sessions/${encodeURIComponent(s.id)}`}>Open</a>
+                {/if}
+                <button class="btn xs" onclick={() => removeSession(s)} disabled={busySessionId !== ''}
+                  >Delete</button
+                >
               </div>
             </div>
           </div>

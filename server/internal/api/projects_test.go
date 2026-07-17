@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -313,25 +314,19 @@ func TestListProjectSessions(t *testing.T) {
 		t.Fatalf("project sessions = %+v, want only scoped session", list.Sessions)
 	}
 
-	// Terminate and archive the scoped session: hidden by default, shown with
-	// includeArchived, and the status filter applies.
-	rec = do(t, h, http.MethodPost, "/sessions/"+scoped.ID+"/terminate", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("terminate status = %d (%s)", rec.Code, rec.Body)
-	}
-	rec = do(t, h, http.MethodPost, "/sessions/"+scoped.ID+"/archive", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("archive status = %d (%s)", rec.Code, rec.Body)
+	// Ended sessions remain in default scoped lists and can be filtered.
+	if _, err := st.MarkEnded(context.Background(), scoped.ID); err != nil {
+		t.Fatalf("MarkEnded: %v", err)
 	}
 	rec = do(t, h, http.MethodGet, "/projects/"+created.ID+"/sessions", "")
-	var hidden SessionListResponse
-	if err := json.NewDecoder(rec.Body).Decode(&hidden); err != nil {
-		t.Fatalf("decode hidden: %v", err)
+	var all SessionListResponse
+	if err := json.NewDecoder(rec.Body).Decode(&all); err != nil {
+		t.Fatalf("decode all: %v", err)
 	}
-	if len(hidden.Sessions) != 0 {
-		t.Fatalf("default project sessions = %+v, want archived hidden", hidden.Sessions)
+	if len(all.Sessions) != 1 || all.Sessions[0].Status != "ended" {
+		t.Fatalf("default project sessions = %+v", all.Sessions)
 	}
-	rec = do(t, h, http.MethodGet, "/projects/"+created.ID+"/sessions?includeArchived=true&status=terminated", "")
+	rec = do(t, h, http.MethodGet, "/projects/"+created.ID+"/sessions?status=ended", "")
 	var full SessionListResponse
 	if err := json.NewDecoder(rec.Body).Decode(&full); err != nil {
 		t.Fatalf("decode full: %v", err)

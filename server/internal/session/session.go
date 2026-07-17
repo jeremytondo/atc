@@ -19,26 +19,25 @@ import (
 )
 
 const (
-	// CodeLaunchFailed is stored and returned when the multiplexer launch fails
-	// after a durable session record exists.
+	// CodeLaunchFailed is returned when the multiplexer launch fails after a
+	// provisional record exists.
 	CodeLaunchFailed = "launch_failed"
-	// CodeActionRemoved is stored and returned when the action was deleted
+	// CodeActionRemoved is returned when the action was deleted
 	// between command resolution and launch.
 	CodeActionRemoved = "action_removed"
 
-	launchFailedReason      = "action failed to launch"
-	startupIncompleteReason = "session startup did not complete"
-	actionRemovedReason     = "action was removed while the session was starting"
+	launchFailedReason  = "action failed to launch"
+	actionRemovedReason = "action was removed while the session was starting"
 )
 
-// Status is the persisted lifecycle state for a session.
-type Status = store.Status
+// Status is the closed public lifecycle vocabulary for Sessions. It is
+// intentionally separate from store.RecordStatus so provisional records
+// cannot accidentally serialize through the API.
+type Status string
 
 const (
-	StatusStarting   = store.StatusStarting
-	StatusRunning    = store.StatusRunning
-	StatusFailed     = store.StatusFailed
-	StatusTerminated = store.StatusTerminated
+	StatusLive  Status = "live"
+	StatusEnded Status = "ended"
 )
 
 // Sentinel errors let callers (notably the API) map failures to stable status
@@ -46,8 +45,7 @@ const (
 var (
 	ErrUnknownKey      = errors.New("unknown key")
 	ErrSessionNotFound = errors.New("session not found")
-	ErrSessionNotLive  = errors.New("session is not live")
-	ErrSessionLive     = errors.New("session is live")
+	ErrSessionEnded    = errors.New("session ended")
 	ErrInvalidStatus   = store.ErrInvalidStatus
 	// ErrInvalidWorkingDir is the project package's working-directory rule
 	// (absolute, exists, is a directory), re-exported so session callers keep
@@ -56,14 +54,22 @@ var (
 	ErrInvalidWorkingDir = project.ErrInvalidWorkingDir
 )
 
-// LaunchError is returned when zmx launch fails after atc has already
-// created the starting record. Error returns the safe user-facing reason; Err is
-// kept only for logging and wrapping.
+// EndedError identifies the stale Session involved in an interaction while
+// preserving ErrSessionEnded for errors.Is checks.
+type EndedError struct {
+	SessionID string
+}
+
+func (e *EndedError) Error() string { return fmt.Sprintf("%s: %s", ErrSessionEnded, e.SessionID) }
+func (e *EndedError) Unwrap() error { return ErrSessionEnded }
+
+// LaunchError is returned when startup fails after atc creates a provisional
+// record. The provisional record is removed before this error is returned.
 type LaunchError struct {
-	SessionID   string
-	FailureCode string
-	Message     string
-	Err         error
+	SessionID string
+	Code      string
+	Message   string
+	Err       error
 }
 
 func (e *LaunchError) Error() string {
@@ -97,24 +103,19 @@ type Session struct {
 	ID   string
 	Name string
 	// Action is the launch action name; empty means the Interactive Shell.
-	Action        string
-	Environment   string
-	Params        map[string]any
-	WorkingDir    string
-	Prompt        string
-	Status        Status
-	FailureReason string
-	FailureCode   string
-	WorkspaceID   string
-	Workspace     *WorkspaceRef
+	Action      string
+	Environment string
+	Params      map[string]any
+	WorkingDir  string
+	Prompt      string
+	Status      Status
+	WorkspaceID string
+	Workspace   *WorkspaceRef
 	// Project is the derived project reference, reached through the
 	// workspace, kept so clients that group sessions by project keep working.
-	Project      *ProjectRef
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	TerminatedAt *time.Time
-	ArchivedAt   *time.Time
-	Attachable   bool
+	Project   *ProjectRef
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // WorkspaceRef is the workspace slice carried on sessions.
@@ -257,47 +258,59 @@ func (s *Service) Start(ctx context.Context, input StartInput) (Session, error) 
 	s.logger.Info("starting session", "id", record.ID, "zmx_name", name, "dir", workingDir, "action", input.Action, "environment", environmentName)
 	if err := s.mux.Start(ctx, name, workingDir, argv); err != nil {
 		s.logger.Error("session launch failed", "id", record.ID, "zmx_name", name, "action", input.Action, "environment", environmentName, "err", err)
-		failed, markErr := s.store.MarkFailed(ctx, record.ID, launchFailedReason, CodeLaunchFailed)
-		if errors.Is(markErr, store.ErrSessionNotStarting) || errors.Is(markErr, store.ErrSessionNotFound) {
-			// The record was terminated or deleted while starting; the launch
-			// failed anyway, so there is nothing live to clean up.
-			return Session{}, &LaunchError{
-				SessionID:   record.ID,
-				FailureCode: CodeLaunchFailed,
-				Message:     launchFailedReason,
-				Err:         err,
-			}
-		}
-		if markErr != nil {
-			return Session{}, fmt.Errorf("record launch failure for session %s: %w", record.ID, markErr)
+		if deleteErr := s.store.DeleteStarting(ctx, record.ID); deleteErr != nil &&
+			!errors.Is(deleteErr, store.ErrSessionNotStarting) && !errors.Is(deleteErr, store.ErrSessionNotFound) {
+			return Session{}, fmt.Errorf("remove failed launch attempt %s: %w", record.ID, deleteErr)
 		}
 		return Session{}, &LaunchError{
-			SessionID:   failed.ID,
-			FailureCode: failed.FailureCode,
-			Message:     failed.FailureReason,
-			Err:         err,
+			SessionID: record.ID,
+			Code:      CodeLaunchFailed,
+			Message:   launchFailedReason,
+			Err:       err,
 		}
 	}
 
-	running, err := s.store.MarkRunning(ctx, record.ID)
-	if errors.Is(err, store.ErrSessionNotStarting) || errors.Is(err, store.ErrSessionNotFound) {
-		// A Terminate or Delete settled the record while this launch was in
-		// flight; the launch must not outlive that decision.
-		if termErr := s.mux.Terminate(ctx, name); termErr != nil {
-			s.logger.Error("terminate for settled starting session failed", "id", record.ID, "zmx_name", name, "err", termErr)
+	live, err := s.store.PromoteToLive(ctx, record.ID)
+	switch {
+	case errors.Is(err, store.ErrSessionNotStarting):
+		// The provisional record settled concurrently. Startup reconciliation
+		// may have promoted it after seeing the process alive; that Live
+		// record is this launch's outcome and the process must keep running.
+		if settled, getErr := s.store.Get(ctx, record.ID); getErr == nil && settled.Status == store.StatusLive {
+			return domainSession(settled)
 		}
-		return Session{}, fmt.Errorf("%w: %s: session was terminated while starting", ErrSessionNotLive, record.ID)
-	}
-	if err != nil {
+		fallthrough
+	case errors.Is(err, store.ErrSessionNotFound):
+		// Workspace deletion removed the provisional record while this launch
+		// was in flight; the process must not outlive that decision.
+		s.terminateAbandonedLaunch(ctx, record.ID, name)
+		return Session{}, fmt.Errorf("%w: %s", ErrSessionNotFound, record.ID)
+	case err != nil:
+		// The process launched but the promotion write failed. The caller
+		// receives a failure, so neither the process nor the provisional
+		// record may survive it.
+		s.terminateAbandonedLaunch(ctx, record.ID, name)
+		if deleteErr := s.store.DeleteStarting(ctx, record.ID); deleteErr != nil &&
+			!errors.Is(deleteErr, store.ErrSessionNotStarting) && !errors.Is(deleteErr, store.ErrSessionNotFound) {
+			s.logger.Error("remove unpromoted launch attempt failed", "id", record.ID, "err", deleteErr)
+		}
 		return Session{}, translateStoreErr(err)
 	}
-	return domainSession(running, true)
+	return domainSession(live)
 }
 
-// requireActionStillExists re-resolves an action after the starting row is
-// durable and settles the record as failed when the action was deleted in the
-// window between command resolution and the insert. Any recheck failure
-// settles the record so no row is left starting with no launch in flight.
+// terminateAbandonedLaunch stops a process whose launch will be reported as
+// failed. Termination failure is logged only: the record-side outcome is
+// already decided and reconciliation removes stragglers at next startup.
+func (s *Service) terminateAbandonedLaunch(ctx context.Context, id, name string) {
+	if err := s.mux.Terminate(ctx, name); err != nil {
+		s.logger.Error("terminate abandoned launch failed", "id", id, "zmx_name", name, "err", err)
+	}
+}
+
+// requireActionStillExists re-resolves an action after the provisional row is
+// durable. Any recheck failure removes that row so no abandoned launch attempt
+// remains visible to internal lifecycle logic.
 func (s *Service) requireActionStillExists(ctx context.Context, sessionID, actionName string) error {
 	registry, loadErr := s.actions.Load(ctx)
 	if loadErr == nil {
@@ -307,15 +320,13 @@ func (s *Service) requireActionStillExists(ctx context.Context, sessionID, actio
 	}
 	reason, code := actionRemovedReason, CodeActionRemoved
 	if loadErr != nil {
-		reason, code = startupIncompleteReason, CodeLaunchFailed
+		reason, code = launchFailedReason, CodeLaunchFailed
 	}
-	if _, markErr := s.store.MarkFailed(ctx, sessionID, reason, code); markErr != nil && !errors.Is(markErr, store.ErrSessionNotStarting) {
-		return fmt.Errorf("record startup failure for session %s: %w", sessionID, markErr)
+	if deleteErr := s.store.DeleteStarting(ctx, sessionID); deleteErr != nil &&
+		!errors.Is(deleteErr, store.ErrSessionNotStarting) && !errors.Is(deleteErr, store.ErrSessionNotFound) {
+		return fmt.Errorf("remove abandoned launch attempt %s: %w", sessionID, deleteErr)
 	}
-	if loadErr != nil {
-		return loadErr
-	}
-	return fmt.Errorf("%w %q: removed while the session was starting", ErrUnknownAction, actionName)
+	return &LaunchError{SessionID: sessionID, Code: code, Message: reason, Err: loadErr}
 }
 
 // resolveStartDir resolves the referenced workspace to its project's working
@@ -339,17 +350,15 @@ type ListScope struct {
 	ProjectID   string
 }
 
-// List returns persisted sessions newest-first, reconciling running-session
-// liveness when the multiplexer can be queried. Starting records are owned by
-// the in-flight Start call and are never resolved by read paths.
-func (s *Service) List(ctx context.Context, includeArchived bool, statusFilter Status, scope ListScope) ([]Session, error) {
+// List returns public Sessions newest-first, reconciling live records when the
+// multiplexer can be queried. Provisional records are excluded by the store.
+func (s *Service) List(ctx context.Context, statusFilter Status, scope ListScope) ([]Session, error) {
 	if statusFilter != "" && !validStatus(statusFilter) {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidStatus, statusFilter)
 	}
 	records, err := s.store.List(ctx, store.ListFilter{
-		IncludeArchived: includeArchived,
-		WorkspaceID:     scope.WorkspaceID,
-		ProjectID:       scope.ProjectID,
+		WorkspaceID: scope.WorkspaceID,
+		ProjectID:   scope.ProjectID,
 	})
 	if err != nil {
 		return nil, translateStoreErr(err)
@@ -358,18 +367,20 @@ func (s *Service) List(ctx context.Context, includeArchived bool, statusFilter S
 	live, ok := s.liveNameSet(ctx)
 	sessions := make([]Session, 0, len(records))
 	for _, record := range records {
-		liveForRecord := false
 		if ok {
-			var err error
-			record, liveForRecord, err = s.reconcileReadRecord(ctx, record, live)
+			record, err = s.reconcileReadRecord(ctx, record, live)
 			if err != nil {
 				return nil, err
 			}
 		}
-		if statusFilter != "" && record.Status != statusFilter {
+		publicStatus, err := publicStatus(record.Status)
+		if err != nil {
+			return nil, err
+		}
+		if statusFilter != "" && publicStatus != statusFilter {
 			continue
 		}
-		session, err := domainSession(record, liveForRecord)
+		session, err := domainSession(record)
 		if err != nil {
 			return nil, err
 		}
@@ -378,24 +389,25 @@ func (s *Service) List(ctx context.Context, includeArchived bool, statusFilter S
 	return sessions, nil
 }
 
-// Read loads one session by id and reconciles running-session liveness when it
-// is available. Starting records are reported as starting until Start settles
-// them.
+// Read loads a public Session and reconciles live liveness when available.
+// Provisional records behave as not found.
 func (s *Service) Read(ctx context.Context, id string) (Session, error) {
 	record, err := s.store.Get(ctx, id)
 	if err != nil {
 		return Session{}, translateStoreErr(err)
 	}
 
+	if record.Status == store.StatusStarting {
+		return Session{}, fmt.Errorf("%w: %s", ErrSessionNotFound, id)
+	}
 	live, ok := s.liveNameSet(ctx)
-	liveForRecord := false
 	if ok {
-		record, liveForRecord, err = s.reconcileReadRecord(ctx, record, live)
+		record, err = s.reconcileReadRecord(ctx, record, live)
 		if err != nil {
 			return Session{}, err
 		}
 	}
-	return domainSession(record, liveForRecord)
+	return domainSession(record)
 }
 
 // SendText injects text into a live session verbatim, without submitting it.
@@ -430,8 +442,8 @@ func (s *Service) SendKey(ctx context.Context, id, keyName string) error {
 	return nil
 }
 
-// EnsureAttachable verifies that id currently names a live attachable session
-// without spawning an attach client.
+// EnsureAttachable verifies that id currently names a Live Session without
+// spawning an attach client.
 func (s *Service) EnsureAttachable(ctx context.Context, id string) error {
 	_, err := s.requireLive(ctx, id)
 	return err
@@ -447,97 +459,31 @@ func (s *Service) Attach(ctx context.Context, id string, rows, cols uint16) (zmx
 	return s.mux.Attach(ctx, zmx.NameForID(record.ID), rows, cols)
 }
 
-// Terminate requests the multiplexer stop any live terminal for id and records
-// the terminal as no longer reachable. It is idempotent for settled non-live
-// records and settles active (starting or running) records; an in-flight
-// Start that loses its record to a Terminate detects that through the
-// starting-only MarkRunning transition and tears down its own launch.
-func (s *Service) Terminate(ctx context.Context, id string) (Session, error) {
-	record, err := s.store.Get(ctx, id)
-	if err != nil {
-		return Session{}, translateStoreErr(err)
-	}
-	if record.Status == StatusFailed || record.Status == StatusTerminated {
-		return domainSession(record, false)
-	}
-
-	live, err := s.isLive(ctx, id)
-	if err != nil {
-		return Session{}, err
-	}
-	if live {
-		name := zmx.NameForID(id)
-		if err := s.mux.Terminate(ctx, name); err != nil {
-			s.logger.Error("session terminate failed", "id", id, "zmx_name", name, "err", err)
-			return Session{}, err
-		}
-	}
-
-	record, err = s.store.MarkTerminated(ctx, id)
-	if err != nil {
-		return Session{}, translateStoreErr(err)
-	}
-	return domainSession(record, false)
-}
-
-// Archive hides settled non-live sessions from default lists without changing
-// status.
-func (s *Service) Archive(ctx context.Context, id string) (Session, error) {
-	record, err := s.store.Get(ctx, id)
-	if err != nil {
-		return Session{}, translateStoreErr(err)
-	}
-	if record.ArchivedAt != nil {
-		return domainSession(record, false)
-	}
-	if record.Status == StatusStarting {
-		return Session{}, fmt.Errorf("%w: %s", ErrSessionNotLive, id)
-	}
-
-	live, err := s.isLive(ctx, id)
-	if err != nil {
-		return Session{}, err
-	}
-	if live {
-		return Session{}, fmt.Errorf("%w: %s", ErrSessionLive, id)
-	}
-
-	if record.Status == StatusRunning {
-		record, err = s.store.MarkTerminated(ctx, id)
-		if err != nil {
-			return Session{}, translateStoreErr(err)
-		}
-	}
-
-	archived, err := s.store.MarkArchived(ctx, id)
-	if err != nil {
-		return Session{}, translateStoreErr(err)
-	}
-	return domainSession(archived, false)
-}
-
-// Unarchive returns an archived session to default lists, mirroring project
-// unarchive semantics: it clears archivedAt and is a no-op for an unarchived
-// session.
-func (s *Service) Unarchive(ctx context.Context, id string) (Session, error) {
-	record, err := s.store.MarkUnarchived(ctx, id)
-	if err != nil {
-		return Session{}, translateStoreErr(err)
-	}
-	return domainSession(record, false)
-}
-
-// Delete removes a session's metadata. An active session is terminated
-// first; a stop failure aborts the delete with the metadata intact. Files
-// are never touched.
+// Delete is the sole public lifecycle action. A Live process is ended and
+// marked ended before its record is removed; an ended record is removed
+// directly. Provisional records behave as not found.
 func (s *Service) Delete(ctx context.Context, id string) error {
 	record, err := s.store.Get(ctx, id)
 	if err != nil {
 		return translateStoreErr(err)
 	}
-	if record.Status == StatusStarting || record.Status == StatusRunning {
-		if _, err := s.Terminate(ctx, id); err != nil {
+	if record.Status == store.StatusStarting {
+		return fmt.Errorf("%w: %s", ErrSessionNotFound, id)
+	}
+	if record.Status == store.StatusLive {
+		isLive, err := s.isLive(ctx, id)
+		if err != nil {
 			return err
+		}
+		if isLive {
+			name := zmx.NameForID(id)
+			if err := s.mux.Terminate(ctx, name); err != nil {
+				s.logger.Error("session terminate during delete failed", "id", id, "zmx_name", name, "err", err)
+				return err
+			}
+		}
+		if _, err := s.store.MarkEnded(ctx, id); err != nil {
+			return translateStoreErr(err)
 		}
 	}
 	if err := s.store.DeleteSession(ctx, id); err != nil {
@@ -547,10 +493,52 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// Reconcile performs the startup pass over starting/running records. A
+// End stops an active record for internal workspace deletion. It is not a
+// public lifecycle operation.
+func (s *Service) End(ctx context.Context, id string) error {
+	for {
+		record, err := s.store.Get(ctx, id)
+		if errors.Is(err, store.ErrSessionNotFound) {
+			// A concurrent delete already removed the record; the
+			// postcondition (no active session) holds.
+			return nil
+		}
+		if err != nil {
+			return translateStoreErr(err)
+		}
+		if record.Status == store.StatusEnded {
+			return nil
+		}
+		isLive, err := s.isLive(ctx, id)
+		if err != nil {
+			return err
+		}
+		if isLive {
+			name := zmx.NameForID(id)
+			if err := s.mux.Terminate(ctx, name); err != nil {
+				s.logger.Error("session end failed", "id", id, "zmx_name", name, "err", err)
+				return err
+			}
+		}
+		if record.Status == store.StatusStarting {
+			err := s.store.DeleteStarting(ctx, id)
+			if errors.Is(err, store.ErrSessionNotStarting) {
+				continue
+			}
+			if errors.Is(err, store.ErrSessionNotFound) {
+				return nil
+			}
+			return err
+		}
+		_, err = s.store.MarkEnded(ctx, id)
+		return translateStoreErr(err)
+	}
+}
+
+// Reconcile performs the startup pass over provisional/live records. A
 // multiplexer liveness failure is logged and leaves stored state untouched.
 func (s *Service) Reconcile(ctx context.Context) error {
-	records, err := s.store.List(ctx, store.ListFilter{})
+	records, err := s.store.ListAll(ctx, store.ListFilter{})
 	if err != nil {
 		return translateStoreErr(err)
 	}
@@ -559,7 +547,7 @@ func (s *Service) Reconcile(ctx context.Context) error {
 		return nil
 	}
 	for _, record := range records {
-		if _, _, err := s.reconcileStartupRecord(ctx, record, live); err != nil {
+		if err := s.reconcileStartupRecord(ctx, record, live); err != nil {
 			return err
 		}
 	}
@@ -571,11 +559,11 @@ func (s *Service) requireLive(ctx context.Context, id string) (store.Session, er
 	if err != nil {
 		return store.Session{}, translateStoreErr(err)
 	}
-	if record.ArchivedAt != nil || record.Status == StatusFailed || record.Status == StatusTerminated {
-		return store.Session{}, fmt.Errorf("%w: %s", ErrSessionNotLive, id)
+	if record.Status == store.StatusStarting {
+		return store.Session{}, fmt.Errorf("%w: %s", ErrSessionNotFound, id)
 	}
-	if record.Status == StatusStarting {
-		return store.Session{}, fmt.Errorf("%w: %s", ErrSessionNotLive, id)
+	if record.Status == store.StatusEnded {
+		return store.Session{}, &EndedError{SessionID: id}
 	}
 
 	live, err := s.isLive(ctx, id)
@@ -583,62 +571,49 @@ func (s *Service) requireLive(ctx context.Context, id string) (store.Session, er
 		return store.Session{}, err
 	}
 	if !live {
-		if record.Status == StatusRunning {
-			if _, err := s.store.MarkTerminated(ctx, id); err != nil {
-				return store.Session{}, translateStoreErr(err)
-			}
+		if _, err := s.store.MarkEnded(ctx, id); err != nil {
+			return store.Session{}, translateStoreErr(err)
 		}
-		return store.Session{}, fmt.Errorf("%w: %s", ErrSessionNotLive, id)
-	}
-	if record.Status != StatusRunning {
-		return store.Session{}, fmt.Errorf("%w: %s", ErrSessionNotLive, id)
+		return store.Session{}, &EndedError{SessionID: id}
 	}
 	return record, nil
 }
 
-func (s *Service) reconcileReadRecord(ctx context.Context, record store.Session, live map[string]bool) (store.Session, bool, error) {
-	if record.ArchivedAt != nil {
-		return record, false, nil
-	}
-	if record.Status != StatusRunning {
-		return record, false, nil
+func (s *Service) reconcileReadRecord(ctx context.Context, record store.Session, live map[string]bool) (store.Session, error) {
+	if record.Status != store.StatusLive {
+		return record, nil
 	}
 	if live[zmx.NameForID(record.ID)] {
-		return record, true, nil
+		return record, nil
 	}
-	record, err := s.store.MarkTerminated(ctx, record.ID)
+	record, err := s.store.MarkEnded(ctx, record.ID)
 	if err != nil {
-		return store.Session{}, false, translateStoreErr(err)
+		return store.Session{}, translateStoreErr(err)
 	}
-	return record, false, nil
+	return record, nil
 }
 
-func (s *Service) reconcileStartupRecord(ctx context.Context, record store.Session, live map[string]bool) (store.Session, bool, error) {
-	return s.reconcileStartupLiveness(ctx, record, live[zmx.NameForID(record.ID)])
-}
-
-func (s *Service) reconcileStartupLiveness(ctx context.Context, record store.Session, isLive bool) (store.Session, bool, error) {
-	if record.ArchivedAt != nil {
-		return record, false, nil
-	}
-
-	var err error
+func (s *Service) reconcileStartupRecord(ctx context.Context, record store.Session, live map[string]bool) error {
+	isLive := live[zmx.NameForID(record.ID)]
 	switch record.Status {
-	case StatusStarting:
+	case store.StatusStarting:
 		if isLive {
-			record, err = s.store.MarkRunning(ctx, record.ID)
+			_, err := s.store.PromoteToLive(ctx, record.ID)
+			return translateStoreErr(err)
 		} else {
-			record, err = s.store.MarkFailed(ctx, record.ID, startupIncompleteReason, CodeLaunchFailed)
+			err := s.store.DeleteStarting(ctx, record.ID)
+			if errors.Is(err, store.ErrSessionNotFound) {
+				return nil
+			}
+			return err
 		}
-	case StatusRunning:
+	case store.StatusLive:
 		if !isLive {
-			record, err = s.store.MarkTerminated(ctx, record.ID)
+			_, err := s.store.MarkEnded(ctx, record.ID)
+			return translateStoreErr(err)
 		}
 	}
-	if err != nil {
-		return store.Session{}, false, translateStoreErr(err)
-	}
-	return record, record.Status == StatusRunning && isLive, nil
+	return nil
 }
 
 func (s *Service) isLive(ctx context.Context, id string) (bool, error) {
@@ -670,7 +645,7 @@ func (s *Service) liveNames(ctx context.Context) (map[string]bool, error) {
 	return live, nil
 }
 
-func domainSession(record store.Session, live bool) (Session, error) {
+func domainSession(record store.Session) (Session, error) {
 	params := map[string]any{}
 	if len(record.Params) > 0 {
 		if err := json.Unmarshal(record.Params, &params); err != nil {
@@ -685,26 +660,36 @@ func domainSession(record store.Session, live bool) (Session, error) {
 	if record.Project != nil {
 		projectRef = &ProjectRef{ID: record.Project.ID, Name: record.Project.Name}
 	}
+	status, err := publicStatus(record.Status)
+	if err != nil {
+		return Session{}, err
+	}
 	return Session{
-		ID:            record.ID,
-		Name:          record.Name,
-		Action:        record.Action,
-		Environment:   record.Environment,
-		Params:        params,
-		WorkingDir:    record.WorkingDir,
-		Prompt:        record.Prompt,
-		Status:        record.Status,
-		FailureReason: record.FailureReason,
-		FailureCode:   record.FailureCode,
-		WorkspaceID:   record.WorkspaceID,
-		Workspace:     workspaceRef,
-		Project:       projectRef,
-		CreatedAt:     record.CreatedAt,
-		UpdatedAt:     record.UpdatedAt,
-		TerminatedAt:  record.TerminatedAt,
-		ArchivedAt:    record.ArchivedAt,
-		Attachable:    live && record.Status == StatusRunning && record.ArchivedAt == nil,
+		ID:          record.ID,
+		Name:        record.Name,
+		Action:      record.Action,
+		Environment: record.Environment,
+		Params:      params,
+		WorkingDir:  record.WorkingDir,
+		Prompt:      record.Prompt,
+		Status:      status,
+		WorkspaceID: record.WorkspaceID,
+		Workspace:   workspaceRef,
+		Project:     projectRef,
+		CreatedAt:   record.CreatedAt,
+		UpdatedAt:   record.UpdatedAt,
 	}, nil
+}
+
+func publicStatus(status store.RecordStatus) (Status, error) {
+	switch status {
+	case store.StatusLive:
+		return StatusLive, nil
+	case store.StatusEnded:
+		return StatusEnded, nil
+	default:
+		return "", fmt.Errorf("provisional session cannot be exposed: %s", status)
+	}
 }
 
 func marshalParams(params map[string]any) (json.RawMessage, error) {
@@ -722,8 +707,6 @@ func translateStoreErr(err error) error {
 	switch {
 	case errors.Is(err, store.ErrSessionNotFound):
 		return fmt.Errorf("%w: %v", ErrSessionNotFound, err)
-	case errors.Is(err, store.ErrSessionActive):
-		return fmt.Errorf("%w: %v", ErrSessionLive, err)
 	// The store's guarded session insert reports the workspace state it saw;
 	// re-home those on the workspace sentinels the API layer maps.
 	case errors.Is(err, store.ErrWorkspaceNotFound):
@@ -736,7 +719,7 @@ func translateStoreErr(err error) error {
 
 func validStatus(status Status) bool {
 	switch status {
-	case StatusStarting, StatusRunning, StatusFailed, StatusTerminated:
+	case StatusLive, StatusEnded:
 		return true
 	default:
 		return false

@@ -2,9 +2,6 @@
   import { onMount } from 'svelte';
   import {
     listSessions,
-    terminateSession,
-    archiveSession,
-    unarchiveSession,
     deleteSession,
     sessionActionLabel,
     messageFromError,
@@ -16,24 +13,19 @@
   let loading = $state(false);
   let error = $state('');
   let busyId = $state('');
-  let includeArchived = $state(false);
 
-  const ORDER = ['running', 'starting', 'failed', 'terminated'];
-  const LABELS: Record<string, string> = {
-    running: 'Running',
-    starting: 'Starting',
-    failed: 'Failed',
-    terminated: 'Terminated'
+  const ORDER: SessionListItem['status'][] = ['live', 'ended'];
+  const LABELS: Record<SessionListItem['status'], string> = {
+    live: 'Live',
+    ended: 'Ended'
   };
 
   function dotColor(status: string) {
     return (
       (
         {
-          running: 'var(--dc-green)',
-          starting: 'var(--dc-amber)',
-          terminated: 'var(--dc-dim)',
-          failed: 'var(--dc-red)'
+          live: 'var(--dc-green)',
+          ended: 'var(--dc-dim)'
         } as Record<string, string>
       )[status] ?? 'var(--dc-dim)'
     );
@@ -69,7 +61,7 @@
     loading = true;
     error = '';
     try {
-      sessions = await listSessions({ includeArchived });
+      sessions = await listSessions();
     } catch (e) {
       error = messageFromError(e);
     } finally {
@@ -77,56 +69,17 @@
     }
   }
 
-  function toggleArchived() {
-    includeArchived = !includeArchived;
-    void load();
-  }
-
-  async function stop(id: string) {
-    busyId = id;
-    error = '';
-    try {
-      await terminateSession(id);
-      await load();
-    } catch (e) {
-      error = messageFromError(e);
-    } finally {
-      busyId = '';
-    }
-  }
-
-  async function archive(id: string) {
-    busyId = id;
-    error = '';
-    try {
-      await archiveSession(id);
-      await load();
-    } catch (e) {
-      error = messageFromError(e);
-    } finally {
-      busyId = '';
-    }
-  }
-
-  async function unarchive(id: string) {
-    busyId = id;
-    error = '';
-    try {
-      await unarchiveSession(id);
-      await load();
-    } catch (e) {
-      error = messageFromError(e);
-    } finally {
-      busyId = '';
-    }
-  }
-
   async function remove(s: SessionListItem) {
+    // One deletion at a time: overlapping requests would fight over busyId
+    // and could reload the list out of order.
+    if (busyId) return;
     const label = s.name?.trim() || s.id;
+    const effect =
+      s.status === 'live'
+        ? 'The running process will end and the session record will be removed.'
+        : 'The session record will be permanently removed.';
     const ok = confirm(
-      `Delete session "${label}"?\n\n` +
-        `The session is stopped if it is still running and its record is removed. ` +
-        `Files on disk are not touched.`
+      `Delete session "${label}"?\n\n${effect} Files on disk are not touched.`
     );
     if (!ok) return;
     busyId = s.id;
@@ -159,13 +112,6 @@
   <p class="lede" style="margin-bottom:16px">
     Persistent terminals on this machine — including ones you start from the docs console.
   </p>
-
-  <label
-    style="display:flex;align-items:center;gap:7px;margin-bottom:16px;font-size:12.5px;color:var(--dc-mut);cursor:pointer"
-  >
-    <input type="checkbox" checked={includeArchived} onchange={toggleArchived} />
-    Show archived
-  </label>
 
   <ErrorBanner message={error} />
 
@@ -216,25 +162,10 @@
             <span class="badge" style="color:var(--dc-dim)">{s.environment}</span>
             <span class="stime">{timeAgo(s.createdAt)}</span>
             <div class="iacts">
-              {#if s.attachable}
+              {#if s.status === 'live'}
                 <a class="btn xs" href={`/sessions/${encodeURIComponent(s.id)}`}>Open</a>
               {/if}
-              {#if s.status === 'running'}
-                <button class="btn xs" onclick={() => stop(s.id)} disabled={busyId === s.id}
-                  >Stop</button
-                >
-              {/if}
-              {#if (s.status === 'failed' || s.status === 'terminated') && !s.archivedAt}
-                <button class="btn xs" onclick={() => archive(s.id)} disabled={busyId === s.id}
-                  >Archive</button
-                >
-              {/if}
-              {#if s.archivedAt}
-                <button class="btn xs" onclick={() => unarchive(s.id)} disabled={busyId === s.id}
-                  >Unarchive</button
-                >
-              {/if}
-              <button class="btn xs" onclick={() => remove(s)} disabled={busyId === s.id}
+              <button class="btn xs" onclick={() => remove(s)} disabled={busyId !== ''}
                 >Delete</button
               >
             </div>

@@ -239,7 +239,7 @@ func TestDeleteWorkspaceStopsSessionsAndRemovesMetadata(t *testing.T) {
 		t.Fatalf("delete status = %d, want 200 (%s)", rec.Code, rec.Body)
 	}
 	if mux.lastTerminate != zmx.NameForID("ses_active") {
-		t.Fatalf("terminate = %q, want active session stopped", mux.lastTerminate)
+		t.Fatalf("terminate = %q, want Live Session ended", mux.lastTerminate)
 	}
 	if _, err := st.GetWorkspace(context.Background(), testWorkspaceID); !errors.Is(err, store.ErrWorkspaceNotFound) {
 		t.Fatalf("workspace survived delete: %v", err)
@@ -255,7 +255,7 @@ func TestDeleteWorkspaceStopsSessionsAndRemovesMetadata(t *testing.T) {
 	assertErrorCode(t, rec, "workspace_not_found")
 }
 
-func TestDeleteWorkspaceStopFailureReturns502AndKeepsMetadata(t *testing.T) {
+func TestDeleteWorkspaceEndFailureReturns502AndKeepsMetadata(t *testing.T) {
 	mux := &fakeMux{terminateErr: errors.New("zmx kill failed")}
 	h, st := newHandler(t, mux)
 	seedRunning(t, st, "ses_stuck", "Stuck")
@@ -265,7 +265,7 @@ func TestDeleteWorkspaceStopFailureReturns502AndKeepsMetadata(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("delete status = %d, want 502 (%s)", rec.Code, rec.Body)
 	}
-	assertErrorCode(t, rec, "session_stop_failed")
+	assertErrorCode(t, rec, "session_end_failed")
 	if _, err := st.GetWorkspace(context.Background(), testWorkspaceID); err != nil {
 		t.Fatalf("workspace lost after aborted delete: %v", err)
 	}
@@ -302,29 +302,16 @@ func TestListWorkspaceSessions(t *testing.T) {
 		t.Fatalf("workspace ref = %+v", list.Sessions[0].Workspace)
 	}
 
-	// Archived sessions hide by default and show with includeArchived.
-	rec = do(t, h, http.MethodPost, "/sessions/ses_scoped/terminate", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("terminate status = %d (%s)", rec.Code, rec.Body)
-	}
-	rec = do(t, h, http.MethodPost, "/sessions/ses_scoped/archive", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("archive status = %d (%s)", rec.Code, rec.Body)
+	// Ended sessions remain in the default workspace list.
+	if _, err := st.MarkEnded(context.Background(), "ses_scoped"); err != nil {
+		t.Fatalf("MarkEnded: %v", err)
 	}
 	rec = do(t, h, http.MethodGet, "/workspaces/"+testWorkspaceID+"/sessions", "")
-	var hidden SessionListResponse
-	if err := json.NewDecoder(rec.Body).Decode(&hidden); err != nil {
-		t.Fatalf("decode hidden: %v", err)
-	}
-	if len(hidden.Sessions) != 0 {
-		t.Fatalf("default workspace sessions = %+v, want archived hidden", hidden.Sessions)
-	}
-	rec = do(t, h, http.MethodGet, "/workspaces/"+testWorkspaceID+"/sessions?includeArchived=true", "")
 	var full SessionListResponse
 	if err := json.NewDecoder(rec.Body).Decode(&full); err != nil {
 		t.Fatalf("decode full: %v", err)
 	}
-	if len(full.Sessions) != 1 || full.Sessions[0].ID != "ses_scoped" {
+	if len(full.Sessions) != 1 || full.Sessions[0].ID != "ses_scoped" || full.Sessions[0].Status != "ended" {
 		t.Fatalf("full workspace sessions = %+v", full.Sessions)
 	}
 

@@ -21,8 +21,8 @@ var (
 	ErrDuplicate      = errors.New("action already exists")
 	ErrBuiltinRemoval = errors.New("built-in action cannot be removed")
 	ErrInvalidAction  = errors.New("invalid action")
-	// ErrActionInUse is returned when a delete is rejected because a starting
-	// or running session still references the action.
+	// ErrActionInUse is returned when a delete is rejected because a provisional
+	// or Live record still references the action.
 	ErrActionInUse = errors.New("action is in use by an active session")
 )
 
@@ -76,7 +76,7 @@ type Discovery struct {
 	Origin Origin
 }
 
-// ActiveSessionCounter reports how many starting or running sessions
+// ActiveSessionCounter reports how many provisional or Live session records
 // reference an action name, so deletion can be guarded.
 type ActiveSessionCounter interface {
 	CountActiveSessionsForAction(ctx context.Context, action string) (int, error)
@@ -207,7 +207,7 @@ func (s *Store) Update(ctx context.Context, name string, action session.Action) 
 
 // Delete removes a file entry. Deleting a file-backed override of a built-in
 // reverts to the built-in and is always allowed; deleting a custom action is
-// rejected while any starting or running session references it; deleting a
+// rejected while any provisional or Live session record references it; deleting a
 // bare built-in is rejected.
 func (s *Store) Delete(ctx context.Context, name string) error {
 	if err := validateName(name); err != nil {
@@ -224,7 +224,7 @@ func (s *Store) Delete(ctx context.Context, name string) error {
 	if _, ok := fileActions[name]; ok {
 		if _, isBuiltin := s.defaults[name]; !isBuiltin {
 			// Only true removal is guarded; reverting an override keeps the
-			// built-in launchable, so running sessions are unaffected.
+			// built-in launchable, so Live Sessions are unaffected.
 			if err := s.requireActionUnused(ctx, name); err != nil {
 				return err
 			}
