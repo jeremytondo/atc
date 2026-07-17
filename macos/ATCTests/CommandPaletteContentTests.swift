@@ -133,6 +133,40 @@ struct CommandPaletteContentTests {
         #expect(projected.compactMap(\.sessionRow).isEmpty)
     }
 
+    @Test("an unmatched query with live candidates has no per-bucket rows")
+    func unmatchedQueryIsEntirelyEmpty() async throws {
+        let fixture = try await makeLiveFixture()
+        #expect(results(query: "zzz no such result", fixture: fixture).isEmpty)
+    }
+
+    @Test("an unreachable Connection keeps Sessions selectable but not Workspaces")
+    func sessionsIgnoreReachability() async throws {
+        let client = ScriptableClient()
+        let model = AppModel.preview(client: client)
+        await model.refreshAll()
+        let state = WindowState.ephemeral()
+        let connectionID = try #require(model.runtimes.first?.id)
+        #expect(state.activateWorkspace(
+            WorkspaceRef(connectionID: connectionID, workspaceID: "wsp_parser"),
+            in: model
+        ))
+        let runtime = try #require(model.runtime(id: connectionID))
+        runtime.stopPolling()
+        client.shouldFail = true
+        await runtime.refresh()
+        #expect(runtime.reachability == .unreachable)
+
+        let fixture = makeFixture(appModel: model, windowState: state)
+        let projected = results(query: "parser", fixture: fixture)
+        let workspaceRows = projected.compactMap(\.workspaceRow)
+        #expect(!workspaceRows.isEmpty)
+        #expect(workspaceRows.allSatisfy { !$0.availability.isAvailable })
+        #expect(!projected.compactMap(\.sessionRow).isEmpty)
+        #expect(projected.compactMap(\.sessionRow).allSatisfy {
+            $0.title == "Fix the parser"
+        })
+    }
+
     private func makeFixture(
         config: String = "",
         appModel: AppModel? = nil,

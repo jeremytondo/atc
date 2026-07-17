@@ -54,9 +54,10 @@ struct CommandPaletteView: View {
             },
             fallback: { windowState.requestTerminalFocus() }
         ))
+        .onAppear { resetSelection(for: rows) }
         .onChange(of: query) {
+            resetSelection(for: rows)
             let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-            selectedID = trimmed.isEmpty ? nil : rows.first?.id
             if !trimmed.isEmpty, rows.isEmpty {
                 AccessibilityNotification.Announcement("No matching results").post()
             }
@@ -310,6 +311,14 @@ struct CommandPaletteView: View {
 
     private func dismissPalette() {
         windowState.isCommandPalettePresented = false
+    }
+
+    /// The one selection rule: first row for a nonempty query, none for an
+    /// empty one. Applied on appearance too, so a palette hosted with a
+    /// prefilled query starts with a live selection.
+    private func resetSelection(for rows: [PaletteResult]) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        selectedID = trimmed.isEmpty ? nil : rows.first?.id
     }
 
     private func moveSelection(
