@@ -1,0 +1,858 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ATC Toolbar Simplification — Design Exploration</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --page: #101114;
+      --page-elevated: #17191e;
+      --card: rgba(255, 255, 255, 0.045);
+      --card-hover: rgba(255, 255, 255, 0.075);
+      --stroke: rgba(255, 255, 255, 0.105);
+      --stroke-strong: rgba(255, 255, 255, 0.18);
+      --text: #f1f2f4;
+      --muted: #9a9da5;
+      --faint: #676a73;
+      --blue: #0a84ff;
+      --blue-soft: rgba(10, 132, 255, 0.18);
+      --green: #32d74b;
+      --terminal: #0c0d10;
+      --toolbar: rgba(31, 33, 39, 0.98);
+      --sidebar: #191b20;
+      --popover: #24262d;
+      --inspector: #1b1d22;
+      --shadow: 0 24px 80px rgba(0, 0, 0, 0.46);
+      --radius: 13px;
+    }
+
+    body.light {
+      color-scheme: light;
+      --page: #f0f1f4;
+      --page-elevated: #ffffff;
+      --card: rgba(0, 0, 0, 0.035);
+      --card-hover: rgba(0, 0, 0, 0.06);
+      --stroke: rgba(0, 0, 0, 0.1);
+      --stroke-strong: rgba(0, 0, 0, 0.17);
+      --text: #202126;
+      --muted: #696c74;
+      --faint: #9699a0;
+      --blue: #007aff;
+      --blue-soft: rgba(0, 122, 255, 0.12);
+      --green: #22a33a;
+      --terminal: #fbfbfc;
+      --toolbar: rgba(244, 244, 246, 0.98);
+      --sidebar: #eceef2;
+      --popover: #ffffff;
+      --inspector: #f5f5f7;
+      --shadow: 0 24px 80px rgba(46, 48, 56, 0.22);
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      min-width: 900px;
+      background:
+        radial-gradient(circle at 15% -5%, rgba(10, 132, 255, 0.11), transparent 30rem),
+        radial-gradient(circle at 85% 0%, rgba(126, 87, 255, 0.09), transparent 26rem),
+        var(--page);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    button { font: inherit; }
+
+    .page {
+      width: min(1460px, calc(100vw - 64px));
+      margin: 0 auto;
+      padding: 48px 0 72px;
+    }
+
+    .eyebrow {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .issue-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--blue);
+      box-shadow: 0 0 0 4px var(--blue-soft);
+    }
+
+    .intro {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 32px;
+      margin-bottom: 34px;
+    }
+
+    h1 {
+      margin: 0;
+      max-width: 760px;
+      font-size: clamp(34px, 4vw, 58px);
+      line-height: 0.98;
+      letter-spacing: -0.046em;
+    }
+
+    .intro-copy {
+      max-width: 460px;
+      margin: 0 0 4px;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.55;
+    }
+
+    .option-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-bottom: 22px;
+    }
+
+    .option-card {
+      position: relative;
+      min-height: 164px;
+      padding: 20px;
+      border: 1px solid var(--stroke);
+      border-radius: 16px;
+      background: var(--card);
+      color: inherit;
+      text-align: left;
+      cursor: pointer;
+      transition: 160ms ease;
+    }
+
+    .option-card:hover { background: var(--card-hover); transform: translateY(-1px); }
+    .option-card.active {
+      border-color: color-mix(in srgb, var(--blue) 72%, transparent);
+      background: var(--blue-soft);
+      box-shadow: inset 0 0 0 1px rgba(10, 132, 255, 0.15);
+    }
+
+    .option-number {
+      display: inline-grid;
+      place-items: center;
+      width: 27px;
+      height: 27px;
+      margin-bottom: 17px;
+      border: 1px solid var(--stroke-strong);
+      border-radius: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .option-card.active .option-number {
+      border-color: var(--blue);
+      background: var(--blue);
+      color: white;
+    }
+
+    .option-card h2 {
+      margin: 0 0 7px;
+      font-size: 17px;
+      letter-spacing: -0.015em;
+    }
+
+    .option-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .recommendation {
+      position: absolute;
+      top: 18px;
+      right: 18px;
+      padding: 5px 8px;
+      border-radius: 999px;
+      background: rgba(50, 215, 75, 0.12);
+      color: var(--green);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+
+    .playground {
+      overflow: hidden;
+      border: 1px solid var(--stroke);
+      border-radius: 20px;
+      background: var(--page-elevated);
+      box-shadow: var(--shadow);
+    }
+
+    .playground-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 14px 16px 14px 20px;
+      border-bottom: 1px solid var(--stroke);
+    }
+
+    .playground-title {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+    }
+
+    .playground-title strong { font-size: 14px; }
+    .playground-title span { color: var(--muted); font-size: 12px; }
+
+    .controls { display: flex; align-items: center; gap: 8px; }
+
+    .control-group {
+      display: flex;
+      padding: 3px;
+      border: 1px solid var(--stroke);
+      border-radius: 9px;
+      background: var(--card);
+    }
+
+    .control,
+    .theme-button {
+      height: 28px;
+      padding: 0 11px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .control.active { background: var(--stroke-strong); color: var(--text); }
+
+    .theme-button {
+      width: 32px;
+      padding: 0;
+      border: 1px solid var(--stroke);
+      font-size: 14px;
+    }
+
+    .canvas {
+      padding: 38px;
+      background:
+        linear-gradient(135deg, rgba(10, 132, 255, 0.055), transparent 38%),
+        repeating-linear-gradient(0deg, transparent, transparent 31px, rgba(255,255,255,.015) 32px),
+        var(--page);
+    }
+
+    .app-window {
+      position: relative;
+      overflow: hidden;
+      width: 100%;
+      min-height: 580px;
+      border: 1px solid var(--stroke-strong);
+      border-radius: 13px;
+      background: var(--terminal);
+      box-shadow: 0 20px 48px rgba(0, 0, 0, .32);
+    }
+
+    .titlebar {
+      position: relative;
+      z-index: 4;
+      display: grid;
+      align-items: center;
+      grid-template-columns: minmax(155px, 1fr) minmax(400px, 2.25fr) minmax(155px, 1fr);
+      height: 70px;
+      padding: 0 14px;
+      border-bottom: 1px solid var(--stroke);
+      background: var(--toolbar);
+    }
+
+    .titlebar-leading,
+    .titlebar-trailing {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .titlebar-trailing { justify-content: flex-end; }
+
+    .traffic { display: flex; gap: 7px; margin-right: 9px; }
+    .traffic i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+    .traffic i:nth-child(1) { background: #ff5f57; }
+    .traffic i:nth-child(2) { background: #febc2e; }
+    .traffic i:nth-child(3) { background: #28c840; }
+
+    .icon-button {
+      display: inline-grid;
+      place-items: center;
+      flex: 0 0 auto;
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+    }
+
+    .icon-button:hover,
+    .icon-button.active { background: var(--stroke); color: var(--text); }
+    .icon-button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+
+    .toolbar-center {
+      position: relative;
+      display: flex;
+      justify-content: center;
+      min-width: 0;
+    }
+
+    .context-control {
+      border: 1px solid var(--stroke);
+      color: inherit;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .context-control:hover { border-color: var(--stroke-strong); }
+
+    .status-dot {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 14%, transparent);
+    }
+
+    .chevron {
+      width: 7px;
+      height: 7px;
+      border-right: 1.5px solid currentColor;
+      border-bottom: 1.5px solid currentColor;
+      transform: rotate(45deg) translateY(-2px);
+      opacity: .58;
+    }
+
+    .workspace-popover {
+      display: none;
+      position: absolute;
+      z-index: 12;
+      top: 59px;
+      left: 50%;
+      width: 330px;
+      padding: 10px;
+      border: 1px solid var(--stroke-strong);
+      border-radius: 14px;
+      background: var(--popover);
+      box-shadow: 0 18px 55px rgba(0,0,0,.42);
+      transform: translateX(-50%);
+    }
+
+    .workspace-popover.open { display: block; animation: pop 130ms ease-out; }
+    @keyframes pop { from { opacity: 0; transform: translate(-50%, -5px) scale(.98); } }
+
+    .filter {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 34px;
+      padding: 0 10px;
+      margin-bottom: 8px;
+      border: 1px solid var(--stroke);
+      border-radius: 8px;
+      color: var(--faint);
+      font-size: 12px;
+    }
+
+    .menu-heading {
+      padding: 7px 10px 5px;
+      color: var(--faint);
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+    }
+
+    .workspace-row {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      width: 100%;
+      height: 36px;
+      padding: 0 10px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .workspace-row:hover { background: var(--stroke); }
+    .workspace-row.selected { background: var(--blue); color: white; }
+    .workspace-row .check { width: 13px; font-weight: 800; }
+    .workspace-row .row-name { flex: 1; font-size: 13px; font-weight: 600; }
+    .workspace-row .row-project { opacity: .65; font-size: 11px; }
+
+    .body-grid {
+      display: grid;
+      grid-template-columns: 238px minmax(0, 1fr) 0;
+      min-height: 509px;
+      transition: grid-template-columns 180ms ease;
+    }
+
+    .app-window.sidebar-hidden .body-grid { grid-template-columns: 0 minmax(0, 1fr) 0; }
+    .app-window.inspector-open .body-grid { grid-template-columns: 238px minmax(0, 1fr) 284px; }
+    .app-window.sidebar-hidden.inspector-open .body-grid { grid-template-columns: 0 minmax(0, 1fr) 284px; }
+
+    .sidebar,
+    .inspector {
+      overflow: hidden;
+      min-width: 0;
+      background: var(--sidebar);
+    }
+
+    .sidebar { border-right: 1px solid var(--stroke); }
+    .inspector { border-left: 1px solid var(--stroke); background: var(--inspector); }
+
+    .sidebar-content { width: 238px; padding: 16px 12px; }
+    .sidebar-heading { padding: 7px 8px; color: var(--faint); font-size: 10px; font-weight: 700; letter-spacing: .065em; text-transform: uppercase; }
+    .sidebar-row { display: flex; align-items: center; gap: 9px; height: 33px; padding: 0 9px; border-radius: 7px; color: var(--muted); font-size: 12px; }
+    .sidebar-row.selected { background: var(--blue-soft); color: var(--text); }
+    .sidebar-row svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+    .sidebar-row .mini-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); margin-left: auto; }
+
+    .terminal-view {
+      min-width: 0;
+      padding: 26px 28px;
+      background:
+        radial-gradient(circle at 70% 0%, rgba(10,132,255,.035), transparent 26rem),
+        var(--terminal);
+      color: color-mix(in srgb, var(--text) 75%, var(--muted));
+      font: 12px/1.72 ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+    }
+
+    .terminal-view .prompt { color: #7bd88f; }
+    .terminal-view .path { color: #6cb6ff; }
+    .terminal-view .command { color: var(--text); }
+    .terminal-view .dim { color: var(--faint); }
+    .terminal-view .blue { color: #6cb6ff; }
+    .terminal-view .violet { color: #c99bff; }
+    .cursor { display: inline-block; width: 7px; height: 15px; vertical-align: -3px; background: var(--text); opacity: .75; }
+
+    .inspector-content { width: 284px; padding: 20px; }
+    .inspector-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; font-size: 13px; font-weight: 700; }
+    .data-label { margin-top: 16px; color: var(--faint); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+    .data-value { margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.4; word-break: break-all; }
+
+    /* Option A — a two-level, Xcode-inspired context capsule. */
+    .concept-a .xcode-capsule {
+      display: grid;
+      grid-template-columns: minmax(0, 1.45fr) auto;
+      width: min(620px, 100%);
+      min-width: 420px;
+      min-height: 52px;
+      padding: 6px 12px 6px 14px;
+      border-radius: 14px;
+      background: rgba(0, 0, 0, .12);
+    }
+
+    body.light .concept-a .xcode-capsule { background: rgba(255,255,255,.5); }
+    .xcode-main { min-width: 0; padding-right: 14px; }
+    .xcode-top { display: flex; align-items: center; gap: 7px; height: 20px; min-width: 0; font-size: 12px; font-weight: 650; }
+    .xcode-project { color: var(--muted); }
+    .xcode-workspace { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .xcode-session { display: flex; align-items: center; gap: 7px; height: 20px; color: var(--muted); font-size: 11px; min-width: 0; }
+    .xcode-session strong { color: var(--text); font-weight: 580; }
+    .xcode-session .agent { color: #c99bff; }
+    .xcode-session .dir { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .xcode-connection { display: flex; align-items: center; gap: 8px; align-self: stretch; padding-left: 16px; border-left: 1px solid var(--stroke); color: var(--muted); font-size: 11px; white-space: nowrap; }
+
+    /* Option B — all context arranged as discrete, single-line segments. */
+    .concept-b .titlebar { height: 56px; }
+    .concept-b .workspace-popover { top: 47px; }
+    .concept-b .body-grid { min-height: 523px; }
+    .segment-strip { display: flex; align-items: center; width: min(740px, 100%); height: 36px; border-radius: 10px; background: rgba(0,0,0,.1); }
+    body.light .segment-strip { background: rgba(255,255,255,.45); }
+    .segment { display: flex; align-items: center; gap: 7px; min-width: 0; height: 100%; padding: 0 11px; border-right: 1px solid var(--stroke); }
+    .segment:last-child { border-right: 0; }
+    .segment.workspace { flex: 0 1 220px; }
+    .segment.session { flex: 0 1 180px; }
+    .segment.directory { flex: 1 1 260px; color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .segment .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 600; }
+    .segment .subtle { color: var(--muted); font-size: 10px; }
+    .segment.agent-segment { color: #c99bff; }
+    .segment svg { flex: 0 0 auto; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.7; }
+
+    /* Option C — make the active session the window title. */
+    .concept-c .titlebar { grid-template-columns: minmax(250px, 1fr) minmax(280px, 1.1fr) minmax(250px, 1fr); height: 62px; }
+    .concept-c .workspace-popover { top: 40px; left: 0; transform: none; }
+    .concept-c .workspace-popover.open { animation: pop-left 130ms ease-out; }
+    @keyframes pop-left { from { opacity: 0; transform: translateY(-5px) scale(.98); } }
+    .concept-c .body-grid { min-height: 517px; }
+    .compact-workspace {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 235px;
+      height: 32px;
+      padding: 0 10px;
+      border-radius: 8px;
+      background: transparent;
+    }
+    .compact-workspace .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 600; }
+    .session-title { min-width: 0; text-align: center; }
+    .session-title strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 650; }
+    .session-title span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 3px; color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .connection-label { display: flex; align-items: center; gap: 8px; margin-right: 4px; color: var(--muted); font-size: 11px; }
+
+    .concept-note {
+      display: grid;
+      grid-template-columns: 1.1fr 1fr 1fr;
+      gap: 1px;
+      border-top: 1px solid var(--stroke);
+      background: var(--stroke);
+    }
+
+    .note-cell { min-height: 116px; padding: 18px 20px; background: var(--page-elevated); }
+    .note-cell h3 { margin: 0 0 8px; font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .07em; }
+    .note-cell p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+    .principles {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1px;
+      margin-top: 22px;
+      overflow: hidden;
+      border: 1px solid var(--stroke);
+      border-radius: 14px;
+      background: var(--stroke);
+    }
+
+    .principle { padding: 17px 18px; background: var(--page-elevated); }
+    .principle strong { display: block; margin-bottom: 6px; font-size: 12px; }
+    .principle span { color: var(--muted); font-size: 11px; line-height: 1.45; }
+
+    @media (max-width: 1100px) {
+      .intro { align-items: flex-start; flex-direction: column; }
+      .canvas { padding: 22px; }
+      .titlebar { grid-template-columns: 150px minmax(400px, 1fr) 150px; }
+      .principles { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="eyebrow"><span class="issue-dot"></span> ATC-28 · Design exploration</div>
+    <section class="intro">
+      <h1>One toolbar.<br>Three hierarchies.</h1>
+      <p class="intro-copy">
+        Each direction removes the back button, native project/connection subtitle, workspace actions menu, and separate session bar. The same essential context is recomposed into one calmer titlebar.
+      </p>
+    </section>
+
+    <section class="option-grid" aria-label="Toolbar concepts">
+      <button class="option-card active" data-concept="a">
+        <span class="recommendation">Recommended</span>
+        <span class="option-number">01</span>
+        <h2>Xcode Unified</h2>
+        <p>A spacious two-level capsule keeps Workspace selection primary while retaining session context.</p>
+      </button>
+      <button class="option-card" data-concept="b">
+        <span class="option-number">02</span>
+        <h2>Segmented Strip</h2>
+        <p>A dense, scannable row gives Workspace, session, agent, and directory equal treatment.</p>
+      </button>
+      <button class="option-card" data-concept="c">
+        <span class="option-number">03</span>
+        <h2>Session First</h2>
+        <p>The working session becomes the window title; Workspace and Connection recede to the edges.</p>
+      </button>
+    </section>
+
+    <section class="playground">
+      <header class="playground-header">
+        <div class="playground-title">
+          <strong id="playground-name">Option 01 · Xcode Unified</strong>
+          <span>Click the Workspace control and Inspector button</span>
+        </div>
+        <div class="controls">
+          <div class="control-group" aria-label="Session type">
+            <button class="control active" data-mode="agent">Agent session</button>
+            <button class="control" data-mode="terminal">Terminal</button>
+          </div>
+          <button class="theme-button" id="theme-toggle" title="Toggle appearance" aria-label="Toggle appearance">☼</button>
+        </div>
+      </header>
+
+      <div class="canvas">
+        <div class="app-window concept-a" id="app-window">
+          <header class="titlebar" id="titlebar">
+            <div class="titlebar-leading">
+              <div class="traffic" aria-hidden="true"><i></i><i></i><i></i></div>
+              <button class="icon-button sidebar-toggle" title="Toggle sidebar" aria-label="Toggle sidebar">
+                <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+              </button>
+            </div>
+            <div class="toolbar-center">
+              <button class="context-control xcode-capsule workspace-toggle">
+                <span class="xcode-main">
+                  <span class="xcode-top"><span class="xcode-project">ATC</span><span>›</span><span class="xcode-workspace">toolbar-simplification</span><span class="chevron"></span></span>
+                  <span class="xcode-session"><strong>Simplify toolbar</strong><span class="agent">Claude</span><span>·</span><span class="dir">~/Projects/ATC/atc</span></span>
+                </span>
+                <span class="xcode-connection"><span class="status-dot"></span> My Mac</span>
+              </button>
+            </div>
+            <div class="titlebar-trailing">
+              <button class="icon-button inspector-toggle" title="Show session info" aria-label="Show session info">
+                <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
+              </button>
+            </div>
+          </header>
+          <div class="body-grid">
+            <aside class="sidebar">
+              <div class="sidebar-content">
+                <div class="sidebar-heading">Sessions</div>
+                <div class="sidebar-row selected" id="agent-sidebar-row">
+                  <svg viewBox="0 0 24 24"><path d="M8 9h8M9 14h.01M15 14h.01M6 4h12a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/></svg>
+                  <span>Simplify toolbar</span><span class="mini-dot"></span>
+                </div>
+                <div class="sidebar-row">
+                  <svg viewBox="0 0 24 24"><path d="M8 9h8M9 14h.01M15 14h.01M6 4h12a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/></svg>
+                  <span>Fix sidebar focus</span>
+                </div>
+                <div class="sidebar-heading" style="margin-top:14px">Terminals</div>
+                <div class="sidebar-row" id="terminal-sidebar-row">
+                  <svg viewBox="0 0 24 24"><path d="m7 8 4 4-4 4M13 16h4M4 4h16v16H4z"/></svg>
+                  <span>Server</span><span class="mini-dot"></span>
+                </div>
+              </div>
+            </aside>
+            <section class="terminal-view" aria-label="Terminal preview">
+              <div><span class="prompt">➜</span> <span class="path">~/Projects/ATC/atc</span> <span class="command">jj status</span></div>
+              <div class="dim">The working copy has no changes.</div>
+              <div style="height:14px"></div>
+              <div><span class="prompt">➜</span> <span class="path">~/Projects/ATC/atc</span> <span class="command">mise run macos:dev</span></div>
+              <div><span class="blue">Building</span> ATC for debugging…</div>
+              <div><span class="violet">Compiling</span> WorkspaceSwitcher.swift</div>
+              <div class="dim">Linking ATC</div>
+              <div>Build complete! (2.41s)</div>
+              <div style="height:14px"></div>
+              <div><span class="prompt">➜</span> <span class="path">~/Projects/ATC/atc</span> <span class="cursor"></span></div>
+            </section>
+            <aside class="inspector">
+              <div class="inspector-content">
+                <div class="inspector-title">Session Info <span class="status-dot"></span></div>
+                <div class="data-label">Name</div><div class="data-value" id="inspector-session">Simplify toolbar</div>
+                <div class="data-label">Kind</div><div class="data-value" id="inspector-kind">Agent session · Claude</div>
+                <div class="data-label">Directory</div><div class="data-value">/Users/jeremytondo/Projects/ATC/atc</div>
+                <div class="data-label">Connection</div><div class="data-value">My Mac · Connected</div>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </div>
+
+      <div class="concept-note">
+        <div class="note-cell"><h3>Why it works</h3><p id="why-copy">Closest to the issue’s Xcode reference. Two lines create breathing room without reintroducing a separate content bar.</p></div>
+        <div class="note-cell"><h3>Best for</h3><p id="best-copy">Making Workspace selection feel stable and prominent while a session remains active.</p></div>
+        <div class="note-cell"><h3>Watch out for</h3><p id="risk-copy">At 70 pt it is the tallest option; long names need disciplined truncation.</p></div>
+      </div>
+    </section>
+
+    <section class="principles" aria-label="Shared decisions">
+      <div class="principle"><strong>Remove duplication</strong><span>No native project title, connection subtitle, or separate session header.</span></div>
+      <div class="principle"><strong>Keep context</strong><span>Workspace, Project, Connection, session, agent, and directory remain visible.</span></div>
+      <div class="principle"><strong>Move destructive actions</strong><span>Rename and delete stay in navigator context menus—not permanent toolbar chrome.</span></div>
+      <div class="principle"><strong>Keep Inspector stable</strong><span>The trailing sidebar button remains the one persistent contextual action.</span></div>
+    </section>
+  </main>
+
+  <script>
+    const icons = {
+      sidebar: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>',
+      inspector: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>',
+      agent: '<svg viewBox="0 0 24 24"><path d="M8 9h8M9 14h.01M15 14h.01M6 4h12a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/></svg>',
+      terminal: '<svg viewBox="0 0 24 24"><path d="m7 8 4 4-4 4M13 16h4M4 4h16v16H4z"/></svg>'
+    };
+
+    const concepts = {
+      a: {
+        name: 'Option 01 · Xcode Unified',
+        why: 'Closest to the issue’s Xcode reference. Two lines create breathing room without reintroducing a separate content bar.',
+        best: 'Making Workspace selection feel stable and prominent while a session remains active.',
+        risk: 'At 70 pt it is the tallest option; long names need disciplined truncation.'
+      },
+      b: {
+        name: 'Option 02 · Segmented Strip',
+        why: 'Every piece of context has a predictable horizontal slot and the 56 pt bar preserves more terminal height.',
+        best: 'Fast scanning and users who treat Project, Workspace, session, and path as peer information.',
+        risk: 'The equal-weight segments can read as busier and feel more like a status strip than a macOS titlebar.'
+      },
+      c: {
+        name: 'Option 03 · Session First',
+        why: 'The current task is unmistakable. Workspace and Connection stay available but stop competing with active work.',
+        best: 'A terminal-first product where users switch sessions more often than they switch Workspaces.',
+        risk: 'Workspace switching is less central than requested in ATC-28 and diverges most from the Xcode reference.'
+      }
+    };
+
+    let state = { concept: 'a', mode: 'agent', workspace: 'toolbar-simplification' };
+    const appWindow = document.getElementById('app-window');
+    const titlebar = document.getElementById('titlebar');
+
+    function traffic() {
+      return '<div class="traffic" aria-hidden="true"><i></i><i></i><i></i></div>';
+    }
+
+    function sidebarButton() {
+      return `<button class="icon-button sidebar-toggle" title="Toggle sidebar" aria-label="Toggle sidebar">${icons.sidebar}</button>`;
+    }
+
+    function inspectorButton() {
+      return `<button class="icon-button inspector-toggle" title="Show session info" aria-label="Show session info">${icons.inspector}</button>`;
+    }
+
+    function popover() {
+      return `<div class="workspace-popover" id="workspace-popover">
+        <div class="filter">⌕&nbsp;&nbsp;Filter Workspaces</div>
+        <div class="menu-heading">ATC · My Mac</div>
+        <button class="workspace-row ${state.workspace === 'toolbar-simplification' ? 'selected' : ''}" data-workspace="toolbar-simplification"><span class="check">${state.workspace === 'toolbar-simplification' ? '✓' : ''}</span><span class="row-name">toolbar-simplification</span><span class="row-project">ATC</span></button>
+        <button class="workspace-row ${state.workspace === 'main' ? 'selected' : ''}" data-workspace="main"><span class="check">${state.workspace === 'main' ? '✓' : ''}</span><span class="row-name">main</span><span class="row-project">ATC</span></button>
+        <button class="workspace-row ${state.workspace === 'remote-files' ? 'selected' : ''}" data-workspace="remote-files"><span class="check">${state.workspace === 'remote-files' ? '✓' : ''}</span><span class="row-name">remote-files</span><span class="row-project">ATC</span></button>
+        <div class="menu-heading">Website · Build Server</div>
+        <button class="workspace-row" data-workspace="marketing"><span class="check"></span><span class="row-name">marketing-refresh</span><span class="row-project">Website</span></button>
+      </div>`;
+    }
+
+    function modeValues() {
+      return state.mode === 'agent'
+        ? { session: 'Simplify toolbar', kind: 'Claude', icon: icons.agent }
+        : { session: 'Server', kind: 'Terminal', icon: icons.terminal };
+    }
+
+    function renderTitlebar() {
+      const v = modeValues();
+      const workspace = state.workspace;
+      let markup = '';
+
+      if (state.concept === 'a') {
+        markup = `
+          <div class="titlebar-leading">${traffic()}${sidebarButton()}</div>
+          <div class="toolbar-center">
+            <button class="context-control xcode-capsule workspace-toggle">
+              <span class="xcode-main">
+                <span class="xcode-top"><span class="xcode-project">ATC</span><span>›</span><span class="xcode-workspace">${workspace}</span><span class="chevron"></span></span>
+                <span class="xcode-session"><strong>${v.session}</strong>${state.mode === 'agent' ? '<span class="agent">Claude</span>' : ''}<span>·</span><span class="dir">~/Projects/ATC/atc</span></span>
+              </span>
+              <span class="xcode-connection"><span class="status-dot"></span> My Mac</span>
+            </button>
+            ${popover()}
+          </div>
+          <div class="titlebar-trailing">${inspectorButton()}</div>`;
+      } else if (state.concept === 'b') {
+        markup = `
+          <div class="titlebar-leading">${traffic()}${sidebarButton()}</div>
+          <div class="toolbar-center">
+            <button class="context-control segment-strip workspace-toggle">
+              <span class="segment workspace"><span class="truncate">ATC › ${workspace}</span><span class="chevron"></span></span>
+              <span class="segment session">${v.icon}<span class="truncate">${v.session}</span></span>
+              ${state.mode === 'agent' ? '<span class="segment agent-segment"><span class="subtle">Agent</span> Claude</span>' : ''}
+              <span class="segment directory">~/Projects/ATC/atc</span>
+            </button>
+            ${popover()}
+          </div>
+          <div class="titlebar-trailing"><span class="connection-label"><span class="status-dot"></span> My Mac</span>${inspectorButton()}</div>`;
+      } else {
+        markup = `
+          <div class="titlebar-leading">${traffic()}${sidebarButton()}
+            <div style="position:relative">
+              <button class="context-control compact-workspace workspace-toggle"><span class="label">ATC › ${workspace}</span><span class="chevron"></span></button>
+              ${popover()}
+            </div>
+          </div>
+          <div class="toolbar-center"><div class="session-title"><strong>${v.session}${state.mode === 'agent' ? ' · Claude' : ''}</strong><span>~/Projects/ATC/atc</span></div></div>
+          <div class="titlebar-trailing"><span class="connection-label"><span class="status-dot"></span> My Mac</span>${inspectorButton()}</div>`;
+      }
+
+      titlebar.innerHTML = markup;
+      bindTitlebarActions();
+    }
+
+    function bindTitlebarActions() {
+      document.querySelectorAll('.workspace-toggle').forEach(button => {
+        button.addEventListener('click', event => {
+          event.stopPropagation();
+          document.getElementById('workspace-popover')?.classList.toggle('open');
+        });
+      });
+      document.querySelectorAll('.workspace-row').forEach(button => {
+        button.addEventListener('click', event => {
+          event.stopPropagation();
+          state.workspace = button.dataset.workspace;
+          renderTitlebar();
+        });
+      });
+      document.querySelectorAll('.sidebar-toggle').forEach(button => {
+        button.addEventListener('click', () => appWindow.classList.toggle('sidebar-hidden'));
+      });
+      document.querySelectorAll('.inspector-toggle').forEach(button => {
+        button.classList.toggle('active', appWindow.classList.contains('inspector-open'));
+        button.addEventListener('click', () => {
+          appWindow.classList.toggle('inspector-open');
+          document.querySelector('.inspector-toggle')?.classList.toggle('active', appWindow.classList.contains('inspector-open'));
+        });
+      });
+    }
+
+    function renderConcept() {
+      appWindow.className = `app-window concept-${state.concept}`;
+      document.querySelectorAll('.option-card').forEach(card => card.classList.toggle('active', card.dataset.concept === state.concept));
+      const copy = concepts[state.concept];
+      document.getElementById('playground-name').textContent = copy.name;
+      document.getElementById('why-copy').textContent = copy.why;
+      document.getElementById('best-copy').textContent = copy.best;
+      document.getElementById('risk-copy').textContent = copy.risk;
+      renderTitlebar();
+    }
+
+    function renderMode() {
+      document.querySelectorAll('.control[data-mode]').forEach(button => button.classList.toggle('active', button.dataset.mode === state.mode));
+      document.getElementById('agent-sidebar-row').classList.toggle('selected', state.mode === 'agent');
+      document.getElementById('terminal-sidebar-row').classList.toggle('selected', state.mode === 'terminal');
+      document.getElementById('inspector-session').textContent = state.mode === 'agent' ? 'Simplify toolbar' : 'Server';
+      document.getElementById('inspector-kind').textContent = state.mode === 'agent' ? 'Agent session · Claude' : 'Terminal';
+      renderTitlebar();
+    }
+
+    document.querySelectorAll('.option-card').forEach(card => card.addEventListener('click', () => {
+      state.concept = card.dataset.concept;
+      renderConcept();
+    }));
+
+    document.querySelectorAll('.control[data-mode]').forEach(button => button.addEventListener('click', () => {
+      state.mode = button.dataset.mode;
+      renderMode();
+    }));
+
+    document.getElementById('theme-toggle').addEventListener('click', () => document.body.classList.toggle('light'));
+    document.addEventListener('click', () => document.getElementById('workspace-popover')?.classList.remove('open'));
+    renderConcept();
+  </script>
+</body>
+</html>
