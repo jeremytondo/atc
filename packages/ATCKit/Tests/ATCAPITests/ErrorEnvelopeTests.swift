@@ -14,16 +14,17 @@ struct ErrorEnvelopeTests {
 
     @Test("envelope with sessionId")
     func withSessionID() throws {
-        let body = Data(#"{"error":"session_live","message":"session is still running","sessionId":"ses_abc"}"#.utf8)
+        let body = Data(#"{"error":"session_ended","message":"session has ended","sessionId":"ses_abc"}"#.utf8)
         let envelope = try JSONDecoder.atc().decode(ErrorEnvelope.self, from: body)
-        #expect(envelope.error == "session_live")
+        #expect(envelope.error == "session_ended")
         #expect(envelope.sessionId == "ses_abc")
     }
 
     @Test("ATCError surfaces message and code")
     func errorSurface() {
-        let error = ATCError.api(code: "session_live", message: "still running", sessionID: nil)
-        #expect(error.apiCode == "session_live")
-        #expect(error.errorDescription == "still running")
+        let error = ATCError.api(code: "session_ended", message: "session has ended", sessionID: "ses_abc")
+        #expect(error.apiCode == "session_ended")
+        #expect(error.sessionID == "ses_abc")
+        #expect(error.errorDescription == "session has ended")
     }
 }

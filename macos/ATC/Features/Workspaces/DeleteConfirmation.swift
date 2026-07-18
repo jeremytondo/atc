@@ -1,13 +1,19 @@
 import Foundation
+import ATCAPI
 
 /// The one source of delete-confirmation copy, so every dialog names its
 /// target and ends with the ADR 0008 sentence: files are never touched.
 enum DeleteConfirmation {
     static let filesUntouched = "Files on disk are not touched."
 
-    static func sessionMessage(displayName: String) -> String {
-        "Delete Session “\(displayName)”? This stops the session if it is "
-            + "running and removes its atc history. \(filesUntouched)"
+    static func sessionMessage(displayName: String, status: SessionStatus) -> String {
+        let consequence = switch status {
+        case .live:
+            "The running process will end and the session record will be removed."
+        case .ended:
+            "The session record will be permanently removed."
+        }
+        return "Delete Session “\(displayName)”? \(consequence) \(filesUntouched)"
     }
 
     /// Counts come from the local store at confirmation time.

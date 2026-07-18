@@ -32,18 +32,16 @@ struct ContractFixtureTests {
     func sessionsList() throws {
         let sessions = try decodeResponse("sessions-list", as: SessionsEnvelope.self).sessions
         #expect(sessions.count == 2)
-        #expect(sessions[0].status == .running)
+        #expect(sessions[0].status == .live)
         #expect(sessions[0].workspace?.id == "wsp_fixture01")
         #expect(sessions[0].project?.id == "prj_fixture01")
         // The second session is an Interactive Shell: no action on the wire.
         #expect(sessions[1].action == nil)
         #expect(sessions[1].displayName == "Shell")
-        #expect(sessions[1].status == .failed)
-        #expect(sessions[1].failureCode == "launch_failed")
-        #expect(sessions[1].isArchived)
+        #expect(sessions[1].status == .ended)
     }
 
-    @Test("session detail", arguments: ["session-detail", "session-start", "session-unarchive"])
+    @Test("session detail", arguments: ["session-detail", "session-start"])
     func sessionDetail(fixture: String) throws {
         let detail = try decodeResponse(fixture, as: SessionDetail.self)
         #expect(!detail.id.isEmpty)
@@ -131,6 +129,7 @@ struct ContractFixtureTests {
     func errorEnvelope() throws {
         let envelope = try decodeResponse("error", as: ErrorEnvelope.self)
         #expect(envelope.error == "session_not_found")
+        #expect(envelope.sessionId == "ses_fixture01")
     }
 
     @Test("health and version")

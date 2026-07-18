@@ -151,6 +151,11 @@ actor AttachConnection {
         if closedByClient {
             return .closedByClient
         }
+        // A stale attach is rejected before WebSocket upgrade. URLSession
+        // exposes the HTTP response even though there is no close frame.
+        if (task.response as? HTTPURLResponse)?.statusCode == 409 {
+            return .sessionEnded
+        }
         switch task.closeCode {
         case .normalClosure:
             return .sessionEnded

@@ -127,8 +127,7 @@ nonisolated struct MockATCClient: ATCClient {
             action: "claude",
             environment: "host-login-shell",
             workingDir: "/home/dev/Projects/atelier",
-            status: .running,
-            attachable: true,
+            status: .live,
             createdAt: Date(timeIntervalSinceNow: -3600),
             updatedAt: Date(timeIntervalSinceNow: -60),
             workspace: MockATCClient.parserRef,
@@ -139,8 +138,7 @@ nonisolated struct MockATCClient: ATCClient {
             action: "codex",
             environment: "host-login-shell",
             workingDir: "/home/dev/Projects/huge",
-            status: .starting,
-            attachable: false,
+            status: .live,
             createdAt: Date(timeIntervalSinceNow: -30),
             updatedAt: Date(timeIntervalSinceNow: -30),
             workspace: MockATCClient.blazerrWorkspaceRef,
@@ -151,10 +149,7 @@ nonisolated struct MockATCClient: ATCClient {
             action: "lazygit",
             environment: "host-login-shell",
             workingDir: "/home/dev",
-            status: .failed,
-            attachable: false,
-            failureReason: "command not found: lazygit",
-            failureCode: "spawn_failed",
+            status: .ended,
             createdAt: Date(timeIntervalSinceNow: -7200),
             updatedAt: Date(timeIntervalSinceNow: -7100)
         ),
@@ -164,11 +159,9 @@ nonisolated struct MockATCClient: ATCClient {
             action: "claude",
             environment: "host-login-shell",
             workingDir: "/home/dev/Projects/atelier",
-            status: .terminated,
-            attachable: false,
+            status: .ended,
             createdAt: Date(timeIntervalSinceNow: -90000),
             updatedAt: Date(timeIntervalSinceNow: -86400),
-            terminatedAt: Date(timeIntervalSinceNow: -86400),
             workspace: MockATCClient.refactorRef,
             project: MockATCClient.atelierRef
         ),
@@ -178,8 +171,7 @@ nonisolated struct MockATCClient: ATCClient {
             action: nil,
             environment: "host-login-shell",
             workingDir: "/home/dev/Projects/atelier",
-            status: .running,
-            attachable: true,
+            status: .live,
             createdAt: Date(timeIntervalSinceNow: -1800),
             updatedAt: Date(timeIntervalSinceNow: -120),
             workspace: MockATCClient.parserRef,
@@ -191,8 +183,7 @@ nonisolated struct MockATCClient: ATCClient {
             action: "lazygit",
             environment: "host-login-shell",
             workingDir: "/home/dev/Projects/atelier",
-            status: .running,
-            attachable: true,
+            status: .live,
             createdAt: Date(timeIntervalSinceNow: -900),
             updatedAt: Date(timeIntervalSinceNow: -60),
             workspace: MockATCClient.parserRef,
@@ -204,27 +195,22 @@ nonisolated struct MockATCClient: ATCClient {
             action: "ghost",
             environment: "host-login-shell",
             workingDir: "/home/dev/Projects/atelier",
-            status: .terminated,
-            attachable: false,
+            status: .ended,
             createdAt: Date(timeIntervalSinceNow: -50000),
             updatedAt: Date(timeIntervalSinceNow: -49000),
-            terminatedAt: Date(timeIntervalSinceNow: -49000),
             workspace: MockATCClient.refactorRef,
             project: MockATCClient.atelierRef
         ),
-        // Archived agent session, behind the shell's Archived filter.
+        // Another ended agent session.
         Session(
             id: "ses_archived",
             name: "Abandoned attempt",
             action: "claude",
             environment: "host-login-shell",
             workingDir: "/home/dev/Projects/atelier",
-            status: .terminated,
-            attachable: false,
+            status: .ended,
             createdAt: Date(timeIntervalSinceNow: -200000),
             updatedAt: Date(timeIntervalSinceNow: -190000),
-            terminatedAt: Date(timeIntervalSinceNow: -195000),
-            archivedAt: Date(timeIntervalSinceNow: -190000),
             workspace: MockATCClient.parserRef,
             project: MockATCClient.atelierRef
         ),
@@ -236,8 +222,8 @@ nonisolated struct MockATCClient: ATCClient {
         Version(name: "atc", version: "dev", commit: "unknown")
     }
 
-    func sessions(includeArchived: Bool, status: SessionStatus?) async throws -> [Session] {
-        mockSessions.filter { includeArchived || !$0.isArchived }
+    func sessions(status: SessionStatus?) async throws -> [Session] {
+        mockSessions.filter { status == nil || $0.status == status }
     }
 
     func session(id: String) async throws -> SessionDetail {
@@ -269,37 +255,13 @@ nonisolated struct MockATCClient: ATCClient {
             action: request.action,
             environment: request.environment ?? "host-login-shell",
             workingDir: project.workingDir,
-            status: .starting,
-            attachable: false,
+            status: .live,
             createdAt: Date(),
             updatedAt: Date(),
             workspace: SessionWorkspace(id: workspace.id, name: workspace.name),
             project: SessionProject(id: project.id, name: project.name)
         )
         return detail(from: session)
-    }
-
-    func terminateSession(id: String) async throws -> SessionDetail {
-        var session = try await self.session(id: id)
-        session.status = .terminated
-        session.attachable = false
-        session.terminatedAt = Date()
-        return session
-    }
-
-    func archiveSession(id: String) async throws -> SessionDetail {
-        var session = try await self.session(id: id)
-        guard session.status == .terminated || session.status == .failed else {
-            throw ATCError.api(code: "session_live", message: "session is still running", sessionID: id)
-        }
-        session.archivedAt = Date()
-        return session
-    }
-
-    func unarchiveSession(id: String) async throws -> SessionDetail {
-        var session = try await self.session(id: id)
-        session.archivedAt = nil
-        return session
     }
 
     func deleteSession(id: String) async throws {
@@ -392,13 +354,11 @@ nonisolated struct MockATCClient: ATCClient {
 
     func projectSessions(
         projectID: String,
-        includeArchived: Bool,
         status: SessionStatus?
     ) async throws -> [Session] {
         _ = try lookupProject(projectID)
         return mockSessions.filter { session in
             session.project?.id == projectID
-                && (includeArchived || !session.isArchived)
                 && (status == nil || session.status == status)
         }
     }
@@ -471,13 +431,11 @@ nonisolated struct MockATCClient: ATCClient {
 
     func workspaceSessions(
         workspaceID: String,
-        includeArchived: Bool,
         status: SessionStatus?
     ) async throws -> [Session] {
         _ = try lookupWorkspace(workspaceID)
         return mockSessions.filter { session in
             session.workspace?.id == workspaceID
-                && (includeArchived || !session.isArchived)
                 && (status == nil || session.status == status)
         }
     }

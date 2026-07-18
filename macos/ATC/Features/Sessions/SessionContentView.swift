@@ -50,12 +50,15 @@ struct SessionContentView: View {
     @ViewBuilder
     private var cover: some View {
         if let ref = selectedRef, let session = selectedSession {
-            if let controller = appModel.terminals[ref] {
+            if session.status == .ended {
+                SessionEndedView(sessionRef: ref, session: session)
+                    .background()
+            } else if let controller = appModel.terminals[ref] {
                 // Terminal visible; only the phase banner floats on top.
                 TerminalStatusBanner(controller: controller) {
                     appModel.disconnectTerminal(ref: ref)
                 }
-            } else if session.attachable {
+            } else if session.status == .live {
                 // Normally auto-attach creates the controller in the same
                 // update; this cover only lingers after an explicit
                 // Disconnect, so offer the way back in.
@@ -74,9 +77,6 @@ struct SessionContentView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background()
-            } else if let client = appModel.runtime(id: ref.connectionID)?.client {
-                SessionDetailView(session: session, client: client)
-                    .background()
             }
         } else if let emptyState {
             ContentUnavailableView {
@@ -111,8 +111,6 @@ struct SessionHeaderBar: View {
     let session: Session
     @Binding var showInspector: Bool
 
-    @State private var confirmStop = false
-    @State private var confirmArchive = false
     @State private var confirmDelete = false
     @State private var actionError: String?
 
@@ -122,19 +120,6 @@ struct SessionHeaderBar: View {
 
     private var canMutate: Bool {
         appModel.canMutate(connectionID: sessionRef.connectionID)
-    }
-
-    private var canStop: Bool {
-        session.status == .running || session.status == .starting
-    }
-
-    /// Mirror the server rule: archive only after the session ended.
-    private var canArchive: Bool {
-        !session.isArchived && (session.status == .terminated || session.status == .failed)
-    }
-
-    private var sessionsStore: SessionsStore? {
-        appModel.runtime(id: sessionRef.connectionID)?.sessions
     }
 
     private var actions: [ATCAction] {
@@ -160,33 +145,11 @@ struct SessionHeaderBar: View {
                 .lineLimit(1)
                 .truncationMode(.head)
             Spacer()
-            if isConnected {
+            if session.status == .live && isConnected {
                 Button("Disconnect", systemImage: "cable.connector.slash") {
                     appModel.disconnectTerminal(ref: sessionRef)
                 }
                 .help("Detach from the session (it keeps running)")
-            }
-            if canStop {
-                Button("Stop", systemImage: "stop.circle") {
-                    confirmStop = true
-                }
-                .disabled(!canMutate)
-                .help("Terminate this session")
-            }
-            if session.isArchived {
-                Button("Unarchive", systemImage: "archivebox") {
-                    appModel.run(on: sessionRef.connectionID, reporting: $actionError) {
-                        try await sessionsStore?.unarchive(id: session.id)
-                    }
-                }
-                .disabled(!canMutate)
-                .help("Unarchive this session")
-            } else {
-                Button("Archive", systemImage: "archivebox") {
-                    confirmArchive = true
-                }
-                .disabled(!canArchive || !canMutate)
-                .help(canArchive ? "Archive this session" : "Stop the session before archiving")
             }
             Button("Delete", systemImage: "trash") {
                 confirmDelete = true
@@ -205,32 +168,6 @@ struct SessionHeaderBar: View {
         .padding(.horizontal, Spacing.md)
         .padding(.vertical, Spacing.sm)
         .confirmationDialog(
-            "Stop “\(displayName)”?",
-            isPresented: $confirmStop
-        ) {
-            Button("Stop Session", role: .destructive) {
-                appModel.run(on: sessionRef.connectionID, reporting: $actionError) {
-                    try await sessionsStore?.terminate(id: session.id)
-                }
-            }
-            .disabled(!canMutate)
-        } message: {
-            Text("The process will be terminated. The session record is kept until archived.")
-        }
-        .confirmationDialog(
-            "Archive “\(displayName)”?",
-            isPresented: $confirmArchive
-        ) {
-            Button("Archive Session") {
-                appModel.run(on: sessionRef.connectionID, reporting: $actionError) {
-                    try await sessionsStore?.archive(id: session.id)
-                }
-            }
-            .disabled(!canMutate)
-        } message: {
-            Text("Archived sessions are hidden behind the archived filter.")
-        }
-        .confirmationDialog(
             "Delete Session “\(displayName)”?",
             isPresented: $confirmDelete
         ) {
@@ -239,19 +176,66 @@ struct SessionHeaderBar: View {
             }
             .disabled(!canMutate)
         } message: {
-            Text(DeleteConfirmation.sessionMessage(displayName: displayName))
+            Text(DeleteConfirmation.sessionMessage(
+                displayName: displayName,
+                status: session.status
+            ))
         }
         .actionErrorAlert($actionError, title: "Session Action Failed")
     }
 
-    /// Failure (stop error, 502) leaves the session and surfaces the alert.
+    /// Failure leaves the session and surfaces the alert.
     private func deleteSession() {
-        appModel.run(on: sessionRef.connectionID, reporting: $actionError) {
-            try await sessionsStore?.delete(id: session.id)
-            appModel.disconnectTerminal(ref: sessionRef)
-            if windowState.selectedSession == sessionRef {
-                windowState.showWorkspaceEmpty()
+        appModel.deleteSession(ref: sessionRef, windowState: windowState, reporting: $actionError)
+    }
+}
+
+/// Non-interactive presentation for an Ended session. Selection remains in
+/// place so metadata and explicit record deletion stay available.
+private struct SessionEndedView: View {
+    @Environment(AppModel.self) private var appModel
+    @Environment(WindowState.self) private var windowState
+    let sessionRef: SessionRef
+    let session: Session
+
+    @State private var confirmDelete = false
+    @State private var actionError: String?
+
+    private var displayName: String {
+        let actions = appModel.runtime(id: sessionRef.connectionID)?.actions.actions ?? []
+        return SessionKind.displayName(session: session, actions: actions)
+    }
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("Session Ended", systemImage: "checkmark.circle")
+        } description: {
+            Text("This session is no longer interactive.")
+        } actions: {
+            Button("Delete Session", role: .destructive) {
+                confirmDelete = true
             }
+            .disabled(!appModel.canMutate(connectionID: sessionRef.connectionID))
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .confirmationDialog(
+            "Delete Session “\(displayName)”?",
+            isPresented: $confirmDelete
+        ) {
+            Button("Delete Session", role: .destructive) {
+                deleteSession()
+            }
+            .disabled(!appModel.canMutate(connectionID: sessionRef.connectionID))
+        } message: {
+            Text(DeleteConfirmation.sessionMessage(
+                displayName: displayName,
+                status: session.status
+            ))
+        }
+        .actionErrorAlert($actionError, title: "Session Action Failed")
+    }
+
+    private func deleteSession() {
+        appModel.deleteSession(ref: sessionRef, windowState: windowState, reporting: $actionError)
     }
 }

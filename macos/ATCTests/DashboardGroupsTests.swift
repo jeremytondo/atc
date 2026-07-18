@@ -35,7 +35,7 @@ struct DashboardGroupsTests {
     ) -> Session {
         Session(
             id: id, environment: "host", workingDir: "/home/dev",
-            status: status, attachable: status == .running,
+            status: status,
             createdAt: .now, updatedAt: .now,
             workspace: SessionWorkspace(id: workspace, name: workspace)
         )
@@ -114,9 +114,9 @@ struct DashboardGroupsTests {
             projects: [project("p1")],
             workspaces: [workspace("w1", project: "p1", createdAgo: 10)],
             sessions: [
-                session("s1", workspace: "w1", status: .running),
-                session("s2", workspace: "w1", status: .terminated),
-                session("s3", workspace: "other", status: .running),
+                session("s1", workspace: "w1", status: .live),
+                session("s2", workspace: "w1", status: .ended),
+                session("s3", workspace: "other", status: .live),
             ]
         )
         let row = result.sections[0].cards[0].rows[0]

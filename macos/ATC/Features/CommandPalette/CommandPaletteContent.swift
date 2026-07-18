@@ -139,7 +139,7 @@ enum CommandPaletteContent {
     ) -> [SessionResult] {
         let keyword = PaletteTypeKeyword.match(query)
         return sessions.compactMap { session in
-            guard session.belongs(to: activeWorkspace), !session.isArchived else { return nil }
+            guard session.belongs(to: activeWorkspace) else { return nil }
             let title = SessionKind.displayName(session: session, actions: actions)
             let kind = SessionKind.classify(session: session, actions: actions)
             let titleMatch = QueryMatcher.match(query, in: title)

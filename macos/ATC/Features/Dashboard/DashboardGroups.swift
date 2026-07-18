@@ -23,7 +23,7 @@ struct DashboardGroups {
     struct WorkspaceRow: Identifiable {
         let ref: WorkspaceRef
         let workspace: Workspace
-        /// Any known session is `starting`/`running` — gates Archive.
+        /// Any known session is Live — gates Archive.
         let hasActiveSessions: Bool
         /// Local-store counts for the delete confirmation.
         let sessionCount: Int
@@ -81,9 +81,7 @@ struct DashboardGroups {
                     .sortedNewestFirst()
                     .map { workspace in
                         let members = sessionsByWorkspace[workspace.id] ?? []
-                        let active = members.filter {
-                            $0.status == .starting || $0.status == .running
-                        }
+                        let active = members.filter(\.isActive)
                         return WorkspaceRow(
                             ref: WorkspaceRef(
                                 connectionID: input.connection.id,

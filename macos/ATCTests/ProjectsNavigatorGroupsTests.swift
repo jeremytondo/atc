@@ -46,6 +46,7 @@ struct ProjectsNavigatorGroupsTests {
         connection: ConnectionRecord,
         projects: [Project],
         workspaces: [Workspace],
+        sessions: [Session] = [],
         reachability: Reachability = .connected
     ) -> ProjectsNavigatorGroups.Input {
         .init(
@@ -53,8 +54,28 @@ struct ProjectsNavigatorGroupsTests {
             reachability: reachability,
             projects: projects,
             workspaces: workspaces,
-            sessions: []
+            sessions: sessions
         )
+    }
+
+    @Test("Ended sessions count as records but do not block Workspace archive")
+    func endedSessionsDoNotBlockArchive() {
+        let c = connection("00000000-0000-0000-0000-000000000001", name: "Alpha")
+        let session = Session(
+            id: "ended", environment: "host", workingDir: "/tmp", status: .ended,
+            createdAt: .now, updatedAt: .now,
+            workspace: SessionWorkspace(id: "workspace", name: "Workspace")
+        )
+        let result = ProjectsNavigatorGroups(inputs: [input(
+            connection: c,
+            projects: [project("project", name: "Project")],
+            workspaces: [workspace("workspace", project: "project", age: 1)],
+            sessions: [session]
+        )])
+        let row = result.projects[0].workspaces[0]
+        #expect(row.sessionCount == 1)
+        #expect(row.activeSessionCount == 0)
+        #expect(!row.hasActiveSessions)
     }
 
     @Test("projects sort case-insensitively, then by Connection name and stable identity")

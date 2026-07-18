@@ -9,8 +9,8 @@ struct ATCServerTests {
     @Test("REST URLs live under /api")
     func restURL() {
         #expect(server.restURL("sessions").absoluteString == "http://workstation.tail1f9a09.ts.net:7331/api/sessions")
-        let filtered = server.restURL("sessions", query: [URLQueryItem(name: "includeArchived", value: "true")])
-        #expect(filtered.absoluteString == "http://workstation.tail1f9a09.ts.net:7331/api/sessions?includeArchived=true")
+        let filtered = server.restURL("sessions", query: [URLQueryItem(name: "status", value: "live")])
+        #expect(filtered.absoluteString == "http://workstation.tail1f9a09.ts.net:7331/api/sessions?status=live")
     }
 
     @Test("attach URL swaps scheme to ws")

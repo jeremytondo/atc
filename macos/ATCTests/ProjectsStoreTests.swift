@@ -125,12 +125,9 @@ final class GatedProjectsClient: ATCClient, @unchecked Sendable {
 
     func health() async throws -> Health { throw ATCError.badStatus(500) }
     func version() async throws -> Version { throw ATCError.badStatus(500) }
-    func sessions(includeArchived: Bool, status: SessionStatus?) async throws -> [Session] { [] }
+    func sessions(status: SessionStatus?) async throws -> [Session] { [] }
     func session(id: String) async throws -> SessionDetail { throw ATCError.badStatus(500) }
     func startSession(_ request: StartSessionRequest) async throws -> SessionDetail { throw ATCError.badStatus(500) }
-    func terminateSession(id: String) async throws -> SessionDetail { throw ATCError.badStatus(500) }
-    func archiveSession(id: String) async throws -> SessionDetail { throw ATCError.badStatus(500) }
-    func unarchiveSession(id: String) async throws -> SessionDetail { throw ATCError.badStatus(500) }
     func deleteSession(id: String) async throws { throw ATCError.badStatus(500) }
     func sendText(sessionID: String, text: String) async throws {}
     func sendKey(sessionID: String, key: String) async throws {}
@@ -147,7 +144,7 @@ final class GatedProjectsClient: ATCClient, @unchecked Sendable {
     func renameProject(id: String, name: String) async throws -> Project { throw ATCError.badStatus(500) }
     func archiveProject(id: String) async throws -> Project { throw ATCError.badStatus(500) }
     func unarchiveProject(id: String) async throws -> Project { throw ATCError.badStatus(500) }
-    func projectSessions(projectID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session] { [] }
+    func projectSessions(projectID: String, status: SessionStatus?) async throws -> [Session] { [] }
     func deleteProject(id: String) async throws { throw ATCError.badStatus(500) }
     func workspaces(projectID: String?, includeArchived: Bool) async throws -> [Workspace] { [] }
     func workspace(id: String) async throws -> Workspace { throw ATCError.badStatus(500) }
@@ -156,7 +153,7 @@ final class GatedProjectsClient: ATCClient, @unchecked Sendable {
     func archiveWorkspace(id: String) async throws -> Workspace { throw ATCError.badStatus(500) }
     func unarchiveWorkspace(id: String) async throws -> Workspace { throw ATCError.badStatus(500) }
     func deleteWorkspace(id: String) async throws { throw ATCError.badStatus(500) }
-    func workspaceSessions(workspaceID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session] { [] }
+    func workspaceSessions(workspaceID: String, status: SessionStatus?) async throws -> [Session] { [] }
     func attachURL(sessionID: String) -> URL { URL(string: "ws://127.0.0.1:1/attach")! }
     func attachHeaders() -> [String: String] { [:] }
 }
@@ -246,12 +243,9 @@ final class StatefulProjectsClient: ATCClient, @unchecked Sendable {
 
     func health() async throws -> Health { throw ATCError.badStatus(500) }
     func version() async throws -> Version { throw ATCError.badStatus(500) }
-    func sessions(includeArchived: Bool, status: SessionStatus?) async throws -> [Session] { [] }
+    func sessions(status: SessionStatus?) async throws -> [Session] { [] }
     func session(id: String) async throws -> SessionDetail { throw ATCError.badStatus(500) }
     func startSession(_ request: StartSessionRequest) async throws -> SessionDetail { throw ATCError.badStatus(500) }
-    func terminateSession(id: String) async throws -> SessionDetail { throw ATCError.badStatus(500) }
-    func archiveSession(id: String) async throws -> SessionDetail { throw ATCError.badStatus(500) }
-    func unarchiveSession(id: String) async throws -> SessionDetail { throw ATCError.badStatus(500) }
     func deleteSession(id: String) async throws { throw ATCError.badStatus(500) }
     func sendText(sessionID: String, text: String) async throws {}
     func sendKey(sessionID: String, key: String) async throws {}
@@ -263,7 +257,7 @@ final class StatefulProjectsClient: ATCClient, @unchecked Sendable {
     func deleteAction(name: String) async throws { throw ATCError.badStatus(500) }
     func environments() async throws -> [ATCEnvironment] { [] }
     func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing { throw ATCError.badStatus(500) }
-    func projectSessions(projectID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session] { [] }
+    func projectSessions(projectID: String, status: SessionStatus?) async throws -> [Session] { [] }
     func workspaces(projectID: String?, includeArchived: Bool) async throws -> [Workspace] { [] }
     func workspace(id: String) async throws -> Workspace { throw ATCError.badStatus(500) }
     func createWorkspace(projectID: String, name: String) async throws -> Workspace { throw ATCError.badStatus(500) }
@@ -271,7 +265,7 @@ final class StatefulProjectsClient: ATCClient, @unchecked Sendable {
     func archiveWorkspace(id: String) async throws -> Workspace { throw ATCError.badStatus(500) }
     func unarchiveWorkspace(id: String) async throws -> Workspace { throw ATCError.badStatus(500) }
     func deleteWorkspace(id: String) async throws { throw ATCError.badStatus(500) }
-    func workspaceSessions(workspaceID: String, includeArchived: Bool, status: SessionStatus?) async throws -> [Session] { [] }
+    func workspaceSessions(workspaceID: String, status: SessionStatus?) async throws -> [Session] { [] }
     func attachURL(sessionID: String) -> URL { URL(string: "ws://127.0.0.1:1/attach")! }
     func attachHeaders() -> [String: String] { [:] }
 }

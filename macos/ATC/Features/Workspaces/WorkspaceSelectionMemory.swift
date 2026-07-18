@@ -48,8 +48,7 @@ struct WorkspaceSelectionMemory {
     func restoredSelection(for ref: WorkspaceRef, in sessions: [Session]) -> SessionRef? {
         guard let saved = sessionID(for: ref),
               let session = sessions.first(where: { $0.id == saved }),
-              session.workspace?.id == ref.workspaceID,
-              !session.isArchived
+              session.workspace?.id == ref.workspaceID
         else { return nil }
         return SessionRef(connectionID: ref.connectionID, sessionID: session.id)
     }
