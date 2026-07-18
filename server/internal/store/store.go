@@ -238,6 +238,23 @@ func (s *Store) MarkEnded(ctx context.Context, id string) (Session, error) {
 	return s.queries().MarkEnded(ctx, id)
 }
 
+// RenameSession updates a session's display name. It does not affect process
+// identity or lifecycle state.
+func (s *Store) RenameSession(ctx context.Context, id, name string) (Session, error) {
+	if strings.TrimSpace(name) == "" {
+		return Session{}, errors.New("rename session: name is required")
+	}
+	q := s.queries()
+	now := q.nowUTC()
+	return q.updateOne(ctx, id, "rename", `
+	UPDATE sessions
+	SET name = ?, updated_at = ?
+	WHERE id = ? AND status != ?
+	RETURNING`+sessionColumnsSQL,
+		name, formatTime(now), id, StatusStarting,
+	)
+}
+
 // DeleteSession removes a session's metadata row. Deleting a starting or live
 // session is rejected; the guard and the delete are one statement so
 // nothing can slip between them. Files are never touched.

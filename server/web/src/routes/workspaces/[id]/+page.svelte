@@ -24,6 +24,8 @@
   } from '$lib/api';
   import ErrorBanner from '$lib/error-banner.svelte';
   import WorkspaceEditor from '$lib/workspaces/workspace-editor.svelte';
+  import SessionRowActions from '$lib/sessions/session-row-actions.svelte';
+  import { replaceRenamedSession } from '$lib/sessions/session-rename';
 
   const workspaceId = $derived(page.params.id ?? '');
 
@@ -414,6 +416,11 @@
                 {#if s.status === 'live'}
                   <a class="btn xs" href={`/sessions/${encodeURIComponent(s.id)}`}>Open</a>
                 {/if}
+                <SessionRowActions
+                  session={s}
+                  disabled={busySessionId !== ''}
+                  onRenamed={(renamed) => (sessions = replaceRenamedSession(sessions, renamed))}
+                />
                 <button class="btn xs" onclick={() => removeSession(s)} disabled={busySessionId !== ''}
                   >Delete</button
                 >

@@ -167,6 +167,50 @@ func TestCreateStartingPromoteAndEndRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRenameSessionPersistsAndReturnsHydratedRecord(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	defer st.Close()
+	seedWorkspace(t, st, "prj_main", "wsp_main")
+	clock := newTestClock(time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC))
+	st.now = clock.Now
+
+	created, err := st.CreateStarting(ctx, CreateSessionInput{
+		ID: "ses_rename", Name: "Before", Environment: "host-login-shell",
+		WorkingDir: "/work", WorkspaceID: "wsp_main",
+	})
+	if err != nil {
+		t.Fatalf("CreateStarting: %v", err)
+	}
+	if _, err := st.PromoteToLive(ctx, created.ID); err != nil {
+		t.Fatalf("PromoteToLive: %v", err)
+	}
+	renamed, err := st.RenameSession(ctx, created.ID, "After")
+	if err != nil {
+		t.Fatalf("RenameSession: %v", err)
+	}
+	if renamed.Name != "After" || !renamed.UpdatedAt.After(created.UpdatedAt) {
+		t.Fatalf("renamed = %+v", renamed)
+	}
+	if renamed.Workspace == nil || renamed.Workspace.ID != "wsp_main" || renamed.Project == nil || renamed.Project.ID != "prj_main" {
+		t.Fatalf("refs = workspace %+v project %+v", renamed.Workspace, renamed.Project)
+	}
+	got, err := st.Get(ctx, created.ID)
+	if err != nil || got.Name != "After" {
+		t.Fatalf("Get = %+v err=%v", got, err)
+	}
+	if _, err := st.MarkEnded(ctx, created.ID); err != nil {
+		t.Fatalf("MarkEnded: %v", err)
+	}
+	ended, err := st.RenameSession(ctx, created.ID, "After ending")
+	if err != nil || ended.Name != "After ending" || ended.Status != StatusEnded {
+		t.Fatalf("rename ended = %+v err=%v", ended, err)
+	}
+	if _, err := st.RenameSession(ctx, "ses_missing", "After"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("missing err = %v, want ErrSessionNotFound", err)
+	}
+}
+
 func TestCreateStartingRequiresWorkspace(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)

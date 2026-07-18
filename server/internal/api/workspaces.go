@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -93,10 +92,7 @@ func (routes apiRoutes) patchWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req renameWorkspaceRequest
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "request body must be a JSON object with only a name field")
+	if !decodeRenameJSON(w, r, &req) {
 		return
 	}
 	renamed, err := routes.workspaces.Rename(r.Context(), r.PathValue("id"), req.Name)

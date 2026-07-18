@@ -423,6 +423,7 @@ go run ./cmd/atc environments list
 go run ./cmd/atc sessions start --workspace <id> --action codex --env host-login-shell
 go run ./cmd/atc sessions list
 go run ./cmd/atc sessions show <id>
+go run ./cmd/atc sessions rename <id> "New name"
 go run ./cmd/atc sessions attach <id>
 go run ./cmd/atc sessions send-text <id> "hello"
 go run ./cmd/atc sessions send-key <id> enter
@@ -433,6 +434,11 @@ Discovery, start, list, and show commands accept `--output json` for scripting.
 Sessions always inherit the referenced Workspace's Project working directory.
 The current named keys for `sessions send-key` are `enter`, `ctrl-c`, and
 `escape`.
+
+The HTTP API renames both Live and Ended Sessions with
+`PATCH /api/sessions/{id}` and a strict `{"name":"New name"}` body. The server
+trims the name, rejects blank names with `400 invalid_request`, and returns the
+updated Session detail. Rename changes only the persisted display name.
 
 ## Mise Tasks
 

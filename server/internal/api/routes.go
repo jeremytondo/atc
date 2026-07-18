@@ -59,6 +59,7 @@ func (routes apiRoutes) endpoints() map[string]http.HandlerFunc {
 		"POST /sessions/start":            routes.startSession,
 		"GET /sessions":                   routes.listSessions,
 		"GET /sessions/{id}":              routes.readSession,
+		"PATCH /sessions/{id}":            routes.patchSession,
 		"POST /sessions/{id}/send-text":   routes.sendText,
 		"POST /sessions/{id}/send-key":    routes.sendKey,
 		"DELETE /sessions/{id}":           routes.deleteSession,
@@ -121,18 +122,32 @@ const jsonBodyReadTimeout = 30 * time.Second
 // decodeJSON decodes the request body into dst as a single bounded JSON
 // value, writing the appropriate 4xx and returning false on failure.
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	return decodeJSONBody(w, r, dst, false, "request body must be valid JSON")
+}
+
+// decodeRenameJSON decodes the strict single-field rename body shared by the
+// project, workspace, and session PATCH endpoints. Unknown fields are
+// rejected so a client cannot believe it changed anything else.
+func decodeRenameJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	return decodeJSONBody(w, r, dst, true, "request body must be a JSON object with only a name field")
+}
+
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any, strict bool, invalidMessage string) bool {
 	// Deadline errors surface through the size-limited reader as generic
 	// read failures; SetReadDeadline is a no-op on connections that don't
 	// support it (e.g. some test recorders), which is fine.
 	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(jsonBodyReadTimeout))
 	body := http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	decoder := json.NewDecoder(body)
+	if strict {
+		decoder.DisallowUnknownFields()
+	}
 	if err := decoder.Decode(dst); err != nil {
 		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			writeError(w, http.StatusRequestEntityTooLarge, "request_too_large", "request body exceeds the size limit")
 			return false
 		}
-		writeError(w, http.StatusBadRequest, "invalid_request", "request body must be valid JSON")
+		writeError(w, http.StatusBadRequest, "invalid_request", invalidMessage)
 		return false
 	}
 	if err := decoder.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {

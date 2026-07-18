@@ -39,6 +39,11 @@ public struct HTTPATCClient: ATCClient {
         try await post("sessions/start", body: request)
     }
 
+    public func renameSession(id: String, name: String) async throws -> SessionDetail {
+        struct Body: Encodable { var name: String }
+        return try await patch("sessions/\(id)", body: Body(name: name))
+    }
+
     public func deleteSession(id: String) async throws {
         _ = try await send(method: "DELETE", path: "sessions/\(id)", body: nil as Never?)
     }

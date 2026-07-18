@@ -43,10 +43,11 @@ const (
 // Sentinel errors let callers (notably the API) map failures to stable status
 // codes.
 var (
-	ErrUnknownKey      = errors.New("unknown key")
-	ErrSessionNotFound = errors.New("session not found")
-	ErrSessionEnded    = errors.New("session ended")
-	ErrInvalidStatus   = store.ErrInvalidStatus
+	ErrUnknownKey         = errors.New("unknown key")
+	ErrSessionNotFound    = errors.New("session not found")
+	ErrSessionEnded       = errors.New("session ended")
+	ErrInvalidSessionName = errors.New("invalid session name")
+	ErrInvalidStatus      = store.ErrInvalidStatus
 	// ErrInvalidWorkingDir is the project package's working-directory rule
 	// (absolute, exists, is a directory), re-exported so session callers keep
 	// one import. A bad directory fails fast instead of surfacing later as a
@@ -182,6 +183,7 @@ func (s *Service) Environments(ctx context.Context) []EnvironmentDiscovery {
 // empty Action launches the Interactive Shell: the host user's shell run
 // through the selected environment without a command payload.
 func (s *Service) Start(ctx context.Context, input StartInput) (Session, error) {
+	input.Name = strings.TrimSpace(input.Name)
 	environment, environmentName, err := s.environments.resolve(input.Environment)
 	if err != nil {
 		return Session{}, err
@@ -406,6 +408,20 @@ func (s *Service) Read(ctx context.Context, id string) (Session, error) {
 		if err != nil {
 			return Session{}, err
 		}
+	}
+	return domainSession(record)
+}
+
+// Rename updates only a session's persisted display name. Live and ended
+// sessions are both renameable; provisional records remain private.
+func (s *Service) Rename(ctx context.Context, id, name string) (Session, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return Session{}, fmt.Errorf("%w: name is required", ErrInvalidSessionName)
+	}
+	record, err := s.store.RenameSession(ctx, id, name)
+	if err != nil {
+		return Session{}, translateStoreErr(err)
 	}
 	return domainSession(record)
 }

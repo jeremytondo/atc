@@ -9,6 +9,7 @@ public protocol ATCClient: Sendable {
     func sessions(status: SessionStatus?) async throws -> [Session]
     func session(id: String) async throws -> SessionDetail
     func startSession(_ request: StartSessionRequest) async throws -> SessionDetail
+    func renameSession(id: String, name: String) async throws -> SessionDetail
     /// Deletes a session's metadata, ending it first if Live. Files
     /// are never touched.
     func deleteSession(id: String) async throws

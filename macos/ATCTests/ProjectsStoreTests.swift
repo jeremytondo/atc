@@ -128,6 +128,7 @@ final class GatedProjectsClient: ATCClient, @unchecked Sendable {
     func sessions(status: SessionStatus?) async throws -> [Session] { [] }
     func session(id: String) async throws -> SessionDetail { throw ATCError.badStatus(500) }
     func startSession(_ request: StartSessionRequest) async throws -> SessionDetail { throw ATCError.badStatus(500) }
+    func renameSession(id: String, name: String) async throws -> SessionDetail { throw ATCError.badStatus(500) }
     func deleteSession(id: String) async throws { throw ATCError.badStatus(500) }
     func sendText(sessionID: String, text: String) async throws {}
     func sendKey(sessionID: String, key: String) async throws {}
@@ -246,6 +247,7 @@ final class StatefulProjectsClient: ATCClient, @unchecked Sendable {
     func sessions(status: SessionStatus?) async throws -> [Session] { [] }
     func session(id: String) async throws -> SessionDetail { throw ATCError.badStatus(500) }
     func startSession(_ request: StartSessionRequest) async throws -> SessionDetail { throw ATCError.badStatus(500) }
+    func renameSession(id: String, name: String) async throws -> SessionDetail { throw ATCError.badStatus(500) }
     func deleteSession(id: String) async throws { throw ATCError.badStatus(500) }
     func sendText(sessionID: String, text: String) async throws {}
     func sendKey(sessionID: String, key: String) async throws {}

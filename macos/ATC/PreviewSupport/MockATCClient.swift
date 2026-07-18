@@ -264,6 +264,17 @@ nonisolated struct MockATCClient: ATCClient {
         return detail(from: session)
     }
 
+    func renameSession(id: String, name: String) async throws -> SessionDetail {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw ATCError.api(code: "invalid_request", message: "name is required", sessionID: nil)
+        }
+        var detail = try await session(id: id)
+        detail.name = trimmed
+        detail.updatedAt = Date()
+        return detail
+    }
+
     func deleteSession(id: String) async throws {
         _ = try await self.session(id: id)
     }

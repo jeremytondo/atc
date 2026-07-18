@@ -12,6 +12,7 @@ import errorFixture from '../../../../packages/contracts/fixtures/error.json';
 import projectCreate from '../../../../packages/contracts/fixtures/project-create.json';
 import projectsList from '../../../../packages/contracts/fixtures/projects-list.json';
 import sessionStart from '../../../../packages/contracts/fixtures/session-start.json';
+import sessionRename from '../../../../packages/contracts/fixtures/session-rename.json';
 import sessionsList from '../../../../packages/contracts/fixtures/sessions-list.json';
 import workspaceCreate from '../../../../packages/contracts/fixtures/workspace-create.json';
 import workspaceSessions from '../../../../packages/contracts/fixtures/workspace-sessions.json';
@@ -25,6 +26,7 @@ import {
   createProject,
   listSessions,
   startSession,
+  renameSession,
   listWorkspaces,
   createWorkspace,
   listWorkspaceSessions,
@@ -64,6 +66,11 @@ const sessionStartContract = {
   ...sessionStart.response,
   status: sessionStatus(sessionStart.response.status)
 } satisfies SessionDetail;
+const sessionRenameContract = {
+  ...sessionRename.response,
+  status: sessionStatus(sessionRename.response.status)
+} satisfies SessionDetail;
+sessionRename.request satisfies { name: string };
 sessionStart.request satisfies StartSessionRequest;
 projectsList.response satisfies { projects: Project[] };
 projectCreate.response satisfies Project;
@@ -117,6 +124,19 @@ describe('api client unwraps fixture responses', () => {
 	expect(detail.status).toBe('live');
     expect(detail.params).toEqual({ model: 'opus' });
     expect(detail.workspace?.id).toBe('wsp_fixture01');
+  });
+
+  it('renameSession patches the encoded session path and returns updated detail', async () => {
+    mockFetch(sessionRenameContract);
+    const detail = await renameSession('ses/fixture 01', sessionRename.request.name);
+    expect(detail.name).toBe('Review login fix');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/sessions/ses%2Ffixture%2001',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify(sessionRename.request)
+      })
+    );
   });
 
   it('listWorkspaces returns the workspaces array', async () => {

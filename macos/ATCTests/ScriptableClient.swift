@@ -41,6 +41,9 @@ nonisolated final class ScriptableClient: ATCClient, @unchecked Sendable {
     func startSession(_ request: StartSessionRequest) async throws -> SessionDetail {
         try await gate(); return try await inner.startSession(request)
     }
+    func renameSession(id: String, name: String) async throws -> SessionDetail {
+        try await gate(); return try await inner.renameSession(id: id, name: name)
+    }
     func deleteSession(id: String) async throws {
         try await gate(); try await inner.deleteSession(id: id)
     }

@@ -8,6 +8,8 @@
     type SessionListItem
   } from '$lib/api';
   import ErrorBanner from '$lib/error-banner.svelte';
+  import SessionRowActions from '$lib/sessions/session-row-actions.svelte';
+  import { replaceRenamedSession } from '$lib/sessions/session-rename';
 
   let sessions = $state<SessionListItem[]>([]);
   let loading = $state(false);
@@ -165,6 +167,11 @@
               {#if s.status === 'live'}
                 <a class="btn xs" href={`/sessions/${encodeURIComponent(s.id)}`}>Open</a>
               {/if}
+              <SessionRowActions
+                session={s}
+                disabled={busyId !== ''}
+                onRenamed={(renamed) => (sessions = replaceRenamedSession(sessions, renamed))}
+              />
               <button class="btn xs" onclick={() => remove(s)} disabled={busyId !== ''}
                 >Delete</button
               >

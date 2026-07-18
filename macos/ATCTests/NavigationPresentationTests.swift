@@ -67,4 +67,13 @@ struct NavigationPresentationTests {
         #expect(archived.isArchived)
         #expect(archived.help.contains("Archived"))
     }
+
+    @Test("Session rename dialog follows row classification")
+    func sessionRenameTitles() {
+        #expect(SessionRenamePresentation(kind: .agent).dialogTitle == "Rename Session")
+        #expect(SessionRenamePresentation(kind: .terminal).dialogTitle == "Rename Terminal")
+        #expect(!SessionRenamePresentation.canSubmit(" \n "))
+        #expect(SessionRenamePresentation.canSubmit(" New name "))
+        #expect(SessionRenamePresentation.normalizedName("  New name\n") == "New name")
+    }
 }

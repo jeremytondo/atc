@@ -176,6 +176,80 @@ func TestStartSessionReturnsFullSession(t *testing.T) {
 	}
 }
 
+func TestStartSessionNormalizesName(t *testing.T) {
+	mux := &fakeMux{}
+	env := newHandlerEnv(t, mux)
+	rec := do(t, env.handler, http.MethodPost, "/sessions/start",
+		`{"workspaceId":"`+testWorkspaceID+`","name":"  Review  "}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body)
+	}
+	var resp SessionDetail
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Name != "Review" {
+		t.Fatalf("name = %q, want trimmed", resp.Name)
+	}
+
+	rec = do(t, env.handler, http.MethodPost, "/sessions/start",
+		`{"workspaceId":"`+testWorkspaceID+`","name":"   "}`)
+	var blank SessionDetail
+	if err := json.NewDecoder(rec.Body).Decode(&blank); err != nil {
+		t.Fatalf("decode blank name: %v", err)
+	}
+	if rec.Code != http.StatusOK || blank.Name != "" {
+		t.Fatalf("blank name response = %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestPatchSessionRenamesAndDecodesStrictly(t *testing.T) {
+	mux := &fakeMux{}
+	env := newHandlerEnv(t, mux)
+	started := do(t, env.handler, http.MethodPost, "/sessions/start",
+		`{"workspaceId":"`+testWorkspaceID+`","name":"Before"}`)
+	var original SessionDetail
+	if err := json.NewDecoder(started.Body).Decode(&original); err != nil {
+		t.Fatalf("decode start: %v", err)
+	}
+
+	rec := do(t, env.handler, http.MethodPatch, "/sessions/"+original.ID, `{"name":"  After  "}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body)
+	}
+	var renamed SessionDetail
+	if err := json.NewDecoder(rec.Body).Decode(&renamed); err != nil {
+		t.Fatalf("decode rename: %v", err)
+	}
+	if renamed.ID != original.ID || renamed.Name != "After" || renamed.Workspace == nil || renamed.Project == nil {
+		t.Fatalf("renamed = %+v", renamed)
+	}
+	if renamed.Status != original.Status || renamed.WorkingDir != original.WorkingDir || mux.lastStart.name != zmx.NameForID(original.ID) {
+		t.Fatalf("rename changed session identity/config: before=%+v after=%+v", original, renamed)
+	}
+
+	for _, tc := range []struct {
+		name, id, body, code string
+		status               int
+	}{
+		{name: "blank", id: original.ID, body: `{"name":"   "}`, status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "unknown field", id: original.ID, body: `{"name":"X","status":"ended"}`, status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "trailing data", id: original.ID, body: `{"name":"X"}{"name":"Y"}`, status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "missing", id: "ses_missing", body: `{"name":"X"}`, status: http.StatusNotFound, code: "session_not_found"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := do(t, env.handler, http.MethodPatch, "/sessions/"+tc.id, tc.body)
+			if rec.Code != tc.status {
+				t.Fatalf("status = %d, want %d (%s)", rec.Code, tc.status, rec.Body)
+			}
+			var failure errorResponse
+			if err := json.NewDecoder(rec.Body).Decode(&failure); err != nil || failure.Error != tc.code {
+				t.Fatalf("error = %+v decode=%v", failure, err)
+			}
+		})
+	}
+}
+
 func TestStartSessionWithoutActionLaunchesInteractiveShell(t *testing.T) {
 	mux := &fakeMux{}
 	env := newHandlerEnv(t, mux)
