@@ -9,8 +9,7 @@ struct WorkspaceNavigatorView: View {
 
     @State private var actionError: String?
     @State private var deletingSession: Row?
-    @State private var renamingSession: Row?
-    @State private var renameDraft = ""
+    @State private var renameRequest: SessionRenameRequest?
 
     private struct Row: Identifiable {
         let ref: SessionRef
@@ -89,15 +88,15 @@ struct WorkspaceNavigatorView: View {
                 ))
             }
         }
-        .alert(renamePresentation.dialogTitle, isPresented: Binding(
-            get: { renamingSession != nil },
-            set: { if !$0 { renamingSession = nil } }
+        .alert(renameRequest?.dialogTitle ?? "Rename Session", isPresented: Binding(
+            get: { renameRequest != nil },
+            set: { if !$0 { renameRequest = nil } }
         )) {
-            TextField("Name", text: $renameDraft)
+            TextField("Name", text: renameDraft)
             Button("Rename") {
                 renameSession()
             }
-            .disabled(!SessionRenamePresentation.canSubmit(renameDraft) || !isConnected)
+            .disabled(!(renameRequest?.canSubmit ?? false) || !isConnected)
             Button("Cancel", role: .cancel) {}
         }
         .actionErrorAlert($actionError, title: "Workspace Action Failed")
@@ -131,8 +130,11 @@ struct WorkspaceNavigatorView: View {
     @ViewBuilder
     private func sessionMenu(_ row: Row) -> some View {
         Button("Rename…", systemImage: "pencil") {
-            renameDraft = row.title
-            renamingSession = row
+            renameRequest = SessionRenameRequest(
+                ref: row.ref,
+                title: row.title,
+                kind: row.kind
+            )
         }
         .disabled(!isConnected)
         Divider()
@@ -185,33 +187,45 @@ struct WorkspaceNavigatorView: View {
         appModel.deleteSession(ref: row.ref, windowState: windowState, reporting: $actionError)
     }
 
-    private var renamePresentation: SessionRenamePresentation {
-        SessionRenamePresentation(kind: renamingSession?.kind ?? .agent)
+    private var renameDraft: Binding<String> {
+        Binding(
+            get: { renameRequest?.draft ?? "" },
+            set: { renameRequest?.draft = $0 }
+        )
     }
 
     private func renameSession() {
-        guard let row = renamingSession, let runtime else { return }
-        let name = SessionRenamePresentation.normalizedName(renameDraft)
+        guard let request = renameRequest,
+              let runtime = appModel.runtime(id: request.ref.connectionID)
+        else { return }
         let store = runtime.sessions
         appModel.run(on: runtime.id, reporting: $actionError) {
-            try await store.rename(id: row.session.id, name: name)
+            try await store.rename(id: request.ref.sessionID, name: request.normalizedName)
         }
     }
 }
 
-struct SessionRenamePresentation: Equatable {
+struct SessionRenameRequest: Equatable {
+    let ref: SessionRef
     let kind: SessionKind
+    var draft: String
+
+    init(ref: SessionRef, title: String, kind: SessionKind) {
+        self.ref = ref
+        self.kind = kind
+        self.draft = title
+    }
 
     var dialogTitle: String {
         kind == .agent ? "Rename Session" : "Rename Terminal"
     }
 
-    static func normalizedName(_ draft: String) -> String {
+    var normalizedName: String {
         draft.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    static func canSubmit(_ draft: String) -> Bool {
-        !normalizedName(draft).isEmpty
+    var canSubmit: Bool {
+        !normalizedName.isEmpty
     }
 }
 

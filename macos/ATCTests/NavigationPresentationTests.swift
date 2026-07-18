@@ -68,12 +68,21 @@ struct NavigationPresentationTests {
         #expect(archived.help.contains("Archived"))
     }
 
-    @Test("Session rename dialog follows row classification")
-    func sessionRenameTitles() {
-        #expect(SessionRenamePresentation(kind: .agent).dialogTitle == "Rename Session")
-        #expect(SessionRenamePresentation(kind: .terminal).dialogTitle == "Rename Terminal")
-        #expect(!SessionRenamePresentation.canSubmit(" \n "))
-        #expect(SessionRenamePresentation.canSubmit(" New name "))
-        #expect(SessionRenamePresentation.normalizedName("  New name\n") == "New name")
+    @Test("Session rename request starts with the current display name")
+    func sessionRenameRequest() {
+        let ref = SessionRef(connectionID: UUID(), sessionID: "ses_123")
+        var request = SessionRenameRequest(ref: ref, title: "Current name", kind: .agent)
+
+        #expect(request.ref == ref)
+        #expect(request.dialogTitle == "Rename Session")
+        #expect(request.draft == "Current name")
+        #expect(request.canSubmit)
+
+        request.draft = " \n "
+        #expect(!request.canSubmit)
+
+        request = SessionRenameRequest(ref: ref, title: "  New name\n", kind: .terminal)
+        #expect(request.dialogTitle == "Rename Terminal")
+        #expect(request.normalizedName == "New name")
     }
 }
