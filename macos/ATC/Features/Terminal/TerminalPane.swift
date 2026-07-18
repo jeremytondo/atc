@@ -79,8 +79,8 @@ struct TerminalStatusBanner: View {
         HStack(spacing: Spacing.sm, content: content)
             .padding(.horizontal, Spacing.md)
             .padding(.vertical, Spacing.sm)
-            // The app's one floating overlay — the only Liquid Glass call
-            // outside what system components provide for free.
+            // Floating overlay on Liquid Glass, like the toolbar's
+            // workspace pill.
             .glassEffect()
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .padding(.top, Spacing.lg)

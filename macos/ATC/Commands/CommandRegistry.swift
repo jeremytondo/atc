@@ -75,6 +75,14 @@ enum CommandRegistry {
                 },
                 perform: { $0.windowState.isCommandPalettePresented.toggle() }
             )
+        case .showDashboard:
+            CommandDescriptor(
+                id: id,
+                title: "Show Dashboard",
+                category: .view,
+                availability: { _ in .available },
+                perform: { $0.windowState.showDashboard() }
+            )
         case .newSession:
             CommandDescriptor(
                 id: id,

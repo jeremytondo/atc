@@ -55,7 +55,8 @@ struct CommandRegistryTests {
     @Test("descriptor enumeration is complete, unique, and stable")
     func descriptors() {
         let expectedIDs = [
-            "view.toggle-sidebar", "view.toggle-command-palette", "session.new",
+            "view.toggle-sidebar", "view.toggle-command-palette",
+            "view.show-dashboard", "session.new",
             "terminal.new", "project.new",
             "workspace.new", "data.refresh", "configuration.reload",
         ]
@@ -79,6 +80,7 @@ struct CommandRegistryTests {
         }) == [
             .toggleSidebar: .view,
             .toggleCommandPalette: .view,
+            .showDashboard: .view,
             .newSession: .sessionsAndTerminals,
             .newTerminal: .sessionsAndTerminals,
             .newProject: .projectsAndWorkspaces,
@@ -167,6 +169,10 @@ struct CommandRegistryTests {
         #expect(state.columnVisibility == .all)
         CommandRegistry.execute(.toggleSidebar, context: context)
         #expect(state.columnVisibility == .detailOnly)
+
+        #expect(state.selectedContent != .dashboard)
+        CommandRegistry.execute(.showDashboard, context: context)
+        #expect(state.selectedContent == .dashboard)
 
         CommandRegistry.execute(.newSession, context: context)
         #expect(state.startSessionKind?.rawValue == StartSessionKind.agentSession.rawValue)

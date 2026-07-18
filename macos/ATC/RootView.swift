@@ -32,29 +32,21 @@ struct RootView: View {
                 }
         }
         .navigationTitle("atc")
-        .navigationSubtitle(activeRuntime?.record.name ?? "")
+        .toolbar(removing: .title)
         .toolbar {
-            if windowState.selectedContent != .dashboard {
-                ToolbarItem(placement: .navigation) {
-                    Button {
-                        windowState.showDashboard()
-                    } label: {
-                        Label("Dashboard", systemImage: "chevron.left")
-                    }
-                    .labelStyle(.iconOnly)
-                    .help("Show Dashboard")
-                    .keyboardShortcut(.upArrow, modifiers: .command)
-                }
-            }
             ToolbarItem(placement: .principal) {
                 WorkspaceSwitcher()
             }
-            if windowState.activeWorkspace != nil,
-               windowState.selectedContent != .dashboard {
-                ToolbarItemGroup {
-                    WorkspaceActionsMenu()
+            ToolbarItem(placement: .primaryAction) {
+                Toggle(isOn: $windowState.isInspectorPresented) {
+                    Label("Inspector", systemImage: "sidebar.trailing")
                         .labelStyle(.iconOnly)
                 }
+                .toggleStyle(.button)
+                // Closing is always allowed; opening needs a session to show.
+                .disabled(!windowState.isInspectorPresented
+                    && !windowState.hasInspectorTarget(in: appModel))
+                .help(windowState.isInspectorPresented ? "Hide Inspector" : "Show Inspector")
             }
         }
         .sheet(isPresented: $windowState.isCreateProjectPresented) {
@@ -119,10 +111,6 @@ struct RootView: View {
 
     private var visibleSession: Session? {
         visibleSessionRef.flatMap { appModel.session(for: $0) }
-    }
-
-    private var activeRuntime: ConnectionRuntime? {
-        windowState.activeWorkspace.flatMap { appModel.runtime(id: $0.connectionID) }
     }
 
     private var workspaceEmptyActions: SessionContentView.EmptyStateActions? {

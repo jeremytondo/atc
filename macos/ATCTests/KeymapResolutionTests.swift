@@ -26,14 +26,16 @@ struct KeymapResolutionTests {
         let paletteShortcut = try stroke("cmd+shift+p")
         #expect(keymap.menuShortcuts[.toggleCommandPalette]
             == paletteShortcut)
+        #expect(command(at: try stroke("cmd+d"), in: keymap) == .showDashboard)
         #expect(command(at: try stroke("cmd+n"), in: keymap) == .newSession)
         #expect(command(at: try stroke("cmd+r"), in: keymap) == .refresh)
         #expect(command(at: try stroke("cmd+t"), in: keymap) == .newTerminal)
         #expect(command(at: try stroke("cmd+shift+n"), in: keymap) == .newWorkspace)
 
         let leader = try #require(prefix(at: try stroke("cmd+k"), in: keymap))
-        #expect(leader.count == 3)
+        #expect(leader.count == 4)
         #expect(command(in: leader[KeyStroke(key: "b", modifiers: [])]) == .toggleSidebar)
+        #expect(command(in: leader[KeyStroke(key: "d", modifiers: [])]) == .showDashboard)
         #expect(command(in: leader[KeyStroke(key: "n", modifiers: [])]) == .newSession)
         #expect(command(in: leader[KeyStroke(key: "r", modifiers: [])]) == .refresh)
     }
