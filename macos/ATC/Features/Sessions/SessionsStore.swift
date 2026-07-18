@@ -78,6 +78,14 @@ final class SessionsStore {
         return detail
     }
 
+    @discardableResult
+    func rename(id: String, name: String) async throws -> SessionDetail {
+        let detail = try await client.renameSession(id: id, name: name)
+        merge(detail)
+        scheduleRefresh()
+        return detail
+    }
+
     /// Deletes a session's metadata (the server ends it first if Live —
     /// files are never touched). Removes the row locally on
     /// success instead of merging.

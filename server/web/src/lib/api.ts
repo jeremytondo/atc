@@ -238,6 +238,14 @@ export async function startSession(body: StartSessionRequest): Promise<SessionDe
   return (await res.json()) as SessionDetail;
 }
 
+export async function renameSession(id: string, name: string): Promise<SessionDetail> {
+  const res = await apiFetch(
+    `/api/sessions/${encodeURIComponent(id)}`,
+    jsonInit('PATCH', { name })
+  );
+  return (await res.json()) as SessionDetail;
+}
+
 // deleteSession ends a Live process before removing its record; an Ended
 // Session only has its record removed.
 // Files on disk are never touched.

@@ -41,7 +41,7 @@ struct ContractFixtureTests {
         #expect(sessions[1].status == .ended)
     }
 
-    @Test("session detail", arguments: ["session-detail", "session-start"])
+    @Test("session detail", arguments: ["session-detail", "session-start", "session-rename"])
     func sessionDetail(fixture: String) throws {
         let detail = try decodeResponse(fixture, as: SessionDetail.self)
         #expect(!detail.id.isEmpty)

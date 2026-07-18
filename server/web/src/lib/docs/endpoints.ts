@@ -136,6 +136,24 @@ export const ENDPOINTS: Endpoint[] = [
     cli: { cmd: 'atc sessions send-text', example: 'atc sessions send-text ses_8f3a2c "hello"' }
   },
   {
+    key: 'renameSession',
+    group: 'Sessions',
+    method: 'PATCH',
+    path: '/api/sessions/{id}',
+    title: 'Rename session',
+    desc: 'Change only a Session’s persisted display name. Live and Ended Sessions can both be renamed; names are trimmed, must not be blank, and need not be unique.',
+    params: [
+      { name: 'id', type: 'string', required: true, desc: 'Session id (path).' },
+      { name: 'name', type: 'string', required: true, desc: 'New display name.' }
+    ],
+    fields: [
+      { key: 'id', label: 'id', kind: 'text', placeholder: 'ses_…', required: true },
+      { key: 'name', label: 'name', kind: 'text', placeholder: 'New name', required: true }
+    ],
+    returns: '{ "id": "ses_…", "name": "New name", "status": "live", … }',
+    cli: { cmd: 'atc sessions rename', example: 'atc sessions rename ses_8f3a2c "New name"' }
+  },
+  {
     key: 'sendKey',
     group: 'Sessions',
     method: 'POST',

@@ -31,6 +31,7 @@ func sessionsCommand(lookup envLookup) *cobra.Command {
 	cmd.AddCommand(sessionsStartCommand(lookup))
 	cmd.AddCommand(sessionsListCommand(lookup))
 	cmd.AddCommand(sessionsShowCommand(lookup))
+	cmd.AddCommand(sessionsRenameCommand(lookup))
 	cmd.AddCommand(sessionsAttachCommand(lookup))
 	cmd.AddCommand(sessionsSendTextCommand(lookup))
 	cmd.AddCommand(sessionsSendKeyCommand(lookup))
@@ -185,6 +186,43 @@ func sessionsShowCommand(lookup envLookup) *cobra.Command {
 				return fmt.Errorf("decode response: %w", err)
 			}
 			return writeSessionDetailText(cmd, resp)
+		},
+	}
+	cmd.Flags().StringVarP(&output, "output", "o", outputText, "Output format: text or json")
+	return cmd
+}
+
+func sessionsRenameCommand(lookup envLookup) *cobra.Command {
+	var output string
+
+	cmd := &cobra.Command{
+		Use:   "rename <id> <name>",
+		Short: "Rename a session",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutput(output); err != nil {
+				return err
+			}
+			client, err := commandAPIClient(cmd, lookup)
+			if err != nil {
+				return err
+			}
+			body, err := client.patch(cmd.Context(), sessionEndpoint(args[0]), map[string]any{
+				"name": args[1],
+			})
+			if err != nil {
+				return err
+			}
+			if output == outputJSON {
+				return writeRawJSON(cmd, body)
+			}
+
+			var resp api.SessionDetail
+			if err := json.Unmarshal(body, &resp); err != nil {
+				return fmt.Errorf("decode response: %w", err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", resp.ID, resp.Name)
+			return nil
 		},
 	}
 	cmd.Flags().StringVarP(&output, "output", "o", outputText, "Output format: text or json")

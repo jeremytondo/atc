@@ -195,6 +195,68 @@ func TestStartSuccessCreatesOneLivePublicSession(t *testing.T) {
 	}
 }
 
+func TestStartNormalizesName(t *testing.T) {
+	mux := &fakeMux{}
+	svc, _ := newService(t, mux)
+	started, err := svc.Start(context.Background(), StartInput{
+		Name: "  Review  ", WorkspaceID: testWorkspaceID,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if started.Name != "Review" {
+		t.Fatalf("name = %q, want trimmed", started.Name)
+	}
+
+	blank, err := svc.Start(context.Background(), StartInput{
+		Name: " \t ", WorkspaceID: testWorkspaceID,
+	})
+	if err != nil {
+		t.Fatalf("Start blank name: %v", err)
+	}
+	if blank.Name != "" {
+		t.Fatalf("blank name = %q, want unnamed", blank.Name)
+	}
+}
+
+func TestRenameLiveAndEndedSessions(t *testing.T) {
+	mux := &fakeMux{}
+	svc, st := newService(t, mux)
+	ctx := context.Background()
+	live, err := svc.Start(ctx, StartInput{Name: "Live", WorkspaceID: testWorkspaceID})
+	if err != nil {
+		t.Fatalf("Start live: %v", err)
+	}
+	ended, err := svc.Start(ctx, StartInput{Name: "Ended", WorkspaceID: testWorkspaceID})
+	if err != nil {
+		t.Fatalf("Start ended: %v", err)
+	}
+	if _, err := st.MarkEnded(ctx, ended.ID); err != nil {
+		t.Fatalf("MarkEnded: %v", err)
+	}
+
+	renamedLive, err := svc.Rename(ctx, live.ID, "  Shared  ")
+	if err != nil {
+		t.Fatalf("Rename live: %v", err)
+	}
+	renamedEnded, err := svc.Rename(ctx, ended.ID, "Shared")
+	if err != nil {
+		t.Fatalf("Rename ended duplicate: %v", err)
+	}
+	if renamedLive.Name != "Shared" || renamedEnded.Name != "Shared" {
+		t.Fatalf("names = %q, %q", renamedLive.Name, renamedEnded.Name)
+	}
+	if renamedLive.Workspace == nil || renamedLive.Project == nil {
+		t.Fatalf("renamed live missing refs: %+v", renamedLive)
+	}
+	if _, err := svc.Rename(ctx, live.ID, "   "); !errors.Is(err, ErrInvalidSessionName) {
+		t.Fatalf("blank err = %v, want ErrInvalidSessionName", err)
+	}
+	if _, err := svc.Rename(ctx, "ses_missing", "Name"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("missing err = %v, want ErrSessionNotFound", err)
+	}
+}
+
 func TestLaunchFailureDeletesProvisionalAndReturnsStructuredError(t *testing.T) {
 	mux := &fakeMux{startErr: errors.New("zmx failed")}
 	svc, st := newService(t, mux)

@@ -29,6 +29,10 @@ type sendKeyRequest struct {
 	Key string `json:"key"`
 }
 
+type renameSessionRequest struct {
+	Name string `json:"name"`
+}
+
 // SessionListResponse is the wire envelope for session list endpoints. It is
 // exported, along with the item and detail structs, so the CLI decodes the
 // same types the server encodes instead of redeclaring them.
@@ -138,6 +142,24 @@ func (routes apiRoutes) readSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, detailResponse(got))
 }
 
+// patchSession renames a session. Strict decoding keeps this endpoint scoped
+// to the display name and prevents clients from believing other fields changed.
+func (routes apiRoutes) patchSession(w http.ResponseWriter, r *http.Request) {
+	if !routes.requireSessions(w) {
+		return
+	}
+	var req renameSessionRequest
+	if !decodeRenameJSON(w, r, &req) {
+		return
+	}
+	renamed, err := routes.sessions.Rename(r.Context(), r.PathValue("id"), req.Name)
+	if err != nil {
+		writeSessionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, detailResponse(renamed))
+}
+
 func (routes apiRoutes) sendText(w http.ResponseWriter, r *http.Request) {
 	if !routes.requireSessions(w) {
 		return
@@ -229,7 +251,8 @@ func writeSessionError(w http.ResponseWriter, err error) {
 	case errors.Is(err, session.ErrActionDisabled):
 		writeError(w, http.StatusConflict, "action_disabled", err.Error())
 	case errors.Is(err, session.ErrUnknownKey),
-		errors.Is(err, session.ErrInvalidStatus):
+		errors.Is(err, session.ErrInvalidStatus),
+		errors.Is(err, session.ErrInvalidSessionName):
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 	case errors.Is(err, session.ErrActionMisconfigured):
 		writeError(w, http.StatusInternalServerError, "action_misconfigured", err.Error())

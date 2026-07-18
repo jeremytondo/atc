@@ -111,6 +111,7 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
     /// Session deletes persist so follow-up refreshes converge.
     private var deletedSessions: Set<String> = []
     private var endedSessions: Set<String> = []
+    private var renamedSessions: [String: String] = [:]
 
     var failDeletes: Bool {
         get { lock.withLock { _failDeletes } }
@@ -259,7 +260,7 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
     func version() async throws -> Version { try await inner.version() }
     func sessions(status: SessionStatus?) async throws -> [Session] {
         if failAll || failSessions { throw ATCError.badStatus(500) }
-        let overrides = lock.withLock { (deletedSessions, endedSessions) }
+        let overrides = lock.withLock { (deletedSessions, endedSessions, renamedSessions) }
         return try await inner.sessions(status: status)
             .filter { !overrides.0.contains($0.id) }
             .map { session in
@@ -271,6 +272,9 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
                 if overrides.1.contains(session.id) {
                     session.status = .ended
                 }
+                if let name = overrides.2[session.id] {
+                    session.name = name
+                }
                 return session
             }
             .filter { status == nil || $0.status == status }
@@ -278,6 +282,12 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
     func session(id: String) async throws -> SessionDetail { try await inner.session(id: id) }
     func startSession(_ request: StartSessionRequest) async throws -> SessionDetail {
         try await inner.startSession(request)
+    }
+    func renameSession(id: String, name: String) async throws -> SessionDetail {
+        var detail = try await inner.renameSession(id: id, name: name)
+        lock.withLock { renamedSessions[id] = detail.name }
+        detail.updatedAt = .now
+        return detail
     }
     func deleteSession(id: String) async throws {
         try await inner.deleteSession(id: id)

@@ -155,6 +155,34 @@ func TestSessionsShowTextIncludesFullDetail(t *testing.T) {
 	}
 }
 
+func TestSessionsRenamePatchesName(t *testing.T) {
+	lookup := testRuntimeLookup(t)
+	serveUnixAPI(t, lookup, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/api/sessions/ses_123" {
+			t.Fatalf("request = %s %s, want PATCH /api/sessions/ses_123", r.Method, r.URL.Path)
+		}
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req["name"] != "Renamed" {
+			t.Fatalf("name = %#v, want Renamed", req["name"])
+		}
+		_, _ = w.Write([]byte(`{"id":"ses_123","name":"Renamed","environment":"host-login-shell","params":{},"workingDir":"/repo","status":"ended","createdAt":"2026-07-09T12:30:00Z","updatedAt":"2026-07-09T14:00:00Z"}`))
+	})
+
+	cmd := sessionsCommand(lookup)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"rename", "ses_123", "Renamed"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if got := out.String(); got != "ses_123\tRenamed\n" {
+		t.Fatalf("output = %q", got)
+	}
+}
+
 func TestSessionActionsPostResourceRoutes(t *testing.T) {
 	tests := []struct {
 		name     string
