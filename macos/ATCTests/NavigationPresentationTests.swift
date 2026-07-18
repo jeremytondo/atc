@@ -33,6 +33,7 @@ struct NavigationPresentationTests {
             createdAt: .now, updatedAt: .now
         )
         let noActive = WorkspaceSwitcherPresentation.noActiveWorkspace
+        #expect(noActive.projectName == nil)
         #expect(noActive.label == "Select Workspace…")
         #expect(noActive.help == "Select an Active Workspace")
 
@@ -40,6 +41,8 @@ struct NavigationPresentationTests {
             project: project,
             workspace: workspace
         )
+        #expect(active.projectName == "Shared")
+        #expect(active.workspaceName == "Parser")
         #expect(active.label == "Shared › Parser")
         #expect(active.help == active.label)
 

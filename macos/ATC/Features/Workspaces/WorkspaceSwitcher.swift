@@ -4,7 +4,9 @@ import ATCAPI
 /// The toolbar's workspace pill: project › workspace breadcrumb plus the
 /// visible session's kind. A plain Button + popover, NOT a Menu — toolbar
 /// Menus bridge to a native item that flattens custom labels to text, so
-/// composite content (the badge) never renders inside one.
+/// composite content (the badge) never renders inside one. The toolbar
+/// already wraps the item in Liquid Glass, so the label draws no container
+/// of its own — a second glassEffect here nests two capsule outlines.
 struct WorkspaceSwitcher: View {
     @Environment(AppModel.self) private var appModel
     @Environment(WindowState.self) private var windowState
@@ -22,21 +24,26 @@ struct WorkspaceSwitcher: View {
             isPickerPresented.toggle()
         } label: {
             HStack(spacing: Spacing.sm) {
-                Text(presentation.label)
-                    .lineLimit(1)
+                HStack(spacing: Spacing.xs) {
+                    if let project = presentation.projectName {
+                        Text(project)
+                            .foregroundStyle(.secondary)
+                        Text("›")
+                            .foregroundStyle(.tertiary)
+                    }
+                    Text(presentation.workspaceName)
+                        .fontWeight(.medium)
+                }
+                .lineLimit(1)
                 Image(systemName: "chevron.down")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
                 if let sessionBadgeLabel {
                     TagBadge(text: sessionBadgeLabel)
                 }
             }
-            .padding(.horizontal, Spacing.md)
-            .padding(.vertical, Spacing.xs)
-            .glassEffect()
-            .contentShape(Capsule())
+            .padding(.horizontal, Spacing.xs)
         }
-        .buttonStyle(.plain)
         .popover(isPresented: $isPickerPresented, arrowEdge: .bottom) {
             // An archived Active Workspace never appears in the picker's
             // rows, so name it explicitly.
@@ -156,21 +163,34 @@ private struct WorkspacePicker: View {
 }
 
 struct WorkspaceSwitcherPresentation: Equatable {
-    let label: String
+    /// nil when no Active Workspace is selected — the pill then shows
+    /// only `workspaceName` (the placeholder prompt).
+    let projectName: String?
+    let workspaceName: String
     let help: String
 
+    /// Flat "project › workspace" string for accessibility and the
+    /// archived-current row in the picker.
+    var label: String {
+        projectName.map { "\($0) › \(workspaceName)" } ?? workspaceName
+    }
+
     static let noActiveWorkspace = WorkspaceSwitcherPresentation(
-        label: "Select Workspace…",
+        projectName: nil,
+        workspaceName: "Select Workspace…",
         help: "Select an Active Workspace"
     )
 
-    private init(label: String, help: String) {
-        self.label = label
+    private init(projectName: String?, workspaceName: String, help: String) {
+        self.projectName = projectName
+        self.workspaceName = workspaceName
         self.help = help
     }
 
     init(project: Project, workspace: Workspace) {
-        label = "\(project.name) › \(workspace.name)"
+        projectName = project.name
+        workspaceName = workspace.name
+        let label = "\(project.name) › \(workspace.name)"
         help = workspace.isArchived ? "\(label), Archived" : label
     }
 }
