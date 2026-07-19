@@ -45,7 +45,7 @@ struct WorkspaceSwitcher: View {
                         .foregroundStyle(.tertiary)
                         .opacity(isHighlighted ? 1 : 0)
                 }
-                .padding(.horizontal, Spacing.xs)
+                .padding(.horizontal, Spacing.sm)
                 .padding(.vertical, 2)
                 .background(
                     .quaternary.opacity(isHighlighted ? 1 : 0),
@@ -78,8 +78,8 @@ struct WorkspaceSwitcher: View {
         // intrinsic width non-negotiable.
         .fixedSize()
         // Inset the content from the toolbar item's glass capsule so the
-        // hover highlight and badge never touch its boundary.
-        .padding(.horizontal, Spacing.xs)
+        // hover highlight and badge never crowd its rounded ends.
+        .padding(.horizontal, Spacing.md)
     }
 
     /// What launched the visible session ("Claude", "Terminal", …); nil
