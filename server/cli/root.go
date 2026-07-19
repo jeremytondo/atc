@@ -41,7 +41,7 @@ func rootCommand() *cobra.Command {
 		SilenceErrors: true,
 	}
 
-	cmd.PersistentFlags().String("config", "", "Config file path (default $XDG_CONFIG_HOME/atc/atc.toml, or ATC_CONFIG)")
+	cmd.PersistentFlags().String("config", "", "Config file path (default $XDG_CONFIG_HOME/atc/server/config.toml, or ATC_CONFIG)")
 
 	cmd.AddCommand(serveCommand(os.Getenv, os.Stderr))
 	cmd.AddCommand(startCommand(os.Getenv))

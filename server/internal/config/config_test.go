@@ -39,7 +39,7 @@ func TestLoadDefaults(t *testing.T) {
 }
 
 func TestLoadFromFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "atc.toml")
+	path := filepath.Join(t.TempDir(), "config.toml")
 	contents := "" +
 		"[server]\nhttp_addr = \"127.0.0.1:9000\"\n" +
 		"[log]\nlevel = \"debug\"\nformat = \"json\"\n" +
@@ -68,7 +68,7 @@ func TestLoadFromFile(t *testing.T) {
 }
 
 func TestLoadPrecedence(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "atc.toml")
+	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(path, []byte("[server]\nhttp_addr = \"127.0.0.1:1111\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestLoadPrecedence(t *testing.T) {
 }
 
 func TestLoadDBPathPrecedence(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "atc.toml")
+	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(path, []byte("[store]\ndb_path = \"/from/file/atc.db\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestLoadDBPathPrecedence(t *testing.T) {
 }
 
 func TestLoadZmxBinPrecedence(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "atc.toml")
+	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(path, []byte("[zmx]\nbin = \"/from/file/zmx\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -233,12 +233,29 @@ func TestLoadMissingExplicitFileErrors(t *testing.T) {
 }
 
 func TestLoadParseError(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "atc.toml")
-	if err := os.WriteFile(path, []byte("this is = not valid = toml"), 0o600); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name     string
+		contents string
+	}{
+		{name: "syntax error", contents: "this is = not valid = toml"},
+		{name: "type mismatch", contents: "[server]\nhttp_addr = 5\n"},
 	}
-	if _, err := Load(Options{ConfigPath: path, ConfigChanged: true, Env: envFunc(nil)}); err == nil {
-		t.Fatal("expected parse error")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(tt.contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(Options{ConfigPath: path, ConfigChanged: true, Env: envFunc(nil)})
+			if err == nil {
+				t.Fatal("expected parse error")
+			}
+			// The diagnostic must carry the file path and go-toml's
+			// line-annotated excerpt (rendered as "N| <line>").
+			if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "1|") {
+				t.Fatalf("Load err = %v, want config path and line position", err)
+			}
+		})
 	}
 }
 
@@ -253,7 +270,7 @@ func TestLoadValidation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "atc.toml")
+			path := filepath.Join(t.TempDir(), "config.toml")
 			if err := os.WriteFile(path, []byte(tt.contents), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -267,12 +284,12 @@ func TestLoadValidation(t *testing.T) {
 func TestResolveConfigPathDefault(t *testing.T) {
 	xdg := "/home/u/.config"
 	got := defaultConfigPath(envFunc(map[string]string{"XDG_CONFIG_HOME": xdg}))
-	if want := filepath.Join(xdg, "atc", "atc.toml"); got != want {
+	if want := filepath.Join(xdg, "atc", "server", "config.toml"); got != want {
 		t.Errorf("xdg path = %q, want %q", got, want)
 	}
 
 	got = defaultConfigPath(envFunc(map[string]string{"HOME": "/home/u"}))
-	if want := filepath.Join("/home/u", ".config", "atc", "atc.toml"); got != want {
+	if want := filepath.Join("/home/u", ".config", "atc", "server", "config.toml"); got != want {
 		t.Errorf("home path = %q, want %q", got, want)
 	}
 }
@@ -283,7 +300,7 @@ func TestLoadDefaultActionsPathAndEnvironments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if want := filepath.Join(xdg, "atc", "actions.json"); cfg.ActionsPath != want {
+	if want := filepath.Join(xdg, "atc", "server", "actions.json"); cfg.ActionsPath != want {
 		t.Fatalf("actions path = %q, want %q", cfg.ActionsPath, want)
 	}
 	env, ok := cfg.Environments["host-login-shell"]
@@ -293,7 +310,7 @@ func TestLoadDefaultActionsPathAndEnvironments(t *testing.T) {
 }
 
 func TestLoadActionsPathPrecedence(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nested", "atc.toml")
+	path := filepath.Join(t.TempDir(), "nested", "config.toml")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -334,32 +351,54 @@ func TestLoadActionsPathFallsBackToTMPDIR(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsActionsTable(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "atc.toml")
-	if err := os.WriteFile(path, []byte("[actions.claude]\nbin = \"claude\"\n"), 0o600); err != nil {
-		t.Fatal(err)
+func TestLoadRejectsUnknownTopLevelTable(t *testing.T) {
+	tests := []struct {
+		name     string
+		contents string
+		want     string
+	}{
+		{name: "arbitrary table", contents: "[nonsense]\nvalue = 1\n", want: "nonsense"},
+		// Actions are managed via the API in actions.json; strict decoding
+		// rejects the retired [actions] and [agents] tables with no
+		// bespoke handling.
+		{name: "actions table", contents: "[actions.claude]\ncommand = \"claude\"\n", want: "actions"},
+		{name: "agents table", contents: "[agents.codex]\ncommand = \"codex\"\n", want: "agents"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(tt.contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
 
-	_, err := Load(Options{ConfigPath: path, ConfigChanged: true, Env: envFunc(nil)})
-	if err == nil || !strings.Contains(err.Error(), "actions are now managed in actions.json") {
-		t.Fatalf("Load err = %v, want actions table error", err)
+			_, err := Load(Options{ConfigPath: path, ConfigChanged: true, Env: envFunc(nil)})
+			if err == nil {
+				t.Fatal("Load returned nil error, want unknown table error")
+			}
+			if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Load err = %v, want config path and offending table %q", err, tt.want)
+			}
+		})
 	}
 }
 
-func TestLoadRejectsLegacyAgentsTable(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "atc.toml")
-	if err := os.WriteFile(path, []byte("[agents.codex]\nbin = \"codex\"\n"), 0o600); err != nil {
+func TestLoadRejectsUnknownKeyInKnownTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[server]\nbogus = 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	_, err := Load(Options{ConfigPath: path, ConfigChanged: true, Env: envFunc(nil)})
-	if err == nil || !strings.Contains(err.Error(), "[agents] has been renamed to [actions]") {
-		t.Fatalf("Load err = %v, want legacy agents table error", err)
+	if err == nil {
+		t.Fatal("Load returned nil error, want unknown key error")
+	}
+	if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "bogus") {
+		t.Fatalf("Load err = %v, want config path and offending key", err)
 	}
 }
 
 func TestLoadEnvironmentsFromFileOverlaysDefaults(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "atc.toml")
+	path := filepath.Join(t.TempDir(), "config.toml")
 	contents := "" +
 		"[environments.custom]\n" +
 		"kind = \"host-login-shell\"\n" +
@@ -381,7 +420,7 @@ func TestLoadEnvironmentsFromFileOverlaysDefaults(t *testing.T) {
 }
 
 func TestLoadAuthTokenPrecedence(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "atc.toml")
+	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(path, []byte("[auth]\ntoken = \"from-file\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -70,12 +70,12 @@ There are two ways to run the project:
   real backend. Logs from both processes stream in the same terminal. Stop both
   with `Ctrl-C`.
 
-  Dev is a hermetic profile: it generates `tmp/dev/atc.toml` and keeps its
+  Dev is a hermetic profile: it generates `tmp/dev/config.toml` and keeps its
   socket, database, and actions file under `tmp/dev/`, on a dedicated port.
-  Your personal `~/.config/atc/atc.toml` and `ATC_*` overrides
+  Your personal `~/.config/atc/server/config.toml` and `ATC_*` overrides
   never apply, and it runs cleanly alongside an installed background service.
   Delete `tmp/dev` for a fresh dev state; to point the CLI at the dev service,
-  pass its config: `go run ./cmd/atc --config tmp/dev/atc.toml sessions list`.
+  pass its config: `go run ./cmd/atc --config tmp/dev/config.toml sessions list`.
 - **`mise run serve`** builds the web app, embeds it into the binary, and runs
   the service in the foreground. This is the development/debug/supervisor path;
   `atc start` is the normal operator path for a background service.
@@ -218,14 +218,20 @@ gh workflow run release.yml --ref main -f channel=stable -f release_type=minor
 
 atc reads an optional TOML config file. Every setting also has a built-in default, so the file is never required.
 
-The default location is `$XDG_CONFIG_HOME/atc/atc.toml` (i.e. `~/.config/atc/atc.toml`). Override it with the `--config` flag or the `ATC_CONFIG` environment variable:
+The default location is `$XDG_CONFIG_HOME/atc/server/config.toml` (falling back
+to `~/.config/atc/server/config.toml`). Override it with the `--config` flag or
+the `ATC_CONFIG` environment variable:
 
 ```sh
-go run ./cmd/atc serve --config ./atc.toml
-ATC_CONFIG=./atc.toml go run ./cmd/atc serve
+go run ./cmd/atc serve --config ./config.toml
+ATC_CONFIG=./config.toml go run ./cmd/atc serve
 ```
 
-A missing config file at the default location is fine — atc falls back to defaults. A file passed explicitly via `--config` or `ATC_CONFIG` that is missing or malformed is an error.
+A missing config file at the default location is fine — atc falls back to
+defaults. A file passed explicitly via `--config` or `ATC_CONFIG` that is
+missing or malformed is an error. Config decoding is strict: unknown tables,
+unknown keys, and malformed values fail startup with the file path and position
+of the problem.
 
 Settings resolve with the precedence **flag > environment variable > config file > built-in default**, so a more specific source always wins. `http_addr` has a CLI flag (`--http-addr`) and environment override (`ATC_HTTP_ADDR`). `zmx.bin`, `auth.token`, and `store.db_path` can be overridden with `ATC_ZMX_BIN`, `ATC_API_TOKEN`, and `ATC_DB_PATH`.
 
@@ -293,11 +299,12 @@ Do not use recursive deletion or broad `atc-*` globs for this reset.
 
 The config file applies to background mode too: `atc start` forwards an explicit `--config` path to the detached service so it resolves the same file.
 
-Actions are managed in `actions.json` beside `atc.toml` by default, or at
-`ATC_ACTIONS_PATH` when that environment variable is set. The file is a
-sparse overlay: built-in `claude` and `codex` are always present underneath, and
-file entries add custom Actions or override built-ins by name. `[actions]` in
-`atc.toml` is rejected.
+Actions are managed in `actions.json` beside the resolved config file (by
+default `~/.config/atc/server/actions.json`), or at `ATC_ACTIONS_PATH` when that
+environment variable is set. The file is a sparse overlay: built-in `claude`
+and `codex` are always present underneath, and file entries add custom Actions
+or override built-ins by name. `[actions]` in TOML is rejected because the
+schema is strict; actions are managed through the API in `actions.json`.
 
 Pre-release files that use `bin` and `kind` still load, but new API writes use
 `command` and omit `kind`.
@@ -354,7 +361,7 @@ documents the `params` shape; it is not the default Codex definition:
 }
 ```
 
-Environments still live in `atc.toml`:
+Environments still live in `config.toml`:
 
 ```toml
 
