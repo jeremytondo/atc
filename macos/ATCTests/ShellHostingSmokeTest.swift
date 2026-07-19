@@ -34,7 +34,7 @@ struct ShellHostingSmokeTest {
         let appModel = AppModel.preview()
         let runtime = try #require(appModel.runtimes.first)
         await waitForData(runtime)
-        host(RootView(configStore: KeyboardConfigStore()).environment(appModel).environment(WindowState.ephemeral()))
+        host(RootView(configStore: ConfigurationStore()).environment(appModel).environment(WindowState.ephemeral()))
     }
 
     @Test("root view hosts with data arriving after first render")
@@ -42,7 +42,7 @@ struct ShellHostingSmokeTest {
         // The app's real launch order: the window is up before the first
         // poll returns, then rows insert into the live List.
         let appModel = AppModel.preview()
-        host(RootView(configStore: KeyboardConfigStore()).environment(appModel).environment(WindowState.ephemeral()))
+        host(RootView(configStore: ConfigurationStore()).environment(appModel).environment(WindowState.ephemeral()))
     }
 
     @Test("root view hosts Workspace content inside the stable split view")
@@ -55,7 +55,7 @@ struct ShellHostingSmokeTest {
             WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser"),
             in: appModel
         ))
-        host(RootView(configStore: KeyboardConfigStore()).environment(appModel).environment(windowState))
+        host(RootView(configStore: ConfigurationStore()).environment(appModel).environment(windowState))
         #expect(windowState.activeWorkspace?.workspaceID == "wsp_parser")
         #expect(windowState.selectedContent != .dashboard)
     }
@@ -71,7 +71,7 @@ struct ShellHostingSmokeTest {
             in: appModel
         ))
         windowState.showDashboard()
-        host(RootView(configStore: KeyboardConfigStore()).environment(appModel).environment(windowState))
+        host(RootView(configStore: ConfigurationStore()).environment(appModel).environment(windowState))
         #expect(windowState.selectedContent == .dashboard)
         #expect(windowState.activeWorkspace != nil)
     }
@@ -92,7 +92,7 @@ struct ShellHostingSmokeTest {
             styleMask: [.titled], backing: .buffered, defer: false
         )
         window.contentView = NSHostingView(
-            rootView: RootView(configStore: KeyboardConfigStore()).environment(appModel).environment(windowState)
+            rootView: RootView(configStore: ConfigurationStore()).environment(appModel).environment(windowState)
         )
         window.orderFront(nil)
         pump(seconds: 0.5)
@@ -119,7 +119,7 @@ struct ShellHostingSmokeTest {
             WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_archived"),
             in: appModel
         ))
-        host(RootView(configStore: KeyboardConfigStore()).environment(appModel).environment(windowState))
+        host(RootView(configStore: ConfigurationStore()).environment(appModel).environment(windowState))
     }
 
     @Test("Navigator and Dashboard transitions retain the hosted terminal surface")
@@ -140,7 +140,7 @@ struct ShellHostingSmokeTest {
             styleMask: [.titled], backing: .buffered, defer: false
         )
         window.contentView = NSHostingView(
-            rootView: RootView(configStore: KeyboardConfigStore()).environment(appModel).environment(windowState)
+            rootView: RootView(configStore: ConfigurationStore()).environment(appModel).environment(windowState)
         )
         window.orderFront(nil)
 
@@ -177,7 +177,7 @@ struct ShellHostingSmokeTest {
             styleMask: [.titled], backing: .buffered, defer: false
         )
         window.contentView = NSHostingView(
-            rootView: RootView(configStore: KeyboardConfigStore())
+            rootView: RootView(configStore: ConfigurationStore())
                 .environment(appModel)
                 .environment(windowState)
         )

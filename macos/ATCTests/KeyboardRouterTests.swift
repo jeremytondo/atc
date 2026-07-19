@@ -6,7 +6,7 @@ import Testing
 struct KeyboardRouterTests {
     private func keymap(_ config: String = "", generation: Int = 1) throws -> ResolvedKeymap {
         try Keymap.resolve(
-            user: KeyboardConfigParser.parse(config),
+            user: ConfigurationLoader.parse(config),
             generation: generation
         ).get()
     }

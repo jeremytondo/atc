@@ -12,6 +12,7 @@
 		AC00000000000000000000B3 /* GhosttyTerminal in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A3 /* GhosttyTerminal */; };
 		AC00000000000000000000B4 /* GhosttyTheme in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A4 /* GhosttyTheme */; };
 		AC00000000000000000000B5 /* ATCAPI in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A5 /* ATCAPI */; };
+		AC00000000000000000000B6 /* TOMLDecoder in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A6 /* TOMLDecoder */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -59,6 +60,7 @@
 				AC00000000000000000000B2 /* GhosttyKit in Frameworks */,
 				AC00000000000000000000B3 /* GhosttyTerminal in Frameworks */,
 				AC00000000000000000000B4 /* GhosttyTheme in Frameworks */,
+				AC00000000000000000000B6 /* TOMLDecoder in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -130,6 +132,7 @@
 				AC00000000000000000000A2 /* GhosttyKit */,
 				AC00000000000000000000A3 /* GhosttyTerminal */,
 				AC00000000000000000000A4 /* GhosttyTheme */,
+				AC00000000000000000000A6 /* TOMLDecoder */,
 			);
 			productName = atc;
 			productReference = DE7C711E2FF757CA00D8D7E5 /* atc.app */;
@@ -166,6 +169,7 @@
 			packageReferences = (
 				AC00000000000000000000C1 /* XCLocalSwiftPackageReference "../packages/ATCKit" */,
 				AC00000000000000000000C2 /* XCRemoteSwiftPackageReference "libghostty-spm" */,
+				AC00000000000000000000C3 /* XCRemoteSwiftPackageReference "TOMLDecoder" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = DE7C711F2FF757CA00D8D7E5 /* Products */;
@@ -492,6 +496,14 @@
 				version = 1.2.8;
 			};
 		};
+		AC00000000000000000000C3 /* XCRemoteSwiftPackageReference "TOMLDecoder" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/dduan/TOMLDecoder";
+			requirement = {
+				kind = exactVersion;
+				version = 0.4.5;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -517,6 +529,11 @@
 		AC00000000000000000000A5 /* ATCAPI */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = ATCAPI;
+		};
+		AC00000000000000000000A6 /* TOMLDecoder */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AC00000000000000000000C3 /* XCRemoteSwiftPackageReference "TOMLDecoder" */;
+			productName = TOMLDecoder;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

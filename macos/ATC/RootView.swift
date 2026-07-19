@@ -9,7 +9,7 @@ struct RootView: View {
     @Environment(WindowState.self) private var windowState
     /// The one store ATCApp creates and loads; previews and hosting tests
     /// pass an unloaded throwaway explicitly.
-    let configStore: KeyboardConfigStore
+    let configStore: ConfigurationStore
 
     var body: some View {
         KeyboardRoutingContainer(
@@ -129,7 +129,7 @@ struct RootView: View {
 }
 
 #Preview {
-    RootView(configStore: KeyboardConfigStore())
+    RootView(configStore: ConfigurationStore())
         .environment(AppModel.preview())
         .environment(WindowState())
         .preferredColorScheme(.dark)

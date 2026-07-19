@@ -43,6 +43,43 @@ The macOS app connects to one or more atc servers, browses their
 Projects, and attaches to Terminal Sessions in a native terminal. Open
 `macos/atc.xcodeproj` in Xcode to build and run it.
 
+### Configuration
+
+The macOS app optionally reads `$XDG_CONFIG_HOME/atc/macos.toml`. If
+`XDG_CONFIG_HOME` is empty or unset, it reads `~/.config/atc/macos.toml`.
+The app never creates the configuration directory or file.
+
+```toml
+[keyboard]
+leader = "cmd+k"                       # default: "cmd+k"
+leader_timeout_ms = 1800               # default: 1800
+clear_default_keybindings = false      # default: false
+
+[keybindings]
+"cmd+b" = "view.toggle-sidebar"
+"leader>b" = "view.toggle-sidebar"
+"cmd+r" = "unbind"
+```
+
+Binding keys are either direct triggers such as `cmd+b` or two-step leader
+sequences such as `leader>b`. Values are command IDs, or `"unbind"` to remove
+a default binding. Configuration uses a closed schema: unknown tables, unknown
+keys, duplicate keys, wrong types, and invalid values reject the entire file.
+When a command has several direct triggers, the menu bar shows one of them,
+chosen deterministically (user bindings beat defaults; ties resolve
+alphabetically).
+
+Use **Reload Configuration** in the app menu after editing the file. A valid
+reload replaces the complete application configuration; an invalid reload
+keeps the last-known-good configuration. Deleting the file and reloading
+restores defaults. **Reveal Configuration** selects `macos.toml` in Finder when
+it exists, or reveals its expected directory without creating anything.
+
+This file belongs only to the macOS process. It is separate from the server's
+`~/.config/atc/server/config.toml`; the app never reads server configuration
+files. Connections are stored by the app, and connection tokens remain in the
+Keychain.
+
 ## Development
 
 Tasks are run with [mise](https://mise.jdx.dev). From the repo root:
