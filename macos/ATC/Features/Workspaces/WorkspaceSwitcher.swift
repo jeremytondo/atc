@@ -25,14 +25,12 @@ struct WorkspaceSwitcher: View {
         } ?? .noActiveWorkspace
         // Highlight persists while the picker is open, matching Xcode.
         let isHighlighted = isHovering || isPickerPresented
-        HStack(spacing: Spacing.sm) {
+        HStack(spacing: Spacing.xs) {
             if let project = presentation.projectName {
-                HStack(spacing: Spacing.xs) {
-                    Text(project)
-                        .foregroundStyle(.secondary)
-                    Text("›")
-                        .foregroundStyle(.tertiary)
-                }
+                Text(project)
+                    .foregroundStyle(.secondary)
+                Text("›")
+                    .foregroundStyle(.tertiary)
             }
             Button {
                 isPickerPresented.toggle()
@@ -48,7 +46,7 @@ struct WorkspaceSwitcher: View {
                         .opacity(isHighlighted ? 1 : 0)
                 }
                 .padding(.horizontal, Spacing.xs)
-                .padding(.vertical, 3)
+                .padding(.vertical, 2)
                 .background(
                     .quaternary.opacity(isHighlighted ? 1 : 0),
                     in: RoundedRectangle(cornerRadius: 5)
@@ -74,6 +72,14 @@ struct WorkspaceSwitcher: View {
             }
         }
         .lineLimit(1)
+        // The toolbar offers custom principal views less than their
+        // natural width, which SwiftUI resolves by squeezing the Texts
+        // into "…" — even short names. fixedSize makes the pill's
+        // intrinsic width non-negotiable.
+        .fixedSize()
+        // Inset the content from the toolbar item's glass capsule so the
+        // hover highlight and badge never touch its boundary.
+        .padding(.horizontal, Spacing.xs)
     }
 
     /// What launched the visible session ("Claude", "Terminal", …); nil
