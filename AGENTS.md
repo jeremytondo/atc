@@ -45,3 +45,7 @@ When starting sub agents or running workflows, be smart about which agents to ch
 ## Using Linear
 
 When doing work in Linear, always work within the atc team: https://linear.app/elevenideas/team/ATC.
+
+## Working With XCode
+
+If using XcodeBuildMCP, use the installed XcodeBuildMCP skill before calling XcodeBuildMCP tools.

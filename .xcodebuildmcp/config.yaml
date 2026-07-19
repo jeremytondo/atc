@@ -1,0 +1,12 @@
+schemaVersion: 1
+enabledWorkflows:
+  - macos
+  - xcode-ide
+debug: false
+sentryDisabled: false
+setupPreferences:
+  platforms:
+    - macOS
+sessionDefaults:
+  projectPath: macos/atc.xcodeproj
+  scheme: atc
