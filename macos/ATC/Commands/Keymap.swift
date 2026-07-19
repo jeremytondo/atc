@@ -24,6 +24,9 @@ enum Keymap {
         ("cmd+r", .refresh), ("leader>r", .refresh),
         ("cmd+t", .newTerminal),
         ("cmd+shift+n", .newWorkspace),
+        ("cmd+shift+s", .searchSessions), ("leader>s", .searchSessions),
+        ("cmd+shift+t", .searchTerminals), ("leader>t", .searchTerminals),
+        ("cmd+shift+o", .searchWorkspaces), ("leader>w", .searchWorkspaces),
     ]
 
     static func resolve(

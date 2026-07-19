@@ -249,6 +249,154 @@ struct CommandPaletteContentTests {
         })
     }
 
+    @Test("scoped blank queries list only the Active Workspace's classified Sessions")
+    func scopedSessionKinds() async throws {
+        var client = MockATCClient()
+        client.mockProjects = [paletteProject("project", name: "Project")]
+        client.mockWorkspaces = [
+            paletteWorkspace("active", project: "project", name: "Active"),
+            paletteWorkspace("other", project: "project", name: "Other"),
+        ]
+        client.mockSessions = [
+            paletteSession(
+                "agent-live", name: "Zulu Agent", action: "claude", workspace: "active"
+            ),
+            paletteSession(
+                "agent-ended", name: "Alpha Agent", action: "claude",
+                workspace: "active", status: .ended
+            ),
+            paletteSession("terminal-live", name: "Beta Terminal", workspace: "active"),
+            paletteSession(
+                "terminal-ended", name: "Delta Tool", action: "lazygit",
+                workspace: "active", status: .ended
+            ),
+            paletteSession(
+                "outside", name: "Outside Agent", action: "claude", workspace: "other"
+            ),
+        ]
+        let fixture = try await makeLiveFixture(client: client, workspaceID: "active")
+
+        let sessions = results(query: "", presentation: .sessions, fixture: fixture)
+        #expect(sessions.count == 2)
+        #expect(sessions.compactMap(\.sessionRow).map(\.title) == ["Alpha Agent", "Zulu Agent"])
+        #expect(sessions.compactMap(\.sessionRow).allSatisfy { $0.kind == .agent })
+
+        let terminals = results(query: "", presentation: .terminals, fixture: fixture)
+        #expect(terminals.count == 2)
+        #expect(terminals.compactMap(\.sessionRow).map(\.title) == [
+            "Beta Terminal", "Delta Tool",
+        ])
+        #expect(terminals.compactMap(\.sessionRow).allSatisfy { $0.kind == .terminal })
+    }
+
+    @Test("scoped typed queries never admit another result type")
+    func scopedTypeIsolation() async throws {
+        var client = MockATCClient()
+        client.mockProjects = [paletteProject("project", name: "Project")]
+        client.mockWorkspaces = [
+            paletteWorkspace("active", project: "project", name: "Active Workspace")
+        ]
+        client.mockSessions = [
+            paletteSession(
+                "agent", name: "Agent Result", action: "claude", workspace: "active"
+            ),
+            paletteSession("terminal", name: "Terminal Result", workspace: "active"),
+        ]
+        let fixture = try await makeLiveFixture(client: client, workspaceID: "active")
+
+        #expect(results(
+            query: "Refresh", presentation: .sessions, fixture: fixture
+        ).isEmpty)
+        #expect(results(
+            query: "Terminal Result", presentation: .sessions, fixture: fixture
+        ).isEmpty)
+        #expect(results(
+            query: "Agent Result", presentation: .terminals, fixture: fixture
+        ).isEmpty)
+        #expect(results(
+            query: "Agent Result", presentation: .workspaces, fixture: fixture
+        ).isEmpty)
+    }
+
+    @Test("type keywords expand only in the unscoped palette")
+    func scopedKeywordsDoNotExpand() async throws {
+        var client = MockATCClient()
+        client.mockProjects = [paletteProject("project", name: "Project")]
+        client.mockWorkspaces = [
+            paletteWorkspace("alpha", project: "project", name: "Alpha"),
+            paletteWorkspace("working", project: "project", name: "Workspace Notes"),
+        ]
+        client.mockSessions = [
+            paletteSession(
+                "session-match", name: "Session Notes", action: "claude",
+                workspace: "alpha"
+            ),
+            paletteSession(
+                "session-other", name: "Agent Notes", action: "claude",
+                workspace: "alpha"
+            ),
+            paletteSession("terminal-match", name: "Terminal Notes", workspace: "alpha"),
+            paletteSession("terminal-other", name: "Shell Notes", workspace: "alpha"),
+        ]
+        let fixture = try await makeLiveFixture(client: client, workspaceID: "alpha")
+
+        #expect(results(
+            query: "ses", presentation: .sessions, fixture: fixture
+        ).compactMap(\.sessionRow).map(\.ref.sessionID) == ["session-match"])
+        #expect(results(
+            query: "ter", presentation: .terminals, fixture: fixture
+        ).compactMap(\.sessionRow).map(\.ref.sessionID) == ["terminal-match"])
+        // "worksp" is still a keyword prefix, but avoids the preview
+        // Connection name "Workstation", which every scoped row may match.
+        #expect(results(
+            query: "worksp", presentation: .workspaces, fixture: fixture
+        ).compactMap(\.workspaceRow).map(\.ref.workspaceID) == ["working"])
+
+        let unscoped = results(query: "ses", presentation: .all, fixture: fixture)
+            .compactMap(\.sessionRow)
+        #expect(unscoped.map(\.ref.sessionID) == ["session-other", "session-match"])
+        #expect(unscoped.allSatisfy { $0.kind == .agent })
+    }
+
+    @Test("Workspace scope includes unarchived Workspaces from unreachable Connections")
+    func scopedWorkspacesAcrossConnections() async throws {
+        let connectedClient = ScriptableClient()
+        let disconnectedClient = ScriptableClient()
+        let model = AppModel.preview(connections: [
+            (name: "Connected", client: connectedClient),
+            (name: "Disconnected", client: disconnectedClient),
+        ])
+        await model.refreshAll()
+        let disconnectedRuntime = try #require(model.runtimes.first {
+            $0.record.name == "Disconnected"
+        })
+        disconnectedRuntime.stopPolling()
+        disconnectedClient.shouldFail = true
+        await disconnectedRuntime.refresh()
+
+        let fixture = makeFixture(appModel: model)
+        let rows = results(query: "", presentation: .workspaces, fixture: fixture)
+            .compactMap(\.workspaceRow)
+        #expect(rows.count == 6)
+        #expect(rows.map(\.title) == rows.map(\.title).sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        })
+        #expect(!rows.map(\.title).contains("Old experiment"))
+        #expect(Set(rows.map(\.connectionName)) == ["Connected", "Disconnected"])
+        #expect(rows.filter { $0.connectionName == "Disconnected" }.allSatisfy {
+            $0.availability == .unavailable(reason: "Requires a reachable Connection")
+        })
+    }
+
+    @Test("Session scopes are empty without an Active Workspace")
+    func scopedSessionsWithoutActiveWorkspace() async {
+        let model = AppModel.preview()
+        await model.refreshAll()
+        let fixture = makeFixture(appModel: model)
+        #expect(results(query: "", presentation: .sessions, fixture: fixture).isEmpty)
+        #expect(results(query: "", presentation: .terminals, fixture: fixture).isEmpty)
+    }
+
     private func makeFixture(
         config: String = "",
         appModel: AppModel? = nil,
@@ -295,11 +443,16 @@ struct CommandPaletteContentTests {
         return makeFixture(appModel: model, windowState: state)
     }
 
-    private func results(query: String, fixture: Fixture) -> [PaletteResult] {
+    private func results(
+        query: String,
+        presentation: CommandPalettePresentation = .all,
+        fixture: Fixture
+    ) -> [PaletteResult] {
         CommandPaletteContent.results(
             query: query,
             keymap: fixture.keymap,
-            context: fixture.context
+            context: fixture.context,
+            presentation: presentation
         )
     }
 
@@ -502,7 +655,11 @@ struct CommandPaletteWorkspaceResultTests {
         query: String,
         groups: ProjectsNavigatorGroups
     ) -> [WorkspaceResult] {
-        CommandPaletteContent.workspaceResults(query: query, groups: groups)
+        CommandPaletteContent.workspaceResults(
+            query: query,
+            groups: groups,
+            keyword: PaletteTypeKeyword.match(query)
+        )
     }
 
     private func groups(inputs: [ProjectsNavigatorGroups.Input]) -> ProjectsNavigatorGroups {
@@ -696,7 +853,8 @@ struct CommandPaletteSessionResultTests {
         let projected = CommandPaletteContent.results(
             query: "Only",
             keymap: fixture.keymap,
-            context: fixture.context
+            context: fixture.context,
+            presentation: .all
         ).compactMap(\.sessionRow)
         #expect(projected.map(\.title) == ["Only Active Connection"])
     }
@@ -710,7 +868,8 @@ struct CommandPaletteSessionResultTests {
             query: query,
             activeWorkspace: active,
             sessions: sessions,
-            actions: actions
+            actions: actions,
+            keyword: PaletteTypeKeyword.match(query)
         )
     }
 }
@@ -739,7 +898,8 @@ struct CommandPaletteScaleTests {
         }
         let workspaceResults = CommandPaletteContent.workspaceResults(
             query: "Scale",
-            groups: ProjectsNavigatorGroups(inputs: workspaceInputs)
+            groups: ProjectsNavigatorGroups(inputs: workspaceInputs),
+            keyword: nil
         )
         #expect(workspaceResults.count == 2_000)
 
@@ -757,7 +917,8 @@ struct CommandPaletteScaleTests {
             query: "Scale",
             activeWorkspace: active,
             sessions: sessions,
-            actions: []
+            actions: [],
+            keyword: nil
         )
         #expect(sessionResults.count == 2_000)
 
@@ -765,7 +926,8 @@ struct CommandPaletteScaleTests {
             query: "ter",
             activeWorkspace: active,
             sessions: sessions,
-            actions: []
+            actions: [],
+            keyword: .terminals
         )
         #expect(keywordResults.count == 2_000)
     }

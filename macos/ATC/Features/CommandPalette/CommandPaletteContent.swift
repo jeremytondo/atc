@@ -47,11 +47,12 @@ struct SessionResult: Identifiable {
     var id: PaletteResultID { .session(ref) }
 }
 
-/// A whole-query type keyword: a trimmed query of three or more characters
-/// that is a case-insensitive prefix of one plural keyword ("sessions",
-/// "terminals", "workspaces") lists every target of that type, additively
-/// with ordinary matching. Anything else — shorter, longer than the keyword,
-/// or a composed query like "session parser" — matches only by title.
+/// A whole-query type keyword for the unscoped palette: a trimmed query of
+/// three or more characters that is a case-insensitive prefix of one plural
+/// keyword ("sessions", "terminals", "workspaces") lists every target of that
+/// type, additively with ordinary matching. Anything else — shorter, longer
+/// than the keyword, or a composed query like "session parser" — matches only
+/// by title.
 enum PaletteTypeKeyword: CaseIterable, Equatable {
     case sessions
     case terminals
@@ -79,6 +80,28 @@ enum CommandPaletteContent {
     static func results(
         query: String,
         keymap: ResolvedKeymap,
+        context: CommandContext,
+        presentation: CommandPalettePresentation
+    ) -> [PaletteResult] {
+        switch presentation {
+        case .all:
+            return allResults(query: query, keymap: keymap, context: context)
+        case .sessions:
+            return scopedSessionResults(query: query, kind: .agent, context: context)
+        case .terminals:
+            return scopedSessionResults(query: query, kind: .terminal, context: context)
+        case .workspaces:
+            return workspaceResults(
+                query: query,
+                groups: ProjectsNavigatorGroups(runtimes: context.appModel.runtimes),
+                keyword: nil
+            ).map(PaletteResult.workspace)
+        }
+    }
+
+    private static func allResults(
+        query: String,
+        keymap: ResolvedKeymap,
         context: CommandContext
     ) -> [PaletteResult] {
         let commands = commandRows(query: query, keymap: keymap, context: context)
@@ -87,9 +110,12 @@ enum CommandPaletteContent {
             return commands
         }
 
+        let keyword = PaletteTypeKeyword.match(query)
+
         let workspaces = workspaceResults(
             query: query,
-            groups: ProjectsNavigatorGroups(runtimes: context.appModel.runtimes)
+            groups: ProjectsNavigatorGroups(runtimes: context.appModel.runtimes),
+            keyword: keyword
         ).map(PaletteResult.workspace)
 
         guard let activeWorkspace = context.windowState.activeWorkspace,
@@ -99,16 +125,36 @@ enum CommandPaletteContent {
             query: query,
             activeWorkspace: activeWorkspace,
             sessions: runtime.sessions.sessions,
-            actions: runtime.actions.actions
+            actions: runtime.actions.actions,
+            keyword: keyword
         ).map(PaletteResult.session)
         return commands + workspaces + sessions
     }
 
+    private static func scopedSessionResults(
+        query: String,
+        kind: SessionKind,
+        context: CommandContext
+    ) -> [PaletteResult] {
+        guard let activeWorkspace = context.windowState.activeWorkspace,
+              let runtime = context.appModel.runtime(id: activeWorkspace.connectionID)
+        else { return [] }
+        return sessionResults(
+            query: query,
+            activeWorkspace: activeWorkspace,
+            sessions: runtime.sessions.sessions,
+            actions: runtime.actions.actions,
+            keyword: nil,
+            kind: kind
+        ).map(PaletteResult.session)
+    }
+
     static func workspaceResults(
         query: String,
-        groups: ProjectsNavigatorGroups
+        groups: ProjectsNavigatorGroups,
+        keyword: PaletteTypeKeyword?
     ) -> [WorkspaceResult] {
-        let expandsWorkspaces = PaletteTypeKeyword.match(query) == .workspaces
+        let expandsWorkspaces = keyword == .workspaces
         return groups.projects.flatMap { group in
             group.workspaces.compactMap { row in
                 let titleMatch = QueryMatcher.match(query, in: row.workspace.name)
@@ -135,13 +181,15 @@ enum CommandPaletteContent {
         query: String,
         activeWorkspace: WorkspaceRef,
         sessions: [Session],
-        actions: [ATCAction]
+        actions: [ATCAction],
+        keyword: PaletteTypeKeyword?,
+        kind requiredKind: SessionKind? = nil
     ) -> [SessionResult] {
-        let keyword = PaletteTypeKeyword.match(query)
         return sessions.compactMap { session in
             guard session.belongs(to: activeWorkspace) else { return nil }
             let title = SessionKind.displayName(session: session, actions: actions)
             let kind = SessionKind.classify(session: session, actions: actions)
+            guard requiredKind == nil || kind == requiredKind else { return nil }
             let titleMatch = QueryMatcher.match(query, in: title)
             let expandsKind: Bool
             switch kind {

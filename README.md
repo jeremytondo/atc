@@ -78,6 +78,14 @@ When a command has several direct triggers, the menu bar shows one of them,
 chosen deterministically (user bindings beat defaults; ties resolve
 alphabetically).
 
+The scoped Command Palette commands search within a specific navigation type:
+
+| Command ID | Default bindings |
+| --- | --- |
+| `view.search-sessions` | `cmd+shift+s`, `leader>s` |
+| `view.search-terminals` | `cmd+shift+t`, `leader>t` |
+| `view.search-workspaces` | `cmd+shift+o`, `leader>w` |
+
 All `[terminal]` keys are optional. Terminal presentation starts from
 libghostty's compiled defaults, then applies only the values explicitly set in
 this table. `theme` must name a bundled Ghostty theme; `font_family` must be

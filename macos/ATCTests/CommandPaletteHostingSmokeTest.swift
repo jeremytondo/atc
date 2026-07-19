@@ -77,6 +77,50 @@ struct CommandPaletteHostingSmokeTest {
         window.orderOut(nil)
     }
 
+    @Test("scoped palettes host their blank-query listings without crashing")
+    func hostScopedPalettes() async throws {
+        let store = ConfigurationStore(
+            configURL: FileManager.default.temporaryDirectory
+                .appending(path: UUID().uuidString)
+        )
+        let appModel = AppModel.preview()
+        await appModel.refreshAll()
+        let windowState = WindowState.ephemeral()
+        let connectionID = try #require(appModel.runtimes.first?.id)
+        #expect(windowState.activateWorkspace(
+            WorkspaceRef(connectionID: connectionID, workspaceID: "wsp_parser"),
+            in: appModel
+        ))
+        let router = WindowKeyboardRouter(
+            keymap: store.configuration.keymap,
+            context: CommandContext(
+                appModel: appModel,
+                windowState: windowState,
+                configStore: store
+            )
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        for presentation in [
+            CommandPalettePresentation.sessions, .terminals, .workspaces,
+        ] {
+            windowState.commandPalettePresentation = presentation
+            window.contentView = NSHostingView(
+                rootView: CommandPaletteView()
+                    .environment(appModel)
+                    .environment(windowState)
+                    .environment(store)
+                    .environment(router)
+            )
+            window.makeKeyAndOrderFront(nil)
+            pump(seconds: 0.2)
+            #expect(windowState.commandPalettePresentation == presentation)
+        }
+        window.orderOut(nil)
+    }
+
     @Test("routing container mounts the presented palette without crashing")
     func hostIntegratedPalette() {
         let store = ConfigurationStore(
@@ -85,7 +129,7 @@ struct CommandPaletteHostingSmokeTest {
         )
         let appModel = AppModel.preview()
         let windowState = WindowState.ephemeral()
-        windowState.isCommandPalettePresented = true
+        windowState.commandPalettePresentation = .all
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
             styleMask: [.titled], backing: .buffered, defer: false
@@ -103,7 +147,7 @@ struct CommandPaletteHostingSmokeTest {
         )
         window.makeKeyAndOrderFront(nil)
         pump(seconds: 0.5)
-        #expect(windowState.isCommandPalettePresented)
+        #expect(windowState.commandPalettePresentation == .all)
         window.orderOut(nil)
     }
 
@@ -138,11 +182,11 @@ struct CommandPaletteHostingSmokeTest {
         hostingView.addSubview(previousResponder)
         #expect(window.makeFirstResponder(previousResponder))
 
-        windowState.isCommandPalettePresented = true
+        windowState.commandPalettePresentation = .all
         pump(until: { window.firstResponder !== previousResponder })
         #expect(window.firstResponder !== previousResponder)
 
-        windowState.isCommandPalettePresented = false
+        windowState.commandPalettePresentation = nil
         pump(until: { window.firstResponder === previousResponder })
         #expect(window.firstResponder === previousResponder)
         window.orderOut(nil)
@@ -175,7 +219,7 @@ struct CommandPaletteHostingSmokeTest {
 
         let coordinator = KeyboardMonitorHost.Coordinator(
             router: router,
-            onDeactivate: { windowState.isCommandPalettePresented = false },
+            onDeactivate: { windowState.commandPalettePresentation = nil },
             focusFallback: {}
         )
         coordinator.install(for: window)
@@ -183,7 +227,7 @@ struct CommandPaletteHostingSmokeTest {
         // Simulate the keyboard opener mid-flight: suspension has flipped and
         // the key monitor stashed the responder and cleared focus, but the
         // palette's window accessor has not mounted yet.
-        windowState.isCommandPalettePresented = true
+        windowState.commandPalettePresentation = .all
         router.responderBeforeSuspension = probe
         window.makeFirstResponder(nil)
 
@@ -193,7 +237,7 @@ struct CommandPaletteHostingSmokeTest {
         )
         pump(until: { window.firstResponder === probe })
 
-        #expect(!windowState.isCommandPalettePresented)
+        #expect(windowState.commandPalettePresentation == nil)
         #expect(window.firstResponder === probe)
         #expect(router.responderBeforeSuspension == nil)
         coordinator.stop()

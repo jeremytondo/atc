@@ -56,7 +56,8 @@ struct CommandRegistryTests {
     func descriptors() {
         let expectedIDs = [
             "view.toggle-sidebar", "view.toggle-command-palette",
-            "view.show-dashboard", "session.new",
+            "view.search-sessions", "view.search-terminals",
+            "view.search-workspaces", "view.show-dashboard", "session.new",
             "terminal.new", "project.new",
             "workspace.new", "data.refresh", "configuration.reload",
             "configuration.reveal",
@@ -68,7 +69,7 @@ struct CommandRegistryTests {
         #expect(Set(descriptors.map { $0.id.rawValue }).count == descriptors.count)
         #expect(descriptors.allSatisfy { !$0.title.isEmpty })
         #expect(descriptors.filter { !$0.isPaletteEligible }.map(\.id)
-            == [.toggleCommandPalette])
+            == [.toggleCommandPalette, .searchSessions, .searchTerminals, .searchWorkspaces])
     }
 
     @Test("categories use the shared presentation order and assignments")
@@ -81,6 +82,9 @@ struct CommandRegistryTests {
         }) == [
             .toggleSidebar: .view,
             .toggleCommandPalette: .view,
+            .searchSessions: .view,
+            .searchTerminals: .view,
+            .searchWorkspaces: .view,
             .showDashboard: .view,
             .newSession: .sessionsAndTerminals,
             .newTerminal: .sessionsAndTerminals,
@@ -104,9 +108,13 @@ struct CommandRegistryTests {
 
         #expect(descriptor.availability(context) == .available)
         CommandRegistry.execute(.toggleCommandPalette, context: context)
-        #expect(state.isCommandPalettePresented)
+        #expect(state.commandPalettePresentation == .all)
         CommandRegistry.execute(.toggleCommandPalette, context: context)
-        #expect(!state.isCommandPalettePresented)
+        #expect(state.commandPalettePresentation == nil)
+
+        state.commandPalettePresentation = .sessions
+        CommandRegistry.execute(.toggleCommandPalette, context: context)
+        #expect(state.commandPalettePresentation == nil)
 
         state.isCreateProjectPresented = true
         #expect(state.isSheetPresented)
@@ -124,6 +132,66 @@ struct CommandRegistryTests {
         state.startSessionKind = nil
         #expect(!state.isSheetPresented)
         #expect(descriptor.availability(context) == .available)
+    }
+
+    @Test("scoped palette commands execute into their presentation")
+    func scopedPaletteExecution() async throws {
+        let (context, _) = try await loadedContext()
+        let state = context.windowState
+
+        for (id, presentation) in [
+            (CommandID.searchSessions, CommandPalettePresentation.sessions),
+            (.searchTerminals, .terminals),
+            (.searchWorkspaces, .workspaces),
+        ] {
+            #expect(CommandRegistry.execute(id, context: context) == .available)
+            #expect(state.commandPalettePresentation == presentation)
+            state.commandPalettePresentation = nil
+        }
+    }
+
+    @Test("scoped palette availability follows dialog, palette, and Workspace state")
+    func scopedPaletteAvailability() async throws {
+        let model = makeModel()
+        let state = WindowState.ephemeral()
+        let context = makeContext(model: model, state: state)
+        let workspaceRequired = CommandAvailability.unavailable(
+            reason: "Requires an Active Workspace"
+        )
+        #expect(CommandRegistry.descriptor(for: .searchSessions).availability(context)
+            == workspaceRequired)
+        #expect(CommandRegistry.descriptor(for: .searchTerminals).availability(context)
+            == workspaceRequired)
+        #expect(CommandRegistry.descriptor(for: .searchWorkspaces).availability(context)
+            == .available)
+
+        let scopedIDs = [
+            CommandID.searchSessions, .searchTerminals, .searchWorkspaces,
+        ]
+        state.commandPalettePresentation = .all
+        for id in scopedIDs {
+            #expect(CommandRegistry.descriptor(for: id).availability(context) == .unavailable(
+                reason: "Not available while the Command Palette is open"
+            ))
+        }
+        state.commandPalettePresentation = .workspaces
+        for id in scopedIDs {
+            #expect(CommandRegistry.descriptor(for: id).availability(context) == .unavailable(
+                reason: "Not available while the Command Palette is open"
+            ))
+        }
+
+        state.isCreateProjectPresented = true
+        for id in scopedIDs {
+            #expect(CommandRegistry.descriptor(for: id).availability(context) == .unavailable(
+                reason: "Not available while a dialog is open"
+            ))
+        }
+
+        let (loaded, _) = try await loadedContext()
+        for id in scopedIDs {
+            #expect(CommandRegistry.descriptor(for: id).availability(loaded) == .available)
+        }
     }
 
     @Test("availability follows the complete command truth table")

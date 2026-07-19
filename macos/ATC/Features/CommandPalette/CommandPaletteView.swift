@@ -18,6 +18,7 @@ struct CommandPaletteView: View {
     }
 
     var body: some View {
+        let presentation = windowState.commandPalettePresentation ?? .all
         let context = CommandContext(
             appModel: appModel,
             windowState: windowState,
@@ -26,7 +27,8 @@ struct CommandPaletteView: View {
         let rows = CommandPaletteContent.results(
             query: query,
             keymap: configStore.configuration.keymap,
-            context: context
+            context: context,
+            presentation: presentation
         )
 
         ZStack(alignment: .top) {
@@ -34,7 +36,7 @@ struct CommandPaletteView: View {
                 .contentShape(Rectangle())
                 .onTapGesture { dismissPalette() }
 
-            palettePanel(rows: rows, context: context)
+            palettePanel(rows: rows, context: context, presentation: presentation)
                 .frame(maxWidth: 500)
                 .padding(.horizontal, 20)
                 .padding(.top, 48)
@@ -54,9 +56,9 @@ struct CommandPaletteView: View {
             },
             fallback: { windowState.requestTerminalFocus() }
         ))
-        .onAppear { resetSelection(for: rows) }
+        .onAppear { resetSelection(for: rows, presentation: presentation) }
         .onChange(of: query) {
-            resetSelection(for: rows)
+            resetSelection(for: rows, presentation: presentation)
             let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty, rows.isEmpty {
                 AccessibilityNotification.Announcement("No matching results").post()
@@ -66,7 +68,7 @@ struct CommandPaletteView: View {
         // selection that no longer resolves falls back to the standard rule.
         .onChange(of: rows.map(\.id)) {
             if let selectedID, rows.contains(where: { $0.id == selectedID }) { return }
-            resetSelection(for: rows)
+            resetSelection(for: rows, presentation: presentation)
         }
         // Keyboard focus stays on the query field while arrows move the
         // selection, so VoiceOver never lands on the rows; announce the
@@ -81,10 +83,11 @@ struct CommandPaletteView: View {
 
     private func palettePanel(
         rows: [PaletteResult],
-        context: CommandContext
+        context: CommandContext,
+        presentation: CommandPalettePresentation
     ) -> some View {
         VStack(spacing: 0) {
-            TextField("Search commands and navigation…", text: $query)
+            TextField(placeholder(for: presentation), text: $query)
                 .textFieldStyle(.plain)
                 .font(.title3)
                 .padding(.horizontal, 14)
@@ -109,7 +112,7 @@ struct CommandPaletteView: View {
 
             Divider()
 
-            resultList(rows: rows, context: context)
+            resultList(rows: rows, context: context, presentation: presentation)
         }
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 11))
         .overlay {
@@ -122,10 +125,11 @@ struct CommandPaletteView: View {
     @ViewBuilder
     private func resultList(
         rows: [PaletteResult],
-        context: CommandContext
+        context: CommandContext,
+        presentation: CommandPalettePresentation
     ) -> some View {
         if rows.isEmpty {
-            Text("No matching results")
+            Text(emptyStateText(for: presentation))
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, minHeight: 44)
@@ -361,15 +365,39 @@ struct CommandPaletteView: View {
     }
 
     private func dismissPalette() {
-        windowState.isCommandPalettePresented = false
+        windowState.commandPalettePresentation = nil
     }
 
-    /// The one selection rule: first row for a nonempty query, none for an
-    /// empty one. Applied on appearance too, so a palette hosted with a
-    /// prefilled query starts with a live selection.
-    private func resetSelection(for rows: [PaletteResult]) {
+    /// Scoped palettes always select the first row; the unscoped palette does
+    /// so only for a nonempty query. Applied on appearance too, so a palette
+    /// hosted with a prefilled query starts with a live selection.
+    private func resetSelection(
+        for rows: [PaletteResult],
+        presentation: CommandPalettePresentation
+    ) {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        selectedID = trimmed.isEmpty ? nil : rows.first?.id
+        selectedID = presentation == .all && trimmed.isEmpty ? nil : rows.first?.id
+    }
+
+    private func placeholder(for presentation: CommandPalettePresentation) -> String {
+        switch presentation {
+        case .all: "Search commands and navigation…"
+        case .sessions: "Search Sessions…"
+        case .terminals: "Search Terminals…"
+        case .workspaces: "Search Workspaces…"
+        }
+    }
+
+    private func emptyStateText(for presentation: CommandPalettePresentation) -> String {
+        guard query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return "No matching results"
+        }
+        return switch presentation {
+        case .all: "No matching results"
+        case .sessions: "No Sessions"
+        case .terminals: "No Terminals"
+        case .workspaces: "No Workspaces"
+        }
     }
 
     private func moveSelection(
