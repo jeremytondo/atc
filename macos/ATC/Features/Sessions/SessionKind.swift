@@ -28,10 +28,12 @@ enum SessionKind: Equatable {
         return actions.first(where: { $0.name == actionName })?.displayLabel ?? actionName
     }
 
-    /// The Action label shown next to the name in the content header:
-    /// "Terminal" for the Interactive Shell, else the Action's label.
-    static func actionLabel(session: Session, actions: [ATCAction]) -> String {
-        guard let actionName = session.action else { return "Terminal" }
+    /// The toolbar pill identifies an agent session by its Agent Action and
+    /// a terminal session by its session display name.
+    static func toolbarLabel(session: Session, actions: [ATCAction]) -> String {
+        guard classify(session: session, actions: actions) == .agent,
+              let actionName = session.action
+        else { return displayName(session: session, actions: actions) }
         return actions.first(where: { $0.name == actionName })?.displayLabel ?? actionName
     }
 }

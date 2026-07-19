@@ -31,7 +31,7 @@ struct CommandPaletteContentTests {
         let fixture = makeFixture()
         #expect(commandRows(query: "", fixture: fixture).map(\.title) == [
             "New Project…", "New Session", "New Terminal", "New Workspace…",
-            "Refresh", "Reload Configuration", "Toggle Sidebar",
+            "Refresh", "Reload Configuration", "Show Dashboard", "Toggle Sidebar",
         ])
         #expect(commandRows(query: "new", fixture: fixture).map(\.title) == [
             "New Project…", "New Session", "New Terminal", "New Workspace…",

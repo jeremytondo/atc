@@ -22,7 +22,7 @@ struct NavigationPresentationTests {
         #expect(FileNavigatorView.unavailableMessage == "File navigation is not available yet")
     }
 
-    @Test("Workspace Switcher projects no-active, connection, and archive context")
+    @Test("Workspace Switcher projects no-active and archive context")
     func workspaceSwitcherStates() {
         let project = Project(
             id: "prj", name: "Shared", workingDir: "/tmp",
@@ -33,38 +33,25 @@ struct NavigationPresentationTests {
             createdAt: .now, updatedAt: .now
         )
         let noActive = WorkspaceSwitcherPresentation.noActiveWorkspace
+        #expect(noActive.projectName == nil)
         #expect(noActive.label == "Select Workspace…")
         #expect(noActive.help == "Select an Active Workspace")
 
-        let connected = WorkspaceSwitcherPresentation(
+        let active = WorkspaceSwitcherPresentation(
             project: project,
-            workspace: workspace,
-            connectionName: "Mac mini",
-            reachability: .connected
+            workspace: workspace
         )
-        #expect(connected.label == "Shared › Parser")
-        #expect(connected.help.contains("Mac mini"))
-        #expect(connected.help.contains("Connected"))
-
-        let ambiguous = WorkspaceSwitcherPresentation(
-            project: project,
-            workspace: workspace,
-            connectionName: "Laptop",
-            reachability: .unreachable
-        )
-        #expect(ambiguous.label == connected.label)
-        #expect(ambiguous.help != connected.help)
-        #expect(ambiguous.help.contains("Disconnected"))
+        #expect(active.projectName == "Shared")
+        #expect(active.workspaceName == "Parser")
+        #expect(active.label == "Shared › Parser")
+        #expect(active.help == active.label)
 
         var archivedWorkspace = workspace
         archivedWorkspace.archivedAt = .now
         let archived = WorkspaceSwitcherPresentation(
             project: project,
-            workspace: archivedWorkspace,
-            connectionName: "Mac mini",
-            reachability: .connected
+            workspace: archivedWorkspace
         )
-        #expect(archived.isArchived)
         #expect(archived.help.contains("Archived"))
     }
 

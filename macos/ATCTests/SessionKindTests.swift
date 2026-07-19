@@ -57,7 +57,6 @@ struct SessionKindTests {
     @Test("an unnamed interactive shell shows Terminal")
     func unnamedShellShowsTerminal() {
         #expect(SessionKind.displayName(session: session(action: nil), actions: actions) == "Terminal")
-        #expect(SessionKind.actionLabel(session: session(action: nil), actions: actions) == "Terminal")
     }
 
     @Test("an unnamed action terminal shows its action label")
@@ -68,7 +67,6 @@ struct SessionKindTests {
     @Test("an unresolvable action falls back to its raw name")
     func unresolvedShowsRawName() {
         #expect(SessionKind.displayName(session: session(action: "ghost"), actions: actions) == "ghost")
-        #expect(SessionKind.actionLabel(session: session(action: "ghost"), actions: actions) == "ghost")
     }
 
     @Test("an empty name falls back like a missing one")
@@ -76,5 +74,22 @@ struct SessionKindTests {
         #expect(SessionKind.displayName(
             session: session(name: "", action: "claude"), actions: actions
         ) == "Claude")
+    }
+
+    @Test("the toolbar identifies an agent session by agent name")
+    func toolbarAgentLabel() {
+        #expect(SessionKind.toolbarLabel(
+            session: session(name: "Fix parser", action: "claude"), actions: actions
+        ) == "Claude")
+    }
+
+    @Test("the toolbar identifies a terminal session by session name")
+    func toolbarTerminalLabel() {
+        #expect(SessionKind.toolbarLabel(
+            session: session(name: "Server", action: nil), actions: actions
+        ) == "Server")
+        #expect(SessionKind.toolbarLabel(
+            session: session(name: "Git", action: "lazygit"), actions: actions
+        ) == "Git")
     }
 }

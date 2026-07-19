@@ -26,6 +26,7 @@ struct AppCommands: Commands {
 
         CommandGroup(after: .sidebar) {
             commandButton(.toggleSidebar)
+            commandButton(.showDashboard)
             commandButton(.refresh)
             commandButton(.toggleCommandPalette)
             Divider()
