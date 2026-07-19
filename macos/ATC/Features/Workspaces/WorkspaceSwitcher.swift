@@ -82,14 +82,14 @@ struct WorkspaceSwitcher: View {
         .padding(.horizontal, Spacing.md)
     }
 
-    /// What launched the visible session ("Claude", "Terminal", …); nil
+    /// The visible session's Agent name or Terminal session name; nil
     /// whenever no session is the selected content.
     private var sessionBadgeLabel: String? {
         guard let ref = windowState.selectedSession,
               let session = appModel.session(for: ref)
         else { return nil }
         let actions = appModel.runtime(id: ref.connectionID)?.actions.actions ?? []
-        return SessionKind.actionLabel(session: session, actions: actions)
+        return SessionKind.toolbarLabel(session: session, actions: actions)
     }
 
     private var activeContext: (project: Project, workspace: Workspace)? {
