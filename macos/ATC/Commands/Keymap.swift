@@ -33,7 +33,6 @@ enum Keymap {
     ) -> Result<ResolvedKeymap, ConfigDiagnostics> {
         var diagnostics = user.diagnostics
         var leader = requiredStroke(defaultLeader)
-        var leaderLine: Int?
         var timeoutMilliseconds = defaultLeaderTimeoutMilliseconds
         var clearDefaults = false
 
@@ -43,7 +42,6 @@ enum Keymap {
                 guard case .string(let text) = entry.value else {
                     diagnostics.append(.init(
                         severity: .error,
-                        line: entry.line,
                         message: "[keyboard].leader must be a quoted trigger string"
                     ))
                     continue
@@ -51,19 +49,16 @@ enum Keymap {
                 switch KeyStroke.parse(text) {
                 case .success(let stroke):
                     leader = stroke
-                    leaderLine = entry.line
                 case .failure(let error):
                     diagnostics.append(.init(
                         severity: .error,
-                        line: entry.line,
-                        message: "Invalid leader '\(text)': \(error.message)"
+                        message: "[keyboard].leader has invalid trigger '\(text)': \(error.message)"
                     ))
                 }
             case "leader_timeout_ms":
                 guard case .integer(let value) = entry.value, value > 0 else {
                     diagnostics.append(.init(
                         severity: .error,
-                        line: entry.line,
                         message: "[keyboard].leader_timeout_ms must be a positive integer"
                     ))
                     continue
@@ -73,7 +68,6 @@ enum Keymap {
                 guard case .boolean(let value) = entry.value else {
                     diagnostics.append(.init(
                         severity: .error,
-                        line: entry.line,
                         message: "[keyboard].clear_default_keybindings must be a boolean"
                     ))
                     continue
@@ -87,7 +81,6 @@ enum Keymap {
         struct OrderedEntry {
             let sequenceText: String
             let commandText: String
-            let line: Int?
             let order: Int
         }
         var ordered: [OrderedEntry] = []
@@ -96,7 +89,6 @@ enum Keymap {
                 OrderedEntry(
                     sequenceText: binding.sequence,
                     commandText: binding.command.rawValue,
-                    line: nil,
                     order: offset
                 )
             }
@@ -106,15 +98,13 @@ enum Keymap {
             guard case .string(let command) = entry.value else {
                 diagnostics.append(.init(
                     severity: .error,
-                    line: entry.line,
-                    message: "Binding '\(entry.key)' must map to a quoted command id or \"unbind\""
+                    message: "\(configurationKeyPath(table: "keybindings", key: entry.key)) must be a string command id or \"unbind\""
                 ))
                 continue
             }
             ordered.append(.init(
                 sequenceText: entry.key,
                 commandText: command,
-                line: entry.line,
                 order: userOffset + offset
             ))
         }
@@ -122,7 +112,6 @@ enum Keymap {
         struct FoldedBinding {
             let command: CommandID
             let order: Int
-            let line: Int?
         }
         var folded: [KeySequence: FoldedBinding] = [:]
         for entry in ordered {
@@ -132,8 +121,7 @@ enum Keymap {
             case .failure(let error):
                 diagnostics.append(.init(
                     severity: .error,
-                    line: entry.line,
-                    message: "Invalid binding trigger '\(entry.sequenceText)': \(error.message)"
+                    message: "\(configurationKeyPath(table: "keybindings", key: entry.sequenceText)) has an invalid trigger: \(error.message)"
                 ))
                 continue
             }
@@ -150,15 +138,13 @@ enum Keymap {
             guard let command = CommandID(rawValue: entry.commandText) else {
                 diagnostics.append(.init(
                     severity: .error,
-                    line: entry.line,
-                    message: "Unknown command id '\(entry.commandText)' for '\(entry.sequenceText)'"
+                    message: "\(configurationKeyPath(table: "keybindings", key: entry.sequenceText)): unknown command id '\(entry.commandText)'"
                 ))
                 continue
             }
             folded[sequence] = FoldedBinding(
                 command: command,
-                order: entry.order,
-                line: entry.line
+                order: entry.order
             )
         }
 
@@ -167,15 +153,10 @@ enum Keymap {
         // KeyStroke.parse, so every sequence[0] here already satisfies it.
         let directTriggers = Set(folded.keys.filter { $0.count == 1 }.map { $0[0] })
         let prefixTriggers = Set(folded.keys.filter { $0.count > 1 }.map { $0[0] })
-        func sourceLine(for trigger: KeyStroke) -> Int? {
-            if trigger == leader, let leaderLine { return leaderLine }
-            return folded.first { sequence, _ in sequence[0] == trigger }?.value.line
-        }
         for trigger in directTriggers.intersection(prefixTriggers).sorted(by: descriptionOrder) {
             diagnostics.append(.init(
                 severity: .error,
-                line: sourceLine(for: trigger),
-                message: "Trigger '\(trigger)' is both a direct shortcut and a sequence prefix; unbind the direct shortcut or choose another leader"
+                message: "[keybindings] trigger '\(trigger)' is both a direct shortcut and a sequence prefix; unbind the direct shortcut or choose another leader"
             ))
         }
 
@@ -183,10 +164,12 @@ enum Keymap {
         let protectedCandidates = directTriggers.union(prefixTriggers).union([leader])
         for trigger in protectedCandidates.sorted(by: descriptionOrder) {
             if let name = protected[trigger] {
+                let source = trigger == leader
+                    ? "[keyboard].leader '\(trigger)'"
+                    : "[keybindings] trigger '\(trigger)'"
                 diagnostics.append(.init(
                     severity: .error,
-                    line: sourceLine(for: trigger),
-                    message: "\(trigger) is reserved for \(name)"
+                    message: "\(source) is reserved for \(name)"
                 ))
             }
         }

@@ -158,7 +158,7 @@ struct KeyboardMonitorHost: NSViewRepresentable {
 struct KeyboardRoutingContainer<Content: View>: View {
     let appModel: AppModel
     let windowState: WindowState
-    let configStore: KeyboardConfigStore
+    let configStore: ConfigurationStore
     @ViewBuilder let content: Content
 
     @State private var router: WindowKeyboardRouter
@@ -166,7 +166,7 @@ struct KeyboardRoutingContainer<Content: View>: View {
     init(
         appModel: AppModel,
         windowState: WindowState,
-        configStore: KeyboardConfigStore,
+        configStore: ConfigurationStore,
         @ViewBuilder content: () -> Content
     ) {
         self.appModel = appModel
@@ -179,7 +179,7 @@ struct KeyboardRoutingContainer<Content: View>: View {
             configStore: configStore
         )
         let router = WindowKeyboardRouter(
-            keymap: configStore.keymap,
+            keymap: configStore.configuration.keymap,
             context: context
         )
         router.isSuspended = { windowState.isCommandPalettePresented }
@@ -203,8 +203,8 @@ struct KeyboardRoutingContainer<Content: View>: View {
                 onDeactivate: { windowState.isCommandPalettePresented = false },
                 focusFallback: { windowState.requestTerminalFocus() }
             ))
-            .onChange(of: configStore.keymap.generation, initial: true) {
-                router.keymap = configStore.keymap
+            .onChange(of: configStore.configuration.keymap.generation, initial: true) {
+                router.keymap = configStore.configuration.keymap
             }
             .onChange(of: windowState.isCommandPalettePresented) {
                 if windowState.isCommandPalettePresented {

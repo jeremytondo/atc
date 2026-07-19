@@ -8,4 +8,5 @@ enum CommandID: String, CaseIterable, Sendable {
     case newWorkspace = "workspace.new"
     case refresh = "data.refresh"
     case reloadConfiguration = "configuration.reload"
+    case revealConfiguration = "configuration.reveal"
 }

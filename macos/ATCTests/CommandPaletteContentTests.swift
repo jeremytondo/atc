@@ -31,7 +31,8 @@ struct CommandPaletteContentTests {
         let fixture = makeFixture()
         #expect(commandRows(query: "", fixture: fixture).map(\.title) == [
             "New Project…", "New Session", "New Terminal", "New Workspace…",
-            "Refresh", "Reload Configuration", "Show Dashboard", "Toggle Sidebar",
+            "Refresh", "Reload Configuration", "Reveal Configuration",
+            "Show Dashboard", "Toggle Sidebar",
         ])
         #expect(commandRows(query: "new", fixture: fixture).map(\.title) == [
             "New Project…", "New Session", "New Terminal", "New Workspace…",
@@ -262,12 +263,12 @@ struct CommandPaletteContentTests {
             terminalRecoveryMonitor: .disabled()
         )
         let state = windowState ?? WindowState.ephemeral()
-        let store = KeyboardConfigStore(
+        let store = ConfigurationStore(
             configURL: FileManager.default.temporaryDirectory
                 .appending(path: UUID().uuidString)
         )
         let keymap = try! Keymap.resolve(
-            user: KeyboardConfigParser.parse(config)
+            user: ConfigurationLoader.parse(config)
         ).get()
         return Fixture(
             keymap: keymap,
@@ -792,7 +793,7 @@ private func commandContextFixture(
     appModel: AppModel,
     windowState: WindowState
 ) -> (keymap: ResolvedKeymap, context: CommandContext) {
-    let store = KeyboardConfigStore(
+    let store = ConfigurationStore(
         configURL: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     )
     return (

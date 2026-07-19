@@ -3,7 +3,7 @@ import SwiftUI
 struct AppCommands: Commands {
     let appModel: AppModel
     let windowState: WindowState
-    let configStore: KeyboardConfigStore
+    let configStore: ConfigurationStore
 
     private var context: CommandContext {
         CommandContext(
@@ -34,6 +34,7 @@ struct AppCommands: Commands {
 
         CommandGroup(after: .appSettings) {
             commandButton(.reloadConfiguration)
+            commandButton(.revealConfiguration)
         }
     }
 
@@ -45,7 +46,7 @@ struct AppCommands: Commands {
         }
         .disabled(!descriptor.availability(context).isAvailable)
 
-        if let shortcut = configStore.keymap.menuShortcuts[id]?.menuShortcut {
+        if let shortcut = configStore.configuration.keymap.menuShortcuts[id]?.menuShortcut {
             button.keyboardShortcut(shortcut.key, modifiers: shortcut.modifiers)
         } else {
             button

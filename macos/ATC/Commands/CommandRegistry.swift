@@ -1,10 +1,11 @@
+import AppKit
 import Foundation
 
 @MainActor
 struct CommandContext {
     let appModel: AppModel
     let windowState: WindowState
-    let configStore: KeyboardConfigStore
+    let configStore: ConfigurationStore
 }
 
 enum CommandAvailability: Equatable {
@@ -130,6 +131,21 @@ enum CommandRegistry {
                 category: .general,
                 availability: { _ in .available },
                 perform: { $0.configStore.reload() }
+            )
+        case .revealConfiguration:
+            CommandDescriptor(
+                id: id,
+                title: "Reveal Configuration",
+                category: .general,
+                availability: { _ in .available },
+                perform: { context in
+                    let fileURL = context.configStore.configURL
+                    let directoryURL = context.configStore.configDirectoryURL
+                    let selectedURL = FileManager.default.fileExists(atPath: fileURL.path)
+                        ? fileURL
+                        : directoryURL
+                    NSWorkspace.shared.activateFileViewerSelecting([selectedURL])
+                }
             )
         }
     }

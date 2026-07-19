@@ -6,7 +6,7 @@ import Testing
 struct KeymapResolutionTests {
     private func resolve(_ config: String = "", generation: Int = 1) throws -> ResolvedKeymap {
         try Keymap.resolve(
-            user: KeyboardConfigParser.parse(config),
+            user: ConfigurationLoader.parse(config),
             generation: generation
         ).get()
     }
@@ -65,7 +65,6 @@ struct KeymapResolutionTests {
         let replaced = try resolve(#"""
         [keybindings]
         "cmd+b" = "data.refresh"
-        "cmd+n" = "unbind"
         "cmd+n" = "terminal.new"
         """#)
         #expect(command(at: try stroke("cmd+b"), in: replaced) == .refresh)
@@ -104,7 +103,7 @@ struct KeymapResolutionTests {
 
     @Test("direct and expanded-prefix conflicts invalidate the candidate")
     func prefixConflicts() throws {
-        let directConflict = Keymap.resolve(user: KeyboardConfigParser.parse(#"""
+        let directConflict = Keymap.resolve(user: ConfigurationLoader.parse(#"""
         [keybindings]
         "cmd+k" = "data.refresh"
         """#))
@@ -113,7 +112,7 @@ struct KeymapResolutionTests {
             $0.message.contains("cmd+k") && $0.message.contains("both")
         })
 
-        let expandedConflict = Keymap.resolve(user: KeyboardConfigParser.parse(#"""
+        let expandedConflict = Keymap.resolve(user: ConfigurationLoader.parse(#"""
         [keyboard]
         leader = "cmd+b"
         """#))
@@ -125,7 +124,7 @@ struct KeymapResolutionTests {
 
     @Test("protected shortcuts and leaders name the native command")
     func protectedShortcuts() throws {
-        let direct = Keymap.resolve(user: KeyboardConfigParser.parse(#"""
+        let direct = Keymap.resolve(user: ConfigurationLoader.parse(#"""
         [keyboard]
         clear_default_keybindings = true
         [keybindings]
@@ -135,7 +134,7 @@ struct KeymapResolutionTests {
             $0.message.contains("cmd+c") && $0.message.contains("Copy")
         })
 
-        let leader = Keymap.resolve(user: KeyboardConfigParser.parse(#"""
+        let leader = Keymap.resolve(user: ConfigurationLoader.parse(#"""
         [keyboard]
         clear_default_keybindings = true
         leader = "cmd+q"
@@ -147,48 +146,56 @@ struct KeymapResolutionTests {
 
     @Test("unknown command ids invalidate the entire candidate")
     func unknownCommand() throws {
-        let result = Keymap.resolve(user: KeyboardConfigParser.parse(#"""
+        let result = Keymap.resolve(user: ConfigurationLoader.parse(#"""
         [keybindings]
         "cmd+shift+b" = "missing.command"
         """#))
         let diagnostics = try failure(result)
-        #expect(diagnostics.contains { $0.message.contains("missing.command") })
+        #expect(diagnostics.contains {
+            $0.message.contains(#"[keybindings]."cmd+shift+b""#)
+                && $0.message.contains("missing.command")
+        })
     }
 
     @Test("timeout must be a positive integer and defaults when omitted")
     func timeoutValidation() throws {
         #expect(try resolve().leaderTimeout == .milliseconds(1_800))
+        // 0 and -1 fail range validation in the resolver; a string fails the
+        // loader's type check first. Both name the key and want an integer.
         for value in ["0", "-1", "\"1800\""] {
-            let result = Keymap.resolve(user: KeyboardConfigParser.parse("""
+            let result = Keymap.resolve(user: ConfigurationLoader.parse("""
             [keyboard]
             leader_timeout_ms = \(value)
             """))
             #expect(try failure(result).contains {
-                $0.message.contains("positive integer")
+                $0.message.contains("[keyboard].leader_timeout_ms")
+                    && $0.message.contains("integer")
             })
         }
-        let floatResult = Keymap.resolve(user: KeyboardConfigParser.parse("""
+        let floatResult = Keymap.resolve(user: ConfigurationLoader.parse("""
         [keyboard]
         leader_timeout_ms = 1.5
         """))
-        #expect(try failure(floatResult).contains { $0.message.contains("Floats") })
+        #expect(try failure(floatResult).contains {
+            $0.message.contains("[keyboard].leader_timeout_ms")
+                && $0.message.contains("integer")
+        })
     }
 
-    @Test("menu selection uses the latest remaining direct binding")
+    @Test("menu selection uses deterministic order among remaining direct bindings")
     func menuSelection() throws {
-        let latest = try resolve(#"""
+        let selected = try resolve(#"""
         [keybindings]
         "cmd+shift+b" = "view.toggle-sidebar"
         "ctrl+b" = "view.toggle-sidebar"
         """#)
-        let latestStroke = try stroke("ctrl+b")
-        #expect(latest.menuShortcuts[.toggleSidebar] == latestStroke)
+        let selectedStroke = try stroke("ctrl+b")
+        #expect(selected.menuShortcuts[.toggleSidebar] == selectedStroke)
 
         let fallback = try resolve(#"""
         [keybindings]
+        "cmd+b" = "unbind"
         "cmd+shift+b" = "view.toggle-sidebar"
-        "ctrl+b" = "view.toggle-sidebar"
-        "ctrl+b" = "unbind"
         """#)
         let fallbackStroke = try stroke("cmd+shift+b")
         #expect(fallback.menuShortcuts[.toggleSidebar] == fallbackStroke)
@@ -213,7 +220,7 @@ struct KeymapResolutionTests {
 
     @Test("one error prevents every otherwise-valid binding from publishing")
     func atomicFailure() throws {
-        let result = Keymap.resolve(user: KeyboardConfigParser.parse(#"""
+        let result = Keymap.resolve(user: ConfigurationLoader.parse(#"""
         [keybindings]
         "cmd+shift+b" = "data.refresh"
         "cmd+shift+x" = "unknown"

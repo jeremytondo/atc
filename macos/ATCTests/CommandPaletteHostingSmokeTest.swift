@@ -9,14 +9,14 @@ import Testing
 struct CommandPaletteHostingSmokeTest {
     @Test("palette hosts with preview fixtures without crashing")
     func hostPalette() {
-        let store = KeyboardConfigStore(
+        let store = ConfigurationStore(
             configURL: FileManager.default.temporaryDirectory
                 .appending(path: UUID().uuidString)
         )
         let appModel = AppModel.preview()
         let windowState = WindowState.ephemeral()
         let router = WindowKeyboardRouter(
-            keymap: store.keymap,
+            keymap: store.configuration.keymap,
             context: CommandContext(
                 appModel: appModel,
                 windowState: windowState,
@@ -41,7 +41,7 @@ struct CommandPaletteHostingSmokeTest {
 
     @Test("palette hosts heterogeneous results for an Active Workspace")
     func hostHeterogeneousPalette() async throws {
-        let store = KeyboardConfigStore(
+        let store = ConfigurationStore(
             configURL: FileManager.default.temporaryDirectory
                 .appending(path: UUID().uuidString)
         )
@@ -54,7 +54,7 @@ struct CommandPaletteHostingSmokeTest {
             in: appModel
         ))
         let router = WindowKeyboardRouter(
-            keymap: store.keymap,
+            keymap: store.configuration.keymap,
             context: CommandContext(
                 appModel: appModel,
                 windowState: windowState,
@@ -79,7 +79,7 @@ struct CommandPaletteHostingSmokeTest {
 
     @Test("routing container mounts the presented palette without crashing")
     func hostIntegratedPalette() {
-        let store = KeyboardConfigStore(
+        let store = ConfigurationStore(
             configURL: FileManager.default.temporaryDirectory
                 .appending(path: UUID().uuidString)
         )
@@ -109,7 +109,7 @@ struct CommandPaletteHostingSmokeTest {
 
     @Test("palette dismissal restores a valid previous responder")
     func restoresPreviousResponder() {
-        let store = KeyboardConfigStore(
+        let store = ConfigurationStore(
             configURL: FileManager.default.temporaryDirectory
                 .appending(path: UUID().uuidString)
         )
@@ -150,14 +150,14 @@ struct CommandPaletteHostingSmokeTest {
 
     @Test("deactivation before the palette mounts restores the stashed responder")
     func restoresResponderWhenDeactivationBeatsMounting() {
-        let store = KeyboardConfigStore(
+        let store = ConfigurationStore(
             configURL: FileManager.default.temporaryDirectory
                 .appending(path: UUID().uuidString)
         )
         let appModel = AppModel.preview()
         let windowState = WindowState.ephemeral()
         let router = WindowKeyboardRouter(
-            keymap: store.keymap,
+            keymap: store.configuration.keymap,
             context: CommandContext(
                 appModel: appModel,
                 windowState: windowState,

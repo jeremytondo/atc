@@ -6,27 +6,27 @@ struct ATCApp: App {
     /// Single-window today; one WindowState per window is the seam a
     /// future multi-window pass builds on.
     @State private var windowState = WindowState()
-    @State private var keyboardConfigStore: KeyboardConfigStore
+    @State private var configurationStore: ConfigurationStore
 
     init() {
-        let store = KeyboardConfigStore()
+        let store = ConfigurationStore()
         store.loadAtLaunch()
-        _keyboardConfigStore = State(initialValue: store)
+        _configurationStore = State(initialValue: store)
     }
 
     var body: some Scene {
         WindowGroup {
-            RootView(configStore: keyboardConfigStore)
+            RootView(configStore: configurationStore)
                 .environment(appModel)
                 .environment(windowState)
-                .environment(keyboardConfigStore)
+                .environment(configurationStore)
                 .preferredColorScheme(.dark)
         }
         .commands {
             AppCommands(
                 appModel: appModel,
                 windowState: windowState,
-                configStore: keyboardConfigStore
+                configStore: configurationStore
             )
         }
         Settings {

@@ -24,12 +24,12 @@ struct CommandRegistryTests {
     private func makeContext(
         model: AppModel,
         state: WindowState,
-        store: KeyboardConfigStore? = nil
+        store: ConfigurationStore? = nil
     ) -> CommandContext {
         CommandContext(
             appModel: model,
             windowState: state,
-            configStore: store ?? KeyboardConfigStore(
+            configStore: store ?? ConfigurationStore(
                 configURL: FileManager.default.temporaryDirectory
                     .appending(path: UUID().uuidString)
             )
@@ -59,6 +59,7 @@ struct CommandRegistryTests {
             "view.show-dashboard", "session.new",
             "terminal.new", "project.new",
             "workspace.new", "data.refresh", "configuration.reload",
+            "configuration.reveal",
         ]
         let descriptors = CommandRegistry.allDescriptors
 
@@ -87,6 +88,7 @@ struct CommandRegistryTests {
             .newWorkspace: .projectsAndWorkspaces,
             .refresh: .general,
             .reloadConfiguration: .general,
+            .revealConfiguration: .general,
         ])
     }
 
@@ -132,6 +134,8 @@ struct CommandRegistryTests {
         #expect(CommandRegistry.descriptor(for: .toggleSidebar).availability(empty) == .available)
         #expect(CommandRegistry.descriptor(for: .refresh).availability(empty) == .available)
         #expect(CommandRegistry.descriptor(for: .reloadConfiguration).availability(empty)
+            == .available)
+        #expect(CommandRegistry.descriptor(for: .revealConfiguration).availability(empty)
             == .available)
         let sessionAvailability = CommandRegistry.descriptor(for: .newSession)
             .availability(empty)
@@ -190,13 +194,13 @@ struct CommandRegistryTests {
     func appCommands() {
         let model = makeModel()
         let state = WindowState.ephemeral()
-        let store = KeyboardConfigStore(
+        let store = ConfigurationStore(
             configURL: FileManager.default.temporaryDirectory
                 .appending(path: UUID().uuidString)
         )
         let context = makeContext(model: model, state: state, store: store)
         #expect(CommandRegistry.execute(.refresh, context: context) == .available)
         #expect(CommandRegistry.execute(.reloadConfiguration, context: context) == .available)
-        #expect(store.keymap.generation == 1)
+        #expect(store.configuration.keymap.generation == 1)
     }
 }

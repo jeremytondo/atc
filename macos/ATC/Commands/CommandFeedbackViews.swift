@@ -2,7 +2,7 @@ import SwiftUI
 
 struct CommandFeedbackOverlay: View {
     @Environment(WindowKeyboardRouter.self) private var router
-    @Environment(KeyboardConfigStore.self) private var configStore
+    @Environment(ConfigurationStore.self) private var configStore
 
     var body: some View {
         ZStack {
@@ -33,7 +33,7 @@ struct CommandFeedbackOverlay: View {
 struct CommandSequenceHintView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(WindowState.self) private var windowState
-    @Environment(KeyboardConfigStore.self) private var configStore
+    @Environment(ConfigurationStore.self) private var configStore
     @Environment(WindowKeyboardRouter.self) private var router
 
     private var continuations: [(KeyStroke, CommandID)] {
@@ -106,9 +106,12 @@ struct ConfigNoticeView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "keyboard.badge.exclamationmark")
+            Image(systemName: "exclamationmark.triangle.fill")
             Text(notice.message)
                 .font(.callout)
+                // Parser messages can run long; keep the banner bounded.
+                .lineLimit(3)
+                .frame(maxWidth: 560, alignment: .leading)
             Button("Dismiss", action: dismiss)
                 .buttonStyle(.borderless)
         }

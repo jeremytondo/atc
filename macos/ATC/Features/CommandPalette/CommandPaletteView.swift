@@ -4,7 +4,7 @@ import SwiftUI
 struct CommandPaletteView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(WindowState.self) private var windowState
-    @Environment(KeyboardConfigStore.self) private var configStore
+    @Environment(ConfigurationStore.self) private var configStore
     @Environment(WindowKeyboardRouter.self) private var router
 
     @State private var query = ""
@@ -25,7 +25,7 @@ struct CommandPaletteView: View {
         )
         let rows = CommandPaletteContent.results(
             query: query,
-            keymap: configStore.keymap,
+            keymap: configStore.configuration.keymap,
             context: context
         )
 

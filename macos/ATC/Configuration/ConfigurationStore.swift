@@ -8,28 +8,29 @@ struct ConfigNotice: Equatable {
 
 @MainActor
 @Observable
-final class KeyboardConfigStore {
-    private(set) var keymap: ResolvedKeymap
+final class ConfigurationStore {
+    private(set) var configuration: AppConfiguration
     private(set) var notice: ConfigNotice?
     private(set) var diagnostics: [ConfigDiagnostic] = []
 
-    @ObservationIgnored private let configURL: URL
+    @ObservationIgnored let configURL: URL
     @ObservationIgnored private let fileManager: FileManager
     @ObservationIgnored private let logger = Logger(
         subsystem: "ElevenIdeas.atc",
-        category: "keyboard"
+        category: "configuration"
     )
 
+    var configDirectoryURL: URL {
+        configURL.deletingLastPathComponent()
+    }
+
     init(
-        configURL: URL = KeyboardConfigStore.defaultConfigURL(),
+        configURL: URL = ConfigurationStore.defaultConfigURL(),
         fileManager: FileManager = .default
     ) {
         self.configURL = configURL
         self.fileManager = fileManager
-        switch Keymap.resolve(generation: 0) {
-        case .success(let keymap): self.keymap = keymap
-        case .failure: preconditionFailure("Compiled keyboard defaults must be valid")
-        }
+        self.configuration = Self.defaultConfiguration(generation: 0)
     }
 
     func loadAtLaunch() {
@@ -58,37 +59,35 @@ final class KeyboardConfigStore {
         }
         return base
             .appending(path: "atc", directoryHint: .isDirectory)
-            .appending(path: "config.toml", directoryHint: .notDirectory)
+            .appending(path: "macos.toml", directoryHint: .notDirectory)
     }
 
     private func load(isLaunch: Bool) {
-        let nextGeneration = keymap.generation + 1
+        let nextGeneration = configuration.keymap.generation + 1
         guard fileManager.fileExists(atPath: configURL.path) else {
-            apply(parsed: .empty, generation: nextGeneration, isLaunch: isLaunch)
+            configuration = Self.defaultConfiguration(generation: nextGeneration)
+            diagnostics = []
+            notice = nil
             return
         }
 
         let parsed: ParsedConfig
         do {
-            parsed = KeyboardConfigParser.parse(data: try Data(contentsOf: configURL))
+            parsed = ConfigurationLoader.parse(data: try Data(contentsOf: configURL))
         } catch {
             fail(
                 diagnostics: [.init(
                     severity: .error,
-                    line: nil,
-                    message: "Could not read config.toml: \(error.localizedDescription)"
+                    message: "Could not read macos.toml: \(error.localizedDescription)"
                 )],
                 isLaunch: isLaunch
             )
             return
         }
-        apply(parsed: parsed, generation: nextGeneration, isLaunch: isLaunch)
-    }
 
-    private func apply(parsed: ParsedConfig, generation: Int, isLaunch: Bool) {
-        switch Keymap.resolve(user: parsed, generation: generation) {
-        case .success(let candidate):
-            keymap = candidate
+        switch Keymap.resolve(user: parsed, generation: nextGeneration) {
+        case .success(let keymap):
+            configuration = AppConfiguration(keymap: keymap)
             diagnostics = parsed.diagnostics
             notice = nil
             log(parsed.diagnostics)
@@ -100,12 +99,15 @@ final class KeyboardConfigStore {
     private func fail(diagnostics: [ConfigDiagnostic], isLaunch: Bool) {
         self.diagnostics = diagnostics
         log(diagnostics)
-        let errorCount = diagnostics.count { $0.severity == .error }
+        let errors = diagnostics.filter { $0.severity == .error }
         let disposition = isLaunch
-            ? "using default keybindings"
-            : "keeping the previous keybindings"
+            ? "using defaults"
+            : "keeping the previous configuration"
+        let firstError = errors.first?.message ?? "unknown error"
         notice = ConfigNotice(
-            message: "Keyboard configuration was not loaded (\(errorCount) \(errorCount == 1 ? "error" : "errors")) — \(disposition). See log for details."
+            message: "Configuration was not loaded — \(disposition). "
+                + "First error: \(firstError) "
+                + "(see log for \(errors.count) \(errors.count == 1 ? "error" : "errors"))."
         )
     }
 
@@ -116,6 +118,13 @@ final class KeyboardConfigStore {
             case .error: logger.error("\(message, privacy: .public)")
             case .warning: logger.warning("\(message, privacy: .public)")
             }
+        }
+    }
+
+    private static func defaultConfiguration(generation: Int) -> AppConfiguration {
+        switch Keymap.resolve(generation: generation) {
+        case .success(let keymap): AppConfiguration(keymap: keymap)
+        case .failure: preconditionFailure("Compiled application defaults must be valid")
         }
     }
 }
