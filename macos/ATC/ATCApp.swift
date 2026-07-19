@@ -9,7 +9,9 @@ struct ATCApp: App {
     @State private var configurationStore: ConfigurationStore
 
     init() {
-        let store = ConfigurationStore()
+        let store = ConfigurationStore { preferences in
+            TerminalSessionController.applyTerminalPreferences(preferences)
+        }
         store.loadAtLaunch()
         _configurationStore = State(initialValue: store)
     }

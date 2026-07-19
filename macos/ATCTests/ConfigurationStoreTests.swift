@@ -161,6 +161,89 @@ struct ConfigurationStoreTests {
         #expect(store.diagnostics.isEmpty)
     }
 
+    @Test("invalid terminal value rejects keyboard changes and preserves the prior configuration")
+    func terminalFailureIsTransactional() throws {
+        let fixture = try fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        try write(#"""
+        [terminal]
+        font_family = "Berkeley Mono"
+        [keybindings]
+        "ctrl+r" = "data.refresh"
+        """#, to: fixture.config)
+        var applied: [TerminalPreferences] = []
+        let store = ConfigurationStore(
+            configURL: fixture.config,
+            onTerminalPreferencesApplied: { applied.append($0) }
+        )
+        store.loadAtLaunch()
+        let previous = store.configuration
+
+        try write(#"""
+        [keyboard]
+        clear_default_keybindings = true
+        [keybindings]
+        "ctrl+b" = "view.toggle-sidebar"
+        [terminal]
+        padding_x = -1
+        """#, to: fixture.config)
+        store.reload()
+
+        #expect(store.configuration.keymap.generation == previous.keymap.generation)
+        #expect(store.configuration.keymap.menuShortcuts[.toggleSidebar]
+            == previous.keymap.menuShortcuts[.toggleSidebar])
+        #expect(store.configuration.terminal == previous.terminal)
+        #expect(applied == [previous.terminal])
+        #expect(store.notice?.message.contains("[terminal].padding_x") == true)
+        #expect(store.notice?.message.contains("keeping the previous configuration") == true)
+    }
+
+    @Test("successful terminal reload and file deletion both invoke live apply")
+    func terminalPreferencesApplyAndReset() throws {
+        let fixture = try fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        try write(#"""
+        [terminal]
+        background = "123456"
+        """#, to: fixture.config)
+        var applied: [TerminalPreferences] = []
+        let store = ConfigurationStore(
+            configURL: fixture.config,
+            onTerminalPreferencesApplied: { applied.append($0) }
+        )
+
+        store.loadAtLaunch()
+        try write(#"""
+        [terminal]
+        background = "abcdef"
+        """#, to: fixture.config)
+        store.reload()
+        try FileManager.default.removeItem(at: fixture.config)
+        store.reload()
+
+        #expect(applied.map(\.background) == ["123456", "abcdef", nil])
+        #expect(store.configuration.terminal == TerminalPreferences())
+    }
+
+    @Test("invalid launch still applies default terminal preferences")
+    func invalidLaunchAppliesDefaultTerminal() throws {
+        let fixture = try fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        try write(#"""
+        [terminal]
+        theme = "Definitely Not A Real Theme"
+        """#, to: fixture.config)
+        var applied: [TerminalPreferences] = []
+        let store = ConfigurationStore(
+            configURL: fixture.config,
+            onTerminalPreferencesApplied: { applied.append($0) }
+        )
+        store.loadAtLaunch()
+
+        #expect(applied == [TerminalPreferences()])
+        #expect(store.notice?.message.contains("using defaults") == true)
+    }
+
     @Test("configuration location honors non-empty XDG_CONFIG_HOME")
     func configLocation() {
         let home = URL(fileURLWithPath: "/tmp/example-home")

@@ -7,12 +7,16 @@ struct TerminalPane: View {
     @Environment(AppModel.self) private var appModel
     let visibleRef: SessionRef?
     let focusRequest: UInt
+    let preferences: TerminalPreferences
 
     var body: some View {
         ZStack {
-            // Catppuccin Mocha base: pairs with the Ghostty surface theme,
-            // not app chrome — keep this literal out of the design tokens.
-            Color(red: 0.117, green: 0.117, blue: 0.180)
+            let backingColor = TerminalPresentation.backingColor(preferences: preferences)
+            Color(
+                red: backingColor.red,
+                green: backingColor.green,
+                blue: backingColor.blue
+            )
             ForEach(refs, id: \.self) { ref in
                 if let controller = appModel.terminals[ref] {
                     TerminalHostView(

@@ -15,6 +15,7 @@ final class ConfigurationStore {
 
     @ObservationIgnored let configURL: URL
     @ObservationIgnored private let fileManager: FileManager
+    @ObservationIgnored private let onTerminalPreferencesApplied: ((TerminalPreferences) -> Void)?
     @ObservationIgnored private let logger = Logger(
         subsystem: "ElevenIdeas.atc",
         category: "configuration"
@@ -26,10 +27,12 @@ final class ConfigurationStore {
 
     init(
         configURL: URL = ConfigurationStore.defaultConfigURL(),
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        onTerminalPreferencesApplied: ((TerminalPreferences) -> Void)? = nil
     ) {
         self.configURL = configURL
         self.fileManager = fileManager
+        self.onTerminalPreferencesApplied = onTerminalPreferencesApplied
         self.configuration = Self.defaultConfiguration(generation: 0)
     }
 
@@ -68,6 +71,7 @@ final class ConfigurationStore {
             configuration = Self.defaultConfiguration(generation: nextGeneration)
             diagnostics = []
             notice = nil
+            onTerminalPreferencesApplied?(configuration.terminal)
             return
         }
 
@@ -87,10 +91,11 @@ final class ConfigurationStore {
 
         switch Keymap.resolve(user: parsed, generation: nextGeneration) {
         case .success(let keymap):
-            configuration = AppConfiguration(keymap: keymap)
+            configuration = AppConfiguration(keymap: keymap, terminal: parsed.terminal)
             diagnostics = parsed.diagnostics
             notice = nil
             log(parsed.diagnostics)
+            onTerminalPreferencesApplied?(configuration.terminal)
         case .failure(let failure):
             fail(diagnostics: failure.diagnostics, isLaunch: isLaunch)
         }
@@ -109,6 +114,9 @@ final class ConfigurationStore {
                 + "First error: \(firstError) "
                 + "(see log for \(errors.count) \(errors.count == 1 ? "error" : "errors"))."
         )
+        if isLaunch {
+            onTerminalPreferencesApplied?(configuration.terminal)
+        }
     }
 
     private func log(_ diagnostics: [ConfigDiagnostic]) {

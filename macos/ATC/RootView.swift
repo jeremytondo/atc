@@ -78,6 +78,7 @@ struct RootView: View {
                 selectedRef: visibleSessionRef,
                 selectedSession: visibleSession,
                 terminalFocusRequest: windowState.terminalFocusRequest,
+                terminalPreferences: configStore.configuration.terminal,
                 emptyState: workspaceEmptyActions
             )
             if windowState.selectedContent == .dashboard {
