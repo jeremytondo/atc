@@ -59,6 +59,15 @@ clear_default_keybindings = false      # default: false
 "cmd+b" = "view.toggle-sidebar"
 "leader>b" = "view.toggle-sidebar"
 "cmd+r" = "unbind"
+
+[terminal]
+theme = "Catppuccin Mocha"
+font_family = "Berkeley Mono"
+font_size = 14.0
+padding_x = 8
+padding_y = 8
+background = "1e1e2e"
+background_opacity = 0.95
 ```
 
 Binding keys are either direct triggers such as `cmd+b` or two-step leader
@@ -69,11 +78,23 @@ When a command has several direct triggers, the menu bar shows one of them,
 chosen deterministically (user bindings beat defaults; ties resolve
 alphabetically).
 
+All `[terminal]` keys are optional. Terminal presentation starts from
+libghostty's compiled defaults, then applies only the values explicitly set in
+this table. `theme` must name a bundled Ghostty theme; `font_family` must be
+non-empty; `font_size` must be positive; padding values must be non-negative integers;
+`background` is a six-digit RGB hex value with an optional leading `#`; and
+`background_opacity` ranges from `0` (fully transparent) through `1` (opaque).
+
 Use **Reload Configuration** in the app menu after editing the file. A valid
 reload replaces the complete application configuration; an invalid reload
 keeps the last-known-good configuration. Deleting the file and reloading
-restores defaults. **Reveal Configuration** selects `macos.toml` in Finder when
-it exists, or reveals its expected directory without creating anything.
+restores defaults. Terminal presentation changes apply live to every retained
+surface without recreating terminal sessions or reconnecting WebSockets.
+**Reveal Configuration** selects `macos.toml` in Finder when it exists, or
+reveals its expected directory without creating anything.
+
+ATC does not read Ghostty's configuration files. To match an existing Ghostty
+setup, copy the desired presentation values into `[terminal]` in `macos.toml`.
 
 This file belongs only to the macOS process. It is separate from the server's
 `~/.config/atc/server/config.toml`; the app never reads server configuration

@@ -68,8 +68,29 @@ final class TerminalSessionController: Identifiable {
         }
     }
 
-    /// One Ghostty runtime/config for all surfaces.
-    private static let sharedGhostty = GhosttyConfigLoader.makeController()
+    /// One Ghostty runtime/config for all surfaces, created lazily with the
+    /// launch-resolved preferences (ATCApp loads the store before any
+    /// terminal exists) and updated in place on reload.
+    @MainActor private static var sharedGhostty: TerminalController?
+    @MainActor private static var currentPreferences = TerminalPreferences()
+
+    @MainActor
+    static func applyTerminalPreferences(_ preferences: TerminalPreferences) {
+        currentPreferences = preferences
+        if let sharedGhostty {
+            TerminalPresentation.apply(preferences: preferences, to: sharedGhostty)
+        }
+    }
+
+    @MainActor
+    private static func sharedGhosttyController() -> TerminalController {
+        if let sharedGhostty {
+            return sharedGhostty
+        }
+        let controller = TerminalPresentation.makeController(preferences: currentPreferences)
+        sharedGhostty = controller
+        return controller
+    }
 
     let sessionID: String
     let viewState: TerminalViewState
@@ -130,7 +151,7 @@ final class TerminalSessionController: Identifiable {
         // byte order intact — no Task-hop reordering.
         terminalSession = Self.makeTerminalSession(connectionRef: ref)
 
-        viewState = TerminalViewState(controller: Self.sharedGhostty)
+        viewState = TerminalViewState(controller: Self.sharedGhosttyController())
         viewState.configuration = TerminalSurfaceOptions(backend: .inMemory(terminalSession))
 
         connect(isReconnect: false)
