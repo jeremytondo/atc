@@ -3,13 +3,14 @@
 // runs flag > env > file > built-in default, so the most specific source wins.
 //
 // The config file is optional. Its default location is
-// $XDG_CONFIG_HOME/atc/atc.toml (falling back to
-// ~/.config/atc/atc.toml), overridable with the --config flag or the
+// $XDG_CONFIG_HOME/atc/server/config.toml (falling back to
+// ~/.config/atc/server/config.toml), overridable with the --config flag or the
 // ATC_CONFIG environment variable. A missing default file is not an error;
 // an explicitly requested file that is missing or malformed is.
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"maps"
@@ -142,11 +143,10 @@ func Load(opts Options) (Config, error) {
 		data, err := os.ReadFile(path)
 		switch {
 		case err == nil:
-			if err := rejectLegacyActionTables(data); err != nil {
-				return Config{}, err
-			}
-			if err := toml.Unmarshal(data, &cfg); err != nil {
-				return Config{}, fmt.Errorf("parse config file %s: %w", path, err)
+			dec := toml.NewDecoder(bytes.NewReader(data))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&cfg); err != nil {
+				return Config{}, fmt.Errorf("parse config file %s: %s", path, decodeDetail(err))
 			}
 		case errors.Is(err, os.ErrNotExist) && !explicit:
 			// A missing default config file is fine; keep defaults.
@@ -203,10 +203,10 @@ func resolveConfigPath(opts Options, env func(string) string) (path string, expl
 
 func defaultConfigPath(env func(string) string) string {
 	if dir := env("XDG_CONFIG_HOME"); dir != "" {
-		return filepath.Join(dir, "atc", "atc.toml")
+		return filepath.Join(dir, "atc", "server", "config.toml")
 	}
 	if home := env("HOME"); home != "" {
-		return filepath.Join(home, ".config", "atc", "atc.toml")
+		return filepath.Join(home, ".config", "atc", "server", "config.toml")
 	}
 	return ""
 }
@@ -221,18 +221,16 @@ func defaultActionsPath(configPath string, env func(string) string) string {
 	return filepath.Join(filepath.Dir(configPath), "actions.json")
 }
 
-func rejectLegacyActionTables(data []byte) error {
-	var raw map[string]any
-	if err := toml.Unmarshal(data, &raw); err != nil {
-		return nil
+// decodeDetail renders a decode failure with go-toml's line/column excerpt
+// when one is available; Error() alone omits the position.
+func decodeDetail(err error) string {
+	if sme, ok := errors.AsType[*toml.StrictMissingError](err); ok {
+		return "unrecognized tables or keys:\n" + sme.String()
 	}
-	if _, ok := raw["agents"]; ok {
-		return fmt.Errorf("invalid config: [agents] has been renamed to [actions]")
+	if de, ok := errors.AsType[*toml.DecodeError](err); ok {
+		return de.Error() + "\n" + de.String()
 	}
-	if _, ok := raw["actions"]; ok {
-		return fmt.Errorf("invalid config: actions are now managed in actions.json or through the API")
-	}
-	return nil
+	return err.Error()
 }
 
 func (c Config) validate() error {

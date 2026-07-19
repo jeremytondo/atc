@@ -4,7 +4,7 @@ import { defineConfig } from 'vite';
 
 // In dev, the SvelteKit dev server serves the UI on :5173 while the Go API runs
 // on the dev profile's fixed address (see tools/dev.sh, which generates
-// tmp/dev/atc.toml with the same value). Proxy /api to it so the frontend
+// tmp/dev/config.toml with the same value). Proxy /api to it so the frontend
 // stays same-origin (no CORS).
 const apiTarget = 'http://127.0.0.1:7332';
 

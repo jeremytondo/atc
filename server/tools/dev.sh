@@ -5,11 +5,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Dev runs a hermetic profile under tmp/dev/: its own config, loopback bind,
 # Unix socket, database, and actions file. Your personal atc config
-# (~/.config/atc/atc.toml) and ATC_* environment overrides never
+# (~/.config/atc/server/config.toml) and ATC_* environment overrides never
 # apply here, and the dedicated port keeps dev clear of a background service
 # on the default 7331. Delete tmp/dev for a fresh dev state.
 DEV_DIR="$ROOT/tmp/dev"
-DEV_CONFIG="$DEV_DIR/atc.toml"
+DEV_CONFIG="$DEV_DIR/config.toml"
 API_ADDR="127.0.0.1:7332"
 API_PORT="${API_ADDR##*:}"
 API_URL="http://$API_ADDR"
@@ -287,7 +287,7 @@ atc dev ready
 UI:    $WEB_URL
 API:   $API_URL
 State: tmp/dev (delete for a fresh dev database)
-CLI:   go run ./cmd/atc --config tmp/dev/atc.toml sessions list
+CLI:   go run ./cmd/atc --config tmp/dev/config.toml sessions list
 Stop:  Ctrl-C
 
 Logs:
