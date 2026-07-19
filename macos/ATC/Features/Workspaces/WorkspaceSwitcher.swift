@@ -1,17 +1,20 @@
 import SwiftUI
 import ATCAPI
 
-/// The toolbar's workspace pill: project › workspace breadcrumb plus the
-/// visible session's kind. A plain Button + popover, NOT a Menu — toolbar
-/// Menus bridge to a native item that flattens custom labels to text, so
-/// composite content (the badge) never renders inside one. The toolbar
-/// already wraps the item in Liquid Glass, so the label draws no container
-/// of its own — a second glassEffect here nests two capsule outlines.
+/// The toolbar's workspace pill, styled like Xcode's scheme picker: a
+/// static project prefix, then the workspace name as the one interactive
+/// segment — it alone highlights on hover and reveals the dropdown
+/// chevron. A plain Button + popover, NOT a Menu — toolbar Menus bridge
+/// to a native item that flattens custom labels to text, so composite
+/// content (the badge) never renders inside one. The toolbar already
+/// wraps the item in Liquid Glass, so the label draws no container of
+/// its own — a second glassEffect here nests two capsule outlines.
 struct WorkspaceSwitcher: View {
     @Environment(AppModel.self) private var appModel
     @Environment(WindowState.self) private var windowState
 
     @State private var isPickerPresented = false
+    @State private var isHovering = false
 
     var body: some View {
         let presentation = activeContext.map {
@@ -20,41 +23,57 @@ struct WorkspaceSwitcher: View {
                 workspace: $0.workspace
             )
         } ?? .noActiveWorkspace
-        Button {
-            isPickerPresented.toggle()
-        } label: {
-            HStack(spacing: Spacing.sm) {
+        // Highlight persists while the picker is open, matching Xcode.
+        let isHighlighted = isHovering || isPickerPresented
+        HStack(spacing: Spacing.sm) {
+            if let project = presentation.projectName {
                 HStack(spacing: Spacing.xs) {
-                    if let project = presentation.projectName {
-                        Text(project)
-                            .foregroundStyle(.secondary)
-                        Text("›")
-                            .foregroundStyle(.tertiary)
-                    }
-                    Text(presentation.workspaceName)
-                        .fontWeight(.medium)
-                }
-                .lineLimit(1)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                if let sessionBadgeLabel {
-                    TagBadge(text: sessionBadgeLabel)
+                    Text(project)
+                        .foregroundStyle(.secondary)
+                    Text("›")
+                        .foregroundStyle(.tertiary)
                 }
             }
-            .padding(.horizontal, Spacing.xs)
+            Button {
+                isPickerPresented.toggle()
+            } label: {
+                HStack(spacing: Spacing.xs) {
+                    Text(presentation.workspaceName)
+                        .fontWeight(.medium)
+                    // Opacity, not removal: the reserved width keeps the
+                    // pill from shifting as the chevron fades in.
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .opacity(isHighlighted ? 1 : 0)
+                }
+                .padding(.horizontal, Spacing.xs)
+                .padding(.vertical, 3)
+                .background(
+                    .quaternary.opacity(isHighlighted ? 1 : 0),
+                    in: RoundedRectangle(cornerRadius: 5)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 5))
+            }
+            .buttonStyle(.plain)
+            .onHover { isHovering = $0 }
+            .popover(isPresented: $isPickerPresented, arrowEdge: .bottom) {
+                // An archived Active Workspace never appears in the
+                // picker's rows, so name it explicitly.
+                WorkspacePicker(archivedCurrent: activeContext.flatMap {
+                    $0.workspace.isArchived ? presentation.label : nil
+                })
+            }
+            .help(presentation.help)
+            .accessibilityLabel(
+                sessionBadgeLabel.map { "\(presentation.help), \($0)" }
+                    ?? presentation.help
+            )
+            if let sessionBadgeLabel {
+                TagBadge(text: sessionBadgeLabel)
+            }
         }
-        .popover(isPresented: $isPickerPresented, arrowEdge: .bottom) {
-            // An archived Active Workspace never appears in the picker's
-            // rows, so name it explicitly.
-            WorkspacePicker(archivedCurrent: activeContext.flatMap {
-                $0.workspace.isArchived ? presentation.label : nil
-            })
-        }
-        .help(presentation.help)
-        .accessibilityLabel(
-            sessionBadgeLabel.map { "\(presentation.help), \($0)" } ?? presentation.help
-        )
+        .lineLimit(1)
     }
 
     /// What launched the visible session ("Claude", "Terminal", …); nil
@@ -93,10 +112,18 @@ private struct WorkspacePicker: View {
     var body: some View {
         let groups = filteredGroups()
         VStack(spacing: 0) {
-            TextField("Filter Workspaces", text: $query)
-                .textFieldStyle(.roundedBorder)
-                .padding(Spacing.sm)
-            Divider()
+            // Xcode-style filter: the glyph and a plain field inside one
+            // capsule inset, even margins, no divider below.
+            HStack(spacing: Spacing.xs) {
+                Image(systemName: "line.3.horizontal.decrease.circle")
+                    .foregroundStyle(.secondary)
+                TextField("Filter", text: $query)
+                    .textFieldStyle(.plain)
+            }
+            .padding(.horizontal, Spacing.sm)
+            .padding(.vertical, 6)
+            .background(.quaternary, in: Capsule())
+            .padding(Spacing.md)
             if let archivedCurrent {
                 Text("\(archivedCurrent) — Archived")
                     .font(.caption)
