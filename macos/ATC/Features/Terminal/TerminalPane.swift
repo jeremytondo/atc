@@ -7,24 +7,15 @@ struct TerminalPane: View {
     @Environment(AppModel.self) private var appModel
     let visibleRef: SessionRef?
     let focusRequest: UInt
-    let preferences: TerminalPreferences
 
     var body: some View {
-        ZStack {
-            let backingColor = TerminalPresentation.backingColor(preferences: preferences)
-            Color(
-                red: backingColor.red,
-                green: backingColor.green,
-                blue: backingColor.blue
-            )
-            ForEach(refs, id: \.self) { ref in
-                if let controller = appModel.terminals[ref] {
-                    TerminalHostView(
-                        controller: controller,
-                        isVisible: ref == visibleRef,
-                        focusRequest: focusRequest
-                    )
-                }
+        ForEach(refs, id: \.self) { ref in
+            if let controller = appModel.terminals[ref] {
+                TerminalHostView(
+                    controller: controller,
+                    isVisible: ref == visibleRef,
+                    focusRequest: focusRequest
+                )
             }
         }
     }

@@ -486,7 +486,7 @@ struct DashboardView: View {
                 Text("Open Settings")
             }
         }
-        .background()
+        .background(AppColors.canvas)
     }
 
     private var emptyState: some View {
@@ -500,7 +500,7 @@ struct DashboardView: View {
                     appModel.canMutate(connectionID: $0.id)
                 })
         }
-        .background()
+        .background(AppColors.canvas)
     }
 
     private var allLoadedOnce: Bool {

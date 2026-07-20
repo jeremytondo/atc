@@ -33,6 +33,7 @@ struct RootView: View {
         }
         .navigationTitle("atc")
         .toolbar(removing: .title)
+        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 WorkspaceSwitcher()
@@ -78,7 +79,6 @@ struct RootView: View {
                 selectedRef: visibleSessionRef,
                 selectedSession: visibleSession,
                 terminalFocusRequest: windowState.terminalFocusRequest,
-                terminalPreferences: configStore.configuration.terminal,
                 emptyState: workspaceEmptyActions
             )
             if windowState.selectedContent == .dashboard {
@@ -90,8 +90,14 @@ struct RootView: View {
                     onCreateProject: { windowState.isCreateProjectPresented = true },
                     onWorkspaceDeleted: { windowState.forgetSelection(for: $0) }
                 )
-                .background()
+                .background(AppColors.canvas)
             }
+        }
+        .background {
+            let backingColor = detailBackingColor
+            backingColor.color
+                .ignoresSafeArea(.container, edges: .top)
+                .animation(.easeInOut(duration: 0.2), value: backingColor)
         }
     }
 
@@ -112,6 +118,19 @@ struct RootView: View {
 
     private var visibleSession: Session? {
         visibleSessionRef.flatMap { appModel.session(for: $0) }
+    }
+
+    private var detailBackingColor: TerminalBackingColor {
+        let hasController = visibleSessionRef.map { appModel.terminals[$0] != nil } ?? false
+        let showsTerminal = DetailCanvas.showsTerminal(
+            isDashboard: windowState.selectedContent == .dashboard,
+            session: visibleSession,
+            hasController: hasController
+        )
+        return DetailCanvas.backingColor(
+            showsTerminal: showsTerminal,
+            preferences: configStore.configuration.terminal
+        )
     }
 
     private var workspaceEmptyActions: SessionContentView.EmptyStateActions? {
