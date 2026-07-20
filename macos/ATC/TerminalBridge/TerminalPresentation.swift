@@ -3,6 +3,9 @@ import GhosttyTheme
 
 @MainActor
 enum TerminalPresentation {
+    private static let defaultPaddingX = 8
+    private static let defaultPaddingY = 6
+
     static func makeController(preferences: TerminalPreferences) -> TerminalController {
         // An empty generated base is libghostty's compiled defaults;
         // .none would substitute the wrapper's TerminalConfiguration.default
@@ -45,12 +48,8 @@ enum TerminalPresentation {
             if let fontSize = preferences.fontSize {
                 builder.withFontSize(fontSize)
             }
-            if let paddingX = preferences.paddingX {
-                builder.withWindowPaddingX(paddingX)
-            }
-            if let paddingY = preferences.paddingY {
-                builder.withWindowPaddingY(paddingY)
-            }
+            builder.withWindowPaddingX(preferences.paddingX ?? defaultPaddingX)
+            builder.withWindowPaddingY(preferences.paddingY ?? defaultPaddingY)
             // background is rendered through the theme (themes render after
             // this configuration, so only a theme-level value wins).
         }
