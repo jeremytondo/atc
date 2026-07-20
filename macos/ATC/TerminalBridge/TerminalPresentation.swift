@@ -12,7 +12,9 @@ struct TerminalBackingColor: Equatable, Sendable {
         self.blue = blue
     }
 
-    fileprivate init(hex: String) {
+    /// Expects a compile-time-trusted RGB hex literal, not user input;
+    /// user-supplied values are validated by ConfigurationLoader first.
+    init(hex: String) {
         let normalized = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
         precondition(normalized.utf8.count == 6, "Terminal background must be RGB hex")
         red = Double(UInt8(normalized.prefix(2), radix: 16)!) / 255
@@ -62,8 +64,7 @@ enum TerminalPresentation {
            let theme = GhosttyThemeCatalog.theme(named: themeName) {
             return TerminalBackingColor(hex: theme.background)
         }
-        // libghostty's compiled default background (ghostty Config.zig).
-        return TerminalBackingColor(hex: "282C34")
+        return AppColors.canvasBackingColor
     }
 
     private static func configuration(
@@ -99,13 +100,16 @@ enum TerminalPresentation {
             }
             theme = definition.toTerminalTheme()
         } else {
-            // An empty theme renders no keys, so libghostty's compiled
-            // defaults stand; TerminalTheme.default would inject the
-            // wrapper's Alabaster/Afterglow palettes.
+            // Start empty so libghostty's compiled defaults stand except for
+            // the app-owned background injected below.
             theme = TerminalTheme(light: .init(), dark: .init())
         }
 
-        guard let background = preferences.background else { return theme }
+        // A selected theme owns its background unless the user explicitly
+        // overrides it. With no theme, ATC owns the default canvas color.
+        let background = preferences.background
+            ?? (preferences.theme == nil ? AppColors.canvasHex : nil)
+        guard let background else { return theme }
         return TerminalTheme(
             light: TerminalConfiguration(startingFrom: theme.light) {
                 $0.withBackground(background)

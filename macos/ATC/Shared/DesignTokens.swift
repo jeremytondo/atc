@@ -1,5 +1,20 @@
 import SwiftUI
 
+/// The app-wide dark canvas. `canvasHex` is the single source; the SwiftUI
+/// color and the terminal's default background both derive from it so covers
+/// and terminal rest on one color.
+enum AppColors {
+    static let canvasHex = "141416"
+    static let canvasBackingColor = TerminalBackingColor(hex: canvasHex)
+    static let canvas = canvasBackingColor.color
+}
+
+extension TerminalBackingColor {
+    var color: Color {
+        Color(red: red, green: green, blue: blue)
+    }
+}
+
 /// The app-wide spacing scale (4pt grid). Use these instead of literal
 /// spacing/padding values; keep literal `2` only for tight two-line text
 /// stacks and pill interiors.

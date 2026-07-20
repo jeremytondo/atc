@@ -37,13 +37,12 @@ struct TerminalPresentationTests {
         #expect(!rendered.contains("theme"))
     }
 
-    @Test("a fresh controller with no preferences applies no configuration keys")
+    @Test("unset preferences apply only the app-owned default background")
     func compiledDefaultsController() {
-        // Pins the ATC-5 requirement: unset preferences mean libghostty's
-        // compiled defaults — neither the wrapper's default config nor its
-        // default theme may leak into the applied configuration.
+        // Unset preferences keep libghostty's compiled defaults except for
+        // the app-owned background shared with the detail canvas.
         let controller = TerminalPresentation.makeController(preferences: .init())
-        #expect(controller.renderedConfig.isEmpty)
+        #expect(controller.renderedConfig == "background = 141416\n")
     }
 
     @Test("explicit background outranks the selected theme's background")
@@ -56,7 +55,25 @@ struct TerminalPresentationTests {
         #expect(lines.last { $0.hasPrefix("background =") } == "background = ff0000")
     }
 
-    @Test("backing color prefers explicit background, then theme, then black")
+    @Test("a selected theme keeps its own background, not the injected app default")
+    func themeKeepsItsBackground() {
+        let controller = TerminalPresentation.makeController(preferences: .init(
+            theme: "Catppuccin Mocha"
+        ))
+        #expect(controller.renderedConfig.contains("background = 1e1e2e"))
+        #expect(!controller.renderedConfig.contains("background = 141416"))
+    }
+
+    @Test("background opacity alone still injects the app default background")
+    func opacityKeepsDefaultBackground() {
+        let controller = TerminalPresentation.makeController(preferences: .init(
+            backgroundOpacity: 0.95
+        ))
+        #expect(controller.renderedConfig.contains("background-opacity = 0.95"))
+        #expect(controller.renderedConfig.contains("background = 141416"))
+    }
+
+    @Test("backing color prefers explicit background, then theme, then app canvas")
     func backingColorResolution() {
         let explicit = TerminalPresentation.backingColor(preferences: .init(
             theme: "Catppuccin Mocha",
@@ -74,9 +91,9 @@ struct TerminalPresentationTests {
         ))
         #expect(TerminalPresentation.backingColor(preferences: .init())
             == TerminalBackingColor(
-                red: 40.0 / 255,
-                green: 44.0 / 255,
-                blue: 52.0 / 255
+                red: 20.0 / 255,
+                green: 20.0 / 255,
+                blue: 22.0 / 255
             ))
     }
 }

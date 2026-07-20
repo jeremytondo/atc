@@ -19,7 +19,6 @@ struct SessionContentView: View {
     let selectedRef: SessionRef?
     let selectedSession: Session?
     let terminalFocusRequest: UInt
-    let terminalPreferences: TerminalPreferences
     var emptyState: EmptyStateActions?
 
     @Environment(WindowState.self) private var windowState
@@ -28,8 +27,7 @@ struct SessionContentView: View {
         ZStack {
             TerminalPane(
                 visibleRef: selectedRef,
-                focusRequest: terminalFocusRequest,
-                preferences: terminalPreferences
+                focusRequest: terminalFocusRequest
             )
             cover
         }
@@ -40,7 +38,7 @@ struct SessionContentView: View {
         if let ref = selectedRef, let session = selectedSession {
             if session.status == .ended {
                 SessionEndedView(sessionRef: ref, session: session)
-                    .background()
+                    .background(AppColors.canvas)
             } else if let controller = appModel.terminals[ref] {
                 // Terminal visible; only the phase banner floats on top.
                 TerminalStatusBanner(controller: controller) {
@@ -64,7 +62,7 @@ struct SessionContentView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background()
+                .background(AppColors.canvas)
             }
         } else if let emptyState {
             ContentUnavailableView {
@@ -78,7 +76,7 @@ struct SessionContentView: View {
                     .disabled(!emptyState.creationEnabled)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background()
+            .background(AppColors.canvas)
         } else {
             ContentUnavailableView(
                 "No Session Selected",
@@ -86,7 +84,7 @@ struct SessionContentView: View {
                 description: Text("Select a session in the sidebar.")
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background()
+            .background(AppColors.canvas)
         }
     }
 }
