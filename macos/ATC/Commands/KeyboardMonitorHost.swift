@@ -182,14 +182,14 @@ struct KeyboardRoutingContainer<Content: View>: View {
             keymap: configStore.configuration.keymap,
             context: context
         )
-        router.isSuspended = { windowState.isCommandPalettePresented }
+        router.isSuspended = { windowState.commandPalettePresentation != nil }
         _router = State(initialValue: router)
     }
 
     var body: some View {
         content
             .overlay {
-                if windowState.isCommandPalettePresented {
+                if windowState.commandPalettePresentation != nil {
                     CommandPaletteView()
                 }
             }
@@ -200,14 +200,14 @@ struct KeyboardRoutingContainer<Content: View>: View {
             .environment(router)
             .background(KeyboardMonitorHost(
                 router: router,
-                onDeactivate: { windowState.isCommandPalettePresented = false },
+                onDeactivate: { windowState.commandPalettePresentation = nil },
                 focusFallback: { windowState.requestTerminalFocus() }
             ))
             .onChange(of: configStore.configuration.keymap.generation, initial: true) {
                 router.keymap = configStore.configuration.keymap
             }
-            .onChange(of: windowState.isCommandPalettePresented) {
-                if windowState.isCommandPalettePresented {
+            .onChange(of: windowState.commandPalettePresentation) {
+                if windowState.commandPalettePresentation != nil {
                     router.cancel()
                 }
             }

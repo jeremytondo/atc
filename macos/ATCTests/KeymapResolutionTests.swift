@@ -26,6 +26,16 @@ struct KeymapResolutionTests {
         let paletteShortcut = try stroke("cmd+shift+p")
         #expect(keymap.menuShortcuts[.toggleCommandPalette]
             == paletteShortcut)
+        let scopedBindings: [(String, CommandID)] = [
+            ("cmd+shift+s", .searchSessions),
+            ("cmd+shift+t", .searchTerminals),
+            ("cmd+shift+o", .searchWorkspaces),
+        ]
+        for (trigger, commandID) in scopedBindings {
+            let trigger = try stroke(trigger)
+            #expect(command(at: trigger, in: keymap) == commandID)
+            #expect(keymap.menuShortcuts[commandID] == trigger)
+        }
         #expect(command(at: try stroke("cmd+d"), in: keymap) == .showDashboard)
         #expect(command(at: try stroke("cmd+n"), in: keymap) == .newSession)
         #expect(command(at: try stroke("cmd+r"), in: keymap) == .refresh)
@@ -33,11 +43,14 @@ struct KeymapResolutionTests {
         #expect(command(at: try stroke("cmd+shift+n"), in: keymap) == .newWorkspace)
 
         let leader = try #require(prefix(at: try stroke("cmd+k"), in: keymap))
-        #expect(leader.count == 4)
+        #expect(leader.count == 7)
         #expect(command(in: leader[KeyStroke(key: "b", modifiers: [])]) == .toggleSidebar)
         #expect(command(in: leader[KeyStroke(key: "d", modifiers: [])]) == .showDashboard)
         #expect(command(in: leader[KeyStroke(key: "n", modifiers: [])]) == .newSession)
         #expect(command(in: leader[KeyStroke(key: "r", modifiers: [])]) == .refresh)
+        #expect(command(in: leader[KeyStroke(key: "s", modifiers: [])]) == .searchSessions)
+        #expect(command(in: leader[KeyStroke(key: "t", modifiers: [])]) == .searchTerminals)
+        #expect(command(in: leader[KeyStroke(key: "w", modifiers: [])]) == .searchWorkspaces)
     }
 
     @Test("the palette binding can be rebound and unbound")
@@ -58,6 +71,26 @@ struct KeymapResolutionTests {
         """#)
         #expect(unbound.root[try stroke("cmd+shift+p")] == nil)
         #expect(unbound.menuShortcuts[.toggleCommandPalette] == nil)
+    }
+
+    @Test("a scoped search command can be rebound and unbound")
+    func scopedSearchBindingLayering() throws {
+        let rebound = try resolve(#"""
+        [keybindings]
+        "ctrl+shift+s" = "view.search-sessions"
+        """#)
+        let reboundShortcut = try stroke("ctrl+shift+s")
+        #expect(command(at: reboundShortcut, in: rebound) == .searchSessions)
+        #expect(rebound.menuShortcuts[.searchSessions] == reboundShortcut)
+
+        let unbound = try resolve(#"""
+        [keybindings]
+        "cmd+shift+s" = "unbind"
+        """#)
+        #expect(unbound.root[try stroke("cmd+shift+s")] == nil)
+        #expect(unbound.menuShortcuts[.searchSessions] == nil)
+        let leader = try #require(prefix(at: try stroke("cmd+k"), in: unbound))
+        #expect(command(in: leader[KeyStroke(key: "s", modifiers: [])]) == .searchSessions)
     }
 
     @Test("user entries replace, unbind, and can rebind defaults")

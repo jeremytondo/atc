@@ -14,6 +14,13 @@ enum MainContentSelection: Equatable, Sendable {
     case session(SessionRef)
 }
 
+enum CommandPalettePresentation: Equatable, Sendable {
+    case all
+    case sessions
+    case terminals
+    case workspaces
+}
+
 struct TerminalRetentionContext: Equatable, Sendable {
     let activeWorkspace: WorkspaceRef?
     let selectedSession: SessionRef?
@@ -31,7 +38,7 @@ final class WindowState {
     private(set) var selectedContent: MainContentSelection = .dashboard
     var columnVisibility: NavigationSplitViewVisibility = .all
     var isInspectorPresented = false
-    var isCommandPalettePresented = false
+    var commandPalettePresentation: CommandPalettePresentation?
 
     var isProjectsSectionExpanded = true
     var isSessionsSectionExpanded = true

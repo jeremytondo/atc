@@ -29,6 +29,9 @@ struct AppCommands: Commands {
             commandButton(.showDashboard)
             commandButton(.refresh)
             commandButton(.toggleCommandPalette)
+            commandButton(.searchSessions)
+            commandButton(.searchTerminals)
+            commandButton(.searchWorkspaces)
             Divider()
         }
 

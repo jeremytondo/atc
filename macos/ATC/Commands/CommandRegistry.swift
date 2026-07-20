@@ -48,6 +48,7 @@ enum CommandRegistry {
     private static let sessionUnavailable =
         "Requires an open Workspace on a reachable Connection"
     private static let connectionUnavailable = "Requires a configured Connection"
+    private static let dialogUnavailable = "Not available while a dialog is open"
 
     static var allDescriptors: [CommandDescriptor] {
         CommandID.allCases.map(descriptor(for:))
@@ -71,10 +72,40 @@ enum CommandRegistry {
                 isPaletteEligible: false,
                 availability: {
                     $0.windowState.isSheetPresented
-                        ? .unavailable(reason: "Not available while a dialog is open")
+                        ? .unavailable(reason: dialogUnavailable)
                         : .available
                 },
-                perform: { $0.windowState.isCommandPalettePresented.toggle() }
+                perform: {
+                    $0.windowState.commandPalettePresentation =
+                        $0.windowState.commandPalettePresentation == nil ? .all : nil
+                }
+            )
+        case .searchSessions:
+            CommandDescriptor(
+                id: id,
+                title: "Search Sessions…",
+                category: .view,
+                isPaletteEligible: false,
+                availability: { scopedPaletteAvailability($0, requiresWorkspace: true) },
+                perform: { $0.windowState.commandPalettePresentation = .sessions }
+            )
+        case .searchTerminals:
+            CommandDescriptor(
+                id: id,
+                title: "Search Terminals…",
+                category: .view,
+                isPaletteEligible: false,
+                availability: { scopedPaletteAvailability($0, requiresWorkspace: true) },
+                perform: { $0.windowState.commandPalettePresentation = .terminals }
+            )
+        case .searchWorkspaces:
+            CommandDescriptor(
+                id: id,
+                title: "Search Workspaces…",
+                category: .view,
+                isPaletteEligible: false,
+                availability: { scopedPaletteAvailability($0, requiresWorkspace: false) },
+                perform: { $0.windowState.commandPalettePresentation = .workspaces }
             )
         case .showDashboard:
             CommandDescriptor(
@@ -166,6 +197,22 @@ enum CommandRegistry {
         context.windowState.canStartSession(in: context.appModel)
             ? .available
             : .unavailable(reason: sessionUnavailable)
+    }
+
+    private static func scopedPaletteAvailability(
+        _ context: CommandContext,
+        requiresWorkspace: Bool
+    ) -> CommandAvailability {
+        if context.windowState.isSheetPresented {
+            return .unavailable(reason: dialogUnavailable)
+        }
+        if context.windowState.commandPalettePresentation != nil {
+            return .unavailable(reason: "Not available while the Command Palette is open")
+        }
+        if requiresWorkspace, context.windowState.activeWorkspace == nil {
+            return .unavailable(reason: "Requires an Active Workspace")
+        }
+        return .available
     }
 
     private static func connectionAvailability(
