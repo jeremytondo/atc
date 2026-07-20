@@ -132,8 +132,6 @@ struct ConfigurationLoaderTests {
         font_size = 14.0
         padding_x = 8
         padding_y = 9
-        background = "1e1e2e"
-        background_opacity = 0.95
         """#)
 
         #expect(parsed.diagnostics.isEmpty)
@@ -142,23 +140,19 @@ struct ConfigurationLoaderTests {
             fontFamily: "Berkeley Mono",
             fontSize: 14,
             paddingX: 8,
-            paddingY: 9,
-            background: "1e1e2e",
-            backgroundOpacity: 0.95
+            paddingY: 9
         ))
     }
 
-    @Test("terminal accepts integer font size and normalizes prefixed background")
-    func terminalNumericAndBackgroundNormalization() {
+    @Test("terminal accepts integer font size")
+    func terminalIntegerFontSize() {
         let parsed = ConfigurationLoader.parse(#"""
         [terminal]
         font_size = 14
-        background = "#A1b2C3"
         """#)
 
         #expect(parsed.diagnostics.isEmpty)
         #expect(parsed.terminal.fontSize == 14)
-        #expect(parsed.terminal.background == "A1b2C3")
     }
 
     @Test("terminal rejects unknown keys and wrong scalar types with full paths")
@@ -171,20 +165,34 @@ struct ConfigurationLoaderTests {
         font_size = "14"
         padding_x = 1.5
         padding_y = "8"
-        background = 123456
-        background_opacity = "opaque"
         """#)
         let messages = parsed.diagnostics.map(\.message)
 
         for key in [
-            "typo", "theme", "font_family", "font_size", "padding_x",
-            "padding_y", "background", "background_opacity",
+            "typo", "theme", "font_family", "font_size", "padding_x", "padding_y",
         ] {
             #expect(messages.contains { $0.contains("[terminal].\(key)") })
         }
         #expect(messages.first { $0.contains("font_size") }?.contains("number") == true)
         #expect(messages.first { $0.contains("padding_x") }?.contains("integer") == true)
-        #expect(messages.first { $0.contains("background_opacity") }?.contains("number") == true)
+    }
+
+    @Test("removed background keys are rejected as unrecognized")
+    func terminalBackgroundKeysRemoved() {
+        // The terminal background is app-owned; the old customization keys
+        // must fail loudly instead of silently doing nothing.
+        let parsed = ConfigurationLoader.parse(#"""
+        [terminal]
+        background = "1e1e2e"
+        background_opacity = 0.95
+        """#)
+        let messages = parsed.diagnostics.map(\.message)
+
+        for key in ["background", "background_opacity"] {
+            #expect(messages.contains {
+                $0.contains("[terminal].\(key)") && $0.contains("not recognized")
+            })
+        }
     }
 
     @Test("terminal rejects invalid numeric ranges")
@@ -201,34 +209,6 @@ struct ConfigurationLoaderTests {
             #expect(parsed.diagnostics.contains {
                 $0.message.contains("[terminal].\(key)")
                     && $0.message.contains("non-negative")
-            })
-        }
-
-        for value in ["-0.01", "1.01", "inf", "nan"] {
-            let parsed = ConfigurationLoader.parse(
-                "[terminal]\nbackground_opacity = \(value)"
-            )
-            #expect(parsed.diagnostics.contains {
-                $0.message.contains("[terminal].background_opacity")
-            })
-        }
-
-        for value in ["0.0", "1.0", "0", "1"] {
-            #expect(ConfigurationLoader.parse(
-                "[terminal]\nbackground_opacity = \(value)"
-            ).diagnostics.isEmpty)
-        }
-    }
-
-    @Test("terminal rejects malformed RGB backgrounds")
-    func terminalBackgroundValidation() {
-        for value in ["12345", "1234567", "12xx56", "##12345"] {
-            let parsed = ConfigurationLoader.parse(
-                "[terminal]\nbackground = \"\(value)\""
-            )
-            #expect(parsed.diagnostics.contains {
-                $0.message.contains("[terminal].background")
-                    && $0.message.contains("6-hex-digit")
             })
         }
     }

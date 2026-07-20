@@ -27,7 +27,6 @@ enum ConfigurationLoader {
     ])
     private static let terminalKeys = Set([
         "theme", "font_family", "font_size", "padding_x", "padding_y",
-        "background", "background_opacity",
     ])
 
     static func parse(data: Data) -> ParsedConfig {
@@ -179,8 +178,6 @@ enum ConfigurationLoader {
         var fontSize: Float?
         var paddingX: Int?
         var paddingY: Int?
-        var background: String?
-        var backgroundOpacity: Double?
 
         for key in table.keys.sorted() {
             guard terminalKeys.contains(key) else {
@@ -243,30 +240,6 @@ enum ConfigurationLoader {
                 } catch {
                     diagnostics.append(diagnostic("\(path) must be an integer"))
                 }
-            case "background":
-                do {
-                    let value = try table.string(forKey: key)
-                    let normalized = value.hasPrefix("#") ? String(value.dropFirst()) : value
-                    guard isRGBHex(normalized) else {
-                        diagnostics.append(diagnostic(
-                            "\(path) must be a 6-hex-digit RGB value"
-                        ))
-                        continue
-                    }
-                    background = normalized
-                } catch {
-                    diagnostics.append(diagnostic("\(path) must be a string"))
-                }
-            case "background_opacity":
-                guard let value = number(forKey: key, in: table) else {
-                    diagnostics.append(diagnostic("\(path) must be a number"))
-                    continue
-                }
-                guard value.isFinite, (0...1).contains(value) else {
-                    diagnostics.append(diagnostic("\(path) must be between 0 and 1"))
-                    continue
-                }
-                backgroundOpacity = value
             default:
                 preconditionFailure("Recognized terminal key is not decoded")
             }
@@ -277,9 +250,7 @@ enum ConfigurationLoader {
             fontFamily: fontFamily,
             fontSize: fontSize,
             paddingX: paddingX,
-            paddingY: paddingY,
-            background: background,
-            backgroundOpacity: backgroundOpacity
+            paddingY: paddingY
         )
     }
 
@@ -288,12 +259,6 @@ enum ConfigurationLoader {
             return Double(value)
         }
         return try? table.float(forKey: key)
-    }
-
-    private static func isRGBHex(_ value: String) -> Bool {
-        value.utf8.count == 6 && value.utf8.allSatisfy { byte in
-            (48...57).contains(byte) || (65...70).contains(byte) || (97...102).contains(byte)
-        }
     }
 
     private static func diagnostic(_ message: String) -> ConfigDiagnostic {

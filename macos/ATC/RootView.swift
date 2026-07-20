@@ -99,12 +99,7 @@ struct RootView: View {
                 .background(AppColors.canvas)
             }
         }
-        .background {
-            let backingColor = detailBackingColor
-            backingColor.color
-                .ignoresSafeArea(.container, edges: .top)
-                .animation(.easeInOut(duration: 0.2), value: backingColor)
-        }
+        .background(AppColors.canvas.ignoresSafeArea(.container, edges: .top))
     }
 
     @ViewBuilder
@@ -124,19 +119,6 @@ struct RootView: View {
 
     private var visibleSession: Session? {
         visibleSessionRef.flatMap { appModel.session(for: $0) }
-    }
-
-    private var detailBackingColor: TerminalBackingColor {
-        let hasController = visibleSessionRef.map { appModel.terminals[$0] != nil } ?? false
-        let showsTerminal = DetailCanvas.showsTerminal(
-            isDashboard: windowState.selectedContent == .dashboard,
-            session: visibleSession,
-            hasController: hasController
-        )
-        return DetailCanvas.backingColor(
-            showsTerminal: showsTerminal,
-            preferences: configStore.configuration.terminal
-        )
     }
 
     private var workspaceEmptyActions: SessionContentView.EmptyStateActions? {
