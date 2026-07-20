@@ -65,9 +65,7 @@ theme = "Catppuccin Mocha"
 font_family = "Berkeley Mono"
 font_size = 14.0
 padding_x = 8
-padding_y = 8
-background = "1e1e2e"
-background_opacity = 0.95
+padding_y = 6
 ```
 
 Binding keys are either direct triggers such as `cmd+b` or two-step leader
@@ -87,17 +85,21 @@ The scoped Command Palette commands search within a specific navigation type:
 | `view.search-workspaces` | `cmd+shift+o`, `leader>w` |
 
 All `[terminal]` keys are optional. Terminal presentation starts from
-libghostty's compiled defaults, then applies only the values explicitly set in
-this table. `theme` must name a bundled Ghostty theme; `font_family` must be
-non-empty; `font_size` must be positive; padding values must be non-negative integers;
-`background` is a six-digit RGB hex value with an optional leading `#`; and
-`background_opacity` ranges from `0` (fully transparent) through `1` (opaque).
+libghostty's compiled defaults, then applies the values set in this table.
+`theme` must name a bundled Ghostty theme; `font_family` must be non-empty; and
+`font_size` must be positive. `padding_x` and `padding_y` are non-negative
+integers and default to `8` and `6`, respectively. Set either padding value to
+`0` for an intentional edge-to-edge layout, which may place content beneath a
+window's rounded corners.
 
 Use **Reload Configuration** in the app menu after editing the file. A valid
 reload replaces the complete application configuration; an invalid reload
 keeps the last-known-good configuration. Deleting the file and reloading
-restores defaults. Terminal presentation changes apply live to every retained
-surface without recreating terminal sessions or reconnecting WebSockets.
+restores defaults. Most terminal presentation changes apply live to every
+retained surface without recreating terminal sessions or reconnecting
+WebSockets. Padding changes are guaranteed for new terminal surfaces or after
+restarting the app; retained surfaces may not recalculate their padding on
+reload.
 **Reveal Configuration** selects `macos.toml` in Finder when it exists, or
 reveals its expected directory without creating anything.
 

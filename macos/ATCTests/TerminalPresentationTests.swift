@@ -4,20 +4,35 @@ import Testing
 @MainActor
 @Suite("Terminal presentation")
 struct TerminalPresentationTests {
-    @Test("unset preferences render no wrapper-selected configuration")
-    func emptyRendering() {
+    @Test("unset preferences render safe padding defaults")
+    func defaultPaddingRendering() {
         #expect(TerminalPresentation.renderedConfiguration(
             preferences: TerminalPreferences()
-        ).isEmpty)
+        ) == """
+        window-padding-x = 8
+        window-padding-y = 6
+        """)
     }
 
-    @Test("each generated preference renders only its Ghostty key")
+    @Test("generated preferences render with padding defaults or overrides")
     func individualRendering() {
         let cases: [(TerminalPreferences, String)] = [
-            (.init(fontFamily: "Berkeley Mono"), "font-family = Berkeley Mono"),
-            (.init(fontSize: 14), "font-size = 14"),
-            (.init(paddingX: 8), "window-padding-x = 8"),
-            (.init(paddingY: 9), "window-padding-y = 9"),
+            (
+                .init(fontFamily: "Berkeley Mono"),
+                "font-family = Berkeley Mono\nwindow-padding-x = 8\nwindow-padding-y = 6"
+            ),
+            (
+                .init(fontSize: 14),
+                "font-size = 14\nwindow-padding-x = 8\nwindow-padding-y = 6"
+            ),
+            (
+                .init(paddingX: 12),
+                "window-padding-x = 12\nwindow-padding-y = 6"
+            ),
+            (
+                .init(paddingY: 9),
+                "window-padding-x = 8\nwindow-padding-y = 9"
+            ),
         ]
 
         for (preferences, expected) in cases {
@@ -27,21 +42,39 @@ struct TerminalPresentationTests {
         }
     }
 
+    @Test("explicit zero padding renders edge-to-edge overrides")
+    func zeroPaddingRendering() {
+        #expect(TerminalPresentation.renderedConfiguration(
+            preferences: TerminalPreferences(paddingX: 0, paddingY: 0)
+        ) == """
+        window-padding-x = 0
+        window-padding-y = 0
+        """)
+    }
+
     @Test("theme is resolved separately and does not emit a config key")
     func themeRendering() {
         let rendered = TerminalPresentation.renderedConfiguration(
             preferences: TerminalPreferences(theme: "Catppuccin Mocha")
         )
-        #expect(rendered.isEmpty)
+        #expect(rendered == """
+        window-padding-x = 8
+        window-padding-y = 6
+        """)
         #expect(!rendered.contains("theme"))
     }
 
-    @Test("unset preferences apply only the app-owned canvas background")
+    @Test("unset preferences apply safe padding and the app-owned canvas background")
     func compiledDefaultsController() {
         // Unset preferences keep libghostty's compiled defaults except for
-        // the app-owned background shared with every other surface.
+        // safe content padding and the app-owned background.
         let controller = TerminalPresentation.makeController(preferences: .init())
-        #expect(controller.renderedConfig == "background = 141416\n")
+        #expect(controller.renderedConfig == """
+        window-padding-x = 8
+        window-padding-y = 6
+        background = 141416
+
+        """)
     }
 
     @Test("a selected theme keeps its palette but the canvas background wins")
