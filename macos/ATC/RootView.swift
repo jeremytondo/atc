@@ -32,6 +32,12 @@ struct RootView: View {
                 }
         }
         .navigationTitle("atc")
+        // The sidebar's glass composites over the window's base layer, which
+        // otherwise varies with what the window contains (it brightens when a
+        // Metal-backed terminal surface is visible — ATC-45). Pinning the
+        // base layer to the canvas keeps the glass itself but gives it one
+        // constant color to rest on.
+        .containerBackground(AppColors.canvas, for: .window)
         .toolbar(removing: .title)
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         .toolbar {
