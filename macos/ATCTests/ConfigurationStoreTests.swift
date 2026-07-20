@@ -204,7 +204,7 @@ struct ConfigurationStoreTests {
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         try write(#"""
         [terminal]
-        background = "123456"
+        padding_x = 4
         """#, to: fixture.config)
         var applied: [TerminalPreferences] = []
         let store = ConfigurationStore(
@@ -215,13 +215,13 @@ struct ConfigurationStoreTests {
         store.loadAtLaunch()
         try write(#"""
         [terminal]
-        background = "abcdef"
+        padding_x = 8
         """#, to: fixture.config)
         store.reload()
         try FileManager.default.removeItem(at: fixture.config)
         store.reload()
 
-        #expect(applied.map(\.background) == ["123456", "abcdef", nil])
+        #expect(applied.map(\.paddingX) == [4, 8, nil])
         #expect(store.configuration.terminal == TerminalPreferences())
     }
 

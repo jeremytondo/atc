@@ -1,17 +1,20 @@
 import SwiftUI
 
 /// The app-wide dark canvas. `canvasHex` is the single source; the SwiftUI
-/// color and the terminal's default background both derive from it so covers
-/// and terminal rest on one color.
+/// color and the terminal's injected background both derive from it so every
+/// surface rests on one color.
 enum AppColors {
     static let canvasHex = "141416"
-    static let canvasBackingColor = TerminalBackingColor(hex: canvasHex)
-    static let canvas = canvasBackingColor.color
-}
+    static let canvas = color(fromHex: canvasHex)
 
-extension TerminalBackingColor {
-    var color: Color {
-        Color(red: red, green: green, blue: blue)
+    /// Expects a compile-time-trusted RGB hex literal, not user input.
+    private static func color(fromHex hex: String) -> Color {
+        precondition(hex.utf8.count == 6, "Canvas color must be RGB hex")
+        return Color(
+            red: Double(UInt8(hex.prefix(2), radix: 16)!) / 255,
+            green: Double(UInt8(hex.dropFirst(2).prefix(2), radix: 16)!) / 255,
+            blue: Double(UInt8(hex.dropFirst(4).prefix(2), radix: 16)!) / 255
+        )
     }
 }
 
