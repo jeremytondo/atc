@@ -97,12 +97,8 @@ public struct HTTPATCClient: ATCClient {
         return try await get("fs/list", query: query)
     }
 
-    public func projects(includeArchived: Bool) async throws -> [Project] {
-        var query: [URLQueryItem] = []
-        if includeArchived {
-            query.append(URLQueryItem(name: "includeArchived", value: "true"))
-        }
-        let envelope: ProjectsEnvelope = try await get("projects", query: query)
+    public func projects() async throws -> [Project] {
+        let envelope: ProjectsEnvelope = try await get("projects")
         return envelope.projects
     }
 
@@ -120,25 +116,14 @@ public struct HTTPATCClient: ATCClient {
         return try await patch("projects/\(id)", body: Body(name: name))
     }
 
-    public func archiveProject(id: String) async throws -> Project {
-        try await post("projects/\(id)/archive")
-    }
-
-    public func unarchiveProject(id: String) async throws -> Project {
-        try await post("projects/\(id)/unarchive")
-    }
-
     public func deleteProject(id: String) async throws {
         _ = try await send(method: "DELETE", path: "projects/\(id)", body: nil as Never?)
     }
 
-    public func workspaces(projectID: String?, includeArchived: Bool) async throws -> [Workspace] {
+    public func workspaces(projectID: String?) async throws -> [Workspace] {
         var query: [URLQueryItem] = []
         if let projectID {
             query.append(URLQueryItem(name: "projectId", value: projectID))
-        }
-        if includeArchived {
-            query.append(URLQueryItem(name: "includeArchived", value: "true"))
         }
         let envelope: WorkspacesEnvelope = try await get("workspaces", query: query)
         return envelope.workspaces
@@ -156,14 +141,6 @@ public struct HTTPATCClient: ATCClient {
     public func renameWorkspace(id: String, name: String) async throws -> Workspace {
         struct Body: Encodable { var name: String }
         return try await patch("workspaces/\(id)", body: Body(name: name))
-    }
-
-    public func archiveWorkspace(id: String) async throws -> Workspace {
-        try await post("workspaces/\(id)/archive")
-    }
-
-    public func unarchiveWorkspace(id: String) async throws -> Workspace {
-        try await post("workspaces/\(id)/unarchive")
     }
 
     public func deleteWorkspace(id: String) async throws {

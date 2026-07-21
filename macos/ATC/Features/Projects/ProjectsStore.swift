@@ -19,8 +19,6 @@ final class ProjectsStore {
         }
     }
 
-    /// Always includes archived projects; surfaces filter locally (the
-    /// Dashboard's Show Archived toggle).
     private(set) var projects: [Project] = []
     private(set) var isLoading = false
     private(set) var hasLoadedOnce = false
@@ -52,7 +50,7 @@ final class ProjectsStore {
             }
         }
         do {
-            let fetched = try await client.projects(includeArchived: true)
+            let fetched = try await client.projects()
             guard generation == refreshGeneration else { return }
             projects = fetched
             lastError = nil
@@ -83,22 +81,6 @@ final class ProjectsStore {
     @discardableResult
     func rename(id: String, name: String) async throws -> Project {
         let project = try await client.renameProject(id: id, name: name)
-        merge(project)
-        scheduleRefresh()
-        return project
-    }
-
-    @discardableResult
-    func archive(id: String) async throws -> Project {
-        let project = try await client.archiveProject(id: id)
-        merge(project)
-        scheduleRefresh()
-        return project
-    }
-
-    @discardableResult
-    func unarchive(id: String) async throws -> Project {
-        let project = try await client.unarchiveProject(id: id)
         merge(project)
         scheduleRefresh()
         return project

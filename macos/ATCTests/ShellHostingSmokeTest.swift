@@ -110,13 +110,13 @@ struct ShellHostingSmokeTest {
     func hostEmptyWorkspace() async throws {
         // prj_notes has zero workspaces; wsp_refactor has sessions — use a
         // workspace whose sessions are filtered to nothing instead: open
-        // the archived workspace, which owns no sessions in the fixtures.
+        // the experiment workspace, which owns no sessions in the fixtures.
         let appModel = AppModel.preview()
         let runtime = try #require(appModel.runtimes.first)
         await waitForData(runtime)
         let windowState = WindowState.ephemeral()
         #expect(windowState.activateWorkspace(
-            WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_archived"),
+            WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_experiment"),
             in: appModel
         ))
         host(RootView(configStore: ConfigurationStore()).environment(appModel).environment(windowState))

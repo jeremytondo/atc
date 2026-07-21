@@ -7,7 +7,6 @@
   let projects = $state<Project[]>([]);
   let loading = $state(false);
   let error = $state('');
-  let includeArchived = $state(false);
 
   let editorOpen = $state(false);
   let saving = $state(false);
@@ -17,17 +16,12 @@
     loading = true;
     error = '';
     try {
-      projects = await listProjects({ includeArchived });
+      projects = await listProjects();
     } catch (e) {
       error = messageFromError(e);
     } finally {
       loading = false;
     }
-  }
-
-  function toggleArchived() {
-    includeArchived = !includeArchived;
-    void load();
   }
 
   function openNew() {
@@ -71,13 +65,8 @@
     </div>
   </div>
   <p class="lede" style="margin-bottom:16px">
-    A project names one directory on this machine and groups the sessions you start in it.
+    A project names one directory on this machine and groups its workspaces.
   </p>
-
-  <label style="display:flex;align-items:center;gap:7px;margin-bottom:16px;font-size:12.5px;color:var(--dc-mut);cursor:pointer">
-    <input type="checkbox" checked={includeArchived} onchange={toggleArchived} />
-    Show archived
-  </label>
 
   <ErrorBanner message={error} />
 
@@ -94,14 +83,11 @@
       <a
         class="card"
         href={`/projects/${encodeURIComponent(p.id)}`}
-        style="padding:15px 17px;display:block;text-decoration:none;color:inherit;{p.archivedAt
-          ? 'opacity:.55'
-          : ''}"
+        style="padding:15px 17px;display:block;text-decoration:none;color:inherit"
       >
         <div style="display:flex;align-items:center;gap:10px">
           <span style="font-size:14.5px;font-weight:600">{p.name}</span>
           <span class="mono" style="font-size:12px;color:var(--dc-dim)">{p.id}</span>
-          {#if p.archivedAt}<span class="badge line">archived</span>{/if}
         </div>
         <div class="mono" style="font-size:12.5px;color:var(--dc-mut);margin-top:7px">
           {p.workingDir}

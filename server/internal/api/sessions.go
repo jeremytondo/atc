@@ -242,12 +242,8 @@ func writeSessionError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "workspace_not_found", err.Error())
 	case errors.Is(err, workspace.ErrInvalidWorkspace):
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-	case errors.Is(err, workspace.ErrWorkspaceArchived):
-		writeError(w, http.StatusConflict, "workspace_archived", err.Error())
 	case errors.Is(err, project.ErrProjectNotFound):
 		writeError(w, http.StatusBadRequest, "project_not_found", err.Error())
-	case errors.Is(err, project.ErrProjectArchived):
-		writeError(w, http.StatusConflict, "project_archived", err.Error())
 	case errors.Is(err, session.ErrActionDisabled):
 		writeError(w, http.StatusConflict, "action_disabled", err.Error())
 	case errors.Is(err, session.ErrUnknownKey),

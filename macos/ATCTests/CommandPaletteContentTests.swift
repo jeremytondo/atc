@@ -358,7 +358,7 @@ struct CommandPaletteContentTests {
         #expect(unscoped.allSatisfy { $0.kind == .agent })
     }
 
-    @Test("Workspace scope includes unarchived Workspaces from unreachable Connections")
+    @Test("Workspace scope includes Workspaces from unreachable Connections")
     func scopedWorkspacesAcrossConnections() async throws {
         let connectedClient = ScriptableClient()
         let disconnectedClient = ScriptableClient()
@@ -377,11 +377,11 @@ struct CommandPaletteContentTests {
         let fixture = makeFixture(appModel: model)
         let rows = results(query: "", presentation: .workspaces, fixture: fixture)
             .compactMap(\.workspaceRow)
-        #expect(rows.count == 6)
+        #expect(rows.count == 8)
         #expect(rows.map(\.title) == rows.map(\.title).sorted {
             $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
         })
-        #expect(!rows.map(\.title).contains("Old experiment"))
+        #expect(rows.map(\.title).contains("Old experiment"))
         #expect(Set(rows.map(\.connectionName)) == ["Connected", "Disconnected"])
         #expect(rows.filter { $0.connectionName == "Disconnected" }.allSatisfy {
             $0.availability == .unavailable(reason: "Requires a reachable Connection")
@@ -533,25 +533,25 @@ struct CommandPaletteWorkspaceResultTests {
             .matchedRanges.isEmpty)
     }
 
-    @Test("shared groups exclude archived targets and retain every Connection")
-    func archiveAndConnectionProjection() {
+    @Test("shared groups retain every target and Connection")
+    func connectionProjection() {
         let projected = results(query: "Workspace", inputs: [
             input(
                 connection: paletteConnection(1, name: "First"),
                 projects: [
                     paletteProject("active", name: "Active"),
-                    paletteProject("archived", name: "Archived", archived: true),
+                    paletteProject("experiment", name: "Experiment"),
                 ],
                 workspaces: [
                     paletteWorkspace(
                         "first", project: "active", name: "First Workspace"
                     ),
                     paletteWorkspace(
-                        "hidden-workspace", project: "active",
-                        name: "Hidden Workspace", archived: true
+                        "extra-workspace", project: "active",
+                        name: "Extra Workspace"
                     ),
                     paletteWorkspace(
-                        "hidden-project", project: "archived", name: "Project Workspace"
+                        "project-workspace", project: "experiment", name: "Project Workspace"
                     ),
                 ]
             ),
@@ -563,11 +563,11 @@ struct CommandPaletteWorkspaceResultTests {
                 )]
             ),
         ])
-        #expect(projected.map(\.ref.workspaceID) == ["first", "second"])
+        #expect(projected.map(\.ref.workspaceID) == ["extra-workspace", "first", "project-workspace", "second"])
         #expect(Set(projected.map(\.connectionName)) == ["First", "Second"])
     }
 
-    @Test("Workspace keywords include every unarchived Workspace across Connections")
+    @Test("Workspace keywords include every Workspace across Connections")
     func keywordExpansionAcrossConnections() {
         let projected = results(query: "  WoR  ", inputs: [
             input(
@@ -575,9 +575,7 @@ struct CommandPaletteWorkspaceResultTests {
                 projects: [paletteProject("p1", name: "Atlas")],
                 workspaces: [
                     paletteWorkspace("alpha", project: "p1", name: "Alpha"),
-                    paletteWorkspace(
-                        "archived", project: "p1", name: "Archived", archived: true
-                    ),
+                    paletteWorkspace("extra", project: "p1", name: "Extra"),
                 ]
             ),
             input(
@@ -590,7 +588,7 @@ struct CommandPaletteWorkspaceResultTests {
             ),
         ])
 
-        #expect(projected.map(\.ref.workspaceID) == ["alpha", "beta"])
+        #expect(projected.map(\.ref.workspaceID) == ["alpha", "beta", "extra"])
         #expect(projected.allSatisfy { $0.matchedRanges.isEmpty })
         #expect(projected[0].availability == .available)
         #expect(projected[1].availability == .unavailable(
@@ -684,7 +682,7 @@ struct CommandPaletteSessionResultTests {
     ]
 
     @Test("the Active Workspace's Live and Ended Sessions appear")
-    func workspaceAndArchiveFiltering() {
+    func workspaceFiltering() {
         let active = WorkspaceRef(connectionID: connectionID, workspaceID: "active")
         let projected = results(query: "", active: active, sessions: [
             paletteSession("active", name: "Active", workspace: "active"),
@@ -692,21 +690,6 @@ struct CommandPaletteSessionResultTests {
             paletteSession("ended", name: "Ended", workspace: "active", status: .ended),
         ])
         #expect(projected.map(\.ref.sessionID) == ["active", "ended"])
-    }
-
-    @Test("an archived Active Workspace still yields its Sessions")
-    func archivedActiveWorkspace() {
-        let archivedWorkspace = WorkspaceRef(
-            connectionID: connectionID,
-            workspaceID: "archived-workspace"
-        )
-        #expect(results(
-            query: "Session",
-            active: archivedWorkspace,
-            sessions: [paletteSession(
-                "session", name: "Visible Session", workspace: "archived-workspace"
-            )]
-        ).map(\.ref.sessionID) == ["session"])
     }
 
     @Test("display names and kinds reuse SessionKind")
@@ -990,32 +973,28 @@ private func paletteConnection(_ number: Int, name: String) -> ConnectionRecord 
 
 private func paletteProject(
     _ id: String,
-    name: String,
-    archived: Bool = false
+    name: String
 ) -> Project {
     Project(
         id: id,
         name: name,
         workingDir: "/tmp/\(id)",
         createdAt: .now,
-        updatedAt: .now,
-        archivedAt: archived ? .now : nil
+        updatedAt: .now
     )
 }
 
 private func paletteWorkspace(
     _ id: String,
     project: String,
-    name: String,
-    archived: Bool = false
+    name: String
 ) -> Workspace {
     Workspace(
         id: id,
         projectId: project,
         name: name,
         createdAt: .now,
-        updatedAt: .now,
-        archivedAt: archived ? .now : nil
+        updatedAt: .now
     )
 }
 

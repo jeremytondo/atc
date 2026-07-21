@@ -31,14 +31,10 @@ struct ContractFixtureTests {
     @Test("sessions list")
     func sessionsList() throws {
         let sessions = try decodeResponse("sessions-list", as: SessionsEnvelope.self).sessions
-        #expect(sessions.count == 2)
+        #expect(sessions.count == 1)
         #expect(sessions[0].status == .live)
         #expect(sessions[0].workspace?.id == "wsp_fixture01")
         #expect(sessions[0].project?.id == "prj_fixture01")
-        // The second session is an Interactive Shell: no action on the wire.
-        #expect(sessions[1].action == nil)
-        #expect(sessions[1].displayName == "Shell")
-        #expect(sessions[1].status == .ended)
     }
 
     @Test("session detail", arguments: ["session-detail", "session-start", "session-rename"])
@@ -59,9 +55,7 @@ struct ContractFixtureTests {
     @Test("projects list")
     func projectsList() throws {
         let projects = try decodeResponse("projects-list", as: ProjectsEnvelope.self).projects
-        #expect(projects.count == 2)
-        #expect(!projects[0].isArchived)
-        #expect(projects[1].isArchived)
+        #expect(projects.count == 1)
     }
 
     @Test("project detail", arguments: ["project-detail", "project-create", "project-rename"])
@@ -74,10 +68,8 @@ struct ContractFixtureTests {
     @Test("workspaces list")
     func workspacesList() throws {
         let workspaces = try decodeResponse("workspaces-list", as: WorkspacesEnvelope.self).workspaces
-        #expect(workspaces.count == 2)
-        #expect(!workspaces[0].isArchived)
+        #expect(workspaces.count == 1)
         #expect(workspaces[0].projectId == "prj_fixture01")
-        #expect(workspaces[1].isArchived)
     }
 
     @Test("workspace detail", arguments: ["workspace-detail", "workspace-create", "workspace-rename"])

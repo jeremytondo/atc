@@ -45,7 +45,7 @@ extension AppModel {
 /// Canned-data client for previews and offline development.
 nonisolated struct MockATCClient: ATCClient {
     /// Stable-ID project fixtures. Working dirs reuse `mockTree` paths so a
-    /// project-scoped session lands in a browsable directory. One archived.
+    /// project-scoped session lands in a browsable directory.
     var mockProjects: [Project] = [
         Project(
             id: "prj_atelier",
@@ -66,8 +66,7 @@ nonisolated struct MockATCClient: ATCClient {
             name: "Scratch",
             workingDir: "/home/dev/Projects/empty",
             createdAt: Date(timeIntervalSinceNow: -500000),
-            updatedAt: Date(timeIntervalSinceNow: -200000),
-            archivedAt: Date(timeIntervalSinceNow: -100000)
+            updatedAt: Date(timeIntervalSinceNow: -200000)
         ),
         // Active project with zero workspaces, for the Dashboard's inline
         // "New Workspace" empty row.
@@ -80,7 +79,7 @@ nonisolated struct MockATCClient: ATCClient {
         ),
     ]
 
-    /// Stable-ID workspace fixtures; one archived for filter coverage.
+    /// Stable-ID workspace fixtures.
     var mockWorkspaces: [Workspace] = [
         Workspace(
             id: "wsp_parser",
@@ -104,12 +103,11 @@ nonisolated struct MockATCClient: ATCClient {
             updatedAt: Date(timeIntervalSinceNow: -30)
         ),
         Workspace(
-            id: "wsp_archived",
+            id: "wsp_experiment",
             projectId: "prj_atelier",
             name: "Old experiment",
             createdAt: Date(timeIntervalSinceNow: -400000),
-            updatedAt: Date(timeIntervalSinceNow: -300000),
-            archivedAt: Date(timeIntervalSinceNow: -300000)
+            updatedAt: Date(timeIntervalSinceNow: -300000)
         ),
     ]
 
@@ -203,7 +201,7 @@ nonisolated struct MockATCClient: ATCClient {
         ),
         // Another ended agent session.
         Session(
-            id: "ses_archived",
+            id: "ses_abandoned",
             name: "Abandoned attempt",
             action: "claude",
             environment: "host-login-shell",
@@ -234,20 +232,14 @@ nonisolated struct MockATCClient: ATCClient {
     }
 
     func startSession(_ request: StartSessionRequest) async throws -> SessionDetail {
-        // Mirror the server's workspace rules so previews/tests fail where
-        // the real server would.
+        // Mirror the server's workspace validation so previews and tests fail
+        // where the real server would.
         guard !request.workspaceId.trimmingCharacters(in: .whitespaces).isEmpty else {
             throw ATCError.api(
                 code: "invalid_request", message: "workspaceId is required", sessionID: nil
             )
         }
         let workspace = try lookupWorkspace(request.workspaceId)
-        guard !workspace.isArchived else {
-            throw ATCError.api(
-                code: "workspace_archived",
-                message: "workspace is archived: \(workspace.id)", sessionID: nil
-            )
-        }
         let project = try lookupProject(workspace.projectId)
         let session = Session(
             id: "ses_" + String(UUID().uuidString.lowercased().prefix(8)),
@@ -320,8 +312,8 @@ nonisolated struct MockATCClient: ATCClient {
 
     // MARK: - Projects
 
-    func projects(includeArchived: Bool) async throws -> [Project] {
-        mockProjects.filter { includeArchived || !$0.isArchived }
+    func projects() async throws -> [Project] {
+        mockProjects
     }
 
     func project(id: String) async throws -> Project {
@@ -349,20 +341,6 @@ nonisolated struct MockATCClient: ATCClient {
         return project
     }
 
-    func archiveProject(id: String) async throws -> Project {
-        var project = try lookupProject(id)
-        project.archivedAt = Date()
-        project.updatedAt = Date()
-        return project
-    }
-
-    func unarchiveProject(id: String) async throws -> Project {
-        var project = try lookupProject(id)
-        project.archivedAt = nil
-        project.updatedAt = Date()
-        return project
-    }
-
     func projectSessions(
         projectID: String,
         status: SessionStatus?
@@ -386,10 +364,9 @@ nonisolated struct MockATCClient: ATCClient {
 
     // MARK: - Workspaces
 
-    func workspaces(projectID: String?, includeArchived: Bool) async throws -> [Workspace] {
+    func workspaces(projectID: String?) async throws -> [Workspace] {
         mockWorkspaces.filter { workspace in
             (projectID == nil || workspace.projectId == projectID)
-                && (includeArchived || !workspace.isArchived)
         }
     }
 
@@ -398,12 +375,7 @@ nonisolated struct MockATCClient: ATCClient {
     }
 
     func createWorkspace(projectID: String, name: String) async throws -> Workspace {
-        let project = try lookupProject(projectID)
-        guard !project.isArchived else {
-            throw ATCError.api(
-                code: "project_archived", message: "project is archived: \(projectID)", sessionID: nil
-            )
-        }
+        _ = try lookupProject(projectID)
         // Unique id per call, same fidelity limit as mock project creates:
         // the value type means it vanishes on the next refresh.
         return Workspace(
@@ -418,20 +390,6 @@ nonisolated struct MockATCClient: ATCClient {
     func renameWorkspace(id: String, name: String) async throws -> Workspace {
         var workspace = try lookupWorkspace(id)
         workspace.name = name
-        workspace.updatedAt = Date()
-        return workspace
-    }
-
-    func archiveWorkspace(id: String) async throws -> Workspace {
-        var workspace = try lookupWorkspace(id)
-        workspace.archivedAt = Date()
-        workspace.updatedAt = Date()
-        return workspace
-    }
-
-    func unarchiveWorkspace(id: String) async throws -> Workspace {
-        var workspace = try lookupWorkspace(id)
-        workspace.archivedAt = nil
         workspace.updatedAt = Date()
         return workspace
     }

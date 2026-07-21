@@ -58,21 +58,18 @@ func TestWorkspacesListUsesFilters(t *testing.T) {
 		if got := r.URL.Query().Get("projectId"); got != "prj_123" {
 			t.Fatalf("projectId query = %q, want prj_123", got)
 		}
-		if got := r.URL.Query().Get("includeArchived"); got != "true" {
-			t.Fatalf("includeArchived query = %q, want true", got)
-		}
-		_, _ = w.Write([]byte(`{"workspaces":[{"id":"wsp_123","projectId":"prj_123","name":"Login bug","createdAt":"2026-07-09T12:30:00Z","updatedAt":"2026-07-09T12:30:00Z","archivedAt":"2026-07-10T09:00:00Z"}]}`))
+		_, _ = w.Write([]byte(`{"workspaces":[{"id":"wsp_123","projectId":"prj_123","name":"Login bug","createdAt":"2026-07-09T12:30:00Z","updatedAt":"2026-07-09T12:30:00Z"}]}`))
 	})
 
 	cmd := workspacesCommand(lookup)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"list", "--project", "prj_123", "--include-archived"})
+	cmd.SetArgs([]string{"list", "--project", "prj_123"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
-	if got := out.String(); got != "wsp_123\tLogin bug\tprj_123\t2026-07-10T09:00:00Z\n" {
+	if got := out.String(); got != "wsp_123\tLogin bug\tprj_123\n" {
 		t.Fatalf("output = %q", got)
 	}
 }
@@ -128,33 +125,6 @@ func TestWorkspacesRenamePatchesName(t *testing.T) {
 	}
 	if got := out.String(); got != "wsp_123\tRenamed\n" {
 		t.Fatalf("output = %q, want id and new name", got)
-	}
-}
-
-func TestWorkspacesArchiveUnarchivePostResourceRoutes(t *testing.T) {
-	for _, action := range []string{"archive", "unarchive"} {
-		t.Run(action, func(t *testing.T) {
-			lookup := testRuntimeLookup(t)
-			serveUnixAPI(t, lookup, func(w http.ResponseWriter, r *http.Request) {
-				wantPath := "/api/workspaces/wsp_123/" + action
-				if r.Method != http.MethodPost || r.URL.Path != wantPath {
-					t.Fatalf("request = %s %s, want POST %s", r.Method, r.URL.Path, wantPath)
-				}
-				_, _ = w.Write([]byte(`{}`))
-			})
-
-			cmd := workspacesCommand(lookup)
-			var out bytes.Buffer
-			cmd.SetOut(&out)
-			cmd.SetArgs([]string{action, "wsp_123"})
-
-			if err := cmd.Execute(); err != nil {
-				t.Fatalf("Execute returned error: %v", err)
-			}
-			if got := out.String(); got != "wsp_123\n" {
-				t.Fatalf("output = %q, want affected id", got)
-			}
-		})
 	}
 }
 

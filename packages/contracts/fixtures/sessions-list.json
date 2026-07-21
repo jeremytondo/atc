@@ -22,22 +22,6 @@
           "id": "prj_fixture01",
           "name": "Atelier"
         }
-      },
-      {
-        "id": "ses_fixture02",
-        "environment": "zsh",
-        "workingDir": "/home/dev/projects/experiment",
-		"status": "ended",
-        "createdAt": "2026-07-08T10:00:00Z",
-		"updatedAt": "2026-07-08T10:00:05Z",
-        "workspace": {
-          "id": "wsp_fixture02",
-          "name": "Experiment shell"
-        },
-        "project": {
-          "id": "prj_fixture02",
-          "name": "Archived Experiment"
-        }
       }
     ]
   }

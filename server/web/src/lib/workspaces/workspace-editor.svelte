@@ -60,7 +60,7 @@
         placeholder="Fix the login bug"
       />
       <p class="hint">
-        A human label for one unit of work; it can be renamed later, even while archived.
+        A human label for one unit of work; it can be renamed later.
       </p>
     </div>
 

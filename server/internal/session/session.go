@@ -727,8 +727,6 @@ func translateStoreErr(err error) error {
 	// re-home those on the workspace sentinels the API layer maps.
 	case errors.Is(err, store.ErrWorkspaceNotFound):
 		return fmt.Errorf("%w: %v", workspace.ErrWorkspaceNotFound, err)
-	case errors.Is(err, store.ErrWorkspaceArchived):
-		return fmt.Errorf("%w: %v", workspace.ErrWorkspaceArchived, err)
 	}
 	return err
 }

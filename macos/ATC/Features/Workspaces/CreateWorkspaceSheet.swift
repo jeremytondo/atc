@@ -24,12 +24,10 @@ struct CreateWorkspaceSheet: View {
         return false
     }
 
-    /// Unarchived Projects across every Connection, in Dashboard order.
+    /// Projects across every Connection, in Dashboard order.
     private var projectChoices: [(ref: ProjectRef, project: Project, connectionName: String)] {
         appModel.runtimes.flatMap { runtime in
-            runtime.projects.projects
-                .filter { !$0.isArchived }
-                .map { (
+            runtime.projects.projects.map { (
                     ref: ProjectRef(connectionID: runtime.id, projectID: $0.id),
                     project: $0,
                     connectionName: runtime.record.name
@@ -111,7 +109,7 @@ struct CreateWorkspaceSheet: View {
     private var availabilityError: String? {
         guard let selectedProject else { return nil }
         guard appModel.canCreateWorkspace(in: selectedProject) else {
-            return "This project is archived or its connection is unavailable."
+            return "This project's connection is unavailable."
         }
         return nil
     }
@@ -120,7 +118,7 @@ struct CreateWorkspaceSheet: View {
         guard let ref = selectedProject,
               appModel.canCreateWorkspace(in: ref),
               let runtime = appModel.runtime(id: ref.connectionID) else {
-            submitError = "This project is archived or its connection is unavailable."
+            submitError = "This project's connection is unavailable."
             return
         }
         isSubmitting = true

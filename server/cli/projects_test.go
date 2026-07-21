@@ -102,24 +102,21 @@ func TestProjectsListTextAndQuery(t *testing.T) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/projects" {
 			t.Fatalf("request = %s %s, want GET /api/projects", r.Method, r.URL.Path)
 		}
-		if got := r.URL.Query().Get("includeArchived"); got != "true" {
-			t.Fatalf("includeArchived query = %q, want true", got)
-		}
 		_, _ = w.Write([]byte(`{"projects":[
 			{"id":"prj_new","name":"New","workingDir":"/repo/new","createdAt":"2026-07-07T15:04:05Z","updatedAt":"2026-07-07T15:04:05Z"},
-			{"id":"prj_old","name":"Old","workingDir":"/repo/old","createdAt":"2026-07-01T15:04:05Z","updatedAt":"2026-07-02T15:04:05Z","archivedAt":"2026-07-03T15:04:05Z"}
+			{"id":"prj_old","name":"Old","workingDir":"/repo/old","createdAt":"2026-07-01T15:04:05Z","updatedAt":"2026-07-02T15:04:05Z"}
 		]}`))
 	})
 
 	cmd := projectsCommand(lookup)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"list", "--include-archived"})
+	cmd.SetArgs([]string{"list"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
-	want := "prj_new\tNew\t/repo/new\t\nprj_old\tOld\t/repo/old\t2026-07-03T15:04:05Z\n"
+	want := "prj_new\tNew\t/repo/new\nprj_old\tOld\t/repo/old\n"
 	if got := out.String(); got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
@@ -151,7 +148,7 @@ func TestProjectsShowPrintsKeyValueLines(t *testing.T) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/projects/prj_show" {
 			t.Fatalf("request = %s %s, want GET /api/projects/prj_show", r.Method, r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"id":"prj_show","name":"atc","workingDir":"/repo","createdAt":"2026-07-07T15:04:05Z","updatedAt":"2026-07-07T16:04:05Z","archivedAt":"2026-07-08T09:00:00Z"}`))
+		_, _ = w.Write([]byte(`{"id":"prj_show","name":"atc","workingDir":"/repo","createdAt":"2026-07-07T15:04:05Z","updatedAt":"2026-07-07T16:04:05Z"}`))
 	})
 
 	cmd := projectsCommand(lookup)
@@ -162,7 +159,7 @@ func TestProjectsShowPrintsKeyValueLines(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
-	want := "id\tprj_show\nname\tatc\nworkingDir\t/repo\ncreatedAt\t2026-07-07T15:04:05Z\nupdatedAt\t2026-07-07T16:04:05Z\narchivedAt\t2026-07-08T09:00:00Z\n"
+	want := "id\tprj_show\nname\tatc\nworkingDir\t/repo\ncreatedAt\t2026-07-07T15:04:05Z\nupdatedAt\t2026-07-07T16:04:05Z\n"
 	if got := out.String(); got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
@@ -194,40 +191,6 @@ func TestProjectsRenameUsesPatch(t *testing.T) {
 	}
 	if got := out.String(); got != "prj_123\tRenamed\n" {
 		t.Fatalf("output = %q, want id and new name", got)
-	}
-}
-
-func TestProjectsArchiveAndUnarchivePostResourceRoutes(t *testing.T) {
-	tests := []struct {
-		name string
-		args []string
-		path string
-	}{
-		{name: "archive", args: []string{"archive", "prj_123"}, path: "/api/projects/prj_123/archive"},
-		{name: "unarchive", args: []string{"unarchive", "prj_123"}, path: "/api/projects/prj_123/unarchive"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			lookup := testRuntimeLookup(t)
-			serveUnixAPI(t, lookup, func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodPost || r.URL.Path != tt.path {
-					t.Fatalf("request = %s %s, want POST %s", r.Method, r.URL.Path, tt.path)
-				}
-				_, _ = w.Write([]byte(`{}`))
-			})
-
-			cmd := projectsCommand(lookup)
-			var out bytes.Buffer
-			cmd.SetOut(&out)
-			cmd.SetArgs(tt.args)
-
-			if err := cmd.Execute(); err != nil {
-				t.Fatalf("Execute returned error: %v", err)
-			}
-			if got := out.String(); got != "prj_123\n" {
-				t.Fatalf("output = %q, want affected id", got)
-			}
-		})
 	}
 }
 
@@ -273,9 +236,6 @@ func TestSessionsListWithProjectUsesProjectRoute(t *testing.T) {
 		}
 		if got := r.URL.Query().Get("status"); got != "live" {
 			t.Fatalf("status query = %q, want live", got)
-		}
-		if got := r.URL.Query().Get("includeArchived"); got != "" {
-			t.Fatalf("includeArchived query = %q, want absent", got)
 		}
 		_, _ = w.Write([]byte(body))
 	})

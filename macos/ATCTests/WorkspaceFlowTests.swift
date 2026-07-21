@@ -367,12 +367,12 @@ struct WorkspaceFlowTests {
         let (selectionMemory, _) = memory()
         let state = WindowState(selectionMemory: selectionMemory)
         let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
-        let ended = SessionRef(connectionID: runtime.id, sessionID: "ses_archived")
+        let ended = SessionRef(connectionID: runtime.id, sessionID: "ses_abandoned")
 
         #expect(state.activateWorkspace(workspace, in: model))
         #expect(state.selectSession(ended, in: model))
         #expect(state.selectedContent == .session(ended))
-        #expect(selectionMemory.sessionID(for: workspace) == "ses_archived")
+        #expect(selectionMemory.sessionID(for: workspace) == "ses_abandoned")
         #expect(model.terminals[ended] == nil)
     }
 
@@ -482,20 +482,7 @@ struct WorkspaceFlowTests {
         #expect(state.selectedContent == .dashboard)
     }
 
-    @Test("archiving an Active Workspace preserves it and disables creation")
-    func archivedWorkspaceRemainsActive() async throws {
-        let client = StatefulWorkspacesClient()
-        let (model, runtime) = try await makeLoadedModel(client: client)
-        let state = WindowState.ephemeral()
-        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_a")
-        #expect(state.activateWorkspace(workspace, in: model))
-        try await runtime.workspaces.archive(id: workspace.workspaceID)
-        state.reconcile(in: model)
-        #expect(state.activeWorkspace == workspace)
-        #expect(!state.canStartSession(in: model))
-    }
-
-    @Test("creation availability depends on Active Workspace, archive, and reachability")
+    @Test("creation availability depends on Active Workspace and reachability")
     func creationAvailability() async throws {
         let client = StatefulWorkspacesClient()
         let (model, runtime) = try await makeLoadedModel(client: client)
@@ -509,16 +496,6 @@ struct WorkspaceFlowTests {
         client.failSessions = true
         await runtime.refresh()
         #expect(!state.canStartSession(in: model))
-
-        client.failSessions = false
-        await runtime.refresh()
-        let (archiveModel, archiveRuntime) = try await makeLoadedModel()
-        let archiveState = WindowState.ephemeral()
-        #expect(archiveState.activateWorkspace(
-            WorkspaceRef(connectionID: archiveRuntime.id, workspaceID: "wsp_archived"),
-            in: archiveModel
-        ))
-        #expect(!archiveState.canStartSession(in: archiveModel))
     }
 
     @Test("New Workspace uses Active Project even while Dashboard is visible")
@@ -535,7 +512,7 @@ struct WorkspaceFlowTests {
         ))
     }
 
-    @Test("captured creation targets revalidate reachability and archive state")
+    @Test("captured creation targets revalidate reachability")
     func mutationTargetsRevalidate() async throws {
         let client = StatefulWorkspacesClient()
         let (model, runtime) = try await makeLoadedModel(client: client)
@@ -556,9 +533,6 @@ struct WorkspaceFlowTests {
         await runtime.refresh()
         #expect(model.canCreateWorkspace(in: project))
         #expect(model.canStartSession(in: workspace))
-
-        try await runtime.workspaces.archive(id: workspace.workspaceID)
-        #expect(!model.canStartSession(in: workspace))
     }
 
     @Test("selection memory is Connection-qualified")

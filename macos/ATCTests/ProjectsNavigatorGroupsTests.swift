@@ -15,30 +15,27 @@ struct ProjectsNavigatorGroupsTests {
         )
     }
 
-    private func project(_ id: String, name: String, archived: Bool = false) -> Project {
+    private func project(_ id: String, name: String) -> Project {
         Project(
             id: id,
             name: name,
             workingDir: "/tmp/\(id)",
             createdAt: .now,
-            updatedAt: .now,
-            archivedAt: archived ? .now : nil
+            updatedAt: .now
         )
     }
 
     private func workspace(
         _ id: String,
         project: String,
-        age: TimeInterval,
-        archived: Bool = false
+        age: TimeInterval
     ) -> Workspace {
         Workspace(
             id: id,
             projectId: project,
             name: id,
             createdAt: Date(timeIntervalSinceNow: -age),
-            updatedAt: .now,
-            archivedAt: archived ? .now : nil
+            updatedAt: .now
         )
     }
 
@@ -58,8 +55,8 @@ struct ProjectsNavigatorGroupsTests {
         )
     }
 
-    @Test("Ended sessions count as records but do not block Workspace archive")
-    func endedSessionsDoNotBlockArchive() {
+    @Test("Ended sessions count as records but are not active")
+    func endedSessionsAreNotActive() {
         let c = connection("00000000-0000-0000-0000-000000000001", name: "Alpha")
         let session = Session(
             id: "ended", environment: "host", workingDir: "/tmp", status: .ended,
@@ -93,25 +90,20 @@ struct ProjectsNavigatorGroupsTests {
         #expect(result.projects.map(\.connectionName) == ["Alpha", "Alpha", "Zulu"])
     }
 
-    @Test("workspaces sort newest-first and archived records are excluded")
-    func workspaceOrderingAndArchiveFiltering() {
+    @Test("workspaces sort newest-first")
+    func workspaceOrdering() {
         let c = connection("00000000-0000-0000-0000-000000000001", name: "Alpha")
         let result = ProjectsNavigatorGroups(inputs: [input(
             connection: c,
-            projects: [
-                project("active", name: "Active"),
-                project("archived", name: "Archived", archived: true)
-            ],
+            projects: [project("active", name: "Active")],
             workspaces: [
                 workspace("old", project: "active", age: 300),
-                workspace("new", project: "active", age: 10),
-                workspace("hidden", project: "active", age: 1, archived: true),
-                workspace("orphan", project: "archived", age: 1)
+                workspace("new", project: "active", age: 10)
             ]
         )])
         #expect(result.projects.map(\.project.id) == ["active"])
         #expect(result.projects[0].workspaces.map(\.workspace.id) == ["new", "old"])
-        #expect(result.projects[0].totalWorkspaceCount == 3)
+        #expect(result.projects[0].totalWorkspaceCount == 2)
     }
 
     @Test("Connection context and reachability project onto same-named Projects")

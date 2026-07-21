@@ -105,9 +105,6 @@ func TestSessionsListJSONUsesQuery(t *testing.T) {
 		if got := r.URL.Query().Get("status"); got != "live" {
 			t.Fatalf("status query = %q, want live", got)
 		}
-		if got := r.URL.Query().Get("includeArchived"); got != "" {
-			t.Fatalf("includeArchived query = %q, want absent", got)
-		}
 		_, _ = w.Write([]byte(body))
 	})
 

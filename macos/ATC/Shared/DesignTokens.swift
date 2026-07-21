@@ -40,7 +40,7 @@ enum Radius {
     static let card: CGFloat = 12
 }
 
-/// Opacity applied to archived/unavailable content.
+/// Opacity applied to unavailable content.
 enum Dimming {
-    static let archived: Double = 0.5
+    static let unavailable: Double = 0.5
 }

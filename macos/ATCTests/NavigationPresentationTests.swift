@@ -22,7 +22,7 @@ struct NavigationPresentationTests {
         #expect(FileNavigatorView.unavailableMessage == "File navigation is not available yet")
     }
 
-    @Test("Workspace Switcher projects no-active and archive context")
+    @Test("Workspace Switcher projects no-active and active context")
     func workspaceSwitcherStates() {
         let project = Project(
             id: "prj", name: "Shared", workingDir: "/tmp",
@@ -45,14 +45,6 @@ struct NavigationPresentationTests {
         #expect(active.workspaceName == "Parser")
         #expect(active.label == "Shared › Parser")
         #expect(active.help == active.label)
-
-        var archivedWorkspace = workspace
-        archivedWorkspace.archivedAt = .now
-        let archived = WorkspaceSwitcherPresentation(
-            project: project,
-            workspace: archivedWorkspace
-        )
-        #expect(archived.help.contains("Archived"))
     }
 
     @Test("Session rename request starts with the current display name")

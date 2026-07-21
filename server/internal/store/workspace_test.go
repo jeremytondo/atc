@@ -74,6 +74,62 @@ func TestWorkspaceMigrationDestroysSessionsPreservesProjects(t *testing.T) {
 	}
 }
 
+func TestRemoveArchivingMigrationDestroysArchivedRecords(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "atc.db")
+	db, err := sql.Open(sqliteDriver, sqliteDSN(dbPath))
+	if err != nil {
+		t.Fatalf("open raw database: %v", err)
+	}
+	defer db.Close()
+	migrationFS, err := fs.Sub(migrations, "migrations")
+	if err != nil {
+		t.Fatalf("sub migrations: %v", err)
+	}
+	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrationFS, goose.WithLogger(goose.NopLogger()))
+	if err != nil {
+		t.Fatalf("goose provider: %v", err)
+	}
+	if _, err := provider.UpTo(ctx, 3); err != nil {
+		t.Fatalf("migrate to 0003: %v", err)
+	}
+	const timestamp = "2026-01-01T00:00:00.000000000Z"
+	if _, err := db.Exec(`
+	INSERT INTO projects (id, name, working_dir, created_at, updated_at, archived_at) VALUES
+		('prj_active', 'Active', '/active', ?, ?, NULL),
+		('prj_archived', 'Archived', '/archived', ?, ?, ?);
+	INSERT INTO workspaces (id, project_id, name, created_at, updated_at, archived_at) VALUES
+		('wsp_active', 'prj_active', 'Active', ?, ?, NULL),
+		('wsp_archived', 'prj_active', 'Archived', ?, ?, ?),
+		('wsp_archived_parent', 'prj_archived', 'Child', ?, ?, NULL);
+	INSERT INTO sessions (id, action, environment, params, working_dir, status, workspace_id, created_at, updated_at) VALUES
+		('ses_active', 'codex', 'host', '{}', '/active', 'ended', 'wsp_active', ?, ?),
+		('ses_archived', 'codex', 'host', '{}', '/active', 'ended', 'wsp_archived', ?, ?),
+		('ses_archived_parent', 'codex', 'host', '{}', '/archived', 'ended', 'wsp_archived_parent', ?, ?)`,
+		timestamp, timestamp, timestamp, timestamp, timestamp,
+		timestamp, timestamp, timestamp, timestamp, timestamp, timestamp, timestamp,
+		timestamp, timestamp, timestamp, timestamp, timestamp, timestamp,
+	); err != nil {
+		t.Fatalf("seed archived records: %v", err)
+	}
+	if _, err := provider.UpTo(ctx, 4); err != nil {
+		t.Fatalf("migrate to 0004: %v", err)
+	}
+
+	for table, wantID := range map[string]string{
+		"projects": "prj_active", "workspaces": "wsp_active", "sessions": "ses_active",
+	} {
+		var count int
+		var id string
+		if err := db.QueryRow(`SELECT count(*), min(id) FROM `+table).Scan(&count, &id); err != nil {
+			t.Fatalf("query %s after migration: %v", table, err)
+		}
+		if count != 1 || id != wantID {
+			t.Fatalf("%s after migration = count %d id %q, want 1 %q", table, count, id, wantID)
+		}
+	}
+}
+
 func TestCreateWorkspaceGuardsProject(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
@@ -86,15 +142,8 @@ func TestCreateWorkspaceGuardsProject(t *testing.T) {
 	if _, err := st.CreateProject(ctx, CreateProjectInput{ID: "prj_gone", Name: "Gone", WorkingDir: "/work"}); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	if _, err := st.ArchiveProject(ctx, "prj_gone"); err != nil {
-		t.Fatalf("ArchiveProject: %v", err)
-	}
-	if _, err := st.CreateWorkspace(ctx, CreateWorkspaceInput{ID: "wsp_late", ProjectID: "prj_gone", Name: "Late"}); !errors.Is(err, ErrProjectArchived) {
-		t.Fatalf("create in archived project err = %v, want ErrProjectArchived", err)
-	}
-	// The rejected insert must leave no workspace row behind.
-	if _, err := st.GetWorkspace(ctx, "wsp_late"); !errors.Is(err, ErrWorkspaceNotFound) {
-		t.Fatalf("GetWorkspace err = %v, want ErrWorkspaceNotFound", err)
+	if _, err := st.CreateWorkspace(ctx, CreateWorkspaceInput{ID: "wsp_child", ProjectID: "prj_gone", Name: "Child"}); err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
 	}
 }
 
@@ -107,20 +156,6 @@ func TestCreateSessionGuardsWorkspace(t *testing.T) {
 		ID: "ses_orphan", Action: "codex", Environment: "host-login-shell", WorkingDir: "/work", WorkspaceID: "wsp_ghost",
 	}); !errors.Is(err, ErrWorkspaceNotFound) {
 		t.Fatalf("CreateStarting err = %v, want ErrWorkspaceNotFound", err)
-	}
-
-	seedWorkspace(t, st, "prj_home", "wsp_gone")
-	if _, err := st.ArchiveWorkspace(ctx, "wsp_gone"); err != nil {
-		t.Fatalf("ArchiveWorkspace: %v", err)
-	}
-	if _, err := st.CreateStarting(ctx, CreateSessionInput{
-		ID: "ses_late", Action: "codex", Environment: "host-login-shell", WorkingDir: "/work", WorkspaceID: "wsp_gone",
-	}); !errors.Is(err, ErrWorkspaceArchived) {
-		t.Fatalf("CreateStarting err = %v, want ErrWorkspaceArchived", err)
-	}
-	// The rejected insert must leave no session row behind.
-	if _, err := st.Get(ctx, "ses_late"); !errors.Is(err, ErrSessionNotFound) {
-		t.Fatalf("Get err = %v, want ErrSessionNotFound", err)
 	}
 }
 
@@ -142,7 +177,7 @@ func TestWorkspaceCRUDRoundTrip(t *testing.T) {
 	if created.ID != "wsp_alpha" || created.ProjectID != "prj_home" || created.Name != "Login bug" {
 		t.Fatalf("created = %+v", created)
 	}
-	if created.CreatedAt.IsZero() || !created.CreatedAt.Equal(created.UpdatedAt) || created.ArchivedAt != nil {
+	if created.CreatedAt.IsZero() || !created.CreatedAt.Equal(created.UpdatedAt) {
 		t.Fatalf("created timestamps = %+v", created)
 	}
 
@@ -166,41 +201,6 @@ func TestWorkspaceCRUDRoundTrip(t *testing.T) {
 	if renamed.Name != "Login bug v2" || !renamed.UpdatedAt.After(created.UpdatedAt) {
 		t.Fatalf("renamed = %+v", renamed)
 	}
-
-	archived, err := st.ArchiveWorkspace(ctx, "wsp_alpha")
-	if err != nil {
-		t.Fatalf("ArchiveWorkspace: %v", err)
-	}
-	if archived.ArchivedAt == nil || !archived.UpdatedAt.After(renamed.UpdatedAt) {
-		t.Fatalf("archived = %+v", archived)
-	}
-	archivedAgain, err := st.ArchiveWorkspace(ctx, "wsp_alpha")
-	if err != nil {
-		t.Fatalf("ArchiveWorkspace again: %v", err)
-	}
-	if !archivedAgain.ArchivedAt.Equal(*archived.ArchivedAt) || !archivedAgain.UpdatedAt.Equal(archived.UpdatedAt) {
-		t.Fatalf("second archive = %+v, want unchanged %+v", archivedAgain, archived)
-	}
-
-	// Rename stays allowed while archived.
-	if _, err := st.RenameWorkspace(ctx, "wsp_alpha", "Renamed while archived"); err != nil {
-		t.Fatalf("RenameWorkspace archived: %v", err)
-	}
-
-	unarchived, err := st.UnarchiveWorkspace(ctx, "wsp_alpha")
-	if err != nil {
-		t.Fatalf("UnarchiveWorkspace: %v", err)
-	}
-	if unarchived.ArchivedAt != nil {
-		t.Fatalf("unarchived = %+v", unarchived)
-	}
-	unarchivedAgain, err := st.UnarchiveWorkspace(ctx, "wsp_alpha")
-	if err != nil {
-		t.Fatalf("UnarchiveWorkspace again: %v", err)
-	}
-	if unarchivedAgain.ArchivedAt != nil || !unarchivedAgain.UpdatedAt.Equal(unarchived.UpdatedAt) {
-		t.Fatalf("second unarchive = %+v, want unchanged %+v", unarchivedAgain, unarchived)
-	}
 }
 
 func TestWorkspaceNotFoundErrors(t *testing.T) {
@@ -214,86 +214,8 @@ func TestWorkspaceNotFoundErrors(t *testing.T) {
 	if _, err := st.RenameWorkspace(ctx, "wsp_missing", "name"); !errors.Is(err, ErrWorkspaceNotFound) {
 		t.Fatalf("RenameWorkspace err = %v, want ErrWorkspaceNotFound", err)
 	}
-	if _, err := st.ArchiveWorkspace(ctx, "wsp_missing"); !errors.Is(err, ErrWorkspaceNotFound) {
-		t.Fatalf("ArchiveWorkspace err = %v, want ErrWorkspaceNotFound", err)
-	}
-	if _, err := st.UnarchiveWorkspace(ctx, "wsp_missing"); !errors.Is(err, ErrWorkspaceNotFound) {
-		t.Fatalf("UnarchiveWorkspace err = %v, want ErrWorkspaceNotFound", err)
-	}
 	if err := st.DeleteWorkspace(ctx, "wsp_missing"); !errors.Is(err, ErrWorkspaceNotFound) {
 		t.Fatalf("DeleteWorkspace err = %v, want ErrWorkspaceNotFound", err)
-	}
-}
-
-func TestArchiveWorkspaceBlockedByActiveSessions(t *testing.T) {
-	ctx := context.Background()
-	st := openTestStore(t)
-	defer st.Close()
-	seedWorkspace(t, st, "prj_home", "wsp_busy")
-
-	if _, err := st.CreateStarting(ctx, CreateSessionInput{
-		ID: "ses_active", Action: "codex", Environment: "host-login-shell", WorkingDir: "/work", WorkspaceID: "wsp_busy",
-	}); err != nil {
-		t.Fatalf("CreateStarting: %v", err)
-	}
-
-	// Blocked while the record is provisional, then while the Session is Live.
-	if _, err := st.ArchiveWorkspace(ctx, "wsp_busy"); !errors.Is(err, ErrWorkspaceHasActiveSessions) {
-		t.Fatalf("archive with starting session err = %v, want ErrWorkspaceHasActiveSessions", err)
-	}
-	if _, err := st.PromoteToLive(ctx, "ses_active"); err != nil {
-		t.Fatalf("PromoteToLive: %v", err)
-	}
-	if _, err := st.ArchiveWorkspace(ctx, "wsp_busy"); !errors.Is(err, ErrWorkspaceHasActiveSessions) {
-		t.Fatalf("archive with Live Session err = %v, want ErrWorkspaceHasActiveSessions", err)
-	}
-	got, err := st.GetWorkspace(ctx, "wsp_busy")
-	if err != nil {
-		t.Fatalf("GetWorkspace: %v", err)
-	}
-	if got.ArchivedAt != nil {
-		t.Fatalf("workspace archived despite active session: %+v", got)
-	}
-
-	// Ended Sessions do not block.
-	if _, err := st.MarkEnded(ctx, "ses_active"); err != nil {
-		t.Fatalf("MarkEnded: %v", err)
-	}
-	archived, err := st.ArchiveWorkspace(ctx, "wsp_busy")
-	if err != nil {
-		t.Fatalf("archive with only inactive sessions: %v", err)
-	}
-	if archived.ArchivedAt == nil {
-		t.Fatalf("archived = %+v, want archivedAt set", archived)
-	}
-}
-
-func TestUnarchiveWorkspaceBlockedByArchivedProject(t *testing.T) {
-	ctx := context.Background()
-	st := openTestStore(t)
-	defer st.Close()
-	seedWorkspace(t, st, "prj_home", "wsp_child")
-
-	if _, err := st.ArchiveWorkspace(ctx, "wsp_child"); err != nil {
-		t.Fatalf("ArchiveWorkspace: %v", err)
-	}
-	if _, err := st.ArchiveProject(ctx, "prj_home"); err != nil {
-		t.Fatalf("ArchiveProject: %v", err)
-	}
-
-	if _, err := st.UnarchiveWorkspace(ctx, "wsp_child"); !errors.Is(err, ErrProjectArchived) {
-		t.Fatalf("unarchive under archived project err = %v, want ErrProjectArchived", err)
-	}
-
-	if _, err := st.UnarchiveProject(ctx, "prj_home"); err != nil {
-		t.Fatalf("UnarchiveProject: %v", err)
-	}
-	unarchived, err := st.UnarchiveWorkspace(ctx, "wsp_child")
-	if err != nil {
-		t.Fatalf("UnarchiveWorkspace after project unarchive: %v", err)
-	}
-	if unarchived.ArchivedAt != nil {
-		t.Fatalf("unarchived = %+v", unarchived)
 	}
 }
 
@@ -363,21 +285,11 @@ func TestListWorkspacesFiltersAndOrder(t *testing.T) {
 	create("wsp_old", "prj_one")
 	create("wsp_middle", "prj_two")
 	create("wsp_new", "prj_one")
-	if _, err := st.ArchiveWorkspace(ctx, "wsp_middle"); err != nil {
-		t.Fatalf("ArchiveWorkspace: %v", err)
-	}
-
 	all, err := st.ListWorkspaces(ctx, WorkspaceListFilter{})
 	if err != nil {
 		t.Fatalf("ListWorkspaces default: %v", err)
 	}
-	assertWorkspaceIDs(t, all, []string{"wsp_new", "wsp_old"})
-
-	withArchived, err := st.ListWorkspaces(ctx, WorkspaceListFilter{IncludeArchived: true})
-	if err != nil {
-		t.Fatalf("ListWorkspaces include archived: %v", err)
-	}
-	assertWorkspaceIDs(t, withArchived, []string{"wsp_new", "wsp_middle", "wsp_old"})
+	assertWorkspaceIDs(t, all, []string{"wsp_new", "wsp_middle", "wsp_old"})
 
 	scoped, err := st.ListWorkspaces(ctx, WorkspaceListFilter{ProjectID: "prj_one"})
 	if err != nil {

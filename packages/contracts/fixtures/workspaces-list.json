@@ -10,14 +10,6 @@
         "name": "Login bug",
         "createdAt": "2026-07-09T12:30:00Z",
         "updatedAt": "2026-07-09T12:30:00Z"
-      },
-      {
-        "id": "wsp_fixture02",
-        "projectId": "prj_fixture02",
-        "name": "Experiment shell",
-        "createdAt": "2026-07-01T08:30:00Z",
-        "updatedAt": "2026-07-02T09:00:00Z",
-        "archivedAt": "2026-07-02T09:00:00Z"
       }
     ]
   }

@@ -3,8 +3,7 @@ import Testing
 import ATCAPI
 @testable import ATC
 
-/// ProjectsStore behavior: refresh, archived filtering, and
-/// merge-after-mutation semantics.
+/// ProjectsStore behavior: refresh and merge-after-mutation semantics.
 ///
 /// Mutation tests use `StatefulProjectsClient` instead of the value-type
 /// `MockATCClient`: the store fires an unawaited refresh after every
@@ -12,14 +11,13 @@ import ATCAPI
 /// refreshes from resurrecting pre-mutation fixtures mid-test.
 @Suite("ProjectsStore")
 struct ProjectsStoreTests {
-    @Test("refresh always loads archived projects too; views filter locally")
-    func refreshIncludesArchived() async throws {
+    @Test("refresh loads projects")
+    func refreshLoadsProjects() async throws {
         let store = ProjectsStore(client: MockATCClient())
         await store.refresh()
         #expect(store.hasLoadedOnce)
         #expect(store.lastError == nil)
         #expect(store.projects.count == 4)
-        #expect(store.projects.contains { $0.id == "prj_scratch" && $0.isArchived })
     }
 
     @Test("create merges the new project at the front with a unique id")
@@ -31,15 +29,6 @@ struct ProjectsStoreTests {
         #expect(first.id != second.id)
         #expect(store.projects.first?.id == second.id)
         #expect(store.projects.contains { $0.id == first.id })
-    }
-
-    @Test("archive keeps the project in the list; views hide it locally")
-    func archiveKeepsRow() async throws {
-        let store = ProjectsStore(client: StatefulProjectsClient())
-        await store.refresh()
-        let target = try #require(store.projects.first)
-        try await store.archive(id: target.id)
-        #expect(store.project(id: target.id)?.isArchived == true)
     }
 
     @Test("delete removes the project row locally")
@@ -114,7 +103,7 @@ final class GatedProjectsClient: ATCClient, @unchecked Sendable {
         waiter?.resume()
     }
 
-    func projects(includeArchived: Bool) async throws -> [Project] {
+    func projects() async throws -> [Project] {
         await withCheckedContinuation { continuation in
             lock.withLock { waiters.append(continuation) }
         }
@@ -143,16 +132,12 @@ final class GatedProjectsClient: ATCClient, @unchecked Sendable {
     func project(id: String) async throws -> Project { throw ATCError.badStatus(500) }
     func createProject(name: String, workingDir: String) async throws -> Project { throw ATCError.badStatus(500) }
     func renameProject(id: String, name: String) async throws -> Project { throw ATCError.badStatus(500) }
-    func archiveProject(id: String) async throws -> Project { throw ATCError.badStatus(500) }
-    func unarchiveProject(id: String) async throws -> Project { throw ATCError.badStatus(500) }
     func projectSessions(projectID: String, status: SessionStatus?) async throws -> [Session] { [] }
     func deleteProject(id: String) async throws { throw ATCError.badStatus(500) }
-    func workspaces(projectID: String?, includeArchived: Bool) async throws -> [Workspace] { [] }
+    func workspaces(projectID: String?) async throws -> [Workspace] { [] }
     func workspace(id: String) async throws -> Workspace { throw ATCError.badStatus(500) }
     func createWorkspace(projectID: String, name: String) async throws -> Workspace { throw ATCError.badStatus(500) }
     func renameWorkspace(id: String, name: String) async throws -> Workspace { throw ATCError.badStatus(500) }
-    func archiveWorkspace(id: String) async throws -> Workspace { throw ATCError.badStatus(500) }
-    func unarchiveWorkspace(id: String) async throws -> Workspace { throw ATCError.badStatus(500) }
     func deleteWorkspace(id: String) async throws { throw ATCError.badStatus(500) }
     func workspaceSessions(workspaceID: String, status: SessionStatus?) async throws -> [Session] { [] }
     func attachURL(sessionID: String) -> URL { URL(string: "ws://127.0.0.1:1/attach")! }
@@ -183,8 +168,8 @@ final class StatefulProjectsClient: ATCClient, @unchecked Sendable {
         return try body(&stored)
     }
 
-    func projects(includeArchived: Bool) async throws -> [Project] {
-        try withState { $0.filter { includeArchived || !$0.isArchived } }
+    func projects() async throws -> [Project] {
+        try withState { $0 }
     }
 
     func project(id: String) async throws -> Project {
@@ -210,14 +195,6 @@ final class StatefulProjectsClient: ATCClient, @unchecked Sendable {
 
     func renameProject(id: String, name: String) async throws -> Project {
         try mutate(id) { $0.name = name }
-    }
-
-    func archiveProject(id: String) async throws -> Project {
-        try mutate(id) { $0.archivedAt = .now }
-    }
-
-    func unarchiveProject(id: String) async throws -> Project {
-        try mutate(id) { $0.archivedAt = nil }
     }
 
     func deleteProject(id: String) async throws {
@@ -260,12 +237,10 @@ final class StatefulProjectsClient: ATCClient, @unchecked Sendable {
     func environments() async throws -> [ATCEnvironment] { [] }
     func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing { throw ATCError.badStatus(500) }
     func projectSessions(projectID: String, status: SessionStatus?) async throws -> [Session] { [] }
-    func workspaces(projectID: String?, includeArchived: Bool) async throws -> [Workspace] { [] }
+    func workspaces(projectID: String?) async throws -> [Workspace] { [] }
     func workspace(id: String) async throws -> Workspace { throw ATCError.badStatus(500) }
     func createWorkspace(projectID: String, name: String) async throws -> Workspace { throw ATCError.badStatus(500) }
     func renameWorkspace(id: String, name: String) async throws -> Workspace { throw ATCError.badStatus(500) }
-    func archiveWorkspace(id: String) async throws -> Workspace { throw ATCError.badStatus(500) }
-    func unarchiveWorkspace(id: String) async throws -> Workspace { throw ATCError.badStatus(500) }
     func deleteWorkspace(id: String) async throws { throw ATCError.badStatus(500) }
     func workspaceSessions(workspaceID: String, status: SessionStatus?) async throws -> [Session] { [] }
     func attachURL(sessionID: String) -> URL { URL(string: "ws://127.0.0.1:1/attach")! }

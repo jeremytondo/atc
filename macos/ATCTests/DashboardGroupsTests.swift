@@ -3,30 +3,28 @@ import Testing
 import ATCAPI
 @testable import ATC
 
-/// DashboardGroups: ordering, archived filtering at both levels, empty
-/// projects, session counts, and the local/remote context label.
+/// DashboardGroups: ordering, empty projects, session counts, and the
+/// local/remote context label.
 @Suite("DashboardGroups")
 struct DashboardGroupsTests {
     private let connection = ConnectionRecord(
         name: "Workstation", urlString: "http://workstation:7331", token: ""
     )
 
-    private func project(_ id: String, archived: Bool = false) -> Project {
+    private func project(_ id: String) -> Project {
         Project(
             id: id, name: id, workingDir: "/home/dev/\(id)",
-            createdAt: .now, updatedAt: .now,
-            archivedAt: archived ? .now : nil
+            createdAt: .now, updatedAt: .now
         )
     }
 
     private func workspace(
-        _ id: String, project: String, createdAgo: TimeInterval, archived: Bool = false
+        _ id: String, project: String, createdAgo: TimeInterval
     ) -> Workspace {
         Workspace(
             id: id, projectId: project, name: id,
             createdAt: Date(timeIntervalSinceNow: -createdAgo),
-            updatedAt: .now,
-            archivedAt: archived ? .now : nil
+            updatedAt: .now
         )
     }
 
@@ -42,8 +40,7 @@ struct DashboardGroupsTests {
     }
 
     private func groups(
-        projects: [Project], workspaces: [Workspace], sessions: [Session] = [],
-        showArchived: Bool = false
+        projects: [Project], workspaces: [Workspace], sessions: [Session] = []
     ) -> DashboardGroups {
         DashboardGroups(
             inputs: [DashboardGroups.ConnectionInput(
@@ -51,8 +48,7 @@ struct DashboardGroupsTests {
                 projects: projects,
                 workspaces: workspaces,
                 sessions: sessions
-            )],
-            showArchived: showArchived
+            )]
         )
     }
 
@@ -69,22 +65,6 @@ struct DashboardGroupsTests {
         #expect(result.sections[0].cards[0].rows.map(\.workspace.id) == ["w_new", "w_mid", "w_old"])
     }
 
-    @Test("archived projects and workspaces hide behind the toggle")
-    func archivedFiltering() {
-        let projects = [project("active"), project("dusty", archived: true)]
-        let workspaces = [
-            workspace("w1", project: "active", createdAgo: 10),
-            workspace("w2", project: "active", createdAgo: 20, archived: true),
-        ]
-        let hidden = groups(projects: projects, workspaces: workspaces)
-        #expect(hidden.sections[0].cards.map(\.project.id) == ["active"])
-        #expect(hidden.sections[0].cards[0].rows.map(\.workspace.id) == ["w1"])
-
-        let shown = groups(projects: projects, workspaces: workspaces, showArchived: true)
-        #expect(shown.sections[0].cards.map(\.project.id) == ["active", "dusty"])
-        #expect(shown.sections[0].cards[0].rows.map(\.workspace.id) == ["w1", "w2"])
-    }
-
     @Test("a project with zero workspaces keeps its card with an empty row list")
     func emptyProject() {
         let result = groups(projects: [project("lonely")], workspaces: [])
@@ -92,20 +72,6 @@ struct DashboardGroupsTests {
         #expect(result.sections[0].cards[0].rows.isEmpty)
         #expect(result.sections[0].cards[0].totalWorkspaceCount == 0)
         #expect(!result.isEmpty)
-    }
-
-    @Test("archived workspaces still gate project delete and archive")
-    func hiddenWorkspacesStillCount() {
-        let result = groups(
-            projects: [project("p1")],
-            workspaces: [workspace("w1", project: "p1", createdAgo: 10, archived: true)]
-        )
-        let card = result.sections[0].cards[0]
-        // Hidden by the filter, but Delete Project must stay disabled.
-        #expect(card.rows.isEmpty)
-        #expect(card.totalWorkspaceCount == 1)
-        // All workspaces archived: Archive Project becomes available.
-        #expect(!card.hasUnarchivedWorkspaces)
     }
 
     @Test("session counts and activity join by workspace")
@@ -125,14 +91,6 @@ struct DashboardGroupsTests {
         #expect(row.hasActiveSessions)
     }
 
-    @Test("archived-only projects hide their cards but still count as projects")
-    func archivedOnlyIsNotEmpty() {
-        let result = groups(projects: [project("dusty", archived: true)], workspaces: [])
-        // No visible cards, but the "No Projects" overlay must not show.
-        #expect(result.isEmpty)
-        #expect(result.totalProjectCount == 1)
-    }
-
     @Test("sections keep connection order and derive the context label")
     func sectionOrderAndContext() {
         let local = ConnectionRecord(name: "Here", urlString: "http://localhost:7331", token: "")
@@ -145,8 +103,7 @@ struct DashboardGroupsTests {
                 DashboardGroups.ConnectionInput(
                     connection: remote, projects: [], workspaces: [], sessions: []
                 ),
-            ],
-            showArchived: false
+            ]
         )
         #expect(result.sections.map(\.connectionName) == ["Here", "There"])
         #expect(result.sections[0].contextLabel == "Local")

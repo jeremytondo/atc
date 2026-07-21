@@ -28,7 +28,6 @@ struct ProjectsNavigatorGroups {
         let reachability: Reachability
         let workspaces: [WorkspaceRow]
         let totalWorkspaceCount: Int
-        let hasUnarchivedWorkspaces: Bool
         var id: ProjectRef { ref }
     }
 
@@ -52,11 +51,9 @@ struct ProjectsNavigatorGroups {
         projects = inputs.flatMap { input -> [ProjectGroup] in
             let allWorkspaces = Dictionary(grouping: input.workspaces, by: \.projectId)
             let sessions = Dictionary(grouping: input.sessions, by: { $0.workspace?.id })
-            return input.projects.compactMap { project -> ProjectGroup? in
-                guard !project.isArchived else { return nil }
+            return input.projects.map { project -> ProjectGroup in
                 let all = allWorkspaces[project.id] ?? []
                 let rows = all
-                    .filter { !$0.isArchived }
                     .sortedNewestFirst()
                     .map { workspace in
                         let members = sessions[workspace.id] ?? []
@@ -80,8 +77,7 @@ struct ProjectsNavigatorGroups {
                     connectionName: input.connection.name,
                     reachability: input.reachability,
                     workspaces: rows,
-                    totalWorkspaceCount: all.count,
-                    hasUnarchivedWorkspaces: all.contains { !$0.isArchived }
+                    totalWorkspaceCount: all.count
                 )
             }
         }

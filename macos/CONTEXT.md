@@ -14,15 +14,11 @@ _Avoid_: Project detail, home sidebar
 
 **Project**:
 A Server-owned record for one codebase on an atc server. A Project provides the default repository folder for its Workspaces; atc displays Projects through their Connection, but does not own the Project record itself.
-A Server-owned record for one codebase on an atc server. A Project provides the default repository folder for its Workspaces; it can be archived only after they are archived, or deleted only after they are deleted. Neither operation changes filesystem state.
+A Project can be deleted only after its Workspaces are deleted. Deletion does not change filesystem state.
 _Avoid_: Local project, app project
 
 **Workspace**:
-A Server-owned task context within one Project. In the initial version, every Workspace uses its Project's default folder while owning its own Agent Sessions and Terminals.
-_Avoid_: Checkout, worktree
-
-**Workspace**:
-A Server-owned task context within one Project. In the initial version, every Workspace uses its Project's default folder, owns its Sessions, persists after they end, and may be archived only when it has no active Sessions. Its name is user-owned, renameable, and need not be unique. Archive is reversible through unarchive. Deleting a Workspace never changes its working directory or other filesystem state, but stops and deletes all of its associated Sessions only after every stop succeeds.
+A Server-owned task context within one Project. In the initial version, every Workspace uses its Project's default folder, owns its Sessions, and persists after they end. Its name is user-owned, renameable, and need not be unique. Deleting a Workspace never changes its working directory or other filesystem state, but stops and deletes all of its associated Sessions only after every stop succeeds.
 _Avoid_: Checkout, worktree
 
 **Terminal Session**:
@@ -32,11 +28,11 @@ _Avoid_: Terminal, shell
 **Agent Session**:
 A Terminal Session configured to run a coding agent such as Codex or Claude Code. A Workspace may have multiple Agent Sessions.
 _Avoid_: Agent
-A Workspace Session that opens the server's default Interactive Shell or runs an Action from the Terminal creation flow. The macOS sidebar labels this group Terminals; the server treats it as a generic Session. Archive hides it while retaining metadata and is reversible through unarchive.
+A Workspace Session that opens the server's default Interactive Shell or runs an Action from the Terminal creation flow. The macOS sidebar labels this group Terminals; the server treats it as a generic Session.
 _Avoid_: Shell, generic Session
 
 **Agent Session**:
-A Workspace Session started from an Agent Action, such as Codex or Claude Code. The macOS sidebar labels this group Sessions; it remains a generic server Session and may later report Agent Activity. Archive hides it while retaining metadata and is reversible through unarchive.
+A Workspace Session started from an Agent Action, such as Codex or Claude Code. The macOS sidebar labels this group Sessions; it remains a generic server Session and may later report Agent Activity.
 _Avoid_: Agent
 
 **Focused Sidebar Row**:
