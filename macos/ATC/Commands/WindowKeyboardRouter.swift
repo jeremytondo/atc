@@ -29,7 +29,6 @@ final class WindowKeyboardRouter {
     /// on dismissal; AnyObject keeps AppKit out of this file.
     @ObservationIgnored weak var responderBeforeSuspension: AnyObject?
     @ObservationIgnored private let executeCommand: @MainActor (CommandID) -> CommandAvailability
-    @ObservationIgnored private var timeoutTask: Task<Void, Never>?
     @ObservationIgnored private var flashTask: Task<Void, Never>?
     @ObservationIgnored private var flashToken = 0
 
@@ -75,16 +74,7 @@ final class WindowKeyboardRouter {
     }
 
     func cancel() {
-        timeoutTask?.cancel()
-        timeoutTask = nil
         state = .idle
-    }
-
-    func handleTimeout(generation: Int) {
-        guard generation == keymap.generation,
-              case .pending = state
-        else { return }
-        cancel()
     }
 
     func showUnavailable(reason: String) {
@@ -103,23 +93,8 @@ final class WindowKeyboardRouter {
             }
         case .prefix(let continuations):
             state = .pending(node: continuations)
-            startTimeout()
         }
         return true
-    }
-
-    private func startTimeout() {
-        timeoutTask?.cancel()
-        let generation = keymap.generation
-        let duration = keymap.leaderTimeout
-        timeoutTask = Task { [weak self] in
-            do {
-                try await Task.sleep(for: duration)
-            } catch {
-                return
-            }
-            self?.handleTimeout(generation: generation)
-        }
     }
 
     private func clearFlash() {

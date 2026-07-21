@@ -52,7 +52,6 @@ The app never creates the configuration directory or file.
 ```toml
 [keyboard]
 leader = "cmd+k"                       # default: "cmd+k"
-leader_timeout_ms = 1800               # default: 1800
 clear_default_keybindings = false      # default: false
 
 [keybindings]

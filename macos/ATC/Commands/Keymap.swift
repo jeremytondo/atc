@@ -8,13 +8,11 @@ struct ResolvedKeymap: Sendable {
 
     let root: [KeyStroke: Node]
     let menuShortcuts: [CommandID: KeyStroke]
-    let leaderTimeout: Duration
     let generation: Int
 }
 
 enum Keymap {
     static let defaultLeader = "cmd+k"
-    static let defaultLeaderTimeoutMilliseconds = 1_800
 
     static let compiledDefaults: [(sequence: String, command: CommandID)] = [
         ("cmd+b", .toggleSidebar), ("leader>b", .toggleSidebar),
@@ -36,7 +34,6 @@ enum Keymap {
     ) -> Result<ResolvedKeymap, ConfigDiagnostics> {
         var diagnostics = user.diagnostics
         var leader = requiredStroke(defaultLeader)
-        var timeoutMilliseconds = defaultLeaderTimeoutMilliseconds
         var clearDefaults = false
 
         for entry in user.tables["keyboard", default: []] {
@@ -58,15 +55,6 @@ enum Keymap {
                         message: "[keyboard].leader has invalid trigger '\(text)': \(error.message)"
                     ))
                 }
-            case "leader_timeout_ms":
-                guard case .integer(let value) = entry.value, value > 0 else {
-                    diagnostics.append(.init(
-                        severity: .error,
-                        message: "[keyboard].leader_timeout_ms must be a positive integer"
-                    ))
-                    continue
-                }
-                timeoutMilliseconds = value
             case "clear_default_keybindings":
                 guard case .boolean(let value) = entry.value else {
                     diagnostics.append(.init(
@@ -207,7 +195,6 @@ enum Keymap {
         return .success(ResolvedKeymap(
             root: root,
             menuShortcuts: menuCandidates.mapValues(\.stroke),
-            leaderTimeout: .milliseconds(timeoutMilliseconds),
             generation: generation
         ))
     }

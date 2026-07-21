@@ -105,18 +105,6 @@ struct KeyboardRouterTests {
         #expect(router.flash == nil)
     }
 
-    @Test("only a timeout for the current generation cancels")
-    func timeoutGeneration() throws {
-        let router = WindowKeyboardRouter(
-            keymap: try keymap(generation: 7)
-        ) { _ in .available }
-        #expect(router.handle(try stroke("cmd+k"), isRepeat: false))
-        router.handleTimeout(generation: 6)
-        #expect(router.pendingNode != nil)
-        router.handleTimeout(generation: 7)
-        #expect(router.pendingNode == nil)
-    }
-
     @Test("unavailable commands consume and surface their reason")
     func unavailableCommand() throws {
         var executions = 0
