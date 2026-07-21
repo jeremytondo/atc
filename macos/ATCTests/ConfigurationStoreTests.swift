@@ -118,7 +118,7 @@ struct ConfigurationStoreTests {
 
         try write(#"""
         [keyboard]
-        leader_timeout_ms = 0
+        leader = false
         mystery = true
         """#, to: fixture.config)
         store.reload()
@@ -128,7 +128,7 @@ struct ConfigurationStoreTests {
         #expect(store.notice?.message.contains("keeping the previous configuration") == true)
         #expect(store.notice?.message.contains("[keyboard]") == true)
         #expect(store.diagnostics.contains {
-            $0.severity == .error && $0.message.contains("[keyboard].leader_timeout_ms")
+            $0.severity == .error && $0.message.contains("[keyboard].leader")
         })
         #expect(store.diagnostics.contains {
             $0.severity == .error && $0.message.contains("[keyboard].mystery")

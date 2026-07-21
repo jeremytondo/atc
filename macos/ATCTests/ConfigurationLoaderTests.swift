@@ -9,7 +9,6 @@ struct ConfigurationLoaderTests {
         let parsed = ConfigurationLoader.parse(#"""
           [keyboard]
           leader = 'cmd+k'
-          leader_timeout_ms=1_800
           clear_default_keybindings = false
 
           [keybindings]
@@ -18,7 +17,7 @@ struct ConfigurationLoaderTests {
         """#)
 
         #expect(parsed.diagnostics.isEmpty)
-        #expect(parsed.tables["keyboard"]?.count == 3)
+        #expect(parsed.tables["keyboard"]?.count == 2)
         #expect(parsed.tables["keybindings"]?.map(\.key) == ["cmd+b", "leader>b"])
         #expect(try Keymap.resolve(user: parsed).get().menuShortcuts[.toggleSidebar]
             == KeyStroke(key: "b", modifiers: .command))
@@ -64,7 +63,6 @@ struct ConfigurationLoaderTests {
         let parsed = ConfigurationLoader.parse(#"""
         [keyboard]
         leader = false
-        leader_timeout_ms = 1.5
         clear_default_keybindings = "no"
 
         [keybindings]
@@ -74,9 +72,6 @@ struct ConfigurationLoaderTests {
 
         #expect(messages.contains {
             $0.contains("[keyboard].leader") && $0.contains("string")
-        })
-        #expect(messages.contains {
-            $0.contains("[keyboard].leader_timeout_ms") && $0.contains("integer")
         })
         #expect(messages.contains {
             $0.contains("[keyboard].clear_default_keybindings")

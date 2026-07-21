@@ -23,7 +23,7 @@ struct ParsedConfig: Sendable {
 enum ConfigurationLoader {
     private static let recognizedTables = Set(["keyboard", "keybindings", "terminal"])
     private static let keyboardKeys = Set([
-        "leader", "leader_timeout_ms", "clear_default_keybindings",
+        "leader", "clear_default_keybindings",
     ])
     private static let terminalKeys = Set([
         "theme", "font_family", "font_size", "padding_x", "padding_y",
@@ -120,15 +120,6 @@ enum ConfigurationLoader {
                     ))
                 } catch {
                     diagnostics.append(diagnostic("[keyboard].leader must be a string"))
-                }
-            case "leader_timeout_ms":
-                do {
-                    let value = try table.integer(forKey: key)
-                    entries.append(.init(key: key, value: .integer(Int(value))))
-                } catch {
-                    diagnostics.append(diagnostic(
-                        "[keyboard].leader_timeout_ms must be an integer"
-                    ))
                 }
             case "clear_default_keybindings":
                 do {

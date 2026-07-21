@@ -45,17 +45,15 @@ struct CommandSequenceHintView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text("Command Sequence")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 10) {
             ForEach(continuations, id: \.0) { stroke, command in
                 continuationRow(stroke: stroke, command: command)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .frame(minWidth: 280, alignment: .leading)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
         .shadow(color: .black.opacity(0.2), radius: 12, y: 4)
     }
 
@@ -68,17 +66,17 @@ struct CommandSequenceHintView: View {
         )
         let descriptor = CommandRegistry.descriptor(for: command)
         let availability = descriptor.availability(context)
-        HStack(spacing: 9) {
+        HStack(spacing: 11) {
             Text(stroke.displayDescription)
-                .font(.caption.monospaced().weight(.semibold))
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: 5))
+                .font(.callout.monospaced().weight(.semibold))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
             Text(descriptor.title)
-                .font(.caption)
+                .font(.callout)
             if case .unavailable(let reason) = availability {
                 Text(reason)
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(.tertiary)
             }
         }

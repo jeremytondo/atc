@@ -19,7 +19,6 @@ struct KeymapResolutionTests {
     func defaults() throws {
         let keymap = try resolve()
         #expect(keymap.generation == 1)
-        #expect(keymap.leaderTimeout == .milliseconds(1_800))
         #expect(command(at: try stroke("cmd+b"), in: keymap) == .toggleSidebar)
         #expect(command(at: try stroke("cmd+shift+p"), in: keymap)
             == .toggleCommandPalette)
@@ -187,31 +186,6 @@ struct KeymapResolutionTests {
         #expect(diagnostics.contains {
             $0.message.contains(#"[keybindings]."cmd+shift+b""#)
                 && $0.message.contains("missing.command")
-        })
-    }
-
-    @Test("timeout must be a positive integer and defaults when omitted")
-    func timeoutValidation() throws {
-        #expect(try resolve().leaderTimeout == .milliseconds(1_800))
-        // 0 and -1 fail range validation in the resolver; a string fails the
-        // loader's type check first. Both name the key and want an integer.
-        for value in ["0", "-1", "\"1800\""] {
-            let result = Keymap.resolve(user: ConfigurationLoader.parse("""
-            [keyboard]
-            leader_timeout_ms = \(value)
-            """))
-            #expect(try failure(result).contains {
-                $0.message.contains("[keyboard].leader_timeout_ms")
-                    && $0.message.contains("integer")
-            })
-        }
-        let floatResult = Keymap.resolve(user: ConfigurationLoader.parse("""
-        [keyboard]
-        leader_timeout_ms = 1.5
-        """))
-        #expect(try failure(floatResult).contains {
-            $0.message.contains("[keyboard].leader_timeout_ms")
-                && $0.message.contains("integer")
         })
     }
 
