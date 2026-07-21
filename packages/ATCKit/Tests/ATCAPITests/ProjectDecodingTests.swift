@@ -2,13 +2,12 @@ import Foundation
 import Testing
 @testable import ATCAPI
 
-/// Fixture shaped like `GET /api/projects?includeArchived=true`
-/// (`{"projects":[...]}`, newest first). One archived, RFC3339Nano dates
-/// with varying fraction digits.
+/// Fixture shaped like `GET /api/projects` (`{"projects":[...]}`, newest
+/// first) with RFC3339Nano dates using varying fraction digits.
 private let projectsFixture = Data(#"""
 {"projects":[
   {"id":"prj_atelier","name":"Atelier","workingDir":"/home/dev/Projects/atelier","createdAt":"2026-07-01T10:00:00.5Z","updatedAt":"2026-07-05T12:34:56.123456789Z"},
-  {"id":"prj_old","name":"Old Thing","workingDir":"/home/dev/Projects/old","createdAt":"2026-06-01T08:00:00Z","updatedAt":"2026-06-15T09:30:00.42Z","archivedAt":"2026-06-20T18:00:00.987654321Z"}
+  {"id":"prj_old","name":"Old Thing","workingDir":"/home/dev/Projects/old","createdAt":"2026-06-01T08:00:00Z","updatedAt":"2026-06-15T09:30:00.42Z"}
 ]}
 """#.utf8)
 
@@ -28,7 +27,7 @@ private let sessionWithoutProjectFixture = Data(#"""
 
 @Suite("Project decoding")
 struct ProjectDecodingTests {
-    @Test("wrapped list decodes; archived project carries archivedAt")
+    @Test("wrapped list decodes")
     func listDecodes() throws {
         let envelope = try JSONDecoder.atc().decode(ProjectsEnvelope.self, from: projectsFixture)
         #expect(envelope.projects.count == 2)
@@ -37,12 +36,7 @@ struct ProjectDecodingTests {
         #expect(active.id == "prj_atelier")
         #expect(active.name == "Atelier")
         #expect(active.workingDir == "/home/dev/Projects/atelier")
-        #expect(!active.isArchived)
-        #expect(active.archivedAt == nil)
-
-        let archived = envelope.projects[1]
-        #expect(archived.isArchived)
-        #expect(archived.archivedAt != nil)
+        #expect(envelope.projects[1].id == "prj_old")
     }
 
     @Test("single project decodes")
@@ -50,7 +44,6 @@ struct ProjectDecodingTests {
         let project = try JSONDecoder.atc().decode(Project.self, from: projectFixture)
         #expect(project.id == "prj_atelier")
         #expect(project.workingDir == "/home/dev/Projects/atelier")
-        #expect(!project.isArchived)
     }
 
     @Test("session detail decodes nested workspace and derived project")

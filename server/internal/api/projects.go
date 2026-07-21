@@ -12,12 +12,11 @@ import (
 // identical; detail never inlines sessions). Exported so the CLI decodes the
 // same types the server encodes.
 type Project struct {
-	ID         string  `json:"id"`
-	Name       string  `json:"name"`
-	WorkingDir string  `json:"workingDir"`
-	CreatedAt  string  `json:"createdAt"`
-	UpdatedAt  string  `json:"updatedAt"`
-	ArchivedAt *string `json:"archivedAt,omitempty"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	WorkingDir string `json:"workingDir"`
+	CreatedAt  string `json:"createdAt"`
+	UpdatedAt  string `json:"updatedAt"`
 }
 
 // ProjectListResponse is the wire envelope for GET /projects.
@@ -54,12 +53,7 @@ func (routes apiRoutes) listProjects(w http.ResponseWriter, r *http.Request) {
 	if !routes.requireProjects(w) {
 		return
 	}
-	includeArchived, err := boolQuery(r, "includeArchived")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	projects, err := routes.projects.List(r.Context(), includeArchived)
+	projects, err := routes.projects.List(r.Context())
 	if err != nil {
 		writeProjectError(w, err)
 		return
@@ -100,30 +94,6 @@ func (routes apiRoutes) patchProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, projectResponse(renamed))
-}
-
-func (routes apiRoutes) archiveProject(w http.ResponseWriter, r *http.Request) {
-	if !routes.requireProjects(w) {
-		return
-	}
-	archived, err := routes.projects.Archive(r.Context(), r.PathValue("id"))
-	if err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, projectResponse(archived))
-}
-
-func (routes apiRoutes) unarchiveProject(w http.ResponseWriter, r *http.Request) {
-	if !routes.requireProjects(w) {
-		return
-	}
-	unarchived, err := routes.projects.Unarchive(r.Context(), r.PathValue("id"))
-	if err != nil {
-		writeProjectError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, projectResponse(unarchived))
 }
 
 func (routes apiRoutes) deleteProject(w http.ResponseWriter, r *http.Request) {
@@ -180,10 +150,6 @@ func writeProjectError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_working_dir", err.Error())
 	case errors.Is(err, project.ErrInvalidProject):
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-	case errors.Is(err, project.ErrProjectArchived):
-		writeError(w, http.StatusConflict, "project_archived", err.Error())
-	case errors.Is(err, project.ErrProjectHasUnarchivedWorkspaces):
-		writeError(w, http.StatusConflict, "project_has_unarchived_workspaces", err.Error())
 	case errors.Is(err, project.ErrProjectHasWorkspaces):
 		writeError(w, http.StatusConflict, "project_has_workspaces", err.Error())
 	default:
@@ -198,6 +164,5 @@ func projectResponse(p project.Project) Project {
 		WorkingDir: p.WorkingDir,
 		CreatedAt:  formatTime(p.CreatedAt),
 		UpdatedAt:  formatTime(p.UpdatedAt),
-		ArchivedAt: formatOptionalTime(p.ArchivedAt),
 	}
 }

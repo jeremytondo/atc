@@ -56,11 +56,7 @@ struct WorkspaceSwitcher: View {
             .buttonStyle(.plain)
             .onHover { isHovering = $0 }
             .popover(isPresented: $isPickerPresented, arrowEdge: .bottom) {
-                // An archived Active Workspace never appears in the
-                // picker's rows, so name it explicitly.
-                WorkspacePicker(archivedCurrent: activeContext.flatMap {
-                    $0.workspace.isArchived ? presentation.label : nil
-                })
+                WorkspacePicker()
             }
             .help(presentation.help)
             .accessibilityLabel(
@@ -109,10 +105,6 @@ private struct WorkspacePicker: View {
     @Environment(WindowState.self) private var windowState
     @Environment(\.dismiss) private var dismiss
 
-    /// "project › workspace" when the Active Workspace is archived (and
-    /// therefore absent from the rows below); nil otherwise.
-    let archivedCurrent: String?
-
     @State private var query = ""
 
     var body: some View {
@@ -130,13 +122,6 @@ private struct WorkspacePicker: View {
             .padding(.vertical, 6)
             .background(.quaternary, in: Capsule())
             .padding(Spacing.md)
-            if let archivedCurrent {
-                Text("\(archivedCurrent) — Archived")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(Spacing.sm)
-                Divider()
-            }
             if groups.isEmpty {
                 Text(query.isEmpty ? "No Workspaces" : "No Matches")
                     .foregroundStyle(.secondary)
@@ -202,8 +187,7 @@ struct WorkspaceSwitcherPresentation: Equatable {
     let workspaceName: String
     let help: String
 
-    /// Flat "project › workspace" string for accessibility and the
-    /// archived-current row in the picker.
+    /// Flat "project › workspace" string for accessibility.
     var label: String {
         projectName.map { "\($0) › \(workspaceName)" } ?? workspaceName
     }
@@ -223,7 +207,6 @@ struct WorkspaceSwitcherPresentation: Equatable {
     init(project: Project, workspace: Workspace) {
         projectName = project.name
         workspaceName = workspace.name
-        let label = "\(project.name) › \(workspace.name)"
-        help = workspace.isArchived ? "\(label), Archived" : label
+        help = "\(project.name) › \(workspace.name)"
     }
 }

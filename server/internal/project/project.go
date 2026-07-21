@@ -1,6 +1,5 @@
-// Package project owns atc Project semantics: named workstation
-// directories that group sessions. Projects are records only — they carry no
-// process state — and are archived rather than deleted.
+// Package project owns atc Project semantics: named workstation directories
+// that group workspaces. Projects are records only — they carry no process state.
 package project
 
 import (
@@ -28,26 +27,19 @@ var (
 	// ErrInvalidWorkingDir is returned when a working directory is relative,
 	// missing, or not a directory.
 	ErrInvalidWorkingDir = errors.New("invalid working directory")
-	// ErrProjectArchived is returned when a workspace create or session start
-	// references an archived project.
-	ErrProjectArchived = errors.New("project is archived")
-	// ErrProjectHasUnarchivedWorkspaces is returned when an archive is
-	// rejected because the project still has an unarchived workspace.
-	ErrProjectHasUnarchivedWorkspaces = errors.New("project has unarchived workspaces")
 	// ErrProjectHasWorkspaces is returned when a delete is rejected because
 	// the project still has workspaces.
 	ErrProjectHasWorkspaces = errors.New("project has workspaces")
 )
 
 // Project is atc's domain model for a project. WorkingDir is fixed after
-// creation; Name is renameable; a nil ArchivedAt means active.
+// creation; Name is renameable.
 type Project struct {
 	ID         string
 	Name       string
 	WorkingDir string
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
-	ArchivedAt *time.Time
 }
 
 // ValidateWorkingDir is the single working-directory rule for projects and
@@ -122,10 +114,9 @@ func (s *Service) Get(ctx context.Context, id string) (Project, error) {
 	return domainProject(record), nil
 }
 
-// List returns projects newest-first, hiding archived projects unless
-// includeArchived is true.
-func (s *Service) List(ctx context.Context, includeArchived bool) ([]Project, error) {
-	records, err := s.store.ListProjects(ctx, store.ProjectListFilter{IncludeArchived: includeArchived})
+// List returns projects newest-first.
+func (s *Service) List(ctx context.Context) ([]Project, error) {
+	records, err := s.store.ListProjects(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -149,20 +140,6 @@ func (s *Service) Rename(ctx context.Context, id, name string) (Project, error) 
 	return domainProject(record), nil
 }
 
-// Archive hides a project from default lists and blocks new workspace
-// creation. Archiving an archived project is a no-op returning the current
-// record. A project with an unarchived workspace cannot be archived.
-func (s *Service) Archive(ctx context.Context, id string) (Project, error) {
-	record, err := s.store.ArchiveProject(ctx, id)
-	if errors.Is(err, store.ErrProjectHasUnarchivedWorkspaces) {
-		return Project{}, fmt.Errorf("%w: %s", ErrProjectHasUnarchivedWorkspaces, id)
-	}
-	if err != nil {
-		return Project{}, translateStoreErr(err)
-	}
-	return domainProject(record), nil
-}
-
 // Delete removes a project record. Deletion is allowed only when the project
 // has zero workspaces, and removes only the project row — files are never
 // touched.
@@ -178,26 +155,12 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// Unarchive reactivates a project. Unarchiving an active project is a no-op
-// returning the current record.
-func (s *Service) Unarchive(ctx context.Context, id string) (Project, error) {
-	record, err := s.store.UnarchiveProject(ctx, id)
-	if err != nil {
-		return Project{}, translateStoreErr(err)
-	}
-	return domainProject(record), nil
-}
-
-// ResolveForStart loads the project a session start references, rejecting
-// archived projects and revalidating the working directory so a directory
-// that vanished since creation fails fast.
+// ResolveForStart loads the project a session start references and revalidates
+// the working directory so a directory that vanished since creation fails fast.
 func (s *Service) ResolveForStart(ctx context.Context, id string) (Project, error) {
 	got, err := s.Get(ctx, id)
 	if err != nil {
 		return Project{}, err
-	}
-	if got.ArchivedAt != nil {
-		return Project{}, fmt.Errorf("%w: %s", ErrProjectArchived, id)
 	}
 	if err := ValidateWorkingDir(got.WorkingDir); err != nil {
 		return Project{}, err
@@ -212,7 +175,6 @@ func domainProject(record store.Project) Project {
 		WorkingDir: record.WorkingDir,
 		CreatedAt:  record.CreatedAt,
 		UpdatedAt:  record.UpdatedAt,
-		ArchivedAt: record.ArchivedAt,
 	}
 }
 

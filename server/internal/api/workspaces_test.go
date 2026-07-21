@@ -34,7 +34,7 @@ func TestCreateWorkspaceReturnsFullRecord(t *testing.T) {
 	if !strings.HasPrefix(created.ID, "wsp_") || created.Name != "Login bug" || created.ProjectID != project.ID {
 		t.Fatalf("created = %+v", created)
 	}
-	if created.CreatedAt == "" || created.UpdatedAt == "" || created.ArchivedAt != nil {
+	if created.CreatedAt == "" || created.UpdatedAt == "" {
 		t.Fatalf("created timestamps = %+v", created)
 	}
 }
@@ -42,11 +42,6 @@ func TestCreateWorkspaceReturnsFullRecord(t *testing.T) {
 func TestCreateWorkspaceValidationErrors(t *testing.T) {
 	h, _ := newHandler(t, &fakeMux{})
 	project := createTestProject(t, h, "atc", t.TempDir())
-	archived := createTestProject(t, h, "Archived", t.TempDir())
-	rec := do(t, h, http.MethodPost, "/projects/"+archived.ID+"/archive", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("archive status = %d (%s)", rec.Code, rec.Body)
-	}
 
 	tests := []struct {
 		name   string
@@ -59,7 +54,6 @@ func TestCreateWorkspaceValidationErrors(t *testing.T) {
 		{name: "blank name", body: `{"projectId":"` + project.ID + `","name":"   "}`, status: http.StatusBadRequest, code: "invalid_request"},
 		{name: "missing projectId", body: `{"name":"X"}`, status: http.StatusBadRequest, code: "invalid_request"},
 		{name: "unknown project", body: `{"projectId":"prj_missing","name":"X"}`, status: http.StatusNotFound, code: "project_not_found"},
-		{name: "archived project", body: `{"projectId":"` + archived.ID + `","name":"X"}`, status: http.StatusConflict, code: "project_archived"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -79,30 +73,15 @@ func TestListWorkspacesFilters(t *testing.T) {
 	one := createTestWorkspace(t, h, first.ID, "One")
 	two := createTestWorkspace(t, h, second.ID, "Two")
 	three := createTestWorkspace(t, h, first.ID, "Three")
-	rec := do(t, h, http.MethodPost, "/workspaces/"+three.ID+"/archive", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("archive status = %d (%s)", rec.Code, rec.Body)
-	}
-
 	// The seeded test workspace (wsp_test) also exists; scope by project to
 	// keep assertions exact.
-	rec = do(t, h, http.MethodGet, "/workspaces?projectId="+first.ID, "")
+	rec := do(t, h, http.MethodGet, "/workspaces?projectId="+first.ID, "")
 	var scoped WorkspaceListResponse
 	if err := json.NewDecoder(rec.Body).Decode(&scoped); err != nil {
 		t.Fatalf("decode scoped: %v", err)
 	}
-	if len(scoped.Workspaces) != 1 || scoped.Workspaces[0].ID != one.ID {
-		t.Fatalf("scoped list = %+v, want only unarchived workspace of first project", scoped.Workspaces)
-	}
-
-	rec = do(t, h, http.MethodGet, "/workspaces?projectId="+first.ID+"&includeArchived=true", "")
-	var all WorkspaceListResponse
-	if err := json.NewDecoder(rec.Body).Decode(&all); err != nil {
-		t.Fatalf("decode all: %v", err)
-	}
-	// Newest-created-first.
-	if len(all.Workspaces) != 2 || all.Workspaces[0].ID != three.ID || all.Workspaces[1].ID != one.ID {
-		t.Fatalf("full list = %+v", all.Workspaces)
+	if len(scoped.Workspaces) != 2 || scoped.Workspaces[0].ID != three.ID || scoped.Workspaces[1].ID != one.ID {
+		t.Fatalf("scoped list = %+v, want newest-first", scoped.Workspaces)
 	}
 
 	// Without projectId the list spans every project.
@@ -118,12 +97,6 @@ func TestListWorkspacesFilters(t *testing.T) {
 	if !ids[one.ID] || !ids[two.ID] || !ids[testWorkspaceID] {
 		t.Fatalf("global list = %+v, want workspaces across projects", global.Workspaces)
 	}
-
-	rec = do(t, h, http.MethodGet, "/workspaces?includeArchived=bogus", "")
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("bad includeArchived status = %d, want 400", rec.Code)
-	}
-	assertErrorCode(t, rec, "invalid_request")
 }
 
 func TestGetPatchWorkspace(t *testing.T) {
@@ -173,59 +146,6 @@ func TestGetPatchWorkspace(t *testing.T) {
 		t.Fatalf("missing status = %d, want 404", rec.Code)
 	}
 	assertErrorCode(t, rec, "workspace_not_found")
-}
-
-func TestArchiveUnarchiveWorkspaceRoutes(t *testing.T) {
-	h, st := newHandler(t, &fakeMux{})
-	project := createTestProject(t, h, "atc", t.TempDir())
-	created := createTestWorkspace(t, h, project.ID, "Lifecycle")
-	seedRunning(t, st, "ses_busy", "Busy")
-
-	// The seeded session lives in wsp_test; archiving it is blocked.
-	rec := do(t, h, http.MethodPost, "/workspaces/"+testWorkspaceID+"/archive", "")
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("archive busy workspace status = %d, want 409 (%s)", rec.Code, rec.Body)
-	}
-	assertErrorCode(t, rec, "workspace_has_active_sessions")
-
-	rec = do(t, h, http.MethodPost, "/workspaces/"+created.ID+"/archive", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("archive status = %d, want 200 (%s)", rec.Code, rec.Body)
-	}
-	var archived Workspace
-	if err := json.NewDecoder(rec.Body).Decode(&archived); err != nil {
-		t.Fatalf("decode archived: %v", err)
-	}
-	if archived.ArchivedAt == nil {
-		t.Fatalf("archived = %+v, want archivedAt", archived)
-	}
-
-	// Unarchive under an archived project conflicts.
-	rec = do(t, h, http.MethodPost, "/projects/"+project.ID+"/archive", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("project archive status = %d (%s)", rec.Code, rec.Body)
-	}
-	rec = do(t, h, http.MethodPost, "/workspaces/"+created.ID+"/unarchive", "")
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("unarchive under archived project status = %d, want 409 (%s)", rec.Code, rec.Body)
-	}
-	assertErrorCode(t, rec, "project_archived")
-
-	rec = do(t, h, http.MethodPost, "/projects/"+project.ID+"/unarchive", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("project unarchive status = %d (%s)", rec.Code, rec.Body)
-	}
-	rec = do(t, h, http.MethodPost, "/workspaces/"+created.ID+"/unarchive", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("unarchive status = %d, want 200 (%s)", rec.Code, rec.Body)
-	}
-	var unarchived Workspace
-	if err := json.NewDecoder(rec.Body).Decode(&unarchived); err != nil {
-		t.Fatalf("decode unarchived: %v", err)
-	}
-	if unarchived.ArchivedAt != nil {
-		t.Fatalf("unarchived = %+v", unarchived)
-	}
 }
 
 func TestDeleteWorkspaceStopsSessionsAndRemovesMetadata(t *testing.T) {

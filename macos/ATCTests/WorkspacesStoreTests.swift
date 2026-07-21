@@ -3,8 +3,7 @@ import Testing
 import ATCAPI
 @testable import ATC
 
-/// WorkspacesStore behavior: refresh, archived-inclusive fetching, and
-/// merge-after-mutation semantics.
+/// WorkspacesStore behavior: refresh and merge-after-mutation semantics.
 ///
 /// Mutation tests use `StatefulWorkspacesClient` for the same reason
 /// `ProjectsStoreTests` uses its stateful client: the store fires an
@@ -13,14 +12,13 @@ import ATCAPI
 /// fixtures mid-test.
 @Suite("WorkspacesStore")
 struct WorkspacesStoreTests {
-    @Test("refresh loads every workspace, archived included")
-    func refreshIncludesArchived() async throws {
+    @Test("refresh loads every workspace")
+    func refreshLoadsAll() async throws {
         let store = WorkspacesStore(client: StatefulWorkspacesClient())
         await store.refresh()
         #expect(store.hasLoadedOnce)
         #expect(store.lastError == nil)
         #expect(store.workspaces.count == 3)
-        #expect(store.workspaces.contains { $0.isArchived })
     }
 
     @Test("create merges the new workspace at the front with a unique id")
@@ -34,15 +32,6 @@ struct WorkspacesStoreTests {
         #expect(store.workspaces.contains { $0.id == first.id })
     }
 
-    @Test("creating in an archived project surfaces the server 409")
-    func createInArchivedProjectThrows() async throws {
-        let store = WorkspacesStore(client: StatefulWorkspacesClient())
-        await store.refresh()
-        await #expect(throws: ATCError.self) {
-            try await store.create(projectID: "prj_archived", name: "Nope")
-        }
-    }
-
     @Test("rename updates the workspace in place")
     func renameUpdates() async throws {
         let store = WorkspacesStore(client: StatefulWorkspacesClient())
@@ -50,17 +39,6 @@ struct WorkspacesStoreTests {
         let target = try #require(store.workspaces.first)
         try await store.rename(id: target.id, name: "Renamed")
         #expect(store.workspace(id: target.id)?.name == "Renamed")
-    }
-
-    @Test("archive keeps the row; views hide it locally")
-    func archiveKeepsRow() async throws {
-        let store = WorkspacesStore(client: StatefulWorkspacesClient())
-        await store.refresh()
-        let target = try #require(store.workspaces.first { !$0.isArchived })
-        try await store.archive(id: target.id)
-        #expect(store.workspace(id: target.id)?.isArchived == true)
-        try await store.unarchive(id: target.id)
-        #expect(store.workspace(id: target.id)?.isArchived == false)
     }
 
     @Test("delete removes the row locally")
@@ -138,8 +116,8 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
     private let projects = [
         Project(id: "prj_one", name: "One", workingDir: "/home/dev/one", createdAt: .now, updatedAt: .now),
         Project(
-            id: "prj_archived", name: "Dusty", workingDir: "/home/dev/dusty",
-            createdAt: .now, updatedAt: .now, archivedAt: .now
+            id: "prj_three", name: "Three", workingDir: "/home/dev/three",
+            createdAt: .now, updatedAt: .now
         ),
     ]
 
@@ -156,8 +134,7 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
             ),
             Workspace(
                 id: "wsp_old", projectId: "prj_one", name: "Old",
-                createdAt: Date(timeIntervalSinceNow: -300), updatedAt: .now,
-                archivedAt: .now
+                createdAt: Date(timeIntervalSinceNow: -300), updatedAt: .now
             ),
         ]
     }
@@ -169,12 +146,11 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
         return try body(&stored)
     }
 
-    func workspaces(projectID: String?, includeArchived: Bool) async throws -> [Workspace] {
+    func workspaces(projectID: String?) async throws -> [Workspace] {
         if failWorkspaces { throw ATCError.badStatus(500) }
         return try withState { state in
             state.filter {
-                (projectID == nil || $0.projectId == projectID)
-                    && (includeArchived || !$0.isArchived)
+                projectID == nil || $0.projectId == projectID
             }
         }
     }
@@ -192,9 +168,6 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
         guard let project = projects.first(where: { $0.id == projectID }) else {
             throw ATCError.api(code: "project_not_found", message: projectID, sessionID: nil)
         }
-        guard !project.isArchived else {
-            throw ATCError.api(code: "project_archived", message: projectID, sessionID: nil)
-        }
         return try withState { state in
             counter += 1
             let workspace = Workspace(
@@ -208,14 +181,6 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
 
     func renameWorkspace(id: String, name: String) async throws -> Workspace {
         try mutate(id) { $0.name = name }
-    }
-
-    func archiveWorkspace(id: String) async throws -> Workspace {
-        try mutate(id) { $0.archivedAt = .now }
-    }
-
-    func unarchiveWorkspace(id: String) async throws -> Workspace {
-        try mutate(id) { $0.archivedAt = nil }
     }
 
     func deleteWorkspace(id: String) async throws {
@@ -244,9 +209,9 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
 
     // MARK: - Pass-through / unused surface
 
-    func projects(includeArchived: Bool) async throws -> [Project] {
+    func projects() async throws -> [Project] {
         if failAll { throw ATCError.badStatus(500) }
-        return projects.filter { includeArchived || !$0.isArchived }
+        return projects
     }
 
     func project(id: String) async throws -> Project {
@@ -320,8 +285,6 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
     func renameProject(id: String, name: String) async throws -> Project {
         try await inner.renameProject(id: id, name: name)
     }
-    func archiveProject(id: String) async throws -> Project { try await inner.archiveProject(id: id) }
-    func unarchiveProject(id: String) async throws -> Project { try await inner.unarchiveProject(id: id) }
     func projectSessions(projectID: String, status: SessionStatus?) async throws -> [Session] {
         try await inner.projectSessions(projectID: projectID, status: status)
     }

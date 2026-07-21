@@ -111,11 +111,9 @@ describe('api client unwraps fixture responses', () => {
   it('listSessions returns the sessions array', async () => {
 	mockFetch(sessionsContract);
     const sessions = await listSessions();
-    expect(sessions.map((s) => s.id)).toEqual(['ses_fixture01', 'ses_fixture02']);
+    expect(sessions.map((s) => s.id)).toEqual(['ses_fixture01']);
     expect(sessions[0].project?.id).toBe('prj_fixture01');
     expect(sessions[0].workspace?.id).toBe('wsp_fixture01');
-    // The second fixture session is an Interactive Shell: no action.
-    expect(sessions[1].action).toBeUndefined();
   });
 
   it('startSession returns the session detail', async () => {
@@ -142,8 +140,7 @@ describe('api client unwraps fixture responses', () => {
   it('listWorkspaces returns the workspaces array', async () => {
     mockFetch(workspacesList.response);
     const workspaces = await listWorkspaces();
-    expect(workspaces).toHaveLength(2);
-    expect(workspaces[1].archivedAt).toBeDefined();
+    expect(workspaces).toHaveLength(1);
   });
 
   it('createWorkspace returns the workspace', async () => {
@@ -163,8 +160,7 @@ describe('api client unwraps fixture responses', () => {
   it('listProjects returns the projects array', async () => {
     mockFetch(projectsList.response);
     const projects = await listProjects();
-    expect(projects).toHaveLength(2);
-    expect(projects[1].archivedAt).toBeDefined();
+    expect(projects).toHaveLength(1);
   });
 
   it('createProject returns the project', async () => {

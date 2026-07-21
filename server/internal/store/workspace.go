@@ -13,12 +13,11 @@ import (
 // Project, it carries no JSON tags; the API layer owns wire types and
 // serialization.
 type Workspace struct {
-	ID         string
-	ProjectID  string
-	Name       string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	ArchivedAt *time.Time
+	ID        string
+	ProjectID string
+	Name      string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // CreateWorkspaceInput is the record stored when a workspace is created.
@@ -28,23 +27,22 @@ type CreateWorkspaceInput struct {
 	Name      string
 }
 
-// WorkspaceListFilter controls workspace list queries. Archived workspaces
-// are hidden by default; ProjectID is optional (empty lists all workspaces).
+// WorkspaceListFilter controls workspace list queries. ProjectID is optional
+// (empty lists all workspaces).
 type WorkspaceListFilter struct {
-	IncludeArchived bool
-	ProjectID       string
+	ProjectID string
 }
 
 // CreateWorkspace inserts a new workspace. The single-statement guard makes
-// the insert atomic with the project check (mirroring the guarded session
-// insert), so a create racing a project archive cannot slip through.
+// the insert atomic with the project existence check (mirroring the guarded
+// session insert).
 func (s *Store) CreateWorkspace(ctx context.Context, input CreateWorkspaceInput) (Workspace, error) {
 	q := s.queries()
 	now := q.nowUTC()
 	created, err := scanWorkspace(q.runner.QueryRowContext(ctx, `
 	INSERT INTO workspaces (id, project_id, name, created_at, updated_at)
 	SELECT ?, ?, ?, ?, ?
-	WHERE EXISTS (SELECT 1 FROM projects WHERE id = ? AND archived_at IS NULL)
+	WHERE EXISTS (SELECT 1 FROM projects WHERE id = ?)
 	RETURNING`+workspaceColumnsSQL,
 		input.ID,
 		input.ProjectID,
@@ -54,7 +52,7 @@ func (s *Store) CreateWorkspace(ctx context.Context, input CreateWorkspaceInput)
 		input.ProjectID,
 	))
 	if errors.Is(err, sql.ErrNoRows) {
-		return Workspace{}, q.classifyProjectGuardFailure(ctx, input.ProjectID)
+		return Workspace{}, fmt.Errorf("%w: %s", ErrProjectNotFound, input.ProjectID)
 	}
 	if err != nil {
 		return Workspace{}, fmt.Errorf("create workspace %s: %w", input.ID, err)
@@ -78,15 +76,11 @@ func (q queries) GetWorkspace(ctx context.Context, id string) (Workspace, error)
 	return workspace, nil
 }
 
-// ListWorkspaces loads workspaces newest-first. Archived records are excluded
-// unless IncludeArchived is true; a non-empty ProjectID restricts the list to
-// one project's workspaces.
+// ListWorkspaces loads workspaces newest-first. A non-empty ProjectID
+// restricts the list to one project's workspaces.
 func (s *Store) ListWorkspaces(ctx context.Context, filter WorkspaceListFilter) ([]Workspace, error) {
-	clauses := make([]string, 0, 2)
+	clauses := make([]string, 0, 1)
 	args := make([]any, 0, 1)
-	if !filter.IncludeArchived {
-		clauses = append(clauses, "archived_at IS NULL")
-	}
 	if filter.ProjectID != "" {
 		clauses = append(clauses, "project_id = ?")
 		args = append(args, filter.ProjectID)
@@ -119,8 +113,7 @@ func (s *Store) ListWorkspaces(ctx context.Context, filter WorkspaceListFilter) 
 	return workspaces, nil
 }
 
-// RenameWorkspace updates a workspace's name. Renaming is allowed while the
-// workspace is archived.
+// RenameWorkspace updates a workspace's name.
 func (s *Store) RenameWorkspace(ctx context.Context, id, name string) (Workspace, error) {
 	if strings.TrimSpace(name) == "" {
 		return Workspace{}, errors.New("rename workspace: name is required")
@@ -134,72 +127,6 @@ func (s *Store) RenameWorkspace(ctx context.Context, id, name string) (Workspace
 	RETURNING`+workspaceColumnsSQL,
 		name, formatTime(now), id,
 	)
-}
-
-// ArchiveWorkspace archives a workspace. Archiving an archived workspace is a
-// no-op that returns the current record. A workspace with a starting or
-// live session cannot be archived; the check and the update share one
-// transaction so a session starting concurrently cannot slip through.
-func (s *Store) ArchiveWorkspace(ctx context.Context, id string) (Workspace, error) {
-	var archived Workspace
-	err := s.WithTx(ctx, func(tx *Tx) error {
-		active, err := tx.q.countActiveWorkspaceSessions(ctx, id)
-		if err != nil {
-			return err
-		}
-		if active > 0 {
-			return fmt.Errorf("%w: %s", ErrWorkspaceHasActiveSessions, id)
-		}
-		now := tx.q.nowUTC()
-		archived, err = tx.q.updateOneWorkspace(ctx, id, "archive", `
-		UPDATE workspaces
-		SET archived_at = COALESCE(archived_at, ?),
-			updated_at = CASE WHEN archived_at IS NULL THEN ? ELSE updated_at END
-		WHERE id = ?
-		RETURNING`+workspaceColumnsSQL,
-			formatTime(now), formatTime(now), id,
-		)
-		return err
-	})
-	if err != nil {
-		return Workspace{}, err
-	}
-	return archived, nil
-}
-
-// UnarchiveWorkspace reactivates a workspace. Unarchiving an active workspace
-// is a no-op that returns the current record; unarchiving under an archived
-// project is rejected so the "archived project has only archived workspaces"
-// invariant holds.
-func (s *Store) UnarchiveWorkspace(ctx context.Context, id string) (Workspace, error) {
-	var unarchived Workspace
-	err := s.WithTx(ctx, func(tx *Tx) error {
-		workspace, err := tx.q.GetWorkspace(ctx, id)
-		if err != nil {
-			return err
-		}
-		project, err := scanProject(tx.q.runner.QueryRowContext(ctx, selectProjectSQL+` WHERE id = ?`, workspace.ProjectID))
-		if err != nil {
-			return fmt.Errorf("unarchive workspace %s: load project: %w", id, err)
-		}
-		if project.ArchivedAt != nil {
-			return fmt.Errorf("%w: %s", ErrProjectArchived, workspace.ProjectID)
-		}
-		now := tx.q.nowUTC()
-		unarchived, err = tx.q.updateOneWorkspace(ctx, id, "unarchive", `
-		UPDATE workspaces
-		SET updated_at = CASE WHEN archived_at IS NOT NULL THEN ? ELSE updated_at END,
-			archived_at = NULL
-		WHERE id = ?
-		RETURNING`+workspaceColumnsSQL,
-			formatTime(now), id,
-		)
-		return err
-	})
-	if err != nil {
-		return Workspace{}, err
-	}
-	return unarchived, nil
 }
 
 // DeleteWorkspace removes a workspace and all of its session rows in one
@@ -257,8 +184,7 @@ const workspaceColumnsSQL = `
 		project_id,
 		name,
 		created_at,
-		updated_at,
-		archived_at`
+		updated_at`
 
 const selectWorkspaceSQL = `
 SELECT` + workspaceColumnsSQL + `
@@ -267,14 +193,12 @@ SELECT` + workspaceColumnsSQL + `
 func scanWorkspace(row scanner) (Workspace, error) {
 	var workspace Workspace
 	var createdAt, updatedAt string
-	var archivedAt sql.NullString
 	if err := row.Scan(
 		&workspace.ID,
 		&workspace.ProjectID,
 		&workspace.Name,
 		&createdAt,
 		&updatedAt,
-		&archivedAt,
 	); err != nil {
 		return Workspace{}, err
 	}
@@ -287,10 +211,6 @@ func scanWorkspace(row scanner) (Workspace, error) {
 	workspace.UpdatedAt, err = parseTime(updatedAt)
 	if err != nil {
 		return Workspace{}, fmt.Errorf("parse updated_at: %w", err)
-	}
-	workspace.ArchivedAt, err = parseOptionalTime(archivedAt)
-	if err != nil {
-		return Workspace{}, fmt.Errorf("parse archived_at: %w", err)
 	}
 	return workspace, nil
 }

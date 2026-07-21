@@ -53,21 +53,19 @@ private nonisolated final class RecordingClient: ATCClient, @unchecked Sendable 
     func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing {
         try await inner.listDirectory(path: path, showHidden: showHidden)
     }
-    func projects(includeArchived: Bool) async throws -> [Project] {
-        try await inner.projects(includeArchived: includeArchived)
+    func projects() async throws -> [Project] {
+        try await inner.projects()
     }
     func project(id: String) async throws -> Project { try await inner.project(id: id) }
     func renameProject(id: String, name: String) async throws -> Project {
         try await inner.renameProject(id: id, name: name)
     }
-    func archiveProject(id: String) async throws -> Project { try await inner.archiveProject(id: id) }
-    func unarchiveProject(id: String) async throws -> Project { try await inner.unarchiveProject(id: id) }
     func projectSessions(projectID: String, status: SessionStatus?) async throws -> [Session] {
         try await inner.projectSessions(projectID: projectID, status: status)
     }
     func deleteProject(id: String) async throws { try await inner.deleteProject(id: id) }
-    func workspaces(projectID: String?, includeArchived: Bool) async throws -> [Workspace] {
-        try await inner.workspaces(projectID: projectID, includeArchived: includeArchived)
+    func workspaces(projectID: String?) async throws -> [Workspace] {
+        try await inner.workspaces(projectID: projectID)
     }
     func workspace(id: String) async throws -> Workspace { try await inner.workspace(id: id) }
     func createWorkspace(projectID: String, name: String) async throws -> Workspace {
@@ -76,8 +74,6 @@ private nonisolated final class RecordingClient: ATCClient, @unchecked Sendable 
     func renameWorkspace(id: String, name: String) async throws -> Workspace {
         try await inner.renameWorkspace(id: id, name: name)
     }
-    func archiveWorkspace(id: String) async throws -> Workspace { try await inner.archiveWorkspace(id: id) }
-    func unarchiveWorkspace(id: String) async throws -> Workspace { try await inner.unarchiveWorkspace(id: id) }
     func deleteWorkspace(id: String) async throws { try await inner.deleteWorkspace(id: id) }
     func workspaceSessions(workspaceID: String, status: SessionStatus?) async throws -> [Session] {
         try await inner.workspaceSessions(workspaceID: workspaceID, status: status)

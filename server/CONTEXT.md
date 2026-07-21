@@ -17,8 +17,7 @@ provisional Launch Attempt used during startup is not a Session. atc starts it,
 injects input, and can re-attach while it is Live. Its atc identity is
 independent of its multiplexer handle. Chosen
 over "Run"/"Agent Run" deliberately, despite "session" being the underlying zmx
-term. Delete ends a Live process when necessary and removes its atc record;
-there is no Session archive lifecycle.
+term. Delete ends a Live process when necessary and removes its atc record.
 _Avoid_: terminal, tab, pane, job, task, run, agent run.
 
 **Action**:
@@ -80,19 +79,17 @@ _Avoid_: terminal server, pty manager, tmux.
 **Project**:
 An atc-owned record that names one workstation directory and contains related
 Workspaces. Workspace Sessions reach their Project through their Workspace. A
-Project can be archived only after all of its Workspaces are archived.
-It can be deleted only after all of its Workspaces are deleted, without changing
-filesystem state.
+A Project can be deleted only after all of its Workspaces are deleted, without
+changing filesystem state.
 _Avoid_: workspace, repository, folder, app project.
 
 **Workspace**:
 An atc-owned task context within one Project. In the initial version, a
-Workspace uses the Project Working Directory, owns its Sessions, persists after
-they end, and may be archived only when it has no active Sessions. Its name is
-user-owned, renameable, and need not be unique. Deleting a Workspace never
-changes its working directory or other filesystem state, but ends and deletes
-all of its associated Sessions only after every end succeeds. Archive is
-reversible through unarchive.
+Workspace uses the Project Working Directory, owns its Sessions, and persists
+after they end. Its name is user-owned, renameable, and need not be unique.
+Deleting a Workspace never changes its working directory or other filesystem
+state, but ends and deletes all of its associated Sessions only after every end
+succeeds.
 _Avoid_: checkout, worktree, disposable session group
 
 **Project Working Directory**:

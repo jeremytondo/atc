@@ -25,22 +25,18 @@ public protocol ATCClient: Sendable {
     func deleteAction(name: String) async throws
     func environments() async throws -> [ATCEnvironment]
     func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing
-    func projects(includeArchived: Bool) async throws -> [Project]
+    func projects() async throws -> [Project]
     func project(id: String) async throws -> Project
     func createProject(name: String, workingDir: String) async throws -> Project
     func renameProject(id: String, name: String) async throws -> Project
-    func archiveProject(id: String) async throws -> Project
-    func unarchiveProject(id: String) async throws -> Project
     /// Deletes a project record; allowed only once it has zero workspaces.
     func deleteProject(id: String) async throws
     func projectSessions(projectID: String, status: SessionStatus?) async throws -> [Session]
     /// Lists workspaces newest-first; a nil `projectID` spans every project.
-    func workspaces(projectID: String?, includeArchived: Bool) async throws -> [Workspace]
+    func workspaces(projectID: String?) async throws -> [Workspace]
     func workspace(id: String) async throws -> Workspace
     func createWorkspace(projectID: String, name: String) async throws -> Workspace
     func renameWorkspace(id: String, name: String) async throws -> Workspace
-    func archiveWorkspace(id: String) async throws -> Workspace
-    func unarchiveWorkspace(id: String) async throws -> Workspace
     /// Deletes a workspace and its sessions' metadata, ending Live sessions
     /// first. Files are never touched.
     func deleteWorkspace(id: String) async throws
@@ -61,16 +57,8 @@ public extension ATCClient {
         try await listDirectory(path: path, showHidden: false)
     }
 
-    func projects() async throws -> [Project] {
-        try await projects(includeArchived: false)
-    }
-
     func projectSessions(projectID: String) async throws -> [Session] {
         try await projectSessions(projectID: projectID, status: nil)
-    }
-
-    func workspaces(projectID: String? = nil) async throws -> [Workspace] {
-        try await workspaces(projectID: projectID, includeArchived: false)
     }
 
     func workspaceSessions(workspaceID: String) async throws -> [Session] {

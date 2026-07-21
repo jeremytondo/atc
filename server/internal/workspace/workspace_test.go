@@ -100,16 +100,6 @@ func TestCreateValidatesAndGeneratesID(t *testing.T) {
 		t.Fatalf("missing project err = %v, want ErrProjectNotFound", err)
 	}
 
-	if _, err := st.ArchiveProject(ctx, "prj_other"); !errors.Is(err, store.ErrProjectNotFound) {
-		t.Fatalf("sanity: %v", err)
-	}
-	seedProject(t, st, "prj_gone", "/work")
-	if _, err := st.ArchiveProject(ctx, "prj_gone"); err != nil {
-		t.Fatalf("ArchiveProject: %v", err)
-	}
-	if _, err := svc.Create(ctx, "prj_gone", "Name"); !errors.Is(err, project.ErrProjectArchived) {
-		t.Fatalf("archived project err = %v, want ErrProjectArchived", err)
-	}
 }
 
 func TestDeleteStopsActiveSessionsThenRemovesMetadata(t *testing.T) {
@@ -192,58 +182,12 @@ func TestResolveForStartChecksChainAndDirectory(t *testing.T) {
 		t.Fatalf("missing workspace err = %v, want ErrWorkspaceNotFound", err)
 	}
 
-	if _, err := svc.Archive(ctx, ws.ID); err != nil {
-		t.Fatalf("Archive: %v", err)
-	}
-	if _, err := svc.ResolveForStart(ctx, ws.ID); !errors.Is(err, ErrWorkspaceArchived) {
-		t.Fatalf("archived workspace err = %v, want ErrWorkspaceArchived", err)
-	}
-	if _, err := svc.Unarchive(ctx, ws.ID); err != nil {
-		t.Fatalf("Unarchive: %v", err)
-	}
-
 	// A project directory that vanished since creation fails fast.
 	if err := os.RemoveAll(dir); err != nil {
 		t.Fatalf("remove dir: %v", err)
 	}
 	if _, err := svc.ResolveForStart(ctx, ws.ID); !errors.Is(err, project.ErrInvalidWorkingDir) {
 		t.Fatalf("vanished dir err = %v, want ErrInvalidWorkingDir", err)
-	}
-}
-
-func TestArchiveUnarchiveRulesSurfaceDomainErrors(t *testing.T) {
-	ctx := context.Background()
-	svc, st := newTestService(t)
-	seedProject(t, st, "prj_home", "/work")
-	ws, err := svc.Create(ctx, "prj_home", "Rules")
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	seedSession(t, st, "ses_live", ws.ID, true)
-
-	if _, err := svc.Archive(ctx, ws.ID); !errors.Is(err, ErrWorkspaceHasActiveSessions) {
-		t.Fatalf("archive err = %v, want ErrWorkspaceHasActiveSessions", err)
-	}
-	if _, err := st.MarkEnded(ctx, "ses_live"); err != nil {
-		t.Fatalf("MarkEnded: %v", err)
-	}
-	if _, err := svc.Archive(ctx, ws.ID); err != nil {
-		t.Fatalf("Archive: %v", err)
-	}
-	if _, err := st.ArchiveProject(ctx, "prj_home"); err != nil {
-		t.Fatalf("ArchiveProject: %v", err)
-	}
-	if _, err := svc.Unarchive(ctx, ws.ID); !errors.Is(err, project.ErrProjectArchived) {
-		t.Fatalf("unarchive err = %v, want ErrProjectArchived", err)
-	}
-
-	// Rename works while archived.
-	renamed, err := svc.Rename(ctx, ws.ID, "Renamed")
-	if err != nil {
-		t.Fatalf("Rename archived: %v", err)
-	}
-	if renamed.Name != "Renamed" {
-		t.Fatalf("renamed = %+v", renamed)
 	}
 }
 
@@ -261,14 +205,14 @@ func TestListScopesToProject(t *testing.T) {
 		t.Fatalf("Create second: %v", err)
 	}
 
-	all, err := svc.List(ctx, false, "")
+	all, err := svc.List(ctx, "")
 	if err != nil {
 		t.Fatalf("List all: %v", err)
 	}
 	if len(all) != 2 {
 		t.Fatalf("all = %+v, want 2", all)
 	}
-	scoped, err := svc.List(ctx, false, "prj_one")
+	scoped, err := svc.List(ctx, "prj_one")
 	if err != nil {
 		t.Fatalf("List scoped: %v", err)
 	}

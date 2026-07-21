@@ -5,15 +5,11 @@
   import {
     getProject,
     renameProject,
-    archiveProject,
-    unarchiveProject,
     deleteProject,
     listProjectSessions,
     listWorkspaces,
     createWorkspace,
     renameWorkspace,
-    archiveWorkspace,
-    unarchiveWorkspace,
     deleteWorkspace,
     deleteSession,
     listWorkspaceSessions,
@@ -38,7 +34,6 @@
   let error = $state('');
   let busy = $state(false);
   let busyWorkspaceId = $state('');
-  let includeArchivedWorkspaces = $state(false);
   let busySessionId = $state('');
 
   let renameOpen = $state(false);
@@ -82,10 +77,7 @@
   }
 
   async function loadWorkspaces() {
-    workspaces = await listWorkspaces({
-      projectId,
-      includeArchived: includeArchivedWorkspaces
-    });
+    workspaces = await listWorkspaces({ projectId });
   }
 
   async function load() {
@@ -98,26 +90,6 @@
       error = messageFromError(e);
     } finally {
       loading = false;
-    }
-  }
-
-  function toggleArchivedWorkspaces() {
-    includeArchivedWorkspaces = !includeArchivedWorkspaces;
-    void loadWorkspaces().catch((e) => (error = messageFromError(e)));
-  }
-
-  async function archiveToggle() {
-    if (!project) return;
-    busy = true;
-    error = '';
-    try {
-      project = project.archivedAt
-        ? await unarchiveProject(project.id)
-        : await archiveProject(project.id);
-    } catch (e) {
-      error = messageFromError(e);
-    } finally {
-      busy = false;
     }
   }
 
@@ -199,23 +171,6 @@
     }
   }
 
-  async function workspaceArchiveToggle(ws: Workspace) {
-    busyWorkspaceId = ws.id;
-    error = '';
-    try {
-      if (ws.archivedAt) {
-        await unarchiveWorkspace(ws.id);
-      } else {
-        await archiveWorkspace(ws.id);
-      }
-      await loadWorkspaces();
-    } catch (e) {
-      error = messageFromError(e);
-    } finally {
-      busyWorkspaceId = '';
-    }
-  }
-
   async function removeWorkspace(ws: Workspace) {
     busyWorkspaceId = ws.id;
     error = '';
@@ -282,7 +237,6 @@
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
       <div style="display:flex;align-items:center;gap:10px">
         <h1 class="h1" style="margin:0">{project.name}</h1>
-        {#if project.archivedAt}<span class="badge line">archived</span>{/if}
       </div>
       <div style="display:flex;gap:8px">
         <button
@@ -293,9 +247,6 @@
           }}
           disabled={busy}>Rename</button
         >
-        <button class="btn" onclick={archiveToggle} disabled={busy}>
-          {project.archivedAt ? 'Unarchive' : 'Archive'}
-        </button>
         <button class="btn" onclick={removeProject} disabled={busy}>Delete</button>
       </div>
     </div>
@@ -320,31 +271,11 @@
         <span style="color:var(--dc-mut);font-size:12.5px">updatedAt</span>
         <span class="mono" style="font-size:12.5px">{project.updatedAt}</span>
       </div>
-      {#if project.archivedAt}
-        <div class="row">
-          <span style="color:var(--dc-mut);font-size:12.5px">archivedAt</span>
-          <span class="mono" style="font-size:12.5px">{project.archivedAt}</span>
-        </div>
-      {/if}
     </div>
 
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
       <div class="seclabel" style="margin:0">Workspaces</div>
-      <div style="display:flex;align-items:center;gap:14px">
-        <label
-          style="display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--dc-mut);cursor:pointer"
-        >
-          <input
-            type="checkbox"
-            checked={includeArchivedWorkspaces}
-            onchange={toggleArchivedWorkspaces}
-          />
-          Show archived
-        </label>
-        {#if !project.archivedAt}
-          <button class="btn xs" onclick={openNewWorkspace}>+ New workspace</button>
-        {/if}
-      </div>
+      <button class="btn xs" onclick={openNewWorkspace}>+ New workspace</button>
     </div>
     {#if workspaces.length === 0}
       <div
@@ -356,13 +287,12 @@
     {:else}
       <div style="margin-bottom:26px">
         {#each workspaces as ws (ws.id)}
-          <div class="irow" style={ws.archivedAt ? 'opacity:.55' : ''}>
+          <div class="irow">
             <div class="sident">
               <span class="sname">{ws.name}</span>
               <span class="ssub">{ws.id}</span>
             </div>
             <div class="imeta">
-              {#if ws.archivedAt}<span class="badge line">archived</span>{/if}
               <span class="stime">{timeAgo(ws.createdAt)}</span>
               <div class="iacts">
                 <a class="btn xs" href={`/workspaces/${encodeURIComponent(ws.id)}`}>Open</a>
@@ -371,13 +301,6 @@
                   onclick={() => openRenameWorkspace(ws)}
                   disabled={busyWorkspaceId === ws.id}>Rename</button
                 >
-                <button
-                  class="btn xs"
-                  onclick={() => workspaceArchiveToggle(ws)}
-                  disabled={busyWorkspaceId === ws.id}
-                >
-                  {ws.archivedAt ? 'Unarchive' : 'Archive'}
-                </button>
                 <button
                   class="btn xs"
                   onclick={() => removeWorkspace(ws)}

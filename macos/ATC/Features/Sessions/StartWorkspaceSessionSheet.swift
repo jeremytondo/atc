@@ -60,7 +60,7 @@ struct StartWorkspaceSessionSheet: View {
             return "This workspace's connection is no longer configured."
         }
         guard appModel.canStartSession(in: workspaceRef) else {
-            return "This workspace is archived or its connection is unavailable."
+            return "This workspace's connection is unavailable."
         }
         return nil
     }
@@ -140,7 +140,7 @@ struct StartWorkspaceSessionSheet: View {
 
     private func submit() async {
         guard appModel.canStartSession(in: workspaceRef), let runtime else {
-            submitError = "This workspace is archived or its connection is unavailable."
+            submitError = "This workspace's connection is unavailable."
             return
         }
         isSubmitting = true

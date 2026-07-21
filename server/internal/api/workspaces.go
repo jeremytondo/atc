@@ -13,12 +13,11 @@ import (
 // Workspace is the wire shape of workspace list and detail responses.
 // Exported so the CLI decodes the same types the server encodes.
 type Workspace struct {
-	ID         string  `json:"id"`
-	ProjectID  string  `json:"projectId"`
-	Name       string  `json:"name"`
-	CreatedAt  string  `json:"createdAt"`
-	UpdatedAt  string  `json:"updatedAt"`
-	ArchivedAt *string `json:"archivedAt,omitempty"`
+	ID        string `json:"id"`
+	ProjectID string `json:"projectId"`
+	Name      string `json:"name"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
 }
 
 // WorkspaceListResponse is the wire envelope for GET /workspaces.
@@ -55,12 +54,7 @@ func (routes apiRoutes) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 	if !routes.requireWorkspaces(w) {
 		return
 	}
-	includeArchived, err := boolQuery(r, "includeArchived")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	workspaces, err := routes.workspaces.List(r.Context(), includeArchived, r.URL.Query().Get("projectId"))
+	workspaces, err := routes.workspaces.List(r.Context(), r.URL.Query().Get("projectId"))
 	if err != nil {
 		writeWorkspaceError(w, err)
 		return
@@ -101,30 +95,6 @@ func (routes apiRoutes) patchWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, workspaceResponse(renamed))
-}
-
-func (routes apiRoutes) archiveWorkspace(w http.ResponseWriter, r *http.Request) {
-	if !routes.requireWorkspaces(w) {
-		return
-	}
-	archived, err := routes.workspaces.Archive(r.Context(), r.PathValue("id"))
-	if err != nil {
-		writeWorkspaceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, workspaceResponse(archived))
-}
-
-func (routes apiRoutes) unarchiveWorkspace(w http.ResponseWriter, r *http.Request) {
-	if !routes.requireWorkspaces(w) {
-		return
-	}
-	unarchived, err := routes.workspaces.Unarchive(r.Context(), r.PathValue("id"))
-	if err != nil {
-		writeWorkspaceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, workspaceResponse(unarchived))
 }
 
 func (routes apiRoutes) deleteWorkspace(w http.ResponseWriter, r *http.Request) {
@@ -190,8 +160,6 @@ func writeWorkspaceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "workspace_not_found", err.Error())
 	case errors.Is(err, workspace.ErrInvalidWorkspace):
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-	case errors.Is(err, workspace.ErrWorkspaceArchived):
-		writeError(w, http.StatusConflict, "workspace_archived", err.Error())
 	case errors.Is(err, workspace.ErrWorkspaceHasActiveSessions):
 		writeError(w, http.StatusConflict, "workspace_has_active_sessions", err.Error())
 	// A session that could not be ended is a multiplexer failure, surfaced
@@ -200,8 +168,6 @@ func writeWorkspaceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadGateway, "session_end_failed", err.Error())
 	case errors.Is(err, project.ErrProjectNotFound):
 		writeError(w, http.StatusNotFound, "project_not_found", err.Error())
-	case errors.Is(err, project.ErrProjectArchived):
-		writeError(w, http.StatusConflict, "project_archived", err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 	}
@@ -209,11 +175,10 @@ func writeWorkspaceError(w http.ResponseWriter, err error) {
 
 func workspaceResponse(ws workspace.Workspace) Workspace {
 	return Workspace{
-		ID:         ws.ID,
-		ProjectID:  ws.ProjectID,
-		Name:       ws.Name,
-		CreatedAt:  formatTime(ws.CreatedAt),
-		UpdatedAt:  formatTime(ws.UpdatedAt),
-		ArchivedAt: formatOptionalTime(ws.ArchivedAt),
+		ID:        ws.ID,
+		ProjectID: ws.ProjectID,
+		Name:      ws.Name,
+		CreatedAt: formatTime(ws.CreatedAt),
+		UpdatedAt: formatTime(ws.UpdatedAt),
 	}
 }

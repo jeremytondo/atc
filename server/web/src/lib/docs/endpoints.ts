@@ -210,15 +210,9 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'GET',
     path: '/api/workspaces',
     title: 'List workspaces',
-    desc: 'Return workspaces, newest first. Omit projectId to list all workspaces across projects; archived workspaces are hidden unless requested.',
-    params: [
-      { name: 'projectId', type: 'string', desc: 'Restrict to one project’s workspaces.' },
-      { name: 'includeArchived', type: 'bool', desc: 'Include archived workspaces.' }
-    ],
-    fields: [
-      { key: 'projectId', label: 'projectId', kind: 'text', placeholder: 'prj_… (optional)' },
-      { key: 'includeArchived', label: 'includeArchived', kind: 'select', options: ['false', 'true'] }
-    ],
+    desc: 'Return workspaces, newest first. Omit projectId to list all workspaces across projects.',
+    params: [{ name: 'projectId', type: 'string', desc: 'Restrict to one project’s workspaces.' }],
+    fields: [{ key: 'projectId', label: 'projectId', kind: 'text', placeholder: 'prj_… (optional)' }],
     returns: '{ "workspaces": [ … ] }',
     cli: { cmd: 'atc workspaces list', example: 'atc workspaces list --project prj_8f3a2c' }
   },
@@ -240,7 +234,7 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'PATCH',
     path: '/api/workspaces/{id}',
     title: 'Rename workspace',
-    desc: 'Change a workspace name. The body accepts only name; renaming works while archived too.',
+    desc: 'Change a workspace name. The body accepts only name.',
     params: [
       { name: 'id', type: 'string', required: true, desc: 'Workspace id (path).' },
       { name: 'name', type: 'string', required: true, desc: 'New name.' }
@@ -251,30 +245,6 @@ export const ENDPOINTS: Endpoint[] = [
     ],
     returns: '{ "id": "wsp_…", "name": "New name", … }',
     cli: { cmd: 'atc workspaces rename', example: 'atc workspaces rename wsp_8f3a2c "New name"' }
-  },
-  {
-    key: 'archiveWorkspace',
-    group: 'Workspaces',
-    method: 'POST',
-    path: '/api/workspaces/{id}/archive',
-    title: 'Archive workspace',
-	desc: 'Hide a workspace from default lists and block new Session starts in it. Fails with 409 workspace_has_active_sessions while the workspace has a provisional launch attempt or Live Session. Idempotent.',
-    params: [{ name: 'id', type: 'string', required: true, desc: 'Workspace id (path).' }],
-    fields: [{ key: 'id', label: 'id', kind: 'text', placeholder: 'wsp_…', required: true }],
-    returns: '{ "id": "wsp_…", "archivedAt": "…" }',
-    cli: { cmd: 'atc workspaces archive', example: 'atc workspaces archive wsp_8f3a2c' }
-  },
-  {
-    key: 'unarchiveWorkspace',
-    group: 'Workspaces',
-    method: 'POST',
-    path: '/api/workspaces/{id}/unarchive',
-    title: 'Unarchive workspace',
-    desc: 'Reactivate an archived workspace. Fails with 409 project_archived while the parent project is archived. Idempotent.',
-    params: [{ name: 'id', type: 'string', required: true, desc: 'Workspace id (path).' }],
-    fields: [{ key: 'id', label: 'id', kind: 'text', placeholder: 'wsp_…', required: true }],
-    returns: '{ "id": "wsp_…", "name": "…", … }',
-    cli: { cmd: 'atc workspaces unarchive', example: 'atc workspaces unarchive wsp_8f3a2c' }
   },
   {
     key: 'deleteWorkspace',
@@ -349,11 +319,9 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'GET',
     path: '/api/projects',
     title: 'List projects',
-    desc: 'Return all projects, newest first. Archived projects are hidden unless requested.',
-    params: [{ name: 'includeArchived', type: 'bool', desc: 'Include archived projects.' }],
-    fields: [
-      { key: 'includeArchived', label: 'includeArchived', kind: 'select', options: ['false', 'true'] }
-    ],
+    desc: 'Return all projects, newest first.',
+    params: [],
+    fields: [],
     returns: '{ "projects": [ … ] }',
     cli: { cmd: 'atc projects list', example: 'atc projects list' }
   },
@@ -388,18 +356,6 @@ export const ENDPOINTS: Endpoint[] = [
     cli: { cmd: 'atc projects rename', example: 'atc projects rename prj_8f3a2c "New name"' }
   },
   {
-    key: 'archiveProject',
-    group: 'Projects',
-    method: 'POST',
-    path: '/api/projects/{id}/archive',
-    title: 'Archive project',
-    desc: 'Hide a project from default lists and block new workspace creation in it. Fails with 409 project_has_unarchived_workspaces while any of the project’s workspaces is unarchived. Idempotent.',
-    params: [{ name: 'id', type: 'string', required: true, desc: 'Project id (path).' }],
-    fields: [{ key: 'id', label: 'id', kind: 'text', placeholder: 'prj_…', required: true }],
-    returns: '{ "id": "prj_…", "archivedAt": "…" }',
-    cli: { cmd: 'atc projects archive', example: 'atc projects archive prj_8f3a2c' }
-  },
-  {
     key: 'deleteProject',
     group: 'Projects',
     method: 'DELETE',
@@ -410,18 +366,6 @@ export const ENDPOINTS: Endpoint[] = [
     fields: [{ key: 'id', label: 'id', kind: 'text', placeholder: 'prj_…', required: true }],
     returns: '{}',
     cli: { cmd: 'atc projects delete', example: 'atc projects delete prj_8f3a2c' }
-  },
-  {
-    key: 'unarchiveProject',
-    group: 'Projects',
-    method: 'POST',
-    path: '/api/projects/{id}/unarchive',
-    title: 'Unarchive project',
-    desc: 'Reactivate an archived project. Idempotent.',
-    params: [{ name: 'id', type: 'string', required: true, desc: 'Project id (path).' }],
-    fields: [{ key: 'id', label: 'id', kind: 'text', placeholder: 'prj_…', required: true }],
-    returns: '{ "id": "prj_…", "name": "atc", … }',
-    cli: { cmd: 'atc projects unarchive', example: 'atc projects unarchive prj_8f3a2c' }
   },
   {
     key: 'projectSessions',

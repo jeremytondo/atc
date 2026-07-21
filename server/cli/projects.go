@@ -21,8 +21,6 @@ func projectsCommand(lookup envLookup) *cobra.Command {
 	cmd.AddCommand(projectsListCommand(lookup))
 	cmd.AddCommand(projectsShowCommand(lookup))
 	cmd.AddCommand(projectsRenameCommand(lookup))
-	cmd.AddCommand(projectsArchiveCommand(lookup))
-	cmd.AddCommand(projectsUnarchiveCommand(lookup))
 	cmd.AddCommand(projectsDeleteCommand(lookup))
 	return cmd
 }
@@ -78,7 +76,6 @@ func projectsCreateCommand(lookup envLookup) *cobra.Command {
 
 func projectsListCommand(lookup envLookup) *cobra.Command {
 	var output string
-	var includeArchived bool
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -89,16 +86,11 @@ func projectsListCommand(lookup envLookup) *cobra.Command {
 				return err
 			}
 
-			query := url.Values{}
-			if includeArchived {
-				query.Set("includeArchived", "true")
-			}
-
 			client, err := commandAPIClient(cmd, lookup)
 			if err != nil {
 				return err
 			}
-			body, err := client.getQuery(cmd.Context(), "projects", query)
+			body, err := client.get(cmd.Context(), "projects")
 			if err != nil {
 				return err
 			}
@@ -111,17 +103,12 @@ func projectsListCommand(lookup envLookup) *cobra.Command {
 				return fmt.Errorf("decode response: %w", err)
 			}
 			for _, p := range resp.Projects {
-				archivedAt := ""
-				if p.ArchivedAt != nil {
-					archivedAt = *p.ArchivedAt
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", p.ID, p.Name, p.WorkingDir, archivedAt)
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\n", p.ID, p.Name, p.WorkingDir)
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVarP(&output, "output", "o", outputText, "Output format: text or json")
-	cmd.Flags().BoolVar(&includeArchived, "include-archived", false, "Include archived projects")
 	return cmd
 }
 
@@ -158,9 +145,6 @@ func projectsShowCommand(lookup envLookup) *cobra.Command {
 			fmt.Fprintf(out, "workingDir\t%s\n", resp.WorkingDir)
 			fmt.Fprintf(out, "createdAt\t%s\n", resp.CreatedAt)
 			fmt.Fprintf(out, "updatedAt\t%s\n", resp.UpdatedAt)
-			if resp.ArchivedAt != nil {
-				fmt.Fprintf(out, "archivedAt\t%s\n", *resp.ArchivedAt)
-			}
 			return nil
 		},
 	}
@@ -203,18 +187,6 @@ func projectsRenameCommand(lookup envLookup) *cobra.Command {
 	}
 	cmd.Flags().StringVarP(&output, "output", "o", outputText, "Output format: text or json")
 	return cmd
-}
-
-func projectsArchiveCommand(lookup envLookup) *cobra.Command {
-	return resourceActionCommand(lookup, "archive <id>", "Archive a project", 1, func(id string, args []string) (string, any) {
-		return projectEndpoint(id, "archive"), struct{}{}
-	})
-}
-
-func projectsUnarchiveCommand(lookup envLookup) *cobra.Command {
-	return resourceActionCommand(lookup, "unarchive <id>", "Unarchive a project", 1, func(id string, args []string) (string, any) {
-		return projectEndpoint(id, "unarchive"), struct{}{}
-	})
 }
 
 func projectsDeleteCommand(lookup envLookup) *cobra.Command {

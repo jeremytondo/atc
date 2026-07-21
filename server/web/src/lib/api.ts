@@ -72,7 +72,6 @@ export type Project = {
   workingDir: string;
   createdAt: string;
   updatedAt: string;
-  archivedAt?: string;
 };
 
 // Workspace is a named unit of work inside a project that groups sessions.
@@ -82,7 +81,6 @@ export type Workspace = {
   name: string;
   createdAt: string;
   updatedAt: string;
-  archivedAt?: string;
 };
 
 // SessionWorkspace is the workspace object nested on sessions.
@@ -253,9 +251,8 @@ export async function deleteSession(id: string): Promise<void> {
   await apiFetch(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
-export async function listProjects(opts: { includeArchived?: boolean } = {}): Promise<Project[]> {
-  const qs = opts.includeArchived ? '?includeArchived=true' : '';
-  const res = await apiFetch(`/api/projects${qs}`);
+export async function listProjects(): Promise<Project[]> {
+  const res = await apiFetch('/api/projects');
   const body = (await res.json()) as { projects?: Project[] };
   return body.projects ?? [];
 }
@@ -278,18 +275,6 @@ export async function renameProject(id: string, name: string): Promise<Project> 
   return (await res.json()) as Project;
 }
 
-export async function archiveProject(id: string): Promise<Project> {
-  const res = await apiFetch(`/api/projects/${encodeURIComponent(id)}/archive`, { method: 'POST' });
-  return (await res.json()) as Project;
-}
-
-export async function unarchiveProject(id: string): Promise<Project> {
-  const res = await apiFetch(`/api/projects/${encodeURIComponent(id)}/unarchive`, {
-    method: 'POST'
-  });
-  return (await res.json()) as Project;
-}
-
 // deleteProject removes a project with zero workspaces. Files on disk are
 // never touched.
 export async function deleteProject(id: string): Promise<void> {
@@ -307,11 +292,10 @@ export async function listProjectSessions(
 }
 
 export async function listWorkspaces(
-  opts: { projectId?: string; includeArchived?: boolean } = {}
+  opts: { projectId?: string } = {}
 ): Promise<Workspace[]> {
   const query = new URLSearchParams();
   if (opts.projectId) query.set('projectId', opts.projectId);
-  if (opts.includeArchived) query.set('includeArchived', 'true');
   const qs = query.size > 0 ? `?${query.toString()}` : '';
   const res = await apiFetch(`/api/workspaces${qs}`);
   const body = (await res.json()) as { workspaces?: Workspace[] };
@@ -333,20 +317,6 @@ export async function renameWorkspace(id: string, name: string): Promise<Workspa
     `/api/workspaces/${encodeURIComponent(id)}`,
     jsonInit('PATCH', { name })
   );
-  return (await res.json()) as Workspace;
-}
-
-export async function archiveWorkspace(id: string): Promise<Workspace> {
-  const res = await apiFetch(`/api/workspaces/${encodeURIComponent(id)}/archive`, {
-    method: 'POST'
-  });
-  return (await res.json()) as Workspace;
-}
-
-export async function unarchiveWorkspace(id: string): Promise<Workspace> {
-  const res = await apiFetch(`/api/workspaces/${encodeURIComponent(id)}/unarchive`, {
-    method: 'POST'
-  });
   return (await res.json()) as Workspace;
 }
 

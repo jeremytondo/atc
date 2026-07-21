@@ -14,7 +14,6 @@ struct DashboardView: View {
     /// Clears window selection memory for a deleted Workspace.
     var onWorkspaceDeleted: (WorkspaceRef) -> Void
 
-    @State private var showArchived = false
     /// Keyboard focus over workspace rows: arrows move, Return opens.
     @State private var focusedWorkspace: WorkspaceRef?
     @State private var renamingWorkspace: DashboardGroups.WorkspaceRow?
@@ -34,8 +33,7 @@ struct DashboardView: View {
                     workspaces: $0.workspaces.workspaces,
                     sessions: $0.sessions.sessions
                 )
-            },
-            showArchived: showArchived
+            }
         )
         ScrollViewReader { proxy in
             ScrollView {
@@ -58,8 +56,6 @@ struct DashboardView: View {
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Menu {
-                    Toggle("Show Archived", isOn: $showArchived)
-                    Divider()
                     Button("Refresh", systemImage: "arrow.clockwise") {
                         Task { await appModel.refreshAll() }
                     }
@@ -245,7 +241,7 @@ struct DashboardView: View {
         reachable: Bool,
         canOpen: Bool
     ) -> some View {
-        if card.rows.isEmpty && !card.project.isArchived {
+        if card.rows.isEmpty {
             emptyProjectCard(card, reachable: reachable)
         } else {
             VStack(spacing: 0) {
@@ -267,7 +263,6 @@ struct DashboardView: View {
                 cardShape.stroke(Color(nsColor: .separatorColor), lineWidth: 1)
             }
             .clipShape(cardShape)
-            .opacity(card.project.isArchived ? Dimming.archived : 1)
         }
     }
 
@@ -286,25 +281,19 @@ struct DashboardView: View {
                 .lineLimit(1)
                 .truncationMode(.head)
 
-            if card.project.isArchived {
-                TagBadge(text: "Archived")
-            }
-
             Spacer(minLength: Spacing.md)
 
-            if !card.project.isArchived {
-                Button {
-                    onCreateWorkspace(card.ref)
-                } label: {
-                    Label("New Workspace", systemImage: "plus")
-                        .labelStyle(.iconOnly)
-                        .frame(width: 22, height: 22)
-                }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
-                .disabled(!reachable)
-                .help("New workspace in \(card.project.name)")
+            Button {
+                onCreateWorkspace(card.ref)
+            } label: {
+                Label("New Workspace", systemImage: "plus")
+                    .labelStyle(.iconOnly)
+                    .frame(width: 22, height: 22)
             }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .disabled(!reachable)
+            .help("New workspace in \(card.project.name)")
         }
         .padding(.horizontal, Spacing.lg)
         .frame(minHeight: 54)
@@ -355,37 +344,15 @@ struct DashboardView: View {
     @ViewBuilder
     private func projectMenu(_ card: DashboardGroups.ProjectCard, reachable: Bool) -> some View {
         let project = card.project
-        if !project.isArchived {
-            Button("New Workspace…", systemImage: "plus") {
-                onCreateWorkspace(card.ref)
-            }
-            .disabled(!reachable)
-            Button("Rename…", systemImage: "pencil") {
-                renameDraft = project.name
-                renamingProject = card
-            }
-            .disabled(!reachable)
-            Divider()
-            // Mirrors the server rule: archive only once every Workspace
-            // is archived. A stale view still gets the 409 via the alert.
-            Button("Archive Project", systemImage: "archivebox") {
-                if let store = appModel.runtime(id: card.ref.connectionID)?.projects {
-                    appModel.run(on: card.ref.connectionID, reporting: $actionError) {
-                        try await store.archive(id: project.id)
-                    }
-                }
-            }
-            .disabled(!reachable || card.hasUnarchivedWorkspaces)
-        } else {
-            Button("Unarchive Project", systemImage: "archivebox") {
-                if let store = appModel.runtime(id: card.ref.connectionID)?.projects {
-                    appModel.run(on: card.ref.connectionID, reporting: $actionError) {
-                        try await store.unarchive(id: project.id)
-                    }
-                }
-            }
-            .disabled(!reachable)
+        Button("New Workspace…", systemImage: "plus") {
+            onCreateWorkspace(card.ref)
         }
+        .disabled(!reachable)
+        Button("Rename…", systemImage: "pencil") {
+            renameDraft = project.name
+            renamingProject = card
+        }
+        .disabled(!reachable)
         Divider()
         Button("Delete Project…", systemImage: "trash", role: .destructive) {
             deletingProject = card
@@ -413,10 +380,6 @@ struct DashboardView: View {
                     .font(.body.monospaced())
                     .lineLimit(1)
 
-                if workspace.isArchived {
-                    TagBadge(text: "Archived")
-                }
-
                 Spacer()
 
                 Text(workspaceStatus(row))
@@ -434,7 +397,6 @@ struct DashboardView: View {
                 : .clear
         )
         .disabled(!canOpen)
-        .opacity(workspace.isArchived ? Dimming.archived : 1)
         .contextMenu {
             Button("Open", systemImage: "arrow.up.forward.square") {
                 onOpenWorkspace(row.ref)
@@ -445,27 +407,6 @@ struct DashboardView: View {
                 renamingWorkspace = row
             }
             .disabled(!reachable)
-            Divider()
-            if workspace.isArchived {
-                Button("Unarchive", systemImage: "archivebox") {
-                    if let store = workspacesStore(for: row.ref.connectionID) {
-                        appModel.run(on: row.ref.connectionID, reporting: $actionError) {
-                            try await store.unarchive(id: workspace.id)
-                        }
-                    }
-                }
-                .disabled(!reachable)
-            } else {
-                // Mirrors the server rule: no archiving with active sessions.
-                Button("Archive", systemImage: "archivebox") {
-                    if let store = workspacesStore(for: row.ref.connectionID) {
-                        appModel.run(on: row.ref.connectionID, reporting: $actionError) {
-                            try await store.archive(id: workspace.id)
-                        }
-                    }
-                }
-                .disabled(!reachable || row.hasActiveSessions)
-            }
             Divider()
             Button("Delete…", systemImage: "trash", role: .destructive) {
                 deletingWorkspace = row

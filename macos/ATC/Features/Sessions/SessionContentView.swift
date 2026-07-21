@@ -10,8 +10,7 @@ struct SessionContentView: View {
     struct EmptyStateActions {
         var newSession: () -> Void
         var newTerminal: () -> Void
-        /// Mirrors command availability: false in an archived Workspace or
-        /// on an unreachable Connection.
+        /// Mirrors command availability: false on an unreachable Connection.
         var creationEnabled = true
     }
 

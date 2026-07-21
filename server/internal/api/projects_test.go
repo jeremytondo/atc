@@ -36,7 +36,7 @@ func TestCreateProjectReturnsFullRecord(t *testing.T) {
 	if !strings.HasPrefix(created.ID, "prj_") || created.Name != "atc" || created.WorkingDir != workDir {
 		t.Fatalf("created = %+v", created)
 	}
-	if created.CreatedAt == "" || created.UpdatedAt == "" || created.ArchivedAt != nil {
+	if created.CreatedAt == "" || created.UpdatedAt == "" {
 		t.Fatalf("created timestamps = %+v", created)
 	}
 }
@@ -72,45 +72,25 @@ func TestCreateProjectValidationErrors(t *testing.T) {
 	}
 }
 
-func TestListProjectsHidesArchivedByDefault(t *testing.T) {
+func TestListProjectsNewestFirst(t *testing.T) {
 	h, _ := newHandler(t, &fakeMux{})
 	workDir := t.TempDir()
 
 	first := createTestProject(t, h, "First", workDir)
 	second := createTestProject(t, h, "Second", workDir)
-	rec := do(t, h, http.MethodPost, "/projects/"+first.ID+"/archive", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("archive status = %d, want 200 (%s)", rec.Code, rec.Body)
-	}
-
-	rec = do(t, h, http.MethodGet, "/projects", "")
+	rec := do(t, h, http.MethodGet, "/projects", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list status = %d, want 200 (%s)", rec.Code, rec.Body)
 	}
 	// The handler seeds prj_test, so lists include it alongside this test's
 	// projects, newest-created-first.
-	var active ProjectListResponse
-	if err := json.NewDecoder(rec.Body).Decode(&active); err != nil {
+	var projects ProjectListResponse
+	if err := json.NewDecoder(rec.Body).Decode(&projects); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
-	if len(active.Projects) != 2 || active.Projects[0].ID != second.ID || active.Projects[1].ID != "prj_test" {
-		t.Fatalf("default list = %+v, want active projects only", active.Projects)
+	if len(projects.Projects) != 3 || projects.Projects[0].ID != second.ID || projects.Projects[1].ID != first.ID || projects.Projects[2].ID != "prj_test" {
+		t.Fatalf("projects = %+v, want newest-first", projects.Projects)
 	}
-
-	rec = do(t, h, http.MethodGet, "/projects?includeArchived=true", "")
-	var all ProjectListResponse
-	if err := json.NewDecoder(rec.Body).Decode(&all); err != nil {
-		t.Fatalf("decode full list: %v", err)
-	}
-	if len(all.Projects) != 3 || all.Projects[0].ID != second.ID || all.Projects[1].ID != first.ID {
-		t.Fatalf("full list = %+v", all.Projects)
-	}
-
-	rec = do(t, h, http.MethodGet, "/projects?includeArchived=bogus", "")
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("bad includeArchived status = %d, want 400", rec.Code)
-	}
-	assertErrorCode(t, rec, "invalid_request")
 }
 
 func TestGetProjectAndNotFound(t *testing.T) {
@@ -176,82 +156,6 @@ func TestPatchProjectRenamesWithStrictDecode(t *testing.T) {
 		t.Fatalf("missing patch status = %d, want 404", rec.Code)
 	}
 	assertErrorCode(t, rec, "project_not_found")
-}
-
-func TestArchiveAndUnarchiveProjectAreIdempotent(t *testing.T) {
-	h, _ := newHandler(t, &fakeMux{})
-	created := createTestProject(t, h, "atc", t.TempDir())
-
-	rec := do(t, h, http.MethodPost, "/projects/"+created.ID+"/archive", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("archive status = %d, want 200 (%s)", rec.Code, rec.Body)
-	}
-	var archived Project
-	if err := json.NewDecoder(rec.Body).Decode(&archived); err != nil {
-		t.Fatalf("decode archived: %v", err)
-	}
-	if archived.ArchivedAt == nil {
-		t.Fatalf("archived = %+v, want archivedAt", archived)
-	}
-
-	rec = do(t, h, http.MethodPost, "/projects/"+created.ID+"/archive", "")
-	var archivedAgain Project
-	if err := json.NewDecoder(rec.Body).Decode(&archivedAgain); err != nil {
-		t.Fatalf("decode archived again: %v", err)
-	}
-	if rec.Code != http.StatusOK || *archivedAgain.ArchivedAt != *archived.ArchivedAt {
-		t.Fatalf("second archive = %d %+v", rec.Code, archivedAgain)
-	}
-
-	rec = do(t, h, http.MethodPost, "/projects/"+created.ID+"/unarchive", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("unarchive status = %d, want 200 (%s)", rec.Code, rec.Body)
-	}
-	var unarchived Project
-	if err := json.NewDecoder(rec.Body).Decode(&unarchived); err != nil {
-		t.Fatalf("decode unarchived: %v", err)
-	}
-	if unarchived.ArchivedAt != nil {
-		t.Fatalf("unarchived = %+v", unarchived)
-	}
-
-	rec = do(t, h, http.MethodPost, "/projects/prj_missing/archive", "")
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("missing archive status = %d, want 404", rec.Code)
-	}
-	assertErrorCode(t, rec, "project_not_found")
-}
-
-func TestArchiveProjectBlockedByUnarchivedWorkspace(t *testing.T) {
-	h, _ := newHandler(t, &fakeMux{})
-	created := createTestProject(t, h, "atc", t.TempDir())
-	ws := createTestWorkspace(t, h, created.ID, "Feature work")
-
-	rec := do(t, h, http.MethodPost, "/projects/"+created.ID+"/archive", "")
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("archive with unarchived workspace status = %d, want 409 (%s)", rec.Code, rec.Body)
-	}
-	assertErrorCode(t, rec, "project_has_unarchived_workspaces")
-
-	// The rejected archive left the project active.
-	rec = do(t, h, http.MethodGet, "/projects/"+created.ID, "")
-	var got Project
-	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
-		t.Fatalf("decode project: %v", err)
-	}
-	if got.ArchivedAt != nil {
-		t.Fatalf("project archived despite conflict: %+v", got)
-	}
-
-	// Once every workspace is archived, the archive goes through.
-	rec = do(t, h, http.MethodPost, "/workspaces/"+ws.ID+"/archive", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("workspace archive status = %d (%s)", rec.Code, rec.Body)
-	}
-	rec = do(t, h, http.MethodPost, "/projects/"+created.ID+"/archive", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("archive after workspace archive status = %d, want 200 (%s)", rec.Code, rec.Body)
-	}
 }
 
 func TestDeleteProjectRequiresZeroWorkspaces(t *testing.T) {

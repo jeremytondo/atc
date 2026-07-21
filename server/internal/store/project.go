@@ -17,7 +17,6 @@ type Project struct {
 	WorkingDir string
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
-	ArchivedAt *time.Time
 }
 
 // CreateProjectInput is the record stored when a project is created.
@@ -25,12 +24,6 @@ type CreateProjectInput struct {
 	ID         string
 	Name       string
 	WorkingDir string
-}
-
-// ProjectListFilter controls project list queries. Archived projects are
-// hidden by default.
-type ProjectListFilter struct {
-	IncludeArchived bool
 }
 
 // CreateProject inserts a new project.
@@ -65,13 +58,9 @@ func (s *Store) GetProject(ctx context.Context, id string) (Project, error) {
 	return project, nil
 }
 
-// ListProjects loads projects newest-first. Archived records are excluded
-// unless IncludeArchived is true.
-func (s *Store) ListProjects(ctx context.Context, filter ProjectListFilter) ([]Project, error) {
+// ListProjects loads projects newest-first.
+func (s *Store) ListProjects(ctx context.Context) ([]Project, error) {
 	query := selectProjectSQL
-	if !filter.IncludeArchived {
-		query += " WHERE archived_at IS NULL"
-	}
 	// rowid breaks created_at ties by insertion order, matching session lists.
 	query += " ORDER BY created_at DESC, rowid DESC"
 
@@ -111,46 +100,6 @@ func (s *Store) RenameProject(ctx context.Context, id, name string) (Project, er
 	)
 }
 
-// ArchiveProject archives a project. Archiving an archived project is a
-// no-op that returns the current record. A project with an unarchived
-// workspace cannot be archived; the check and the update share one
-// transaction so a workspace created or unarchived concurrently cannot slip
-// through.
-func (s *Store) ArchiveProject(ctx context.Context, id string) (Project, error) {
-	var archived Project
-	err := s.WithTx(ctx, func(tx *Tx) error {
-		var err error
-		archived, err = tx.q.archiveProject(ctx, id)
-		return err
-	})
-	if err != nil {
-		return Project{}, err
-	}
-	return archived, nil
-}
-
-func (q queries) archiveProject(ctx context.Context, id string) (Project, error) {
-	var unarchived int
-	if err := q.runner.QueryRowContext(ctx, `
-	SELECT count(*) FROM workspaces WHERE project_id = ? AND archived_at IS NULL`,
-		id,
-	).Scan(&unarchived); err != nil {
-		return Project{}, fmt.Errorf("archive project %s: count unarchived workspaces: %w", id, err)
-	}
-	if unarchived > 0 {
-		return Project{}, fmt.Errorf("%w: %s", ErrProjectHasUnarchivedWorkspaces, id)
-	}
-	now := q.nowUTC()
-	return q.updateOneProject(ctx, id, "archive", `
-	UPDATE projects
-	SET archived_at = COALESCE(archived_at, ?),
-		updated_at = CASE WHEN archived_at IS NULL THEN ? ELSE updated_at END
-	WHERE id = ?
-	RETURNING`+projectColumnsSQL,
-		formatTime(now), formatTime(now), id,
-	)
-}
-
 // DeleteProject removes a project row. Deletion is allowed only when the
 // project has zero workspaces; the check and the delete share one transaction
 // so a workspace created concurrently cannot slip through. Files are never
@@ -178,21 +127,6 @@ func (s *Store) DeleteProject(ctx context.Context, id string) error {
 	})
 }
 
-// UnarchiveProject reactivates a project. Unarchiving an active project is a
-// no-op that returns the current record.
-func (s *Store) UnarchiveProject(ctx context.Context, id string) (Project, error) {
-	q := s.queries()
-	now := q.nowUTC()
-	return q.updateOneProject(ctx, id, "unarchive", `
-	UPDATE projects
-	SET updated_at = CASE WHEN archived_at IS NOT NULL THEN ? ELSE updated_at END,
-		archived_at = NULL
-	WHERE id = ?
-	RETURNING`+projectColumnsSQL,
-		formatTime(now), id,
-	)
-}
-
 func (q queries) updateOneProject(ctx context.Context, id, action, query string, args ...any) (Project, error) {
 	project, err := scanProject(q.runner.QueryRowContext(ctx, query, args...))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -209,8 +143,7 @@ const projectColumnsSQL = `
 		name,
 		working_dir,
 		created_at,
-		updated_at,
-		archived_at`
+		updated_at`
 
 const selectProjectSQL = `
 SELECT` + projectColumnsSQL + `
@@ -219,14 +152,12 @@ SELECT` + projectColumnsSQL + `
 func scanProject(row scanner) (Project, error) {
 	var project Project
 	var createdAt, updatedAt string
-	var archivedAt sql.NullString
 	if err := row.Scan(
 		&project.ID,
 		&project.Name,
 		&project.WorkingDir,
 		&createdAt,
 		&updatedAt,
-		&archivedAt,
 	); err != nil {
 		return Project{}, err
 	}
@@ -239,10 +170,6 @@ func scanProject(row scanner) (Project, error) {
 	project.UpdatedAt, err = parseTime(updatedAt)
 	if err != nil {
 		return Project{}, fmt.Errorf("parse updated_at: %w", err)
-	}
-	project.ArchivedAt, err = parseOptionalTime(archivedAt)
-	if err != nil {
-		return Project{}, fmt.Errorf("parse archived_at: %w", err)
 	}
 	return project, nil
 }

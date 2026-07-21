@@ -132,7 +132,7 @@ struct ActionsSettingsView: View {
                                     TagBadge(text: Self.originLabel(action.origin))
                                 }
                             }
-                            .opacity(action.enabled ? 1 : Dimming.archived)
+                            .opacity(action.enabled ? 1 : Dimming.unavailable)
                             Spacer()
                             Toggle("Enabled", isOn: enabledBinding(for: action))
                                 .toggleStyle(.switch)

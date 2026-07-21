@@ -6,8 +6,6 @@
     getWorkspace,
     getProject,
     renameWorkspace,
-    archiveWorkspace,
-    unarchiveWorkspace,
     deleteWorkspace,
     deleteSession,
     listWorkspaceSessions,
@@ -118,21 +116,6 @@
     startAction = (event.currentTarget as HTMLSelectElement).value;
     startParams = {};
     startError = '';
-  }
-
-  async function archiveToggle() {
-    if (!workspace) return;
-    busy = true;
-    error = '';
-    try {
-      workspace = workspace.archivedAt
-        ? await unarchiveWorkspace(workspace.id)
-        : await archiveWorkspace(workspace.id);
-    } catch (e) {
-      error = messageFromError(e);
-    } finally {
-      busy = false;
-    }
   }
 
   async function removeWorkspace() {
@@ -250,7 +233,6 @@
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
       <div style="display:flex;align-items:center;gap:10px">
         <h1 class="h1" style="margin:0">{workspace.name}</h1>
-        {#if workspace.archivedAt}<span class="badge line">archived</span>{/if}
       </div>
       <div style="display:flex;gap:8px">
         <button
@@ -261,9 +243,6 @@
           }}
           disabled={busy}>Rename</button
         >
-        <button class="btn" onclick={archiveToggle} disabled={busy}>
-          {workspace.archivedAt ? 'Unarchive' : 'Archive'}
-        </button>
         <button class="btn" onclick={removeWorkspace} disabled={busy}>Delete</button>
       </div>
     </div>
@@ -296,100 +275,91 @@
         <span style="color:var(--dc-mut);font-size:12.5px">updatedAt</span>
         <span class="mono" style="font-size:12.5px">{workspace.updatedAt}</span>
       </div>
-      {#if workspace.archivedAt}
-        <div class="row">
-          <span style="color:var(--dc-mut);font-size:12.5px">archivedAt</span>
-          <span class="mono" style="font-size:12.5px">{workspace.archivedAt}</span>
-        </div>
-      {/if}
     </div>
 
-    {#if !workspace.archivedAt}
-      <div class="seclabel">Start session</div>
-      <div class="card" style="padding:16px;margin-bottom:26px">
-        <div class="fieldgrid" style="margin-bottom:12px">
-          <div>
-            <label class="lbl" for="start-action">Action</label>
-            <select id="start-action" class="sel" value={startAction} onchange={onActionChange}>
-              <option value={interactiveShell}>(interactive shell)</option>
-              {#each enabledActions as a (a.name)}
-                <option value={a.name}>{a.label || a.name}</option>
-              {/each}
-            </select>
-          </div>
-          <div>
-            <label class="lbl" for="start-env">Environment</label>
-            <select
-              id="start-env"
-              class="sel"
-              value={startEnvironment}
-              onchange={(e) => (startEnvironment = e.currentTarget.value)}
-            >
-              {#each environments as env (env.name)}
-                <option value={env.name}>{env.label || env.name}</option>
-              {/each}
-            </select>
-          </div>
+    <div class="seclabel">Start session</div>
+    <div class="card" style="padding:16px;margin-bottom:26px">
+      <div class="fieldgrid" style="margin-bottom:12px">
+        <div>
+          <label class="lbl" for="start-action">Action</label>
+          <select id="start-action" class="sel" value={startAction} onchange={onActionChange}>
+            <option value={interactiveShell}>(interactive shell)</option>
+            {#each enabledActions as a (a.name)}
+              <option value={a.name}>{a.label || a.name}</option>
+            {/each}
+          </select>
         </div>
-        <div style="margin-bottom:12px">
-          <label class="lbl" for="start-name">Name</label>
-          <input
-            id="start-name"
-            class="inp"
-            value={startName}
-            oninput={(e) => (startName = e.currentTarget.value)}
-            placeholder="optional"
-          />
+        <div>
+          <label class="lbl" for="start-env">Environment</label>
+          <select
+            id="start-env"
+            class="sel"
+            value={startEnvironment}
+            onchange={(e) => (startEnvironment = e.currentTarget.value)}
+          >
+            {#each environments as env (env.name)}
+              <option value={env.name}>{env.label || env.name}</option>
+            {/each}
+          </select>
         </div>
-        {#if selectedAction?.prompt}
-          <div style="margin-bottom:12px">
-            <label class="lbl" for="start-prompt">Prompt</label>
-            <textarea
-              id="start-prompt"
-              class="ta"
-              value={startPrompt}
-              oninput={(e) => (startPrompt = e.currentTarget.value)}
-              placeholder="optional starting prompt…"
-            ></textarea>
-          </div>
-        {/if}
-        {#each selectedParams as [name, spec] (name)}
-          <div style="margin-bottom:12px">
-            <label class="lbl" for={`start-param-${name}`}>{spec.label || name}</label>
-            {#if spec.type === 'bool'}
-              <select
-                id={`start-param-${name}`}
-                class="sel"
-                value={startParams[name] ?? ''}
-                onchange={(e) => (startParams = { ...startParams, [name]: e.currentTarget.value })}
-              >
-                <option value="">(default)</option>
-                <option value="true">true</option>
-                <option value="false">false</option>
-              </select>
-            {:else}
-              <select
-                id={`start-param-${name}`}
-                class="sel"
-                value={startParams[name] ?? ''}
-                onchange={(e) => (startParams = { ...startParams, [name]: e.currentTarget.value })}
-              >
-                <option value="">(default)</option>
-                {#each spec.values ?? [] as v (v)}
-                  <option value={v}>{v}</option>
-                {/each}
-              </select>
-            {/if}
-          </div>
-        {/each}
-
-        <ErrorBanner message={startError} />
-        <button class="btn primary" disabled={starting} onclick={start}>
-          {starting ? 'Starting…' : 'Start session'}
-        </button>
       </div>
-    {/if}
+      <div style="margin-bottom:12px">
+        <label class="lbl" for="start-name">Name</label>
+        <input
+          id="start-name"
+          class="inp"
+          value={startName}
+          oninput={(e) => (startName = e.currentTarget.value)}
+          placeholder="optional"
+        />
+      </div>
+      {#if selectedAction?.prompt}
+        <div style="margin-bottom:12px">
+          <label class="lbl" for="start-prompt">Prompt</label>
+          <textarea
+            id="start-prompt"
+            class="ta"
+            value={startPrompt}
+            oninput={(e) => (startPrompt = e.currentTarget.value)}
+            placeholder="optional starting prompt…"
+          ></textarea>
+        </div>
+      {/if}
+      {#each selectedParams as [name, spec] (name)}
+        <div style="margin-bottom:12px">
+          <label class="lbl" for={`start-param-${name}`}>{spec.label || name}</label>
+          {#if spec.type === 'bool'}
+            <select
+              id={`start-param-${name}`}
+              class="sel"
+              value={startParams[name] ?? ''}
+              onchange={(e) => (startParams = { ...startParams, [name]: e.currentTarget.value })}
+            >
+              <option value="">(default)</option>
+              <option value="true">true</option>
+              <option value="false">false</option>
+            </select>
+          {:else}
+            <select
+              id={`start-param-${name}`}
+              class="sel"
+              value={startParams[name] ?? ''}
+              onchange={(e) => (startParams = { ...startParams, [name]: e.currentTarget.value })}
+            >
+              <option value="">(default)</option>
+              {#each spec.values ?? [] as v (v)}
+                <option value={v}>{v}</option>
+              {/each}
+            </select>
+          {/if}
+        </div>
+      {/each}
 
+      <ErrorBanner message={startError} />
+      <button class="btn primary" disabled={starting} onclick={start}>
+        {starting ? 'Starting…' : 'Start session'}
+      </button>
+    </div>
     <div class="seclabel">Sessions</div>
     {#if sessions.length === 0}
       <div class="card" style="padding:20px;text-align:center;color:var(--dc-mut);font-size:13px">

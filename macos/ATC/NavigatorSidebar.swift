@@ -285,15 +285,6 @@ struct ProjectsNavigatorView: View {
         }
         .disabled(group.reachability != .connected)
         Divider()
-        Button("Archive Project", systemImage: "archivebox") {
-            if let store = appModel.runtime(id: group.ref.connectionID)?.projects {
-                appModel.run(on: group.ref.connectionID, reporting: $actionError) {
-                    try await store.archive(id: group.project.id)
-                }
-            }
-        }
-        .disabled(group.reachability != .connected || group.hasUnarchivedWorkspaces)
-        Divider()
         Button("Delete Project…", systemImage: "trash", role: .destructive) {
             deletingProject = group
         }
@@ -317,16 +308,8 @@ struct ProjectsNavigatorView: View {
         ) { _ in
             Text(row.workspace.name)
                 .lineLimit(1)
-        } actions: {
-            NavigatorActionButton(
-                systemImage: "archivebox",
-                help: row.hasActiveSessions ? "Stop active sessions before archiving" : "Archive workspace",
-                isEnabled: !row.hasActiveSessions
-            ) {
-                archiveWorkspace(row)
-            }
-        }
-        .opacity(enabled ? 1 : Dimming.archived)
+        } actions: {}
+        .opacity(enabled ? 1 : Dimming.unavailable)
         .contextMenu { workspaceMenu(row, enabled: enabled) }
     }
 
@@ -353,22 +336,10 @@ struct ProjectsNavigatorView: View {
             renamingWorkspace = row
         }
         .disabled(!enabled)
-        Button("Archive", systemImage: "archivebox") {
-            archiveWorkspace(row)
-        }
-        .disabled(!enabled || row.hasActiveSessions)
-        Divider()
         Button("Delete…", systemImage: "trash", role: .destructive) {
             deletingWorkspace = row
         }
         .disabled(!enabled)
-    }
-
-    private func archiveWorkspace(_ row: ProjectsNavigatorGroups.WorkspaceRow) {
-        guard let store = appModel.runtime(id: row.ref.connectionID)?.workspaces else { return }
-        appModel.run(on: row.ref.connectionID, reporting: $actionError) {
-            try await store.archive(id: row.workspace.id)
-        }
     }
 
     private func presentStart(_ kind: StartSessionKind, in ref: WorkspaceRef) {

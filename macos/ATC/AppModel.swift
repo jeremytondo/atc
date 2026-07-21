@@ -10,7 +10,6 @@ struct WindowNavigationSnapshot: Equatable {
         struct WorkspaceRecord: Equatable {
             let id: String
             let projectID: String
-            let isArchived: Bool
         }
 
         struct SessionRecord: Equatable {
@@ -111,19 +110,13 @@ final class AppModel {
     }
 
     func canCreateWorkspace(in ref: ProjectRef) -> Bool {
-        guard canMutate(connectionID: ref.connectionID),
-              let project = runtime(id: ref.connectionID)?.projects.project(id: ref.projectID)
-        else { return false }
-        return !project.isArchived
+        canMutate(connectionID: ref.connectionID)
+            && runtime(id: ref.connectionID)?.projects.project(id: ref.projectID) != nil
     }
 
     func canStartSession(in ref: WorkspaceRef) -> Bool {
-        guard canMutate(connectionID: ref.connectionID),
-              let workspace = runtime(id: ref.connectionID)?.workspaces.workspace(
-                id: ref.workspaceID
-              )
-        else { return false }
-        return !workspace.isArchived
+        canMutate(connectionID: ref.connectionID)
+            && runtime(id: ref.connectionID)?.workspaces.workspace(id: ref.workspaceID) != nil
     }
 
     func session(for ref: SessionRef) -> Session? {
@@ -141,7 +134,7 @@ final class AppModel {
                 sessionsCurrent: runtime.sessions.hasLoadedOnce
                     && runtime.sessions.lastError == nil,
                 workspaces: runtime.workspaces.workspaces.map {
-                    .init(id: $0.id, projectID: $0.projectId, isArchived: $0.isArchived)
+                    .init(id: $0.id, projectID: $0.projectId)
                 },
                 sessions: runtime.sessions.sessions.map {
                     .init(

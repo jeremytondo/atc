@@ -7,8 +7,7 @@ private let logger = Logger(subsystem: "ElevenIdeas.atc", category: "workspaces"
 
 /// Shared domain state for one Connection's workspace list. Same polling
 /// story as `ProjectsStore` — `ConnectionRuntime` owns the poll task; this
-/// store only refreshes on demand. Always fetches archived workspaces too;
-/// surfaces filter locally (the Dashboard's Show Archived toggle).
+/// store only refreshes on demand.
 @Observable
 final class WorkspacesStore {
     var client: any ATCClient {
@@ -51,7 +50,7 @@ final class WorkspacesStore {
             }
         }
         do {
-            let fetched = try await client.workspaces(projectID: nil, includeArchived: true)
+            let fetched = try await client.workspaces(projectID: nil)
             guard generation == refreshGeneration else { return }
             workspaces = fetched
             lastError = nil
@@ -70,8 +69,7 @@ final class WorkspacesStore {
 
     // MARK: - Actions
 
-    /// Creates a workspace; throws so the create sheet can show inline
-    /// errors (e.g. the server's `project_archived` 409).
+    /// Creates a workspace; throws so the create sheet can show inline errors.
     @discardableResult
     func create(projectID: String, name: String) async throws -> Workspace {
         let workspace = try await client.createWorkspace(projectID: projectID, name: name)
@@ -83,22 +81,6 @@ final class WorkspacesStore {
     @discardableResult
     func rename(id: String, name: String) async throws -> Workspace {
         let workspace = try await client.renameWorkspace(id: id, name: name)
-        merge(workspace)
-        scheduleRefresh()
-        return workspace
-    }
-
-    @discardableResult
-    func archive(id: String) async throws -> Workspace {
-        let workspace = try await client.archiveWorkspace(id: id)
-        merge(workspace)
-        scheduleRefresh()
-        return workspace
-    }
-
-    @discardableResult
-    func unarchive(id: String) async throws -> Workspace {
-        let workspace = try await client.unarchiveWorkspace(id: id)
         merge(workspace)
         scheduleRefresh()
         return workspace

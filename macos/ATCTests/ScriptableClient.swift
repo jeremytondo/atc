@@ -71,8 +71,8 @@ nonisolated final class ScriptableClient: ATCClient, @unchecked Sendable {
     func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing {
         try await gate(); return try await inner.listDirectory(path: path, showHidden: showHidden)
     }
-    func projects(includeArchived: Bool) async throws -> [Project] {
-        try await gate(); return try await inner.projects(includeArchived: includeArchived)
+    func projects() async throws -> [Project] {
+        try await gate(); return try await inner.projects()
     }
     func project(id: String) async throws -> Project { try await gate(); return try await inner.project(id: id) }
     func createProject(name: String, workingDir: String) async throws -> Project {
@@ -80,12 +80,6 @@ nonisolated final class ScriptableClient: ATCClient, @unchecked Sendable {
     }
     func renameProject(id: String, name: String) async throws -> Project {
         try await gate(); return try await inner.renameProject(id: id, name: name)
-    }
-    func archiveProject(id: String) async throws -> Project {
-        try await gate(); return try await inner.archiveProject(id: id)
-    }
-    func unarchiveProject(id: String) async throws -> Project {
-        try await gate(); return try await inner.unarchiveProject(id: id)
     }
     func projectSessions(projectID: String, status: SessionStatus?) async throws -> [Session] {
         try await gate()
@@ -96,9 +90,9 @@ nonisolated final class ScriptableClient: ATCClient, @unchecked Sendable {
     func deleteProject(id: String) async throws {
         try await gate(); try await inner.deleteProject(id: id)
     }
-    func workspaces(projectID: String?, includeArchived: Bool) async throws -> [Workspace] {
+    func workspaces(projectID: String?) async throws -> [Workspace] {
         try await gate()
-        return try await inner.workspaces(projectID: projectID, includeArchived: includeArchived)
+        return try await inner.workspaces(projectID: projectID)
     }
     func workspace(id: String) async throws -> Workspace {
         try await gate(); return try await inner.workspace(id: id)
@@ -108,12 +102,6 @@ nonisolated final class ScriptableClient: ATCClient, @unchecked Sendable {
     }
     func renameWorkspace(id: String, name: String) async throws -> Workspace {
         try await gate(); return try await inner.renameWorkspace(id: id, name: name)
-    }
-    func archiveWorkspace(id: String) async throws -> Workspace {
-        try await gate(); return try await inner.archiveWorkspace(id: id)
-    }
-    func unarchiveWorkspace(id: String) async throws -> Workspace {
-        try await gate(); return try await inner.unarchiveWorkspace(id: id)
     }
     func deleteWorkspace(id: String) async throws {
         try await gate(); try await inner.deleteWorkspace(id: id)

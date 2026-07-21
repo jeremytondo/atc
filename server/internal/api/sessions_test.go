@@ -315,19 +315,6 @@ func TestStartSessionValidationErrors(t *testing.T) {
 	}
 }
 
-func TestStartSessionRejectsArchivedWorkspace(t *testing.T) {
-	mux := &fakeMux{}
-	env := newHandlerEnv(t, mux)
-	if _, err := env.store.ArchiveWorkspace(context.Background(), testWorkspaceID); err != nil {
-		t.Fatalf("ArchiveWorkspace: %v", err)
-	}
-	rec := do(t, env.handler, http.MethodPost, "/sessions/start", `{"action":"claude","workspaceId":"`+testWorkspaceID+`"}`)
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409 (%s)", rec.Code, rec.Body)
-	}
-	assertErrorCode(t, rec, "workspace_archived")
-}
-
 func TestStartSessionLaunchFailureReturnsSessionIDAndLeavesNoRecord(t *testing.T) {
 	mux := &fakeMux{startErr: errors.New("zmx failed")}
 	h, st := newHandler(t, mux)
@@ -550,6 +537,10 @@ func TestOldRoutesAreRemoved(t *testing.T) {
 		{http.MethodPost, "/sessions/ses_123/terminate", ""},
 		{http.MethodPost, "/sessions/ses_123/archive", ""},
 		{http.MethodPost, "/sessions/ses_123/unarchive", ""},
+		{http.MethodPost, "/projects/prj_123/archive", ""},
+		{http.MethodPost, "/projects/prj_123/unarchive", ""},
+		{http.MethodPost, "/workspaces/wsp_123/archive", ""},
+		{http.MethodPost, "/workspaces/wsp_123/unarchive", ""},
 	} {
 		rec := do(t, h, tt.method, tt.path, tt.body)
 		if rec.Code != http.StatusNotFound {

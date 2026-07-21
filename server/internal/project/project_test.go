@@ -82,7 +82,7 @@ func TestCreateValidatesAndCleans(t *testing.T) {
 	if created.WorkingDir != workDir {
 		t.Fatalf("workingDir = %q, want cleaned %q", created.WorkingDir, workDir)
 	}
-	if created.ArchivedAt != nil || created.CreatedAt.IsZero() {
+	if created.CreatedAt.IsZero() {
 		t.Fatalf("created = %+v", created)
 	}
 }
@@ -112,7 +112,7 @@ func TestGetListRenameRoundTrip(t *testing.T) {
 		t.Fatalf("Get missing err = %v, want ErrProjectNotFound", err)
 	}
 
-	list, err := svc.List(ctx, false)
+	list, err := svc.List(ctx)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -132,65 +132,6 @@ func TestGetListRenameRoundTrip(t *testing.T) {
 	}
 	if _, err := svc.Rename(ctx, "prj_missing", "name"); !errors.Is(err, ErrProjectNotFound) {
 		t.Fatalf("rename missing err = %v, want ErrProjectNotFound", err)
-	}
-}
-
-func TestArchiveUnarchiveSemantics(t *testing.T) {
-	ctx := context.Background()
-	svc := newService(t)
-
-	created, err := svc.Create(ctx, "atc", t.TempDir())
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-
-	archived, err := svc.Archive(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("Archive: %v", err)
-	}
-	if archived.ArchivedAt == nil {
-		t.Fatal("archivedAt = nil after archive")
-	}
-	again, err := svc.Archive(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("Archive again: %v", err)
-	}
-	if !again.ArchivedAt.Equal(*archived.ArchivedAt) {
-		t.Fatalf("second archive changed archivedAt: %v != %v", again.ArchivedAt, archived.ArchivedAt)
-	}
-
-	// Archived projects stay readable and listable with includeArchived.
-	if _, err := svc.Get(ctx, created.ID); err != nil {
-		t.Fatalf("Get archived: %v", err)
-	}
-	hidden, err := svc.List(ctx, false)
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(hidden) != 0 {
-		t.Fatalf("default list = %+v, want archived hidden", hidden)
-	}
-	all, err := svc.List(ctx, true)
-	if err != nil {
-		t.Fatalf("List include archived: %v", err)
-	}
-	if len(all) != 1 {
-		t.Fatalf("include-archived list = %+v", all)
-	}
-
-	unarchived, err := svc.Unarchive(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("Unarchive: %v", err)
-	}
-	if unarchived.ArchivedAt != nil {
-		t.Fatalf("unarchived = %+v", unarchived)
-	}
-	activeAgain, err := svc.Unarchive(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("Unarchive again: %v", err)
-	}
-	if activeAgain.ArchivedAt != nil {
-		t.Fatalf("second unarchive = %+v", activeAgain)
 	}
 }
 
@@ -217,16 +158,6 @@ func TestResolveForStart(t *testing.T) {
 
 	if _, err := svc.ResolveForStart(ctx, "prj_missing"); !errors.Is(err, ErrProjectNotFound) {
 		t.Fatalf("missing err = %v, want ErrProjectNotFound", err)
-	}
-
-	if _, err := svc.Archive(ctx, created.ID); err != nil {
-		t.Fatalf("Archive: %v", err)
-	}
-	if _, err := svc.ResolveForStart(ctx, created.ID); !errors.Is(err, ErrProjectArchived) {
-		t.Fatalf("archived err = %v, want ErrProjectArchived", err)
-	}
-	if _, err := svc.Unarchive(ctx, created.ID); err != nil {
-		t.Fatalf("Unarchive: %v", err)
 	}
 
 	// A directory that vanished since creation fails revalidation.

@@ -510,10 +510,9 @@ go run ./cmd/atc sessions start --action claude --workspace <workspace-id>
 go run ./cmd/atc sessions list --workspace <workspace-id>
 ```
 
-Projects and Workspaces retain their existing archive behavior. A Workspace
-with a provisional launch attempt or Live Session cannot be archived; Ended
-Sessions do not block it. Session Delete is the sole user-requested Session
-lifecycle action.
+Projects and Workspaces have explicit deletion paths. Deleting a Workspace
+ends its active Sessions before removing their metadata; deleting a Project is
+allowed only after its Workspaces are deleted. Files on disk are never touched.
 
 ## Tests
 

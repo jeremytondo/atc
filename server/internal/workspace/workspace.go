@@ -25,10 +25,7 @@ var (
 	// ErrInvalidWorkspace is returned when a workspace record field fails
 	// validation.
 	ErrInvalidWorkspace = errors.New("invalid workspace")
-	// ErrWorkspaceArchived is returned when a session start references an
-	// archived workspace.
-	ErrWorkspaceArchived = errors.New("workspace is archived")
-	// ErrWorkspaceHasActiveSessions is returned when an archive or delete is
+	// ErrWorkspaceHasActiveSessions is returned when a delete is
 	// rejected because the workspace still has a provisional or Live record.
 	ErrWorkspaceHasActiveSessions = errors.New("workspace has active sessions")
 	// ErrSessionEndFailed is returned when a delete aborts because one of the
@@ -37,15 +34,13 @@ var (
 	ErrSessionEndFailed = errors.New("session end failed")
 )
 
-// Workspace is atc's domain model for a workspace. Name is renameable; a
-// nil ArchivedAt means active.
+// Workspace is atc's domain model for a workspace. Name is renameable.
 type Workspace struct {
-	ID         string
-	ProjectID  string
-	Name       string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	ArchivedAt *time.Time
+	ID        string
+	ProjectID string
+	Name      string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // SessionEnder is the slice of the session service that workspace deletion
@@ -106,13 +101,11 @@ func (s *Service) Get(ctx context.Context, id string) (Workspace, error) {
 	return domainWorkspace(record), nil
 }
 
-// List returns workspaces newest-first, hiding archived workspaces unless
-// includeArchived is true. An empty projectID lists all workspaces, which
+// List returns workspaces newest-first. An empty projectID lists all workspaces, which
 // clients showing every workspace per connection rely on.
-func (s *Service) List(ctx context.Context, includeArchived bool, projectID string) ([]Workspace, error) {
+func (s *Service) List(ctx context.Context, projectID string) ([]Workspace, error) {
 	records, err := s.store.ListWorkspaces(ctx, store.WorkspaceListFilter{
-		IncludeArchived: includeArchived,
-		ProjectID:       projectID,
+		ProjectID: projectID,
 	})
 	if err != nil {
 		return nil, translateStoreErr(err)
@@ -124,35 +117,13 @@ func (s *Service) List(ctx context.Context, includeArchived bool, projectID stri
 	return workspaces, nil
 }
 
-// Rename updates a workspace's name. Renaming is allowed while archived.
+// Rename updates a workspace's name.
 func (s *Service) Rename(ctx context.Context, id, name string) (Workspace, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return Workspace{}, fmt.Errorf("%w: name is required", ErrInvalidWorkspace)
 	}
 	record, err := s.store.RenameWorkspace(ctx, id, name)
-	if err != nil {
-		return Workspace{}, translateStoreErr(err)
-	}
-	return domainWorkspace(record), nil
-}
-
-// Archive hides a workspace from default lists and blocks new session starts.
-// Archiving an archived workspace is a no-op returning the current record. A
-// workspace with a provisional or Live record cannot be archived.
-func (s *Service) Archive(ctx context.Context, id string) (Workspace, error) {
-	record, err := s.store.ArchiveWorkspace(ctx, id)
-	if err != nil {
-		return Workspace{}, translateStoreErr(err)
-	}
-	return domainWorkspace(record), nil
-}
-
-// Unarchive reactivates a workspace. Unarchiving an active workspace is a
-// no-op returning the current record; unarchiving while the parent project is
-// archived is rejected.
-func (s *Service) Unarchive(ctx context.Context, id string) (Workspace, error) {
-	record, err := s.store.UnarchiveWorkspace(ctx, id)
 	if err != nil {
 		return Workspace{}, translateStoreErr(err)
 	}
@@ -191,23 +162,16 @@ func (s *Service) Delete(ctx context.Context, id string, ender SessionEnder) err
 }
 
 // ResolveForStart loads the workspace a session start references and resolves
-// it to the project working directory the session will launch in. It rejects
-// archived workspaces and archived projects, and revalidates the working
+// it to the project working directory the session will launch in. It revalidates the working
 // directory so a directory that vanished since creation fails fast.
 func (s *Service) ResolveForStart(ctx context.Context, id string) (string, error) {
 	got, err := s.Get(ctx, id)
 	if err != nil {
 		return "", err
 	}
-	if got.ArchivedAt != nil {
-		return "", fmt.Errorf("%w: %s", ErrWorkspaceArchived, id)
-	}
 	record, err := s.store.GetProject(ctx, got.ProjectID)
 	if err != nil {
 		return "", translateStoreErr(err)
-	}
-	if record.ArchivedAt != nil {
-		return "", fmt.Errorf("%w: %s", project.ErrProjectArchived, record.ID)
 	}
 	if err := project.ValidateWorkingDir(record.WorkingDir); err != nil {
 		return "", err
@@ -217,12 +181,11 @@ func (s *Service) ResolveForStart(ctx context.Context, id string) (string, error
 
 func domainWorkspace(record store.Workspace) Workspace {
 	return Workspace{
-		ID:         record.ID,
-		ProjectID:  record.ProjectID,
-		Name:       record.Name,
-		CreatedAt:  record.CreatedAt,
-		UpdatedAt:  record.UpdatedAt,
-		ArchivedAt: record.ArchivedAt,
+		ID:        record.ID,
+		ProjectID: record.ProjectID,
+		Name:      record.Name,
+		CreatedAt: record.CreatedAt,
+		UpdatedAt: record.UpdatedAt,
 	}
 }
 
@@ -230,14 +193,10 @@ func translateStoreErr(err error) error {
 	switch {
 	case errors.Is(err, store.ErrWorkspaceNotFound):
 		return fmt.Errorf("%w: %v", ErrWorkspaceNotFound, err)
-	case errors.Is(err, store.ErrWorkspaceArchived):
-		return fmt.Errorf("%w: %v", ErrWorkspaceArchived, err)
 	case errors.Is(err, store.ErrWorkspaceHasActiveSessions):
 		return fmt.Errorf("%w: %v", ErrWorkspaceHasActiveSessions, err)
 	case errors.Is(err, store.ErrProjectNotFound):
 		return fmt.Errorf("%w: %v", project.ErrProjectNotFound, err)
-	case errors.Is(err, store.ErrProjectArchived):
-		return fmt.Errorf("%w: %v", project.ErrProjectArchived, err)
 	}
 	return err
 }

@@ -36,22 +36,13 @@ var (
 	ErrSessionNotStarting = errors.New("session is not starting")
 	// ErrProjectNotFound is returned when a project id does not exist.
 	ErrProjectNotFound = errors.New("project not found")
-	// ErrProjectArchived is returned when a write references an archived
-	// project.
-	ErrProjectArchived = errors.New("project is archived")
-	// ErrProjectHasUnarchivedWorkspaces is returned when a project archive is
-	// rejected because the project still has an unarchived workspace.
-	ErrProjectHasUnarchivedWorkspaces = errors.New("project has unarchived workspaces")
 	// ErrProjectHasWorkspaces is returned when a project delete is rejected
 	// because the project still has workspaces.
 	ErrProjectHasWorkspaces = errors.New("project has workspaces")
 	// ErrWorkspaceNotFound is returned when a workspace id does not exist.
 	ErrWorkspaceNotFound = errors.New("workspace not found")
-	// ErrWorkspaceArchived is returned when a session insert references an
-	// archived workspace.
-	ErrWorkspaceArchived = errors.New("workspace is archived")
-	// ErrWorkspaceHasActiveSessions is returned when a workspace archive or
-	// delete is rejected because the workspace still has a starting or live
+	// ErrWorkspaceHasActiveSessions is returned when a workspace delete is
+	// rejected because the workspace still has a starting or live
 	// session.
 	ErrWorkspaceHasActiveSessions = errors.New("workspace has active sessions")
 	// ErrInvalidStatus is returned when a status value is outside the session
@@ -336,17 +327,14 @@ func (q queries) CreateStarting(ctx context.Context, input CreateSessionInput) (
 	}
 	now := q.nowUTC()
 	// The single-statement guard makes the insert atomic with the workspace
-	// check, so a start racing a workspace archive or delete cannot leave an
-	// active session under an archived or missing workspace (the mirror of
-	// the archive/delete-side active-session checks). The workspace guard
-	// transitively covers the project: archive preconditions keep every
-	// workspace of an archived project archived.
+	// check, so a start racing a workspace delete cannot leave an active
+	// session under a missing workspace.
 	created, err := q.scanOne(q.runner.QueryRowContext(ctx, `
 	INSERT INTO sessions (
 		id, name, action, environment, params, working_dir, prompt, status, workspace_id, created_at, updated_at
 	)
 	SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-	WHERE EXISTS (SELECT 1 FROM workspaces WHERE id = ? AND archived_at IS NULL)
+	WHERE EXISTS (SELECT 1 FROM workspaces WHERE id = ?)
 	RETURNING`+sessionColumnsSQL,
 		input.ID,
 		nullableString(input.Name),
@@ -362,45 +350,12 @@ func (q queries) CreateStarting(ctx context.Context, input CreateSessionInput) (
 		input.WorkspaceID,
 	))
 	if errors.Is(err, sql.ErrNoRows) {
-		return Session{}, q.classifyWorkspaceGuardFailure(ctx, input.WorkspaceID)
+		return Session{}, fmt.Errorf("%w: %s", ErrWorkspaceNotFound, input.WorkspaceID)
 	}
 	if err != nil {
 		return Session{}, fmt.Errorf("create starting session %s: %w", input.ID, err)
 	}
 	return q.hydrateRefs(ctx, created)
-}
-
-// classifyProjectGuardFailure explains a guarded workspace insert that
-// matched no project row. The guard itself is what prevents the bad insert;
-// this follow-up read only picks the right error.
-func (q queries) classifyProjectGuardFailure(ctx context.Context, projectID string) error {
-	project, err := scanProject(q.runner.QueryRowContext(ctx, selectProjectSQL+` WHERE id = ?`, projectID))
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return fmt.Errorf("%w: %s", ErrProjectNotFound, projectID)
-	case err != nil:
-		return fmt.Errorf("resolve project %s: %w", projectID, err)
-	case project.ArchivedAt != nil:
-		return fmt.Errorf("%w: %s", ErrProjectArchived, projectID)
-	default:
-		return fmt.Errorf("create workspace in project %s: insert matched no row", projectID)
-	}
-}
-
-// classifyWorkspaceGuardFailure explains a guarded session insert that
-// matched no workspace row, mirroring classifyProjectGuardFailure.
-func (q queries) classifyWorkspaceGuardFailure(ctx context.Context, workspaceID string) error {
-	workspace, err := scanWorkspace(q.runner.QueryRowContext(ctx, selectWorkspaceSQL+` WHERE id = ?`, workspaceID))
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return fmt.Errorf("%w: %s", ErrWorkspaceNotFound, workspaceID)
-	case err != nil:
-		return fmt.Errorf("resolve workspace %s: %w", workspaceID, err)
-	case workspace.ArchivedAt != nil:
-		return fmt.Errorf("%w: %s", ErrWorkspaceArchived, workspaceID)
-	default:
-		return fmt.Errorf("create session in workspace %s: insert matched no row", workspaceID)
-	}
 }
 
 func (q queries) PromoteToLive(ctx context.Context, id string) (Session, error) {
@@ -740,17 +695,6 @@ func parseTime(raw string) (time.Time, error) {
 		return time.Time{}, err
 	}
 	return t.UTC().Round(0), nil
-}
-
-func parseOptionalTime(raw sql.NullString) (*time.Time, error) {
-	if !raw.Valid {
-		return nil, nil
-	}
-	t, err := parseTime(raw.String)
-	if err != nil {
-		return nil, err
-	}
-	return &t, nil
 }
 
 func (s RecordStatus) valid() bool {

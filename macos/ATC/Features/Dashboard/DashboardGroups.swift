@@ -5,13 +5,11 @@ import ATCAPI
 /// (mirrors the old `SidebarGroups` pattern). Ordering rules:
 ///
 /// - Sections follow Connection creation order (the runtimes array).
-/// - Project cards follow each Connection's server ordering; archived
-///   Projects appear only when `showArchived`.
-/// - Workspace rows are newest-created-first within their card; archived
-///   Workspaces appear only when `showArchived`.
+/// - Project cards follow each Connection's server ordering.
+/// - Workspace rows are newest-created-first within their card.
 ///
-/// Session inputs are joined by workspace ID to gate Archive (no active
-/// sessions) and to fill the delete confirmation's local-store counts.
+/// Session inputs are joined by workspace ID to fill the delete
+/// confirmation's local-store counts.
 struct DashboardGroups {
     struct ConnectionInput {
         let connection: ConnectionRecord
@@ -23,7 +21,6 @@ struct DashboardGroups {
     struct WorkspaceRow: Identifiable {
         let ref: WorkspaceRef
         let workspace: Workspace
-        /// Any known session is Live — gates Archive.
         let hasActiveSessions: Bool
         /// Local-store counts for the delete confirmation.
         let sessionCount: Int
@@ -35,11 +32,8 @@ struct DashboardGroups {
         let ref: ProjectRef
         let project: Project
         let rows: [WorkspaceRow]
-        /// Counts every Workspace, including ones hidden by the archived
-        /// filter — gates Delete Project (zero required).
+        /// Counts every Workspace — gates Delete Project (zero required).
         let totalWorkspaceCount: Int
-        /// Any unarchived Workspace left — gates Archive Project.
-        let hasUnarchivedWorkspaces: Bool
         var id: ProjectRef { ref }
     }
 
@@ -54,9 +48,7 @@ struct DashboardGroups {
 
     private(set) var sections: [Section] = []
 
-    /// Every project across all Connections, before archived filtering —
-    /// the "No Projects" overlay must not appear when projects merely
-    /// hide behind the archived toggle.
+    /// Every project across all Connections.
     private(set) var totalProjectCount = 0
 
     /// True when no section has any visible card.
@@ -67,17 +59,15 @@ struct DashboardGroups {
         sections.flatMap { $0.cards.flatMap { $0.rows.map(\.ref) } }
     }
 
-    init(inputs: [ConnectionInput], showArchived: Bool) {
+    init(inputs: [ConnectionInput]) {
         for input in inputs {
             totalProjectCount += input.projects.count
             let workspacesByProject = Dictionary(grouping: input.workspaces, by: \.projectId)
             let sessionsByWorkspace = Dictionary(grouping: input.sessions, by: { $0.workspace?.id })
             var cards: [ProjectCard] = []
             for project in input.projects {
-                if project.isArchived && !showArchived { continue }
                 let all = workspacesByProject[project.id] ?? []
                 let rows = all
-                    .filter { showArchived || !$0.isArchived }
                     .sortedNewestFirst()
                     .map { workspace in
                         let members = sessionsByWorkspace[workspace.id] ?? []
@@ -97,8 +87,7 @@ struct DashboardGroups {
                     ref: ProjectRef(connectionID: input.connection.id, projectID: project.id),
                     project: project,
                     rows: rows,
-                    totalWorkspaceCount: all.count,
-                    hasUnarchivedWorkspaces: all.contains { !$0.isArchived }
+                    totalWorkspaceCount: all.count
                 ))
             }
             sections.append(Section(
