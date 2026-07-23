@@ -22,21 +22,23 @@ struct WorkspaceSwitcher: View {
             )
         } ?? .noActiveWorkspace
 
-        HStack(spacing: Spacing.xs) {
+        HStack(spacing: 0) {
             if let project = presentation.projectName {
                 Text(project)
                     .foregroundStyle(.secondary)
                     .layoutPriority(1)
-                contextSeparator
+                BreadcrumbSeparator()
+                    .padding(.leading, Spacing.md)
+                    .padding(.trailing, Spacing.xs)
             }
             workspaceRegion(presentation)
             if let session = presentation.session {
-                contextSeparator
                 sessionRegion(session, help: presentation.help)
             }
         }
         .lineLimit(1)
-        .padding(.horizontal, Spacing.md)
+        .padding(.leading, Spacing.md)
+        .padding(.trailing, Spacing.xs)
     }
 
     private func workspaceRegion(
@@ -46,13 +48,13 @@ struct WorkspaceSwitcher: View {
         return Button {
             isWorkspacePickerPresented.toggle()
         } label: {
-            HStack(spacing: Spacing.xs) {
-                Text(presentation.workspaceName)
-                    .fontWeight(.medium)
-                    .layoutPriority(3)
-                regionChevron(isHighlighted: isHighlighted)
-            }
-            .regionChrome(isHighlighted: isHighlighted)
+            Text(presentation.workspaceName)
+                .fontWeight(.medium)
+                .layoutPriority(3)
+                .regionChrome(
+                    isHighlighted: isHighlighted,
+                    showsTrailingSeparator: presentation.session != nil
+                )
         }
         .buttonStyle(.plain)
         .onHover { isWorkspaceHovering = $0 }
@@ -88,9 +90,8 @@ struct WorkspaceSwitcher: View {
                         .foregroundStyle(.secondary)
                         .layoutPriority(2)
                 }
-                regionChevron(isHighlighted: isHighlighted)
             }
-            .regionChrome(isHighlighted: isHighlighted)
+            .regionChrome(isHighlighted: isHighlighted, showsTrailingSeparator: false)
         }
         .buttonStyle(.plain)
         .onHover { isSessionHovering = $0 }
@@ -100,19 +101,6 @@ struct WorkspaceSwitcher: View {
         .help(help)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Choose Session, \(identity.accessibilityLabel)")
-    }
-
-    private var contextSeparator: some View {
-        Text("›")
-            .foregroundStyle(.tertiary)
-            .accessibilityHidden(true)
-    }
-
-    private func regionChevron(isHighlighted: Bool) -> some View {
-        Image(systemName: "chevron.down")
-            .font(.system(size: 9, weight: .semibold))
-            .foregroundStyle(.tertiary)
-            .opacity(isHighlighted ? 1 : 0)
     }
 
     private var selectedSession: Session? {
@@ -327,17 +315,47 @@ private struct WorkspacePicker: View {
     }
 }
 
+/// The `›` between breadcrumb items. Regions render theirs inside the
+/// trailing gutter so the picker chevron can take its place on hover.
+private struct BreadcrumbSeparator: View {
+    var body: some View {
+        Text("›")
+            .foregroundStyle(.tertiary)
+            .accessibilityHidden(true)
+    }
+}
+
 private extension View {
     /// Shared hover chrome for each pill region: its own subtle rounded
     /// highlight while the two regions still read as one continuous path.
-    func regionChrome(isHighlighted: Bool) -> some View {
-        padding(.horizontal, Spacing.sm)
-            .padding(.vertical, 2)
-            .background(
-                .quaternary.opacity(isHighlighted ? 1 : 0),
-                in: RoundedRectangle(cornerRadius: 5)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 5))
+    /// The trailing gutter is real layout — it shows the region's breadcrumb
+    /// separator at rest and the picker chevron while highlighted, so the
+    /// chevron never reserves extra width and the separators stay centered.
+    func regionChrome(
+        isHighlighted: Bool,
+        showsTrailingSeparator: Bool
+    ) -> some View {
+        HStack(spacing: 0) {
+            padding(.leading, Spacing.sm)
+            ZStack {
+                if showsTrailingSeparator {
+                    BreadcrumbSeparator()
+                        .opacity(isHighlighted ? 0 : 1)
+                }
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .opacity(isHighlighted ? 1 : 0)
+            }
+            .padding(.leading, Spacing.md)
+            .padding(.trailing, Spacing.xs)
+        }
+        .padding(.vertical, 2)
+        .background(
+            .quaternary.opacity(isHighlighted ? 1 : 0),
+            in: RoundedRectangle(cornerRadius: 5)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 5))
     }
 }
 
