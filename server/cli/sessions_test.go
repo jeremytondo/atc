@@ -301,6 +301,54 @@ func TestSessionsDeleteUsesDeleteMethodAndPrintsFilesStatement(t *testing.T) {
 	}
 }
 
+func TestSessionCommandsSurfaceLifecycleErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		args   []string
+		status int
+		body   string
+		want   string
+	}{
+		{
+			name: "rename ended", args: []string{"rename", "ses_dead", "Nope"},
+			status: http.StatusConflict,
+			body:   `{"error":"session_ended","message":"session ended: ses_dead","sessionId":"ses_dead"}`,
+			want:   "session ended: ses_dead",
+		},
+		{
+			name: "send ended", args: []string{"send-text", "ses_dead", "hello"},
+			status: http.StatusConflict,
+			body:   `{"error":"session_ended","message":"session ended: ses_dead","sessionId":"ses_dead"}`,
+			want:   "session ended: ses_dead",
+		},
+		{
+			name: "delete inventory unavailable", args: []string{"delete", "ses_live"},
+			status: http.StatusServiceUnavailable,
+			body:   `{"error":"zmx_unavailable","message":"zmx session inventory is unavailable"}`,
+			want:   "zmx is unavailable; session state could not be confirmed",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lookup := testRuntimeLookup(t)
+			serveUnixAPI(t, lookup, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			})
+
+			cmd := sessionsCommand(lookup)
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs(tt.args)
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Execute err = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestAPIClientDialAttachOverUnixSocketSetsAuthorization(t *testing.T) {
 	socketPath := testSocketPath(t, "atc.sock")
 	listener, err := net.Listen("unix", socketPath)

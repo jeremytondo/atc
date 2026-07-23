@@ -247,6 +247,21 @@ struct WorkspaceFlowTests {
 
     }
 
+    @Test("workspace empty falls back to Dashboard when the Workspace is gone")
+    func workspaceEmptyFallsBackToDashboard() async throws {
+        let (model, runtime) = try await makeLoadedModel()
+        let state = WindowState.ephemeral()
+        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
+        #expect(state.activateWorkspace(workspace, in: model))
+        #expect(state.selectSession(
+            SessionRef(connectionID: runtime.id, sessionID: "ses_running"), in: model
+        ))
+
+        state.showWorkspaceEmpty(workspaceExists: false)
+
+        #expect(state.selectedContent == .dashboard)
+    }
+
     @Test("explicit Disconnect is not undone by reconcile")
     func disconnectSurvivesReconcile() async throws {
         let (model, runtime) = try await makeLoadedModel()

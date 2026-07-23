@@ -21,7 +21,7 @@ struct StatusBadge: View {
     private var color: Color {
         switch session.status {
         case .live: return .green
-        case .ended: return .gray
+        case .ended: return .red
         }
     }
 

@@ -15,7 +15,7 @@ const session: SessionListItem = {
   actionName: 'Codex',
   isAgent: true,
   workingDir: '/repo',
-  status: 'ended',
+  status: 'live',
   createdAt: '2026-07-18T10:00:00Z',
   updatedAt: '2026-07-18T10:00:00Z'
 };

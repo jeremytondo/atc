@@ -10,6 +10,9 @@
 > **Lifecycle amendment (2026-07):** Sessions now expose only `live | ended`.
 > Provisional launch attempts and Session archive behavior mentioned below are
 > no longer part of the public Session model; failed launches leave no Session.
+> Ended is a retained, read-only tombstone created only after a complete zmx
+> inventory confirms absence. It supports reads and Delete, but not rename,
+> attach, or input.
 
 Supersedes [ADR 0003](0003-sessions-run-arbitrary-commands.md).
 

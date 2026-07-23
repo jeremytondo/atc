@@ -237,6 +237,8 @@ func writeSessionError(w http.ResponseWriter, err error) {
 			id = endedErr.SessionID
 		}
 		writeJSON(w, http.StatusConflict, errorResponse{Error: "session_ended", Message: err.Error(), SessionID: id})
+	case errors.Is(err, session.ErrZmxUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "zmx_unavailable", "zmx session inventory is unavailable")
 	default:
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 	}

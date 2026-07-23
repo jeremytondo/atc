@@ -34,3 +34,5 @@ that hasn't caught up:
 
 Keep fixture values representative and populate optional fields somewhere in
 the set — a field no fixture exercises is a field no client is tested against.
+The error fixtures pin the common envelope plus session-specific
+`session_ended` and `zmx_unavailable` responses.

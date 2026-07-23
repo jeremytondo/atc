@@ -27,6 +27,7 @@ type fakeMux struct {
 	terminateErr  error
 	attachErr     error
 	attachPTY     zmx.PTY
+	listErr       error
 	argv          []string
 	sessions      []zmx.Session
 	lastTerminate string
@@ -59,6 +60,9 @@ func (f *fakeMux) Attach(_ context.Context, _ string, rows, cols uint16) (zmx.PT
 	return f.attachPTY, f.attachErr
 }
 func (f *fakeMux) List(context.Context) ([]zmx.Session, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	return append([]zmx.Session(nil), f.sessions...), nil
 }
 func (f *fakeMux) Terminate(_ context.Context, name string) error {
@@ -346,6 +350,13 @@ func TestPatchSessionRenamesAndDecodesStrictly(t *testing.T) {
 			}
 		})
 	}
+
+	seedEnded(t, env.store, "ses_ended", "Ended")
+	rec = do(t, env.handler, http.MethodPatch, "/sessions/ses_ended", `{"name":"Nope"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("ended rename status = %d, want 409 (%s)", rec.Code, rec.Body)
+	}
+	assertErrorCode(t, rec, "session_ended")
 }
 
 func TestStartSessionValidationErrors(t *testing.T) {
@@ -487,6 +498,17 @@ func TestInputErrorsMapToCodes(t *testing.T) {
 		}
 	})
 
+	t.Run("zmx unavailable", func(t *testing.T) {
+		mux := &fakeMux{listErr: errors.New("offline")}
+		env := newHandlerEnv(t, mux)
+		seedRunning(t, env.store, "ses_live", "Live")
+		rec := do(t, env.handler, http.MethodPost, "/sessions/ses_live/send-text", `{"text":"hello"}`)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want 503 (%s)", rec.Code, rec.Body)
+		}
+		assertErrorCode(t, rec, "zmx_unavailable")
+	})
+
 	t.Run("unknown key", func(t *testing.T) {
 		env := newHandlerEnv(t, &fakeMux{})
 		rec := do(t, env.handler, http.MethodPost, "/sessions/ses_missing/send-key", `{"key":"f1"}`)
@@ -554,6 +576,21 @@ func TestDeleteSessionTerminateFailureKeepsMetadata(t *testing.T) {
 	}
 	if _, err := st.Get(context.Background(), "ses_live"); err != nil {
 		t.Fatalf("metadata lost after failed delete: %v", err)
+	}
+}
+
+func TestDeleteSessionInventoryFailureIs503AndKeepsMetadata(t *testing.T) {
+	mux := &fakeMux{listErr: errors.New("offline")}
+	h, st := newHandler(t, mux)
+	seedRunning(t, st, "ses_live", "Live")
+
+	rec := do(t, h, http.MethodDelete, "/sessions/ses_live", "")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (%s)", rec.Code, rec.Body)
+	}
+	assertErrorCode(t, rec, "zmx_unavailable")
+	if got, err := st.Get(context.Background(), "ses_live"); err != nil || got.Status != store.StatusLive {
+		t.Fatalf("record = %+v err=%v", got, err)
 	}
 }
 

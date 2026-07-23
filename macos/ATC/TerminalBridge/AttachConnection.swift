@@ -2,7 +2,7 @@ import Foundation
 
 /// Why the attach stream stopped.
 enum AttachEndReason: Sendable, Equatable {
-    /// Server close 1000 — the underlying session ended.
+    /// Server close reason `session_ended` — authoritative zmx absence.
     case sessionEnded
     /// Server close 1011.
     case serverError
@@ -148,22 +148,38 @@ actor AttachConnection {
     }
 
     private func endReason(for task: URLSessionWebSocketTask, error: any Error) -> AttachEndReason {
+        Self.endReason(
+            closedByClient: closedByClient,
+            statusCode: (task.response as? HTTPURLResponse)?.statusCode,
+            closeCode: task.closeCode,
+            closeReason: task.closeReason,
+            errorDescription: error.localizedDescription
+        )
+    }
+
+    static func endReason(
+        closedByClient: Bool = false,
+        statusCode: Int? = nil,
+        closeCode: URLSessionWebSocketTask.CloseCode,
+        closeReason: Data?,
+        errorDescription: String
+    ) -> AttachEndReason {
         if closedByClient {
             return .closedByClient
         }
         // A stale attach is rejected before WebSocket upgrade. URLSession
         // exposes the HTTP response even though there is no close frame.
-        if (task.response as? HTTPURLResponse)?.statusCode == 409 {
+        if statusCode == 409 {
             return .sessionEnded
         }
-        switch task.closeCode {
-        case .normalClosure:
+        if closeCode == .normalClosure,
+           closeReason.flatMap({ String(data: $0, encoding: .utf8) }) == "session_ended" {
             return .sessionEnded
-        case .internalServerError:
+        }
+        if closeCode == .internalServerError {
             return .serverError
-        default:
-            return .transportFailure(error.localizedDescription)
         }
+        return .transportFailure(errorDescription)
     }
 
     private func startOutboundPump(_ task: URLSessionWebSocketTask) {

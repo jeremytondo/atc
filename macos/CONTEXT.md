@@ -22,7 +22,7 @@ A Server-owned task context within one Project. In the initial version, every Wo
 _Avoid_: Checkout, worktree
 
 **Terminal Session**:
-A Server-owned terminal process created on a particular atc server. A Terminal Session belongs to its Workspace, except for legacy Project-scoped sessions.
+A Server-owned terminal process created on a particular atc server. A Terminal Session belongs to its Workspace, except for legacy Project-scoped sessions. Its lifecycle is Live or Ended; Ended is a retained read-only tombstone shown only after the server confirms the backing zmx session is absent. Transport and attach failures remain retryable and do not end it.
 _Avoid_: Terminal, shell
 
 **Agent Session**:

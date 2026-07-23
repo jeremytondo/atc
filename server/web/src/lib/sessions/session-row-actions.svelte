@@ -79,7 +79,7 @@
         value={draft}
         oninput={(e) => (draft = e.currentTarget.value)}
       />
-      <p class="hint">Changes only the display name. Live and ended sessions can be renamed.</p>
+      <p class="hint">Changes only the display name.</p>
       {#if saveError}
         <div
           class="card"

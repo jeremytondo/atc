@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/zmx"
 )
 
@@ -81,6 +82,11 @@ func dialAttach(t *testing.T, mux *fakeMux, id string) (*websocket.Conn, *httpte
 }
 
 func dialAttachRaw(t *testing.T, mux *fakeMux, id string) (*websocket.Conn, *httptest.Server) {
+	conn, srv, _ := dialAttachRawWithStore(t, mux, id)
+	return conn, srv
+}
+
+func dialAttachRawWithStore(t *testing.T, mux *fakeMux, id string) (*websocket.Conn, *httptest.Server, *store.Store) {
 	t.Helper()
 	h, st := newHandler(t, mux)
 	seedRunning(t, st, id, "Attach")
@@ -92,7 +98,7 @@ func dialAttachRaw(t *testing.T, mux *fakeMux, id string) (*websocket.Conn, *htt
 		srv.Close()
 		t.Fatalf("dial: %v", err)
 	}
-	return conn, srv
+	return conn, srv, st
 }
 
 func writeResize(t *testing.T, conn *websocket.Conn, cols, rows uint16) {
@@ -358,19 +364,56 @@ func TestAttachPingKeepsHealthyClientAttached(t *testing.T) {
 	}
 }
 
-func TestAttachClosesWithSessionEndedWhenPTYEnds(t *testing.T) {
-	pty := newPipePTY()
-	mux := &fakeMux{attachPTY: pty}
-	conn, srv := dialAttach(t, mux, "ses_attach")
-	defer srv.Close()
-	defer conn.CloseNow()
+func TestAttachPTYEOFRequiresConfirmedAbsence(t *testing.T) {
+	tests := []struct {
+		name        string
+		prepare     func(*fakeMux)
+		closeCode   websocket.StatusCode
+		closeReason string
+		wantStatus  store.RecordStatus
+	}{
+		{
+			name: "absent", prepare: func(mux *fakeMux) { mux.sessions = nil },
+			closeCode: websocket.StatusNormalClosure, closeReason: "session_ended", wantStatus: store.StatusEnded,
+		},
+		{
+			name: "present", prepare: func(_ *fakeMux) {},
+			closeCode: websocket.StatusInternalError, closeReason: "attach_failed", wantStatus: store.StatusLive,
+		},
+		{
+			name: "inventory unavailable", prepare: func(mux *fakeMux) { mux.listErr = errors.New("offline") },
+			closeCode: websocket.StatusInternalError, closeReason: "zmx_unavailable", wantStatus: store.StatusLive,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pty := newPipePTY()
+			mux := &fakeMux{attachPTY: pty}
+			conn, srv, st := dialAttachRawWithStore(t, mux, "ses_attach")
+			defer srv.Close()
+			defer conn.CloseNow()
+			writeResize(t, conn, 80, 24)
+			deadline := time.Now().Add(2 * time.Second)
+			for mux.attachCalls != 1 {
+				if time.Now().After(deadline) {
+					t.Fatal("attach did not spawn")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			tt.prepare(mux)
 
-	_ = pty.toClientIn.Close()
+			_ = pty.toClientIn.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_, _, err := conn.Read(ctx)
-	assertWebSocketClose(t, err, websocket.StatusNormalClosure, "session_ended")
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_, _, err := conn.Read(ctx)
+			assertWebSocketClose(t, err, tt.closeCode, tt.closeReason)
+			record, getErr := st.Get(context.Background(), "ses_attach")
+			if getErr != nil || record.Status != tt.wantStatus {
+				t.Fatalf("record = %+v err=%v, want %s", record, getErr, tt.wantStatus)
+			}
+		})
+	}
 }
 
 func TestAttachClosesWithInternalErrorWhenSpawnFails(t *testing.T) {
@@ -400,6 +443,17 @@ func TestAttachUnknownSessionIs404(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 (%s)", rec.Code, rec.Body)
 	}
+}
+
+func TestAttachInventoryFailureIs503BeforeUpgrade(t *testing.T) {
+	mux := &fakeMux{listErr: errors.New("offline")}
+	h, st := newHandler(t, mux)
+	seedRunning(t, st, "ses_attach", "Attach")
+	rec := do(t, h, http.MethodGet, "/sessions/ses_attach/attach", "")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (%s)", rec.Code, rec.Body)
+	}
+	assertErrorCode(t, rec, "zmx_unavailable")
 }
 
 // TestAttachDoesNotSpawnWithoutHandshake guards the ordering fix: a non-WebSocket

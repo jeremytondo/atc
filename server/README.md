@@ -8,8 +8,9 @@ through the owner-only Unix socket.
 ## Requirements
 
 - `mise` — manages the toolchain (Go, Node, pnpm) and provides task shortcuts
-- `zmx` — required when the service starts or reconciles sessions; defaults to
-  `zmx` on `PATH`
+- `zmx` — terminal multiplexer used for session launch and interaction;
+  defaults to `zmx` on `PATH`. If its inventory is temporarily unavailable,
+  atc keeps stored lifecycle state unchanged.
 - `claude` and/or `codex` — optional commands for the seeded Actions
 
 Install the pinned toolchain once:
@@ -397,10 +398,30 @@ Sessions always inherit the referenced Workspace's Project working directory.
 The current named keys for `sessions send-key` are `enter`, `ctrl-c`, and
 `escape`.
 
-The HTTP API renames both Live and Ended Sessions with
-`PATCH /api/sessions/{id}` and a strict `{"name":"New name"}` body. The server
-trims the name, rejects blank names with `400 invalid_request`, and returns the
-updated Session detail. Rename changes only the persisted display name.
+Sessions have a public `live | ended` lifecycle. Ended is a retained, read-only
+tombstone created only when a successful, complete `zmx list` confirms that the
+derived zmx name is absent. Startup, list, and detail reads share this
+demand-driven reconciliation; there is no polling loop. If inventory is
+unavailable, list and detail serve stored data without changing it. Attach,
+send, and deletion of a Live Session then return `503 zmx_unavailable`, and the
+CLI reports that state could not be confirmed and suggests retrying.
+
+The attach WebSocket uses normal closure reason `session_ended` only after that
+same confirmed absence. A PTY EOF/read/write failure while the session is still
+listed closes with `attach_failed`; an inventory failure closes with
+`zmx_unavailable`. Both failure reasons are retryable and do not change the
+Session to Ended.
+
+`PATCH /api/sessions/{id}` renames only Live Sessions and accepts a strict
+`{"name":"New name"}` body. The server trims the name, rejects blank names with
+`400 invalid_request`, returns `409 session_ended` for an Ended Session, and
+otherwise returns the updated Session detail. Rename changes only the persisted
+display name.
+
+Session deletion is stop-and-forget: a Live process confirmed present is
+terminated before its record is removed; an Ended Session or a Live process
+confirmed absent is removed directly. Inventory or termination failure
+preserves the record. Successful deletion never leaves an Ended tombstone.
 
 ## Mise Tasks
 
@@ -467,8 +488,9 @@ go run ./cmd/atc sessions list --workspace <workspace-id>
 ```
 
 Projects and Workspaces have explicit deletion paths. Deleting a Workspace
-ends its active Sessions before removing their metadata; deleting a Project is
-allowed only after its Workspaces are deleted. Files on disk are never touched.
+stops each associated Session when necessary and removes their metadata only
+after every required stop succeeds; deleting a Project is allowed only after
+its Workspaces are deleted. Files on disk are never touched.
 
 ## Tests
 

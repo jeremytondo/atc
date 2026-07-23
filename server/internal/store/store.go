@@ -229,8 +229,8 @@ func (s *Store) MarkEnded(ctx context.Context, id string) (Session, error) {
 	return s.queries().MarkEnded(ctx, id)
 }
 
-// RenameSession updates a session's display name. It does not affect process
-// identity or lifecycle state.
+// RenameSession updates a Live session's display name. It does not affect
+// process identity or lifecycle state.
 func (s *Store) RenameSession(ctx context.Context, id, name string) (Session, error) {
 	if strings.TrimSpace(name) == "" {
 		return Session{}, errors.New("rename session: name is required")
@@ -240,21 +240,25 @@ func (s *Store) RenameSession(ctx context.Context, id, name string) (Session, er
 	return q.updateOne(ctx, id, "rename", `
 	UPDATE sessions
 	SET name = ?, updated_at = ?
-	WHERE id = ? AND status != ?
+	WHERE id = ? AND status = ?
 	RETURNING`+sessionColumnsSQL,
-		name, formatTime(now), id, StatusStarting,
+		name, formatTime(now), id, StatusLive,
 	)
 }
 
-// DeleteSession removes a session's metadata row. Deleting a starting or live
-// session is rejected; the guard and the delete are one statement so
-// nothing can slip between them. Files are never touched.
-func (s *Store) DeleteSession(ctx context.Context, id string) error {
+// ForgetSession removes a Live or Ended record after the session service has
+// stopped the process or confirmed it absent. Launch Attempts stay protected.
+// Files are never touched.
+func (s *Store) ForgetSession(ctx context.Context, id string) error {
 	q := s.queries()
-	result, err := q.runner.ExecContext(ctx, `DELETE FROM sessions WHERE id = ? AND status = ?`, id, StatusEnded)
+	result, err := q.runner.ExecContext(ctx, `DELETE FROM sessions WHERE id = ? AND status != ?`, id, StatusStarting)
 	if err != nil {
 		return fmt.Errorf("delete session %s: %w", id, err)
 	}
+	return q.checkSessionDelete(ctx, id, result)
+}
+
+func (q queries) checkSessionDelete(ctx context.Context, id string, result sql.Result) error {
 	affected, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("delete session %s: %w", id, err)

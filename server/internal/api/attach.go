@@ -149,7 +149,7 @@ func (routes apiRoutes) attachSession(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if readErr != nil {
-				closeSessionEnded(conn)
+				confirmAttachFailure(routes.sessions, conn, id)
 				return
 			}
 		}
@@ -180,7 +180,7 @@ func (routes apiRoutes) attachSession(w http.ResponseWriter, r *http.Request) {
 
 	for _, data := range initial.binary {
 		if _, err := pty.Write(data); err != nil {
-			closeSessionEnded(conn)
+			confirmAttachFailure(routes.sessions, conn, id)
 			return
 		}
 	}
@@ -194,7 +194,7 @@ func (routes apiRoutes) attachSession(w http.ResponseWriter, r *http.Request) {
 		switch typ {
 		case websocket.MessageBinary:
 			if _, err := pty.Write(data); err != nil {
-				closeSessionEnded(conn)
+				confirmAttachFailure(routes.sessions, conn, id)
 				return
 			}
 		case websocket.MessageText:
@@ -258,12 +258,35 @@ func decodeResizeMessage(data []byte) (uint16, uint16, bool) {
 	return msg.Rows, msg.Cols, true
 }
 
+// closeForSessionErr maps a session error to the attach close vocabulary.
+// A nil err closes with fallbackReason.
+func closeForSessionErr(conn *websocket.Conn, err error, fallbackReason string) {
+	switch {
+	case errors.Is(err, session.ErrSessionNotFound), errors.Is(err, session.ErrSessionEnded):
+		closeSessionEnded(conn)
+	case errors.Is(err, session.ErrZmxUnavailable):
+		_ = conn.Close(websocket.StatusInternalError, "zmx_unavailable")
+	case err != nil:
+		_ = conn.Close(websocket.StatusInternalError, "internal_error")
+	default:
+		_ = conn.Close(websocket.StatusInternalError, fallbackReason)
+	}
+}
+
 func closeAttachError(conn *websocket.Conn, err error) {
-	if errors.Is(err, session.ErrSessionNotFound) || errors.Is(err, session.ErrSessionEnded) {
+	closeForSessionErr(conn, err, "internal_error")
+}
+
+// confirmAttachFailure applies the authoritative absence rule after a PTY
+// failure. It runs on the background context so confirmation still happens
+// when the attach context is already torn down.
+func confirmAttachFailure(sessions *session.Service, conn *websocket.Conn, id string) {
+	ended, err := sessions.ConfirmEnded(context.Background(), id)
+	if ended {
 		closeSessionEnded(conn)
 		return
 	}
-	_ = conn.Close(websocket.StatusInternalError, "internal_error")
+	closeForSessionErr(conn, err, "attach_failed")
 }
 
 func closeSessionEnded(conn *websocket.Conn) {

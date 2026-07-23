@@ -129,11 +129,18 @@ struct ContractFixtureTests {
         #expect(listing.entries[2].kind == .unknown)
     }
 
-    @Test("error envelope")
-    func errorEnvelope() throws {
-        let envelope = try decodeResponse("error", as: ErrorEnvelope.self)
-        #expect(envelope.error == "session_not_found")
-        #expect(envelope.sessionId == "ses_fixture01")
+    @Test(
+        "error envelope",
+        arguments: [
+            ("error", "session_not_found", "ses_fixture01"),
+            ("error-session-ended", "session_ended", "ses_fixture01"),
+            ("error-zmx-unavailable", "zmx_unavailable", nil),
+        ]
+    )
+    func errorEnvelope(fixture: String, code: String, sessionID: String?) throws {
+        let envelope = try decodeResponse(fixture, as: ErrorEnvelope.self)
+        #expect(envelope.error == code)
+        #expect(envelope.sessionId == sessionID)
     }
 
     @Test("health and version")
