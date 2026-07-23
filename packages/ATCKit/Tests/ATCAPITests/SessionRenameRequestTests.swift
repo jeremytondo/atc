@@ -14,8 +14,8 @@ private final class SessionRenameURLProtocol: URLProtocol {
         Self.lastBody = request.httpBody ?? request.httpBodyStream.flatMap(readAll)
         let body = Data(#"""
         {
-          "id":"ses_123","name":"Renamed","environment":"host-login-shell",
-          "params":{},"workingDir":"/repo","status":"ended",
+          "id":"ses_123","name":"Renamed","actionId":"act_123456789abcdefghijklmnopq",
+          "actionName":"Editor","isAgent":false,"workingDir":"/repo","status":"ended",
           "createdAt":"2026-07-18T10:00:00Z","updatedAt":"2026-07-18T11:00:00Z"
         }
         """#.utf8)
@@ -52,7 +52,7 @@ struct SessionRenameRequestTests {
         return HTTPATCClient(server: server, session: URLSession(configuration: configuration))
     }
 
-    @Test("renameSession PATCHes the name and decodes SessionDetail")
+    @Test("renameSession PATCHes the name and decodes Session")
     func renameSession() async throws {
         let detail = try await makeClient().renameSession(id: "ses_123", name: "Renamed")
         let request = try #require(SessionRenameURLProtocol.lastRequest)
