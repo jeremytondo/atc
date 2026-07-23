@@ -5,12 +5,15 @@
 // exercise the client's envelope unwrapping against fixture bodies.
 import { describe, expect, it, vi, afterEach } from 'vitest';
 
+import actionCreate from '../../../../packages/contracts/fixtures/action-create.json';
+import actionDelete from '../../../../packages/contracts/fixtures/action-delete.json';
 import actionDetail from '../../../../packages/contracts/fixtures/action-detail.json';
+import actionUpdate from '../../../../packages/contracts/fixtures/action-update.json';
 import actionsList from '../../../../packages/contracts/fixtures/actions-list.json';
-import environments from '../../../../packages/contracts/fixtures/environments.json';
 import errorFixture from '../../../../packages/contracts/fixtures/error.json';
 import projectCreate from '../../../../packages/contracts/fixtures/project-create.json';
 import projectsList from '../../../../packages/contracts/fixtures/projects-list.json';
+import sessionDetail from '../../../../packages/contracts/fixtures/session-detail.json';
 import sessionStart from '../../../../packages/contracts/fixtures/session-start.json';
 import sessionRename from '../../../../packages/contracts/fixtures/session-rename.json';
 import sessionsList from '../../../../packages/contracts/fixtures/sessions-list.json';
@@ -20,18 +23,22 @@ import workspacesList from '../../../../packages/contracts/fixtures/workspaces-l
 
 import {
   listActions,
-  getActionDetail,
-  listEnvironments,
+  getAction,
+  createAction,
+  updateAction,
+  deleteAction,
   listProjects,
   createProject,
   listSessions,
+  getSession,
   startSession,
   renameSession,
   listWorkspaces,
   createWorkspace,
   listWorkspaceSessions,
-  type ActionDetail,
-  type Environment,
+  type Action,
+  type ActionCreate,
+  type ActionPatch,
   type ErrorResponse,
   type Project,
   type SessionDetail,
@@ -66,6 +73,10 @@ const sessionStartContract = {
   ...sessionStart.response,
   status: sessionStatus(sessionStart.response.status)
 } satisfies SessionDetail;
+const sessionDetailContract = {
+  ...sessionDetail.response,
+  status: sessionStatus(sessionDetail.response.status)
+} satisfies SessionDetail;
 const sessionRenameContract = {
   ...sessionRename.response,
   status: sessionStatus(sessionRename.response.status)
@@ -82,11 +93,13 @@ const workspaceSessionsContract = {
     status: sessionStatus(session.status)
   }))
 } satisfies { sessions: SessionListItem[] };
-// actions-list is checked at runtime only: TS normalizes the two actions'
-// differing `params` literals into phantom `key?: undefined` members that a
-// Record index signature rejects.
-actionDetail.response satisfies ActionDetail;
-environments.response satisfies { environments: Environment[] };
+actionsList.response satisfies { actions: Action[] };
+actionDetail.response satisfies Action;
+actionCreate.request satisfies ActionCreate;
+actionCreate.response satisfies Action;
+actionUpdate.request satisfies ActionPatch;
+actionUpdate.response satisfies Action;
+actionDelete.response satisfies Record<string, never>;
 errorFixture.response satisfies ErrorResponse;
 
 function mockFetch(body: unknown, status = 200) {
@@ -120,8 +133,18 @@ describe('api client unwraps fixture responses', () => {
 	mockFetch(sessionStartContract);
     const detail = await startSession(sessionStart.request);
 	expect(detail.status).toBe('live');
-    expect(detail.params).toEqual({ model: 'opus' });
+    expect(detail.actionName).toBe('Claude');
+    expect(detail.isAgent).toBe(true);
     expect(detail.workspace?.id).toBe('wsp_fixture01');
+  });
+
+  it('getSession returns an Interactive Shell session without action identity', async () => {
+    mockFetch(sessionDetailContract);
+    const detail = await getSession('ses/fixture 02');
+    expect(detail.actionId).toBeUndefined();
+    expect(detail.actionName).toBeUndefined();
+    expect(detail.isAgent).toBe(false);
+    expect(fetch).toHaveBeenCalledWith('/api/sessions/ses%2Ffixture%2002', expect.any(Object));
   });
 
   it('renameSession patches the encoded session path and returns updated detail', async () => {
@@ -172,20 +195,63 @@ describe('api client unwraps fixture responses', () => {
   it('listActions returns the actions array', async () => {
     mockFetch(actionsList.response);
     const actions = await listActions();
-    expect(actions[0].params.model.values).toEqual(['opus', 'sonnet']);
+    expect(actions[0].id).toBe('act_vpj2tlg9viqd8ms52ptuvao5c4');
+    expect(actions[1].args).toEqual(['run', 'dev']);
   });
 
-  it('getActionDetail returns command and args', async () => {
+  it('getAction returns the same complete shape as listActions', async () => {
     mockFetch(actionDetail.response);
-    const detail = await getActionDetail('claude');
+    const detail = await getAction('act_vpj2tlg9viqd8ms52ptuvao5c4');
     expect(detail.command).toBe('claude');
     expect(detail.args).toEqual(['--verbose']);
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/actions/act_vpj2tlg9viqd8ms52ptuvao5c4',
+      expect.any(Object)
+    );
   });
 
-  it('listEnvironments returns the environments array', async () => {
-    mockFetch(environments.response);
-    const envs = await listEnvironments();
-    expect(envs[0].default).toBe(true);
+  it('runs the action administration lifecycle with ID-addressed requests', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(actionCreate.response), { status: 201 })
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify(actionUpdate.response), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(actionDelete.response), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('localStorage', {
+      getItem: () => null,
+      setItem: () => {},
+      removeItem: () => {}
+    });
+
+    const created = await createAction(actionCreate.request);
+    const updated = await updateAction(created.id, actionUpdate.request);
+    await deleteAction(updated.id);
+
+    expect(created.enabled).toBe(true);
+    expect(updated.isAgent).toBe(true);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/api/actions',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify(actionCreate.request)
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      `/api/actions/${created.id}`,
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify(actionUpdate.request)
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      `/api/actions/${updated.id}`,
+      expect.objectContaining({ method: 'DELETE' })
+    );
   });
 
   it('non-2xx responses surface the error envelope', async () => {

@@ -161,7 +161,7 @@
               >
             {/if}
             <span class="badge">{sessionActionLabel(s)}</span>
-            <span class="badge" style="color:var(--dc-dim)">{s.environment}</span>
+            {#if s.isAgent}<span class="badge">Agent</span>{/if}
             <span class="stime">{timeAgo(s.createdAt)}</span>
             <div class="iacts">
               {#if s.status === 'live'}

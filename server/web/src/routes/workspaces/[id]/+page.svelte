@@ -10,15 +10,13 @@
     deleteSession,
     listWorkspaceSessions,
     listActions,
-    listEnvironments,
     startSession,
     sessionActionLabel,
     messageFromError,
     type Workspace,
     type Project,
     type SessionListItem,
-    type Action,
-    type Environment
+    type Action
   } from '$lib/api';
   import ErrorBanner from '$lib/error-banner.svelte';
   import WorkspaceEditor from '$lib/workspaces/workspace-editor.svelte';
@@ -34,7 +32,6 @@
   let project = $state<Project | null>(null);
   let sessions = $state<SessionListItem[]>([]);
   let actions = $state<Action[]>([]);
-  let environments = $state<Environment[]>([]);
   let loading = $state(false);
   let error = $state('');
   let busy = $state(false);
@@ -44,21 +41,12 @@
   let saving = $state(false);
   let saveError = $state('');
 
-  // Start Session form state. Params reset whenever the action changes because
-  // each action declares its own spec.
   let startAction = $state(interactiveShell);
-  let startEnvironment = $state('');
   let startName = $state('');
-  let startPrompt = $state('');
-  let startParams = $state<Record<string, string>>({});
   let starting = $state(false);
   let startError = $state('');
 
-  let enabledActions = $derived(actions.filter((a) => a.enabled !== false));
-  let selectedAction = $derived(enabledActions.find((a) => a.name === startAction) ?? null);
-  let selectedParams = $derived(
-    Object.entries(selectedAction?.params ?? {}).sort(([a], [b]) => a.localeCompare(b))
-  );
+  let enabledActions = $derived(actions.filter((action) => action.enabled));
 
   function dotColor(status: string) {
     return (
@@ -92,17 +80,9 @@
     loading = true;
     error = '';
     try {
-      const [got, acts, envs] = await Promise.all([
-        getWorkspace(workspaceId),
-        listActions(),
-        listEnvironments()
-      ]);
+      const [got, acts] = await Promise.all([getWorkspace(workspaceId), listActions()]);
       workspace = got;
       actions = acts;
-      environments = envs;
-      if (!startEnvironment) {
-        startEnvironment = envs.find((e) => e.default)?.name ?? envs[0]?.name ?? '';
-      }
       const [parent] = await Promise.all([getProject(got.projectId), loadSessions()]);
       project = parent;
     } catch (e) {
@@ -114,7 +94,6 @@
 
   function onActionChange(event: Event) {
     startAction = (event.currentTarget as HTMLSelectElement).value;
-    startParams = {};
     startError = '';
   }
 
@@ -171,22 +150,12 @@
     starting = true;
     startError = '';
     try {
-      const params: Record<string, string> = {};
-      for (const [key, value] of Object.entries(startParams)) {
-        if (value !== '') params[key] = value;
-      }
       await startSession({
         workspaceId: workspace.id,
-        // The interactive shell is an omitted action; it takes no params or
-        // prompt, so those are only sent alongside a real action.
-        action: startAction || undefined,
-        environment: startEnvironment || undefined,
-        params: startAction && Object.keys(params).length > 0 ? params : undefined,
-        name: startName.trim() || undefined,
-        prompt: startAction ? startPrompt.trim() || undefined : undefined
+        actionId: startAction || undefined,
+        name: startName.trim() || undefined
       });
       startName = '';
-      startPrompt = '';
       await loadSessions();
     } catch (e) {
       startError = messageFromError(e);
@@ -284,76 +253,24 @@
           <label class="lbl" for="start-action">Action</label>
           <select id="start-action" class="sel" value={startAction} onchange={onActionChange}>
             <option value={interactiveShell}>(interactive shell)</option>
-            {#each enabledActions as a (a.name)}
-              <option value={a.name}>{a.label || a.name}</option>
+            {#each enabledActions as action (action.id)}
+              <option value={action.id}>
+                {action.name}{action.isAgent ? ' · agent' : ''}
+              </option>
             {/each}
           </select>
         </div>
         <div>
-          <label class="lbl" for="start-env">Environment</label>
-          <select
-            id="start-env"
-            class="sel"
-            value={startEnvironment}
-            onchange={(e) => (startEnvironment = e.currentTarget.value)}
-          >
-            {#each environments as env (env.name)}
-              <option value={env.name}>{env.label || env.name}</option>
-            {/each}
-          </select>
+          <label class="lbl" for="start-name">Name</label>
+          <input
+            id="start-name"
+            class="inp"
+            value={startName}
+            oninput={(event) => (startName = event.currentTarget.value)}
+            placeholder="optional"
+          />
         </div>
       </div>
-      <div style="margin-bottom:12px">
-        <label class="lbl" for="start-name">Name</label>
-        <input
-          id="start-name"
-          class="inp"
-          value={startName}
-          oninput={(e) => (startName = e.currentTarget.value)}
-          placeholder="optional"
-        />
-      </div>
-      {#if selectedAction?.prompt}
-        <div style="margin-bottom:12px">
-          <label class="lbl" for="start-prompt">Prompt</label>
-          <textarea
-            id="start-prompt"
-            class="ta"
-            value={startPrompt}
-            oninput={(e) => (startPrompt = e.currentTarget.value)}
-            placeholder="optional starting prompt…"
-          ></textarea>
-        </div>
-      {/if}
-      {#each selectedParams as [name, spec] (name)}
-        <div style="margin-bottom:12px">
-          <label class="lbl" for={`start-param-${name}`}>{spec.label || name}</label>
-          {#if spec.type === 'bool'}
-            <select
-              id={`start-param-${name}`}
-              class="sel"
-              value={startParams[name] ?? ''}
-              onchange={(e) => (startParams = { ...startParams, [name]: e.currentTarget.value })}
-            >
-              <option value="">(default)</option>
-              <option value="true">true</option>
-              <option value="false">false</option>
-            </select>
-          {:else}
-            <select
-              id={`start-param-${name}`}
-              class="sel"
-              value={startParams[name] ?? ''}
-              onchange={(e) => (startParams = { ...startParams, [name]: e.currentTarget.value })}
-            >
-              <option value="">(default)</option>
-              {#each spec.values ?? [] as v (v)}
-                <option value={v}>{v}</option>
-              {/each}
-            </select>
-          {/if}
-        </div>
-      {/each}
 
       <ErrorBanner message={startError} />
       <button class="btn primary" disabled={starting} onclick={start}>
@@ -380,6 +297,7 @@
             </div>
             <div class="imeta">
               <span class="badge">{sessionActionLabel(s)}</span>
+              {#if s.isAgent}<span class="badge">Agent</span>{/if}
               <span class="badge" style="color:var(--dc-dim)">{s.status}</span>
               <span class="stime">{timeAgo(s.createdAt)}</span>
               <div class="iacts">

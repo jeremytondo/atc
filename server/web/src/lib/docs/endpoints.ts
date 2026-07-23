@@ -47,7 +47,7 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'POST',
     path: '/api/sessions/start',
     title: 'Start session',
-	desc: 'Launch a persistent terminal in a workspace. The session runs in the workspace project’s working directory. Omit action to launch the Interactive Shell (the host user’s shell); params and prompt require an action. The launch is synchronous: the response is the new Live Session.',
+    desc: 'Launch a persistent terminal in a workspace. The session runs in the workspace project’s working directory. Supply an action ID to run its fixed command and literal args, or omit actionId to launch the Interactive Shell. The launch is synchronous: the response is the new Live Session.',
     params: [
       {
         name: 'workspaceId',
@@ -56,34 +56,23 @@ export const ENDPOINTS: Endpoint[] = [
         desc: 'Workspace to start the session in; the session inherits the project directory.'
       },
       {
-        name: 'action',
+        name: 'actionId',
         type: 'string',
-        desc: 'Name of the action to run. Omitted, the server launches the Interactive Shell.'
-      },
-      {
-        name: 'environment',
-        type: 'enum',
-        desc: 'Name of one of the configured environments (see Environments). Defaults to host-login-shell.'
-      },
-      { name: 'params', type: 'object', desc: 'Action-specific parameter values. Requires action.' },
-      {
-        name: 'prompt',
-        type: 'string',
-        desc: 'Initial prompt for actions that declare prompt support. Requires action.'
+        desc: 'Opaque ID of the action to run. Omitted, the server launches the Interactive Shell.'
       },
       { name: 'name', type: 'string', desc: 'Optional human label.' }
     ],
     fields: [
       { key: 'workspaceId', label: 'workspaceId', kind: 'text', placeholder: 'wsp_…', required: true },
-      { key: 'action', label: 'action', kind: 'select', options: ['(interactive shell)', 'codex', 'claude'] },
-      { key: 'environment', label: 'environment', kind: 'select', options: ['host-login-shell'] },
-      { key: 'name', label: 'name', kind: 'text', placeholder: 'optional' },
-      { key: 'prompt', label: 'prompt', kind: 'textarea', placeholder: 'optional starting prompt…' }
+      { key: 'actionId', label: 'actionId', kind: 'text', placeholder: 'act_… (optional)' },
+      { key: 'name', label: 'name', kind: 'text', placeholder: 'optional' }
     ],
-	returns: '{\n  "id": "ses_8f3a2c",\n  "status": "live",\n  "action": "codex"\n}',
+    returns:
+      '{\n  "id": "ses_8f3a2c",\n  "actionId": "act_fh9g7e6571qo53r0t647ughtfg",\n  "actionName": "Codex",\n  "isAgent": true,\n  "status": "live"\n}',
     cli: {
       cmd: 'atc sessions start',
-      example: 'atc sessions start \\\n  --workspace wsp_8f3a2c --action codex'
+      example:
+        'atc sessions start \\\n  --workspace wsp_8f3a2c \\\n  --action act_fh9g7e6571qo53r0t647ughtfg'
     }
   },
   {
@@ -111,7 +100,7 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'GET',
     path: '/api/sessions/{id}',
     title: 'Read session',
-    desc: 'Fetch full detail for one session, including its params and prompt.',
+    desc: 'Fetch one session, including its copied launch-time action name and agent classification. Interactive Shell sessions omit actionId and actionName and return isAgent false.',
     params: [{ name: 'id', type: 'string', required: true, desc: 'Session id (path).' }],
     fields: [{ key: 'id', label: 'id', kind: 'text', placeholder: 'ses_…', required: true }],
 	returns: '{ "id": "ses_…", "status": "live", … }',
@@ -396,22 +385,28 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'GET',
     path: '/api/actions',
     title: 'List actions',
-    desc: 'Return every configured action — built-ins, overrides, and custom ones — with its type ("action" or "agent"), origin, and enabled state.',
+    desc: 'Return every server-wide action in stable name order. List and detail use the same complete shape, including command, literal args, enabled state, and agent classification.',
     params: [],
     fields: [],
-    returns: '{ "actions": [ … ] }',
+    returns:
+      '{ "actions": [{ "id": "act_…", "name": "Codex", "enabled": true, "command": "codex", "args": [], "isAgent": true }] }',
     cli: { cmd: 'atc actions list', example: 'atc actions list' }
   },
   {
     key: 'readAction',
     group: 'Actions',
     method: 'GET',
-    path: '/api/actions/{name}',
+    path: '/api/actions/{id}',
     title: 'Read action',
-    desc: 'Fetch one action’s full effective definition, including command and args, which the list omits.',
-    params: [{ name: 'name', type: 'string', required: true, desc: 'Action name (path).' }],
-    fields: [{ key: 'name', label: 'name', kind: 'text', placeholder: 'claude', required: true }],
-    returns: '{ "name": "claude", "type": "agent", "command": "claude", … }'
+    desc: 'Fetch one complete action by its opaque, immutable ID.',
+    params: [{ name: 'id', type: 'string', required: true, desc: 'Action ID (path).' }],
+    fields: [{ key: 'id', label: 'id', kind: 'text', placeholder: 'act_…', required: true }],
+    returns:
+      '{ "id": "act_fh9g7e6571qo53r0t647ughtfg", "name": "Codex", "enabled": true, "command": "codex", "args": [], "isAgent": true }',
+    cli: {
+      cmd: 'atc actions show',
+      example: 'atc actions show act_fh9g7e6571qo53r0t647ughtfg'
+    }
   },
   {
     key: 'createAction',
@@ -419,79 +414,66 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'POST',
     path: '/api/actions',
     title: 'Create action',
-    desc: 'Create a custom action. Name is optional — omitted, it is derived from the label. Type ("action" or "agent") defaults to "action" and is immutable afterwards.',
+    desc: 'Create a server-wide action. The server generates its immutable ID. enabled defaults to true, args to an empty array, and isAgent to false.',
     params: [
-      { name: 'name', type: 'string', desc: 'Action id; derived from label when omitted.' },
-      { name: 'type', type: 'string', desc: '"action" or "agent". Defaults to "action"; immutable.' },
-      { name: 'label', type: 'string', desc: 'Human label.' },
+      { name: 'name', type: 'string', required: true, desc: 'Editable human-facing name; need not be unique.' },
+      { name: 'description', type: 'string', desc: 'Optional description.' },
       { name: 'command', type: 'string', required: true, desc: 'Executable to launch.' },
-      { name: 'args', type: 'array', desc: 'Fixed base arguments.' },
-      { name: 'prompt', type: 'object', desc: 'Prompt spec; omit for no-prompt actions.' },
-      { name: 'params', type: 'object', desc: 'Closed set of typed parameters.' },
-      { name: 'enabled', type: 'bool', desc: 'Omitted means enabled.' }
+      { name: 'args', type: 'array', desc: 'Ordered literal arguments. Defaults to [].' },
+      { name: 'enabled', type: 'bool', desc: 'Whether new sessions may use the action. Defaults to true.' },
+      { name: 'isAgent', type: 'bool', desc: 'Frontend classification hint. Defaults to false.' }
     ],
     fields: [
-      { key: 'label', label: 'label', kind: 'text', placeholder: 'My Agent', required: true },
-      { key: 'command', label: 'command', kind: 'text', placeholder: 'my-agent', required: true }
+      { key: 'name', label: 'name', kind: 'text', placeholder: 'Neovim', required: true },
+      { key: 'command', label: 'command', kind: 'text', placeholder: 'nvim', required: true }
     ],
-    returns: '{ "name": "my-agent", "type": "action", "origin": "custom", … }'
+    returns:
+      '{ "id": "act_…", "name": "Neovim", "enabled": true, "command": "nvim", "args": [], "isAgent": false }',
+    cli: {
+      cmd: 'atc actions create',
+      example: 'atc actions create --name "Neovim" --command nvim'
+    }
   },
   {
     key: 'updateAction',
     group: 'Actions',
-    method: 'PUT',
-    path: '/api/actions/{name}',
+    method: 'PATCH',
+    path: '/api/actions/{id}',
     title: 'Update action',
-    desc: 'Full replace of an action definition. Updating a built-in name creates an override. Type is immutable: a different type is rejected (400).',
+    desc: 'Update any action field except its ID. Omitted fields stay unchanged; description null clears the description. Existing sessions keep their copied launch identity.',
     params: [
-      { name: 'name', type: 'string', required: true, desc: 'Action name (path).' },
-      { name: 'command', type: 'string', required: true, desc: 'Executable to launch.' }
+      { name: 'id', type: 'string', required: true, desc: 'Action ID (path).' },
+      { name: 'name', type: 'string', desc: 'New human-facing name.' },
+      { name: 'description', type: 'string|null', desc: 'New description, or null to clear it.' },
+      { name: 'command', type: 'string', desc: 'New executable.' },
+      { name: 'args', type: 'array', desc: 'Replacement ordered literal arguments.' },
+      { name: 'enabled', type: 'bool', desc: 'New enabled state.' },
+      { name: 'isAgent', type: 'bool', desc: 'New agent classification.' }
     ],
     fields: [
-      { key: 'name', label: 'name', kind: 'text', placeholder: 'my-agent', required: true },
-      { key: 'command', label: 'command', kind: 'text', placeholder: 'my-agent', required: true }
+      { key: 'id', label: 'id', kind: 'text', placeholder: 'act_…', required: true },
+      { key: 'name', label: 'name', kind: 'text', placeholder: 'New action name' }
     ],
-    returns: '{ "name": "my-agent", "origin": "custom", … }'
-  },
-  {
-    key: 'setActionEnabled',
-    group: 'Actions',
-    method: 'PUT',
-    path: '/api/actions/{name}/enabled',
-    title: 'Enable or disable action',
-    desc: 'Toggle whether an action can launch sessions. Disabled actions stay visible in discovery.',
-    params: [
-      { name: 'name', type: 'string', required: true, desc: 'Action name (path).' },
-      { name: 'enabled', type: 'bool', required: true, desc: 'New enabled state.' }
-    ],
-    fields: [
-      { key: 'name', label: 'name', kind: 'text', placeholder: 'claude', required: true },
-      { key: 'enabled', label: 'enabled', kind: 'select', options: ['true', 'false'], required: true }
-    ],
-    returns: '{ "name": "claude", "enabled": false, … }'
+    returns: '{ "id": "act_…", "name": "New action name", … }',
+    cli: {
+      cmd: 'atc actions update',
+      example: 'atc actions update act_123456789abcdefghijklmnopq --name "New action name"'
+    }
   },
   {
     key: 'deleteAction',
     group: 'Actions',
     method: 'DELETE',
-    path: '/api/actions/{name}',
+    path: '/api/actions/{id}',
     title: 'Delete action',
-	desc: 'Delete a custom action, or revert a modified built-in to its default. Deleting a custom action is rejected with 409 action_in_use while a provisional launch attempt or Live Session references it.',
-    params: [{ name: 'name', type: 'string', required: true, desc: 'Action name (path).' }],
-    fields: [{ key: 'name', label: 'name', kind: 'text', placeholder: 'my-agent', required: true }],
-    returns: '{}'
-  },
-  {
-    key: 'listEnvironments',
-    group: 'Environments',
-    method: 'GET',
-    path: '/api/environments',
-    title: 'List environments',
-    desc: 'Return the configured launch environments sessions can run in.',
-    params: [],
-    fields: [],
-    returns: '{ "environments": [ … ] }',
-    cli: { cmd: 'atc environments list', example: 'atc environments list' }
+    desc: 'Permanently delete an action. Existing sessions and their copied launch identity are not affected.',
+    params: [{ name: 'id', type: 'string', required: true, desc: 'Action ID (path).' }],
+    fields: [{ key: 'id', label: 'id', kind: 'text', placeholder: 'act_…', required: true }],
+    returns: '{}',
+    cli: {
+      cmd: 'atc actions delete',
+      example: 'atc actions delete act_123456789abcdefghijklmnopq'
+    }
   },
   {
     key: 'fsList',

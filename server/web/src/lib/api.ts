@@ -5,65 +5,32 @@
 
 export const tokenStorageKey = 'atc.apiToken';
 
-export type ParamSpec = {
-  type: 'enum' | 'bool' | string;
-  values?: string[];
-  default?: unknown;
-  flag?: string;
-  label?: string;
-  description?: string;
-};
-
-export type ActionOrigin = 'builtin' | 'modified' | 'custom' | string;
-
-// ActionType classifies what an action launches; it is immutable after create.
-export type ActionType = 'action' | 'agent' | string;
-
 export type Action = {
+  id: string;
   name: string;
-  type?: ActionType;
-  origin?: ActionOrigin;
-  enabled?: boolean;
-  label?: string;
   description?: string;
-  prompt?: { flag?: string };
-  params: Record<string, ParamSpec>;
-};
-
-export type ActionDetail = {
-  name: string;
-  type?: ActionType;
-  origin?: ActionOrigin;
-  enabled?: boolean;
-  label?: string;
-  description?: string;
+  enabled: boolean;
   command: string;
   args: string[];
-  prompt?: { flag?: string };
-  params: Record<string, ParamSpec>;
+  isAgent: boolean;
 };
 
-// ActionWrite is the create/update body the backend accepts. Prompt is null when
-// the action takes no initial prompt; enabled is optional (omitted = enabled);
-// type is optional (defaults to "action" on create, immutable afterwards).
-export type ActionWrite = {
-  name?: string;
-  type?: ActionType;
-  label?: string;
+export type ActionCreate = {
+  name: string;
   description?: string;
   command: string;
   args?: string[];
-  prompt?: { flag?: string } | null;
-  params?: Record<string, ParamSpec>;
   enabled?: boolean;
+  isAgent?: boolean;
 };
 
-export type Environment = {
-  name: string;
-  kind: string;
-  label?: string;
-  description?: string;
-  default?: boolean;
+export type ActionPatch = {
+  name?: string;
+  description?: string | null;
+  command?: string;
+  args?: string[];
+  enabled?: boolean;
+  isAgent?: boolean;
 };
 
 export type Project = {
@@ -99,9 +66,10 @@ export type SessionProject = {
 export type SessionListItem = {
   id: string;
   name?: string;
-  // Absent action means the session is an Interactive Shell.
-  action?: string;
-  environment: string;
+  // Absent actionId/actionName means the session is an Interactive Shell.
+  actionId?: string;
+  actionName?: string;
+  isAgent: boolean;
   workingDir: string;
   status: 'live' | 'ended';
   createdAt: string;
@@ -110,18 +78,12 @@ export type SessionListItem = {
   project?: SessionProject;
 };
 
-export type SessionDetail = SessionListItem & {
-  params: Record<string, unknown>;
-  prompt?: string;
-};
+export type SessionDetail = SessionListItem;
 
 export type StartSessionRequest = {
   workspaceId: string;
-  // Omitted action launches the Interactive Shell.
-  action?: string;
-  environment?: string;
-  params?: Record<string, string>;
-  prompt?: string;
+  // Omitted actionId launches the Interactive Shell.
+  actionId?: string;
   name?: string;
 };
 
@@ -181,9 +143,9 @@ export async function listActions(): Promise<Action[]> {
   return body.actions ?? [];
 }
 
-export async function getActionDetail(name: string): Promise<ActionDetail> {
-  const res = await apiFetch(`/api/actions/${encodeURIComponent(name)}`);
-  return (await res.json()) as ActionDetail;
+export async function getAction(id: string): Promise<Action> {
+  const res = await apiFetch(`/api/actions/${encodeURIComponent(id)}`);
+  return (await res.json()) as Action;
 }
 
 function jsonInit(method: string, body: unknown): RequestInit {
@@ -194,32 +156,18 @@ function jsonInit(method: string, body: unknown): RequestInit {
   };
 }
 
-export async function createAction(body: ActionWrite): Promise<ActionDetail> {
+export async function createAction(body: ActionCreate): Promise<Action> {
   const res = await apiFetch('/api/actions', jsonInit('POST', body));
-  return (await res.json()) as ActionDetail;
+  return (await res.json()) as Action;
 }
 
-export async function updateAction(name: string, body: ActionWrite): Promise<ActionDetail> {
-  const res = await apiFetch(`/api/actions/${encodeURIComponent(name)}`, jsonInit('PUT', body));
-  return (await res.json()) as ActionDetail;
+export async function updateAction(id: string, body: ActionPatch): Promise<Action> {
+  const res = await apiFetch(`/api/actions/${encodeURIComponent(id)}`, jsonInit('PATCH', body));
+  return (await res.json()) as Action;
 }
 
-export async function deleteAction(name: string): Promise<void> {
-  await apiFetch(`/api/actions/${encodeURIComponent(name)}`, { method: 'DELETE' });
-}
-
-export async function setActionEnabled(name: string, enabled: boolean): Promise<ActionDetail> {
-  const res = await apiFetch(
-    `/api/actions/${encodeURIComponent(name)}/enabled`,
-    jsonInit('PUT', { enabled })
-  );
-  return (await res.json()) as ActionDetail;
-}
-
-export async function listEnvironments(): Promise<Environment[]> {
-  const res = await apiFetch('/api/environments');
-  const body = (await res.json()) as { environments?: Environment[] };
-  return body.environments ?? [];
+export async function deleteAction(id: string): Promise<void> {
+  await apiFetch(`/api/actions/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 export async function listSessions(
@@ -229,6 +177,11 @@ export async function listSessions(
   const res = await apiFetch(`/api/sessions${qs}`);
   const body = (await res.json()) as { sessions?: SessionListItem[] };
   return body.sessions ?? [];
+}
+
+export async function getSession(id: string): Promise<SessionDetail> {
+  const res = await apiFetch(`/api/sessions/${encodeURIComponent(id)}`);
+  return (await res.json()) as SessionDetail;
 }
 
 export async function startSession(body: StartSessionRequest): Promise<SessionDetail> {
@@ -336,8 +289,8 @@ export async function listWorkspaceSessions(
   return body.sessions ?? [];
 }
 
-// sessionActionLabel is the display label for a session's action; an absent
-// action is the Interactive Shell.
-export function sessionActionLabel(session: { action?: string }): string {
-  return session.action || 'interactive shell';
+// sessionActionLabel is the copied launch-time action name; an absent name is
+// the Interactive Shell.
+export function sessionActionLabel(session: { actionName?: string }): string {
+  return session.actionName ?? 'interactive shell';
 }

@@ -2,6 +2,7 @@
   import { onDestroy, onMount } from 'svelte';
   import { page } from '$app/state';
   import { init, Terminal, FitAddon } from 'ghostty-web';
+  import { getSession, sessionActionLabel, type SessionDetail } from '$lib/api';
 
   // The [id] route param is always present here; '' only satisfies the
   // generic page.params typing and would just 404 the attach.
@@ -13,6 +14,7 @@
   let term: Terminal | undefined;
   let fit: FitAddon | undefined;
   let socket: WebSocket | undefined;
+  let session = $state<SessionDetail | null>(null);
   let status = $state<'connecting' | 'connected' | 'session_ended' | 'internal_error' | 'disconnected' | 'error'>(
     'connecting'
   );
@@ -32,6 +34,14 @@
 
   onMount(() => {
     let disposed = false;
+
+    getSession(id)
+      .then((detail) => {
+        if (!disposed) session = detail;
+      })
+      .catch(() => {
+        // Terminal attachment still works if the optional header metadata fails.
+      });
 
     function sendResize() {
       if (socket?.readyState === WebSocket.OPEN && term) {
@@ -127,7 +137,15 @@
 
 <div class="flex h-screen w-screen flex-col bg-black">
   <header class="flex items-center justify-between gap-3 border-b border-border/60 px-4 py-2">
-    <a href="/sessions" class="min-w-0 truncate font-mono text-sm text-foreground">{id}</a>
+    <div class="flex min-w-0 items-center gap-2">
+      <a href="/sessions" class="min-w-0 truncate font-mono text-sm text-foreground">
+        {session?.name ?? id}
+      </a>
+      {#if session}
+        <span class="badge">{sessionActionLabel(session)}</span>
+        {#if session.isAgent}<span class="badge">Agent</span>{/if}
+      {/if}
+    </div>
     <span
       class="shrink-0 text-xs"
       class:text-emerald-400={status === 'connected'}
