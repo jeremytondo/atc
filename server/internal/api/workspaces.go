@@ -127,7 +127,7 @@ func (routes apiRoutes) listWorkspaceSessions(w http.ResponseWriter, r *http.Req
 		writeSessionError(w, err)
 		return
 	}
-	items := make([]SessionListItem, 0, len(sessions))
+	items := make([]SessionResponse, 0, len(sessions))
 	for _, s := range sessions {
 		items = append(items, listItemResponse(s))
 	}

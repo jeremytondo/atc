@@ -1,17 +1,16 @@
 # atc server
 
 atc server is a standalone Go service, CLI (`atc`), and embedded admin web UI for starting and
-managing persistent terminal sessions. Sessions run configured typed Actions in
-explicit Environments; local CLI commands talk to the background service through
-the owner-only Unix socket.
+managing persistent terminal sessions. Sessions run SQLite-backed Actions or the
+host Interactive Shell; local CLI commands talk to the background service
+through the owner-only Unix socket.
 
 ## Requirements
 
 - `mise` — manages the toolchain (Go, Node, pnpm) and provides task shortcuts
 - `zmx` — required when the service starts or reconciles sessions; defaults to
   `zmx` on `PATH`
-- `claude` and/or `codex` — optional action commands, depending on which
-  built-in or configured Actions you want to launch
+- `claude` and/or `codex` — optional commands for the seeded Actions
 
 Install the pinned toolchain once:
 
@@ -71,7 +70,7 @@ There are two ways to run the project:
   with `Ctrl-C`.
 
   Dev is a hermetic profile: it generates `tmp/dev/config.toml` and keeps its
-  socket, database, and actions file under `tmp/dev/`, on a dedicated port.
+  socket and database under `tmp/dev/`, on a dedicated port.
   Your personal `~/.config/atc/server/config.toml` and `ATC_*` overrides
   never apply, and it runs cleanly alongside an installed background service.
   Delete `tmp/dev` for a fresh dev state; to point the CLI at the dev service,
@@ -299,80 +298,35 @@ Do not use recursive deletion or broad `atc-*` globs for this reset.
 
 The config file applies to background mode too: `atc start` forwards an explicit `--config` path to the detached service so it resolves the same file.
 
-Actions are managed in `actions.json` beside the resolved config file (by
-default `~/.config/atc/server/actions.json`), or at `ATC_ACTIONS_PATH` when that
-environment variable is set. The file is a sparse overlay: built-in `claude`
-and `codex` are always present underneath, and file entries add custom Actions
-or override built-ins by name. `[actions]` in TOML is rejected because the
-schema is strict; actions are managed through the API in `actions.json`.
+Actions are ordinary SQLite rows with opaque `act_…` IDs. A fresh database
+seeds Claude and Codex once; they can then be edited or permanently deleted.
+Names are display text and need not be unique. Arguments are fixed literal
+strings: there is no interpolation or templating.
 
-Pre-release files that use `bin` and `kind` still load, but new API writes use
-`command` and omit `kind`.
+Create common recipes with the CLI:
 
-A minimal custom action only needs `command`:
+```sh
+# Agent
+atc actions create --name Claude --command claude --agent
 
-```json
-{
-  "actions": {
-    "lazygit": {
-      "label": "LazyGit",
-      "description": "Open LazyGit",
-      "command": "lazygit"
-    }
-  }
-}
+# Editor
+atc actions create --name Neovim --command nvim
+
+# Dev server with literal args ["run", "dev"]
+atc actions create --name "Dev server" --command npm --arg run --arg dev
+
+# Explicit shell wrapper for advanced shell behavior
+atc actions create --name "Make watcher" --command zsh --arg=-lc --arg "make watch"
 ```
 
-The built-in `claude` and `codex` actions currently define command and prompt
-support only; they do not include built-in params. Parameter rows in the Actions
-UI come from `params` on custom actions or file-backed overrides.
+Use `atc actions list` to find Action IDs. Sessions copy `actionId`,
+`actionName`, and `isAgent` when they start, so later Action changes do not
+alter existing sessions. Omitting `--action` starts the guaranteed Interactive
+Shell in the Workspace's working directory.
 
-To override a built-in and define params, use the same action name. This example
-documents the `params` shape; it is not the default Codex definition:
-
-```json
-{
-  "actions": {
-    "codex": {
-      "label": "Codex",
-      "description": "OpenAI Codex CLI",
-      "command": "codex",
-      "args": [],
-      "prompt": {},
-      "params": {
-        "model": {
-          "type": "enum",
-          "values": ["gpt-5-codex"],
-          "default": "gpt-5-codex",
-          "flag": "--model",
-          "label": "Model",
-          "description": "Model family"
-        },
-        "full-auto": {
-          "type": "bool",
-          "default": false,
-          "flag": "--full-auto",
-          "label": "Full Auto",
-          "description": "Allow autonomous edits"
-        }
-      }
-    }
-  }
-}
-```
-
-Environments still live in `config.toml`:
-
-```toml
-
-[environments.workstation]
-kind = "host-login-shell"
-label = "Workstation login shell"
-```
-
-Configured `[environments]` entries overlay the built-in
-`host-login-shell` default. Omitting `environment` from a start request still
-uses `host-login-shell`.
+Action updates use PATCH semantics: omitted fields stay unchanged,
+`description: null` clears the description, and `args: null` clears the
+argument list to `[]`.
 
 ## Background Service
 
@@ -426,8 +380,9 @@ it:
 
 ```sh
 go run ./cmd/atc actions list
-go run ./cmd/atc environments list
-go run ./cmd/atc sessions start --workspace <id> --action codex --env host-login-shell
+go run ./cmd/atc actions show <action-id>
+go run ./cmd/atc sessions start --workspace <id> --action <action-id>
+go run ./cmd/atc sessions start --workspace <id>
 go run ./cmd/atc sessions list
 go run ./cmd/atc sessions show <id>
 go run ./cmd/atc sessions rename <id> "New name"
@@ -477,7 +432,7 @@ ATC_HTTP_ADDR=127.0.0.1:7332 mise run dev
 ```
 
 Use the direct `go run ./cmd/atc ...` commands for `start`, `stop`,
-`status`, `health`, `actions`, `environments`, and `sessions`.
+`status`, `health`, `actions`, and `sessions`.
 
 ## CLI Help
 
@@ -493,7 +448,7 @@ Show help for a subcommand:
 go run ./cmd/atc serve --help
 go run ./cmd/atc start --help
 go run ./cmd/atc actions list --help
-go run ./cmd/atc environments list --help
+go run ./cmd/atc actions create --help
 go run ./cmd/atc projects create --help
 go run ./cmd/atc sessions start --help
 go run ./cmd/atc sessions send-text --help
@@ -506,7 +461,8 @@ it:
 ```sh
 go run ./cmd/atc projects create --name "atc" --dir ~/Projects/atc
 go run ./cmd/atc workspaces create --project <project-id> --name "Feature"
-go run ./cmd/atc sessions start --action claude --workspace <workspace-id>
+go run ./cmd/atc actions list
+go run ./cmd/atc sessions start --action <action-id> --workspace <workspace-id>
 go run ./cmd/atc sessions list --workspace <workspace-id>
 ```
 

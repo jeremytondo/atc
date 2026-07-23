@@ -3,49 +3,15 @@
     "POST /actions"
   ],
   "request": {
-    "type": "agent",
-    "label": "My Agent",
-    "description": "Custom agent",
-    "command": "my-agent",
-    "args": [
-      "--fast"
-    ],
-    "prompt": {},
-    "params": {
-      "mode": {
-        "type": "enum",
-        "values": [
-          "fast",
-          "smart"
-        ],
-        "default": "fast",
-        "flag": "--mode"
-      }
-    },
-    "enabled": true
+    "name": "Neovim",
+    "command": "nvim"
   },
   "response": {
-    "name": "my-agent",
-    "type": "agent",
-    "origin": "custom",
+    "id": "act_123456789abcdefghijklmnopq",
+    "name": "Neovim",
     "enabled": true,
-    "label": "My Agent",
-    "description": "Custom agent",
-    "command": "my-agent",
-    "args": [
-      "--fast"
-    ],
-    "prompt": {},
-    "params": {
-      "mode": {
-        "type": "enum",
-        "values": [
-          "fast",
-          "smart"
-        ],
-        "default": "fast",
-        "flag": "--mode"
-      }
-    }
+    "command": "nvim",
+    "args": [],
+    "isAgent": false
   }
 }

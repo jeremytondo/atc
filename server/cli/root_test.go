@@ -18,15 +18,14 @@ import (
 func TestRootCommandIncludesLifecycleCommands(t *testing.T) {
 	cmd := rootCommand()
 	want := map[string]bool{
-		"serve":        false,
-		"start":        false,
-		"stop":         false,
-		"status":       false,
-		"health":       false,
-		"version":      false,
-		"actions":      false,
-		"environments": false,
-		"sessions":     false,
+		"serve":    false,
+		"start":    false,
+		"stop":     false,
+		"status":   false,
+		"health":   false,
+		"version":  false,
+		"actions":  false,
+		"sessions": false,
 	}
 
 	for _, child := range cmd.Commands() {
@@ -124,10 +123,9 @@ func TestHealthCommandCallsServiceThroughUnixSocket(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- server.Serve(ctx, server.Config{
-			HTTPAddr:    "127.0.0.1:0",
-			SocketPath:  socketPath,
-			DBPath:      dbPath,
-			ActionsPath: filepath.Join(envDir, "config", "actions.json"),
+			HTTPAddr:   "127.0.0.1:0",
+			SocketPath: socketPath,
+			DBPath:     dbPath,
 		})
 	}()
 	waitForSocketHealth(t, socketPath)

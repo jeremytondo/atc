@@ -1,27 +1,18 @@
 {
   "routes": [
-    "PUT /actions/{name}"
+    "PATCH /actions/{id}"
   ],
   "request": {
-    "name": "my-agent",
-    "type": "agent",
-    "label": "My Agent",
-    "description": "Custom agent, updated",
-    "command": "my-agent",
-    "args": [],
-    "prompt": null,
-    "params": {},
-    "enabled": false
+    "description": null,
+    "enabled": false,
+    "isAgent": true
   },
   "response": {
-    "name": "my-agent",
-    "type": "agent",
-    "origin": "custom",
+    "id": "act_123456789abcdefghijklmnopq",
+    "name": "Neovim",
     "enabled": false,
-    "label": "My Agent",
-    "description": "Custom agent, updated",
-    "command": "my-agent",
+    "command": "nvim",
     "args": [],
-    "params": {}
+    "isAgent": true
   }
 }

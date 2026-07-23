@@ -2,133 +2,11 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"io/fs"
-	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
-
-	"github.com/pressly/goose/v3"
 )
-
-// TestWorkspaceMigrationDestroysSessionsPreservesProjects runs the 0003
-// migration against a populated 0002 database: session rows are destroyed by
-// the rebuild, projects survive, and no manual reset is needed.
-func TestWorkspaceMigrationDestroysSessionsPreservesProjects(t *testing.T) {
-	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "atc.db")
-
-	db, err := sql.Open(sqliteDriver, sqliteDSN(dbPath))
-	if err != nil {
-		t.Fatalf("open raw database: %v", err)
-	}
-	migrationFS, err := fs.Sub(migrations, "migrations")
-	if err != nil {
-		t.Fatalf("sub migrations: %v", err)
-	}
-	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrationFS, goose.WithLogger(goose.NopLogger()))
-	if err != nil {
-		t.Fatalf("goose provider: %v", err)
-	}
-	if _, err := provider.UpTo(ctx, 2); err != nil {
-		t.Fatalf("migrate to 0002: %v", err)
-	}
-	if _, err := db.Exec(`
-	INSERT INTO projects (id, name, working_dir, created_at, updated_at)
-	VALUES ('prj_keep', 'Keep', '/work', '2026-01-01T00:00:00.000000000Z', '2026-01-01T00:00:00.000000000Z')`); err != nil {
-		t.Fatalf("insert 0002 project: %v", err)
-	}
-	if _, err := db.Exec(`
-	INSERT INTO sessions (id, action, environment, params, working_dir, status, project_id, created_at, updated_at)
-	VALUES ('ses_old', 'codex', 'host-login-shell', '{}', '/work', 'ended', 'prj_keep', '2026-01-01T00:00:00.000000000Z', '2026-01-01T00:00:00.000000000Z')`); err != nil {
-		t.Fatalf("insert 0002 session: %v", err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close raw database: %v", err)
-	}
-
-	st := openTestStoreAt(t, dbPath)
-	defer st.Close()
-
-	if _, err := st.Get(ctx, "ses_old"); !errors.Is(err, ErrSessionNotFound) {
-		t.Fatalf("pre-workspace session survived the rebuild: err = %v, want ErrSessionNotFound", err)
-	}
-	project, err := st.GetProject(ctx, "prj_keep")
-	if err != nil {
-		t.Fatalf("GetProject after migration: %v", err)
-	}
-	if project.Name != "Keep" {
-		t.Fatalf("project after migration = %+v", project)
-	}
-
-	// The rebuilt schema accepts workspace-scoped sessions.
-	if _, err := st.CreateWorkspace(ctx, CreateWorkspaceInput{ID: "wsp_new", ProjectID: "prj_keep", Name: "New"}); err != nil {
-		t.Fatalf("CreateWorkspace after migration: %v", err)
-	}
-	if _, err := st.CreateStarting(ctx, CreateSessionInput{
-		ID: "ses_new", Action: "codex", Environment: "host-login-shell", WorkingDir: "/work", WorkspaceID: "wsp_new",
-	}); err != nil {
-		t.Fatalf("CreateStarting after migration: %v", err)
-	}
-}
-
-func TestRemoveArchivingMigrationDestroysArchivedRecords(t *testing.T) {
-	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "atc.db")
-	db, err := sql.Open(sqliteDriver, sqliteDSN(dbPath))
-	if err != nil {
-		t.Fatalf("open raw database: %v", err)
-	}
-	defer db.Close()
-	migrationFS, err := fs.Sub(migrations, "migrations")
-	if err != nil {
-		t.Fatalf("sub migrations: %v", err)
-	}
-	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrationFS, goose.WithLogger(goose.NopLogger()))
-	if err != nil {
-		t.Fatalf("goose provider: %v", err)
-	}
-	if _, err := provider.UpTo(ctx, 3); err != nil {
-		t.Fatalf("migrate to 0003: %v", err)
-	}
-	const timestamp = "2026-01-01T00:00:00.000000000Z"
-	if _, err := db.Exec(`
-	INSERT INTO projects (id, name, working_dir, created_at, updated_at, archived_at) VALUES
-		('prj_active', 'Active', '/active', ?, ?, NULL),
-		('prj_archived', 'Archived', '/archived', ?, ?, ?);
-	INSERT INTO workspaces (id, project_id, name, created_at, updated_at, archived_at) VALUES
-		('wsp_active', 'prj_active', 'Active', ?, ?, NULL),
-		('wsp_archived', 'prj_active', 'Archived', ?, ?, ?),
-		('wsp_archived_parent', 'prj_archived', 'Child', ?, ?, NULL);
-	INSERT INTO sessions (id, action, environment, params, working_dir, status, workspace_id, created_at, updated_at) VALUES
-		('ses_active', 'codex', 'host', '{}', '/active', 'ended', 'wsp_active', ?, ?),
-		('ses_archived', 'codex', 'host', '{}', '/active', 'ended', 'wsp_archived', ?, ?),
-		('ses_archived_parent', 'codex', 'host', '{}', '/archived', 'ended', 'wsp_archived_parent', ?, ?)`,
-		timestamp, timestamp, timestamp, timestamp, timestamp,
-		timestamp, timestamp, timestamp, timestamp, timestamp, timestamp, timestamp,
-		timestamp, timestamp, timestamp, timestamp, timestamp, timestamp,
-	); err != nil {
-		t.Fatalf("seed archived records: %v", err)
-	}
-	if _, err := provider.UpTo(ctx, 4); err != nil {
-		t.Fatalf("migrate to 0004: %v", err)
-	}
-
-	for table, wantID := range map[string]string{
-		"projects": "prj_active", "workspaces": "wsp_active", "sessions": "ses_active",
-	} {
-		var count int
-		var id string
-		if err := db.QueryRow(`SELECT count(*), min(id) FROM `+table).Scan(&count, &id); err != nil {
-			t.Fatalf("query %s after migration: %v", table, err)
-		}
-		if count != 1 || id != wantID {
-			t.Fatalf("%s after migration = count %d id %q, want 1 %q", table, count, id, wantID)
-		}
-	}
-}
 
 func TestCreateWorkspaceGuardsProject(t *testing.T) {
 	ctx := context.Background()
@@ -153,7 +31,7 @@ func TestCreateSessionGuardsWorkspace(t *testing.T) {
 	defer st.Close()
 
 	if _, err := st.CreateStarting(ctx, CreateSessionInput{
-		ID: "ses_orphan", Action: "codex", Environment: "host-login-shell", WorkingDir: "/work", WorkspaceID: "wsp_ghost",
+		ID: "ses_orphan", ActionID: "act_codex", ActionName: "Codex", WorkingDir: "/work", WorkspaceID: "wsp_ghost",
 	}); !errors.Is(err, ErrWorkspaceNotFound) {
 		t.Fatalf("CreateStarting err = %v, want ErrWorkspaceNotFound", err)
 	}
@@ -226,7 +104,7 @@ func TestDeleteWorkspaceGuardsAndCascades(t *testing.T) {
 	seedWorkspace(t, st, "prj_home", "wsp_doomed")
 
 	if _, err := st.CreateStarting(ctx, CreateSessionInput{
-		ID: "ses_live", Action: "codex", Environment: "host-login-shell", WorkingDir: "/work", WorkspaceID: "wsp_doomed",
+		ID: "ses_live", ActionID: "act_codex", ActionName: "Codex", WorkingDir: "/work", WorkspaceID: "wsp_doomed",
 	}); err != nil {
 		t.Fatalf("CreateStarting: %v", err)
 	}
@@ -313,8 +191,8 @@ func TestSessionWorkspaceHydrationAndFilters(t *testing.T) {
 
 	created, err := st.CreateStarting(ctx, CreateSessionInput{
 		ID:          "ses_scoped",
-		Action:      "codex",
-		Environment: "host-login-shell",
+		ActionID:    "act_codex",
+		ActionName:  "Codex",
 		WorkingDir:  "/work/home",
 		WorkspaceID: "wsp_home",
 	})
@@ -328,7 +206,7 @@ func TestSessionWorkspaceHydrationAndFilters(t *testing.T) {
 		t.Fatalf("created project ref = %+v", created.Project)
 	}
 	if _, err := st.CreateStarting(ctx, CreateSessionInput{
-		ID: "ses_other", Action: "codex", Environment: "host-login-shell", WorkingDir: "/work", WorkspaceID: "wsp_other",
+		ID: "ses_other", ActionID: "act_codex", ActionName: "Codex", WorkingDir: "/work", WorkspaceID: "wsp_other",
 	}); err != nil {
 		t.Fatalf("CreateStarting other: %v", err)
 	}

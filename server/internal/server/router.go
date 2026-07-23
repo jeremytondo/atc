@@ -3,13 +3,13 @@ package server
 import (
 	"net/http"
 
-	"github.com/jeremytondo/atc/internal/action"
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/assets"
 	"github.com/jeremytondo/atc/internal/diagnostics"
 	"github.com/jeremytondo/atc/internal/fs"
 	"github.com/jeremytondo/atc/internal/project"
 	"github.com/jeremytondo/atc/internal/session"
+	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/workspace"
 )
 
@@ -18,7 +18,7 @@ import (
 // backed by workspaces, and filesystem browsing backed by fsService) and the
 // embedded web UI. The API is guarded by authToken on the TCP listener; an
 // empty token disables TCP authentication.
-func Router(sessions *session.Service, projects *project.Service, workspaces *workspace.Service, actions *action.Store, fsService *fs.Service, authToken string) http.Handler {
+func Router(sessions *session.Service, projects *project.Service, workspaces *workspace.Service, actions *store.Store, fsService *fs.Service, authToken string) http.Handler {
 	webFS, err := assets.WebFS()
 	if err != nil {
 		return routerWithWeb(sessions, projects, workspaces, actions, fsService, authToken, webAssetError(http.StatusInternalServerError, "embedded web assets are unavailable"))
@@ -26,7 +26,7 @@ func Router(sessions *session.Service, projects *project.Service, workspaces *wo
 	return routerWithWeb(sessions, projects, workspaces, actions, fsService, authToken, webAssetRoutes(webFS))
 }
 
-func routerWithWeb(sessions *session.Service, projects *project.Service, workspaces *workspace.Service, actions *action.Store, fsService *fs.Service, authToken string, web http.Handler) http.Handler {
+func routerWithWeb(sessions *session.Service, projects *project.Service, workspaces *workspace.Service, actions *store.Store, fsService *fs.Service, authToken string, web http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	apiHandler := http.StripPrefix("/api", api.Routes(diagnostics.DefaultDiagnostics(), sessions, projects, workspaces, actions, fsService))
 	mux.Handle("/api/", withAuth(authToken, apiHandler))

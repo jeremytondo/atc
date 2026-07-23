@@ -13,14 +13,12 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"maps"
 	"net"
 	"os"
 	"path/filepath"
 
 	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/server"
-	"github.com/jeremytondo/atc/internal/session"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -33,8 +31,6 @@ const (
 	EnvZmxBin = "ATC_ZMX_BIN"
 	// EnvDBPath overrides the SQLite state database path.
 	EnvDBPath = "ATC_DB_PATH"
-	// EnvActionsPath overrides the file-backed Action overlay path.
-	EnvActionsPath = "ATC_ACTIONS_PATH"
 	// EnvAPIToken overrides the bearer token required on the TCP listener.
 	EnvAPIToken = "ATC_API_TOKEN"
 )
@@ -48,11 +44,6 @@ type Config struct {
 	Store  StoreConfig  `toml:"store"`
 	Zmx    ZmxConfig    `toml:"zmx"`
 	Auth   AuthConfig   `toml:"auth"`
-	// ActionsPath is the JSON file where API-managed Action overlays live.
-	ActionsPath string `toml:"-"`
-	// Environments is the selectable set of launch wrappers. Configured
-	// environments overlay the built-in host-login-shell default.
-	Environments session.EnvironmentRegistry `toml:"environments"`
 }
 
 type ZmxConfig struct {
@@ -98,18 +89,6 @@ func Defaults() Config {
 	}
 }
 
-// DefaultEnvironments is the built-in environment registry. It is always
-// present unless explicitly replaced by a future config mode.
-func DefaultEnvironments() session.EnvironmentRegistry {
-	return session.EnvironmentRegistry{
-		session.DefaultEnvironmentName: {
-			Kind:        session.EnvironmentKindHostLoginShell,
-			Label:       "Host login shell",
-			Description: "Run through the host user's login-interactive shell",
-		},
-	}
-}
-
 // Options carries the CLI- and environment-derived inputs Load needs to resolve
 // configuration. Env defaults to os.Getenv when nil.
 type Options struct {
@@ -138,7 +117,6 @@ func Load(opts Options) (Config, error) {
 
 	// 1. File (lowest precedence above defaults).
 	path, explicit := resolveConfigPath(opts, env)
-	cfg.ActionsPath = defaultActionsPath(path, env)
 	if path != "" {
 		data, err := os.ReadFile(path)
 		switch {
@@ -165,9 +143,6 @@ func Load(opts Options) (Config, error) {
 	if v := env(EnvDBPath); v != "" {
 		cfg.Store.DBPath = v
 	}
-	if v := env(EnvActionsPath); v != "" {
-		cfg.ActionsPath = v
-	}
 	if v := env(EnvAPIToken); v != "" {
 		cfg.Auth.Token = v
 	}
@@ -177,7 +152,6 @@ func Load(opts Options) (Config, error) {
 		cfg.Server.HTTPAddr = opts.HTTPAddr
 	}
 
-	cfg.Environments = mergeEnvironments(DefaultEnvironments(), cfg.Environments)
 	if cfg.Store.DBPath == "" {
 		cfg.Store.DBPath = paths.DBPathForEnv(paths.EnvLookup(env))
 	}
@@ -211,16 +185,6 @@ func defaultConfigPath(env func(string) string) string {
 	return ""
 }
 
-func defaultActionsPath(configPath string, env func(string) string) string {
-	if configPath == "" {
-		if dir := env("TMPDIR"); dir != "" {
-			return filepath.Join(dir, "atc", "actions.json")
-		}
-		return filepath.Join(os.TempDir(), "atc", "actions.json")
-	}
-	return filepath.Join(filepath.Dir(configPath), "actions.json")
-}
-
 // decodeDetail renders a decode failure with go-toml's line/column excerpt
 // when one is available; Error() alone omits the position.
 func decodeDetail(err error) string {
@@ -247,17 +211,7 @@ func (c Config) validate() error {
 	if err := validateTCPAddr(c.Server.HTTPAddr); err != nil {
 		return err
 	}
-	if err := c.Environments.Validate(); err != nil {
-		return err
-	}
 	return nil
-}
-
-func mergeEnvironments(base, overlay session.EnvironmentRegistry) session.EnvironmentRegistry {
-	merged := make(session.EnvironmentRegistry, len(base)+len(overlay))
-	maps.Copy(merged, base)
-	maps.Copy(merged, overlay)
-	return merged
 }
 
 func validateTCPAddr(addr string) error {

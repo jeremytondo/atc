@@ -7,11 +7,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/jeremytondo/atc/internal/action"
 	"github.com/jeremytondo/atc/internal/diagnostics"
 	"github.com/jeremytondo/atc/internal/fs"
 	"github.com/jeremytondo/atc/internal/project"
 	"github.com/jeremytondo/atc/internal/session"
+	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/workspace"
 )
 
@@ -20,7 +20,7 @@ type apiRoutes struct {
 	sessions    *session.Service
 	projects    *project.Service
 	workspaces  *workspace.Service
-	actions     *action.Store
+	actions     *store.Store
 	fs          *fs.Service
 }
 
@@ -33,12 +33,10 @@ func (routes apiRoutes) endpoints() map[string]http.HandlerFunc {
 		"GET /health":                   routes.health,
 		"GET /version":                  routes.version,
 		"GET /actions":                  routes.listActions,
-		"GET /actions/{name}":           routes.getAction,
+		"GET /actions/{id}":             routes.getAction,
 		"POST /actions":                 routes.createAction,
-		"PUT /actions/{name}":           routes.updateAction,
-		"PUT /actions/{name}/enabled":   routes.setActionEnabled,
-		"DELETE /actions/{name}":        routes.deleteAction,
-		"GET /environments":             routes.listEnvironments,
+		"PATCH /actions/{id}":           routes.updateAction,
+		"DELETE /actions/{id}":          routes.deleteAction,
 		"GET /fs/list":                  routes.fsList,
 		"POST /projects":                routes.createProject,
 		"GET /projects":                 routes.listProjects,
@@ -66,7 +64,7 @@ func (routes apiRoutes) endpoints() map[string]http.HandlerFunc {
 // Routes returns the HTTP handler for the atc API. The sessions, projects,
 // workspaces, and fs services may be nil when their routes are not needed
 // (e.g. diagnostics-only tests).
-func Routes(diagnostics diagnostics.Diagnostics, sessions *session.Service, projects *project.Service, workspaces *workspace.Service, actions *action.Store, fsService *fs.Service) http.Handler {
+func Routes(diagnostics diagnostics.Diagnostics, sessions *session.Service, projects *project.Service, workspaces *workspace.Service, actions *store.Store, fsService *fs.Service) http.Handler {
 	routes := apiRoutes{diagnostics: diagnostics, sessions: sessions, projects: projects, workspaces: workspaces, actions: actions, fs: fsService}
 	mux := http.NewServeMux()
 	for pattern, handler := range routes.endpoints() {

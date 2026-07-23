@@ -256,7 +256,7 @@ func TestSessionsListWithProjectUsesProjectRoute(t *testing.T) {
 func TestSessionsShowPrintsProjectFields(t *testing.T) {
 	lookup := testRuntimeLookup(t)
 	serveUnixAPI(t, lookup, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"id":"ses_show","action":"codex","environment":"host-login-shell","params":{},"workingDir":"/repo","status":"live","createdAt":"2026-07-07T15:04:05Z","updatedAt":"2026-07-07T15:04:06Z","project":{"id":"prj_123","name":"atc","workingDir":"/repo"}}`))
+		_, _ = w.Write([]byte(`{"id":"ses_show","actionId":"act_codex","actionName":"Codex","isAgent":true,"workingDir":"/repo","status":"live","createdAt":"2026-07-07T15:04:05Z","updatedAt":"2026-07-07T15:04:06Z","project":{"id":"prj_123","name":"atc"}}`))
 	})
 
 	cmd := sessionsCommand(lookup)

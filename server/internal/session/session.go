@@ -5,7 +5,6 @@ package session
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -22,12 +21,8 @@ const (
 	// CodeLaunchFailed is returned when the multiplexer launch fails after a
 	// provisional record exists.
 	CodeLaunchFailed = "launch_failed"
-	// CodeActionRemoved is returned when the action was deleted
-	// between command resolution and launch.
-	CodeActionRemoved = "action_removed"
 
-	launchFailedReason  = "action failed to launch"
-	actionRemovedReason = "action was removed while the session was starting"
+	launchFailedReason = "action failed to launch"
 )
 
 // Status is the closed public lifecycle vocabulary for Sessions. It is
@@ -47,6 +42,8 @@ var (
 	ErrSessionNotFound    = errors.New("session not found")
 	ErrSessionEnded       = errors.New("session ended")
 	ErrInvalidSessionName = errors.New("invalid session name")
+	ErrActionNotFound     = errors.New("action not found")
+	ErrActionDisabled     = errors.New("action is disabled")
 	ErrInvalidStatus      = store.ErrInvalidStatus
 	// ErrInvalidWorkingDir is the project package's working-directory rule
 	// (absolute, exists, is a directory), re-exported so session callers keep
@@ -86,14 +83,10 @@ func (e *LaunchError) Unwrap() error {
 
 // StartInput is the accepted shape for starting a new session. WorkspaceID
 // is required; the session launches in the workspace's project working
-// directory. An empty Action launches the Interactive Shell, which accepts
-// neither Params nor Prompt.
+// directory. An empty ActionID launches the Interactive Shell.
 type StartInput struct {
-	Action      string
-	Environment string
-	Params      map[string]any
-	Prompt      string
-	Name        string
+	ActionID string
+	Name     string
 	// WorkspaceID scopes the session to a workspace and is required.
 	WorkspaceID string
 }
@@ -101,14 +94,12 @@ type StartInput struct {
 // Session is atc's full domain model for a session. API list/detail
 // serializers decide which fields are exposed on each endpoint.
 type Session struct {
-	ID   string
-	Name string
-	// Action is the launch action name; empty means the Interactive Shell.
-	Action      string
-	Environment string
-	Params      map[string]any
+	ID          string
+	Name        string
+	ActionID    string
+	ActionName  string
+	IsAgent     bool
 	WorkingDir  string
-	Prompt      string
 	Status      Status
 	WorkspaceID string
 	Workspace   *WorkspaceRef
@@ -141,11 +132,6 @@ type Multiplexer interface {
 	Terminate(ctx context.Context, name string) error
 }
 
-// ActionLoader loads the launchable Action registry at point of use.
-type ActionLoader interface {
-	Load(ctx context.Context) (ActionRegistry, error)
-}
-
 // WorkspaceResolver resolves the workspace a start request references to the
 // validated working directory the session launches in. It is an interface
 // (following the ActionLoader precedent) so tests can fake it.
@@ -156,110 +142,68 @@ type WorkspaceResolver interface {
 // Service implements session operations on top of durable metadata and a
 // Multiplexer.
 type Service struct {
-	store        *store.Store
-	mux          Multiplexer
-	actions      ActionLoader
-	environments EnvironmentRegistry
-	workspaces   WorkspaceResolver
-	logger       *slog.Logger
+	store      *store.Store
+	mux        Multiplexer
+	workspaces WorkspaceResolver
+	logger     *slog.Logger
 }
 
-// NewService returns a Service backed by st and mux that launches configured
-// actions in configured environments. A nil workspaces resolver rejects all
-// starts; a nil logger uses slog.Default.
-func NewService(st *store.Store, mux Multiplexer, actions ActionLoader, environments EnvironmentRegistry, workspaces WorkspaceResolver, logger *slog.Logger) *Service {
+// NewService returns a Service backed by st and mux. A nil workspaces resolver
+// rejects all starts; a nil logger uses slog.Default.
+func NewService(st *store.Store, mux Multiplexer, workspaces WorkspaceResolver, logger *slog.Logger) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{store: st, mux: mux, actions: actions, environments: environments, workspaces: workspaces, logger: logger}
-}
-
-// Environments returns configured launch environments with client-safe metadata.
-func (s *Service) Environments(ctx context.Context) []EnvironmentDiscovery {
-	return s.environments.Discover(ctx)
+	return &Service{store: st, mux: mux, workspaces: workspaces, logger: logger}
 }
 
 // Start validates, records, launches, and returns a new distinct session. An
-// empty Action launches the Interactive Shell: the host user's shell run
-// through the selected environment without a command payload.
+// empty ActionID launches the Interactive Shell.
 func (s *Service) Start(ctx context.Context, input StartInput) (Session, error) {
 	input.Name = strings.TrimSpace(input.Name)
-	environment, environmentName, err := s.environments.resolve(input.Environment)
+	workingDir, err := s.resolveStartDir(ctx, input)
 	if err != nil {
 		return Session{}, err
 	}
 	var argv []string
-	accepted := map[string]any{}
-	if input.Action == "" {
-		// The Interactive Shell takes no command payload, so params and
-		// prompt have nothing to apply to (ADR 0004).
-		if len(input.Params) > 0 {
-			return Session{}, fmt.Errorf("%w: params require an action", ErrInvalidParam)
-		}
-		if input.Prompt != "" {
-			return Session{}, fmt.Errorf("%w: prompt requires an action", ErrInvalidParam)
-		}
-		argv, err = environment.InteractiveCommand()
-		if err != nil {
-			return Session{}, err
-		}
+	var action store.Action
+	if input.ActionID == "" {
+		argv = interactiveShellCommand()
 	} else {
-		actions, err := s.actions.Load(ctx)
+		action, err = s.store.GetAction(ctx, input.ActionID)
 		if err != nil {
+			if errors.Is(err, store.ErrActionNotFound) {
+				return Session{}, fmt.Errorf("%w: %s", ErrActionNotFound, input.ActionID)
+			}
 			return Session{}, err
 		}
-		inner, acceptedParams, err := actions.buildCommand(input.Action, input.Params, input.Prompt)
-		if err != nil {
-			return Session{}, err
+		if !action.Enabled {
+			return Session{}, fmt.Errorf("%w: %s", ErrActionDisabled, input.ActionID)
 		}
-		accepted = acceptedParams
-		argv, err = environment.Command(inner)
-		if err != nil {
-			return Session{}, err
-		}
-	}
-	workingDir, err := s.resolveStartDir(ctx, input)
-	if err != nil {
-		return Session{}, err
+		argv = actionLaunchCommand(actionCommand(action))
 	}
 
 	id, err := newID()
 	if err != nil {
 		return Session{}, err
 	}
-	params, err := marshalParams(accepted)
-	if err != nil {
-		return Session{}, err
-	}
-
 	record, err := s.store.CreateStarting(ctx, store.CreateSessionInput{
 		ID:          id,
 		Name:        input.Name,
-		Action:      input.Action,
-		Environment: environmentName,
-		Params:      params,
+		ActionID:    action.ID,
+		ActionName:  action.Name,
+		IsAgent:     action.IsAgent,
 		WorkingDir:  workingDir,
-		Prompt:      input.Prompt,
 		WorkspaceID: input.WorkspaceID,
 	})
 	if err != nil {
 		return Session{}, translateStoreErr(err)
 	}
 
-	if input.Action != "" {
-		// Action deletion counts active sessions and removes the definition
-		// under one lock. Re-resolving here, after this session's starting row
-		// exists, means either the delete already saw this row and was
-		// rejected, or the delete finished first and the action is gone.
-		if err := s.requireActionStillExists(ctx, record.ID, input.Action); err != nil {
-			return Session{}, err
-		}
-	}
-
 	name := zmx.NameForID(record.ID)
-	s.logger.Info("starting session", "id", record.ID, "zmx_name", name, "dir", workingDir, "action", input.Action, "environment", environmentName)
+	s.logger.Info("starting session", "id", record.ID, "zmx_name", name, "dir", workingDir, "action_id", action.ID)
 	if err := s.mux.Start(ctx, name, workingDir, argv); err != nil {
-		s.logger.Error("session launch failed", "id", record.ID, "zmx_name", name, "action", input.Action, "environment", environmentName, "err", err)
+		s.logger.Error("session launch failed", "id", record.ID, "zmx_name", name, "action_id", action.ID, "err", err)
 		if deleteErr := s.store.DeleteStarting(ctx, record.ID); deleteErr != nil &&
 			!errors.Is(deleteErr, store.ErrSessionNotStarting) && !errors.Is(deleteErr, store.ErrSessionNotFound) {
 			return Session{}, fmt.Errorf("remove failed launch attempt %s: %w", record.ID, deleteErr)
@@ -308,27 +252,6 @@ func (s *Service) terminateAbandonedLaunch(ctx context.Context, id, name string)
 	if err := s.mux.Terminate(ctx, name); err != nil {
 		s.logger.Error("terminate abandoned launch failed", "id", id, "zmx_name", name, "err", err)
 	}
-}
-
-// requireActionStillExists re-resolves an action after the provisional row is
-// durable. Any recheck failure removes that row so no abandoned launch attempt
-// remains visible to internal lifecycle logic.
-func (s *Service) requireActionStillExists(ctx context.Context, sessionID, actionName string) error {
-	registry, loadErr := s.actions.Load(ctx)
-	if loadErr == nil {
-		if _, ok := registry[actionName]; ok {
-			return nil
-		}
-	}
-	reason, code := actionRemovedReason, CodeActionRemoved
-	if loadErr != nil {
-		reason, code = launchFailedReason, CodeLaunchFailed
-	}
-	if deleteErr := s.store.DeleteStarting(ctx, sessionID); deleteErr != nil &&
-		!errors.Is(deleteErr, store.ErrSessionNotStarting) && !errors.Is(deleteErr, store.ErrSessionNotFound) {
-		return fmt.Errorf("remove abandoned launch attempt %s: %w", sessionID, deleteErr)
-	}
-	return &LaunchError{SessionID: sessionID, Code: code, Message: reason, Err: loadErr}
 }
 
 // resolveStartDir resolves the referenced workspace to its project's working
@@ -662,12 +585,6 @@ func (s *Service) liveNames(ctx context.Context) (map[string]bool, error) {
 }
 
 func domainSession(record store.Session) (Session, error) {
-	params := map[string]any{}
-	if len(record.Params) > 0 {
-		if err := json.Unmarshal(record.Params, &params); err != nil {
-			return Session{}, fmt.Errorf("decode session params for %s: %w", record.ID, err)
-		}
-	}
 	var workspaceRef *WorkspaceRef
 	if record.Workspace != nil {
 		workspaceRef = &WorkspaceRef{ID: record.Workspace.ID, Name: record.Workspace.Name}
@@ -683,11 +600,10 @@ func domainSession(record store.Session) (Session, error) {
 	return Session{
 		ID:          record.ID,
 		Name:        record.Name,
-		Action:      record.Action,
-		Environment: record.Environment,
-		Params:      params,
+		ActionID:    record.ActionID,
+		ActionName:  record.ActionName,
+		IsAgent:     record.IsAgent,
 		WorkingDir:  record.WorkingDir,
-		Prompt:      record.Prompt,
 		Status:      status,
 		WorkspaceID: record.WorkspaceID,
 		Workspace:   workspaceRef,
@@ -706,17 +622,6 @@ func publicStatus(status store.RecordStatus) (Status, error) {
 	default:
 		return "", fmt.Errorf("provisional session cannot be exposed: %s", status)
 	}
-}
-
-func marshalParams(params map[string]any) (json.RawMessage, error) {
-	if len(params) == 0 {
-		return json.RawMessage(`{}`), nil
-	}
-	raw, err := json.Marshal(params)
-	if err != nil {
-		return nil, fmt.Errorf("encode accepted params: %w", err)
-	}
-	return raw, nil
 }
 
 func translateStoreErr(err error) error {

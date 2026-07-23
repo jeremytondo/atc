@@ -238,14 +238,13 @@ func newAuthAttachServerWithToken(t *testing.T, token string) (*httptest.Server,
 
 	mux := &authFakeMux{attachPTY: newAuthPTY()}
 	workspaces := workspace.NewService(st, nil)
-	svc := session.NewService(st, mux, session.ActionRegistry{
-		"claude": {Command: "claude"},
-	}, session.EnvironmentRegistry{
-		"host-login-shell": {Kind: session.EnvironmentKindHostLoginShell},
-	}, workspaces, nil)
+	action, err := st.CreateAction(ctx, store.Action{Name: "Claude", Enabled: true, Command: "claude", IsAgent: true})
+	if err != nil {
+		t.Fatalf("CreateAction: %v", err)
+	}
+	svc := session.NewService(st, mux, workspaces, nil)
 	started, err := svc.Start(ctx, session.StartInput{
-		Action:      "claude",
-		Environment: "host-login-shell",
+		ActionID:    action.ID,
 		WorkspaceID: "wsp_auth",
 	})
 	if err != nil {

@@ -158,9 +158,9 @@ Start behavior:
   `project_id` and the inherited directory as the Session's `working_dir`
   snapshot. Archived Project → `ErrProjectArchived`. Vanished/invalid
   directory → `ErrInvalidWorkingDir`.
-- Everything else about Session start (Action, Environment, name, prompt, and
-  params) is unchanged. Launch failures return structured API errors and leave
-  no public Session record.
+- Everything else about Session start follows the current Action contract:
+  optional `actionId` and `name`. Launch failures return structured API errors
+  and leave no public Session record.
 
 `session.Service.List` gains a project filter (threaded to
 `store.ListFilter.ProjectID`) used only by the project-scoped listing route.
@@ -240,7 +240,7 @@ Errors use the existing envelope and a `writeProjectError` mapper parallel to
 | `invalid_request`     | 400  | Bad JSON, missing/blank `name`, unknown PATCH field, `workingDir`+`projectId` conflict, bad `includeArchived`. |
 | `invalid_working_dir` | 400  | Directory is relative, missing, or not a directory — at Project create, any Session start, or project-scoped start revalidation. |
 | `project_not_found`   | 404  | Unknown `{id}` on any `/projects/...` route.               |
-| `project_not_found`   | 400  | Unknown `projectId` on `/sessions/start` (mirrors `unknown_action`). |
+| `project_not_found`   | 400  | Unknown `projectId` on `/sessions/start`. |
 | `project_archived`    | 409  | Session start referencing an archived Project (mirrors `action_disabled`). |
 
 API wire structs live in `internal/api` and are exported (see Shared Wire
@@ -299,11 +299,10 @@ hand-rolled CSS + `$state`/`onMount` patterns:
 - `/projects/[id]` — Project detail: record fields, rename (same editor in
   rename mode, name only), archive/unarchive buttons, the Project's Sessions
   via `GET /projects/{id}/sessions` with Live and Ended shown together, and a
-  **Start Session** form: Action select
-  (enabled Actions from `GET /actions`), Environment select
-  (`GET /environments`), optional Session name and prompt, and param inputs
-  rendered from the selected Action's params spec. Submits
-  `POST /sessions/start` with `projectId` and no `workingDir`.
+  **Start Session** form: enabled Action select (using Action IDs from
+  `GET /actions`) plus the Interactive Shell choice and an optional Session
+  name. Submits `POST /sessions/start` with the workspace and optional
+  `actionId`.
 
 Supporting changes:
 

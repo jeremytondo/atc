@@ -1,5 +1,10 @@
 # Sessions run typed Actions in explicit Environments
 
+> **Superseded launch model (2026-07):** ADR 0009 and the Actions redesign
+> replace the registries and selectable Environments described below. Actions
+> are now SQLite rows addressed by ID and the server always uses the host
+> login-interactive shell. The remainder is retained as historical rationale.
+
 > **Terminology note (2026-07):** This ADR predates the atc rename. "atc" is now the atc server (`atc`), and `atc.toml` is now `atc.toml`.
 
 > **Lifecycle amendment (2026-07):** Sessions now expose only `live | ended`.

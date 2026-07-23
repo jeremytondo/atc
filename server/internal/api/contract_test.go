@@ -34,7 +34,6 @@ var responseTypes = map[string]func() any{
 	"health":             func() any { return &diagnostics.Health{} },
 	"version":            func() any { return &diagnostics.Version{} },
 	"error":              func() any { return &errorResponse{} },
-	"environments":       func() any { return &environmentsResponse{} },
 	"fs-list":            func() any { return &fsListResponse{} },
 	"projects-list":      func() any { return &ProjectListResponse{} },
 	"project-detail":     func() any { return &Project{} },
@@ -48,17 +47,16 @@ var responseTypes = map[string]func() any{
 	"workspace-delete":   func() any { return &struct{}{} },
 	"workspace-sessions": func() any { return &SessionListResponse{} },
 	"sessions-list":      func() any { return &SessionListResponse{} },
-	"session-start":      func() any { return &SessionDetail{} },
-	"session-detail":     func() any { return &SessionDetail{} },
-	"session-rename":     func() any { return &SessionDetail{} },
+	"session-start":      func() any { return &SessionResponse{} },
+	"session-detail":     func() any { return &SessionResponse{} },
+	"session-rename":     func() any { return &SessionResponse{} },
 	"session-delete":     func() any { return &struct{}{} },
 	"session-send-text":  func() any { return &struct{}{} },
 	"session-send-key":   func() any { return &struct{}{} },
 	"actions-list":       func() any { return &actionsResponse{} },
-	"action-detail":      func() any { return &actionDetailResponse{} },
-	"action-create":      func() any { return &actionDetailResponse{} },
-	"action-update":      func() any { return &actionDetailResponse{} },
-	"action-enabled":     func() any { return &actionDetailResponse{} },
+	"action-detail":      func() any { return &Action{} },
+	"action-create":      func() any { return &Action{} },
+	"action-update":      func() any { return &Action{} },
 	"action-delete":      func() any { return &struct{}{} },
 }
 
@@ -72,9 +70,8 @@ var requestTypes = map[string]func() any{
 	"session-rename":    func() any { return &renameSessionRequest{} },
 	"session-send-text": func() any { return &sendTextRequest{} },
 	"session-send-key":  func() any { return &sendKeyRequest{} },
-	"action-create":     func() any { return &actionWriteRequest{} },
-	"action-update":     func() any { return &actionWriteRequest{} },
-	"action-enabled":    func() any { return &actionEnabledRequest{} },
+	"action-create":     func() any { return &actionCreateRequest{} },
+	"action-update":     func() any { return &actionPatchRequest{} },
 }
 
 func loadFixtures(t *testing.T) map[string]contractFixture {

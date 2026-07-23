@@ -58,7 +58,7 @@ func seedSession(t *testing.T, st *store.Store, id, workspaceID string, live boo
 	t.Helper()
 	ctx := context.Background()
 	if _, err := st.CreateStarting(ctx, store.CreateSessionInput{
-		ID: id, Action: "codex", Environment: "host-login-shell", WorkingDir: "/work", WorkspaceID: workspaceID,
+		ID: id, ActionID: "act_codex", ActionName: "Codex", WorkingDir: "/work", WorkspaceID: workspaceID,
 	}); err != nil {
 		t.Fatalf("CreateStarting(%s): %v", id, err)
 	}

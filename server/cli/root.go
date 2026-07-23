@@ -50,7 +50,6 @@ func rootCommand() *cobra.Command {
 	cmd.AddCommand(healthCommand(os.Getenv))
 	cmd.AddCommand(versionCommand())
 	cmd.AddCommand(actionsCommand(os.Getenv))
-	cmd.AddCommand(environmentsCommand(os.Getenv))
 	cmd.AddCommand(projectsCommand(os.Getenv))
 	cmd.AddCommand(workspacesCommand(os.Getenv))
 	cmd.AddCommand(sessionsCommand(os.Getenv))
@@ -104,8 +103,6 @@ func serveCommand(lookup envLookup, logOutput io.Writer) *cobra.Command {
 				SocketPath:       resolvePaths(cfg, lookup).SocketPath,
 				DBPath:           cfg.Store.DBPath,
 				ZmxBin:           cfg.Zmx.Bin,
-				ActionsPath:      cfg.ActionsPath,
-				Environments:     cfg.Environments,
 				AuthToken:        cfg.Auth.Token,
 				Logger:           logger,
 			}); err != nil {

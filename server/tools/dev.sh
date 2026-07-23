@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Dev runs a hermetic profile under tmp/dev/: its own config, loopback bind,
-# Unix socket, database, and actions file. Your personal atc config
+# Unix socket, and database. Your personal atc config
 # (~/.config/atc/server/config.toml) and ATC_* environment overrides never
 # apply here, and the dedicated port keeps dev clear of a background service
 # on the default 7331. Delete tmp/dev for a fresh dev state.
@@ -239,7 +239,7 @@ start_api() {
   # stays honored — it locates a tool, not state.
   bash -c '
     cd "$1"
-    export ATC_CONFIG= ATC_HTTP_ADDR= ATC_DB_PATH= ATC_ACTIONS_PATH= ATC_API_TOKEN=
+    export ATC_CONFIG= ATC_HTTP_ADDR= ATC_DB_PATH= ATC_API_TOKEN=
     exec go run ./cmd/atc serve --config "$2"
   ' bash "$ROOT" "$DEV_CONFIG" \
     > >(prefix api) 2>&1 &

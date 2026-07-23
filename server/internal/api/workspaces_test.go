@@ -201,7 +201,7 @@ func TestListWorkspaceSessions(t *testing.T) {
 	other := createTestWorkspace(t, h, project.ID, "Other")
 	seedRunning(t, st, "ses_scoped", "Scoped")
 	if _, err := st.CreateStarting(context.Background(), store.CreateSessionInput{
-		ID: "ses_other", Action: "codex", Environment: "host-login-shell", WorkingDir: "/work", WorkspaceID: other.ID,
+		ID: "ses_other", ActionID: "act_codex", ActionName: "Codex", WorkingDir: "/work", WorkspaceID: other.ID,
 	}); err != nil {
 		t.Fatalf("CreateStarting other: %v", err)
 	}
