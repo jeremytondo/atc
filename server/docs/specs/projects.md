@@ -6,6 +6,11 @@ Source brief: `docs/ideas/projects.md`. Implementation plan: `docs/plans/project
 > lifecycle with `live | ended`. Session lists include both states by default,
 > accept only an optional `status=live|ended` filter, and no longer support
 > Session archival. Project archival behavior described here is unchanged.
+>
+> **Reconciliation amendment (2026-07-23):** Ended is a retained, read-only
+> tombstone created only after a successful, complete zmx inventory confirms
+> absence. Inventory failure changes no state, rename is Live-only, and a
+> successful explicit Session delete removes the record without a tombstone.
 
 ## Scope
 
@@ -312,7 +317,9 @@ Supporting changes:
   `project` object; Session list methods accept an optional `live | ended`
   status filter.
 - Sessions page retrofit (minimal): each Session row shows its Project name
-  linking to `/projects/[id]`; Live and Ended Sessions are shown together.
+  linking to `/projects/[id]`; Live and Ended Sessions are shown together in
+  server order, without regrouping by status. Only Ended rows show a status dot,
+  and their only row action is Delete.
 - The reference/Try-it console gains the Project endpoints: `endpoints.ts`'s
   method union widens to include `PATCH` and the Try-it request builder
   handles it like `POST`.

@@ -81,7 +81,7 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'GET',
     path: '/api/sessions',
     title: 'List sessions',
-	desc: 'Return all Live and Ended Sessions. Provisional launch attempts are never returned.',
+	desc: 'Return all Live and Ended Sessions after demand-driven zmx reconciliation. Provisional launch attempts are never returned. If inventory is unavailable, stored state is returned unchanged.',
 	params: [{ name: 'status', type: 'enum', desc: 'Optional live or ended filter.' }],
     fields: [
       {
@@ -100,7 +100,7 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'GET',
     path: '/api/sessions/{id}',
     title: 'Read session',
-    desc: 'Fetch one session, including its copied launch-time action name and agent classification. Interactive Shell sessions omit actionId and actionName and return isAgent false.',
+    desc: 'Fetch one session after demand-driven zmx reconciliation, including its copied launch-time action name and agent classification. If inventory is unavailable, stored state is returned unchanged. Interactive Shell sessions omit actionId and actionName and return isAgent false.',
     params: [{ name: 'id', type: 'string', required: true, desc: 'Session id (path).' }],
     fields: [{ key: 'id', label: 'id', kind: 'text', placeholder: 'ses_…', required: true }],
 	returns: '{ "id": "ses_…", "status": "live", … }',
@@ -112,7 +112,7 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'POST',
     path: '/api/sessions/{id}/send-text',
     title: 'Send text',
-    desc: 'Inject text into the session terminal as if a human typed it.',
+    desc: 'Inject text into a Live Session as if a human typed it. Confirmed absence returns 409 session_ended; unavailable zmx inventory returns 503 zmx_unavailable so the operation can be retried.',
     params: [
       { name: 'id', type: 'string', required: true, desc: 'Session id (path).' },
       { name: 'text', type: 'string', required: true, desc: 'Text to inject.' }
@@ -130,7 +130,7 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'PATCH',
     path: '/api/sessions/{id}',
     title: 'Rename session',
-    desc: 'Change only a Session’s persisted display name. Live and Ended Sessions can both be renamed; names are trimmed, must not be blank, and need not be unique.',
+    desc: 'Change only a Live Session’s persisted display name. Names are trimmed, must not be blank, and need not be unique; an Ended Session returns 409 session_ended.',
     params: [
       { name: 'id', type: 'string', required: true, desc: 'Session id (path).' },
       { name: 'name', type: 'string', required: true, desc: 'New display name.' }
@@ -148,7 +148,7 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'POST',
     path: '/api/sessions/{id}/send-key',
     title: 'Send key',
-    desc: 'Send a named key. Current keys: enter, ctrl-c, escape.',
+    desc: 'Send a named key to a Live Session. Current keys: enter, ctrl-c, escape. Confirmed absence returns 409 session_ended; unavailable zmx inventory returns 503 zmx_unavailable so the operation can be retried.',
     params: [
       { name: 'id', type: 'string', required: true, desc: 'Session id (path).' },
       { name: 'key', type: 'string', required: true, desc: 'Named key.' }
@@ -166,7 +166,7 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'DELETE',
     path: '/api/sessions/{id}',
     title: 'Delete session',
-	desc: 'Delete a Session. A Live process is ended before its record is removed; an Ended Session only has its record removed. Files on disk are never touched.',
+	desc: 'Delete a Session without leaving a tombstone. A Live process confirmed present is terminated before removal; a Live process confirmed absent or an Ended Session is removed directly. Inventory or termination failure preserves the record, and files on disk are never touched.',
     params: [{ name: 'id', type: 'string', required: true, desc: 'Session id (path).' }],
     fields: [{ key: 'id', label: 'id', kind: 'text', placeholder: 'ses_…', required: true }],
     returns: '{}',

@@ -4,7 +4,9 @@
 
 > **Lifecycle amendment (2026-07):** The atc-owned identity remains, but failed
 > starts no longer create Sessions and Sessions no longer archive. Public
-> lifecycle is `live | ended`.
+> lifecycle is `live | ended`; Ended is a retained, read-only tombstone created
+> only after a successful, complete zmx inventory confirms absence. Inventory
+> failure changes no Session state.
 
 Supersedes [ADR 0002](0002-session-identity-in-zmx-name.md).
 
