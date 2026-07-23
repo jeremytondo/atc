@@ -1,9 +1,8 @@
 import Foundation
 import ATCAPI
 
-/// The one display order for Workspace and Session lists: newest-created
-/// first, with a stable id tiebreak so equal timestamps keep a
-/// deterministic order across renders.
+/// Shared creation metadata used by Workspace ordering and the legacy
+/// fallback for index-less Sessions.
 protocol CreatedOrdered {
     var createdAt: Date { get }
     var id: String { get }
@@ -17,6 +16,28 @@ extension Sequence where Element: CreatedOrdered {
         sorted {
             if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
             return $0.id < $1.id
+        }
+    }
+}
+
+extension Sequence where Element == Session {
+    /// Workspace Session address order: indexed Sessions first and ascending,
+    /// then legacy index-less Sessions by creation time and stable ID.
+    func sortedBySessionIndex() -> [Session] {
+        sorted {
+            switch ($0.sessionIndex, $1.sessionIndex) {
+            case let (lhs?, rhs?) where lhs != rhs:
+                return lhs < rhs
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                if $0.createdAt != $1.createdAt {
+                    return $0.createdAt < $1.createdAt
+                }
+                return $0.id < $1.id
+            }
         }
     }
 }

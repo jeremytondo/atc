@@ -8,16 +8,8 @@ struct WorkspaceNavigatorView: View {
     @Environment(WindowState.self) private var windowState
 
     @State private var actionError: String?
-    @State private var deletingSession: Row?
+    @State private var deletingSession: WorkspaceSessionGroups.Row?
     @State private var renameRequest: SessionRenameRequest?
-
-    private struct Row: Identifiable {
-        let ref: SessionRef
-        let session: Session
-        let title: String
-        let kind: SessionKind
-        var id: SessionRef { ref }
-    }
 
     var body: some View {
         if workspaceRef == nil {
@@ -35,9 +27,7 @@ struct WorkspaceNavigatorView: View {
     @ViewBuilder
     private var navigatorContent: some View {
         @Bindable var windowState = windowState
-        let rows = sidebarRows()
-        let agents = rows.filter { kind(of: $0.session) == .agent }
-        let terminals = rows.filter { kind(of: $0.session) == .terminal }
+        let groups = sessionGroups()
 
         NavigatorList {
             if runtime?.reachability == .unreachable {
@@ -55,7 +45,7 @@ struct WorkspaceNavigatorView: View {
                 onAdd: { windowState.startSessionKind = .agentSession }
             )
             if windowState.isSessionsSectionExpanded {
-                sessionRows(agents, emptyText: "No sessions")
+                sessionRows(groups.sessions, emptyText: "No sessions")
             }
 
             NavigatorDisclosureHeader(
@@ -66,11 +56,11 @@ struct WorkspaceNavigatorView: View {
                 onAdd: { windowState.startSessionKind = .terminal }
             )
             if windowState.isTerminalsSectionExpanded {
-                sessionRows(terminals, emptyText: "No terminals")
+                sessionRows(groups.terminals, emptyText: "No terminals")
             }
         }
         .confirmationDialog(
-            "Delete Session “\(deletingSession?.title ?? "")”?",
+            "Delete Session “\(deletingSession?.identity.indexedLabel ?? "")”?",
             isPresented: Binding(
                 get: { deletingSession != nil },
                 set: { if !$0 { deletingSession = nil } }
@@ -83,7 +73,7 @@ struct WorkspaceNavigatorView: View {
         } message: {
             if let row = deletingSession {
                 Text(DeleteConfirmation.sessionMessage(
-                    displayName: row.title,
+                    displayName: row.identity.indexedLabel,
                     status: row.session.status
                 ))
             }
@@ -104,7 +94,7 @@ struct WorkspaceNavigatorView: View {
 
     @ViewBuilder
     private func sessionRows(
-        _ rows: [Row],
+        _ rows: [WorkspaceSessionGroups.Row],
         emptyText: String
     ) -> some View {
         ForEach(rows) { row in
@@ -113,7 +103,10 @@ struct WorkspaceNavigatorView: View {
                 action: { _ = windowState.selectSession(row.ref, in: appModel) }
             ) { _ in
                 HStack(spacing: Spacing.xs) {
-                    Text(row.title)
+                    if let index = row.identity.index {
+                        SessionIndexBadge(index)
+                    }
+                    Text(row.identity.fullLabel)
                         .lineLimit(1)
                     if row.session.status == .ended {
                         StatusDot(color: .red)
@@ -124,6 +117,13 @@ struct WorkspaceNavigatorView: View {
             } actions: {
                 EmptyView()
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(
+                row.session.status == .ended
+                    ? "\(row.identity.accessibilityLabel), Ended"
+                    : row.identity.accessibilityLabel
+            )
+            .help(row.identity.indexedLabel)
             .contextMenu { sessionMenu(row) }
         }
         if rows.isEmpty {
@@ -135,12 +135,12 @@ struct WorkspaceNavigatorView: View {
     }
 
     @ViewBuilder
-    private func sessionMenu(_ row: Row) -> some View {
+    private func sessionMenu(_ row: WorkspaceSessionGroups.Row) -> some View {
         if row.session.status == .live {
             Button("Rename…", systemImage: "pencil") {
                 renameRequest = SessionRenameRequest(
                     ref: row.ref,
-                    title: row.title,
+                    identity: row.identity,
                     kind: row.kind
                 )
             }
@@ -172,26 +172,12 @@ struct WorkspaceNavigatorView: View {
         return runtime.sessions.sessions.filter { $0.belongs(to: ref) }
     }
 
-    private func kind(of session: Session) -> SessionKind {
-        SessionKind.classify(session: session)
+    private func sessionGroups() -> WorkspaceSessionGroups {
+        guard let ref = workspaceRef else { return .empty }
+        return WorkspaceSessionGroups(workspace: ref, sessions: workspaceSessions())
     }
 
-    /// Ordered sidebar rows: the Active Workspace's sessions, newest-first.
-    private func sidebarRows() -> [Row] {
-        guard let ref = workspaceRef else { return [] }
-        return workspaceSessions()
-            .sortedNewestFirst()
-            .map { session in
-                return Row(
-                    ref: SessionRef(connectionID: ref.connectionID, sessionID: session.id),
-                    session: session,
-                    title: SessionKind.displayName(session: session),
-                    kind: SessionKind.classify(session: session)
-                )
-            }
-    }
-
-    private func deleteSession(_ row: Row) {
+    private func deleteSession(_ row: WorkspaceSessionGroups.Row) {
         appModel.deleteSession(ref: row.ref, windowState: windowState, reporting: $actionError)
     }
 
@@ -216,23 +202,29 @@ struct WorkspaceNavigatorView: View {
 struct SessionRenameRequest: Equatable {
     let ref: SessionRef
     let kind: SessionKind
+    let identity: SessionIdentity
+    private let originalName: String?
     var draft: String
 
-    init(ref: SessionRef, title: String, kind: SessionKind) {
+    init(ref: SessionRef, identity: SessionIdentity, kind: SessionKind) {
         self.ref = ref
         self.kind = kind
-        self.draft = title
+        self.identity = identity
+        originalName = identity.customName
+        draft = identity.customName ?? ""
     }
 
     var dialogTitle: String {
-        kind == .agent ? "Rename Session" : "Rename Terminal"
+        let category = kind == .agent ? "Session" : "Terminal"
+        return "Rename \(category) “\(identity.indexedLabel)”"
     }
 
-    var normalizedName: String {
-        draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    var normalizedName: String? {
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     var canSubmit: Bool {
-        !normalizedName.isEmpty
+        normalizedName != originalName
     }
 }

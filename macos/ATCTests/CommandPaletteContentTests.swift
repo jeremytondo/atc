@@ -134,7 +134,11 @@ struct CommandPaletteContentTests {
         } == ["Alpha:wsp_b", "same:wsp_a", "Same:wsp_z"])
         #expect(projected.compactMap(\.sessionRow).map {
             "\($0.title):\($0.ref.sessionID)"
-        } == ["Alpha:ses_b", "same:ses_a", "Same:ses_z"])
+        } == [
+            "Shell · Alpha:ses_b",
+            "Shell · same:ses_a",
+            "Shell · Same:ses_z",
+        ])
     }
 
     @Test("keyword expansion keeps bucket and alphabetical ordering")
@@ -161,7 +165,9 @@ struct CommandPaletteContentTests {
         #expect(projected.compactMap(\.workspaceRow).map(\.title) == [
             "Session Alpha", "Session Zoo",
         ])
-        #expect(projected.compactMap(\.sessionRow).map(\.title) == ["Alpha", "Zulu"])
+        #expect(projected.compactMap(\.sessionRow).map(\.title) == [
+            "Claude · Alpha", "Claude · Zulu",
+        ])
         #expect(projected.map { result in
             switch result {
             case .command: "command"
@@ -194,7 +200,7 @@ struct CommandPaletteContentTests {
         let sessionRows = projected.compactMap(\.sessionRow)
 
         #expect(projected.compactMap(\.commandRow).map(\.title).contains("New Terminal"))
-        #expect(sessionRows.map(\.ref.sessionID) == ["category-only", "title-match"])
+        #expect(sessionRows.map(\.ref.sessionID) == ["title-match", "category-only"])
         #expect(sessionRows.filter { $0.ref.sessionID == "title-match" }.count == 1)
         let titleMatch = try #require(sessionRows.first {
             $0.ref.sessionID == "title-match"
@@ -245,7 +251,7 @@ struct CommandPaletteContentTests {
         #expect(workspaceRows.allSatisfy { !$0.availability.isAvailable })
         #expect(!projected.compactMap(\.sessionRow).isEmpty)
         #expect(projected.compactMap(\.sessionRow).allSatisfy {
-            $0.title == "Fix the parser"
+            $0.title == "Claude · Fix the parser"
         })
     }
 
@@ -278,13 +284,15 @@ struct CommandPaletteContentTests {
 
         let sessions = results(query: "", presentation: .sessions, fixture: fixture)
         #expect(sessions.count == 2)
-        #expect(sessions.compactMap(\.sessionRow).map(\.title) == ["Alpha Agent", "Zulu Agent"])
+        #expect(sessions.compactMap(\.sessionRow).map(\.title) == [
+            "Claude · Alpha Agent", "Claude · Zulu Agent",
+        ])
         #expect(sessions.compactMap(\.sessionRow).allSatisfy { $0.kind == .agent })
 
         let terminals = results(query: "", presentation: .terminals, fixture: fixture)
         #expect(terminals.count == 2)
         #expect(terminals.compactMap(\.sessionRow).map(\.title) == [
-            "Beta Terminal", "Delta Tool",
+            "LazyGit · Delta Tool", "Shell · Beta Terminal",
         ])
         #expect(terminals.compactMap(\.sessionRow).allSatisfy { $0.kind == .terminal })
     }
@@ -354,7 +362,7 @@ struct CommandPaletteContentTests {
 
         let unscoped = results(query: "ses", presentation: .all, fixture: fixture)
             .compactMap(\.sessionRow)
-        #expect(unscoped.map(\.ref.sessionID) == ["session-other", "session-match"])
+        #expect(unscoped.map(\.ref.sessionID) == ["session-match", "session-other"])
         #expect(unscoped.allSatisfy { $0.kind == .agent })
     }
 
@@ -692,9 +700,9 @@ struct CommandPaletteSessionResultTests {
             paletteSession("tool", actionName: "LazyGit", workspace: "active"),
         ])
         let byID = Dictionary(uniqueKeysWithValues: projected.map { ($0.ref.sessionID, $0) })
-        #expect(byID["named"]?.title == "Fix parser")
+        #expect(byID["named"]?.title == "Claude · Fix parser")
         #expect(byID["named"]?.kind == .agent)
-        #expect(byID["shell"]?.title == "Terminal")
+        #expect(byID["shell"]?.title == "Shell")
         #expect(byID["shell"]?.kind == .terminal)
         #expect(byID["agent"]?.title == "Claude")
         #expect(byID["agent"]?.kind == .agent)
@@ -738,7 +746,7 @@ struct CommandPaletteSessionResultTests {
 
         let terminals = results(query: "ter", active: active, sessions: candidates)
         #expect(terminals.map(\.ref.sessionID) == [
-            "shell-starting", "action-terminated", "unresolved-running",
+            "action-terminated", "unresolved-running", "shell-starting",
         ])
         #expect(terminals.allSatisfy { $0.kind == .terminal && $0.matchedRanges.isEmpty })
     }
@@ -763,11 +771,11 @@ struct CommandPaletteSessionResultTests {
         #expect(try #require(bySessionKeyword.last).matchedRanges.isEmpty)
 
         let byTerminalKeyword = results(query: "ter", active: active, sessions: candidates)
-        #expect(byTerminalKeyword.map(\.ref.sessionID) == ["shell", "agent"])
-        #expect(try #require(byTerminalKeyword.first).matchedRanges.isEmpty)
-        let agentMatch = try #require(byTerminalKeyword.last)
+        #expect(byTerminalKeyword.map(\.ref.sessionID) == ["agent", "shell"])
+        let agentMatch = try #require(byTerminalKeyword.first)
         #expect(agentMatch.kind == .agent)
         #expect(agentMatch.matchedRanges.map { String(agentMatch.title[$0]) } == ["Ter"])
+        #expect(try #require(byTerminalKeyword.last).matchedRanges.isEmpty)
     }
 
     @Test("a two-character keyword prefix never expands")
@@ -782,16 +790,71 @@ struct CommandPaletteSessionResultTests {
         #expect(projected.map(\.ref.sessionID) == ["shell"])
     }
 
-    @Test("hidden Action, status, and raw identifiers never match")
+    @Test("numeric, identity, custom-name, and combined Session queries are additive")
+    func indexedQueries() {
+        let active = WorkspaceRef(connectionID: connectionID, workspaceID: "active")
+        let candidates = [
+            paletteSession(
+                "claude-two", index: 2, name: "API migration",
+                actionName: "Claude", workspace: "active"
+            ),
+            paletteSession(
+                "codex-three", index: 3, name: "Parser cleanup",
+                actionName: "Codex", workspace: "active"
+            ),
+            paletteSession(
+                "title-digit", index: 9, name: "Version 2 shell",
+                workspace: "active"
+            ),
+        ]
+
+        #expect(results(
+            query: "2", active: active, sessions: candidates
+        ).map(\.ref.sessionID) == ["claude-two", "title-digit"])
+        #expect(results(
+            query: "claude", active: active, sessions: candidates
+        ).map(\.ref.sessionID) == ["claude-two"])
+        #expect(results(
+            query: "migration", active: active, sessions: candidates
+        ).map(\.ref.sessionID) == ["claude-two"])
+        #expect(results(
+            query: "2 claude", active: active, sessions: candidates
+        ).map(\.ref.sessionID) == ["claude-two"])
+        #expect(results(
+            query: "2 codex", active: active, sessions: candidates
+        ).isEmpty)
+    }
+
+    @Test("index is the default Session tie-break ahead of title and legacy IDs")
+    func indexTieBreak() {
+        let active = WorkspaceRef(connectionID: connectionID, workspaceID: "active")
+        let projected = results(query: "claude", active: active, sessions: [
+            paletteSession(
+                "legacy", name: "Alpha", actionName: "Claude", workspace: "active"
+            ),
+            paletteSession(
+                "seven", index: 7, name: "Beta", actionName: "Claude", workspace: "active"
+            ),
+            paletteSession(
+                "two", index: 2, name: "Zulu", actionName: "Claude", workspace: "active"
+            ),
+        ])
+
+        #expect(projected.map(\.ref.sessionID) == ["two", "seven", "legacy"])
+        #expect(projected.map(\.identity.index) == [2, 7, nil])
+    }
+
+    @Test("identity and custom names match while status and raw identifiers stay hidden")
     func hiddenFieldsDoNotMatch() {
         let active = WorkspaceRef(connectionID: connectionID, workspaceID: "active")
         let session = paletteSession(
             "raw-identifier", name: "Public Name", actionName: "Claude",
             workspace: "active", status: .ended
         )
-        for query in ["claude", "failed", "raw-identifier"] {
+        for query in ["failed", "raw-identifier"] {
             #expect(results(query: query, active: active, sessions: [session]).isEmpty)
         }
+        #expect(results(query: "claude", active: active, sessions: [session]).count == 1)
         #expect(results(query: "Public", active: active, sessions: [session]).count == 1)
     }
 
@@ -829,7 +892,7 @@ struct CommandPaletteSessionResultTests {
             context: fixture.context,
             presentation: .all
         ).compactMap(\.sessionRow)
-        #expect(projected.map(\.title) == ["Only Active Connection"])
+        #expect(projected.map(\.title) == ["Shell · Only Active Connection"])
     }
 
     private func results(
@@ -987,6 +1050,7 @@ private func paletteWorkspace(
 
 private func paletteSession(
     _ id: String,
+    index: Int? = nil,
     name: String? = nil,
     actionName: String? = nil,
     workspace: String,
@@ -994,6 +1058,7 @@ private func paletteSession(
 ) -> Session {
     return Session(
         id: id,
+        sessionIndex: index,
         name: name,
         actionId: actionName.map { "act_\($0.lowercased())" },
         actionName: actionName,

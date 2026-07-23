@@ -79,7 +79,7 @@ final class SessionsStore {
     }
 
     @discardableResult
-    func rename(id: String, name: String) async throws -> Session {
+    func rename(id: String, name: String?) async throws -> Session {
         let session = try await client.renameSession(id: id, name: name)
         merge(session)
         scheduleRefresh()

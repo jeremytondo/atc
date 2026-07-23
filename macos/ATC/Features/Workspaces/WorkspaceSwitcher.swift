@@ -1,90 +1,124 @@
 import SwiftUI
 import ATCAPI
 
-/// The toolbar's workspace pill, styled like Xcode's scheme picker: a
-/// static project prefix, then the workspace name as the one interactive
-/// segment — it alone highlights on hover and reveals the dropdown
-/// chevron. A plain Button + popover, NOT a Menu — toolbar Menus bridge
-/// to a native item that flattens custom labels to text, so composite
-/// content (the badge) never renders inside one. The toolbar already
-/// wraps the item in Liquid Glass, so the label draws no container of
-/// its own — a second glassEffect here nests two capsule outlines.
+/// The toolbar's continuous context pill. Plain Buttons + popovers are used
+/// instead of toolbar Menus because native toolbar Menu labels flatten
+/// composite SwiftUI content such as the Session index badge.
 struct WorkspaceSwitcher: View {
     @Environment(AppModel.self) private var appModel
     @Environment(WindowState.self) private var windowState
 
-    @State private var isPickerPresented = false
-    @State private var isHovering = false
+    @State private var isWorkspacePickerPresented = false
+    @State private var isSessionPickerPresented = false
+    @State private var isWorkspaceHovering = false
+    @State private var isSessionHovering = false
 
     var body: some View {
         let presentation = activeContext.map {
             WorkspaceSwitcherPresentation(
                 project: $0.project,
-                workspace: $0.workspace
+                workspace: $0.workspace,
+                session: selectedSession
             )
         } ?? .noActiveWorkspace
-        // Highlight persists while the picker is open, matching Xcode.
-        let isHighlighted = isHovering || isPickerPresented
-        HStack(spacing: Spacing.xs) {
-            if let project = presentation.projectName {
-                Text(project)
-                    .foregroundStyle(.secondary)
-                Text("›")
-                    .foregroundStyle(.tertiary)
-            }
-            Button {
-                isPickerPresented.toggle()
-            } label: {
-                HStack(spacing: Spacing.xs) {
-                    Text(presentation.workspaceName)
-                        .fontWeight(.medium)
-                    // Opacity, not removal: the reserved width keeps the
-                    // pill from shifting as the chevron fades in.
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .opacity(isHighlighted ? 1 : 0)
-                }
-                .padding(.horizontal, Spacing.sm)
-                .padding(.vertical, 2)
-                .background(
-                    .quaternary.opacity(isHighlighted ? 1 : 0),
-                    in: RoundedRectangle(cornerRadius: 5)
-                )
-                .contentShape(RoundedRectangle(cornerRadius: 5))
-            }
-            .buttonStyle(.plain)
-            .onHover { isHovering = $0 }
-            .popover(isPresented: $isPickerPresented, arrowEdge: .bottom) {
-                WorkspacePicker()
-            }
-            .help(presentation.help)
-            .accessibilityLabel(
-                sessionBadgeLabel.map { "\(presentation.help), \($0)" }
-                    ?? presentation.help
-            )
-            if let sessionBadgeLabel {
-                TagBadge(text: sessionBadgeLabel)
+
+        HStack(spacing: 0) {
+            workspaceRegion(presentation)
+            if let session = presentation.session {
+                sessionRegion(session, help: presentation.help)
             }
         }
         .lineLimit(1)
-        // The toolbar offers custom principal views less than their
-        // natural width, which SwiftUI resolves by squeezing the Texts
-        // into "…" — even short names. fixedSize makes the pill's
-        // intrinsic width non-negotiable.
-        .fixedSize()
-        // Inset the content from the toolbar item's glass capsule so the
-        // hover highlight and badge never crowd its rounded ends.
         .padding(.horizontal, Spacing.md)
     }
 
-    /// The visible session's Agent name or Terminal session name; nil
-    /// whenever no session is the selected content.
-    private var sessionBadgeLabel: String? {
-        guard let ref = windowState.selectedSession,
-              let session = appModel.session(for: ref)
+    private func workspaceRegion(
+        _ presentation: WorkspaceSwitcherPresentation
+    ) -> some View {
+        let isHighlighted = isWorkspaceHovering || isWorkspacePickerPresented
+        return Button {
+            isWorkspacePickerPresented.toggle()
+        } label: {
+            HStack(spacing: Spacing.xs) {
+                if let project = presentation.projectName {
+                    Text(project)
+                        .foregroundStyle(.secondary)
+                        .layoutPriority(1)
+                    Text("›")
+                        .foregroundStyle(.tertiary)
+                }
+                Text(presentation.workspaceName)
+                    .fontWeight(.medium)
+                    .layoutPriority(3)
+                regionChevron(isHighlighted: isHighlighted)
+            }
+            .regionChrome(isHighlighted: isHighlighted)
+        }
+        .buttonStyle(.plain)
+        .onHover { isWorkspaceHovering = $0 }
+        .popover(isPresented: $isWorkspacePickerPresented, arrowEdge: .bottom) {
+            WorkspacePicker()
+        }
+        .help(presentation.workspaceHelp)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Choose Workspace, \(presentation.label)")
+    }
+
+    private func sessionRegion(
+        _ identity: SessionIdentity,
+        help: String
+    ) -> some View {
+        let isHighlighted = isSessionHovering || isSessionPickerPresented
+        return Button {
+            isSessionPickerPresented.toggle()
+        } label: {
+            HStack(spacing: Spacing.xs) {
+                Text("›")
+                    .foregroundStyle(.tertiary)
+                if let index = identity.index {
+                    SessionIndexBadge(index)
+                        .layoutPriority(4)
+                }
+                Text(identity.identityText)
+                    .fontWeight(.medium)
+                    .layoutPriority(4)
+                if let customName = identity.customName {
+                    Text("·")
+                        .foregroundStyle(.tertiary)
+                        .layoutPriority(2)
+                    Text(customName)
+                        .foregroundStyle(.secondary)
+                        .layoutPriority(2)
+                }
+                regionChevron(isHighlighted: isHighlighted)
+            }
+            .regionChrome(isHighlighted: isHighlighted)
+        }
+        .buttonStyle(.plain)
+        .onHover { isSessionHovering = $0 }
+        .popover(isPresented: $isSessionPickerPresented, arrowEdge: .bottom) {
+            WorkspaceSessionPicker()
+        }
+        .help(help)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Choose Session, \(identity.accessibilityLabel)")
+    }
+
+    private func regionChevron(isHighlighted: Bool) -> some View {
+        Image(systemName: "chevron.down")
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(.tertiary)
+            .opacity(isHighlighted ? 1 : 0)
+    }
+
+    private var selectedSession: Session? {
+        guard let workspace = windowState.activeWorkspace,
+              let ref = windowState.selectedSession,
+              ref.connectionID == workspace.connectionID,
+              let session = appModel.session(for: ref),
+              session.belongs(to: workspace)
         else { return nil }
-        return SessionKind.displayName(session: session)
+        return session
     }
 
     private var activeContext: (project: Project, workspace: Workspace)? {
@@ -94,6 +128,116 @@ struct WorkspaceSwitcher: View {
               let project = runtime.projects.project(id: workspace.projectId)
         else { return nil }
         return (project, workspace)
+    }
+}
+
+/// Pure projection for the Workspace-scoped Session picker.
+struct SessionPickerPresentation: Equatable, Sendable {
+    let groups: WorkspaceSessionGroups
+    let selectedSession: SessionRef?
+
+    init(
+        workspace: WorkspaceRef,
+        sessions: [Session],
+        selectedSession: SessionRef?
+    ) {
+        groups = WorkspaceSessionGroups(workspace: workspace, sessions: sessions)
+        self.selectedSession = selectedSession
+    }
+
+    func isSelected(_ row: WorkspaceSessionGroups.Row) -> Bool {
+        row.ref == selectedSession
+    }
+}
+
+/// Picker for existing Sessions and Terminals in the Active Workspace.
+/// Selection is immediate; creation and filtering intentionally live
+/// elsewhere.
+struct WorkspaceSessionPicker: View {
+    @Environment(AppModel.self) private var appModel
+    @Environment(WindowState.self) private var windowState
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        if let presentation {
+            List {
+                sessionSection(
+                    "Sessions",
+                    rows: presentation.groups.sessions,
+                    emptyText: "No Sessions",
+                    presentation: presentation
+                )
+                sessionSection(
+                    "Terminals",
+                    rows: presentation.groups.terminals,
+                    emptyText: "No Terminals",
+                    presentation: presentation
+                )
+            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .frame(width: 300, height: 300)
+        } else {
+            Text("No Active Workspace")
+                .foregroundStyle(.secondary)
+                .frame(width: 300, height: 160)
+        }
+    }
+
+    @ViewBuilder
+    private func sessionSection(
+        _ title: String,
+        rows: [WorkspaceSessionGroups.Row],
+        emptyText: String,
+        presentation: SessionPickerPresentation
+    ) -> some View {
+        Section(title) {
+            if rows.isEmpty {
+                Text(emptyText)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } else {
+                ForEach(rows) { row in
+                    Button {
+                        if windowState.selectSession(row.ref, in: appModel) {
+                            dismiss()
+                        }
+                    } label: {
+                        HStack(spacing: Spacing.xs) {
+                            if let index = row.identity.index {
+                                SessionIndexBadge(index)
+                            }
+                            Text(row.identity.fullLabel)
+                                .lineLimit(1)
+                            Spacer()
+                            if presentation.isSelected(row) {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(row.identity.indexedLabel)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(row.identity.accessibilityLabel)
+                    .accessibilityAddTraits(
+                        presentation.isSelected(row) ? .isSelected : []
+                    )
+                }
+            }
+        }
+    }
+
+    private var presentation: SessionPickerPresentation? {
+        guard let workspace = windowState.activeWorkspace,
+              let runtime = appModel.runtime(id: workspace.connectionID)
+        else { return nil }
+        return SessionPickerPresentation(
+            workspace: workspace,
+            sessions: runtime.sessions.sessions,
+            selectedSession: windowState.selectedSession
+        )
     }
 }
 
@@ -179,12 +323,27 @@ private struct WorkspacePicker: View {
     }
 }
 
+private extension View {
+    /// Shared hover chrome for each pill region: its own subtle rounded
+    /// highlight while the two regions still read as one continuous path.
+    func regionChrome(isHighlighted: Bool) -> some View {
+        padding(.horizontal, Spacing.sm)
+            .padding(.vertical, 2)
+            .background(
+                .quaternary.opacity(isHighlighted ? 1 : 0),
+                in: RoundedRectangle(cornerRadius: 5)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 5))
+    }
+}
+
 struct WorkspaceSwitcherPresentation: Equatable {
     /// nil when no Active Workspace is selected — the pill then shows
     /// only `workspaceName` (the placeholder prompt).
     let projectName: String?
     let workspaceName: String
-    let help: String
+    let session: SessionIdentity?
+    let workspaceHelp: String
 
     /// Flat "project › workspace" string for accessibility.
     var label: String {
@@ -194,18 +353,30 @@ struct WorkspaceSwitcherPresentation: Equatable {
     static let noActiveWorkspace = WorkspaceSwitcherPresentation(
         projectName: nil,
         workspaceName: "Select Workspace…",
-        help: "Select an Active Workspace"
+        session: nil,
+        workspaceHelp: "Select an Active Workspace"
     )
 
-    private init(projectName: String?, workspaceName: String, help: String) {
-        self.projectName = projectName
-        self.workspaceName = workspaceName
-        self.help = help
+    var help: String {
+        session.map { "\(workspaceHelp) › \($0.indexedLabel)" } ?? workspaceHelp
     }
 
-    init(project: Project, workspace: Workspace) {
+    private init(
+        projectName: String?,
+        workspaceName: String,
+        session: SessionIdentity?,
+        workspaceHelp: String
+    ) {
+        self.projectName = projectName
+        self.workspaceName = workspaceName
+        self.session = session
+        self.workspaceHelp = workspaceHelp
+    }
+
+    init(project: Project, workspace: Workspace, session: Session? = nil) {
         projectName = project.name
         workspaceName = workspace.name
-        help = "\(project.name) › \(workspace.name)"
+        self.session = session.map(SessionIdentity.init(session:))
+        workspaceHelp = "\(project.name) › \(workspace.name)"
     }
 }
