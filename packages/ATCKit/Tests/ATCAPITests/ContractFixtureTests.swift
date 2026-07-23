@@ -31,6 +31,7 @@ struct ContractFixtureTests {
     func sessionsList() throws {
         let sessions = try decodeResponse("sessions-list", as: SessionsEnvelope.self).sessions
         #expect(sessions.count == 1)
+        #expect(sessions[0].sessionIndex == 3)
         #expect(sessions[0].status == .live)
         #expect(sessions[0].actionName == "Claude")
         #expect(sessions[0].isAgent)
@@ -42,6 +43,7 @@ struct ContractFixtureTests {
     func session(fixture: String) throws {
         let session = try decodeResponse(fixture, as: Session.self)
         #expect(!session.id.isEmpty)
+        #expect(session.sessionIndex != nil)
         #expect(session.workspace != nil)
         #expect(session.project != nil)
         if fixture == "session-detail" {
@@ -63,6 +65,7 @@ struct ContractFixtureTests {
     func workspaceSessions() throws {
         let sessions = try decodeResponse("workspace-sessions", as: SessionsEnvelope.self).sessions
         #expect(sessions.count == 1)
+        #expect(sessions[0].sessionIndex == 3)
         #expect(sessions[0].workspace?.id == "wsp_fixture01")
     }
 

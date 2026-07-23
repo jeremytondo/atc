@@ -387,6 +387,7 @@ go run ./cmd/atc sessions start --workspace <id>
 go run ./cmd/atc sessions list
 go run ./cmd/atc sessions show <id>
 go run ./cmd/atc sessions rename <id> "New name"
+go run ./cmd/atc sessions rename <id> --clear
 go run ./cmd/atc sessions attach <id>
 go run ./cmd/atc sessions send-text <id> "hello"
 go run ./cmd/atc sessions send-key <id> enter
@@ -413,10 +414,16 @@ listed closes with `attach_failed`; an inventory failure closes with
 Session to Ended.
 
 `PATCH /api/sessions/{id}` renames only Live Sessions and accepts a strict
-`{"name":"New name"}` body. The server trims the name, rejects blank names with
-`400 invalid_request`, returns `409 session_ended` for an Ended Session, and
-otherwise returns the updated Session detail. Rename changes only the persisted
-display name.
+`{"name":"New name"}` body, or `{"name":null}` to clear the custom name. The
+server trims the name, rejects blank names with `400 invalid_request`, returns
+`409 session_ended` for an Ended Session, and otherwise returns the updated
+Session detail. Rename changes only the persisted display name.
+
+Every Workspace Session carries a server-owned `sessionIndex`: the smallest
+unused positive integer in its Workspace at start time, shared across agent and
+terminal Sessions, immutable for the record's lifetime, retained by Ended
+tombstones, and released only when the record is deleted. It is a human-facing
+Workspace-local address; the Session ID remains the API identity.
 
 Session deletion is stop-and-forget: a Live process confirmed present is
 terminated before its record is removed; an Ended Session or a Live process

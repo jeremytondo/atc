@@ -68,7 +68,7 @@ export const ENDPOINTS: Endpoint[] = [
       { key: 'name', label: 'name', kind: 'text', placeholder: 'optional' }
     ],
     returns:
-      '{\n  "id": "ses_8f3a2c",\n  "actionId": "act_fh9g7e6571qo53r0t647ughtfg",\n  "actionName": "Codex",\n  "isAgent": true,\n  "status": "live"\n}',
+      '{\n  "id": "ses_8f3a2c",\n  "sessionIndex": 3,\n  "actionId": "act_fh9g7e6571qo53r0t647ughtfg",\n  "actionName": "Codex",\n  "isAgent": true,\n  "status": "live"\n}',
     cli: {
       cmd: 'atc sessions start',
       example:
@@ -103,7 +103,7 @@ export const ENDPOINTS: Endpoint[] = [
     desc: 'Fetch one session after demand-driven zmx reconciliation, including its copied launch-time action name and agent classification. If inventory is unavailable, stored state is returned unchanged. Interactive Shell sessions omit actionId and actionName and return isAgent false.',
     params: [{ name: 'id', type: 'string', required: true, desc: 'Session id (path).' }],
     fields: [{ key: 'id', label: 'id', kind: 'text', placeholder: 'ses_…', required: true }],
-	returns: '{ "id": "ses_…", "status": "live", … }',
+	returns: '{ "id": "ses_…", "sessionIndex": 3, "status": "live", … }',
     cli: { cmd: 'atc sessions show', example: 'atc sessions show ses_8f3a2c' }
   },
   {
@@ -130,16 +130,16 @@ export const ENDPOINTS: Endpoint[] = [
     method: 'PATCH',
     path: '/api/sessions/{id}',
     title: 'Rename session',
-    desc: 'Change only a Live Session’s persisted display name. Names are trimmed, must not be blank, and need not be unique; an Ended Session returns 409 session_ended.',
+    desc: 'Change only a Live Session’s persisted display name. Names are trimmed, must not be blank, and need not be unique; send null to clear the custom name. An Ended Session returns 409 session_ended.',
     params: [
       { name: 'id', type: 'string', required: true, desc: 'Session id (path).' },
-      { name: 'name', type: 'string', required: true, desc: 'New display name.' }
+      { name: 'name', type: 'string | null', required: true, desc: 'New display name, or null to clear it.' }
     ],
     fields: [
       { key: 'id', label: 'id', kind: 'text', placeholder: 'ses_…', required: true },
       { key: 'name', label: 'name', kind: 'text', placeholder: 'New name', required: true }
     ],
-    returns: '{ "id": "ses_…", "name": "New name", "status": "live", … }',
+    returns: '{ "id": "ses_…", "sessionIndex": 3, "name": "New name", "status": "live", … }',
     cli: { cmd: 'atc sessions rename', example: 'atc sessions rename ses_8f3a2c "New name"' }
   },
   {

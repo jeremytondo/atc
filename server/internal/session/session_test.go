@@ -235,6 +235,14 @@ func TestLaunchFailureDeletesProvisionalSession(t *testing.T) {
 	if len(records) != 0 {
 		t.Fatalf("persistent sessions after failure = %+v", records)
 	}
+	mux.startErr = nil
+	started, err := svc.Start(ctx, StartInput{WorkspaceID: testWorkspaceID, ActionID: action.ID})
+	if err != nil {
+		t.Fatalf("Start after failed launch: %v", err)
+	}
+	if started.SessionIndex != 1 {
+		t.Fatalf("index after failed launch = %d, want released index 1", started.SessionIndex)
+	}
 }
 
 func TestNewIDUsesSessionPrefix(t *testing.T) {
@@ -310,11 +318,11 @@ func TestRenameLiveSessionAndRejectEnded(t *testing.T) {
 		t.Fatalf("MarkEnded: %v", err)
 	}
 
-	renamedLive, err := svc.Rename(ctx, live.ID, "  Shared  ")
+	renamedLive, err := svc.Rename(ctx, live.ID, sessionName("  Shared  "))
 	if err != nil {
 		t.Fatalf("Rename live: %v", err)
 	}
-	_, err = svc.Rename(ctx, ended.ID, "Shared")
+	_, err = svc.Rename(ctx, ended.ID, sessionName("Shared"))
 	var endedErr *EndedError
 	if !errors.As(err, &endedErr) || endedErr.SessionID != ended.ID {
 		t.Fatalf("Rename ended err = %#v", err)
@@ -325,12 +333,20 @@ func TestRenameLiveSessionAndRejectEnded(t *testing.T) {
 	if renamedLive.Workspace == nil || renamedLive.Project == nil {
 		t.Fatalf("renamed live missing refs: %+v", renamedLive)
 	}
-	if _, err := svc.Rename(ctx, live.ID, "   "); !errors.Is(err, ErrInvalidSessionName) {
+	clearedLive, err := svc.Rename(ctx, live.ID, nil)
+	if err != nil || clearedLive.Name != "" {
+		t.Fatalf("clear live = %+v err=%v", clearedLive, err)
+	}
+	if _, err := svc.Rename(ctx, live.ID, sessionName("   ")); !errors.Is(err, ErrInvalidSessionName) {
 		t.Fatalf("blank err = %v, want ErrInvalidSessionName", err)
 	}
-	if _, err := svc.Rename(ctx, "ses_missing", "Name"); !errors.Is(err, ErrSessionNotFound) {
+	if _, err := svc.Rename(ctx, "ses_missing", sessionName("Name")); !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("missing err = %v, want ErrSessionNotFound", err)
 	}
+}
+
+func sessionName(name string) *string {
+	return &name
 }
 
 func TestStartPromotionLostRaceTerminatesLaunchedProcess(t *testing.T) {

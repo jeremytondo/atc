@@ -31,6 +31,9 @@ public struct SessionProject: Codable, Sendable, Hashable, Identifiable {
 /// The shared shape returned by session list, detail, start, and rename APIs.
 public struct Session: Codable, Sendable, Hashable, Identifiable {
     public var id: String
+    /// Workspace-local human-facing address. Nil when the server predates
+    /// session indexes.
+    public var sessionIndex: Int?
     public var name: String?
     /// Copied launch identity. Both fields are nil for the Interactive Shell.
     public var actionId: String?
@@ -45,6 +48,7 @@ public struct Session: Codable, Sendable, Hashable, Identifiable {
 
     public init(
         id: String,
+        sessionIndex: Int? = nil,
         name: String? = nil,
         actionId: String? = nil,
         actionName: String? = nil,
@@ -57,6 +61,7 @@ public struct Session: Codable, Sendable, Hashable, Identifiable {
         project: SessionProject? = nil
     ) {
         self.id = id
+        self.sessionIndex = sessionIndex
         self.name = name
         self.actionId = actionId
         self.actionName = actionName

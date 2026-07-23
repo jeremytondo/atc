@@ -148,6 +148,7 @@
         {session?.name ?? id}
       </a>
       {#if session}
+        <span class="badge">[{session.sessionIndex}]</span>
         <span class="badge">{sessionActionLabel(session)}</span>
         {#if session.isAgent}<span class="badge">Agent</span>{/if}
       {/if}

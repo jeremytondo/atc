@@ -108,15 +108,16 @@ type StartInput struct {
 // Session is atc's full domain model for a session. API list/detail
 // serializers decide which fields are exposed on each endpoint.
 type Session struct {
-	ID          string
-	Name        string
-	ActionID    string
-	ActionName  string
-	IsAgent     bool
-	WorkingDir  string
-	Status      Status
-	WorkspaceID string
-	Workspace   *WorkspaceRef
+	ID           string
+	SessionIndex int
+	Name         string
+	ActionID     string
+	ActionName   string
+	IsAgent      bool
+	WorkingDir   string
+	Status       Status
+	WorkspaceID  string
+	Workspace    *WorkspaceRef
 	// Project is the derived project reference, reached through the
 	// workspace, kept so clients that group sessions by project keep working.
 	Project   *ProjectRef
@@ -348,10 +349,13 @@ func (s *Service) Read(ctx context.Context, id string) (Session, error) {
 }
 
 // Rename updates only a Live session's persisted display name.
-func (s *Service) Rename(ctx context.Context, id, name string) (Session, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return Session{}, fmt.Errorf("%w: name is required", ErrInvalidSessionName)
+func (s *Service) Rename(ctx context.Context, id string, name *string) (Session, error) {
+	if name != nil {
+		trimmed := strings.TrimSpace(*name)
+		if trimmed == "" {
+			return Session{}, fmt.Errorf("%w: name is required", ErrInvalidSessionName)
+		}
+		name = &trimmed
 	}
 	current, err := s.store.Get(ctx, id)
 	if err != nil {
@@ -735,18 +739,19 @@ func domainSession(record store.Session) (Session, error) {
 		return Session{}, err
 	}
 	return Session{
-		ID:          record.ID,
-		Name:        record.Name,
-		ActionID:    record.ActionID,
-		ActionName:  record.ActionName,
-		IsAgent:     record.IsAgent,
-		WorkingDir:  record.WorkingDir,
-		Status:      status,
-		WorkspaceID: record.WorkspaceID,
-		Workspace:   workspaceRef,
-		Project:     projectRef,
-		CreatedAt:   record.CreatedAt,
-		UpdatedAt:   record.UpdatedAt,
+		ID:           record.ID,
+		SessionIndex: record.SessionIndex,
+		Name:         record.Name,
+		ActionID:     record.ActionID,
+		ActionName:   record.ActionName,
+		IsAgent:      record.IsAgent,
+		WorkingDir:   record.WorkingDir,
+		Status:       status,
+		WorkspaceID:  record.WorkspaceID,
+		Workspace:    workspaceRef,
+		Project:      projectRef,
+		CreatedAt:    record.CreatedAt,
+		UpdatedAt:    record.UpdatedAt,
 	}, nil
 }
 

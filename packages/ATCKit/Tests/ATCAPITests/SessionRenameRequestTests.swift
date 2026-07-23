@@ -14,7 +14,7 @@ private final class SessionRenameURLProtocol: URLProtocol {
         Self.lastBody = request.httpBody ?? request.httpBodyStream.flatMap(readAll)
         let body = Data(#"""
         {
-          "id":"ses_123","name":"Renamed","actionId":"act_123456789abcdefghijklmnopq",
+          "id":"ses_123","sessionIndex":4,"name":"Renamed","actionId":"act_123456789abcdefghijklmnopq",
           "actionName":"Editor","isAgent":false,"workingDir":"/repo","status":"ended",
           "createdAt":"2026-07-18T10:00:00Z","updatedAt":"2026-07-18T11:00:00Z"
         }
@@ -62,7 +62,17 @@ struct SessionRenameRequestTests {
         let json = try JSONSerialization.jsonObject(with: body) as? [String: String]
         #expect(json == ["name": "Renamed"])
         #expect(detail.id == "ses_123")
+        #expect(detail.sessionIndex == 4)
         #expect(detail.name == "Renamed")
         #expect(detail.status == .ended)
+    }
+
+    @Test("renameSession encodes an explicit null when clearing")
+    func clearSessionName() async throws {
+        _ = try await makeClient().renameSession(id: "ses_123", name: nil)
+        let body = try #require(SessionRenameURLProtocol.lastBody)
+        let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        #expect(json.keys.sorted() == ["name"])
+        #expect(json["name"] is NSNull)
     }
 }

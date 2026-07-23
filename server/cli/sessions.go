@@ -135,7 +135,7 @@ func sessionsListCommand(lookup envLookup) *cobra.Command {
 				if actionName == "" {
 					actionName = "(interactive shell)"
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%t\t%s\t%s\n", s.ID, s.Status, actionName, s.IsAgent, s.WorkingDir, s.Name)
+				fmt.Fprintf(cmd.OutOrStdout(), "%d\t%s\t%s\t%s\t%t\t%s\t%s\n", s.SessionIndex, s.ID, s.Status, actionName, s.IsAgent, s.WorkingDir, s.Name)
 			}
 			return nil
 		},
@@ -184,21 +184,32 @@ func sessionsShowCommand(lookup envLookup) *cobra.Command {
 
 func sessionsRenameCommand(lookup envLookup) *cobra.Command {
 	var output string
+	var clearName bool
 
 	cmd := &cobra.Command{
-		Use:   "rename <id> <name>",
-		Short: "Rename a session",
-		Args:  cobra.ExactArgs(2),
+		Use:   "rename <id> [name]",
+		Short: "Set or clear a session name",
+		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateOutput(output); err != nil {
 				return err
+			}
+			if clearName && len(args) == 2 {
+				return errors.New("--clear cannot be used with a name")
+			}
+			if !clearName && len(args) != 2 {
+				return errors.New("a name is required unless --clear is used")
+			}
+			var name any
+			if !clearName {
+				name = args[1]
 			}
 			client, err := commandAPIClient(cmd, lookup)
 			if err != nil {
 				return err
 			}
 			body, err := client.patch(cmd.Context(), sessionEndpoint(args[0]), map[string]any{
-				"name": args[1],
+				"name": name,
 			})
 			if err != nil {
 				return err
@@ -216,6 +227,7 @@ func sessionsRenameCommand(lookup envLookup) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&output, "output", "o", outputText, "Output format: text or json")
+	cmd.Flags().BoolVar(&clearName, "clear", false, "Clear the custom session name")
 	return cmd
 }
 
@@ -337,6 +349,7 @@ func writeSessionDetailText(cmd *cobra.Command, s api.SessionDetail) error {
 	}
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "id\t%s\n", s.ID)
+	fmt.Fprintf(out, "sessionIndex\t%d\n", s.SessionIndex)
 	fmt.Fprintf(out, "status\t%s\n", s.Status)
 	if s.ActionID != "" {
 		fmt.Fprintf(out, "actionId\t%s\n", s.ActionID)

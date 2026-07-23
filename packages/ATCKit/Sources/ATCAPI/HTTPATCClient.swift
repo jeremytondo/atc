@@ -39,9 +39,10 @@ public struct HTTPATCClient: ATCClient {
         try await post("sessions/start", body: request)
     }
 
-    public func renameSession(id: String, name: String) async throws -> Session {
-        struct Body: Encodable { var name: String }
-        return try await patch("sessions/\(id)", body: Body(name: name))
+    public func renameSession(id: String, name: String?) async throws -> Session {
+        // A dictionary value encodes nil as an explicit JSON null, which the
+        // server requires to clear the name; a struct property would be omitted.
+        try await patch("sessions/\(id)", body: ["name": name])
     }
 
     public func deleteSession(id: String) async throws {
