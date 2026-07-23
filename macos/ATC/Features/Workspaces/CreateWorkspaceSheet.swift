@@ -2,9 +2,8 @@ import SwiftUI
 import ATCAPI
 
 /// Form for `POST /workspaces`: a name plus the owning Project, invoked
-/// from three contexts (see `CreateWorkspaceContext.Mode`). Uses the
-/// server's default Environment implicitly. On success, creation opens the
-/// new Workspace — it does not merely select it.
+/// from three contexts (see `CreateWorkspaceContext.Mode`). On success,
+/// creation opens the new Workspace — it does not merely select it.
 struct CreateWorkspaceSheet: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss

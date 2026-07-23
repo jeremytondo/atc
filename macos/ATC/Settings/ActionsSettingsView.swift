@@ -1,39 +1,29 @@
+import AppKit
 import SwiftUI
 import ATCAPI
 
-/// What the editor pane is editing: an existing action by name, or a new
+/// What the editor pane is editing: an existing action by ID, or a new
 /// draft that isn't on the server until Save.
 enum ActionEditorTarget: Hashable {
     case existing(String)
     case new
 }
 
-/// The Actions settings section. Actions live on the atc server, so the
-/// section is scoped to one Connection at a time via the picker up top;
-/// below it, the same master list + draft editor shape as Connections.
-///
-/// Origin drives the affordances: built-ins can be edited (creating an
-/// override) but not deleted; modified built-ins offer Revert to Default;
-/// custom actions delete outright.
+/// Server-wide Action administration scoped to one Connection.
 struct ActionsSettingsView: View {
     @Environment(AppModel.self) private var appModel
 
     @State private var connectionID: UUID?
     @State private var target: ActionEditorTarget?
     @State private var confirmRemove = false
-    /// Bumped when a revert rewrites the selected action server-side, so the
-    /// editor reloads even though the target name didn't change.
-    @State private var editorGeneration = 0
 
     private var runtime: ConnectionRuntime? {
         connectionID.flatMap { appModel.runtime(id: $0) }
     }
 
     private var selectedAction: ATCAction? {
-        if case .existing(let name) = target {
-            return runtime?.actions.action(name: name)
-        }
-        return nil
+        guard case .existing(let id) = target else { return nil }
+        return runtime?.actions.action(id: id)
     }
 
     var body: some View {
@@ -63,30 +53,18 @@ struct ActionsSettingsView: View {
             .onChange(of: connectionID) { target = nil }
             .task(id: connectionID) { await runtime?.actions.refresh() }
             .confirmationDialog(removePrompt, isPresented: $confirmRemove) {
-                Button(
-                    selectedAction?.isModified == true ? "Revert to Default" : "Delete Action",
-                    role: .destructive
-                ) {
+                Button("Delete Action", role: .destructive) {
                     remove()
                 }
             } message: {
-                Text(
-                    selectedAction?.isModified == true
-                        ? "Your customizations are discarded and the built-in definition comes back."
-                        : "This removes the action from the atc server for every client."
-                )
+                Text("This removes the action from the atc server for every client. Existing sessions keep their copied launch identity.")
             }
         }
     }
 
-    // MARK: Header
-
     private var header: some View {
         HStack(spacing: Spacing.md) {
             Picker("Connection", selection: $connectionID) {
-                // The selection is nil until onAppear picks the first runtime
-                // (and dangles if that Connection is deleted); keep a matching
-                // tag so AppKit doesn't log an invalid selection.
                 if runtime == nil {
                     Text("Select Connection").tag(connectionID)
                 }
@@ -112,8 +90,6 @@ struct ActionsSettingsView: View {
         .padding(.vertical, Spacing.sm)
     }
 
-    // MARK: Master list
-
     private var master: some View {
         VStack(spacing: 0) {
             List(selection: $target) {
@@ -121,15 +97,14 @@ struct ActionsSettingsView: View {
                     ForEach(store.actions) { action in
                         HStack(spacing: Spacing.sm) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(action.displayLabel)
+                                Text(action.name)
                                     .font(.headline)
                                     .lineLimit(1)
-                                HStack(spacing: Spacing.sm) {
-                                    Text(action.name)
+                                if let description = action.description {
+                                    Text(description)
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                         .lineLimit(1)
-                                    TagBadge(text: Self.originLabel(action.origin))
                                 }
                             }
                             .opacity(action.enabled ? 1 : Dimming.unavailable)
@@ -143,7 +118,12 @@ struct ActionsSettingsView: View {
                                     : "Enable this action")
                         }
                         .padding(.vertical, 2)
-                        .tag(ActionEditorTarget.existing(action.name))
+                        .tag(ActionEditorTarget.existing(action.id))
+                        .contextMenu {
+                            Button("Copy Action ID") {
+                                copyToPasteboard(action.id)
+                            }
+                        }
                     }
                 }
             }
@@ -159,25 +139,21 @@ struct ActionsSettingsView: View {
             Divider()
             ListEditorBar(
                 addHelp: "Add an action",
-                removeHelp: minusHelp,
-                canRemove: selectedAction != nil && selectedAction?.isBuiltin != true,
+                removeHelp: "Delete the selected action",
+                canRemove: selectedAction != nil,
                 onAdd: { target = .new },
                 onRemove: { confirmRemove = true }
             )
         }
     }
 
-    // MARK: Detail
-
     @ViewBuilder
     private var detail: some View {
         if let runtime, let target {
-            ActionEditorView(store: runtime.actions, target: target) { savedName in
-                self.target = .existing(savedName)
+            ActionEditorView(store: runtime.actions, target: target) { savedID in
+                self.target = .existing(savedID)
             }
-            // Reseed cleanly when the connection, target, or server-side
-            // content (revert) changes.
-            .id(EditorIdentity(connectionID: runtime.id, target: target, generation: editorGeneration))
+            .id(EditorIdentity(connectionID: runtime.id, target: target))
         } else {
             ContentUnavailableView(
                 "No Action Selected",
@@ -190,43 +166,20 @@ struct ActionsSettingsView: View {
     private struct EditorIdentity: Hashable {
         let connectionID: UUID
         let target: ActionEditorTarget
-        let generation: Int
     }
-
-    /// Where an action's definition comes from, for its list badge.
-    private static func originLabel(_ origin: String) -> String {
-        switch origin {
-        case "builtin": "Built-in"
-        case "modified": "Modified"
-        default: "Custom"
-        }
-    }
-
-    // MARK: Mutations
 
     private var removePrompt: String {
-        let label = selectedAction?.displayLabel ?? "Action"
-        return selectedAction?.isModified == true
-            ? "Revert “\(label)” to its built-in definition?"
-            : "Delete “\(label)”?"
-    }
-
-    private var minusHelp: String {
-        switch selectedAction?.origin {
-        case "builtin": "Built-in actions can't be removed"
-        case "modified": "Revert the selected action to its built-in definition"
-        default: "Delete the selected action"
-        }
+        "Delete “\(selectedAction?.name ?? "Action")”?"
     }
 
     private func enabledBinding(for action: ATCAction) -> Binding<Bool> {
         Binding(
-            get: { runtime?.actions.action(name: action.name)?.enabled ?? action.enabled },
+            get: { runtime?.actions.action(id: action.id)?.enabled ?? action.enabled },
             set: { newValue in
                 guard let store = runtime?.actions else { return }
                 Task {
                     do {
-                        try await store.setEnabled(name: action.name, enabled: newValue)
+                        try await store.setEnabled(id: action.id, enabled: newValue)
                     } catch {
                         store.lastError = error.localizedDescription
                     }
@@ -236,17 +189,11 @@ struct ActionsSettingsView: View {
     }
 
     private func remove() {
-        guard let store = runtime?.actions, case .existing(let name) = target else { return }
-        let wasModified = store.action(name: name)?.isModified == true
+        guard let store = runtime?.actions, case .existing(let id) = target else { return }
         Task {
             do {
-                try await store.delete(name: name)
-                if wasModified {
-                    // The action still exists (reverted); reload its editor.
-                    editorGeneration += 1
-                } else {
-                    target = nil
-                }
+                try await store.delete(id: id)
+                target = nil
             } catch {
                 store.lastError = error.localizedDescription
             }
@@ -254,24 +201,18 @@ struct ActionsSettingsView: View {
     }
 }
 
-/// Draft editor for one action. Existing actions load their full definition
-/// first (the list omits `command`/`args`); nothing reaches the server until
-/// Save, which sends a full replace. Recreated per target via `.id(...)`.
+/// Editor for one complete Action definition. IDs stay out of the primary
+/// form and are available only from the contextual info affordance.
 private struct ActionEditorView: View {
     let store: ActionsStore
     let target: ActionEditorTarget
-    /// Called after a successful save with the action's name so the parent
-    /// can keep it selected (a new draft becomes an existing selection).
     var onSaved: (String) -> Void
 
     @State private var draft = ActionDraft()
-    /// The loaded server definition for existing targets; drives the origin
-    /// footnote and Cancel's reseed.
     @State private var original: ATCAction?
-    @State private var isLoading = false
-    @State private var loadError: String?
     @State private var isSubmitting = false
     @State private var submitError: String?
+    @State private var showsID = false
 
     private var isNew: Bool {
         if case .new = target { return true }
@@ -279,120 +220,81 @@ private struct ActionEditorView: View {
     }
 
     private var canSubmit: Bool {
-        !isSubmitting && !draft.command.trimmingCharacters(in: .whitespaces).isEmpty
+        !isSubmitting && draft.validationMessage() == nil
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            if isLoading {
-                Spacer()
-                ProgressView()
-                Spacer()
-            } else if let loadError {
-                ContentUnavailableView {
-                    Label("Couldn’t Load Action", systemImage: "exclamationmark.triangle")
-                } description: {
-                    Text(loadError)
-                } actions: {
-                    Button("Retry") {
-                        Task { await load() }
-                    }
-                }
-            } else {
-                form
-                Divider()
-                bottomBar
-            }
+            form
+            Divider()
+            bottomBar
         }
-        .task { await load() }
+        .onAppear { reseed() }
     }
 
     private var form: some View {
         Form {
             Section {
-                TextField("Label", text: $draft.label)
-                if isNew {
-                    TextField(
-                        "Name",
-                        text: $draft.name,
-                        prompt: Text(draft.derivedName.isEmpty ? "derived from label" : draft.derivedName)
-                    )
-                    .autocorrectionDisabled()
-                } else {
-                    LabeledContent("Name", value: draft.name)
+                LabeledContent("Name") {
+                    HStack(spacing: Spacing.sm) {
+                        TextField("Name", text: $draft.name, prompt: Text("Codex"))
+                            .labelsHidden()
+                        if original != nil {
+                            Button {
+                                showsID.toggle()
+                            } label: {
+                                Image(systemName: "info.circle")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Show Action ID")
+                            .popover(isPresented: $showsID) {
+                                actionIDPopover
+                            }
+                        }
+                    }
                 }
                 TextField("Description", text: $draft.descriptionText)
+                Toggle("Agent action", isOn: $draft.isAgent)
                 Toggle("Enabled", isOn: $draft.enabled)
-            } footer: {
-                if original?.isBuiltin == true {
-                    Text("Built-in action — saving creates an override you can revert later.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else if original?.isModified == true {
-                    Text("Overrides a built-in action. Use − in the list to revert to the default.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
             }
 
             Section {
-                TextField("Command", text: $draft.command, prompt: Text("lazygit"))
+                TextField("Command", text: $draft.command, prompt: Text("codex"))
                     .fontDesign(.monospaced)
                     .autocorrectionDisabled()
                 LabeledContent("Arguments") {
                     TextEditor(text: $draft.argsText)
                         .font(.body.monospaced())
-                        .frame(minHeight: 44, maxHeight: 88)
+                        .frame(minHeight: 70, maxHeight: 140)
                         .scrollContentBackground(.hidden)
                         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Radius.control))
                 }
-                .help("One argument per line")
             } header: {
                 Text("Command")
             } footer: {
-                Text("One argument per line.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section {
-                Toggle("Accepts an initial prompt", isOn: $draft.acceptsPrompt)
-                if draft.acceptsPrompt {
-                    TextField("Prompt flag", text: $draft.promptFlag, prompt: Text("--prompt"))
-                        .fontDesign(.monospaced)
-                        .autocorrectionDisabled()
-                }
-            } header: {
-                Text("Prompt")
-            } footer: {
-                if draft.acceptsPrompt {
-                    Text("Leave the flag empty to pass the prompt as a positional argument.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Section {
-                ForEach(draft.params) { param in
-                    ActionParamEditor(param: param) {
-                        draft.params.removeAll { $0.id == param.id }
-                    }
-                }
-                Button {
-                    draft.params.append(ParamDraft())
-                } label: {
-                    Label("Add Parameter", systemImage: "plus")
-                }
-                .buttonStyle(.borderless)
-            } header: {
-                Text("Parameters")
-            } footer: {
-                Text("Typed launch options shown when starting a session: a choice list or an on/off switch.")
+                Text("One literal argument per line. Spaces are part of the argument.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
+    }
+
+    @ViewBuilder
+    private var actionIDPopover: some View {
+        if let original {
+            VStack(alignment: .leading, spacing: Spacing.sm) {
+                Text("Action ID")
+                    .font(.headline)
+                Text(original.id)
+                    .font(.body.monospaced())
+                    .textSelection(.enabled)
+                Button("Copy") {
+                    copyToPasteboard(original.id)
+                }
+            }
+            .padding(Spacing.md)
+        }
     }
 
     private var bottomBar: some View {
@@ -413,30 +315,21 @@ private struct ActionEditorView: View {
         .padding(Spacing.md)
     }
 
-    // MARK: Actions
-
-    private func load() async {
-        guard case .existing(let name) = target else { return }
-        isLoading = true
-        defer { isLoading = false }
-        do {
-            let detail = try await store.detail(name: name)
-            original = detail
-            draft = ActionDraft(action: detail)
-            loadError = nil
-        } catch {
-            loadError = error.localizedDescription
-        }
-    }
-
     private func reseed() {
-        draft = original.map(ActionDraft.init(action:)) ?? ActionDraft()
+        switch target {
+        case .new:
+            original = nil
+            draft = ActionDraft()
+        case .existing(let id):
+            original = store.action(id: id)
+            draft = original.map(ActionDraft.init(action:)) ?? ActionDraft()
+        }
         submitError = nil
     }
 
     private func submit() {
         submitError = nil
-        if let message = draft.validationMessage(isNew: isNew) {
+        if let message = draft.validationMessage() {
             submitError = message
             return
         }
@@ -444,16 +337,16 @@ private struct ActionEditorView: View {
         Task {
             defer { isSubmitting = false }
             do {
+                let saved: ATCAction
                 switch target {
                 case .new:
-                    let created = try await store.create(draft.writeRequest(routeName: nil))
-                    onSaved(created.name)
-                case .existing(let name):
-                    let updated = try await store.update(name: name, draft.writeRequest(routeName: name))
-                    original = updated
-                    draft = ActionDraft(action: updated)
-                    onSaved(updated.name)
+                    saved = try await store.create(draft.createRequest())
+                case .existing(let id):
+                    saved = try await store.update(id: id, draft.patch())
                 }
+                original = saved
+                draft = ActionDraft(action: saved)
+                onSaved(saved.id)
             } catch {
                 submitError = error.localizedDescription
             }
@@ -461,59 +354,10 @@ private struct ActionEditorView: View {
     }
 }
 
-/// Editor for one entry of the params map. A small boxed sub-form: name and
-/// type up top, then the type-specific fields.
-private struct ActionParamEditor: View {
-    @Bindable var param: ParamDraft
-    var onRemove: () -> Void
-
-    var body: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: Spacing.sm) {
-                HStack(spacing: Spacing.sm) {
-                    TextField("Name", text: $param.name, prompt: Text("model"))
-                        .fontDesign(.monospaced)
-                        .autocorrectionDisabled()
-                    Picker("Type", selection: $param.isEnum) {
-                        Text("Choices").tag(true)
-                        Text("Switch").tag(false)
-                    }
-                    .labelsHidden()
-                    .fixedSize()
-                    Button {
-                        onRemove()
-                    } label: {
-                        Image(systemName: "trash")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Remove this parameter")
-                }
-                if param.isEnum {
-                    TextField("Values", text: $param.valuesText, prompt: Text("fast, smart"))
-                        .fontDesign(.monospaced)
-                        .autocorrectionDisabled()
-                    Picker("Default", selection: $param.defaultValue) {
-                        Text("None").tag("")
-                        ForEach(param.uniqueValues, id: \.self) { value in
-                            Text(value).tag(value)
-                        }
-                        // Keep a stale default selectable so the picker never
-                        // holds a missing tag; validation flags it on save.
-                        if !param.defaultValue.isEmpty && !param.uniqueValues.contains(param.defaultValue) {
-                            Text(param.defaultValue).tag(param.defaultValue)
-                        }
-                    }
-                } else {
-                    Toggle("Default on", isOn: $param.boolDefault)
-                }
-                TextField("Flag", text: $param.flag, prompt: Text("--model"))
-                    .fontDesign(.monospaced)
-                    .autocorrectionDisabled()
-                TextField("Label", text: $param.label, prompt: Text("Model"))
-            }
-            .padding(Spacing.xs)
-        }
-    }
+@MainActor
+private func copyToPasteboard(_ value: String) {
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(value, forType: .string)
 }
 
 #Preview("Actions — populated") {
@@ -523,20 +367,13 @@ private struct ActionParamEditor: View {
         .preferredColorScheme(.dark)
 }
 
-#Preview("Editor — codex (params)") {
-    ActionEditorView(
-        store: ActionsStore(client: MockATCClient()),
-        target: .existing("codex"),
-        onSaved: { _ in }
-    )
-    .frame(width: 500, height: 540)
-    .preferredColorScheme(.dark)
-}
-
 #Preview("Actions — no connections") {
     ActionsSettingsView()
         .environment(AppModel(
-            connections: ConnectionsStore(defaults: UserDefaults(suiteName: "preview.actions.empty")!, credentials: InMemoryCredentialStore()),
+            connections: ConnectionsStore(
+                defaults: UserDefaults(suiteName: "preview.actions.empty")!,
+                credentials: InMemoryCredentialStore()
+            ),
             clientFactory: { _ in MockATCClient() }
         ))
         .frame(width: 760, height: 520)

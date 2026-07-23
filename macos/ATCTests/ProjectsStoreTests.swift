@@ -115,19 +115,17 @@ final class GatedProjectsClient: ATCClient, @unchecked Sendable {
     func health() async throws -> Health { throw ATCError.badStatus(500) }
     func version() async throws -> Version { throw ATCError.badStatus(500) }
     func sessions(status: SessionStatus?) async throws -> [Session] { [] }
-    func session(id: String) async throws -> SessionDetail { throw ATCError.badStatus(500) }
-    func startSession(_ request: StartSessionRequest) async throws -> SessionDetail { throw ATCError.badStatus(500) }
-    func renameSession(id: String, name: String) async throws -> SessionDetail { throw ATCError.badStatus(500) }
+    func session(id: String) async throws -> Session { throw ATCError.badStatus(500) }
+    func startSession(_ request: StartSessionRequest) async throws -> Session { throw ATCError.badStatus(500) }
+    func renameSession(id: String, name: String) async throws -> Session { throw ATCError.badStatus(500) }
     func deleteSession(id: String) async throws { throw ATCError.badStatus(500) }
     func sendText(sessionID: String, text: String) async throws {}
     func sendKey(sessionID: String, key: String) async throws {}
     func actions() async throws -> [ATCAction] { [] }
-    func action(name: String) async throws -> ATCAction { throw ATCError.badStatus(500) }
-    func createAction(_ request: ActionWriteRequest) async throws -> ATCAction { throw ATCError.badStatus(500) }
-    func updateAction(name: String, _ request: ActionWriteRequest) async throws -> ATCAction { throw ATCError.badStatus(500) }
-    func setActionEnabled(name: String, enabled: Bool) async throws -> ATCAction { throw ATCError.badStatus(500) }
-    func deleteAction(name: String) async throws { throw ATCError.badStatus(500) }
-    func environments() async throws -> [ATCEnvironment] { [] }
+    func action(id: String) async throws -> ATCAction { throw ATCError.badStatus(500) }
+    func createAction(_ request: ActionCreate) async throws -> ATCAction { throw ATCError.badStatus(500) }
+    func updateAction(id: String, _ request: ActionPatch) async throws -> ATCAction { throw ATCError.badStatus(500) }
+    func deleteAction(id: String) async throws { throw ATCError.badStatus(500) }
     func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing { throw ATCError.badStatus(500) }
     func project(id: String) async throws -> Project { throw ATCError.badStatus(500) }
     func createProject(name: String, workingDir: String) async throws -> Project { throw ATCError.badStatus(500) }
@@ -222,19 +220,17 @@ final class StatefulProjectsClient: ATCClient, @unchecked Sendable {
     func health() async throws -> Health { throw ATCError.badStatus(500) }
     func version() async throws -> Version { throw ATCError.badStatus(500) }
     func sessions(status: SessionStatus?) async throws -> [Session] { [] }
-    func session(id: String) async throws -> SessionDetail { throw ATCError.badStatus(500) }
-    func startSession(_ request: StartSessionRequest) async throws -> SessionDetail { throw ATCError.badStatus(500) }
-    func renameSession(id: String, name: String) async throws -> SessionDetail { throw ATCError.badStatus(500) }
+    func session(id: String) async throws -> Session { throw ATCError.badStatus(500) }
+    func startSession(_ request: StartSessionRequest) async throws -> Session { throw ATCError.badStatus(500) }
+    func renameSession(id: String, name: String) async throws -> Session { throw ATCError.badStatus(500) }
     func deleteSession(id: String) async throws { throw ATCError.badStatus(500) }
     func sendText(sessionID: String, text: String) async throws {}
     func sendKey(sessionID: String, key: String) async throws {}
     func actions() async throws -> [ATCAction] { [] }
-    func action(name: String) async throws -> ATCAction { throw ATCError.badStatus(500) }
-    func createAction(_ request: ActionWriteRequest) async throws -> ATCAction { throw ATCError.badStatus(500) }
-    func updateAction(name: String, _ request: ActionWriteRequest) async throws -> ATCAction { throw ATCError.badStatus(500) }
-    func setActionEnabled(name: String, enabled: Bool) async throws -> ATCAction { throw ATCError.badStatus(500) }
-    func deleteAction(name: String) async throws { throw ATCError.badStatus(500) }
-    func environments() async throws -> [ATCEnvironment] { [] }
+    func action(id: String) async throws -> ATCAction { throw ATCError.badStatus(500) }
+    func createAction(_ request: ActionCreate) async throws -> ATCAction { throw ATCError.badStatus(500) }
+    func updateAction(id: String, _ request: ActionPatch) async throws -> ATCAction { throw ATCError.badStatus(500) }
+    func deleteAction(id: String) async throws { throw ATCError.badStatus(500) }
     func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing { throw ATCError.badStatus(500) }
     func projectSessions(projectID: String, status: SessionStatus?) async throws -> [Session] { [] }
     func workspaces(projectID: String?) async throws -> [Workspace] { [] }

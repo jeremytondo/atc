@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/jeremytondo/atc/internal/diagnostics"
@@ -75,7 +76,7 @@ func TestActionPatchOmissionNullAndArgsNull(t *testing.T) {
 	if updated.Description != "" || updated.Name != "Tool" || updated.Command != "tool" || !updated.Enabled || !updated.IsAgent || len(updated.Args) != 0 {
 		t.Fatalf("updated = %+v", updated)
 	}
-	if stringsContains(rec.Body.String(), `"description"`) {
+	if strings.Contains(rec.Body.String(), `"description"`) {
 		t.Fatalf("cleared description was not omitted: %s", rec.Body)
 	}
 
@@ -137,13 +138,4 @@ func TestActionsUnavailable(t *testing.T) {
 		t.Fatalf("status = %d, want 500", rec.Code)
 	}
 	assertErrorCode(t, rec, "internal_error")
-}
-
-func stringsContains(s, needle string) bool {
-	for i := 0; i+len(needle) <= len(s); i++ {
-		if s[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
 }

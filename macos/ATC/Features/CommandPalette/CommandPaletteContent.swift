@@ -125,7 +125,6 @@ enum CommandPaletteContent {
             query: query,
             activeWorkspace: activeWorkspace,
             sessions: runtime.sessions.sessions,
-            actions: runtime.actions.actions,
             keyword: keyword
         ).map(PaletteResult.session)
         return commands + workspaces + sessions
@@ -143,7 +142,6 @@ enum CommandPaletteContent {
             query: query,
             activeWorkspace: activeWorkspace,
             sessions: runtime.sessions.sessions,
-            actions: runtime.actions.actions,
             keyword: nil,
             kind: kind
         ).map(PaletteResult.session)
@@ -181,14 +179,13 @@ enum CommandPaletteContent {
         query: String,
         activeWorkspace: WorkspaceRef,
         sessions: [Session],
-        actions: [ATCAction],
         keyword: PaletteTypeKeyword?,
         kind requiredKind: SessionKind? = nil
     ) -> [SessionResult] {
         return sessions.compactMap { session in
             guard session.belongs(to: activeWorkspace) else { return nil }
-            let title = SessionKind.displayName(session: session, actions: actions)
-            let kind = SessionKind.classify(session: session, actions: actions)
+            let title = SessionKind.displayName(session: session)
+            let kind = SessionKind.classify(session: session)
             guard requiredKind == nil || kind == requiredKind else { return nil }
             let titleMatch = QueryMatcher.match(query, in: title)
             let expandsKind: Bool

@@ -4,7 +4,34 @@ import ATCAPI
 
 @Suite("SessionsStore")
 struct SessionsStoreTests {
-    @Test("rename merges the authoritative Session detail immediately")
+    @Test("start returns the Action identity copied onto the Session")
+    func startCopiesActionIdentity() async throws {
+        let store = SessionsStore(client: MockATCClient())
+
+        let started = try await store.start(StartSessionRequest(
+            workspaceId: "wsp_parser",
+            actionId: "act_vpj2tlg9viqd8ms52ptuvao5c4"
+        ))
+
+        #expect(started.actionId == "act_vpj2tlg9viqd8ms52ptuvao5c4")
+        #expect(started.actionName == "Claude")
+        #expect(started.isAgent)
+    }
+
+    @Test("start without an Action ID returns an Interactive Shell Session")
+    func startInteractiveShell() async throws {
+        let store = SessionsStore(client: MockATCClient())
+
+        let started = try await store.start(StartSessionRequest(
+            workspaceId: "wsp_parser"
+        ))
+
+        #expect(started.actionId == nil)
+        #expect(started.actionName == nil)
+        #expect(!started.isAgent)
+    }
+
+    @Test("rename merges the authoritative Session immediately")
     func renameMerges() async throws {
         let store = SessionsStore(client: StatefulWorkspacesClient())
         await store.refresh()
@@ -16,5 +43,8 @@ struct SessionsStoreTests {
         #expect(store.session(id: target.id)?.name == "Parser review")
         #expect(store.session(id: target.id)?.id == target.id)
         #expect(store.session(id: target.id)?.status == target.status)
+        #expect(renamed.actionId == target.actionId)
+        #expect(renamed.actionName == target.actionName)
+        #expect(renamed.isAgent == target.isAgent)
     }
 }

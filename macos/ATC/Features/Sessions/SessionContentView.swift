@@ -100,8 +100,7 @@ private struct SessionEndedView: View {
     @State private var actionError: String?
 
     private var displayName: String {
-        let actions = appModel.runtime(id: sessionRef.connectionID)?.actions.actions ?? []
-        return SessionKind.displayName(session: session, actions: actions)
+        SessionKind.displayName(session: session)
     }
 
     var body: some View {

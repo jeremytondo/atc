@@ -135,42 +135,42 @@ func (routes apiRoutes) deleteAction(w http.ResponseWriter, r *http.Request) {
 func (req actionPatchRequest) updateInput() (store.UpdateActionInput, error) {
 	var input store.UpdateActionInput
 	var err error
-	if input.Name, err = decodePatchValue[string]("name", req.Name, false); err != nil {
+	if input.Name, err = decodePatchValue[string]("name", req.Name); err != nil {
 		return store.UpdateActionInput{}, err
 	}
 	if req.Description != nil {
 		input.DescriptionSet = true
 		if !isJSONNull(req.Description) {
-			if input.Description, err = decodePatchValue[string]("description", req.Description, false); err != nil {
+			if input.Description, err = decodePatchValue[string]("description", req.Description); err != nil {
 				return store.UpdateActionInput{}, err
 			}
 		}
 	}
-	if input.Command, err = decodePatchValue[string]("command", req.Command, false); err != nil {
+	if input.Command, err = decodePatchValue[string]("command", req.Command); err != nil {
 		return store.UpdateActionInput{}, err
 	}
 	if req.Args != nil {
 		if isJSONNull(req.Args) {
 			empty := []string{}
 			input.Args = &empty
-		} else if input.Args, err = decodePatchValue[[]string]("args", req.Args, false); err != nil {
+		} else if input.Args, err = decodePatchValue[[]string]("args", req.Args); err != nil {
 			return store.UpdateActionInput{}, err
 		}
 	}
-	if input.Enabled, err = decodePatchValue[bool]("enabled", req.Enabled, false); err != nil {
+	if input.Enabled, err = decodePatchValue[bool]("enabled", req.Enabled); err != nil {
 		return store.UpdateActionInput{}, err
 	}
-	if input.IsAgent, err = decodePatchValue[bool]("isAgent", req.IsAgent, false); err != nil {
+	if input.IsAgent, err = decodePatchValue[bool]("isAgent", req.IsAgent); err != nil {
 		return store.UpdateActionInput{}, err
 	}
 	return input, nil
 }
 
-func decodePatchValue[T any](name string, raw json.RawMessage, allowNull bool) (*T, error) {
+func decodePatchValue[T any](name string, raw json.RawMessage) (*T, error) {
 	if raw == nil {
 		return nil, nil
 	}
-	if isJSONNull(raw) && !allowNull {
+	if isJSONNull(raw) {
 		return nil, fmt.Errorf("%w: %s cannot be null", store.ErrInvalidAction, name)
 	}
 	var value T

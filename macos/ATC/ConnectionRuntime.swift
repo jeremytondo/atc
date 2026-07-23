@@ -35,8 +35,7 @@ final class ConnectionRuntime: Identifiable {
     let projects: ProjectsStore
     let sessions: SessionsStore
     let workspaces: WorkspacesStore
-    /// Part of the poll cycle so session classification (agent vs terminal)
-    /// and the creation sheets never depend on stale on-demand data.
+    /// Part of the poll cycle so creation sheets and settings stay current.
     let actions: ActionsStore
 
     /// Outcome of the most recent combined refresh: gray until one
