@@ -246,19 +246,9 @@ func (s *Store) RenameSession(ctx context.Context, id, name string) (Session, er
 	)
 }
 
-// DeleteSession removes an ended session's metadata row. Deleting a starting
-// or live session is rejected. Files are never touched.
-func (s *Store) DeleteSession(ctx context.Context, id string) error {
-	q := s.queries()
-	result, err := q.runner.ExecContext(ctx, `DELETE FROM sessions WHERE id = ? AND status = ?`, id, StatusEnded)
-	if err != nil {
-		return fmt.Errorf("delete session %s: %w", id, err)
-	}
-	return q.checkSessionDelete(ctx, id, result)
-}
-
 // ForgetSession removes a Live or Ended record after the session service has
 // stopped the process or confirmed it absent. Launch Attempts stay protected.
+// Files are never touched.
 func (s *Store) ForgetSession(ctx context.Context, id string) error {
 	q := s.queries()
 	result, err := q.runner.ExecContext(ctx, `DELETE FROM sessions WHERE id = ? AND status != ?`, id, StatusStarting)

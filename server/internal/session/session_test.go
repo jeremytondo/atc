@@ -701,6 +701,39 @@ func TestDeleteTreatsConcurrentExitAfterTerminateFailureAsSuccess(t *testing.T) 
 	assertMissing(t, st, "ses_live")
 }
 
+func TestDeleteTerminateFailureWithUnavailableRecheckIsZmxUnavailable(t *testing.T) {
+	name := zmx.NameForID("ses_live")
+	mux := &fakeMux{
+		live:         map[string]bool{name: true},
+		terminateErr: errors.New("zmx kill failed"),
+	}
+	mux.terminateHook = func(string) { mux.listErr = errors.New("offline") }
+	svc, st := newTestService(t, mux)
+	seedLive(t, st, "ses_live")
+
+	if err := svc.Delete(context.Background(), "ses_live"); !errors.Is(err, ErrZmxUnavailable) {
+		t.Fatalf("err = %v, want ErrZmxUnavailable", err)
+	}
+	assertStoredStatus(t, st, "ses_live", store.StatusLive)
+}
+
+func TestEndToleratesConcurrentDelete(t *testing.T) {
+	name := zmx.NameForID("ses_live")
+	mux := &fakeMux{live: map[string]bool{name: true}}
+	svc, st := newTestService(t, mux)
+	seedLive(t, st, "ses_live")
+	mux.terminateHook = func(string) {
+		if err := st.ForgetSession(context.Background(), "ses_live"); err != nil {
+			t.Errorf("ForgetSession: %v", err)
+		}
+	}
+
+	if err := svc.End(context.Background(), "ses_live"); err != nil {
+		t.Fatalf("End: %v", err)
+	}
+	assertMissing(t, st, "ses_live")
+}
+
 func TestReconciliationAndDeleteAreIdempotentWhenConcurrent(t *testing.T) {
 	svc, st := newTestService(t, &fakeMux{})
 	seedLive(t, st, "ses_live")

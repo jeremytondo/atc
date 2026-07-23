@@ -439,8 +439,9 @@ func (s *Service) confirmSendFailure(ctx context.Context, id string, cause error
 	return cause
 }
 
-// ConfirmEnded applies the authoritative absence rule after an attach failure.
-// Only a complete inventory that omits the zmx name may end the Session.
+// ConfirmEnded applies the authoritative absence rule after a failed
+// interaction. Only a complete inventory that omits the zmx name may end the
+// Session.
 func (s *Service) ConfirmEnded(ctx context.Context, id string) (bool, error) {
 	record, err := s.store.Get(ctx, id)
 	if err != nil {
@@ -452,18 +453,11 @@ func (s *Service) ConfirmEnded(ctx context.Context, id string) (bool, error) {
 	if record.Status == store.StatusEnded {
 		return true, nil
 	}
-	live, err := s.liveNames(ctx)
+	live, err := s.endIfAbsent(ctx, id)
 	if err != nil {
 		return false, err
 	}
-	if live[zmx.NameForID(id)] {
-		return false, nil
-	}
-	_, _, err = s.reconcileRecord(ctx, record, live)
-	if err != nil {
-		return false, err
-	}
-	return true, nil
+	return !live, nil
 }
 
 // Delete is the sole public lifecycle action. A Live process is ended and
@@ -487,7 +481,10 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 			if err := s.mux.Terminate(ctx, name); err != nil {
 				s.logger.Error("session terminate during delete failed", "id", id, "zmx_name", name, "err", err)
 				stillLive, inventoryErr := s.isLive(ctx, id)
-				if inventoryErr != nil || stillLive {
+				if inventoryErr != nil {
+					return inventoryErr
+				}
+				if stillLive {
 					return err
 				}
 			}
@@ -545,6 +542,11 @@ func (s *Service) End(ctx context.Context, id string) error {
 			return err
 		}
 		_, err = s.store.MarkEnded(ctx, id)
+		if errors.Is(err, store.ErrSessionNotFound) {
+			// A concurrent delete removed the row after we confirmed the
+			// process gone; the postcondition still holds.
+			return nil
+		}
 		return translateStoreErr(err)
 	}
 }
@@ -568,19 +570,33 @@ func (s *Service) requireLive(ctx context.Context, id string) (store.Session, er
 		return store.Session{}, &EndedError{SessionID: id}
 	}
 
-	live, err := s.isLive(ctx, id)
+	live, err := s.endIfAbsent(ctx, id)
 	if err != nil {
 		return store.Session{}, err
 	}
 	if !live {
-		if _, err := s.store.MarkEnded(ctx, id); err != nil {
-			return store.Session{}, translateStoreErr(err)
-		}
 		return store.Session{}, &EndedError{SessionID: id}
 	}
 	return record, nil
 }
 
+// endIfAbsent applies the authoritative absence rule to a Live record: only a
+// successful inventory that omits the session marks it Ended. It reports
+// whether the session is still live.
+func (s *Service) endIfAbsent(ctx context.Context, id string) (bool, error) {
+	live, err := s.isLive(ctx, id)
+	if err != nil || live {
+		return live, err
+	}
+	if _, err := s.store.MarkEnded(ctx, id); err != nil {
+		return false, translateStoreErr(err)
+	}
+	return false, nil
+}
+
+// reconcileRecord applies the shared evidence rule to one stored record using
+// a successful inventory. The bool reports whether the record still exists;
+// when false the returned record is meaningless.
 func (s *Service) reconcileRecord(ctx context.Context, record store.Session, live map[string]bool) (store.Session, bool, error) {
 	isLive := live[zmx.NameForID(record.ID)]
 	switch record.Status {
@@ -594,14 +610,7 @@ func (s *Service) reconcileRecord(ctx context.Context, record store.Session, liv
 				return store.Session{}, false, nil
 			}
 			if errors.Is(err, store.ErrSessionNotStarting) {
-				settled, getErr := s.store.Get(ctx, record.ID)
-				if errors.Is(getErr, store.ErrSessionNotFound) {
-					return store.Session{}, false, nil
-				}
-				if getErr != nil {
-					return store.Session{}, false, translateStoreErr(getErr)
-				}
-				return s.reconcileRecord(ctx, settled, live)
+				return s.reconcileSettled(ctx, record.ID, live)
 			}
 			if err != nil {
 				return store.Session{}, false, translateStoreErr(err)
@@ -613,14 +622,7 @@ func (s *Service) reconcileRecord(ctx context.Context, record store.Session, liv
 			return store.Session{}, false, nil
 		}
 		if errors.Is(err, store.ErrSessionNotStarting) {
-			settled, getErr := s.store.Get(ctx, record.ID)
-			if errors.Is(getErr, store.ErrSessionNotFound) {
-				return store.Session{}, false, nil
-			}
-			if getErr != nil {
-				return store.Session{}, false, translateStoreErr(getErr)
-			}
-			return s.reconcileRecord(ctx, settled, live)
+			return s.reconcileSettled(ctx, record.ID, live)
 		}
 		return store.Session{}, false, translateStoreErr(err)
 	case store.StatusLive:
@@ -636,6 +638,19 @@ func (s *Service) reconcileRecord(ctx context.Context, record store.Session, liv
 		}
 	}
 	return record, true, nil
+}
+
+// reconcileSettled re-reads a record that settled out of Starting under a
+// concurrent Start and reconciles the settled state instead.
+func (s *Service) reconcileSettled(ctx context.Context, id string, live map[string]bool) (store.Session, bool, error) {
+	settled, err := s.store.Get(ctx, id)
+	if errors.Is(err, store.ErrSessionNotFound) {
+		return store.Session{}, false, nil
+	}
+	if err != nil {
+		return store.Session{}, false, translateStoreErr(err)
+	}
+	return s.reconcileRecord(ctx, settled, live)
 }
 
 func (s *Service) reconcileStored(ctx context.Context, filter store.ListFilter) ([]store.Session, error) {

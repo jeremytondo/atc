@@ -258,23 +258,10 @@ func decodeResizeMessage(data []byte) (uint16, uint16, bool) {
 	return msg.Rows, msg.Cols, true
 }
 
-func closeAttachError(conn *websocket.Conn, err error) {
-	if errors.Is(err, session.ErrSessionNotFound) || errors.Is(err, session.ErrSessionEnded) {
-		closeSessionEnded(conn)
-		return
-	}
-	if errors.Is(err, session.ErrZmxUnavailable) {
-		_ = conn.Close(websocket.StatusInternalError, "zmx_unavailable")
-		return
-	}
-	_ = conn.Close(websocket.StatusInternalError, "internal_error")
-}
-
-func confirmAttachFailure(sessions *session.Service, conn *websocket.Conn, id string) {
-	ended, err := sessions.ConfirmEnded(context.Background(), id)
+// closeForSessionErr maps a session error to the attach close vocabulary.
+// A nil err closes with fallbackReason.
+func closeForSessionErr(conn *websocket.Conn, err error, fallbackReason string) {
 	switch {
-	case ended:
-		closeSessionEnded(conn)
 	case errors.Is(err, session.ErrSessionNotFound), errors.Is(err, session.ErrSessionEnded):
 		closeSessionEnded(conn)
 	case errors.Is(err, session.ErrZmxUnavailable):
@@ -282,8 +269,24 @@ func confirmAttachFailure(sessions *session.Service, conn *websocket.Conn, id st
 	case err != nil:
 		_ = conn.Close(websocket.StatusInternalError, "internal_error")
 	default:
-		_ = conn.Close(websocket.StatusInternalError, "attach_failed")
+		_ = conn.Close(websocket.StatusInternalError, fallbackReason)
 	}
+}
+
+func closeAttachError(conn *websocket.Conn, err error) {
+	closeForSessionErr(conn, err, "internal_error")
+}
+
+// confirmAttachFailure applies the authoritative absence rule after a PTY
+// failure. It runs on the background context so confirmation still happens
+// when the attach context is already torn down.
+func confirmAttachFailure(sessions *session.Service, conn *websocket.Conn, id string) {
+	ended, err := sessions.ConfirmEnded(context.Background(), id)
+	if ended {
+		closeSessionEnded(conn)
+		return
+	}
+	closeForSessionErr(conn, err, "attach_failed")
 }
 
 func closeSessionEnded(conn *websocket.Conn) {

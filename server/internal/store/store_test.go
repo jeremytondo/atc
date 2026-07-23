@@ -332,7 +332,7 @@ func TestCreateStartingRequiresWorkspace(t *testing.T) {
 	}
 }
 
-func TestDeleteSessionRemovesSettledAndRejectsActive(t *testing.T) {
+func TestForgetSessionRemovesSettledAndRejectsStarting(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
 	defer st.Close()
@@ -343,26 +343,38 @@ func TestDeleteSessionRemovesSettledAndRejectsActive(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("CreateStarting: %v", err)
 	}
-	if err := st.DeleteSession(ctx, "ses_doomed"); !errors.Is(err, ErrSessionActive) {
-		t.Fatalf("delete starting session err = %v, want ErrSessionActive", err)
+	if err := st.ForgetSession(ctx, "ses_doomed"); !errors.Is(err, ErrSessionActive) {
+		t.Fatalf("forget starting session err = %v, want ErrSessionActive", err)
 	}
 	if _, err := st.PromoteToLive(ctx, "ses_doomed"); err != nil {
 		t.Fatalf("PromoteToLive: %v", err)
 	}
-	if err := st.DeleteSession(ctx, "ses_doomed"); !errors.Is(err, ErrSessionActive) {
-		t.Fatalf("delete Live Session err = %v, want ErrSessionActive", err)
-	}
-	if _, err := st.MarkEnded(ctx, "ses_doomed"); err != nil {
-		t.Fatalf("MarkEnded: %v", err)
-	}
-	if err := st.DeleteSession(ctx, "ses_doomed"); err != nil {
-		t.Fatalf("DeleteSession: %v", err)
+	if err := st.ForgetSession(ctx, "ses_doomed"); err != nil {
+		t.Fatalf("forget live session: %v", err)
 	}
 	if _, err := st.Get(ctx, "ses_doomed"); !errors.Is(err, ErrSessionNotFound) {
-		t.Fatalf("Get after delete err = %v, want ErrSessionNotFound", err)
+		t.Fatalf("Get after forget err = %v, want ErrSessionNotFound", err)
 	}
-	if err := st.DeleteSession(ctx, "ses_doomed"); !errors.Is(err, ErrSessionNotFound) {
-		t.Fatalf("delete missing session err = %v, want ErrSessionNotFound", err)
+	if err := st.ForgetSession(ctx, "ses_doomed"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("forget missing session err = %v, want ErrSessionNotFound", err)
+	}
+
+	if _, err := st.CreateStarting(ctx, CreateSessionInput{
+		ID: "ses_ended", ActionID: "act_x", ActionName: "Codex", WorkingDir: "/work", WorkspaceID: "wsp_main",
+	}); err != nil {
+		t.Fatalf("CreateStarting: %v", err)
+	}
+	if _, err := st.PromoteToLive(ctx, "ses_ended"); err != nil {
+		t.Fatalf("PromoteToLive: %v", err)
+	}
+	if _, err := st.MarkEnded(ctx, "ses_ended"); err != nil {
+		t.Fatalf("MarkEnded: %v", err)
+	}
+	if err := st.ForgetSession(ctx, "ses_ended"); err != nil {
+		t.Fatalf("forget ended session: %v", err)
+	}
+	if _, err := st.Get(ctx, "ses_ended"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("Get after forget err = %v, want ErrSessionNotFound", err)
 	}
 }
 

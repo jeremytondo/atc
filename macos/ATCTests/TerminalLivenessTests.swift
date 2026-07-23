@@ -78,9 +78,7 @@ struct TerminalLivenessTests {
             errorDescription: "closed"
         )
         #expect(confirmedClose == .sessionEnded)
-        if confirmedClose == .sessionEnded {
-            controller.onSessionEnded?()
-        }
+        controller.onSessionEnded?()
         let reconciled = try #require(runtime.sessions.sessions.first { $0.id == session.id })
         #expect(reconciled.status == .ended)
         #expect(appModel.terminals[ref] == nil)
