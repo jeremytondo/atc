@@ -25,7 +25,7 @@ The Navigator containing the file tree of the single Active Workspace.
 _Avoid_: Files Navigator, File browser Navigator
 
 **Workspace Switcher**:
-The toolbar control that identifies the Active Workspace as `Project › Workspace` and opens the app-wide Workspace selection menu. Its status indicator reflects the Active Workspace's Connection.
+The toolbar context pill whose Workspace region identifies the Active Workspace as `Project › Workspace` and opens the app-wide Workspace selection menu. When a Session is selected, a second region shows `› [index] Identity` with an optional ` · Custom Name` and opens the Active Workspace's Session picker, grouped into Sessions and Terminals.
 _Avoid_: Workspace Picker, Project picker, Breadcrumb
 
 **Command Palette**:

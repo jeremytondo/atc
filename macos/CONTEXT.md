@@ -1,6 +1,6 @@
 # atc
 
-atc is a native client for working with atc Terminal Sessions on a remote workstation.
+atc is a native client for working with atc Sessions on a remote workstation.
 
 ## Language
 
@@ -21,22 +21,28 @@ _Avoid_: Local project, app project
 A Server-owned task context within one Project. In the initial version, every Workspace uses its Project's default folder, owns its Sessions, and persists after they end. Its name is user-owned, renameable, and need not be unique. Deleting a Workspace never changes its working directory or other filesystem state, but stops and deletes all of its associated Sessions only after every stop succeeds.
 _Avoid_: Checkout, worktree
 
-**Terminal Session**:
-A Server-owned terminal process created on a particular atc server. A Terminal Session belongs to its Workspace, except for legacy Project-scoped sessions. Its lifecycle is Live or Ended; Ended is a retained read-only tombstone shown only after the server confirms the backing zmx session is absent. Transport and attach failures remain retryable and do not end it.
-_Avoid_: Terminal, shell
+**Session**:
+A Server-owned terminal process created on a particular atc server. A Session belongs to its Workspace, except for legacy Project-scoped Sessions. Its lifecycle is Live or Ended; Ended is a retained read-only tombstone shown only after the server confirms the backing zmx session is absent. Transport and attach failures remain retryable and do not end it.
+_Avoid_: Terminal Session, shell
 
-**Agent Session**:
-A Terminal Session configured to run a coding agent such as Codex or Claude Code. A Workspace may have multiple Agent Sessions.
-_Avoid_: Agent
-A Workspace Session that opens the server's default Interactive Shell or runs an Action from the Terminal creation flow. The macOS sidebar labels this group Terminals; the server treats it as a generic Session.
-_Avoid_: Shell, generic Session
+**Session Identity**:
+The macOS user-facing identity copied onto a Session at launch: its Agent or Action name, or `Shell` for the Interactive Shell. An indexed Session presents as `[index] Identity`, followed by ` · Custom Name` when set; the optional Custom Name supplements and never replaces the identity.
+_Avoid_: Session name, Terminal
+
+**Session Index**:
+An immutable positive Workspace-local address allocated by the server in one namespace shared by Sessions and Terminals. The Workspace Navigator and Session picker sort each group by ascending Session Index; gaps are expected, and legacy index-less Sessions sort last.
+_Avoid_: Session ID, row number
+
+**Terminal**:
+The macOS category for a Workspace Session that opens the server's default Interactive Shell or runs a non-Agent Action from the Terminal creation flow. It appears in the Terminals group, but its Session Identity is `Shell` or the Action name, never `Terminal`.
+_Avoid_: Terminal Session, Shell Session
 
 **Agent Session**:
 A Workspace Session started from an Agent Action, such as Codex or Claude Code. The macOS sidebar labels this group Sessions; it remains a generic server Session and may later report Agent Activity.
 _Avoid_: Agent
 
 **Focused Sidebar Row**:
-The Workspace, Agent Session, or Terminal Session row currently targeted by keyboard navigation in the sidebar. A Focused Sidebar Row is distinct from the selected Session because Workspaces can be focused without becoming the active detail content.
+The Workspace, Agent Session, or Terminal row currently targeted by keyboard navigation in the sidebar. A Focused Sidebar Row is distinct from the selected Session because Workspaces can be focused without becoming the active detail content.
 _Avoid_: Highlighted Entry, selected row
 
 **Remote Workspace Root**:
@@ -52,5 +58,5 @@ The current viewed remote directory that atc will use as a session working direc
 _Avoid_: Selected file, selected row
 
 **Command Sequence**:
-A two-step atc interaction that starts with the configured leader (`Cmd-K` by default), waits for one continuation key (modified or unmodified), and targets atc itself, including when a Terminal Session has focus. A Command Sequence is not a Keyboard Shortcut.
+A two-step atc interaction that starts with the configured leader (`Cmd-K` by default), waits for one continuation key (modified or unmodified), and targets atc itself, including when a Session has focus. A Command Sequence is not a Keyboard Shortcut.
 _Avoid_: Keyboard Shortcut, terminal prefix, command chord
