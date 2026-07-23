@@ -27,22 +27,22 @@ type Action struct {
 
 type actionCreateRequest struct {
 	Name        string   `json:"name"`
-	Description string   `json:"description,omitempty"`
+	Description string   `json:"description"`
 	Command     string   `json:"command"`
-	Args        []string `json:"args,omitempty"`
-	Enabled     *bool    `json:"enabled,omitempty"`
-	IsAgent     bool     `json:"isAgent,omitempty"`
+	Args        []string `json:"args"`
+	Enabled     *bool    `json:"enabled"`
+	IsAgent     bool     `json:"isAgent"`
 }
 
 // RawMessage preserves omitted-vs-null PATCH semantics. An omitted field is
 // nil; an explicit JSON null contains the bytes "null".
 type actionPatchRequest struct {
-	Name        json.RawMessage `json:"name,omitempty"`
-	Description json.RawMessage `json:"description,omitempty"`
-	Command     json.RawMessage `json:"command,omitempty"`
-	Args        json.RawMessage `json:"args,omitempty"`
-	Enabled     json.RawMessage `json:"enabled,omitempty"`
-	IsAgent     json.RawMessage `json:"isAgent,omitempty"`
+	Name        json.RawMessage `json:"name"`
+	Description json.RawMessage `json:"description"`
+	Command     json.RawMessage `json:"command"`
+	Args        json.RawMessage `json:"args"`
+	Enabled     json.RawMessage `json:"enabled"`
+	IsAgent     json.RawMessage `json:"isAgent"`
 }
 
 func (routes apiRoutes) listActions(w http.ResponseWriter, r *http.Request) {

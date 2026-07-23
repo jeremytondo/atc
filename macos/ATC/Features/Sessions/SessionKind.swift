@@ -16,8 +16,4 @@ enum SessionKind: Equatable {
     static func displayName(session: Session) -> String {
         session.name ?? session.actionName ?? "Terminal"
     }
-
-    static func toolbarLabel(session: Session) -> String {
-        displayName(session: session)
-    }
 }

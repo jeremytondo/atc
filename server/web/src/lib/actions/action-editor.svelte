@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Action, ActionCreate, ActionPatch } from '$lib/api';
+  import { renderCommand, type Action, type ActionCreate, type ActionPatch } from '$lib/api';
 
   type Draft = {
     name: string;
@@ -39,6 +39,9 @@
     };
   }
 
+  // Wrapper (not an inline call): the draft intentionally captures `source`
+  // once on mount, and the function boundary keeps svelte-check from flagging
+  // the initial-value read as a lost reactive reference.
   function initialDraft(): Draft {
     return toDraft(source);
   }
@@ -46,11 +49,7 @@
   let draft = $state<Draft>(initialDraft());
   let canSave = $derived(draft.name.trim() !== '' && draft.command.trim() !== '');
   let args = $derived(draft.argsText === '' ? [] : draft.argsText.split('\n'));
-  let commandPreview = $derived(
-    [draft.command.trim() || '…', ...args]
-      .map((part) => (/\s/.test(part) ? JSON.stringify(part) : part))
-      .join(' ')
-  );
+  let commandPreview = $derived(renderCommand(draft.command.trim() || '…', args));
 
   function buildWrite(): ActionCreate | ActionPatch {
     const description = draft.description.trim();

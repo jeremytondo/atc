@@ -3,11 +3,17 @@ package session
 import (
 	"reflect"
 	"testing"
+
+	"github.com/jeremytondo/atc/internal/store"
 )
 
 func TestActionLaunchCommandQuotesLiteralTokens(t *testing.T) {
 	t.Setenv("SHELL", "/bin/zsh")
-	got := actionLaunchCommand([]string{"tool", "--label", "two words", "$HOME", "it's"})
+	action := store.Action{
+		Command: "tool",
+		Args:    []string{"--label", "two words", "$HOME", "it's"},
+	}
+	got := actionLaunchCommand(action)
 	want := []string{"/bin/zsh", "-l", "-i", "-c", `tool --label 'two words' '$HOME' 'it'\''s'`}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("actionLaunchCommand = %#v, want %#v", got, want)

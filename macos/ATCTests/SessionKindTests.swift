@@ -56,14 +56,4 @@ struct SessionKindTests {
             session: session(actionId: nil, actionName: nil)
         ) == "Terminal")
     }
-
-    @Test("toolbar uses the same stable display fields")
-    func toolbarLabel() {
-        #expect(SessionKind.toolbarLabel(
-            session: session(name: "Fix parser", actionName: "Claude", isAgent: true)
-        ) == "Fix parser")
-        #expect(SessionKind.toolbarLabel(
-            session: session(name: nil, actionName: "Claude", isAgent: true)
-        ) == "Claude")
-    }
 }

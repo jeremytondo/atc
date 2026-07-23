@@ -133,8 +133,8 @@ type Multiplexer interface {
 }
 
 // WorkspaceResolver resolves the workspace a start request references to the
-// validated working directory the session launches in. It is an interface
-// (following the ActionLoader precedent) so tests can fake it.
+// validated working directory the session launches in. It is an interface so
+// tests can fake it.
 type WorkspaceResolver interface {
 	ResolveForStart(ctx context.Context, id string) (string, error)
 }
@@ -180,7 +180,7 @@ func (s *Service) Start(ctx context.Context, input StartInput) (Session, error) 
 		if !action.Enabled {
 			return Session{}, fmt.Errorf("%w: %s", ErrActionDisabled, input.ActionID)
 		}
-		argv = actionLaunchCommand(actionCommand(action))
+		argv = actionLaunchCommand(action)
 	}
 
 	id, err := newID()

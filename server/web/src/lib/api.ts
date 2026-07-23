@@ -292,5 +292,11 @@ export async function listWorkspaceSessions(
 // sessionActionLabel is the copied launch-time action name; an absent name is
 // the Interactive Shell.
 export function sessionActionLabel(session: { actionName?: string }): string {
-  return session.actionName ?? 'interactive shell';
+  return session.actionName ?? 'Interactive Shell';
+}
+
+// renderCommand renders an action's fixed command and literal args as one
+// shell-style preview line, quoting args that contain whitespace.
+export function renderCommand(command: string, args: string[]): string {
+  return [command, ...args].map((part) => (/\s/.test(part) ? JSON.stringify(part) : part)).join(' ');
 }

@@ -36,6 +36,41 @@ type UpdateActionInput struct {
 
 // CreateAction validates and inserts a new Action with a generated public ID.
 func (s *Store) CreateAction(ctx context.Context, action Action) (Action, error) {
+	return s.queries().createAction(ctx, action)
+}
+
+// ListActions returns all Actions ordered by display name and then ID.
+func (s *Store) ListActions(ctx context.Context) ([]Action, error) {
+	return s.queries().listActions(ctx)
+}
+
+// GetAction loads an Action by its opaque ID.
+func (s *Store) GetAction(ctx context.Context, id string) (Action, error) {
+	return s.queries().getAction(ctx, id)
+}
+
+// UpdateAction applies a partial update and returns the complete Action. The
+// read-modify-write runs in one transaction so concurrent partial updates
+// cannot drop each other's fields.
+func (s *Store) UpdateAction(ctx context.Context, id string, input UpdateActionInput) (Action, error) {
+	var updated Action
+	err := s.WithTx(ctx, func(tx *Tx) error {
+		var err error
+		updated, err = tx.q.updateAction(ctx, id, input)
+		return err
+	})
+	if err != nil {
+		return Action{}, err
+	}
+	return updated, nil
+}
+
+// DeleteAction permanently deletes an Action without inspecting sessions.
+func (s *Store) DeleteAction(ctx context.Context, id string) error {
+	return s.queries().deleteAction(ctx, id)
+}
+
+func (q queries) createAction(ctx context.Context, action Action) (Action, error) {
 	action.Name = strings.TrimSpace(action.Name)
 	action.Command = strings.TrimSpace(action.Command)
 	action.Args = normalizeArgs(action.Args)
@@ -51,7 +86,7 @@ func (s *Store) CreateAction(ctx context.Context, action Action) (Action, error)
 	if err != nil {
 		return Action{}, fmt.Errorf("%w: args: %v", ErrInvalidAction, err)
 	}
-	created, err := scanAction(s.db.QueryRowContext(ctx, `
+	created, err := scanAction(q.runner.QueryRowContext(ctx, `
 		INSERT INTO actions (id, name, description, enabled, command, args, is_agent)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 		RETURNING`+actionColumnsSQL,
@@ -69,9 +104,8 @@ func (s *Store) CreateAction(ctx context.Context, action Action) (Action, error)
 	return created, nil
 }
 
-// ListActions returns all Actions ordered by display name and then ID.
-func (s *Store) ListActions(ctx context.Context) ([]Action, error) {
-	rows, err := s.db.QueryContext(ctx, selectActionSQL+` ORDER BY name, id`)
+func (q queries) listActions(ctx context.Context) ([]Action, error) {
+	rows, err := q.runner.QueryContext(ctx, selectActionSQL+` ORDER BY name, id`)
 	if err != nil {
 		return nil, fmt.Errorf("list actions: %w", err)
 	}
@@ -91,9 +125,8 @@ func (s *Store) ListActions(ctx context.Context) ([]Action, error) {
 	return actions, nil
 }
 
-// GetAction loads an Action by its opaque ID.
-func (s *Store) GetAction(ctx context.Context, id string) (Action, error) {
-	action, err := scanAction(s.db.QueryRowContext(ctx, selectActionSQL+` WHERE id = ?`, id))
+func (q queries) getAction(ctx context.Context, id string) (Action, error) {
+	action, err := scanAction(q.runner.QueryRowContext(ctx, selectActionSQL+` WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Action{}, fmt.Errorf("%w: %s", ErrActionNotFound, id)
 	}
@@ -103,9 +136,8 @@ func (s *Store) GetAction(ctx context.Context, id string) (Action, error) {
 	return action, nil
 }
 
-// UpdateAction applies a partial update and returns the complete Action.
-func (s *Store) UpdateAction(ctx context.Context, id string, input UpdateActionInput) (Action, error) {
-	current, err := s.GetAction(ctx, id)
+func (q queries) updateAction(ctx context.Context, id string, input UpdateActionInput) (Action, error) {
+	current, err := q.getAction(ctx, id)
 	if err != nil {
 		return Action{}, err
 	}
@@ -137,7 +169,7 @@ func (s *Store) UpdateAction(ctx context.Context, id string, input UpdateActionI
 	if err != nil {
 		return Action{}, fmt.Errorf("%w: args: %v", ErrInvalidAction, err)
 	}
-	updated, err := scanAction(s.db.QueryRowContext(ctx, `
+	updated, err := scanAction(q.runner.QueryRowContext(ctx, `
 		UPDATE actions
 		SET name = ?, description = ?, enabled = ?, command = ?, args = ?, is_agent = ?
 		WHERE id = ?
@@ -159,9 +191,8 @@ func (s *Store) UpdateAction(ctx context.Context, id string, input UpdateActionI
 	return updated, nil
 }
 
-// DeleteAction permanently deletes an Action without inspecting sessions.
-func (s *Store) DeleteAction(ctx context.Context, id string) error {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM actions WHERE id = ?`, id)
+func (q queries) deleteAction(ctx context.Context, id string) error {
+	result, err := q.runner.ExecContext(ctx, `DELETE FROM actions WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete action %s: %w", id, err)
 	}

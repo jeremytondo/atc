@@ -84,7 +84,7 @@ struct WorkspaceSwitcher: View {
         guard let ref = windowState.selectedSession,
               let session = appModel.session(for: ref)
         else { return nil }
-        return SessionKind.toolbarLabel(session: session)
+        return SessionKind.displayName(session: session)
     }
 
     private var activeContext: (project: Project, workspace: Workspace)? {

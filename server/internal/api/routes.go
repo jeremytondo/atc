@@ -106,7 +106,7 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 }
 
 // maxJSONBodyBytes bounds every JSON request body. The largest legitimate
-// payloads (action definitions with params) are far below 1 MiB.
+// payloads (action definitions) are far below 1 MiB.
 const maxJSONBodyBytes = 1 << 20
 
 // jsonBodyReadTimeout bounds how long a client may take to deliver a JSON

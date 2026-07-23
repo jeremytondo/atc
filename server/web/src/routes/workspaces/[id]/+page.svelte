@@ -252,7 +252,7 @@
         <div>
           <label class="lbl" for="start-action">Action</label>
           <select id="start-action" class="sel" value={startAction} onchange={onActionChange}>
-            <option value={interactiveShell}>(interactive shell)</option>
+            <option value={interactiveShell}>Interactive Shell</option>
             {#each enabledActions as action (action.id)}
               <option value={action.id}>
                 {action.name}{action.isAgent ? ' · agent' : ''}

@@ -3,11 +3,15 @@ package session
 import (
 	"os"
 	"strings"
+
+	"github.com/jeremytondo/atc/internal/store"
 )
 
-// actionLaunchCommand wraps an Action's argv in the host login-interactive
-// shell used for every Action launch.
-func actionLaunchCommand(inner []string) []string {
+// actionLaunchCommand wraps an Action's fixed command and literal args in the
+// host login-interactive shell used for every Action launch. No request data
+// is interpolated into an Action command.
+func actionLaunchCommand(action store.Action) []string {
+	inner := append([]string{action.Command}, action.Args...)
 	return []string{loginShell(), "-l", "-i", "-c", shellJoin(inner)}
 }
 

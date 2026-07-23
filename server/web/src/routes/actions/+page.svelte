@@ -6,6 +6,7 @@
     updateAction,
     deleteAction,
     messageFromError,
+    renderCommand,
     type Action,
     type ActionCreate,
     type ActionPatch
@@ -24,12 +25,6 @@
   let editorSource = $state<Action | null>(null);
   let saving = $state(false);
   let saveError = $state('');
-
-  function commandPreview(action: Action): string {
-    return [action.command, ...action.args]
-      .map((part) => (/\s/.test(part) ? JSON.stringify(part) : part))
-      .join(' ');
-  }
 
   async function load() {
     loading = true;
@@ -198,7 +193,7 @@
           {/if}
           <div class="codeblock" style="padding:9px 12px;margin-top:12px">
             <span class="code">
-              <span style="color:var(--dc-green)">$</span> {commandPreview(action)}
+              <span style="color:var(--dc-green)">$</span> {renderCommand(action.command, action.args)}
             </span>
           </div>
         </div>
