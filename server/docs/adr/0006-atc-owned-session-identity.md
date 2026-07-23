@@ -14,6 +14,11 @@
 > context and can be set or cleared while Live; neither the index nor name
 > replaces Action or Agent identity.
 
+> **Presentation amendment (2026-07):** Clients may use a Terminal's custom
+> name as its primary visible label while retaining the copied Action name or
+> Interactive Shell identity as metadata. The macOS client continues to show
+> Agent identity alongside an Agent Session's custom name.
+
 Supersedes [ADR 0002](0002-session-identity-in-zmx-name.md).
 
 atc sessions will expose a stable atc-owned `Session.id` as their public

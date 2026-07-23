@@ -135,9 +135,9 @@ struct CommandPaletteContentTests {
         #expect(projected.compactMap(\.sessionRow).map {
             "\($0.title):\($0.ref.sessionID)"
         } == [
-            "Shell · Alpha:ses_b",
-            "Shell · same:ses_a",
-            "Shell · Same:ses_z",
+            "Alpha:ses_b",
+            "same:ses_a",
+            "Same:ses_z",
         ])
     }
 
@@ -292,7 +292,7 @@ struct CommandPaletteContentTests {
         let terminals = results(query: "", presentation: .terminals, fixture: fixture)
         #expect(terminals.count == 2)
         #expect(terminals.compactMap(\.sessionRow).map(\.title) == [
-            "LazyGit · Delta Tool", "Shell · Beta Terminal",
+            "Beta Terminal", "Delta Tool",
         ])
         #expect(terminals.compactMap(\.sessionRow).allSatisfy { $0.kind == .terminal })
     }
@@ -746,7 +746,7 @@ struct CommandPaletteSessionResultTests {
 
         let terminals = results(query: "ter", active: active, sessions: candidates)
         #expect(terminals.map(\.ref.sessionID) == [
-            "action-terminated", "unresolved-running", "shell-starting",
+            "shell-starting", "action-terminated", "unresolved-running",
         ])
         #expect(terminals.allSatisfy { $0.kind == .terminal && $0.matchedRanges.isEmpty })
     }
@@ -825,6 +825,34 @@ struct CommandPaletteSessionResultTests {
         ).isEmpty)
     }
 
+    @Test("a named Terminal remains searchable by its hidden Action identity")
+    func hiddenTerminalIdentitySearch() throws {
+        let active = WorkspaceRef(connectionID: connectionID, workspaceID: "active")
+        let terminal = paletteSession(
+            "editor",
+            index: 2,
+            name: "Editor",
+            actionName: "Neovim",
+            workspace: "active"
+        )
+
+        let nameMatch = try #require(results(
+            query: "Editor", active: active, sessions: [terminal]
+        ).first)
+        #expect(nameMatch.title == "Editor")
+        #expect(!nameMatch.matchedRanges.isEmpty)
+
+        let identityMatch = try #require(results(
+            query: "Neovim", active: active, sessions: [terminal]
+        ).first)
+        #expect(identityMatch.title == "Editor")
+        #expect(identityMatch.matchedRanges.isEmpty)
+
+        #expect(results(
+            query: "2 Neovim", active: active, sessions: [terminal]
+        ).map(\.ref.sessionID) == ["editor"])
+    }
+
     @Test("index is the default Session tie-break ahead of title and legacy IDs")
     func indexTieBreak() {
         let active = WorkspaceRef(connectionID: connectionID, workspaceID: "active")
@@ -892,7 +920,7 @@ struct CommandPaletteSessionResultTests {
             context: fixture.context,
             presentation: .all
         ).compactMap(\.sessionRow)
-        #expect(projected.map(\.title) == ["Shell · Only Active Connection"])
+        #expect(projected.map(\.title) == ["Only Active Connection"])
     }
 
     private func results(

@@ -79,14 +79,14 @@ struct WorkspaceSwitcher: View {
                     SessionIndexBadge(index)
                         .layoutPriority(4)
                 }
-                Text(identity.identityText)
+                Text(identity.primaryText)
                     .fontWeight(.medium)
                     .layoutPriority(4)
-                if let customName = identity.customName {
+                if let secondaryText = identity.secondaryText {
                     Text("·")
                         .foregroundStyle(.tertiary)
                         .layoutPriority(2)
-                    Text(customName)
+                    Text(secondaryText)
                         .foregroundStyle(.secondary)
                         .layoutPriority(2)
                 }

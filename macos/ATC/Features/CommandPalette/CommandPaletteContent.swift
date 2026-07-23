@@ -52,7 +52,8 @@ struct SessionResult: Identifiable {
 fileprivate enum SessionMatchQuality: Int {
     case index = 0
     case title = 1
-    case typeExpansion = 2
+    case identity = 2
+    case typeExpansion = 3
 }
 
 /// A whole-query type keyword for the unscoped palette: a trimmed query of
@@ -195,7 +196,7 @@ enum CommandPaletteContent {
             guard session.belongs(to: activeWorkspace) else { return nil }
             let identity = SessionIdentity(session: session)
             let title = identity.fullLabel
-            let kind = SessionKind.classify(session: session)
+            let kind = identity.kind
             guard requiredKind == nil || kind == requiredKind else { return nil }
             let match = sessionQuery.match(identity: identity, title: title)
             let expandsKind: Bool
@@ -328,22 +329,35 @@ private struct SessionQuery {
     func match(identity: SessionIdentity, title: String) -> Match? {
         switch kind {
         case .title(let query):
-            return QueryMatcher.match(query, in: title).map {
-                Match(query: $0, quality: .title)
-            }
+            return textMatch(query, identity: identity, title: title)
         case .index(let digits):
             if index(digits, matches: identity.index) {
                 return Match(query: nil, quality: .index)
             }
-            return QueryMatcher.match(digits, in: title).map {
-                Match(query: $0, quality: .title)
-            }
+            return textMatch(digits, identity: identity, title: title)
         case .indexAndTitle(let digits, let query):
             guard index(digits, matches: identity.index),
-                  let titleMatch = QueryMatcher.match(query, in: title)
+                  let match = textMatch(query, identity: identity, title: title)
             else { return nil }
-            return Match(query: titleMatch, quality: .index)
+            return Match(query: match.query, quality: .index)
         }
+    }
+
+    /// A named Terminal hides its launch identity from the visible title, but
+    /// that Action name remains useful search metadata. Visible-title matches
+    /// rank first and carry highlight ranges; hidden-identity matches do not.
+    private func textMatch(
+        _ query: String,
+        identity: SessionIdentity,
+        title: String
+    ) -> Match? {
+        if let titleMatch = QueryMatcher.match(query, in: title) {
+            return Match(query: titleMatch, quality: .title)
+        }
+        guard identity.identityText != title,
+              QueryMatcher.match(query, in: identity.identityText) != nil
+        else { return nil }
+        return Match(query: nil, quality: .identity)
     }
 
     private func index(_ digits: String, matches index: Int?) -> Bool {

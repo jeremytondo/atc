@@ -51,7 +51,7 @@ struct SessionKindTests {
         #expect(SessionIdentity(session: deletedAgent).identityText == "Deleted Agent")
     }
 
-    @Test("identity keeps launch identity ahead of the optional custom name")
+    @Test("Agent identity stays primary and the custom name stays secondary")
     func identityProjection() {
         let agent = SessionIdentity(session: session(
             index: 2,
@@ -60,15 +60,39 @@ struct SessionKindTests {
             isAgent: true
         ))
         #expect(agent.index == 2)
+        #expect(agent.kind == .agent)
         #expect(agent.identityText == "Codex")
         #expect(agent.customName == "API migration")
+        #expect(agent.primaryText == "Codex")
+        #expect(agent.secondaryText == "API migration")
         #expect(agent.fullLabel == "Codex · API migration")
         #expect(agent.indexedLabel == "[2] Codex · API migration")
+        #expect(agent.indexedIdentityLabel == "[2] Codex")
         #expect(agent.accessibilityLabel == "Session 2, Codex, API migration")
 
         let action = SessionIdentity(session: session(actionName: "Editor"))
+        #expect(action.kind == .terminal)
         #expect(action.identityText == "Editor")
+        #expect(action.primaryText == "Editor")
+        #expect(action.secondaryText == nil)
         #expect(action.fullLabel == "Editor")
+    }
+
+    @Test("Terminal custom names replace the launch identity in visible labels")
+    func terminalCustomNameProjection() {
+        let action = SessionIdentity(session: session(
+            index: 4,
+            name: "Editor",
+            actionName: "Neovim"
+        ))
+        #expect(action.identityText == "Neovim")
+        #expect(action.customName == "Editor")
+        #expect(action.primaryText == "Editor")
+        #expect(action.secondaryText == nil)
+        #expect(action.fullLabel == "Editor")
+        #expect(action.indexedLabel == "[4] Editor")
+        #expect(action.indexedIdentityLabel == "[4] Neovim")
+        #expect(action.accessibilityLabel == "Session 4, Editor")
 
         let shell = SessionIdentity(session: session(
             name: "Scratch",
@@ -76,7 +100,15 @@ struct SessionKindTests {
             actionName: nil
         ))
         #expect(shell.identityText == "Shell")
-        #expect(shell.fullLabel == "Shell · Scratch")
+        #expect(shell.fullLabel == "Scratch")
+        #expect(shell.accessibilityLabel == "Scratch")
+
+        let duplicateShell = SessionIdentity(session: session(
+            name: "Shell",
+            actionId: nil,
+            actionName: nil
+        ))
+        #expect(duplicateShell.fullLabel == "Shell")
     }
 
     @Test("legacy identity omits the index and blank custom names")

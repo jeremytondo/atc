@@ -96,6 +96,21 @@ struct NavigationPresentationTests {
         #expect(request.dialogTitle == "Rename Terminal “[3] Shell”")
         #expect(request.draft.isEmpty)
         #expect(!request.canSubmit)
+
+        let namedTerminal = SessionIdentity(session: navigationSession(
+            ref.sessionID,
+            index: 4,
+            name: "Editor",
+            actionName: "Neovim",
+            isAgent: false
+        ))
+        request = SessionRenameRequest(
+            ref: ref,
+            identity: namedTerminal,
+            kind: .terminal
+        )
+        #expect(request.dialogTitle == "Rename Terminal “[4] Editor”")
+        #expect(request.draft == "Editor")
     }
 
     @Test("Session picker groups rows and marks the current selection")

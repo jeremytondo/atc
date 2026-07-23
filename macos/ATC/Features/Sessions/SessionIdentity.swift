@@ -3,15 +3,18 @@ import ATCAPI
 
 /// The one user-facing identity projection for a Session.
 ///
-/// A custom name is supporting context. It never replaces the launch
-/// identity copied onto the Session.
+/// Agent Sessions keep their launch identity visible and use a custom name as
+/// supporting context. Terminals use a custom name as their primary label,
+/// falling back to their Action name or "Shell" when unnamed.
 struct SessionIdentity: Equatable, Sendable {
     let index: Int?
+    let kind: SessionKind
     let identityText: String
     let customName: String?
 
     init(session: Session) {
         index = session.sessionIndex
+        kind = SessionKind.classify(session: session)
         if session.actionId == nil {
             identityText = "Shell"
         } else {
@@ -22,9 +25,22 @@ struct SessionIdentity: Equatable, Sendable {
         customName = session.name?.nonemptyTrimmed
     }
 
-    /// Identity plus optional supporting name, without the index badge.
+    /// The visually prominent portion of the label.
+    var primaryText: String {
+        if kind == .terminal, let customName {
+            return customName
+        }
+        return identityText
+    }
+
+    /// Supporting context shown only for named Agent Sessions.
+    var secondaryText: String? {
+        kind == .agent ? customName : nil
+    }
+
+    /// The complete visible label, without the index badge.
     var fullLabel: String {
-        customName.map { "\(identityText) · \($0)" } ?? identityText
+        secondaryText.map { "\(primaryText) · \($0)" } ?? primaryText
     }
 
     /// Plain-text equivalent of the badge and label used in dialogs/help.
@@ -32,14 +48,20 @@ struct SessionIdentity: Equatable, Sendable {
         index.map { "[\($0)] \(fullLabel)" } ?? fullLabel
     }
 
+    /// Launch identity with its index, for metadata surfaces that expose the
+    /// immutable identity separately from the custom display name.
+    var indexedIdentityLabel: String {
+        index.map { "[\($0)] \(identityText)" } ?? identityText
+    }
+
     var accessibilityLabel: String {
         var parts: [String] = []
         if let index {
             parts.append("Session \(index)")
         }
-        parts.append(identityText)
-        if let customName {
-            parts.append(customName)
+        parts.append(primaryText)
+        if let secondaryText {
+            parts.append(secondaryText)
         }
         return parts.joined(separator: ", ")
     }
@@ -68,14 +90,15 @@ struct WorkspaceSessionGroups: Equatable, Sendable {
             .filter { $0.belongs(to: workspace) }
             .sortedBySessionIndex()
             .map { session in
-                Row(
+                let identity = SessionIdentity(session: session)
+                return Row(
                     ref: SessionRef(
                         connectionID: workspace.connectionID,
                         sessionID: session.id
                     ),
                     session: session,
-                    identity: SessionIdentity(session: session),
-                    kind: SessionKind.classify(session: session)
+                    identity: identity,
+                    kind: identity.kind
                 )
             }
         sessions = rows.filter { $0.kind == .agent }

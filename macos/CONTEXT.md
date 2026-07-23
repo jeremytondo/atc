@@ -34,7 +34,7 @@ A Server-owned terminal process created on a particular atc server. A Session be
 _Avoid_: Terminal Session, shell
 
 **Session Identity**:
-The macOS user-facing identity copied onto a Session at launch: its Agent or Action name, or `Shell` for the Interactive Shell. An indexed Session presents as `[index] Identity`, followed by ` · Custom Name` when set; the optional Custom Name supplements and never replaces the identity.
+The launch identity copied onto a Session: its Agent or Action name, or `Shell` for the Interactive Shell. macOS keeps that identity visible for Agent Sessions, presenting `[index] Identity · Custom Name` when named. A named Terminal instead presents `[index] Custom Name`; an unnamed Terminal falls back to `[index] Identity`. The launch identity remains available in Session details and command-palette search even when a Terminal's custom name is its visible label.
 _Avoid_: Session name, Terminal
 
 **Session Index**:

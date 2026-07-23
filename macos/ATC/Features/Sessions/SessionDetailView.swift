@@ -9,7 +9,7 @@ struct SessionDetailView: View {
         let identity = SessionIdentity(session: session)
         Form {
             Section("Session") {
-                LabeledContent("Identity", value: identity.indexedLabel)
+                LabeledContent("Identity", value: identity.indexedIdentityLabel)
                 if let customName = identity.customName {
                     LabeledContent("Custom Name", value: customName)
                 }

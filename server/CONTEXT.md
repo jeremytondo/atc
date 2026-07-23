@@ -18,11 +18,13 @@ injects input, and can re-attach while it is Live. Its atc identity is
 independent of its multiplexer handle. Each Session also has an immutable
 positive index in a Workspace-local namespace shared by agent and terminal
 Sessions. While Live, its optional custom name is supporting context that can
-be set or cleared; it never replaces Action or Agent identity. Ended is a
-retained, read-only tombstone whose backing zmx session was confirmed absent by a
-successful, complete zmx inventory. Attach EOF, PTY/input failures, and failed
-inventories are never evidence of ending; unavailable inventory changes no
-state and operations that require it return `zmx_unavailable`. Chosen
+be set or cleared; it never mutates the copied Action or Agent identity. Clients
+may use a Terminal's custom name as its primary visible label while retaining
+the launch identity as metadata. Ended is a retained, read-only tombstone whose
+backing zmx session was confirmed absent by a successful, complete zmx
+inventory. Attach EOF, PTY/input failures, and failed inventories are never
+evidence of ending; unavailable inventory changes no state and operations that
+require it return `zmx_unavailable`. Chosen
 over "Run"/"Agent Run" deliberately, despite "session" being the underlying zmx
 term. Delete ends a Live process when necessary and removes its atc record.
 _Avoid_: terminal, tab, pane, job, task, run, agent run.
