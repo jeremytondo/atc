@@ -3,9 +3,7 @@ import ATCAPI
 
 /// The New Session / New Terminal sheet, always scoped to the Active
 /// Workspace. New Session picks among enabled Agent Actions; New Terminal
-/// offers the Interactive Shell (default) plus enabled general Actions. No
-/// prompt field, no params UI, no Environment picker — the server default
-/// Environment is used.
+/// offers the Interactive Shell (default) plus enabled non-agent Actions.
 struct StartWorkspaceSessionSheet: View {
     /// Sentinel Picker tag for the Interactive Shell (a nil-action start).
     private static let interactiveShellTag = ""
@@ -17,7 +15,7 @@ struct StartWorkspaceSessionSheet: View {
     /// Called with the new Session's ref so the window can select it.
     var onStarted: (SessionRef) -> Void = { _ in }
 
-    @State private var selectedActionName = ""
+    @State private var selectedActionID = ""
     @State private var name = ""
     @State private var isSubmitting = false
     @State private var submitError: String?
@@ -38,11 +36,11 @@ struct StartWorkspaceSessionSheet: View {
     }
 
     private var isInteractiveShell: Bool {
-        kind == .terminal && selectedActionName == Self.interactiveShellTag
+        kind == .terminal && selectedActionID == Self.interactiveShellTag
     }
 
     private var selectedAction: ATCAction? {
-        choices.first { $0.name == selectedActionName }
+        choices.first { $0.id == selectedActionID }
     }
 
     /// The actions list is polled with the runtime; a load failure with
@@ -95,14 +93,14 @@ struct StartWorkspaceSessionSheet: View {
         }
         .frame(width: 460, height: 280)
         .onAppear { preselect() }
-        .onChange(of: choices.map(\.name)) { preselect() }
+        .onChange(of: choices.map(\.id)) { preselect() }
     }
 
     @ViewBuilder
     private var picker: some View {
         switch kind {
         case .agentSession:
-            Picker("Agent", selection: $selectedActionName) {
+            Picker("Agent", selection: $selectedActionID) {
                 // Actions load async; the "" selection needs a matching
                 // tag until then or AppKit logs an invalid selection.
                 if choices.isEmpty {
@@ -110,14 +108,14 @@ struct StartWorkspaceSessionSheet: View {
                         .tag("")
                 }
                 ForEach(choices) { action in
-                    Text(action.displayLabel).tag(action.name)
+                    Text(action.name).tag(action.id)
                 }
             }
         case .terminal:
-            Picker("Run", selection: $selectedActionName) {
+            Picker("Run", selection: $selectedActionID) {
                 Text("Interactive Shell").tag(Self.interactiveShellTag)
                 ForEach(choices) { action in
-                    Text(action.displayLabel).tag(action.name)
+                    Text(action.name).tag(action.id)
                 }
             }
         }
@@ -127,7 +125,7 @@ struct StartWorkspaceSessionSheet: View {
     /// defaults to the Interactive Shell.
     private func preselect() {
         guard kind == .agentSession, selectedAction == nil else { return }
-        selectedActionName = choices.first?.name ?? ""
+        selectedActionID = choices.first?.id ?? ""
     }
 
     private var canSubmit: Bool {
@@ -149,13 +147,13 @@ struct StartWorkspaceSessionSheet: View {
             let trimmedName = name.trimmingCharacters(in: .whitespaces)
             let request = StartSessionRequest(
                 workspaceId: workspaceRef.workspaceID,
-                action: isInteractiveShell ? nil : selectedAction?.name,
+                actionId: isInteractiveShell ? nil : selectedAction?.id,
                 name: trimmedName.isEmpty ? nil : trimmedName
             )
-            let detail = try await runtime.sessions.start(request)
+            let session = try await runtime.sessions.start(request)
             submitError = nil
             dismiss()
-            onStarted(SessionRef(connectionID: runtime.id, sessionID: detail.id))
+            onStarted(SessionRef(connectionID: runtime.id, sessionID: session.id))
         } catch {
             submitError = error.localizedDescription
         }

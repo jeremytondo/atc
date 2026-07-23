@@ -11,7 +11,9 @@ import {
 const session: SessionListItem = {
   id: 'ses_123',
   name: 'Before',
-  environment: 'host-login-shell',
+  actionId: 'act_123',
+  actionName: 'Codex',
+  isAgent: true,
   workingDir: '/repo',
   status: 'ended',
   createdAt: '2026-07-18T10:00:00Z',
@@ -21,7 +23,6 @@ const session: SessionListItem = {
 const renamed: SessionDetail = {
   ...session,
   name: 'After',
-  params: {},
   updatedAt: '2026-07-18T11:00:00Z'
 };
 

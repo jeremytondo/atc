@@ -8,7 +8,6 @@ import (
 
 	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/server"
-	"github.com/jeremytondo/atc/internal/session"
 )
 
 // envFunc builds a lookup over a fixed map for deterministic tests.
@@ -32,9 +31,6 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if want := paths.DBPathForEnv(envFunc(nil)); cfg.Store.DBPath != want {
 		t.Errorf("db path = %q, want %q", cfg.Store.DBPath, want)
-	}
-	if want := filepath.Join(os.TempDir(), "atc", "actions.json"); cfg.ActionsPath != want {
-		t.Errorf("actions path = %q, want %q", cfg.ActionsPath, want)
 	}
 }
 
@@ -294,63 +290,6 @@ func TestResolveConfigPathDefault(t *testing.T) {
 	}
 }
 
-func TestLoadDefaultActionsPathAndEnvironments(t *testing.T) {
-	xdg := filepath.Join(t.TempDir(), "config")
-	cfg, err := Load(Options{Env: envFunc(map[string]string{"XDG_CONFIG_HOME": xdg})})
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if want := filepath.Join(xdg, "atc", "server", "actions.json"); cfg.ActionsPath != want {
-		t.Fatalf("actions path = %q, want %q", cfg.ActionsPath, want)
-	}
-	env, ok := cfg.Environments["host-login-shell"]
-	if !ok || env.Kind != session.EnvironmentKindHostLoginShell {
-		t.Fatalf("default environments = %+v, want host-login-shell", cfg.Environments)
-	}
-}
-
-func TestLoadActionsPathPrecedence(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nested", "config.toml")
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("[log]\nlevel = \"info\"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := Load(Options{ConfigPath: path, ConfigChanged: true, Env: envFunc(nil)})
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if want := filepath.Join(filepath.Dir(path), "actions.json"); cfg.ActionsPath != want {
-		t.Fatalf("actions path = %q, want %q", cfg.ActionsPath, want)
-	}
-
-	override := filepath.Join(t.TempDir(), "managed-actions.json")
-	cfg, err = Load(Options{
-		ConfigPath:    path,
-		ConfigChanged: true,
-		Env:           envFunc(map[string]string{EnvActionsPath: override}),
-	})
-	if err != nil {
-		t.Fatalf("Load with env override: %v", err)
-	}
-	if cfg.ActionsPath != override {
-		t.Fatalf("actions path = %q, want env override %q", cfg.ActionsPath, override)
-	}
-}
-
-func TestLoadActionsPathFallsBackToTMPDIR(t *testing.T) {
-	tmp := t.TempDir()
-	cfg, err := Load(Options{Env: envFunc(map[string]string{"TMPDIR": tmp})})
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if want := filepath.Join(tmp, "atc", "actions.json"); cfg.ActionsPath != want {
-		t.Fatalf("actions path = %q, want %q", cfg.ActionsPath, want)
-	}
-}
-
 func TestLoadRejectsUnknownTopLevelTable(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -358,11 +297,11 @@ func TestLoadRejectsUnknownTopLevelTable(t *testing.T) {
 		want     string
 	}{
 		{name: "arbitrary table", contents: "[nonsense]\nvalue = 1\n", want: "nonsense"},
-		// Actions are managed via the API in actions.json; strict decoding
-		// rejects the retired [actions] and [agents] tables with no
-		// bespoke handling.
+		// Actions are managed via the API; strict decoding rejects retired
+		// configuration tables with no bespoke handling.
 		{name: "actions table", contents: "[actions.claude]\ncommand = \"claude\"\n", want: "actions"},
 		{name: "agents table", contents: "[agents.codex]\ncommand = \"codex\"\n", want: "agents"},
+		{name: "environments table", contents: "[environments.host]\nkind = \"host-login-shell\"\n", want: "environments"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -394,28 +333,6 @@ func TestLoadRejectsUnknownKeyInKnownTable(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "bogus") {
 		t.Fatalf("Load err = %v, want config path and offending key", err)
-	}
-}
-
-func TestLoadEnvironmentsFromFileOverlaysDefaults(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.toml")
-	contents := "" +
-		"[environments.custom]\n" +
-		"kind = \"host-login-shell\"\n" +
-		"label = \"Custom shell\"\n"
-	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := Load(Options{ConfigPath: path, ConfigChanged: true, Env: envFunc(nil)})
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if _, ok := cfg.Environments["host-login-shell"]; !ok {
-		t.Fatalf("environments = %+v, want built-in host-login-shell retained", cfg.Environments)
-	}
-	if got := cfg.Environments["custom"]; got.Kind != session.EnvironmentKindHostLoginShell || got.Label != "Custom shell" {
-		t.Fatalf("custom environment = %+v", got)
 	}
 }
 

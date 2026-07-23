@@ -21,7 +21,6 @@
     if (p.startsWith('/sessions')) return 'Sessions';
     if (p.startsWith('/projects')) return 'Projects';
     if (p.startsWith('/actions')) return 'Actions';
-    if (p.startsWith('/environments')) return 'Environments';
     return 'atc';
   });
 
@@ -66,14 +65,6 @@
         ></span></span
       >Actions
     </a>
-    <a class="navi" class:on={pathname.startsWith('/environments')} href="/environments">
-      <span class="ic"
-        ><span
-          style="width:9px;height:9px;border:1.4px solid currentColor;border-radius:2px;transform:rotate(45deg)"
-        ></span></span
-      >Environments
-    </a>
-
     <div class="seclbl">Documentation</div>
     <a class="epitem" class:on={pathname === '/'} href="/">
       <span class="ic"

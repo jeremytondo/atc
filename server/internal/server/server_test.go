@@ -42,21 +42,6 @@ func TestServeRejectsEmptyDBPath(t *testing.T) {
 	}
 }
 
-func TestServeRejectsEmptyActionsPath(t *testing.T) {
-	dir := t.TempDir()
-	err := Serve(context.Background(), Config{
-		HTTPAddr:   "127.0.0.1:0",
-		SocketPath: filepath.Join(dir, "atc.sock"),
-		DBPath:     filepath.Join(dir, "state", "atc.db"),
-	})
-	if err == nil {
-		t.Fatal("Serve returned nil error, want missing actions path error")
-	}
-	if !strings.Contains(err.Error(), "actions file path is required") {
-		t.Fatalf("error = %q, want missing actions path", err)
-	}
-}
-
 func TestServeListensOnUnixSocket(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -67,10 +52,9 @@ func TestServeListensOnUnixSocket(t *testing.T) {
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Serve(ctx, Config{
-			HTTPAddr:    "127.0.0.1:0",
-			SocketPath:  socketPath,
-			DBPath:      dbPath,
-			ActionsPath: filepath.Join(dir, "config", "actions.json"),
+			HTTPAddr:   "127.0.0.1:0",
+			SocketPath: socketPath,
+			DBPath:     dbPath,
 		})
 	}()
 

@@ -5,15 +5,11 @@ import ATCAPI
 
 private let logger = Logger(subsystem: "ElevenIdeas.atc", category: "actions")
 
-/// Shared domain state for one Connection's action registry. Unlike
-/// Projects/Sessions this isn't polled — the settings editor and pickers
-/// refresh on demand, matching the server's read-through registry.
+/// Shared domain state for one Connection's server-wide actions.
 @Observable
 final class ActionsStore {
     let client: any ATCClient
 
-    /// Sorted by display label for stable list presentation; list entries
-    /// omit `command`/`args` (use `detail(name:)` for the full definition).
     private(set) var actions: [ATCAction] = []
     private(set) var isLoading = false
     private(set) var hasLoadedOnce = false
@@ -22,6 +18,7 @@ final class ActionsStore {
     /// Monotonic token: a slow in-flight refresh must not clobber the
     /// result of a newer one.
     private var refreshGeneration = 0
+    private var followUpRefresh: Task<Void, Never>?
 
     init(client: any ATCClient) {
         self.client = client
@@ -32,8 +29,10 @@ final class ActionsStore {
         let generation = refreshGeneration
         isLoading = true
         defer {
-            isLoading = false
-            hasLoadedOnce = true
+            if generation == refreshGeneration {
+                isLoading = false
+                hasLoadedOnce = true
+            }
         }
         do {
             let fetched = try await client.actions()
@@ -48,50 +47,47 @@ final class ActionsStore {
         }
     }
 
-    /// Full definition including `command`/`args`, which the list omits.
-    func detail(name: String) async throws -> ATCAction {
-        try await client.action(name: name)
-    }
-
-    /// Mutations throw so the editor can show inline errors.
     @discardableResult
-    func create(_ request: ActionWriteRequest) async throws -> ATCAction {
+    func create(_ request: ActionCreate) async throws -> ATCAction {
         let action = try await client.createAction(request)
         merge(action)
-        Task { await refresh() }
+        scheduleRefresh()
+        logger.info("created action \(action.id, privacy: .public)")
         return action
     }
 
     @discardableResult
-    func update(name: String, _ request: ActionWriteRequest) async throws -> ATCAction {
-        let action = try await client.updateAction(name: name, request)
+    func update(id: String, _ patch: ActionPatch) async throws -> ATCAction {
+        let action = try await client.updateAction(id: id, patch)
         merge(action)
-        Task { await refresh() }
+        scheduleRefresh()
+        logger.info("updated action \(id, privacy: .public)")
         return action
     }
 
     @discardableResult
-    func setEnabled(name: String, enabled: Bool) async throws -> ATCAction {
-        let action = try await client.setActionEnabled(name: name, enabled: enabled)
-        merge(action)
-        Task { await refresh() }
-        return action
+    func setEnabled(id: String, enabled: Bool) async throws -> ATCAction {
+        try await update(id: id, ActionPatch(enabled: enabled))
     }
 
-    /// Deletes a custom action or reverts a built-in override. Refreshes
-    /// synchronously: the server's `{}` response doesn't say which happened,
-    /// and a reverted built-in must reappear with its default definition.
-    func delete(name: String) async throws {
-        try await client.deleteAction(name: name)
-        await refresh()
+    func delete(id: String) async throws {
+        try await client.deleteAction(id: id)
+        actions.removeAll { $0.id == id }
+        scheduleRefresh()
+        logger.info("deleted action \(id, privacy: .public)")
     }
 
-    func action(name: String) -> ATCAction? {
-        actions.first { $0.name == name }
+    func action(id: String) -> ATCAction? {
+        actions.first { $0.id == id }
+    }
+
+    private func scheduleRefresh() {
+        followUpRefresh?.cancel()
+        followUpRefresh = Task { await refresh() }
     }
 
     private func merge(_ action: ATCAction) {
-        if let index = actions.firstIndex(where: { $0.name == action.name }) {
+        if let index = actions.firstIndex(where: { $0.id == action.id }) {
             actions[index] = action
         } else {
             actions.append(action)
@@ -101,8 +97,8 @@ final class ActionsStore {
 
     private static func sorted(_ actions: [ATCAction]) -> [ATCAction] {
         actions.sorted {
-            let order = $0.displayLabel.localizedCaseInsensitiveCompare($1.displayLabel)
-            return order == .orderedSame ? $0.name < $1.name : order == .orderedAscending
+            let order = $0.name.localizedCaseInsensitiveCompare($1.name)
+            return order == .orderedSame ? $0.id < $1.id : order == .orderedAscending
         }
     }
 }

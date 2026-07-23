@@ -40,33 +40,22 @@ func sessionsCommand(lookup envLookup) *cobra.Command {
 }
 
 func sessionsStartCommand(lookup envLookup) *cobra.Command {
-	var action, environment, prompt, name, workspaceID, output string
-	var params []string
+	var actionID, name, workspaceID, output string
 
 	cmd := &cobra.Command{
-		Use:   "start --workspace <id> [--action <name>] [--env <name>] [--param key=value]... [--prompt <text>] [--name <name>]",
+		Use:   "start --workspace <id> [--action <id>] [--name <name>]",
 		Short: "Start a session in a workspace (no action starts the interactive shell)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateOutput(output); err != nil {
 				return err
 			}
-			paramMap, err := parseParams(params)
-			if err != nil {
-				return err
-			}
 			request := map[string]any{
 				"workspaceId": workspaceID,
-				"environment": environment,
-				"prompt":      prompt,
 				"name":        name,
 			}
-			// action is optional: omitted, the server launches the Interactive
-			// Shell, which accepts neither params nor a prompt. The keys are
-			// left out entirely so the server sees a true omission.
-			if action != "" {
-				request["action"] = action
-				request["params"] = paramMap
+			if actionID != "" {
+				request["actionId"] = actionID
 			}
 
 			client, err := commandAPIClient(cmd, lookup)
@@ -91,10 +80,7 @@ func sessionsStartCommand(lookup envLookup) *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&workspaceID, "workspace", "", "Workspace to start the session in (inherits the project's working directory)")
-	cmd.Flags().StringVar(&action, "action", "", "Action to launch (default: the interactive shell)")
-	cmd.Flags().StringVar(&environment, "env", "", "Environment to run in (default: host-login-shell)")
-	cmd.Flags().StringArrayVar(&params, "param", nil, "Action parameter as key=value (repeatable)")
-	cmd.Flags().StringVar(&prompt, "prompt", "", "Initial prompt for the agent")
+	cmd.Flags().StringVar(&actionID, "action", "", "Action ID to launch (default: the interactive shell)")
 	cmd.Flags().StringVar(&name, "name", "", "Human-readable session name")
 	cmd.Flags().StringVarP(&output, "output", "o", outputText, "Output format: text or json")
 	_ = cmd.MarkFlagRequired("workspace")
@@ -145,7 +131,11 @@ func sessionsListCommand(lookup envLookup) *cobra.Command {
 				return fmt.Errorf("decode response: %w", err)
 			}
 			for _, s := range resp.Sessions {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\t%s\n", s.ID, s.Status, s.Action, s.Environment, s.WorkingDir, s.Name)
+				actionName := s.ActionName
+				if actionName == "" {
+					actionName = "(interactive shell)"
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%t\t%s\t%s\n", s.ID, s.Status, actionName, s.IsAgent, s.WorkingDir, s.Name)
 			}
 			return nil
 		},
@@ -302,23 +292,6 @@ func resourceActionCommand(lookup envLookup, use, short string, argCount int, bu
 	}
 }
 
-// parseParams turns repeated key=value flags into a parameter map. Values are
-// sent as strings; the service validates and types them per the action's spec.
-func parseParams(pairs []string) (map[string]string, error) {
-	if len(pairs) == 0 {
-		return nil, nil
-	}
-	out := make(map[string]string, len(pairs))
-	for _, p := range pairs {
-		key, value, ok := strings.Cut(p, "=")
-		if !ok || key == "" {
-			return nil, fmt.Errorf("invalid --param %q: expected key=value", p)
-		}
-		out[key] = value
-	}
-	return out, nil
-}
-
 func commandAPIClient(cmd *cobra.Command, lookup envLookup) (*apiClient, error) {
 	cfg, err := resolveConfig(cmd, lookup)
 	if err != nil {
@@ -358,25 +331,18 @@ func writeRawJSON(cmd *cobra.Command, body []byte) error {
 }
 
 func writeSessionDetailText(cmd *cobra.Command, s api.SessionDetail) error {
-	params := "{}"
-	if len(s.Params) > 0 {
-		encoded, err := json.Marshal(s.Params)
-		if err != nil {
-			return fmt.Errorf("encode params: %w", err)
-		}
-		params = string(encoded)
-	}
-
-	// An empty action is the Interactive Shell; show that instead of a blank.
-	action := s.Action
-	if action == "" {
-		action = "(interactive shell)"
+	actionName := s.ActionName
+	if actionName == "" {
+		actionName = "(interactive shell)"
 	}
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "id\t%s\n", s.ID)
 	fmt.Fprintf(out, "status\t%s\n", s.Status)
-	fmt.Fprintf(out, "action\t%s\n", action)
-	fmt.Fprintf(out, "environment\t%s\n", s.Environment)
+	if s.ActionID != "" {
+		fmt.Fprintf(out, "actionId\t%s\n", s.ActionID)
+	}
+	fmt.Fprintf(out, "actionName\t%s\n", actionName)
+	fmt.Fprintf(out, "isAgent\t%t\n", s.IsAgent)
 	fmt.Fprintf(out, "workingDir\t%s\n", s.WorkingDir)
 	if s.Workspace != nil {
 		fmt.Fprintf(out, "workspace\t%s\n", s.Workspace.ID)
@@ -389,10 +355,6 @@ func writeSessionDetailText(cmd *cobra.Command, s api.SessionDetail) error {
 	if s.Name != "" {
 		fmt.Fprintf(out, "name\t%s\n", s.Name)
 	}
-	if s.Prompt != "" {
-		fmt.Fprintf(out, "prompt\t%s\n", s.Prompt)
-	}
-	fmt.Fprintf(out, "params\t%s\n", params)
 	fmt.Fprintf(out, "createdAt\t%s\n", s.CreatedAt)
 	fmt.Fprintf(out, "updatedAt\t%s\n", s.UpdatedAt)
 	return nil

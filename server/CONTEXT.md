@@ -21,11 +21,11 @@ term. Delete ends a Live process when necessary and removes its atc record.
 _Avoid_: terminal, tab, pane, job, task, run, agent run.
 
 **Action**:
-The named command template a Session runs. Actions are operator-defined config
-with a required executable `command`, fixed `args`, optional initial prompt
-placement, and optional typed params. An Action is either a general Action or
-an Agent Action; its type is fixed when it is created. A custom Action cannot
-be deleted while it has active Sessions.
+The server-wide SQLite launch recipe a Session runs, addressed by an opaque ID.
+It has a user-facing name, a required executable `command`, fixed literal
+`args`, and editable enabled/agent-classification metadata. A Session copies
+the Action's identity at launch, so later edits or deletion affect only future
+launches.
 _Avoid_: raw command, arbitrary command, harness.
 
 **Launch Attempt**:
@@ -35,8 +35,9 @@ deleted. It is never returned by Session APIs.
 _Avoid_: starting Session, pending Session.
 
 **Agent Action**:
-An Action typed to launch an Agent. It may later declare Agent integration
-metadata, but it uses the same command and Session lifecycle as every Action.
+An Action whose editable `isAgent` classification hint is true. It may later
+declare Agent integration metadata, but it uses the same command and Session
+lifecycle as every Action.
 _Avoid_: non-Agent Action, agent command
 
 **Agent**:
@@ -56,12 +57,11 @@ The server-selected shell started when a Session has no Action. It provides the
 plain terminal prompt without accepting an arbitrary caller-provided command.
 _Avoid_: shell action, raw command
 
-**Environment**:
-The named launch wrapper that decides how/where an Action runs. The default is
-`host-login-shell`, which runs the Action argv through the host user's
-login-interactive shell. Future Environments may wrap Actions with containers,
-mise, nix, or other launch contexts.
-_Avoid_: shell seam, runtime, executor.
+**Launch environment**:
+The server-owned host login-interactive shell wrapper. Clients do not select or
+configure it. Actions run through `$SHELL -l -i -c`; the Interactive Shell runs
+as `$SHELL -l -i`.
+_Avoid_: selectable Environment, runtime, executor.
 
 **Session Input**:
 Text or named keys injected into a Session's terminal as if a human typed them.

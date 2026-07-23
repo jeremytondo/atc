@@ -6,10 +6,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
-	actionstore "github.com/jeremytondo/atc/internal/action"
 	"github.com/jeremytondo/atc/internal/diagnostics"
 	"github.com/jeremytondo/atc/internal/project"
 	"github.com/jeremytondo/atc/internal/session"
@@ -18,60 +20,54 @@ import (
 	"github.com/jeremytondo/atc/internal/zmx"
 )
 
-// fakeMux is a faked session.Multiplexer for driving the API end to end.
+const testWorkspaceID = "wsp_test"
+
 type fakeMux struct {
-	sessions    []zmx.Session
-	startErr    error
-	attachPTY   zmx.PTY
-	attachErr   error
-	attachCalls int
-	attachRows  uint16
-	attachCols  uint16
-	lastStart   struct {
-		name, dir string
-		argv      []string
-	}
-	lastSend struct {
+	startErr      error
+	terminateErr  error
+	attachErr     error
+	attachPTY     zmx.PTY
+	argv          []string
+	sessions      []zmx.Session
+	lastTerminate string
+	attachCalls   int
+	attachRows    uint16
+	attachCols    uint16
+	lastSend      struct {
 		name    string
 		payload []byte
 	}
-	lastTerminate string
-	terminateErr  error
 }
 
-func (f *fakeMux) Start(_ context.Context, name, dir string, argv []string) error {
-	f.lastStart.name, f.lastStart.dir = name, dir
-	f.lastStart.argv = append([]string(nil), argv...)
+func (f *fakeMux) Start(_ context.Context, name, _ string, argv []string) error {
+	f.argv = append([]string(nil), argv...)
 	if f.startErr != nil {
 		return f.startErr
 	}
-	f.sessions = append(f.sessions, zmx.Session{Name: name, StartDir: dir, Cmd: strings.Join(argv, " ")})
+	f.sessions = append(f.sessions, zmx.Session{Name: name})
 	return nil
 }
-
 func (f *fakeMux) Send(_ context.Context, name string, payload []byte) error {
-	f.lastSend.name, f.lastSend.payload = name, payload
+	f.lastSend.name = name
+	f.lastSend.payload = append([]byte(nil), payload...)
 	return nil
 }
-
 func (f *fakeMux) Attach(_ context.Context, _ string, rows, cols uint16) (zmx.PTY, error) {
 	f.attachCalls++
 	f.attachRows = rows
 	f.attachCols = cols
 	return f.attachPTY, f.attachErr
 }
-
 func (f *fakeMux) List(context.Context) ([]zmx.Session, error) {
-	return f.sessions, nil
+	return append([]zmx.Session(nil), f.sessions...), nil
 }
-
 func (f *fakeMux) Terminate(_ context.Context, name string) error {
 	f.lastTerminate = name
 	if f.terminateErr != nil {
 		return f.terminateErr
 	}
-	for i, s := range f.sessions {
-		if s.Name == name {
+	for i, item := range f.sessions {
+		if item.Name == name {
 			f.sessions = append(f.sessions[:i], f.sessions[i+1:]...)
 			break
 		}
@@ -79,50 +75,44 @@ func (f *fakeMux) Terminate(_ context.Context, name string) error {
 	return nil
 }
 
-// testWorkspaceID is the workspace every handler test hangs sessions off;
-// newHandler seeds its project/workspace rows.
-const testWorkspaceID = "wsp_test"
-
 type handlerEnv struct {
-	handler http.Handler
-	store   *store.Store
-	workDir string
+	handler  http.Handler
+	store    *store.Store
+	actionID string
+	workDir  string
 }
 
 func newHandlerEnv(t *testing.T, mux *fakeMux) handlerEnv {
 	t.Helper()
-	st, err := store.Open(t.TempDir() + "/atc.db")
+	st, err := store.Open(filepath.Join(t.TempDir(), "atc.db"))
 	if err != nil {
-		t.Fatalf("Open store: %v", err)
+		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	workDir := t.TempDir()
 	ctx := context.Background()
+	workDir := t.TempDir()
 	if _, err := st.CreateProject(ctx, store.CreateProjectInput{ID: "prj_test", Name: "Test", WorkingDir: workDir}); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
 	if _, err := st.CreateWorkspace(ctx, store.CreateWorkspaceInput{ID: testWorkspaceID, ProjectID: "prj_test", Name: "Test workspace"}); err != nil {
 		t.Fatalf("CreateWorkspace: %v", err)
 	}
-	actions := session.ActionRegistry{
-		"claude": {Command: "claude"},
-		"codex": {
-			Command: "codex",
-			Prompt:  &session.PromptSpec{},
-			Params: map[string]session.ParamSpec{
-				"model": {Type: "enum", Values: []string{"gpt-5"}, Flag: "--model"},
-			},
-		},
+	action, err := st.CreateAction(ctx, store.Action{
+		Name: "Agent", Description: "Test agent", Enabled: true, Command: "agent",
+		Args: []string{"$HOME", "two words"}, IsAgent: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateAction: %v", err)
 	}
-	environments := session.EnvironmentRegistry{
-		"host-login-shell": {Kind: session.EnvironmentKindHostLoginShell},
-	}
-	actionStore := actionstore.NewStore(t.TempDir()+"/actions.json", actions, st)
 	projects := project.NewService(st, nil)
 	workspaces := workspace.NewService(st, nil)
-	sessions := session.NewService(st, mux, actionStore, environments, workspaces, nil)
-	handler := Routes(diagnostics.DefaultDiagnostics(), sessions, projects, workspaces, actionStore, nil)
-	return handlerEnv{handler: handler, store: st, workDir: workDir}
+	sessions := session.NewService(st, mux, workspaces, nil)
+	return handlerEnv{
+		handler:  Routes(diagnostics.DefaultDiagnostics(), sessions, projects, workspaces, st, nil),
+		store:    st,
+		actionID: action.ID,
+		workDir:  workDir,
+	}
 }
 
 func newHandler(t *testing.T, mux *fakeMux) (http.Handler, *store.Store) {
@@ -131,48 +121,156 @@ func newHandler(t *testing.T, mux *fakeMux) (http.Handler, *store.Store) {
 	return env.handler, env.store
 }
 
-func do(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {
+func seedRunning(t *testing.T, st *store.Store, id, name string) {
 	t.Helper()
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	h.ServeHTTP(rec, req)
-	return rec
+	created, err := st.CreateStarting(context.Background(), store.CreateSessionInput{
+		ID: id, Name: name, ActionID: "act_fh9g7e6571qo53r0t647ughtfg", ActionName: "Codex",
+		IsAgent: true, WorkingDir: "/work", WorkspaceID: testWorkspaceID,
+	})
+	if err != nil {
+		t.Fatalf("CreateStarting: %v", err)
+	}
+	if _, err := st.PromoteToLive(context.Background(), created.ID); err != nil {
+		t.Fatalf("PromoteToLive: %v", err)
+	}
 }
 
-func TestStartSessionReturnsFullSession(t *testing.T) {
+func seedEnded(t *testing.T, st *store.Store, id, name string) {
+	t.Helper()
+	seedRunning(t, st, id, name)
+	if _, err := st.MarkEnded(context.Background(), id); err != nil {
+		t.Fatalf("MarkEnded(%s): %v", id, err)
+	}
+}
+
+func liveSession(id string) zmx.Session {
+	return zmx.Session{Name: zmx.NameForID(id)}
+}
+
+func TestStartSessionByActionID(t *testing.T) {
+	t.Setenv("SHELL", "/bin/zsh")
 	mux := &fakeMux{}
 	env := newHandlerEnv(t, mux)
 	rec := do(t, env.handler, http.MethodPost, "/sessions/start",
-		`{"action":"codex","params":{"model":"gpt-5"},"workspaceId":"`+testWorkspaceID+`","prompt":"review this","name":"Review"}`)
-
+		`{"workspaceId":"`+testWorkspaceID+`","actionId":"`+env.actionID+`","name":"Review"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body)
 	}
-	var resp SessionDetail
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+	var got SessionResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !strings.HasPrefix(resp.ID, "ses_") || resp.Name != "Review" || resp.Action != "codex" || resp.Environment != "host-login-shell" ||
-		resp.WorkingDir != env.workDir || resp.Prompt != "review this" || resp.Status != "live" {
-		t.Fatalf("response = %+v", resp)
+	if got.ActionID != env.actionID || got.ActionName != "Agent" || !got.IsAgent || got.Name != "Review" {
+		t.Fatalf("response = %+v", got)
 	}
-	if resp.Params["model"] != "gpt-5" {
-		t.Fatalf("params = %#v", resp.Params)
+	wantArgv := []string{"/bin/zsh", "-l", "-i", "-c", `agent '$HOME' 'two words'`}
+	if !reflect.DeepEqual(mux.argv, wantArgv) {
+		t.Fatalf("argv = %#v, want %#v", mux.argv, wantArgv)
 	}
-	if resp.Workspace == nil || resp.Workspace.ID != testWorkspaceID || resp.Workspace.Name != "Test workspace" {
-		t.Fatalf("workspace ref = %+v", resp.Workspace)
+}
+
+func TestStartInteractiveShellResponseOmitsActionIdentity(t *testing.T) {
+	t.Setenv("SHELL", "/bin/fish")
+	mux := &fakeMux{}
+	env := newHandlerEnv(t, mux)
+	rec := do(t, env.handler, http.MethodPost, "/sessions/start", `{"workspaceId":"`+testWorkspaceID+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body)
 	}
-	if resp.Project == nil || resp.Project.ID != "prj_test" || resp.Project.Name != "Test" {
-		t.Fatalf("project ref = %+v", resp.Project)
+	if body := rec.Body.String(); containsAny(body, `"actionId"`, `"actionName"`) {
+		t.Fatalf("interactive response exposed Action identity: %s", body)
 	}
-	if mux.lastStart.name != zmx.NameForID(resp.ID) || mux.lastStart.dir != env.workDir {
-		t.Fatalf("start = %+v", mux.lastStart)
+	var got SessionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
 	}
-	if got := strings.Join(mux.lastStart.argv, " "); !strings.Contains(got, "-l -i -c codex --model gpt-5 'review this'") {
-		t.Fatalf("argv = %#v", mux.lastStart.argv)
+	if got.IsAgent || !reflect.DeepEqual(mux.argv, []string{"/bin/fish", "-l", "-i"}) {
+		t.Fatalf("response=%+v argv=%#v", got, mux.argv)
 	}
-	if strings.Contains(rec.Body.String(), "atc-") {
-		t.Fatalf("response leaked zmx name: %s", rec.Body)
+}
+
+func TestStartSessionErrorsUsePinnedTaxonomy(t *testing.T) {
+	mux := &fakeMux{}
+	env := newHandlerEnv(t, mux)
+
+	rec := do(t, env.handler, http.MethodPost, "/sessions/start", `{"workspaceId":"`+testWorkspaceID+`","actionId":"act_missing"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("missing status = %d, want 404 (%s)", rec.Code, rec.Body)
+	}
+	assertErrorCode(t, rec, "action_not_found")
+
+	disabled, err := env.store.CreateAction(context.Background(), store.Action{Name: "Off", Command: "off"})
+	if err != nil {
+		t.Fatalf("CreateAction: %v", err)
+	}
+	rec = do(t, env.handler, http.MethodPost, "/sessions/start", `{"workspaceId":"`+testWorkspaceID+`","actionId":"`+disabled.ID+`"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("disabled status = %d, want 409 (%s)", rec.Code, rec.Body)
+	}
+	assertErrorCode(t, rec, "action_disabled")
+}
+
+func TestStartSessionStrictlyRejectsLegacyFields(t *testing.T) {
+	env := newHandlerEnv(t, &fakeMux{})
+	for _, body := range []string{
+		`{"workspaceId":"` + testWorkspaceID + `","action":"agent"}`,
+		`{"workspaceId":"` + testWorkspaceID + `","environment":"host-login-shell"}`,
+		`{"workspaceId":"` + testWorkspaceID + `","params":{}}`,
+		`{"workspaceId":"` + testWorkspaceID + `","prompt":"hello"}`,
+	} {
+		rec := do(t, env.handler, http.MethodPost, "/sessions/start", body)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %s status = %d, want 400 (%s)", body, rec.Code, rec.Body)
+		}
+		assertErrorCode(t, rec, "invalid_request")
+	}
+}
+
+func TestLaunchFailureReturns502AndDeletesProvisional(t *testing.T) {
+	env := newHandlerEnv(t, &fakeMux{startErr: errors.New("executable missing")})
+	rec := do(t, env.handler, http.MethodPost, "/sessions/start",
+		`{"workspaceId":"`+testWorkspaceID+`","actionId":"`+env.actionID+`"}`)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (%s)", rec.Code, rec.Body)
+	}
+	assertErrorCode(t, rec, "launch_failed")
+	records, err := env.store.ListAll(context.Background(), store.ListFilter{})
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("records after failed launch = %+v", records)
+	}
+}
+
+func TestSessionListAndDetailShareShape(t *testing.T) {
+	env := newHandlerEnv(t, &fakeMux{})
+	start := do(t, env.handler, http.MethodPost, "/sessions/start",
+		`{"workspaceId":"`+testWorkspaceID+`","actionId":"`+env.actionID+`"}`)
+	var created SessionResponse
+	if err := json.Unmarshal(start.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode start: %v", err)
+	}
+
+	detail := do(t, env.handler, http.MethodGet, "/sessions/"+created.ID, "")
+	if detail.Code != http.StatusOK {
+		t.Fatalf("detail status = %d (%s)", detail.Code, detail.Body)
+	}
+	var got SessionResponse
+	if err := json.Unmarshal(detail.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	if got.ActionID != env.actionID || got.ActionName != "Agent" || !got.IsAgent {
+		t.Fatalf("detail = %+v", got)
+	}
+
+	list := do(t, env.handler, http.MethodGet, "/sessions", "")
+	var listed SessionListResponse
+	if err := json.Unmarshal(list.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(listed.Sessions) != 1 || listed.Sessions[0].ActionID != got.ActionID || listed.Sessions[0].IsAgent != got.IsAgent {
+		t.Fatalf("list = %+v", listed)
 	}
 }
 
@@ -224,7 +322,7 @@ func TestPatchSessionRenamesAndDecodesStrictly(t *testing.T) {
 	if renamed.ID != original.ID || renamed.Name != "After" || renamed.Workspace == nil || renamed.Project == nil {
 		t.Fatalf("renamed = %+v", renamed)
 	}
-	if renamed.Status != original.Status || renamed.WorkingDir != original.WorkingDir || mux.lastStart.name != zmx.NameForID(original.ID) {
+	if renamed.Status != original.Status || renamed.WorkingDir != original.WorkingDir || len(mux.sessions) != 1 || mux.sessions[0].Name != zmx.NameForID(original.ID) {
 		t.Fatalf("rename changed session identity/config: before=%+v after=%+v", original, renamed)
 	}
 
@@ -250,31 +348,6 @@ func TestPatchSessionRenamesAndDecodesStrictly(t *testing.T) {
 	}
 }
 
-func TestStartSessionWithoutActionLaunchesInteractiveShell(t *testing.T) {
-	mux := &fakeMux{}
-	env := newHandlerEnv(t, mux)
-	rec := do(t, env.handler, http.MethodPost, "/sessions/start", `{"workspaceId":"`+testWorkspaceID+`"}`)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body)
-	}
-	var resp SessionDetail
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp.Action != "" || resp.Status != "live" {
-		t.Fatalf("response = %+v, want live interactive shell", resp)
-	}
-	// The wire form of an interactive shell session omits action entirely.
-	if strings.Contains(rec.Body.String(), `"action"`) {
-		t.Fatalf("interactive shell response carries action: %s", rec.Body)
-	}
-	argv := strings.Join(mux.lastStart.argv, " ")
-	if strings.Contains(argv, "-c") {
-		t.Fatalf("interactive shell argv carries a command payload: %#v", mux.lastStart.argv)
-	}
-}
-
 func TestStartSessionValidationErrors(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -282,15 +355,10 @@ func TestStartSessionValidationErrors(t *testing.T) {
 		status int
 		code   string
 	}{
-		{name: "missing workspaceId", body: `{"action":"claude"}`, status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "blank workspaceId", body: `{"action":"claude","workspaceId":"   "}`, status: http.StatusBadRequest, code: "invalid_request"},
-		{name: "unknown workspace", body: `{"action":"claude","workspaceId":"wsp_ghost"}`, status: http.StatusBadRequest, code: "workspace_not_found"},
-		{name: "unknown action", body: `{"action":"ghost","workspaceId":"` + testWorkspaceID + `"}`, status: http.StatusBadRequest, code: "unknown_action"},
-		{name: "unknown environment", body: `{"action":"codex","environment":"ghost","workspaceId":"` + testWorkspaceID + `"}`, status: http.StatusBadRequest, code: "unknown_environment"},
-		{name: "invalid params", body: `{"action":"codex","workspaceId":"` + testWorkspaceID + `","params":{"model":"gpt-4"}}`, status: http.StatusBadRequest, code: "invalid_params"},
-		{name: "unsupported prompt", body: `{"action":"claude","workspaceId":"` + testWorkspaceID + `","prompt":"do it"}`, status: http.StatusBadRequest, code: "invalid_params"},
-		{name: "params without action", body: `{"workspaceId":"` + testWorkspaceID + `","params":{"model":"gpt-5"}}`, status: http.StatusBadRequest, code: "invalid_params"},
-		{name: "prompt without action", body: `{"workspaceId":"` + testWorkspaceID + `","prompt":"do it"}`, status: http.StatusBadRequest, code: "invalid_params"},
+		{name: "missing workspaceId", body: `{}`, status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "blank workspaceId", body: `{"workspaceId":"   "}`, status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "unknown workspace", body: `{"workspaceId":"wsp_ghost"}`, status: http.StatusBadRequest, code: "workspace_not_found"},
+		{name: "unknown action", body: `{"actionId":"act_ghost","workspaceId":"` + testWorkspaceID + `"}`, status: http.StatusNotFound, code: "action_not_found"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -301,113 +369,17 @@ func TestStartSessionValidationErrors(t *testing.T) {
 				t.Fatalf("status = %d, want %d (%s)", rec.Code, tt.status, rec.Body)
 			}
 			assertErrorCode(t, rec, tt.code)
-			if mux.lastStart.name != "" {
-				t.Fatalf("start called: %+v", mux.lastStart)
+			if len(mux.sessions) != 0 {
+				t.Fatalf("start called: %+v", mux.sessions)
 			}
 			records, err := env.store.ListAll(context.Background(), store.ListFilter{})
 			if err != nil {
-				t.Fatalf("List: %v", err)
+				t.Fatalf("ListAll: %v", err)
 			}
 			if len(records) != 0 {
 				t.Fatalf("records = %+v, want none", records)
 			}
 		})
-	}
-}
-
-func TestStartSessionLaunchFailureReturnsSessionIDAndLeavesNoRecord(t *testing.T) {
-	mux := &fakeMux{startErr: errors.New("zmx failed")}
-	h, st := newHandler(t, mux)
-	rec := do(t, h, http.MethodPost, "/sessions/start", `{"action":"claude","workspaceId":"`+testWorkspaceID+`"}`)
-
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d, want 502 (%s)", rec.Code, rec.Body)
-	}
-	var resp struct {
-		Error     string `json:"error"`
-		Message   string `json:"message"`
-		SessionID string `json:"sessionId"`
-	}
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp.Error != "launch_failed" || resp.Message != "action failed to launch" || resp.SessionID == "" {
-		t.Fatalf("error response = %+v", resp)
-	}
-	if _, err := st.Get(context.Background(), resp.SessionID); !errors.Is(err, store.ErrSessionNotFound) {
-		t.Fatalf("Get failed launch record err = %v, want not found", err)
-	}
-}
-
-func TestListSessionsOmitsPromptAndParamsAndFiltersStatus(t *testing.T) {
-	mux := &fakeMux{}
-	h, st := newHandler(t, mux)
-	seedRunning(t, st, "ses_old", "Old")
-	seedEnded(t, st, "ses_ended", "Ended")
-	seedRunning(t, st, "ses_live", "Live")
-	mux.sessions = []zmx.Session{{Name: zmx.NameForID("ses_live")}}
-
-	rec := do(t, h, http.MethodGet, "/sessions", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body)
-	}
-	var raw map[string][]map[string]any
-	if err := json.NewDecoder(rec.Body).Decode(&raw); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(raw["sessions"]) != 3 {
-		t.Fatalf("sessions = %#v", raw["sessions"])
-	}
-	for _, item := range raw["sessions"] {
-		if _, ok := item["params"]; ok {
-			t.Fatalf("list item leaked params: %#v", item)
-		}
-		if _, ok := item["prompt"]; ok {
-			t.Fatalf("list item leaked prompt: %#v", item)
-		}
-	}
-
-	rec = do(t, h, http.MethodGet, "/sessions?status=ended", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body)
-	}
-	var ended SessionListResponse
-	if err := json.NewDecoder(rec.Body).Decode(&ended); err != nil {
-		t.Fatalf("decode ended list: %v", err)
-	}
-	if len(ended.Sessions) != 2 {
-		t.Fatalf("ended list = %+v", ended.Sessions)
-	}
-
-	rec = do(t, h, http.MethodGet, "/sessions?status=bogus", "")
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("invalid status = %d, want 400", rec.Code)
-	}
-	assertErrorCode(t, rec, "invalid_request")
-}
-
-func TestReadSessionIncludesPromptParamsAndWorkspace(t *testing.T) {
-	mux := &fakeMux{}
-	h, st := newHandler(t, mux)
-	seedRunning(t, st, "ses_detail", "Detail")
-	mux.sessions = []zmx.Session{{Name: zmx.NameForID("ses_detail")}}
-
-	rec := do(t, h, http.MethodGet, "/sessions/ses_detail", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body)
-	}
-	var resp SessionDetail
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp.ID != "ses_detail" || resp.Name != "Detail" || resp.Action != "codex" || resp.Environment != "host-login-shell" || resp.Prompt != "hello" || resp.Params["model"] != "gpt-5" {
-		t.Fatalf("detail = %+v", resp)
-	}
-	if resp.Workspace == nil || resp.Workspace.ID != testWorkspaceID {
-		t.Fatalf("workspace ref = %+v", resp.Workspace)
-	}
-	if resp.Project == nil || resp.Project.ID != "prj_test" {
-		t.Fatalf("project ref = %+v", resp.Project)
 	}
 }
 
@@ -435,39 +407,101 @@ func TestSendTextAndKeyUseSessionID(t *testing.T) {
 }
 
 func TestInputErrorsMapToCodes(t *testing.T) {
-	mux := &fakeMux{}
-	h, st := newHandler(t, mux)
-	seedRunning(t, st, "ses_dead", "Dead")
+	t.Run("invalid request", func(t *testing.T) {
+		env := newHandlerEnv(t, &fakeMux{})
+		rec := do(t, env.handler, http.MethodPost, "/sessions/start", `{}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400 (%s)", rec.Code, rec.Body)
+		}
+		assertErrorCode(t, rec, "invalid_request")
+	})
 
-	rec := do(t, h, http.MethodPost, "/sessions/ses_missing/send-text", `{"text":"hello"}`)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("missing status = %d, want 404", rec.Code)
-	}
-	assertErrorCode(t, rec, "session_not_found")
+	t.Run("workspace not found", func(t *testing.T) {
+		env := newHandlerEnv(t, &fakeMux{})
+		rec := do(t, env.handler, http.MethodPost, "/sessions/start", `{"workspaceId":"wsp_missing"}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400 (%s)", rec.Code, rec.Body)
+		}
+		assertErrorCode(t, rec, "workspace_not_found")
+	})
 
-	rec = do(t, h, http.MethodPost, "/sessions/ses_dead/send-text", `{"text":"hello"}`)
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("dead status = %d, want 409 (%s)", rec.Code, rec.Body)
-	}
-	var endedError errorResponse
-	if err := json.NewDecoder(rec.Body).Decode(&endedError); err != nil {
-		t.Fatalf("decode ended error: %v", err)
-	}
-	if endedError.Error != "session_ended" || endedError.SessionID != "ses_dead" {
-		t.Fatalf("ended error = %+v", endedError)
-	}
+	t.Run("action not found", func(t *testing.T) {
+		env := newHandlerEnv(t, &fakeMux{})
+		rec := do(t, env.handler, http.MethodPost, "/sessions/start",
+			`{"workspaceId":"`+testWorkspaceID+`","actionId":"act_missing"}`)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (%s)", rec.Code, rec.Body)
+		}
+		assertErrorCode(t, rec, "action_not_found")
+	})
 
-	rec = do(t, h, http.MethodPost, "/sessions/ses_dead/send-key", `{"key":"f1"}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("key status = %d, want 400 (%s)", rec.Code, rec.Body)
-	}
-	assertErrorCode(t, rec, "invalid_request")
+	t.Run("action disabled", func(t *testing.T) {
+		env := newHandlerEnv(t, &fakeMux{})
+		disabled, err := env.store.CreateAction(context.Background(), store.Action{Name: "Off", Command: "off"})
+		if err != nil {
+			t.Fatalf("CreateAction: %v", err)
+		}
+		rec := do(t, env.handler, http.MethodPost, "/sessions/start",
+			`{"workspaceId":"`+testWorkspaceID+`","actionId":"`+disabled.ID+`"}`)
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want 409 (%s)", rec.Code, rec.Body)
+		}
+		assertErrorCode(t, rec, "action_disabled")
+	})
+
+	t.Run("invalid working dir", func(t *testing.T) {
+		env := newHandlerEnv(t, &fakeMux{})
+		if err := os.RemoveAll(env.workDir); err != nil {
+			t.Fatalf("remove working dir: %v", err)
+		}
+		rec := do(t, env.handler, http.MethodPost, "/sessions/start",
+			`{"workspaceId":"`+testWorkspaceID+`"}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400 (%s)", rec.Code, rec.Body)
+		}
+		assertErrorCode(t, rec, "invalid_working_dir")
+	})
+
+	t.Run("session not found", func(t *testing.T) {
+		env := newHandlerEnv(t, &fakeMux{})
+		rec := do(t, env.handler, http.MethodPost, "/sessions/ses_missing/send-text", `{"text":"hello"}`)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (%s)", rec.Code, rec.Body)
+		}
+		assertErrorCode(t, rec, "session_not_found")
+	})
+
+	t.Run("session ended", func(t *testing.T) {
+		env := newHandlerEnv(t, &fakeMux{})
+		seedEnded(t, env.store, "ses_dead", "Dead")
+		rec := do(t, env.handler, http.MethodPost, "/sessions/ses_dead/send-text", `{"text":"hello"}`)
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want 409 (%s)", rec.Code, rec.Body)
+		}
+		var endedError errorResponse
+		if err := json.NewDecoder(rec.Body).Decode(&endedError); err != nil {
+			t.Fatalf("decode ended error: %v", err)
+		}
+		if endedError.Error != "session_ended" || endedError.SessionID != "ses_dead" {
+			t.Fatalf("ended error = %+v", endedError)
+		}
+	})
+
+	t.Run("unknown key", func(t *testing.T) {
+		env := newHandlerEnv(t, &fakeMux{})
+		rec := do(t, env.handler, http.MethodPost, "/sessions/ses_missing/send-key", `{"key":"f1"}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400 (%s)", rec.Code, rec.Body)
+		}
+		assertErrorCode(t, rec, "invalid_request")
+	})
 }
 
 func TestProvisionalRecordsAreNotPublic(t *testing.T) {
 	h, st := newHandler(t, &fakeMux{})
 	if _, err := st.CreateStarting(context.Background(), store.CreateSessionInput{
-		ID: "ses_starting", Action: "codex", Environment: "host-login-shell", WorkingDir: "/work", WorkspaceID: testWorkspaceID,
+		ID: "ses_starting", ActionID: "act_test", ActionName: "Codex", IsAgent: true,
+		WorkingDir: "/work", WorkspaceID: testWorkspaceID,
 	}); err != nil {
 		t.Fatalf("CreateStarting: %v", err)
 	}
@@ -524,27 +558,33 @@ func TestDeleteSessionTerminateFailureKeepsMetadata(t *testing.T) {
 }
 
 func TestOldRoutesAreRemoved(t *testing.T) {
-	h, _ := newHandler(t, &fakeMux{})
+	env := newHandlerEnv(t, &fakeMux{})
 	for _, tt := range []struct {
 		method string
 		path   string
 		body   string
+		status int
 	}{
-		{http.MethodPost, "/sessions/send", `{"name":"atc:item:DEV-1","text":"hi"}`},
-		{http.MethodPost, "/sessions/key", `{"name":"atc:item:DEV-1","key":"enter"}`},
-		{http.MethodGet, "/sessions/attach?name=atc:item:DEV-1", ""},
-		{http.MethodGet, "/agents", ""},
-		{http.MethodPost, "/sessions/ses_123/terminate", ""},
-		{http.MethodPost, "/sessions/ses_123/archive", ""},
-		{http.MethodPost, "/sessions/ses_123/unarchive", ""},
-		{http.MethodPost, "/projects/prj_123/archive", ""},
-		{http.MethodPost, "/projects/prj_123/unarchive", ""},
-		{http.MethodPost, "/workspaces/wsp_123/archive", ""},
-		{http.MethodPost, "/workspaces/wsp_123/unarchive", ""},
+		{http.MethodPut, "/actions/" + env.actionID, `{"name":"Agent"}`, http.StatusNotFound},
+		{http.MethodPut, "/actions/" + env.actionID + "/enabled", `{"enabled":false}`, http.StatusNotFound},
+		{http.MethodGet, "/environments", "", http.StatusNotFound},
+		{http.MethodGet, "/actions/Agent", "", http.StatusNotFound},
+		{http.MethodDelete, "/actions/Agent", "", http.StatusNotFound},
+		{http.MethodPost, "/sessions/send", `{"name":"atc:item:DEV-1","text":"hi"}`, http.StatusNotFound},
+		{http.MethodPost, "/sessions/key", `{"name":"atc:item:DEV-1","key":"enter"}`, http.StatusNotFound},
+		{http.MethodGet, "/sessions/attach?name=atc:item:DEV-1", "", http.StatusNotFound},
+		{http.MethodGet, "/agents", "", http.StatusNotFound},
+		{http.MethodPost, "/sessions/ses_123/terminate", "", http.StatusNotFound},
+		{http.MethodPost, "/sessions/ses_123/archive", "", http.StatusNotFound},
+		{http.MethodPost, "/sessions/ses_123/unarchive", "", http.StatusNotFound},
+		{http.MethodPost, "/projects/prj_123/archive", "", http.StatusNotFound},
+		{http.MethodPost, "/projects/prj_123/unarchive", "", http.StatusNotFound},
+		{http.MethodPost, "/workspaces/wsp_123/archive", "", http.StatusNotFound},
+		{http.MethodPost, "/workspaces/wsp_123/unarchive", "", http.StatusNotFound},
 	} {
-		rec := do(t, h, tt.method, tt.path, tt.body)
-		if rec.Code != http.StatusNotFound {
-			t.Fatalf("%s %s status = %d, want 404", tt.method, tt.path, rec.Code)
+		rec := do(t, env.handler, tt.method, tt.path, tt.body)
+		if rec.Code != tt.status {
+			t.Fatalf("%s %s status = %d, want %d", tt.method, tt.path, rec.Code, tt.status)
 		}
 	}
 }
@@ -558,46 +598,34 @@ func TestStartSessionInvalidJSONIs400(t *testing.T) {
 	assertErrorCode(t, rec, "invalid_request")
 }
 
-func seedRunning(t *testing.T, st *store.Store, id, name string) {
+func do(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	if _, err := st.CreateStarting(context.Background(), store.CreateSessionInput{
-		ID:          id,
-		Name:        name,
-		Action:      "codex",
-		Environment: "host-login-shell",
-		Params:      json.RawMessage(`{"model":"gpt-5"}`),
-		WorkingDir:  "/work",
-		Prompt:      "hello",
-		WorkspaceID: testWorkspaceID,
-	}); err != nil {
-		t.Fatalf("CreateStarting(%s): %v", id, err)
+	req := httptest.NewRequest(method, path, nil)
+	if body != "" {
+		req = httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
 	}
-	if _, err := st.PromoteToLive(context.Background(), id); err != nil {
-		t.Fatalf("PromoteToLive(%s): %v", id, err)
-	}
-}
-
-func seedEnded(t *testing.T, st *store.Store, id, name string) {
-	t.Helper()
-	seedRunning(t, st, id, name)
-	if _, err := st.MarkEnded(context.Background(), id); err != nil {
-		t.Fatalf("MarkEnded(%s): %v", id, err)
-	}
-}
-
-func liveSession(id string) zmx.Session {
-	return zmx.Session{Name: zmx.NameForID(id)}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
 }
 
 func assertErrorCode(t *testing.T, rec *httptest.ResponseRecorder, want string) {
 	t.Helper()
-	var resp struct {
-		Error string `json:"error"`
-	}
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+	var got errorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode error response: %v", err)
 	}
-	if resp.Error != want {
-		t.Fatalf("error = %q, want %q", resp.Error, want)
+	if got.Error != want {
+		t.Fatalf("error code = %q, want %q (%s)", got.Error, want, rec.Body)
 	}
+}
+
+func containsAny(s string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+	return false
 }

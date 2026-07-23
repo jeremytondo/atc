@@ -26,23 +26,24 @@ func TestSessionsStartPostsWorkspaceShape(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if req["action"] != "codex" || req["environment"] != "host-login-shell" || req["workspaceId"] != "wsp_123" || req["prompt"] != "review" || req["name"] != "Review" {
+		if req["actionId"] != "act_codex" || req["workspaceId"] != "wsp_123" || req["name"] != "Review" {
 			t.Fatalf("request = %#v, want workspace start shape", req)
 		}
 		if _, ok := req["workingDir"]; ok {
 			t.Fatalf("request = %#v, want no workingDir", req)
 		}
-		params, ok := req["params"].(map[string]any)
-		if !ok || params["model"] != "gpt-5-codex" {
-			t.Fatalf("params = %#v, want model param", req["params"])
+		for _, removed := range []string{"action", "environment", "params", "prompt"} {
+			if _, ok := req[removed]; ok {
+				t.Fatalf("request = %#v, contains removed field %q", req, removed)
+			}
 		}
-		_, _ = w.Write([]byte(`{"id":"ses_123","action":"codex","environment":"host-login-shell","params":{"model":"gpt-5-codex"},"workingDir":"/repo","prompt":"review","status":"live","createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z","workspace":{"id":"wsp_123","name":"Review"}}`))
+		_, _ = w.Write([]byte(`{"id":"ses_123","actionId":"act_codex","actionName":"Codex","isAgent":true,"workingDir":"/repo","status":"live","createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z","workspace":{"id":"wsp_123","name":"Review"}}`))
 	})
 
 	cmd := sessionsCommand(lookup)
 	var out bytes.Buffer
 	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"start", "--workspace", "wsp_123", "--action", "codex", "--env", "host-login-shell", "--param", "model=gpt-5-codex", "--prompt", "review", "--name", "Review"})
+	cmd.SetArgs([]string{"start", "--workspace", "wsp_123", "--action", "act_codex", "--name", "Review"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute returned error: %v", err)
@@ -62,14 +63,10 @@ func TestSessionsStartWithoutActionOmitsActionAndParams(t *testing.T) {
 		if req["workspaceId"] != "wsp_123" {
 			t.Fatalf("workspaceId = %#v, want wsp_123", req["workspaceId"])
 		}
-		// An interactive-shell start must not carry action or params keys.
-		if _, ok := req["action"]; ok {
-			t.Fatalf("request = %#v, want no action", req)
+		if _, ok := req["actionId"]; ok {
+			t.Fatalf("request = %#v, want no actionId", req)
 		}
-		if _, ok := req["params"]; ok {
-			t.Fatalf("request = %#v, want no params", req)
-		}
-		_, _ = w.Write([]byte(`{"id":"ses_123","environment":"host-login-shell","params":{},"workingDir":"/repo","status":"live","createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z","workspace":{"id":"wsp_123","name":"Shell"}}`))
+		_, _ = w.Write([]byte(`{"id":"ses_123","isAgent":false,"workingDir":"/repo","status":"live","createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z","workspace":{"id":"wsp_123","name":"Shell"}}`))
 	})
 
 	cmd := sessionsCommand(lookup)
@@ -97,7 +94,7 @@ func TestSessionsStartRequiresWorkspace(t *testing.T) {
 
 func TestSessionsListJSONUsesQuery(t *testing.T) {
 	lookup := testRuntimeLookup(t)
-	body := `{"sessions":[{"id":"ses_123","action":"codex","environment":"host-login-shell","workingDir":"/repo","status":"live","createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z"}]}`
+	body := `{"sessions":[{"id":"ses_123","actionId":"act_codex","actionName":"Codex","isAgent":true,"workingDir":"/repo","status":"live","createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z"}]}`
 	serveUnixAPI(t, lookup, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/sessions" {
 			t.Fatalf("request = %s %s, want GET /api/sessions", r.Method, r.URL.Path)
@@ -121,13 +118,32 @@ func TestSessionsListJSONUsesQuery(t *testing.T) {
 	}
 }
 
+func TestSessionsListTextShowsCopiedActionIdentity(t *testing.T) {
+	lookup := testRuntimeLookup(t)
+	serveUnixAPI(t, lookup, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"sessions":[{"id":"ses_agent","actionId":"act_codex","actionName":"Codex","isAgent":true,"workingDir":"/repo","status":"live","createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z"},{"id":"ses_shell","isAgent":false,"workingDir":"/repo","status":"ended","createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z"}]}`))
+	})
+
+	cmd := sessionsCommand(lookup)
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"list"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "ses_agent\tlive\tCodex\ttrue") || !strings.Contains(got, "ses_shell\tended\t(interactive shell)\tfalse") {
+		t.Fatalf("output = %q", got)
+	}
+}
+
 func TestSessionsShowTextIncludesFullDetail(t *testing.T) {
 	lookup := testRuntimeLookup(t)
 	serveUnixAPI(t, lookup, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/sessions/ses_show" {
 			t.Fatalf("request = %s %s, want GET /api/sessions/ses_show", r.Method, r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"id":"ses_show","name":"Review","action":"codex","environment":"host-login-shell","params":{"model":"gpt-5-codex"},"workingDir":"/repo","prompt":"review","status":"live","createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z"}`))
+		_, _ = w.Write([]byte(`{"id":"ses_show","name":"Review","actionId":"act_codex","actionName":"Codex","isAgent":true,"workingDir":"/repo","status":"live","createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z"}`))
 	})
 
 	cmd := sessionsCommand(lookup)
@@ -141,10 +157,9 @@ func TestSessionsShowTextIncludesFullDetail(t *testing.T) {
 	got := out.String()
 	for _, want := range []string{
 		"id\tses_show\n",
-		"action\tcodex\n",
-		"environment\thost-login-shell\n",
-		"prompt\treview\n",
-		"params\t{\"model\":\"gpt-5-codex\"}\n",
+		"actionId\tact_codex\n",
+		"actionName\tCodex\n",
+		"isAgent\ttrue\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output = %q, want to contain %q", got, want)
@@ -165,7 +180,7 @@ func TestSessionsRenamePatchesName(t *testing.T) {
 		if req["name"] != "Renamed" {
 			t.Fatalf("name = %#v, want Renamed", req["name"])
 		}
-		_, _ = w.Write([]byte(`{"id":"ses_123","name":"Renamed","environment":"host-login-shell","params":{},"workingDir":"/repo","status":"ended","createdAt":"2026-07-09T12:30:00Z","updatedAt":"2026-07-09T14:00:00Z"}`))
+		_, _ = w.Write([]byte(`{"id":"ses_123","name":"Renamed","isAgent":false,"workingDir":"/repo","status":"ended","createdAt":"2026-07-09T12:30:00Z","updatedAt":"2026-07-09T14:00:00Z"}`))
 	})
 
 	cmd := sessionsCommand(lookup)
@@ -234,7 +249,7 @@ func TestSessionActionsPostResourceRoutes(t *testing.T) {
 }
 
 func TestRemovedSessionCommandsAndFlagsAreRejected(t *testing.T) {
-	for _, args := range [][]string{{"terminate", "ses_123"}, {"archive", "ses_123"}, {"unarchive", "ses_123"}, {"list", "--include-archived"}, {"list", "--status", "starting"}} {
+	for _, args := range [][]string{{"terminate", "ses_123"}, {"archive", "ses_123"}, {"unarchive", "ses_123"}, {"list", "--include-archived"}, {"list", "--status", "starting"}, {"start", "--workspace", "wsp_123", "--env", "host"}, {"start", "--workspace", "wsp_123", "--param", "x=y"}, {"start", "--workspace", "wsp_123", "--prompt", "hello"}} {
 		cmd := sessionsCommand(testRuntimeLookup(t))
 		cmd.SetOut(io.Discard)
 		cmd.SetErr(io.Discard)

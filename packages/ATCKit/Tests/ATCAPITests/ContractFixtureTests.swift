@@ -2,9 +2,7 @@ import Foundation
 import Testing
 @testable import ATCAPI
 
-/// Decodes the shared cross-client fixtures in packages/contracts/fixtures —
-/// the same files the Go server round-trips and the web client type-checks —
-/// so a wire-shape change breaks this suite instead of the app at runtime.
+/// Decodes the shared cross-client fixtures in packages/contracts/fixtures.
 @Suite("Contract fixtures decode into Kit models")
 struct ContractFixtureTests {
     private func fixtureData(_ name: String) throws -> Data {
@@ -17,10 +15,11 @@ struct ContractFixtureTests {
         return try Data(contentsOf: url)
     }
 
-    /// Wrapper matching the fixture file layout; only `response` is decoded.
     private struct Fixture<Body: Decodable>: Decodable {
         let response: Body
     }
+
+    private struct EmptyResponse: Decodable {}
 
     private func decodeResponse<Body: Decodable>(_ name: String, as type: Body.Type) throws -> Body {
         let decoder = JSONDecoder()
@@ -33,16 +32,31 @@ struct ContractFixtureTests {
         let sessions = try decodeResponse("sessions-list", as: SessionsEnvelope.self).sessions
         #expect(sessions.count == 1)
         #expect(sessions[0].status == .live)
+        #expect(sessions[0].actionName == "Claude")
+        #expect(sessions[0].isAgent)
         #expect(sessions[0].workspace?.id == "wsp_fixture01")
         #expect(sessions[0].project?.id == "prj_fixture01")
     }
 
-    @Test("session detail", arguments: ["session-detail", "session-start", "session-rename"])
-    func sessionDetail(fixture: String) throws {
-        let detail = try decodeResponse(fixture, as: SessionDetail.self)
-        #expect(!detail.id.isEmpty)
-        #expect(detail.workspace != nil)
-        #expect(detail.project != nil)
+    @Test("session response", arguments: ["session-detail", "session-start", "session-rename"])
+    func session(fixture: String) throws {
+        let session = try decodeResponse(fixture, as: Session.self)
+        #expect(!session.id.isEmpty)
+        #expect(session.workspace != nil)
+        #expect(session.project != nil)
+        if fixture == "session-detail" {
+            #expect(session.actionId == nil)
+            #expect(session.actionName == nil)
+            #expect(!session.isAgent)
+        }
+    }
+
+    @Test(
+        "empty session response",
+        arguments: ["session-delete", "session-send-key", "session-send-text"]
+    )
+    func emptySessionResponse(fixture: String) throws {
+        _ = try decodeResponse(fixture, as: EmptyResponse.self)
     }
 
     @Test("workspace sessions list")
@@ -85,27 +99,25 @@ struct ContractFixtureTests {
         let actions = try decodeResponse("actions-list", as: ActionsEnvelope.self).actions
         #expect(actions.count == 2)
         #expect(actions[0].isAgent)
-        #expect(actions[1].type == "action")
-        #expect(actions[0].isModified)
-        #expect(actions[0].acceptsPrompt)
-        #expect(actions[0].params["model"]?.isEnum == true)
-        #expect(actions[1].isBuiltin)
+        #expect(actions[0].description != nil)
+        #expect(actions[0].args.isEmpty)
+        #expect(!actions[1].isAgent)
+        #expect(actions[1].description == nil)
         #expect(!actions[1].enabled)
+        #expect(actions[1].args == ["run", "dev"])
     }
 
-    @Test("action detail", arguments: ["action-detail", "action-create", "action-update", "action-enabled"])
-    func actionDetail(fixture: String) throws {
+    @Test("action response", arguments: ["action-detail", "action-create", "action-update"])
+    func action(fixture: String) throws {
         let action = try decodeResponse(fixture, as: ATCAction.self)
+        #expect(action.id.hasPrefix("act_"))
         #expect(!action.name.isEmpty)
-        #expect(action.command != nil)
+        #expect(!action.command.isEmpty)
     }
 
-    @Test("environments")
-    func environments() throws {
-        let environments = try decodeResponse("environments", as: EnvironmentsEnvelope.self).environments
-        #expect(environments.count == 2)
-        #expect(environments[0].isDefault)
-        #expect(!environments[1].isDefault)
+    @Test("action delete response")
+    func actionDelete() throws {
+        _ = try decodeResponse("action-delete", as: EmptyResponse.self)
     }
 
     @Test("fs list")

@@ -5,38 +5,24 @@
   "response": {
     "actions": [
       {
-        "name": "claude",
-        "type": "agent",
-        "origin": "modified",
-        "enabled": true,
-        "label": "Claude Code",
+        "id": "act_vpj2tlg9viqd8ms52ptuvao5c4",
+        "name": "Claude",
         "description": "Anthropic's coding agent",
-        "prompt": {},
-        "params": {
-          "model": {
-            "type": "enum",
-            "values": [
-              "opus",
-              "sonnet"
-            ],
-            "default": "opus",
-            "flag": "--model",
-            "label": "Model",
-            "description": "Which model to use"
-          },
-          "yolo": {
-            "type": "bool",
-            "default": true,
-            "flag": "--dangerously-skip-permissions"
-          }
-        }
+        "enabled": true,
+        "command": "claude",
+        "args": [],
+        "isAgent": true
       },
       {
-        "name": "shell",
-        "type": "action",
-        "origin": "builtin",
+        "id": "act_0123456789abcdefghijklmnop",
+        "name": "Dev server",
         "enabled": false,
-        "params": {}
+        "command": "npm",
+        "args": [
+          "run",
+          "dev"
+        ],
+        "isAgent": false
       }
     ]
   }

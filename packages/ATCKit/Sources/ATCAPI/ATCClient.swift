@@ -7,23 +7,19 @@ public protocol ATCClient: Sendable {
     func health() async throws -> Health
     func version() async throws -> Version
     func sessions(status: SessionStatus?) async throws -> [Session]
-    func session(id: String) async throws -> SessionDetail
-    func startSession(_ request: StartSessionRequest) async throws -> SessionDetail
-    func renameSession(id: String, name: String) async throws -> SessionDetail
+    func session(id: String) async throws -> Session
+    func startSession(_ request: StartSessionRequest) async throws -> Session
+    func renameSession(id: String, name: String) async throws -> Session
     /// Deletes a session's metadata, ending it first if Live. Files
     /// are never touched.
     func deleteSession(id: String) async throws
     func sendText(sessionID: String, text: String) async throws
     func sendKey(sessionID: String, key: String) async throws
     func actions() async throws -> [ATCAction]
-    func action(name: String) async throws -> ATCAction
-    func createAction(_ request: ActionWriteRequest) async throws -> ATCAction
-    func updateAction(name: String, _ request: ActionWriteRequest) async throws -> ATCAction
-    func setActionEnabled(name: String, enabled: Bool) async throws -> ATCAction
-    /// Deletes a custom action; on a built-in override, reverts it to the
-    /// built-in default instead (the action keeps existing).
-    func deleteAction(name: String) async throws
-    func environments() async throws -> [ATCEnvironment]
+    func action(id: String) async throws -> ATCAction
+    func createAction(_ request: ActionCreate) async throws -> ATCAction
+    func updateAction(id: String, _ request: ActionPatch) async throws -> ATCAction
+    func deleteAction(id: String) async throws
     func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing
     func projects() async throws -> [Project]
     func project(id: String) async throws -> Project

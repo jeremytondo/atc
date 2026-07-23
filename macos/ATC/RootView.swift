@@ -105,10 +105,8 @@ struct RootView: View {
     @ViewBuilder
     private var inspectorContent: some View {
         if windowState.hasInspectorTarget(in: appModel),
-           let ref = visibleSessionRef,
-           let session = visibleSession,
-           let client = appModel.runtime(id: ref.connectionID)?.client {
-            SessionDetailView(sessionRef: ref, session: session, client: client)
+           let session = visibleSession {
+            SessionDetailView(session: session)
                 .inspectorColumnWidth(min: 260, ideal: 320)
         }
     }

@@ -164,21 +164,20 @@ struct WorkspaceNavigatorView: View {
     }
 
     private func kind(of session: Session) -> SessionKind {
-        SessionKind.classify(session: session, actions: runtime?.actions.actions ?? [])
+        SessionKind.classify(session: session)
     }
 
     /// Ordered sidebar rows: the Active Workspace's sessions, newest-first.
     private func sidebarRows() -> [Row] {
         guard let ref = workspaceRef else { return [] }
-        let actions = runtime?.actions.actions ?? []
         return workspaceSessions()
             .sortedNewestFirst()
             .map { session in
                 return Row(
                     ref: SessionRef(connectionID: ref.connectionID, sessionID: session.id),
                     session: session,
-                    title: SessionKind.displayName(session: session, actions: actions),
-                    kind: SessionKind.classify(session: session, actions: actions)
+                    title: SessionKind.displayName(session: session),
+                    kind: SessionKind.classify(session: session)
                 )
             }
     }

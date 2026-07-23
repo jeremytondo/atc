@@ -2,11 +2,9 @@
 package store
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"embed"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -45,6 +43,10 @@ var (
 	// rejected because the workspace still has a starting or live
 	// session.
 	ErrWorkspaceHasActiveSessions = errors.New("workspace has active sessions")
+	// ErrActionNotFound is returned when an action id does not exist.
+	ErrActionNotFound = errors.New("action not found")
+	// ErrInvalidAction is returned when an action field fails validation.
+	ErrInvalidAction = errors.New("invalid action")
 	// ErrInvalidStatus is returned when a status value is outside the session
 	// status vocabulary.
 	ErrInvalidStatus = errors.New("invalid session status")
@@ -66,12 +68,12 @@ const (
 type Session struct {
 	ID   string
 	Name string
-	// Action is the launch action name; empty means the Interactive Shell.
-	Action      string
-	Environment string
-	Params      json.RawMessage
+	// ActionID and ActionName are immutable launch provenance. Both are empty
+	// for the Interactive Shell.
+	ActionID    string
+	ActionName  string
+	IsAgent     bool
 	WorkingDir  string
-	Prompt      string
 	Status      RecordStatus
 	WorkspaceID string
 	Workspace   *SessionWorkspace
@@ -99,14 +101,12 @@ type SessionProject struct {
 // CreateSessionInput is the metadata stored when a start request is accepted
 // but before the multiplexer launch result is known.
 type CreateSessionInput struct {
-	ID   string
-	Name string
-	// Action is the launch action name; empty means the Interactive Shell.
-	Action      string
-	Environment string
-	Params      json.RawMessage
-	WorkingDir  string
-	Prompt      string
+	ID         string
+	Name       string
+	ActionID   string
+	ActionName string
+	IsAgent    bool
+	WorkingDir string
 	// WorkspaceID scopes the session to a workspace and is required.
 	WorkspaceID string
 }
@@ -268,19 +268,6 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	return fmt.Errorf("%w: %s", ErrSessionActive, id)
 }
 
-// CountActiveSessionsForAction reports how many starting or live sessions
-// reference the named action, so action deletion can be guarded.
-func (s *Store) CountActiveSessionsForAction(ctx context.Context, action string) (int, error) {
-	var active int
-	if err := s.queries().runner.QueryRowContext(ctx, `
-	SELECT count(*) FROM sessions WHERE action = ? AND status IN (?, ?)`,
-		action, StatusStarting, StatusLive,
-	).Scan(&active); err != nil {
-		return 0, fmt.Errorf("count active sessions for action %s: %w", action, err)
-	}
-	return active, nil
-}
-
 // Get loads a session by id.
 func (s *Store) Get(ctx context.Context, id string) (Session, error) {
 	return s.queries().Get(ctx, id)
@@ -321,28 +308,23 @@ func (q queries) CreateStarting(ctx context.Context, input CreateSessionInput) (
 	if input.WorkspaceID == "" {
 		return Session{}, errors.New("create starting session: workspace id is required")
 	}
-	params, err := normalizeParams(input.Params)
-	if err != nil {
-		return Session{}, err
-	}
 	now := q.nowUTC()
 	// The single-statement guard makes the insert atomic with the workspace
 	// check, so a start racing a workspace delete cannot leave an active
 	// session under a missing workspace.
 	created, err := q.scanOne(q.runner.QueryRowContext(ctx, `
 	INSERT INTO sessions (
-		id, name, action, environment, params, working_dir, prompt, status, workspace_id, created_at, updated_at
+		id, name, action_id, action_name, is_agent, working_dir, status, workspace_id, created_at, updated_at
 	)
-	SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+	SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 	WHERE EXISTS (SELECT 1 FROM workspaces WHERE id = ?)
 	RETURNING`+sessionColumnsSQL,
 		input.ID,
 		nullableString(input.Name),
-		nullableString(input.Action),
-		input.Environment,
-		params,
+		nullableString(input.ActionID),
+		nullableString(input.ActionName),
+		input.IsAgent,
 		input.WorkingDir,
-		nullableString(input.Prompt),
 		StatusStarting,
 		input.WorkspaceID,
 		formatTime(now),
@@ -534,11 +516,10 @@ func (q queries) nowUTC() time.Time {
 const sessionColumnsSQL = `
 		id,
 		COALESCE(name, ''),
-		COALESCE(action, ''),
-		environment,
-		params,
+		COALESCE(action_id, ''),
+		COALESCE(action_name, ''),
+		is_agent,
 		working_dir,
-		COALESCE(prompt, ''),
 		status,
 		workspace_id,
 		created_at,
@@ -547,11 +528,10 @@ const sessionColumnsSQL = `
 const sessionJoinColumnsSQL = `
 		s.id,
 		COALESCE(s.name, ''),
-		COALESCE(s.action, ''),
-		s.environment,
-		s.params,
+		COALESCE(s.action_id, ''),
+		COALESCE(s.action_name, ''),
+		s.is_agent,
 		s.working_dir,
-		COALESCE(s.prompt, ''),
 		s.status,
 		s.workspace_id,
 		s.created_at,
@@ -591,16 +571,14 @@ func scanJoinedSession(row scanner) (Session, error) {
 
 func scanSessionColumns(row scanner, extra ...any) (Session, error) {
 	var session Session
-	var params string
 	var createdAt, updatedAt string
 	dests := []any{
 		&session.ID,
 		&session.Name,
-		&session.Action,
-		&session.Environment,
-		&params,
+		&session.ActionID,
+		&session.ActionName,
+		&session.IsAgent,
 		&session.WorkingDir,
-		&session.Prompt,
 		&session.Status,
 		&session.WorkspaceID,
 		&createdAt,
@@ -619,7 +597,6 @@ func scanSessionColumns(row scanner, extra ...any) (Session, error) {
 	if err != nil {
 		return Session{}, fmt.Errorf("parse updated_at: %w", err)
 	}
-	session.Params = json.RawMessage(params)
 	return session, nil
 }
 
@@ -654,21 +631,6 @@ func sqliteDSN(path string) string {
 	q.Add("_pragma", "foreign_keys(1)")
 	u.RawQuery = q.Encode()
 	return u.String()
-}
-
-func normalizeParams(params json.RawMessage) (string, error) {
-	if len(bytes.TrimSpace(params)) == 0 {
-		return "{}", nil
-	}
-	var compacted bytes.Buffer
-	if err := json.Compact(&compacted, params); err != nil {
-		return "", fmt.Errorf("params must be valid JSON: %w", err)
-	}
-	raw := compacted.Bytes()
-	if len(raw) == 0 || raw[0] != '{' || raw[len(raw)-1] != '}' {
-		return "", errors.New("params must be a JSON object")
-	}
-	return compacted.String(), nil
 }
 
 func nullableString(s string) any {

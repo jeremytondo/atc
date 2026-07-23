@@ -244,11 +244,11 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
             }
             .filter { status == nil || $0.status == status }
     }
-    func session(id: String) async throws -> SessionDetail { try await inner.session(id: id) }
-    func startSession(_ request: StartSessionRequest) async throws -> SessionDetail {
+    func session(id: String) async throws -> Session { try await inner.session(id: id) }
+    func startSession(_ request: StartSessionRequest) async throws -> Session {
         try await inner.startSession(request)
     }
-    func renameSession(id: String, name: String) async throws -> SessionDetail {
+    func renameSession(id: String, name: String) async throws -> Session {
         var detail = try await inner.renameSession(id: id, name: name)
         lock.withLock { renamedSessions[id] = detail.name }
         detail.updatedAt = .now
@@ -264,18 +264,14 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
         if failAll { throw ATCError.badStatus(500) }
         return try await inner.actions()
     }
-    func action(name: String) async throws -> ATCAction { try await inner.action(name: name) }
-    func createAction(_ request: ActionWriteRequest) async throws -> ATCAction {
+    func action(id: String) async throws -> ATCAction { try await inner.action(id: id) }
+    func createAction(_ request: ActionCreate) async throws -> ATCAction {
         try await inner.createAction(request)
     }
-    func updateAction(name: String, _ request: ActionWriteRequest) async throws -> ATCAction {
-        try await inner.updateAction(name: name, request)
+    func updateAction(id: String, _ request: ActionPatch) async throws -> ATCAction {
+        try await inner.updateAction(id: id, request)
     }
-    func setActionEnabled(name: String, enabled: Bool) async throws -> ATCAction {
-        try await inner.setActionEnabled(name: name, enabled: enabled)
-    }
-    func deleteAction(name: String) async throws { try await inner.deleteAction(name: name) }
-    func environments() async throws -> [ATCEnvironment] { try await inner.environments() }
+    func deleteAction(id: String) async throws { try await inner.deleteAction(id: id) }
     func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing {
         try await inner.listDirectory(path: path, showHidden: showHidden)
     }

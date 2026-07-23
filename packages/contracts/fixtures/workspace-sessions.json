@@ -7,8 +7,9 @@
       {
         "id": "ses_fixture01",
         "name": "Fix the login bug",
-        "action": "claude",
-        "environment": "zsh",
+        "actionId": "act_vpj2tlg9viqd8ms52ptuvao5c4",
+        "actionName": "Claude",
+        "isAgent": true,
         "workingDir": "/home/dev/projects/atelier",
         "status": "live",
         "createdAt": "2026-07-09T12:34:56.789Z",

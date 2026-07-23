@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The one text pill: a secondary caption in a quaternary capsule.
-/// Used for action labels and origin/context tags.
+/// Used for compact status and context tags.
 struct TagBadge: View {
     let text: String
     /// Monospaced-semibold variant for code-like tags (LOCAL/REMOTE).

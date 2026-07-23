@@ -67,23 +67,23 @@ final class SessionsStore {
         followUpRefresh = Task { await refresh() }
     }
 
-    // MARK: - Actions
+    // MARK: - Mutations
 
     /// Starts a session; throws so the create sheet can show inline errors.
     @discardableResult
-    func start(_ request: StartSessionRequest) async throws -> SessionDetail {
-        let detail = try await client.startSession(request)
-        merge(detail)
+    func start(_ request: StartSessionRequest) async throws -> Session {
+        let session = try await client.startSession(request)
+        merge(session)
         scheduleRefresh()
-        return detail
+        return session
     }
 
     @discardableResult
-    func rename(id: String, name: String) async throws -> SessionDetail {
-        let detail = try await client.renameSession(id: id, name: name)
-        merge(detail)
+    func rename(id: String, name: String) async throws -> Session {
+        let session = try await client.renameSession(id: id, name: name)
+        merge(session)
         scheduleRefresh()
-        return detail
+        return session
     }
 
     /// Deletes a session's metadata (the server ends it first if Live —
@@ -107,8 +107,7 @@ final class SessionsStore {
         scheduleRefresh()
     }
 
-    private func merge(_ detail: SessionDetail) {
-        let session = detail.asSession
+    private func merge(_ session: Session) {
         if let index = sessions.firstIndex(where: { $0.id == session.id }) {
             sessions[index] = session
         } else {

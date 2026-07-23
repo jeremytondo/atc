@@ -59,7 +59,7 @@ struct ProjectsNavigatorGroupsTests {
     func endedSessionsAreNotActive() {
         let c = connection("00000000-0000-0000-0000-000000000001", name: "Alpha")
         let session = Session(
-            id: "ended", environment: "host", workingDir: "/tmp", status: .ended,
+            id: "ended", isAgent: false, workingDir: "/tmp", status: .ended,
             createdAt: .now, updatedAt: .now,
             workspace: SessionWorkspace(id: "workspace", name: "Workspace")
         )

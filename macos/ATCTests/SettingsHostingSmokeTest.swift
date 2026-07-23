@@ -6,6 +6,7 @@ import ATCAPI
 
 /// Hosts the full Settings window in a real window and pumps the run loop,
 /// catching crashes previews can't attribute.
+@MainActor
 @Suite("Settings UI hosting smoke")
 struct SettingsHostingSmokeTest {
     private func host(_ view: some View, width: CGFloat = 720, height: CGFloat = 500) {
@@ -69,5 +70,31 @@ struct SettingsHostingSmokeTest {
             ActionsSettingsView()
                 .environment(AppModel(connections: store, clientFactory: { _ in MockATCClient() }))
         )
+    }
+
+    @Test("Action IDs stay out of the primary settings UI")
+    func actionIDsAreContextualOnly() async throws {
+        let store = makeStore(seeded: true)
+        let model = AppModel(connections: store, clientFactory: { _ in MockATCClient() })
+        await model.refreshAll()
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 500),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        window.contentView = NSHostingView(
+            rootView: ActionsSettingsView().environment(model)
+        )
+        window.orderFront(nil)
+        pump(seconds: 0.5)
+
+        let primaryStrings = visibleStrings(in: try #require(window.contentView))
+        #expect(!primaryStrings.contains { $0.contains("act_") })
+
+        window.orderOut(nil)
+    }
+
+    private func visibleStrings(in view: NSView) -> [String] {
+        let own = (view as? NSTextField).map { [$0.stringValue] } ?? []
+        return own + view.subviews.flatMap { visibleStrings(in: $0) }
     }
 }

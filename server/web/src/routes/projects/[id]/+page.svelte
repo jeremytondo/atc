@@ -340,6 +340,7 @@
                 >
               {/if}
               <span class="badge">{sessionActionLabel(s)}</span>
+              {#if s.isAgent}<span class="badge">Agent</span>{/if}
               <span class="badge" style="color:var(--dc-dim)">{s.status}</span>
               <span class="stime">{timeAgo(s.createdAt)}</span>
               <div class="iacts">

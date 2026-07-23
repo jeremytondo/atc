@@ -1,5 +1,9 @@
 # Actions are read through from a JSON overlay
 
+> **Superseded (2026-07):** ADR 0009 replaces this decision. Actions are now
+> ordinary SQLite rows addressed by opaque ID; the JSON overlay described
+> below no longer exists. Retained as historical rationale.
+
 > **Terminology note (2026-07):** This ADR predates the atc rename. "atc" is now the atc server (`atc`).
 
 ## Decision

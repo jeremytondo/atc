@@ -556,7 +556,7 @@ struct WorkspaceFlowTests {
         let (memory, _) = memory()
         let ref = WorkspaceRef(connectionID: UUID(), workspaceID: "wsp_a")
         var session = Session(
-            id: "ses_1", environment: "host", workingDir: "/home/dev",
+            id: "ses_1", isAgent: false, workingDir: "/home/dev",
             status: .live,
             createdAt: .now, updatedAt: .now,
             workspace: SessionWorkspace(id: "wsp_a", name: "A")

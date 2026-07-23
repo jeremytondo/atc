@@ -1,14 +1,15 @@
 {
-  "routes": ["GET /sessions/{id}"],
+  "routes": [
+    "GET /sessions/{id}"
+  ],
   "response": {
     "id": "ses_fixture02",
-	"name": "Ended shell",
-    "environment": "zsh",
-    "params": {},
+    "name": "Ended shell",
+    "isAgent": false,
     "workingDir": "/home/dev/projects/experiment",
-	"status": "ended",
+    "status": "ended",
     "createdAt": "2026-07-08T10:00:00Z",
-	"updatedAt": "2026-07-08T10:00:05Z",
+    "updatedAt": "2026-07-08T10:00:05Z",
     "workspace": {
       "id": "wsp_fixture02",
       "name": "Experiment shell"

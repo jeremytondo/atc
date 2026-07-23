@@ -14,7 +14,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/jeremytondo/atc/internal/action"
 	"github.com/jeremytondo/atc/internal/fs"
 	"github.com/jeremytondo/atc/internal/project"
 	"github.com/jeremytondo/atc/internal/session"
@@ -33,10 +32,6 @@ type Config struct {
 	DBPath string
 	// ZmxBin is the zmx binary location; empty resolves zmx from PATH.
 	ZmxBin string
-	// ActionsPath is the JSON file where API-managed Action overlays live.
-	ActionsPath string
-	// Environments is the registry of launch wrappers for session start.
-	Environments session.EnvironmentRegistry
 	// AuthToken is the bearer token required on the TCP listener; empty disables
 	// TCP authentication.
 	AuthToken string
@@ -62,9 +57,6 @@ func Serve(ctx context.Context, cfg Config) error {
 	if cfg.DBPath == "" {
 		return fmt.Errorf("session database path is required")
 	}
-	if cfg.ActionsPath == "" {
-		return fmt.Errorf("actions file path is required")
-	}
 	if err := prepareUnixSocket(cfg.SocketPath); err != nil {
 		return err
 	}
@@ -75,10 +67,9 @@ func Serve(ctx context.Context, cfg Config) error {
 	}
 	defer sessionStore.Close()
 
-	actions := action.NewStore(cfg.ActionsPath, session.DefaultActions(), sessionStore)
 	projects := project.NewService(sessionStore, logger)
 	workspaces := workspace.NewService(sessionStore, logger)
-	sessions := session.NewService(sessionStore, zmx.New(cfg.ZmxBin), actions, cfg.Environments, workspaces, logger)
+	sessions := session.NewService(sessionStore, zmx.New(cfg.ZmxBin), workspaces, logger)
 	if err := sessions.Reconcile(ctx); err != nil {
 		return fmt.Errorf("reconcile sessions: %w", err)
 	}
@@ -98,7 +89,7 @@ func Serve(ctx context.Context, cfg Config) error {
 
 	fsService := fs.NewService(logger)
 
-	router := Router(sessions, projects, workspaces, actions, fsService, cfg.AuthToken)
+	router := Router(sessions, projects, workspaces, sessionStore, fsService, cfg.AuthToken)
 	tcpServer := newHTTPServer(withListenerBoundary(ListenerTCP, router))
 	unixServer := newHTTPServer(withListenerBoundary(ListenerUnix, router))
 

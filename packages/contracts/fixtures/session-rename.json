@@ -8,13 +8,10 @@
   "response": {
     "id": "ses_fixture01",
     "name": "Review login fix",
-    "action": "codex",
-    "environment": "host-login-shell",
-    "params": {
-      "model": "opus"
-    },
+    "actionId": "act_fh9g7e6571qo53r0t647ughtfg",
+    "actionName": "Codex",
+    "isAgent": true,
     "workingDir": "/home/dev/projects/atelier",
-    "prompt": "Review the login flow",
     "status": "live",
     "createdAt": "2026-06-25T15:04:05Z",
     "updatedAt": "2026-07-18T12:00:00Z",

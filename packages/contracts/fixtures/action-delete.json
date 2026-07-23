@@ -1,4 +1,6 @@
 {
-  "routes": ["DELETE /actions/{name}"],
+  "routes": [
+    "DELETE /actions/{id}"
+  ],
   "response": {}
 }

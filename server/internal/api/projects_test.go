@@ -195,7 +195,7 @@ func TestListProjectSessions(t *testing.T) {
 	created := createTestProject(t, h, "atc", t.TempDir())
 	ws := createTestWorkspace(t, h, created.ID, "Feature work")
 
-	rec := do(t, h, http.MethodPost, "/sessions/start", `{"action":"claude","workspaceId":"`+ws.ID+`"}`)
+	rec := do(t, h, http.MethodPost, "/sessions/start", `{"actionId":"act_vpj2tlg9viqd8ms52ptuvao5c4","workspaceId":"`+ws.ID+`"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("start status = %d (%s)", rec.Code, rec.Body)
 	}

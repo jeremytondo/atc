@@ -32,7 +32,7 @@ struct DashboardGroupsTests {
         _ id: String, workspace: String, status: SessionStatus
     ) -> Session {
         Session(
-            id: id, environment: "host", workingDir: "/home/dev",
+            id: id, isAgent: false, workingDir: "/home/dev",
             status: status,
             createdAt: .now, updatedAt: .now,
             workspace: SessionWorkspace(id: workspace, name: workspace)

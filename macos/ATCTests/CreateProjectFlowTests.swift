@@ -19,7 +19,7 @@ private nonisolated final class RecordingClient: ATCClient, @unchecked Sendable 
         lock.withLock { _createdProjects.append((name, workingDir)) }
         return try await inner.createProject(name: name, workingDir: workingDir)
     }
-    func startSession(_ request: StartSessionRequest) async throws -> SessionDetail {
+    func startSession(_ request: StartSessionRequest) async throws -> Session {
         lock.withLock { _startedSessions.append(request) }
         return try await inner.startSession(request)
     }
@@ -30,26 +30,22 @@ private nonisolated final class RecordingClient: ATCClient, @unchecked Sendable 
     func sessions(status: SessionStatus?) async throws -> [Session] {
         try await inner.sessions(status: status)
     }
-    func session(id: String) async throws -> SessionDetail { try await inner.session(id: id) }
-    func renameSession(id: String, name: String) async throws -> SessionDetail {
+    func session(id: String) async throws -> Session { try await inner.session(id: id) }
+    func renameSession(id: String, name: String) async throws -> Session {
         try await inner.renameSession(id: id, name: name)
     }
     func deleteSession(id: String) async throws { try await inner.deleteSession(id: id) }
     func sendText(sessionID: String, text: String) async throws {}
     func sendKey(sessionID: String, key: String) async throws {}
     func actions() async throws -> [ATCAction] { try await inner.actions() }
-    func action(name: String) async throws -> ATCAction { try await inner.action(name: name) }
-    func createAction(_ request: ActionWriteRequest) async throws -> ATCAction {
+    func action(id: String) async throws -> ATCAction { try await inner.action(id: id) }
+    func createAction(_ request: ActionCreate) async throws -> ATCAction {
         try await inner.createAction(request)
     }
-    func updateAction(name: String, _ request: ActionWriteRequest) async throws -> ATCAction {
-        try await inner.updateAction(name: name, request)
+    func updateAction(id: String, _ request: ActionPatch) async throws -> ATCAction {
+        try await inner.updateAction(id: id, request)
     }
-    func setActionEnabled(name: String, enabled: Bool) async throws -> ATCAction {
-        try await inner.setActionEnabled(name: name, enabled: enabled)
-    }
-    func deleteAction(name: String) async throws { try await inner.deleteAction(name: name) }
-    func environments() async throws -> [ATCEnvironment] { try await inner.environments() }
+    func deleteAction(id: String) async throws { try await inner.deleteAction(id: id) }
     func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing {
         try await inner.listDirectory(path: path, showHidden: showHidden)
     }
@@ -173,11 +169,16 @@ struct CreateProjectFlowTests {
             (name: "B", client: clientB),
         ])
         let runtimeB = model.runtimes[1]
-        let request = StartSessionRequest(workspaceId: "wsp_parser", action: "claude", name: nil)
+        let request = StartSessionRequest(
+            workspaceId: "wsp_parser",
+            actionId: "act_vpj2tlg9viqd8ms52ptuvao5c4",
+            name: nil
+        )
         _ = try await runtimeB.sessions.start(request)
 
         #expect(clientB.startedSessions.count == 1)
         #expect(clientB.startedSessions.first?.workspaceId == "wsp_parser")
+        #expect(clientB.startedSessions.first?.actionId == "act_vpj2tlg9viqd8ms52ptuvao5c4")
         #expect(clientA.startedSessions.isEmpty)
     }
 }

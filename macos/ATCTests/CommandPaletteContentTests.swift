@@ -147,10 +147,10 @@ struct CommandPaletteContentTests {
         ]
         client.mockSessions = [
             paletteSession(
-                "ses_z", name: "Zulu", action: "claude", workspace: "wsp_a"
+                "ses_z", name: "Zulu", actionName: "Claude", workspace: "wsp_a"
             ),
             paletteSession(
-                "ses_a", name: "Alpha", action: "claude", workspace: "wsp_a"
+                "ses_a", name: "Alpha", actionName: "Claude", workspace: "wsp_a"
             ),
             paletteSession("terminal", name: "Shell Tools", workspace: "wsp_a"),
         ]
@@ -186,7 +186,7 @@ struct CommandPaletteContentTests {
                 "category-only", name: "Shell tools", workspace: "workspace"
             ),
             paletteSession(
-                "agent", name: "Agent work", action: "claude", workspace: "workspace"
+                "agent", name: "Agent work", actionName: "Claude", workspace: "workspace"
             ),
         ]
         let fixture = try await makeLiveFixture(client: client, workspaceID: "workspace")
@@ -259,19 +259,19 @@ struct CommandPaletteContentTests {
         ]
         client.mockSessions = [
             paletteSession(
-                "agent-live", name: "Zulu Agent", action: "claude", workspace: "active"
+                "agent-live", name: "Zulu Agent", actionName: "Claude", workspace: "active"
             ),
             paletteSession(
-                "agent-ended", name: "Alpha Agent", action: "claude",
+                "agent-ended", name: "Alpha Agent", actionName: "Claude",
                 workspace: "active", status: .ended
             ),
             paletteSession("terminal-live", name: "Beta Terminal", workspace: "active"),
             paletteSession(
-                "terminal-ended", name: "Delta Tool", action: "lazygit",
+                "terminal-ended", name: "Delta Tool", actionName: "LazyGit",
                 workspace: "active", status: .ended
             ),
             paletteSession(
-                "outside", name: "Outside Agent", action: "claude", workspace: "other"
+                "outside", name: "Outside Agent", actionName: "Claude", workspace: "other"
             ),
         ]
         let fixture = try await makeLiveFixture(client: client, workspaceID: "active")
@@ -298,7 +298,7 @@ struct CommandPaletteContentTests {
         ]
         client.mockSessions = [
             paletteSession(
-                "agent", name: "Agent Result", action: "claude", workspace: "active"
+                "agent", name: "Agent Result", actionName: "Claude", workspace: "active"
             ),
             paletteSession("terminal", name: "Terminal Result", workspace: "active"),
         ]
@@ -328,11 +328,11 @@ struct CommandPaletteContentTests {
         ]
         client.mockSessions = [
             paletteSession(
-                "session-match", name: "Session Notes", action: "claude",
+                "session-match", name: "Session Notes", actionName: "Claude",
                 workspace: "alpha"
             ),
             paletteSession(
-                "session-other", name: "Agent Notes", action: "claude",
+                "session-other", name: "Agent Notes", actionName: "Claude",
                 workspace: "alpha"
             ),
             paletteSession("terminal-match", name: "Terminal Notes", workspace: "alpha"),
@@ -670,16 +670,6 @@ struct CommandPaletteWorkspaceResultTests {
 @Suite("Command palette Session candidates")
 struct CommandPaletteSessionResultTests {
     private let connectionID = paletteConnectionID(1)
-    private let actions = [
-        ATCAction(
-            name: "claude", type: "agent", origin: "builtin",
-            enabled: true, label: "Claude"
-        ),
-        ATCAction(
-            name: "lazygit", origin: "custom", enabled: true,
-            label: "LazyGit"
-        ),
-    ]
 
     @Test("the Active Workspace's Live and Ended Sessions appear")
     func workspaceFiltering() {
@@ -696,10 +686,10 @@ struct CommandPaletteSessionResultTests {
     func displayNamesAndKinds() {
         let active = WorkspaceRef(connectionID: connectionID, workspaceID: "active")
         let projected = results(query: "", active: active, sessions: [
-            paletteSession("named", name: "Fix parser", action: "claude", workspace: "active"),
+            paletteSession("named", name: "Fix parser", actionName: "Claude", workspace: "active"),
             paletteSession("shell", workspace: "active"),
-            paletteSession("agent", action: "claude", workspace: "active"),
-            paletteSession("tool", action: "lazygit", workspace: "active"),
+            paletteSession("agent", actionName: "Claude", workspace: "active"),
+            paletteSession("tool", actionName: "LazyGit", workspace: "active"),
         ])
         let byID = Dictionary(uniqueKeysWithValues: projected.map { ($0.ref.sessionID, $0) })
         #expect(byID["named"]?.title == "Fix parser")
@@ -717,11 +707,11 @@ struct CommandPaletteSessionResultTests {
         let active = WorkspaceRef(connectionID: connectionID, workspaceID: "active")
         let candidates = [
             paletteSession(
-                "agent-failed", name: "Agent Failed", action: "claude",
+                "agent-failed", name: "Agent Failed", actionName: "Claude",
                 workspace: "active", status: .ended
             ),
             paletteSession(
-                "agent-terminated", name: "Finished Agent", action: "claude",
+                "agent-terminated", name: "Finished Agent", actionName: "Claude",
                 workspace: "active", status: .ended
             ),
             paletteSession(
@@ -729,15 +719,15 @@ struct CommandPaletteSessionResultTests {
                 workspace: "active", status: .live
             ),
             paletteSession(
-                "action-terminated", name: "Tool Done", action: "lazygit",
+                "action-terminated", name: "Tool Done", actionName: "LazyGit",
                 workspace: "active", status: .ended
             ),
             paletteSession(
-                "unresolved-running", name: "Unknown Action", action: "missing",
+                "unresolved-running", name: "Unknown Action", actionName: "Missing",
                 workspace: "active", status: .live
             ),
             paletteSession(
-                "other-workspace", name: "Other Agent", action: "claude",
+                "other-workspace", name: "Other Agent", actionName: "Claude",
                 workspace: "other"
             ),
         ]
@@ -759,7 +749,7 @@ struct CommandPaletteSessionResultTests {
         let candidates = [
             paletteSession("shell", name: "Session log", workspace: "active"),
             paletteSession(
-                "agent", name: "Terminate run", action: "claude", workspace: "active"
+                "agent", name: "Terminate run", actionName: "Claude", workspace: "active"
             ),
         ]
 
@@ -786,7 +776,7 @@ struct CommandPaletteSessionResultTests {
         let projected = results(query: "se", active: active, sessions: [
             paletteSession("shell", name: "Session log", workspace: "active"),
             paletteSession(
-                "agent", name: "Unrelated", action: "claude", workspace: "active"
+                "agent", name: "Unrelated", actionName: "Claude", workspace: "active"
             ),
         ])
         #expect(projected.map(\.ref.sessionID) == ["shell"])
@@ -796,7 +786,7 @@ struct CommandPaletteSessionResultTests {
     func hiddenFieldsDoNotMatch() {
         let active = WorkspaceRef(connectionID: connectionID, workspaceID: "active")
         let session = paletteSession(
-            "raw-identifier", name: "Public Name", action: "claude",
+            "raw-identifier", name: "Public Name", actionName: "Claude",
             workspace: "active", status: .ended
         )
         for query in ["claude", "failed", "raw-identifier"] {
@@ -851,7 +841,6 @@ struct CommandPaletteSessionResultTests {
             query: query,
             activeWorkspace: active,
             sessions: sessions,
-            actions: actions,
             keyword: PaletteTypeKeyword.match(query)
         )
     }
@@ -900,7 +889,6 @@ struct CommandPaletteScaleTests {
             query: "Scale",
             activeWorkspace: active,
             sessions: sessions,
-            actions: [],
             keyword: nil
         )
         #expect(sessionResults.count == 2_000)
@@ -909,7 +897,6 @@ struct CommandPaletteScaleTests {
             query: "ter",
             activeWorkspace: active,
             sessions: sessions,
-            actions: [],
             keyword: .terminals
         )
         #expect(keywordResults.count == 2_000)
@@ -1001,15 +988,16 @@ private func paletteWorkspace(
 private func paletteSession(
     _ id: String,
     name: String? = nil,
-    action: String? = nil,
+    actionName: String? = nil,
     workspace: String,
     status: SessionStatus = .live
 ) -> Session {
-    Session(
+    return Session(
         id: id,
         name: name,
-        action: action,
-        environment: "host",
+        actionId: actionName.map { "act_\($0.lowercased())" },
+        actionName: actionName,
+        isAgent: actionName == "Claude",
         workingDir: "/tmp",
         status: status,
         createdAt: .now,

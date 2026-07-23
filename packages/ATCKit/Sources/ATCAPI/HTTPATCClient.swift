@@ -31,15 +31,15 @@ public struct HTTPATCClient: ATCClient {
         return envelope.sessions
     }
 
-    public func session(id: String) async throws -> SessionDetail {
+    public func session(id: String) async throws -> Session {
         try await get("sessions/\(id)")
     }
 
-    public func startSession(_ request: StartSessionRequest) async throws -> SessionDetail {
+    public func startSession(_ request: StartSessionRequest) async throws -> Session {
         try await post("sessions/start", body: request)
     }
 
-    public func renameSession(id: String, name: String) async throws -> SessionDetail {
+    public func renameSession(id: String, name: String) async throws -> Session {
         struct Body: Encodable { var name: String }
         return try await patch("sessions/\(id)", body: Body(name: name))
     }
@@ -63,30 +63,20 @@ public struct HTTPATCClient: ATCClient {
         return envelope.actions
     }
 
-    public func action(name: String) async throws -> ATCAction {
-        try await get("actions/\(name)")
+    public func action(id: String) async throws -> ATCAction {
+        try await get("actions/\(id)")
     }
 
-    public func createAction(_ request: ActionWriteRequest) async throws -> ATCAction {
+    public func createAction(_ request: ActionCreate) async throws -> ATCAction {
         try await post("actions", body: request)
     }
 
-    public func updateAction(name: String, _ request: ActionWriteRequest) async throws -> ATCAction {
-        try await put("actions/\(name)", body: request)
+    public func updateAction(id: String, _ request: ActionPatch) async throws -> ATCAction {
+        try await patch("actions/\(id)", body: request)
     }
 
-    public func setActionEnabled(name: String, enabled: Bool) async throws -> ATCAction {
-        struct Body: Encodable { var enabled: Bool }
-        return try await put("actions/\(name)/enabled", body: Body(enabled: enabled))
-    }
-
-    public func deleteAction(name: String) async throws {
-        _ = try await send(method: "DELETE", path: "actions/\(name)", body: nil as Never?)
-    }
-
-    public func environments() async throws -> [ATCEnvironment] {
-        let envelope: EnvironmentsEnvelope = try await get("environments")
-        return envelope.environments
+    public func deleteAction(id: String) async throws {
+        _ = try await send(method: "DELETE", path: "actions/\(id)", body: nil as Never?)
     }
 
     public func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing {
@@ -186,11 +176,6 @@ public struct HTTPATCClient: ATCClient {
         return try decode(data)
     }
 
-    private func post<T: Decodable>(_ path: String) async throws -> T {
-        let data = try await send(method: "POST", path: path, body: nil as Never?)
-        return try decode(data)
-    }
-
     private func post<T: Decodable>(_ path: String, body: some Encodable) async throws -> T {
         let data = try await send(method: "POST", path: path, body: body)
         return try decode(data)
@@ -198,11 +183,6 @@ public struct HTTPATCClient: ATCClient {
 
     private func patch<T: Decodable>(_ path: String, body: some Encodable) async throws -> T {
         let data = try await send(method: "PATCH", path: path, body: body)
-        return try decode(data)
-    }
-
-    private func put<T: Decodable>(_ path: String, body: some Encodable) async throws -> T {
-        let data = try await send(method: "PUT", path: path, body: body)
         return try decode(data)
     }
 

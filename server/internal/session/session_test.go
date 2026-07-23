@@ -4,23 +4,25 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/zmx"
 )
 
-type fakeMux struct {
-	sessions []zmx.Session
-	listErr  error
+const testWorkspaceID = "wsp_test"
 
-	startName, startDir string
-	startArgv           []string
-	startErr            error
-	startHook           func()
-	startCalls          int
+type fakeMux struct {
+	startErr   error
+	started    []string
+	dir        string
+	argv       []string
+	live       map[string]bool
+	listErr    error
+	startHook  func()
+	startCalls int
 
 	sendName    string
 	sendPayload []byte
@@ -38,12 +40,16 @@ type fakeMux struct {
 
 func (f *fakeMux) Start(_ context.Context, name, dir string, argv []string) error {
 	f.startCalls++
-	f.startName, f.startDir = name, dir
-	f.startArgv = append([]string(nil), argv...)
+	f.started = append(f.started, name)
+	f.dir = dir
+	f.argv = append([]string(nil), argv...)
 	if f.startErr != nil {
 		return f.startErr
 	}
-	f.sessions = append(f.sessions, zmx.Session{Name: name, StartDir: dir, Cmd: strings.Join(argv, " ")})
+	if f.live == nil {
+		f.live = map[string]bool{}
+	}
+	f.live[name] = true
 	if f.startHook != nil {
 		f.startHook()
 	}
@@ -56,32 +62,28 @@ func (f *fakeMux) Send(_ context.Context, name string, payload []byte) error {
 	f.sendPayload = append([]byte(nil), payload...)
 	return nil
 }
-
 func (f *fakeMux) Attach(_ context.Context, name string, rows, cols uint16) (zmx.PTY, error) {
 	f.attachName, f.attachRows, f.attachCols = name, rows, cols
 	f.attachCalls++
 	return nil, nil
 }
-
 func (f *fakeMux) List(context.Context) ([]zmx.Session, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
-	return append([]zmx.Session(nil), f.sessions...), nil
+	out := make([]zmx.Session, 0, len(f.live))
+	for name := range f.live {
+		out = append(out, zmx.Session{Name: name})
+	}
+	return out, nil
 }
-
 func (f *fakeMux) Terminate(_ context.Context, name string) error {
 	f.terminateName = name
 	f.terminateCalls++
 	if f.terminateErr != nil {
 		return f.terminateErr
 	}
-	for i, session := range f.sessions {
-		if session.Name == name {
-			f.sessions = append(f.sessions[:i], f.sessions[i+1:]...)
-			break
-		}
-	}
+	delete(f.live, name)
 	return nil
 }
 
@@ -98,69 +100,126 @@ func (f *fakeResolver) ResolveForStart(_ context.Context, id string) (string, er
 	return f.dir, f.err
 }
 
-type sequenceActionLoader struct {
-	loads []ActionRegistry
-	err   error
-	calls int
-}
-
-func (l *sequenceActionLoader) Load(context.Context) (ActionRegistry, error) {
-	if l.err != nil {
-		return nil, l.err
-	}
-	i := l.calls
-	l.calls++
-	if i >= len(l.loads) {
-		i = len(l.loads) - 1
-	}
-	return l.loads[i].Clone(), nil
-}
-
-func testActions() ActionRegistry {
-	return ActionRegistry{
-		"codex": {
-			Command: "codex",
-			Prompt:  &PromptSpec{Flag: "--prompt"},
-			Params: map[string]ParamSpec{
-				"model":     {Type: "enum", Values: []string{"gpt-5", "gpt-5-codex"}, Default: "gpt-5-codex", Flag: "--model"},
-				"full-auto": {Type: "bool", Flag: "--full-auto"},
-			},
-		},
-	}
-}
-
-func testEnvironments() EnvironmentRegistry {
-	return EnvironmentRegistry{"host-login-shell": {Kind: EnvironmentKindHostLoginShell}}
-}
-
-const testWorkspaceID = "wsp_test"
-
-func newService(t *testing.T, mux Multiplexer) (*Service, *store.Store) {
+func newTestService(t *testing.T, mux *fakeMux) (*Service, *store.Store) {
 	t.Helper()
-	return newServiceWithActions(t, mux, testActions())
+	return newTestServiceAtPath(t, mux, filepath.Join(t.TempDir(), "atc.db"))
 }
 
-func newServiceWithActions(t *testing.T, mux Multiplexer, actions ActionLoader) (*Service, *store.Store) {
-	t.Helper()
-	return newServiceAtPath(t, mux, actions, t.TempDir()+"/atc.db")
-}
-
-func newServiceAtPath(t *testing.T, mux Multiplexer, actions ActionLoader, dbPath string) (*Service, *store.Store) {
+func newTestServiceAtPath(t *testing.T, mux *fakeMux, dbPath string) (*Service, *store.Store) {
 	t.Helper()
 	st, err := store.Open(dbPath)
 	if err != nil {
-		t.Fatalf("Open store: %v", err)
+		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	ctx := context.Background()
-	if _, err := st.CreateProject(ctx, store.CreateProjectInput{ID: "prj_test", Name: "Test", WorkingDir: "/work"}); err != nil {
+	if _, err := st.CreateProject(ctx, store.CreateProjectInput{ID: "prj_test", Name: "Test", WorkingDir: t.TempDir()}); err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	if _, err := st.CreateWorkspace(ctx, store.CreateWorkspaceInput{ID: testWorkspaceID, ProjectID: "prj_test", Name: "Test workspace"}); err != nil {
+	if _, err := st.CreateWorkspace(ctx, store.CreateWorkspaceInput{ID: testWorkspaceID, ProjectID: "prj_test", Name: "Test"}); err != nil {
 		t.Fatalf("CreateWorkspace: %v", err)
 	}
-	resolver := &fakeResolver{dir: t.TempDir()}
-	return NewService(st, mux, actions, testEnvironments(), resolver, nil), st
+	return NewService(st, mux, &fakeResolver{dir: "/work"}, nil), st
+}
+
+func TestStartCopiesActionIdentityAndUsesLiteralArgv(t *testing.T) {
+	t.Setenv("SHELL", "/bin/zsh")
+	mux := &fakeMux{}
+	svc, st := newTestService(t, mux)
+	ctx := context.Background()
+	action, err := st.CreateAction(ctx, store.Action{
+		Name: "Agent", Description: "before", Enabled: true, Command: "agent",
+		Args: []string{"$HOME", "{{prompt}}", "two words"}, IsAgent: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateAction: %v", err)
+	}
+
+	started, err := svc.Start(ctx, StartInput{WorkspaceID: testWorkspaceID, ActionID: action.ID, Name: "Review"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if started.ActionID != action.ID || started.ActionName != "Agent" || !started.IsAgent {
+		t.Fatalf("started identity = %+v", started)
+	}
+	wantArgv := []string{"/bin/zsh", "-l", "-i", "-c", `agent '$HOME' '{{prompt}}' 'two words'`}
+	if !reflect.DeepEqual(mux.argv, wantArgv) {
+		t.Fatalf("argv = %#v, want %#v", mux.argv, wantArgv)
+	}
+
+	renamed := "Editor"
+	isAgent := false
+	enabled := false
+	if _, err := st.UpdateAction(ctx, action.ID, store.UpdateActionInput{Name: &renamed, IsAgent: &isAgent, Enabled: &enabled}); err != nil {
+		t.Fatalf("UpdateAction: %v", err)
+	}
+	if err := st.DeleteAction(ctx, action.ID); err != nil {
+		t.Fatalf("DeleteAction: %v", err)
+	}
+	got, err := svc.Read(ctx, started.ID)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if got.ActionID != action.ID || got.ActionName != "Agent" || !got.IsAgent {
+		t.Fatalf("session identity changed after Action mutation: %+v", got)
+	}
+}
+
+func TestStartInteractiveShell(t *testing.T) {
+	t.Setenv("SHELL", "/bin/fish")
+	mux := &fakeMux{}
+	svc, _ := newTestService(t, mux)
+
+	started, err := svc.Start(context.Background(), StartInput{WorkspaceID: testWorkspaceID})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if started.ActionID != "" || started.ActionName != "" || started.IsAgent {
+		t.Fatalf("interactive identity = %+v", started)
+	}
+	if want := []string{"/bin/fish", "-l", "-i"}; !reflect.DeepEqual(mux.argv, want) {
+		t.Fatalf("argv = %#v, want %#v", mux.argv, want)
+	}
+}
+
+func TestStartRejectsMissingAndDisabledActions(t *testing.T) {
+	mux := &fakeMux{}
+	svc, st := newTestService(t, mux)
+	ctx := context.Background()
+
+	if _, err := svc.Start(ctx, StartInput{WorkspaceID: testWorkspaceID, ActionID: "act_missing"}); !errors.Is(err, ErrActionNotFound) {
+		t.Fatalf("missing err = %v, want ErrActionNotFound", err)
+	}
+	action, err := st.CreateAction(ctx, store.Action{Name: "Off", Command: "off"})
+	if err != nil {
+		t.Fatalf("CreateAction: %v", err)
+	}
+	if _, err := svc.Start(ctx, StartInput{WorkspaceID: testWorkspaceID, ActionID: action.ID}); !errors.Is(err, ErrActionDisabled) {
+		t.Fatalf("disabled err = %v, want ErrActionDisabled", err)
+	}
+}
+
+func TestLaunchFailureDeletesProvisionalSession(t *testing.T) {
+	mux := &fakeMux{startErr: errors.New("executable not found")}
+	svc, st := newTestService(t, mux)
+	ctx := context.Background()
+	action, err := st.CreateAction(ctx, store.Action{Name: "Missing", Enabled: true, Command: "not-installed"})
+	if err != nil {
+		t.Fatalf("CreateAction: %v", err)
+	}
+
+	_, err = svc.Start(ctx, StartInput{WorkspaceID: testWorkspaceID, ActionID: action.ID})
+	var launchErr *LaunchError
+	if !errors.As(err, &launchErr) || launchErr.Code != CodeLaunchFailed || launchErr.SessionID == "" {
+		t.Fatalf("Start err = %#v, want launch_failed", err)
+	}
+	records, listErr := st.ListAll(ctx, store.ListFilter{})
+	if listErr != nil {
+		t.Fatalf("ListAll: %v", listErr)
+	}
+	if len(records) != 0 {
+		t.Fatalf("persistent sessions after failure = %+v", records)
+	}
 }
 
 func TestNewIDUsesSessionPrefix(t *testing.T) {
@@ -176,9 +235,10 @@ func TestNewIDUsesSessionPrefix(t *testing.T) {
 func TestStartSuccessCreatesOneLivePublicSession(t *testing.T) {
 	t.Setenv("SHELL", "/usr/bin/zsh")
 	mux := &fakeMux{}
-	svc, st := newService(t, mux)
+	svc, st := newTestService(t, mux)
+	action := createTestAction(t, st)
 	started, err := svc.Start(context.Background(), StartInput{
-		Action: "codex", Params: map[string]any{"full-auto": true}, Prompt: "review", WorkspaceID: testWorkspaceID,
+		ActionID: action.ID, WorkspaceID: testWorkspaceID,
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -186,8 +246,8 @@ func TestStartSuccessCreatesOneLivePublicSession(t *testing.T) {
 	if started.Status != StatusLive || started.ID == "" {
 		t.Fatalf("started = %+v", started)
 	}
-	if mux.startName != zmx.NameForID(started.ID) || mux.startCalls != 1 {
-		t.Fatalf("start call = %q/%d", mux.startName, mux.startCalls)
+	if len(mux.started) != 1 || mux.started[0] != zmx.NameForID(started.ID) || mux.startCalls != 1 {
+		t.Fatalf("start call = %v/%d", mux.started, mux.startCalls)
 	}
 	records, err := st.List(context.Background(), store.ListFilter{})
 	if err != nil || len(records) != 1 || records[0].Status != store.StatusLive {
@@ -197,7 +257,7 @@ func TestStartSuccessCreatesOneLivePublicSession(t *testing.T) {
 
 func TestStartNormalizesName(t *testing.T) {
 	mux := &fakeMux{}
-	svc, _ := newService(t, mux)
+	svc, _ := newTestService(t, mux)
 	started, err := svc.Start(context.Background(), StartInput{
 		Name: "  Review  ", WorkspaceID: testWorkspaceID,
 	})
@@ -221,7 +281,7 @@ func TestStartNormalizesName(t *testing.T) {
 
 func TestRenameLiveAndEndedSessions(t *testing.T) {
 	mux := &fakeMux{}
-	svc, st := newService(t, mux)
+	svc, st := newTestService(t, mux)
 	ctx := context.Background()
 	live, err := svc.Start(ctx, StartInput{Name: "Live", WorkspaceID: testWorkspaceID})
 	if err != nil {
@@ -257,38 +317,9 @@ func TestRenameLiveAndEndedSessions(t *testing.T) {
 	}
 }
 
-func TestLaunchFailureDeletesProvisionalAndReturnsStructuredError(t *testing.T) {
-	mux := &fakeMux{startErr: errors.New("zmx failed")}
-	svc, st := newService(t, mux)
-	_, err := svc.Start(context.Background(), StartInput{Action: "codex", WorkspaceID: testWorkspaceID})
-	var launchErr *LaunchError
-	if !errors.As(err, &launchErr) || launchErr.Code != CodeLaunchFailed || launchErr.SessionID == "" {
-		t.Fatalf("err = %#v", err)
-	}
-	public, _ := st.List(context.Background(), store.ListFilter{})
-	all, _ := st.ListAll(context.Background(), store.ListFilter{})
-	if len(public) != 0 || len(all) != 0 {
-		t.Fatalf("records after failure public=%+v all=%+v", public, all)
-	}
-}
-
-func TestActionRemovedRaceDeletesProvisional(t *testing.T) {
-	loader := &sequenceActionLoader{loads: []ActionRegistry{testActions(), {}}}
-	svc, st := newServiceWithActions(t, &fakeMux{}, loader)
-	_, err := svc.Start(context.Background(), StartInput{Action: "codex", WorkspaceID: testWorkspaceID})
-	var launchErr *LaunchError
-	if !errors.As(err, &launchErr) || launchErr.Code != CodeActionRemoved {
-		t.Fatalf("err = %#v", err)
-	}
-	all, _ := st.ListAll(context.Background(), store.ListFilter{})
-	if len(all) != 0 {
-		t.Fatalf("abandoned records = %+v", all)
-	}
-}
-
 func TestStartPromotionLostRaceTerminatesLaunchedProcess(t *testing.T) {
 	mux := &fakeMux{}
-	svc, st := newService(t, mux)
+	svc, st := newTestService(t, mux)
 	mux.startHook = func() {
 		records, err := st.ListAll(context.Background(), store.ListFilter{})
 		if err != nil || len(records) != 1 {
@@ -298,7 +329,7 @@ func TestStartPromotionLostRaceTerminatesLaunchedProcess(t *testing.T) {
 			t.Fatalf("DeleteStarting: %v", err)
 		}
 	}
-	_, err := svc.Start(context.Background(), StartInput{Action: "codex", WorkspaceID: testWorkspaceID})
+	_, err := svc.Start(context.Background(), StartInput{WorkspaceID: testWorkspaceID})
 	if !errors.Is(err, ErrSessionNotFound) || mux.terminateCalls != 1 {
 		t.Fatalf("err=%v terminateCalls=%d", err, mux.terminateCalls)
 	}
@@ -306,7 +337,7 @@ func TestStartPromotionLostRaceTerminatesLaunchedProcess(t *testing.T) {
 
 func TestStartConcurrentPromotionKeepsLiveSession(t *testing.T) {
 	mux := &fakeMux{}
-	svc, st := newService(t, mux)
+	svc, st := newTestService(t, mux)
 	mux.startHook = func() {
 		records, err := st.ListAll(context.Background(), store.ListFilter{})
 		if err != nil || len(records) != 1 {
@@ -316,7 +347,7 @@ func TestStartConcurrentPromotionKeepsLiveSession(t *testing.T) {
 			t.Fatalf("PromoteToLive: %v", err)
 		}
 	}
-	started, err := svc.Start(context.Background(), StartInput{Action: "codex", WorkspaceID: testWorkspaceID})
+	started, err := svc.Start(context.Background(), StartInput{WorkspaceID: testWorkspaceID})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -328,13 +359,13 @@ func TestStartConcurrentPromotionKeepsLiveSession(t *testing.T) {
 
 func TestStartPromotionPersistenceFailureTerminatesLaunchedProcess(t *testing.T) {
 	mux := &fakeMux{}
-	svc, st := newService(t, mux)
+	svc, st := newTestService(t, mux)
 	mux.startHook = func() {
 		if err := st.Close(); err != nil {
 			t.Fatalf("Close store: %v", err)
 		}
 	}
-	_, err := svc.Start(context.Background(), StartInput{Action: "codex", WorkspaceID: testWorkspaceID})
+	_, err := svc.Start(context.Background(), StartInput{WorkspaceID: testWorkspaceID})
 	if err == nil || errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("err = %v, want a persistence failure", err)
 	}
@@ -345,10 +376,10 @@ func TestStartPromotionPersistenceFailureTerminatesLaunchedProcess(t *testing.T)
 
 func TestListAndReadExcludeProvisionalAndReconcileMissingLive(t *testing.T) {
 	mux := &fakeMux{}
-	svc, st := newService(t, mux)
+	svc, st := newTestService(t, mux)
 	seedStarting(t, st, "ses_provisional")
 	seedLive(t, st, "ses_live")
-	mux.sessions = []zmx.Session{{Name: zmx.NameForID("ses_live")}}
+	mux.live = map[string]bool{zmx.NameForID("ses_live"): true}
 
 	listed, err := svc.List(context.Background(), "", ListScope{})
 	if err != nil {
@@ -359,12 +390,12 @@ func TestListAndReadExcludeProvisionalAndReconcileMissingLive(t *testing.T) {
 		t.Fatalf("Read provisional err = %v", err)
 	}
 
-	mux.sessions = nil
+	mux.live = nil
 	read, err := svc.Read(context.Background(), "ses_live")
 	if err != nil || read.Status != StatusEnded {
 		t.Fatalf("Read stale = %+v err=%v", read, err)
 	}
-	mux.sessions = []zmx.Session{{Name: zmx.NameForID("ses_live")}}
+	mux.live = map[string]bool{zmx.NameForID("ses_live"): true}
 	read, err = svc.Read(context.Background(), "ses_live")
 	if err != nil || read.Status != StatusEnded {
 		t.Fatalf("Read ended with reappeared zmx = %+v err=%v", read, err)
@@ -373,7 +404,7 @@ func TestListAndReadExcludeProvisionalAndReconcileMissingLive(t *testing.T) {
 
 func TestReadListAvailabilityFailureLeavesStoredState(t *testing.T) {
 	mux := &fakeMux{listErr: errors.New("zmx unavailable")}
-	svc, st := newService(t, mux)
+	svc, st := newTestService(t, mux)
 	seedLive(t, st, "ses_live")
 	read, err := svc.Read(context.Background(), "ses_live")
 	if err != nil || read.Status != StatusLive {
@@ -387,8 +418,11 @@ func TestReadListAvailabilityFailureLeavesStoredState(t *testing.T) {
 }
 
 func TestReconcilePromotesDeletesAndEnds(t *testing.T) {
-	mux := &fakeMux{sessions: []zmx.Session{{Name: zmx.NameForID("ses_start_live")}, {Name: zmx.NameForID("ses_live")}}}
-	svc, st := newService(t, mux)
+	mux := &fakeMux{live: map[string]bool{
+		zmx.NameForID("ses_start_live"): true,
+		zmx.NameForID("ses_live"):       true,
+	}}
+	svc, st := newTestService(t, mux)
 	seedStarting(t, st, "ses_start_live")
 	seedStarting(t, st, "ses_start_dead")
 	seedLive(t, st, "ses_live")
@@ -406,7 +440,7 @@ func TestReconcilePromotesDeletesAndEnds(t *testing.T) {
 
 func TestReconcileListFailureChangesNothing(t *testing.T) {
 	mux := &fakeMux{listErr: errors.New("zmx unavailable")}
-	svc, st := newService(t, mux)
+	svc, st := newTestService(t, mux)
 	seedStarting(t, st, "ses_start")
 	seedLive(t, st, "ses_live")
 	if err := svc.Reconcile(context.Background()); err != nil {
@@ -427,7 +461,7 @@ func TestStaleInteractionsPersistEndedAndReturnSessionEnded(t *testing.T) {
 	}
 	for name, operation := range operations {
 		t.Run(name, func(t *testing.T) {
-			svc, st := newService(t, &fakeMux{})
+			svc, st := newTestService(t, &fakeMux{})
 			seedLive(t, st, "ses_live")
 			err := operation(svc)
 			var endedErr *EndedError
@@ -440,7 +474,7 @@ func TestStaleInteractionsPersistEndedAndReturnSessionEnded(t *testing.T) {
 }
 
 func TestInteractionAvailabilityFailureDoesNotEnd(t *testing.T) {
-	svc, st := newService(t, &fakeMux{listErr: errors.New("zmx unavailable")})
+	svc, st := newTestService(t, &fakeMux{listErr: errors.New("zmx unavailable")})
 	seedLive(t, st, "ses_live")
 	if err := svc.SendText(context.Background(), "ses_live", "hi"); err == nil || errors.Is(err, ErrSessionEnded) {
 		t.Fatalf("SendText err = %v", err)
@@ -450,8 +484,8 @@ func TestInteractionAvailabilityFailureDoesNotEnd(t *testing.T) {
 
 func TestDeleteLiveAndEnded(t *testing.T) {
 	t.Run("live", func(t *testing.T) {
-		mux := &fakeMux{sessions: []zmx.Session{{Name: zmx.NameForID("ses_live")}}}
-		svc, st := newService(t, mux)
+		mux := &fakeMux{live: map[string]bool{zmx.NameForID("ses_live"): true}}
+		svc, st := newTestService(t, mux)
 		seedLive(t, st, "ses_live")
 		if err := svc.Delete(context.Background(), "ses_live"); err != nil {
 			t.Fatalf("Delete: %v", err)
@@ -463,7 +497,7 @@ func TestDeleteLiveAndEnded(t *testing.T) {
 	})
 	t.Run("ended", func(t *testing.T) {
 		mux := &fakeMux{}
-		svc, st := newService(t, mux)
+		svc, st := newTestService(t, mux)
 		seedEnded(t, st, "ses_ended")
 		if err := svc.Delete(context.Background(), "ses_ended"); err != nil {
 			t.Fatalf("Delete: %v", err)
@@ -476,8 +510,11 @@ func TestDeleteLiveAndEnded(t *testing.T) {
 }
 
 func TestDeleteTerminateFailureLeavesLiveRecord(t *testing.T) {
-	mux := &fakeMux{sessions: []zmx.Session{{Name: zmx.NameForID("ses_live")}}, terminateErr: errors.New("zmx kill failed")}
-	svc, st := newService(t, mux)
+	mux := &fakeMux{
+		live:         map[string]bool{zmx.NameForID("ses_live"): true},
+		terminateErr: errors.New("zmx kill failed"),
+	}
+	svc, st := newTestService(t, mux)
 	seedLive(t, st, "ses_live")
 	if err := svc.Delete(context.Background(), "ses_live"); err == nil {
 		t.Fatal("Delete succeeded")
@@ -486,9 +523,9 @@ func TestDeleteTerminateFailureLeavesLiveRecord(t *testing.T) {
 }
 
 func TestDeleteRecordFailureLeavesEndedAndCanBeRetried(t *testing.T) {
-	dbPath := t.TempDir() + "/atc.db"
-	mux := &fakeMux{sessions: []zmx.Session{{Name: zmx.NameForID("ses_live")}}}
-	svc, st := newServiceAtPath(t, mux, testActions(), dbPath)
+	dbPath := filepath.Join(t.TempDir(), "atc.db")
+	mux := &fakeMux{live: map[string]bool{zmx.NameForID("ses_live"): true}}
+	svc, st := newTestServiceAtPath(t, mux, dbPath)
 	seedLive(t, st, "ses_live")
 
 	db, err := sql.Open("sqlite", dbPath)
@@ -510,8 +547,8 @@ func TestDeleteRecordFailureLeavesEndedAndCanBeRetried(t *testing.T) {
 		t.Fatal("Delete succeeded")
 	}
 	assertStoredStatus(t, st, "ses_live", store.StatusEnded)
-	if mux.terminateCalls != 1 || len(mux.sessions) != 0 {
-		t.Fatalf("terminateCalls=%d sessions=%+v", mux.terminateCalls, mux.sessions)
+	if mux.terminateCalls != 1 || len(mux.live) != 0 {
+		t.Fatalf("terminateCalls=%d sessions=%+v", mux.terminateCalls, mux.live)
 	}
 
 	if _, err := db.Exec(`DROP TRIGGER fail_ended_session_delete`); err != nil {
@@ -527,7 +564,7 @@ func TestDeleteRecordFailureLeavesEndedAndCanBeRetried(t *testing.T) {
 }
 
 func TestDeleteProvisionalIsNotFound(t *testing.T) {
-	svc, st := newService(t, &fakeMux{})
+	svc, st := newTestService(t, &fakeMux{})
 	seedStarting(t, st, "ses_start")
 	if err := svc.Delete(context.Background(), "ses_start"); !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("Delete err = %v", err)
@@ -536,8 +573,8 @@ func TestDeleteProvisionalIsNotFound(t *testing.T) {
 }
 
 func TestInternalEndRemovesProvisionalAndEndsLive(t *testing.T) {
-	mux := &fakeMux{sessions: []zmx.Session{{Name: zmx.NameForID("ses_live")}}}
-	svc, st := newService(t, mux)
+	mux := &fakeMux{live: map[string]bool{zmx.NameForID("ses_live"): true}}
+	svc, st := newTestService(t, mux)
 	seedStarting(t, st, "ses_start")
 	seedLive(t, st, "ses_live")
 	if err := svc.End(context.Background(), "ses_start"); err != nil {
@@ -551,7 +588,7 @@ func TestInternalEndRemovesProvisionalAndEndsLive(t *testing.T) {
 }
 
 func TestInternalEndTreatsMissingRecordAsEnded(t *testing.T) {
-	svc, _ := newService(t, &fakeMux{})
+	svc, _ := newTestService(t, &fakeMux{})
 	if err := svc.End(context.Background(), "ses_gone"); err != nil {
 		t.Fatalf("End missing session: %v", err)
 	}
@@ -573,10 +610,22 @@ func TestKeyRegistry(t *testing.T) {
 	}
 }
 
+func createTestAction(t *testing.T, st *store.Store) store.Action {
+	t.Helper()
+	action, err := st.CreateAction(context.Background(), store.Action{
+		Name: "Codex", Enabled: true, Command: "codex", IsAgent: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateAction: %v", err)
+	}
+	return action
+}
+
 func seedStarting(t *testing.T, st *store.Store, id string) {
 	t.Helper()
 	if _, err := st.CreateStarting(context.Background(), store.CreateSessionInput{
-		ID: id, Action: "codex", Environment: "host-login-shell", WorkingDir: "/work", WorkspaceID: testWorkspaceID,
+		ID: id, ActionID: "act_test", ActionName: "Codex", IsAgent: true,
+		WorkingDir: "/work", WorkspaceID: testWorkspaceID,
 	}); err != nil {
 		t.Fatalf("CreateStarting(%s): %v", id, err)
 	}

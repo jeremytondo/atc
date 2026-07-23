@@ -13,12 +13,9 @@ import (
 )
 
 type startRequest struct {
-	WorkspaceID string         `json:"workspaceId"`
-	Action      string         `json:"action"`
-	Environment string         `json:"environment"`
-	Params      map[string]any `json:"params"`
-	Prompt      string         `json:"prompt"`
-	Name        string         `json:"name"`
+	WorkspaceID string `json:"workspaceId"`
+	ActionID    string `json:"actionId,omitempty"`
+	Name        string `json:"name,omitempty"`
 }
 
 type sendTextRequest struct {
@@ -37,22 +34,23 @@ type renameSessionRequest struct {
 // exported, along with the item and detail structs, so the CLI decodes the
 // same types the server encodes instead of redeclaring them.
 type SessionListResponse struct {
-	Sessions []SessionListItem `json:"sessions"`
+	Sessions []SessionResponse `json:"sessions"`
 }
 
-// SessionListItem is the wire shape of one session in list responses. Action
-// is omitted for Interactive Shell sessions (a null action on the wire).
-type SessionListItem struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name,omitempty"`
-	Action      string            `json:"action,omitempty"`
-	Environment string            `json:"environment"`
-	WorkingDir  string            `json:"workingDir"`
-	Status      session.Status    `json:"status"`
-	CreatedAt   string            `json:"createdAt"`
-	UpdatedAt   string            `json:"updatedAt"`
-	Workspace   *SessionWorkspace `json:"workspace,omitempty"`
-	Project     *SessionProject   `json:"project,omitempty"`
+// SessionResponse is the wire shape shared by session list and detail
+// endpoints. Action identity is omitted for Interactive Shell sessions.
+type SessionResponse struct {
+	ID         string            `json:"id"`
+	Name       string            `json:"name,omitempty"`
+	ActionID   string            `json:"actionId,omitempty"`
+	ActionName string            `json:"actionName,omitempty"`
+	IsAgent    bool              `json:"isAgent"`
+	WorkingDir string            `json:"workingDir"`
+	Status     session.Status    `json:"status"`
+	CreatedAt  string            `json:"createdAt"`
+	UpdatedAt  string            `json:"updatedAt"`
+	Workspace  *SessionWorkspace `json:"workspace,omitempty"`
+	Project    *SessionProject   `json:"project,omitempty"`
 }
 
 // SessionWorkspace is the workspace object nested on sessions.
@@ -68,42 +66,25 @@ type SessionProject struct {
 	Name string `json:"name"`
 }
 
-// SessionDetail is the wire shape of session detail responses.
-type SessionDetail struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name,omitempty"`
-	Action      string            `json:"action,omitempty"`
-	Environment string            `json:"environment"`
-	Params      map[string]any    `json:"params"`
-	WorkingDir  string            `json:"workingDir"`
-	Prompt      string            `json:"prompt,omitempty"`
-	Status      session.Status    `json:"status"`
-	CreatedAt   string            `json:"createdAt"`
-	UpdatedAt   string            `json:"updatedAt"`
-	Workspace   *SessionWorkspace `json:"workspace,omitempty"`
-	Project     *SessionProject   `json:"project,omitempty"`
-}
+// SessionDetail is retained as an alias for CLI callers; list and detail use
+// the same complete wire shape.
+type SessionDetail = SessionResponse
 
 func (routes apiRoutes) startSession(w http.ResponseWriter, r *http.Request) {
 	if !routes.requireSessions(w) {
 		return
 	}
 	var req startRequest
-	if !decodeJSON(w, r, &req) {
+	if !decodeJSONBody(w, r, &req, true, "request body must be a valid session start request") {
 		return
 	}
 	if strings.TrimSpace(req.WorkspaceID) == "" {
 		writeError(w, http.StatusBadRequest, "invalid_request", "workspaceId is required")
 		return
 	}
-	// action is optional: omitted, the server launches the Interactive Shell.
-	// params and prompt are rejected by the domain when action is omitted.
 	started, err := routes.sessions.Start(r.Context(), session.StartInput{
 		WorkspaceID: req.WorkspaceID,
-		Action:      req.Action,
-		Environment: req.Environment,
-		Params:      req.Params,
-		Prompt:      req.Prompt,
+		ActionID:    req.ActionID,
 		Name:        req.Name,
 	})
 	if err != nil {
@@ -123,7 +104,7 @@ func (routes apiRoutes) listSessions(w http.ResponseWriter, r *http.Request) {
 		writeSessionError(w, err)
 		return
 	}
-	items := make([]SessionListItem, 0, len(sessions))
+	items := make([]SessionResponse, 0, len(sessions))
 	for _, s := range sessions {
 		items = append(items, listItemResponse(s))
 	}
@@ -228,16 +209,12 @@ func writeSessionError(w http.ResponseWriter, err error) {
 			Message:   launchErr.Error(),
 			SessionID: launchErr.SessionID,
 		})
-	case errors.Is(err, session.ErrUnknownAction):
-		writeError(w, http.StatusBadRequest, "unknown_action", err.Error())
-	case errors.Is(err, session.ErrUnknownEnvironment):
-		writeError(w, http.StatusBadRequest, "unknown_environment", err.Error())
-	case errors.Is(err, session.ErrInvalidParam):
-		writeError(w, http.StatusBadRequest, "invalid_params", err.Error())
+	case errors.Is(err, session.ErrActionNotFound):
+		writeError(w, http.StatusNotFound, "action_not_found", err.Error())
 	case errors.Is(err, session.ErrInvalidWorkingDir):
 		writeError(w, http.StatusBadRequest, "invalid_working_dir", err.Error())
-	// workspace_not_found is a 400 on start (mirroring unknown_action): the
-	// request body, not the URL, named the missing workspace.
+	// workspace_not_found is a 400 on start because the request body, not the
+	// URL, named the missing workspace.
 	case errors.Is(err, workspace.ErrWorkspaceNotFound):
 		writeError(w, http.StatusBadRequest, "workspace_not_found", err.Error())
 	case errors.Is(err, workspace.ErrInvalidWorkspace):
@@ -250,10 +227,6 @@ func writeSessionError(w http.ResponseWriter, err error) {
 		errors.Is(err, session.ErrInvalidStatus),
 		errors.Is(err, session.ErrInvalidSessionName):
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
-	case errors.Is(err, session.ErrActionMisconfigured):
-		writeError(w, http.StatusInternalServerError, "action_misconfigured", err.Error())
-	case errors.Is(err, session.ErrEnvironmentMisconfigured):
-		writeError(w, http.StatusInternalServerError, "environment_misconfigured", err.Error())
 	case errors.Is(err, session.ErrSessionNotFound):
 		writeError(w, http.StatusNotFound, "session_not_found", err.Error())
 	case errors.Is(err, session.ErrSessionEnded):
@@ -269,36 +242,24 @@ func writeSessionError(w http.ResponseWriter, err error) {
 	}
 }
 
-func listItemResponse(s session.Session) SessionListItem {
-	return SessionListItem{
-		ID:          s.ID,
-		Name:        s.Name,
-		Action:      s.Action,
-		Environment: s.Environment,
-		WorkingDir:  s.WorkingDir,
-		Status:      s.Status,
-		CreatedAt:   formatTime(s.CreatedAt),
-		UpdatedAt:   formatTime(s.UpdatedAt),
-		Workspace:   sessionWorkspaceResponse(s.Workspace),
-		Project:     sessionProjectResponse(s.Project),
+func listItemResponse(s session.Session) SessionResponse {
+	return SessionResponse{
+		ID:         s.ID,
+		Name:       s.Name,
+		ActionID:   s.ActionID,
+		ActionName: s.ActionName,
+		IsAgent:    s.IsAgent,
+		WorkingDir: s.WorkingDir,
+		Status:     s.Status,
+		CreatedAt:  formatTime(s.CreatedAt),
+		UpdatedAt:  formatTime(s.UpdatedAt),
+		Workspace:  sessionWorkspaceResponse(s.Workspace),
+		Project:    sessionProjectResponse(s.Project),
 	}
 }
 
-func detailResponse(s session.Session) SessionDetail {
-	return SessionDetail{
-		ID:          s.ID,
-		Name:        s.Name,
-		Action:      s.Action,
-		Environment: s.Environment,
-		Params:      s.Params,
-		WorkingDir:  s.WorkingDir,
-		Prompt:      s.Prompt,
-		Status:      s.Status,
-		CreatedAt:   formatTime(s.CreatedAt),
-		UpdatedAt:   formatTime(s.UpdatedAt),
-		Workspace:   sessionWorkspaceResponse(s.Workspace),
-		Project:     sessionProjectResponse(s.Project),
-	}
+func detailResponse(s session.Session) SessionResponse {
+	return listItemResponse(s)
 }
 
 func sessionWorkspaceResponse(ref *session.WorkspaceRef) *SessionWorkspace {

@@ -122,8 +122,9 @@ nonisolated struct MockATCClient: ATCClient {
         Session(
             id: "ses_running",
             name: "Fix the parser",
-            action: "claude",
-            environment: "host-login-shell",
+            actionId: "act_vpj2tlg9viqd8ms52ptuvao5c4",
+            actionName: "Claude",
+            isAgent: true,
             workingDir: "/home/dev/Projects/atelier",
             status: .live,
             createdAt: Date(timeIntervalSinceNow: -3600),
@@ -133,8 +134,9 @@ nonisolated struct MockATCClient: ATCClient {
         ),
         Session(
             id: "ses_starting",
-            action: "codex",
-            environment: "host-login-shell",
+            actionId: "act_fh9g7e6571qo53r0t647ughtfg",
+            actionName: "Codex",
+            isAgent: true,
             workingDir: "/home/dev/Projects/huge",
             status: .live,
             createdAt: Date(timeIntervalSinceNow: -30),
@@ -144,8 +146,9 @@ nonisolated struct MockATCClient: ATCClient {
         ),
         Session(
             id: "ses_failed",
-            action: "lazygit",
-            environment: "host-login-shell",
+            actionId: "act_00000000000000000000000000",
+            actionName: "LazyGit",
+            isAgent: false,
             workingDir: "/home/dev",
             status: .ended,
             createdAt: Date(timeIntervalSinceNow: -7200),
@@ -154,8 +157,9 @@ nonisolated struct MockATCClient: ATCClient {
         Session(
             id: "ses_done",
             name: "Yesterday's refactor",
-            action: "claude",
-            environment: "host-login-shell",
+            actionId: "act_vpj2tlg9viqd8ms52ptuvao5c4",
+            actionName: "Claude",
+            isAgent: true,
             workingDir: "/home/dev/Projects/atelier",
             status: .ended,
             createdAt: Date(timeIntervalSinceNow: -90000),
@@ -163,11 +167,10 @@ nonisolated struct MockATCClient: ATCClient {
             workspace: MockATCClient.refactorRef,
             project: MockATCClient.atelierRef
         ),
-        // Interactive Shell (nil action) → classified as a Terminal.
+        // Interactive Shell (nil action ID) → classified as a Terminal.
         Session(
             id: "ses_shell",
-            action: nil,
-            environment: "host-login-shell",
+            isAgent: false,
             workingDir: "/home/dev/Projects/atelier",
             status: .live,
             createdAt: Date(timeIntervalSinceNow: -1800),
@@ -178,8 +181,9 @@ nonisolated struct MockATCClient: ATCClient {
         // General (non-agent) action → classified as a Terminal.
         Session(
             id: "ses_lazygit",
-            action: "lazygit",
-            environment: "host-login-shell",
+            actionId: "act_00000000000000000000000000",
+            actionName: "LazyGit",
+            isAgent: false,
             workingDir: "/home/dev/Projects/atelier",
             status: .live,
             createdAt: Date(timeIntervalSinceNow: -900),
@@ -187,11 +191,12 @@ nonisolated struct MockATCClient: ATCClient {
             workspace: MockATCClient.parserRef,
             project: MockATCClient.atelierRef
         ),
-        // Action deleted after the session ended (unresolvable) → Terminal.
+        // Action deleted after the session ended; copied identity remains.
         Session(
             id: "ses_ghost",
-            action: "ghost",
-            environment: "host-login-shell",
+            actionId: "act_11111111111111111111111111",
+            actionName: "Deleted Tool",
+            isAgent: false,
             workingDir: "/home/dev/Projects/atelier",
             status: .ended,
             createdAt: Date(timeIntervalSinceNow: -50000),
@@ -203,8 +208,9 @@ nonisolated struct MockATCClient: ATCClient {
         Session(
             id: "ses_abandoned",
             name: "Abandoned attempt",
-            action: "claude",
-            environment: "host-login-shell",
+            actionId: "act_vpj2tlg9viqd8ms52ptuvao5c4",
+            actionName: "Claude",
+            isAgent: true,
             workingDir: "/home/dev/Projects/atelier",
             status: .ended,
             createdAt: Date(timeIntervalSinceNow: -200000),
@@ -224,14 +230,14 @@ nonisolated struct MockATCClient: ATCClient {
         mockSessions.filter { status == nil || $0.status == status }
     }
 
-    func session(id: String) async throws -> SessionDetail {
+    func session(id: String) async throws -> Session {
         guard let session = mockSessions.first(where: { $0.id == id }) else {
             throw ATCError.api(code: "session_not_found", message: "session not found: \(id)", sessionID: id)
         }
-        return detail(from: session)
+        return session
     }
 
-    func startSession(_ request: StartSessionRequest) async throws -> SessionDetail {
+    func startSession(_ request: StartSessionRequest) async throws -> Session {
         // Mirror the server's workspace validation so previews and tests fail
         // where the real server would.
         guard !request.workspaceId.trimmingCharacters(in: .whitespaces).isEmpty else {
@@ -241,11 +247,26 @@ nonisolated struct MockATCClient: ATCClient {
         }
         let workspace = try lookupWorkspace(request.workspaceId)
         let project = try lookupProject(workspace.projectId)
+        let action: ATCAction?
+        if let actionID = request.actionId {
+            let resolved = try actionsState.detail(id: actionID)
+            guard resolved.enabled else {
+                throw ATCError.api(
+                    code: "action_disabled",
+                    message: "action is disabled: \(actionID)",
+                    sessionID: nil
+                )
+            }
+            action = resolved
+        } else {
+            action = nil
+        }
         let session = Session(
             id: "ses_" + String(UUID().uuidString.lowercased().prefix(8)),
             name: request.name,
-            action: request.action,
-            environment: request.environment ?? "host-login-shell",
+            actionId: action?.id,
+            actionName: action?.name,
+            isAgent: action?.isAgent ?? false,
             workingDir: project.workingDir,
             status: .live,
             createdAt: Date(),
@@ -253,18 +274,18 @@ nonisolated struct MockATCClient: ATCClient {
             workspace: SessionWorkspace(id: workspace.id, name: workspace.name),
             project: SessionProject(id: project.id, name: project.name)
         )
-        return detail(from: session)
+        return session
     }
 
-    func renameSession(id: String, name: String) async throws -> SessionDetail {
+    func renameSession(id: String, name: String) async throws -> Session {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw ATCError.api(code: "invalid_request", message: "name is required", sessionID: nil)
         }
-        var detail = try await session(id: id)
-        detail.name = trimmed
-        detail.updatedAt = Date()
-        return detail
+        var session = try await session(id: id)
+        session.name = trimmed
+        session.updatedAt = Date()
+        return session
     }
 
     func deleteSession(id: String) async throws {
@@ -276,38 +297,26 @@ nonisolated struct MockATCClient: ATCClient {
 
     /// Shared across copies of this value type so action mutations survive
     /// refreshes — the settings UI is interactive in previews.
-    let actionRegistry = MockActionRegistry()
+    let actionsState = MockActionsState()
 
     func actions() async throws -> [ATCAction] {
-        actionRegistry.list()
+        actionsState.list()
     }
 
-    func action(name: String) async throws -> ATCAction {
-        try actionRegistry.detail(name: name)
+    func action(id: String) async throws -> ATCAction {
+        try actionsState.detail(id: id)
     }
 
-    func createAction(_ request: ActionWriteRequest) async throws -> ATCAction {
-        try actionRegistry.create(request)
+    func createAction(_ request: ActionCreate) async throws -> ATCAction {
+        try actionsState.create(request)
     }
 
-    func updateAction(name: String, _ request: ActionWriteRequest) async throws -> ATCAction {
-        try actionRegistry.update(name: name, request)
+    func updateAction(id: String, _ request: ActionPatch) async throws -> ATCAction {
+        try actionsState.update(id: id, request)
     }
 
-    func setActionEnabled(name: String, enabled: Bool) async throws -> ATCAction {
-        try actionRegistry.setEnabled(name: name, enabled: enabled)
-    }
-
-    func deleteAction(name: String) async throws {
-        try actionRegistry.delete(name: name)
-    }
-
-    func environments() async throws -> [ATCEnvironment] {
-        let json = Data(#"""
-        {"environments":[{"name":"host-login-shell","kind":"host-login-shell","label":"Host login shell","default":true}]}
-        """#.utf8)
-        struct Envelope: Decodable { var environments: [ATCEnvironment] }
-        return try JSONDecoder().decode(Envelope.self, from: json).environments
+    func deleteAction(id: String) async throws {
+        try actionsState.delete(id: id)
     }
 
     // MARK: - Projects
@@ -531,221 +540,133 @@ nonisolated struct MockATCClient: ATCClient {
 
     func attachHeaders() -> [String: String] { [:] }
 
-    private func detail(from session: Session) -> SessionDetail {
-        // Round-trip through Codable to build the detail shape without a
-        // giant memberwise call.
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let data = try! encoder.encode(session)
-        return try! decoder.decode(SessionDetail.self, from: data)
-    }
 }
 
-/// In-memory mirror of the server's action registry: built-in defaults
-/// (claude, codex) always present underneath a file overlay of custom
-/// actions and built-in overrides. Mimics the server's origin computation,
-/// validation, and error codes so previews/tests fail where it would.
-nonisolated final class MockActionRegistry: @unchecked Sendable {
+/// Thread-safe in-memory mirror of the server's SQLite Action CRUD.
+nonisolated final class MockActionsState: @unchecked Sendable {
     private let lock = NSLock()
 
-    /// Built-in definitions (origin field is ignored; computed at read time).
-    /// Codex carries synthetic params so param-rendering UI has a fixture.
-    private let builtins: [String: ATCAction] = [
-        "claude": ATCAction(
-            name: "claude", type: "agent", origin: "builtin", enabled: true,
-            label: "Claude", description: "Claude Code CLI",
-            command: "claude", args: [], prompt: .init()
+    private var entries: [String: ATCAction] = [
+        "act_vpj2tlg9viqd8ms52ptuvao5c4": ATCAction(
+            id: "act_vpj2tlg9viqd8ms52ptuvao5c4",
+            name: "Claude",
+            description: "Anthropic's coding agent",
+            enabled: true,
+            command: "claude",
+            args: [],
+            isAgent: true
         ),
-        "codex": ATCAction(
-            name: "codex", type: "agent", origin: "builtin", enabled: true,
-            label: "Codex", description: "OpenAI Codex CLI",
-            command: "codex", args: [], prompt: .init(),
-            params: [
-                "model": .init(type: "enum", values: ["fast", "smart"], default: .string("fast"), flag: "--model", label: "Model"),
-                "verbose": .init(type: "bool", flag: "--verbose", label: "Verbose"),
-            ]
+        "act_fh9g7e6571qo53r0t647ughtfg": ATCAction(
+            id: "act_fh9g7e6571qo53r0t647ughtfg",
+            name: "Codex",
+            description: "OpenAI's coding agent",
+            enabled: true,
+            command: "codex",
+            args: [],
+            isAgent: true
+        ),
+        "act_00000000000000000000000000": ATCAction(
+            id: "act_00000000000000000000000000",
+            name: "LazyGit",
+            description: "Open LazyGit",
+            enabled: true,
+            command: "lazygit",
+            args: [],
+            isAgent: false
         ),
     ]
 
-    /// The overlay: custom actions plus built-in overrides.
-    private var fileEntries: [String: ATCAction] = [
-        "lazygit": ATCAction(
-            name: "lazygit", origin: "custom", enabled: true,
-            label: "LazyGit", description: "Open LazyGit",
-            command: "lazygit", args: []
-        ),
-    ]
-
-    /// List view: origin computed, `command`/`args` stripped like the server.
     func list() -> [ATCAction] {
         lock.withLock {
-            allNames().compactMap { name in
-                guard var action = effective(name: name) else { return nil }
-                action.command = nil
-                action.args = nil
-                return action
+            entries.values.sorted {
+                let order = $0.name.localizedCaseInsensitiveCompare($1.name)
+                return order == .orderedSame ? $0.id < $1.id : order == .orderedAscending
             }
         }
     }
 
-    func detail(name: String) throws -> ATCAction {
-        try lock.withLock { try requireEffective(name: name) }
+    func detail(id: String) throws -> ATCAction {
+        try lock.withLock { try require(id: id) }
     }
 
-    func create(_ request: ActionWriteRequest) throws -> ATCAction {
+    func create(_ request: ActionCreate) throws -> ATCAction {
         try lock.withLock {
-            let name = try resolveName(request)
-            try validate(request)
-            guard effective(name: name) == nil else {
-                throw ATCError.api(
-                    code: "action_conflict", message: "action already exists: \(name)", sessionID: nil
-                )
-            }
-            fileEntries[name] = definition(from: request, name: name)
-            return try requireEffective(name: name)
-        }
-    }
-
-    func update(name: String, _ request: ActionWriteRequest) throws -> ATCAction {
-        try lock.withLock {
-            if let bodyName = request.name, bodyName != name {
-                throw ATCError.api(
-                    code: "invalid_request", message: "body name must match route name", sessionID: nil
-                )
-            }
-            try validate(request)
-            store(definition(from: request, name: name), name: name)
-            return try requireEffective(name: name)
-        }
-    }
-
-    func setEnabled(name: String, enabled: Bool) throws -> ATCAction {
-        try lock.withLock {
-            var action = try requireEffective(name: name)
-            action.enabled = enabled
-            store(action, name: name)
-            return try requireEffective(name: name)
-        }
-    }
-
-    func delete(name: String) throws {
-        try lock.withLock {
-            if fileEntries.removeValue(forKey: name) != nil { return }
-            if builtins[name] != nil {
-                throw ATCError.api(
-                    code: "action_conflict",
-                    message: "built-in action cannot be removed: \(name)", sessionID: nil
-                )
-            }
-            throw ATCError.api(
-                code: "action_not_found", message: "action not found: \(name)", sessionID: nil
+            try validate(name: request.name, command: request.command)
+            let suffix = UUID().uuidString
+                .replacingOccurrences(of: "-", with: "")
+                .lowercased()
+                .prefix(26)
+            let id = "act_" + String(suffix)
+            let action = ATCAction(
+                id: id,
+                name: request.name,
+                description: request.description,
+                enabled: request.enabled ?? true,
+                command: request.command,
+                args: request.args ?? [],
+                isAgent: request.isAgent ?? false
             )
+            entries[action.id] = action
+            return action
         }
     }
 
-    // MARK: - Server-rule internals (call only with the lock held)
-
-    private func allNames() -> [String] {
-        Set(builtins.keys).union(fileEntries.keys).sorted()
+    func update(id: String, _ patch: ActionPatch) throws -> ATCAction {
+        try lock.withLock {
+            var action = try require(id: id)
+            if let name = patch.name { action.name = name }
+            if patch.clearDescription {
+                action.description = nil
+            } else if let description = patch.description {
+                action.description = description
+            }
+            if let command = patch.command { action.command = command }
+            if let args = patch.args { action.args = args }
+            if let enabled = patch.enabled { action.enabled = enabled }
+            if let isAgent = patch.isAgent { action.isAgent = isAgent }
+            try validate(name: action.name, command: action.command)
+            entries[id] = action
+            return action
+        }
     }
 
-    private func effective(name: String) -> ATCAction? {
-        if var entry = fileEntries[name] {
-            entry.name = name
-            entry.origin = origin(of: entry, name: name)
-            return entry
+    func delete(id: String) throws {
+        try lock.withLock {
+            guard entries.removeValue(forKey: id) != nil else {
+                throw ATCError.api(
+                    code: "action_not_found",
+                    message: "action not found: \(id)",
+                    sessionID: nil
+                )
+            }
         }
-        if var builtin = builtins[name] {
-            builtin.origin = "builtin"
-            return builtin
-        }
-        return nil
     }
 
-    private func requireEffective(name: String) throws -> ATCAction {
-        guard let action = effective(name: name) else {
+    private func require(id: String) throws -> ATCAction {
+        guard let action = entries[id] else {
             throw ATCError.api(
-                code: "action_not_found", message: "action not found: \(name)", sessionID: nil
+                code: "action_not_found",
+                message: "action not found: \(id)",
+                sessionID: nil
             )
         }
         return action
     }
 
-    /// An overlay that only flips `enabled` still reports `builtin`
-    /// (server: sameExceptDisabled).
-    private func origin(of entry: ATCAction, name: String) -> String {
-        guard let builtin = builtins[name] else { return "custom" }
-        return sameExceptEnabled(entry, builtin) ? "builtin" : "modified"
-    }
-
-    private func sameExceptEnabled(_ a: ATCAction, _ b: ATCAction) -> Bool {
-        a.label == b.label && a.description == b.description
-            && a.command == b.command && a.args == b.args
-            && a.prompt == b.prompt && a.params == b.params
-    }
-
-    /// Writes an entry to the overlay, dropping it when it exactly matches
-    /// the built-in default (the server prunes no-op overrides).
-    private func store(_ action: ATCAction, name: String) {
-        if let builtin = builtins[name],
-           sameExceptEnabled(action, builtin), action.enabled == builtin.enabled {
-            fileEntries[name] = nil
-        } else {
-            fileEntries[name] = action
-        }
-    }
-
-    private func resolveName(_ request: ActionWriteRequest) throws -> String {
-        let name = request.name ?? ActionName.slugify(request.label ?? "")
-        guard !name.isEmpty else {
-            throw ATCError.api(
-                code: "invalid_request", message: "name or label is required", sessionID: nil
-            )
-        }
-        guard ActionName.isValid(name) else {
+    private func validate(name: String, command: String) throws {
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ATCError.api(
                 code: "invalid_action",
-                message: "action name \"\(name)\" must match ^[A-Za-z0-9_-]+$", sessionID: nil
+                message: "action name is required",
+                sessionID: nil
             )
         }
-        return name
-    }
-
-    private func validate(_ request: ActionWriteRequest) throws {
-        guard !request.command.trimmingCharacters(in: .whitespaces).isEmpty else {
+        guard !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ATCError.api(
-                code: "invalid_action", message: "action command is required", sessionID: nil
+                code: "invalid_action",
+                message: "action command is required",
+                sessionID: nil
             )
         }
-        for (paramName, spec) in request.params ?? [:] {
-            guard spec.isEnum || spec.isBool else {
-                throw ATCError.api(
-                    code: "invalid_action",
-                    message: "param \(paramName): unsupported type \(spec.type)", sessionID: nil
-                )
-            }
-            if spec.isEnum, (spec.values ?? []).isEmpty {
-                throw ATCError.api(
-                    code: "invalid_action",
-                    message: "param \(paramName): enum values are required", sessionID: nil
-                )
-            }
-        }
-    }
-
-    private func definition(from request: ActionWriteRequest, name: String) -> ATCAction {
-        ATCAction(
-            name: name,
-            origin: "custom",
-            enabled: request.enabled ?? true,
-            label: request.label,
-            description: request.description,
-            command: request.command,
-            args: request.args ?? [],
-            prompt: request.prompt,
-            params: request.params ?? [:]
-        )
     }
 }
