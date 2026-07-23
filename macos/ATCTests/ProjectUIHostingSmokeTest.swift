@@ -40,6 +40,7 @@ struct ProjectUIHostingSmokeTest {
             onWorkspaceDeleted: { _ in }
         )
             .environment(appModel)
+            .environment(WindowState.ephemeral())
     }
 
     @Test("dashboard renders one populated connection without crashing")

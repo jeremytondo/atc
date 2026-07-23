@@ -48,11 +48,13 @@ final class WindowState {
     var isCreateProjectPresented = false
     var createWorkspaceContext: CreateWorkspaceContext?
     var startSessionKind: StartSessionKind?
+    var workspaceStartupProject: ProjectRef?
 
     var isSheetPresented: Bool {
         isCreateProjectPresented
             || createWorkspaceContext != nil
             || startSessionKind != nil
+            || workspaceStartupProject != nil
     }
 
     /// Advances for every explicit request to type in the selected Terminal
@@ -173,6 +175,12 @@ final class WindowState {
     /// Reconciles store-driven removal and delayed restoration. An unloaded
     /// store is unresolved and never clears the current Workspace.
     func reconcile(in appModel: AppModel) {
+        // The startup editor is keyed to its own target Connection, not the
+        // Active Workspace: dismiss it only when that Connection is removed.
+        if let projectRef = workspaceStartupProject,
+           appModel.runtime(id: projectRef.connectionID) == nil {
+            workspaceStartupProject = nil
+        }
         guard let activeWorkspace else { return }
         guard let runtime = appModel.runtime(id: activeWorkspace.connectionID) else {
             selectionMemory.forget(connectionID: activeWorkspace.connectionID)

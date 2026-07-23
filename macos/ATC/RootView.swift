@@ -73,6 +73,9 @@ struct RootView: View {
                 }
             }
         }
+        .sheet(item: $windowState.workspaceStartupProject) { ref in
+            WorkspaceStartupEditorSheet(target: .project(ref))
+        }
         .onChange(of: appModel.windowNavigationSnapshot(), initial: true) {
             appModel.reconcileTerminalLifecycle()
             windowState.reconcile(in: appModel)

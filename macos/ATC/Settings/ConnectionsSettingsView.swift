@@ -132,6 +132,7 @@ private struct ConnectionEditorView: View {
     @State private var confirmRebuild = false
 
     @State private var testState: TestState = .idle
+    @State private var workspaceStartupTarget: WorkspaceStartupEditorTarget?
     /// Bumped on every draft edit and every new test; stale results are dropped.
     @State private var testGeneration = 0
 
@@ -202,6 +203,29 @@ private struct ConnectionEditorView: View {
                         Spacer()
                     }
                 }
+                if let record = currentRecord {
+                    Section {
+                        HStack(spacing: Spacing.md) {
+                            Text(WorkspaceStartupSummary.text(
+                                configuration: appModel.workspaceStartup.connectionConfiguration(
+                                    connectionID: record.id
+                                ),
+                                actions: appModel.runtime(id: record.id)?.actions.actions ?? [],
+                                hasLoadedOnce: appModel.runtime(id: record.id)?.actions.hasLoadedOnce ?? false
+                            ))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            Spacer()
+                            Button("Edit…") {
+                                workspaceStartupTarget = .connection(record.id)
+                            }
+                        }
+                    } header: {
+                        Text("Workspace Startup")
+                    } footer: {
+                        Text("Sessions configured here are inherited by Projects that use Connection defaults.")
+                    }
+                }
             }
             .formStyle(.grouped)
 
@@ -227,6 +251,9 @@ private struct ConnectionEditorView: View {
             Button("Save and Disconnect", role: .destructive) { performSave() }
         } message: {
             Text("Changing the URL or token reconnects this connection, and its open terminal sessions will be disconnected. Sessions keep running on the server.")
+        }
+        .sheet(item: $workspaceStartupTarget) { target in
+            WorkspaceStartupEditorSheet(target: target)
         }
     }
 
