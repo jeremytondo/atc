@@ -21,6 +21,14 @@ _Avoid_: Local project, app project
 A Server-owned task context within one Project. In the initial version, every Workspace uses its Project's default folder, owns its Sessions, and persists after they end. Its name is user-owned, renameable, and need not be unique. Deleting a Workspace never changes its working directory or other filesystem state, but stops and deletes all of its associated Sessions only after every stop succeeds.
 _Avoid_: Checkout, worktree
 
+**Workspace Startup Configuration**:
+The local macOS preference that lists Action and Interactive Shell entries for Workspace startup. Each Connection has defaults; a Project either uses those defaults with live inheritance or has a Custom configuration copied once and then independent. An explicitly empty Custom configuration suppresses the Connection defaults.
+_Avoid_: Workspace template, server startup configuration
+
+**Default Session**:
+The one entry designated as the Default in every nonempty Workspace Startup Configuration. The first entry added becomes Default, the designation can be transferred, and removing it promotes the earliest remaining entry.
+_Avoid_: Primary Session, first Session
+
 **Session**:
 A Server-owned terminal process created on a particular atc server. A Session belongs to its Workspace, except for legacy Project-scoped Sessions. Its lifecycle is Live or Ended; Ended is a retained read-only tombstone shown only after the server confirms the backing zmx session is absent. Transport and attach failures remain retryable and do not end it.
 _Avoid_: Terminal Session, shell

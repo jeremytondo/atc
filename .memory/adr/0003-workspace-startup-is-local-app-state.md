@@ -1,0 +1,3 @@
+# Workspace Startup Configuration is local app state
+
+The macOS app stores Workspace Startup Configuration as versioned UserDefaults state keyed by local Connection UUID, with Project overrides keyed by Connection UUID and stable server Project ID. A Project uses Connection defaults with live inheritance unless changed to Custom, which copies the current defaults once and remains independent, including when explicitly empty. This preference belongs to the app installation rather than the server or `macos.toml`; removing a Connection clears all of its startup state, and an app-initiated successful Project deletion clears that Project's override.
