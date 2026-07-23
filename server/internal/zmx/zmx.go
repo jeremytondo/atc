@@ -26,6 +26,7 @@ const DefaultBin = "zmx"
 const (
 	atcNamePrefix          = "atc-"
 	defaultSessionTermType = "xterm-256color"
+	zmxSessionEnv          = "ZMX_SESSION"
 )
 
 // Session is one entry reported by `zmx list`.
@@ -183,23 +184,37 @@ func sessionRunEnv() []string {
 }
 
 func setEnv(env []string, key, value string) []string {
+	out := unsetEnv(env, key)
+	return append(out, key+"="+value)
+}
+
+func unsetEnv(env []string, key string) []string {
 	prefix := key + "="
-	out := make([]string, 0, len(env)+1)
+	out := make([]string, 0, len(env))
 	for _, entry := range env {
 		if strings.HasPrefix(entry, prefix) {
 			continue
 		}
 		out = append(out, entry)
 	}
-	return append(out, prefix+value)
+	return out
+}
+
+// zmxCommand is the shared server-to-zmx subprocess boundary. ZMX_SESSION
+// identifies a zmx client as nested inside an existing session; a long-running
+// server must never pass its caller's identity to server-owned zmx commands.
+func zmxCommand(ctx context.Context, bin string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Env = unsetEnv(os.Environ(), zmxSessionEnv)
+	return cmd
 }
 
 // execRun is the production runFunc: it runs zmx as a child process.
 func execRun(ctx context.Context, bin string, opts runOptions, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd := zmxCommand(ctx, bin, args...)
 	cmd.Dir = opts.dir
 	if opts.env != nil {
-		cmd.Env = opts.env
+		cmd.Env = unsetEnv(opts.env, zmxSessionEnv)
 	}
 	if opts.stdin != nil {
 		cmd.Stdin = bytes.NewReader(opts.stdin)
@@ -258,7 +273,7 @@ func execAttach(ctx context.Context, bin, name string, rows, cols uint16) (PTY, 
 	if cols == 0 {
 		cols = DefaultAttachCols
 	}
-	cmd := exec.CommandContext(ctx, bin, "attach", name)
+	cmd := zmxCommand(ctx, bin, "attach", name)
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: rows, Cols: cols})
 	if err != nil {
 		if execErr, ok := errors.AsType[*exec.Error](err); ok {

@@ -115,12 +115,12 @@ func (f *fakeResolver) ResolveForStart(_ context.Context, id string) (string, er
 	return f.dir, f.err
 }
 
-func newTestService(t *testing.T, mux *fakeMux) (*Service, *store.Store) {
+func newTestService(t *testing.T, mux Multiplexer) (*Service, *store.Store) {
 	t.Helper()
 	return newTestServiceAtPath(t, mux, filepath.Join(t.TempDir(), "atc.db"))
 }
 
-func newTestServiceAtPath(t *testing.T, mux *fakeMux, dbPath string) (*Service, *store.Store) {
+func newTestServiceAtPath(t *testing.T, mux Multiplexer, dbPath string) (*Service, *store.Store) {
 	t.Helper()
 	st, err := store.Open(dbPath)
 	if err != nil {
@@ -690,6 +690,24 @@ func TestDeleteLiveAndEnded(t *testing.T) {
 		}
 		assertMissing(t, st, "ses_live")
 	})
+}
+
+func TestDeleteDoesNotPassParentZmxSessionToInventoryOrTerminate(t *testing.T) {
+	const id = "ses_live"
+	t.Setenv("ZMX_SESSION", "parent-session")
+	t.Setenv("ATC_TEST_ZMX_NAME", zmx.NameForID(id))
+	bin, err := filepath.Abs(filepath.Join("..", "zmx", "testdata", "zmx-env-guard.sh"))
+	if err != nil {
+		t.Fatalf("resolve fake zmx path: %v", err)
+	}
+	mux := zmx.New(bin)
+	svc, st := newTestService(t, mux)
+	seedLive(t, st, id)
+
+	if err := svc.Delete(context.Background(), id); err != nil {
+		t.Fatalf("Delete inherited parent ZMX_SESSION: %v", err)
+	}
+	assertMissing(t, st, id)
 }
 
 func TestDeleteInventoryFailureLeavesLiveRecord(t *testing.T) {

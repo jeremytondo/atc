@@ -2,9 +2,11 @@ package zmx
 
 import (
 	"context"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // capture records the arguments of a single run invocation.
@@ -131,6 +133,72 @@ func TestSessionRunEnvSetsStableTerminalType(t *testing.T) {
 	assertEnvValue(t, got, "SHELL", "/usr/bin/zsh")
 	assertEnvValue(t, got, "TERM", defaultSessionTermType)
 	assertEnvCount(t, got, "TERM", 1)
+}
+
+func TestCommandsDoNotInheritParentZmxSession(t *testing.T) {
+	t.Setenv(zmxSessionEnv, "parent-session")
+	bin, err := filepath.Abs(filepath.Join("testdata", "zmx-env-guard.sh"))
+	if err != nil {
+		t.Fatalf("resolve fake zmx path: %v", err)
+	}
+	w := New(bin)
+
+	tests := []struct {
+		name string
+		run  func(context.Context) error
+	}{
+		{
+			name: "run",
+			run: func(ctx context.Context) error {
+				return w.Start(ctx, "atc-test", t.TempDir(), []string{"/bin/sh"})
+			},
+		},
+		{
+			name: "send",
+			run: func(ctx context.Context) error {
+				return w.Send(ctx, "atc-test", []byte("hello"))
+			},
+		},
+		{
+			name: "list",
+			run: func(ctx context.Context) error {
+				_, err := w.List(ctx)
+				return err
+			},
+		},
+		{
+			name: "terminate",
+			run: func(ctx context.Context) error {
+				return w.Terminate(ctx, "atc-test")
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.run(context.Background()); err != nil {
+				t.Fatalf("%s inherited parent %s: %v", tt.name, zmxSessionEnv, err)
+			}
+		})
+	}
+
+	t.Run("attach", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		session, err := w.Attach(ctx, "atc-test", 24, 80)
+		if err != nil {
+			t.Fatalf("Attach: %v", err)
+		}
+		defer session.Close()
+
+		buf := make([]byte, 256)
+		n, err := session.Read(buf)
+		if err != nil {
+			t.Fatalf("read attach output: %v", err)
+		}
+		if got := string(buf[:n]); !strings.Contains(got, "attached without parent ZMX_SESSION") {
+			t.Fatalf("attach output = %q", got)
+		}
+	})
 }
 
 func TestNameForIDIsDeterministicAndOpaque(t *testing.T) {
