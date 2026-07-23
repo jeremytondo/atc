@@ -41,10 +41,18 @@ struct WorkspaceResult: Identifiable {
 
 struct SessionResult: Identifiable {
     let ref: SessionRef
+    let identity: SessionIdentity
     let title: String
     let kind: SessionKind
     let matchedRanges: [Range<String.Index>]
+    fileprivate let matchQuality: SessionMatchQuality
     var id: PaletteResultID { .session(ref) }
+}
+
+fileprivate enum SessionMatchQuality: Int {
+    case index = 0
+    case title = 1
+    case typeExpansion = 2
 }
 
 /// A whole-query type keyword for the unscoped palette: a trimmed query of
@@ -182,12 +190,14 @@ enum CommandPaletteContent {
         keyword: PaletteTypeKeyword?,
         kind requiredKind: SessionKind? = nil
     ) -> [SessionResult] {
+        let sessionQuery = SessionQuery(query)
         return sessions.compactMap { session in
             guard session.belongs(to: activeWorkspace) else { return nil }
-            let title = SessionKind.displayName(session: session)
+            let identity = SessionIdentity(session: session)
+            let title = identity.fullLabel
             let kind = SessionKind.classify(session: session)
             guard requiredKind == nil || kind == requiredKind else { return nil }
-            let titleMatch = QueryMatcher.match(query, in: title)
+            let match = sessionQuery.match(identity: identity, title: title)
             let expandsKind: Bool
             switch kind {
             case .agent:
@@ -195,15 +205,17 @@ enum CommandPaletteContent {
             case .terminal:
                 expandsKind = keyword == .terminals
             }
-            guard titleMatch != nil || expandsKind else { return nil }
+            guard match != nil || expandsKind else { return nil }
             return SessionResult(
                 ref: SessionRef(
                     connectionID: activeWorkspace.connectionID,
                     sessionID: session.id
                 ),
+                identity: identity,
                 title: title,
                 kind: kind,
-                matchedRanges: titleMatch?.ranges ?? []
+                matchedRanges: match?.query?.ranges ?? [],
+                matchQuality: match?.quality ?? .typeExpansion
             )
         }.sorted(by: sessionComesFirst)
     }
@@ -258,10 +270,83 @@ enum CommandPaletteContent {
         _ lhs: SessionResult,
         _ rhs: SessionResult
     ) -> Bool {
+        if lhs.matchQuality != rhs.matchQuality {
+            return lhs.matchQuality.rawValue < rhs.matchQuality.rawValue
+        }
+        switch (lhs.identity.index, rhs.identity.index) {
+        case let (lhsIndex?, rhsIndex?) where lhsIndex != rhsIndex:
+            return lhsIndex < rhsIndex
+        case (_?, nil):
+            return true
+        case (nil, _?):
+            return false
+        default:
+            break
+        }
         let lhsTitle = lhs.title.lowercased()
         let rhsTitle = rhs.title.lowercased()
         return lhsTitle == rhsTitle
             ? lhs.ref.sessionID < rhs.ref.sessionID
             : lhsTitle < rhsTitle
+    }
+}
+
+private struct SessionQuery {
+    enum Kind {
+        case title(String)
+        case index(String)
+        case indexAndTitle(index: String, title: String)
+    }
+
+    struct Match {
+        let query: QueryMatch?
+        let quality: SessionMatchQuality
+    }
+
+    let kind: Kind
+
+    init(_ query: String) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty, trimmed.allSatisfy(\.isNumber) {
+            kind = .index(trimmed)
+            return
+        }
+
+        if let separator = trimmed.firstIndex(where: \.isWhitespace) {
+            let index = String(trimmed[..<separator])
+            let title = trimmed[separator...]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !index.isEmpty, index.allSatisfy(\.isNumber), !title.isEmpty {
+                kind = .indexAndTitle(index: index, title: title)
+                return
+            }
+        }
+
+        kind = .title(query)
+    }
+
+    func match(identity: SessionIdentity, title: String) -> Match? {
+        switch kind {
+        case .title(let query):
+            return QueryMatcher.match(query, in: title).map {
+                Match(query: $0, quality: .title)
+            }
+        case .index(let digits):
+            if index(digits, matches: identity.index) {
+                return Match(query: nil, quality: .index)
+            }
+            return QueryMatcher.match(digits, in: title).map {
+                Match(query: $0, quality: .title)
+            }
+        case .indexAndTitle(let digits, let query):
+            guard index(digits, matches: identity.index),
+                  let titleMatch = QueryMatcher.match(query, in: title)
+            else { return nil }
+            return Match(query: titleMatch, quality: .index)
+        }
+    }
+
+    private func index(_ digits: String, matches index: Int?) -> Bool {
+        index.map { String($0).hasPrefix(digits) } ?? false
     }
 }

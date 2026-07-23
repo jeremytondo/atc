@@ -121,6 +121,7 @@ nonisolated struct MockATCClient: ATCClient {
     var mockSessions: [Session] = [
         Session(
             id: "ses_running",
+            sessionIndex: 1,
             name: "Fix the parser",
             actionId: "act_vpj2tlg9viqd8ms52ptuvao5c4",
             actionName: "Claude",
@@ -134,6 +135,7 @@ nonisolated struct MockATCClient: ATCClient {
         ),
         Session(
             id: "ses_starting",
+            sessionIndex: 1,
             actionId: "act_fh9g7e6571qo53r0t647ughtfg",
             actionName: "Codex",
             isAgent: true,
@@ -156,6 +158,7 @@ nonisolated struct MockATCClient: ATCClient {
         ),
         Session(
             id: "ses_done",
+            sessionIndex: 1,
             name: "Yesterday's refactor",
             actionId: "act_vpj2tlg9viqd8ms52ptuvao5c4",
             actionName: "Claude",
@@ -170,6 +173,7 @@ nonisolated struct MockATCClient: ATCClient {
         // Interactive Shell (nil action ID) → classified as a Terminal.
         Session(
             id: "ses_shell",
+            sessionIndex: 2,
             isAgent: false,
             workingDir: "/home/dev/Projects/atelier",
             status: .live,
@@ -181,6 +185,7 @@ nonisolated struct MockATCClient: ATCClient {
         // General (non-agent) action → classified as a Terminal.
         Session(
             id: "ses_lazygit",
+            sessionIndex: 3,
             actionId: "act_00000000000000000000000000",
             actionName: "LazyGit",
             isAgent: false,
@@ -194,6 +199,7 @@ nonisolated struct MockATCClient: ATCClient {
         // Action deleted after the session ended; copied identity remains.
         Session(
             id: "ses_ghost",
+            sessionIndex: 2,
             actionId: "act_11111111111111111111111111",
             actionName: "Deleted Tool",
             isAgent: false,
@@ -207,6 +213,7 @@ nonisolated struct MockATCClient: ATCClient {
         // Another ended agent session.
         Session(
             id: "ses_abandoned",
+            sessionIndex: 4,
             name: "Abandoned attempt",
             actionId: "act_vpj2tlg9viqd8ms52ptuvao5c4",
             actionName: "Claude",
@@ -263,6 +270,11 @@ nonisolated struct MockATCClient: ATCClient {
         }
         let session = Session(
             id: "ses_" + String(UUID().uuidString.lowercased().prefix(8)),
+            sessionIndex: mockSessions
+                .filter { $0.workspace?.id == workspace.id }
+                .compactMap(\.sessionIndex)
+                .max()
+                .map { $0 + 1 } ?? 1,
             name: request.name,
             actionId: action?.id,
             actionName: action?.name,

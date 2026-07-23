@@ -16,6 +16,7 @@ struct SessionsStoreTests {
         #expect(started.actionId == "act_vpj2tlg9viqd8ms52ptuvao5c4")
         #expect(started.actionName == "Claude")
         #expect(started.isAgent)
+        #expect(started.sessionIndex == 5)
     }
 
     @Test("start without an Action ID returns an Interactive Shell Session")
@@ -29,6 +30,7 @@ struct SessionsStoreTests {
         #expect(started.actionId == nil)
         #expect(started.actionName == nil)
         #expect(!started.isAgent)
+        #expect(started.sessionIndex == 5)
     }
 
     @Test("rename merges the authoritative Session immediately")
@@ -46,5 +48,19 @@ struct SessionsStoreTests {
         #expect(renamed.actionId == target.actionId)
         #expect(renamed.actionName == target.actionName)
         #expect(renamed.isAgent == target.isAgent)
+    }
+
+    @Test("rename passes nil through to clear the custom name")
+    func renameClears() async throws {
+        let store = SessionsStore(client: MockATCClient())
+        await store.refresh()
+        let target = try #require(store.session(id: "ses_running"))
+        #expect(target.name != nil)
+
+        let renamed = try await store.rename(id: target.id, name: nil)
+
+        #expect(renamed.name == nil)
+        #expect(store.session(id: target.id)?.name == nil)
+        #expect(SessionIdentity(session: renamed).fullLabel == "Claude")
     }
 }

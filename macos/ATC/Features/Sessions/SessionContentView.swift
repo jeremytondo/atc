@@ -100,7 +100,7 @@ private struct SessionEndedView: View {
     @State private var actionError: String?
 
     private var displayName: String {
-        SessionKind.displayName(session: session)
+        SessionIdentity(session: session).indexedLabel
     }
 
     var body: some View {

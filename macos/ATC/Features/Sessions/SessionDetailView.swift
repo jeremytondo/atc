@@ -6,9 +6,13 @@ struct SessionDetailView: View {
     let session: Session
 
     var body: some View {
+        let identity = SessionIdentity(session: session)
         Form {
             Section("Session") {
-                LabeledContent("Name", value: SessionKind.displayName(session: session))
+                LabeledContent("Identity", value: identity.indexedLabel)
+                if let customName = identity.customName {
+                    LabeledContent("Custom Name", value: customName)
+                }
                 LabeledContent("ID", value: session.id)
                 LabeledContent("Status") {
                     StatusBadge(session: session, showLabel: true)
