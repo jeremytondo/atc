@@ -248,7 +248,7 @@ final class StatefulWorkspacesClient: ATCClient, @unchecked Sendable {
     func startSession(_ request: StartSessionRequest) async throws -> Session {
         try await inner.startSession(request)
     }
-    func renameSession(id: String, name: String) async throws -> Session {
+    func renameSession(id: String, name: String?) async throws -> Session {
         var detail = try await inner.renameSession(id: id, name: name)
         lock.withLock { renamedSessions[id] = detail.name }
         detail.updatedAt = .now

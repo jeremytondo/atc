@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -27,7 +29,7 @@ type sendKeyRequest struct {
 }
 
 type renameSessionRequest struct {
-	Name string `json:"name"`
+	Name json.RawMessage `json:"name"`
 }
 
 // SessionListResponse is the wire envelope for session list endpoints. It is
@@ -40,17 +42,18 @@ type SessionListResponse struct {
 // SessionResponse is the wire shape shared by session list and detail
 // endpoints. Action identity is omitted for Interactive Shell sessions.
 type SessionResponse struct {
-	ID         string            `json:"id"`
-	Name       string            `json:"name,omitempty"`
-	ActionID   string            `json:"actionId,omitempty"`
-	ActionName string            `json:"actionName,omitempty"`
-	IsAgent    bool              `json:"isAgent"`
-	WorkingDir string            `json:"workingDir"`
-	Status     session.Status    `json:"status"`
-	CreatedAt  string            `json:"createdAt"`
-	UpdatedAt  string            `json:"updatedAt"`
-	Workspace  *SessionWorkspace `json:"workspace,omitempty"`
-	Project    *SessionProject   `json:"project,omitempty"`
+	ID           string            `json:"id"`
+	SessionIndex int               `json:"sessionIndex"`
+	Name         string            `json:"name,omitempty"`
+	ActionID     string            `json:"actionId,omitempty"`
+	ActionName   string            `json:"actionName,omitempty"`
+	IsAgent      bool              `json:"isAgent"`
+	WorkingDir   string            `json:"workingDir"`
+	Status       session.Status    `json:"status"`
+	CreatedAt    string            `json:"createdAt"`
+	UpdatedAt    string            `json:"updatedAt"`
+	Workspace    *SessionWorkspace `json:"workspace,omitempty"`
+	Project      *SessionProject   `json:"project,omitempty"`
 }
 
 // SessionWorkspace is the workspace object nested on sessions.
@@ -133,7 +136,11 @@ func (routes apiRoutes) patchSession(w http.ResponseWriter, r *http.Request) {
 	if !decodeRenameJSON(w, r, &req) {
 		return
 	}
-	renamed, err := routes.sessions.Rename(r.Context(), r.PathValue("id"), req.Name)
+	name, ok := decodeSessionName(w, req.Name)
+	if !ok {
+		return
+	}
+	renamed, err := routes.sessions.Rename(r.Context(), r.PathValue("id"), name)
 	if err != nil {
 		writeSessionError(w, err)
 		return
@@ -246,18 +253,35 @@ func writeSessionError(w http.ResponseWriter, err error) {
 
 func listItemResponse(s session.Session) SessionResponse {
 	return SessionResponse{
-		ID:         s.ID,
-		Name:       s.Name,
-		ActionID:   s.ActionID,
-		ActionName: s.ActionName,
-		IsAgent:    s.IsAgent,
-		WorkingDir: s.WorkingDir,
-		Status:     s.Status,
-		CreatedAt:  formatTime(s.CreatedAt),
-		UpdatedAt:  formatTime(s.UpdatedAt),
-		Workspace:  sessionWorkspaceResponse(s.Workspace),
-		Project:    sessionProjectResponse(s.Project),
+		ID:           s.ID,
+		SessionIndex: s.SessionIndex,
+		Name:         s.Name,
+		ActionID:     s.ActionID,
+		ActionName:   s.ActionName,
+		IsAgent:      s.IsAgent,
+		WorkingDir:   s.WorkingDir,
+		Status:       s.Status,
+		CreatedAt:    formatTime(s.CreatedAt),
+		UpdatedAt:    formatTime(s.UpdatedAt),
+		Workspace:    sessionWorkspaceResponse(s.Workspace),
+		Project:      sessionProjectResponse(s.Project),
 	}
+}
+
+func decodeSessionName(w http.ResponseWriter, raw json.RawMessage) (*string, bool) {
+	if len(raw) == 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "name is required")
+		return nil, false
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, true
+	}
+	var name string
+	if err := json.Unmarshal(raw, &name); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "name must be a string or null")
+		return nil, false
+	}
+	return &name, true
 }
 
 func detailResponse(s session.Session) SessionResponse {

@@ -65,6 +65,7 @@ export type SessionProject = {
 
 export type SessionListItem = {
   id: string;
+  sessionIndex: number;
   name?: string;
   // Absent actionId/actionName means the session is an Interactive Shell.
   actionId?: string;
@@ -189,7 +190,7 @@ export async function startSession(body: StartSessionRequest): Promise<SessionDe
   return (await res.json()) as SessionDetail;
 }
 
-export async function renameSession(id: string, name: string): Promise<SessionDetail> {
+export async function renameSession(id: string, name: string | null): Promise<SessionDetail> {
   const res = await apiFetch(
     `/api/sessions/${encodeURIComponent(id)}`,
     jsonInit('PATCH', { name })

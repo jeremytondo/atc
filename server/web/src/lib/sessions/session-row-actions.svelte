@@ -25,7 +25,7 @@
   let draft = $state('');
   let saving = $state(false);
   let saveError = $state('');
-  let canSave = $derived(canRenameSession(draft));
+  let canSave = $derived(canRenameSession(session, draft));
 
   function beginRename() {
     draft = sessionRenameDraft(session);
@@ -79,7 +79,7 @@
         value={draft}
         oninput={(e) => (draft = e.currentTarget.value)}
       />
-      <p class="hint">Changes only the display name.</p>
+      <p class="hint">Changes only the display name. Leave empty to clear it.</p>
       {#if saveError}
         <div
           class="card"

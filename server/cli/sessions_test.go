@@ -121,7 +121,7 @@ func TestSessionsListJSONUsesQuery(t *testing.T) {
 func TestSessionsListTextShowsCopiedActionIdentity(t *testing.T) {
 	lookup := testRuntimeLookup(t)
 	serveUnixAPI(t, lookup, func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"sessions":[{"id":"ses_agent","actionId":"act_codex","actionName":"Codex","isAgent":true,"workingDir":"/repo","status":"live","createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z"},{"id":"ses_shell","isAgent":false,"workingDir":"/repo","status":"ended","createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z"}]}`))
+		_, _ = w.Write([]byte(`{"sessions":[{"id":"ses_agent","sessionIndex":1,"actionId":"act_codex","actionName":"Codex","isAgent":true,"workingDir":"/repo","status":"live","createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z"},{"id":"ses_shell","sessionIndex":2,"isAgent":false,"workingDir":"/repo","status":"ended","createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z"}]}`))
 	})
 
 	cmd := sessionsCommand(lookup)
@@ -132,7 +132,7 @@ func TestSessionsListTextShowsCopiedActionIdentity(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	got := out.String()
-	if !strings.Contains(got, "ses_agent\tlive\tCodex\ttrue") || !strings.Contains(got, "ses_shell\tended\t(interactive shell)\tfalse") {
+	if !strings.Contains(got, "1\tses_agent\tlive\tCodex\ttrue") || !strings.Contains(got, "2\tses_shell\tended\t(interactive shell)\tfalse") {
 		t.Fatalf("output = %q", got)
 	}
 }
@@ -143,7 +143,7 @@ func TestSessionsShowTextIncludesFullDetail(t *testing.T) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/sessions/ses_show" {
 			t.Fatalf("request = %s %s, want GET /api/sessions/ses_show", r.Method, r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"id":"ses_show","name":"Review","actionId":"act_codex","actionName":"Codex","isAgent":true,"workingDir":"/repo","status":"live","createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z"}`))
+		_, _ = w.Write([]byte(`{"id":"ses_show","sessionIndex":7,"name":"Review","actionId":"act_codex","actionName":"Codex","isAgent":true,"workingDir":"/repo","status":"live","createdAt":"2026-06-25T15:04:05Z","updatedAt":"2026-06-25T15:04:06Z"}`))
 	})
 
 	cmd := sessionsCommand(lookup)
@@ -157,6 +157,7 @@ func TestSessionsShowTextIncludesFullDetail(t *testing.T) {
 	got := out.String()
 	for _, want := range []string{
 		"id\tses_show\n",
+		"sessionIndex\t7\n",
 		"actionId\tact_codex\n",
 		"actionName\tCodex\n",
 		"isAgent\ttrue\n",
@@ -192,6 +193,43 @@ func TestSessionsRenamePatchesName(t *testing.T) {
 	}
 	if got := out.String(); got != "ses_123\tRenamed\n" {
 		t.Fatalf("output = %q", got)
+	}
+}
+
+func TestSessionsRenameClearSendsExplicitNull(t *testing.T) {
+	lookup := testRuntimeLookup(t)
+	serveUnixAPI(t, lookup, func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		name, present := req["name"]
+		if !present || name != nil {
+			t.Fatalf("name = %#v, present=%t; want explicit null", name, present)
+		}
+		_, _ = w.Write([]byte(`{"id":"ses_123","sessionIndex":1,"isAgent":false,"workingDir":"/repo","status":"live","createdAt":"2026-07-09T12:30:00Z","updatedAt":"2026-07-09T14:00:00Z"}`))
+	})
+
+	cmd := sessionsCommand(lookup)
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"rename", "ses_123", "--clear"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute clear: %v", err)
+	}
+}
+
+func TestSessionsRenameValidatesClearUsage(t *testing.T) {
+	for _, args := range [][]string{
+		{"rename", "ses_123"},
+		{"rename", "ses_123", "Name", "--clear"},
+	} {
+		cmd := sessionsCommand(testRuntimeLookup(t))
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err == nil {
+			t.Fatalf("Execute(%v) succeeded", args)
+		}
 	}
 }
 

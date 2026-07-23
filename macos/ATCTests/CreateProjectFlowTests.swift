@@ -31,7 +31,7 @@ private nonisolated final class RecordingClient: ATCClient, @unchecked Sendable 
         try await inner.sessions(status: status)
     }
     func session(id: String) async throws -> Session { try await inner.session(id: id) }
-    func renameSession(id: String, name: String) async throws -> Session {
+    func renameSession(id: String, name: String?) async throws -> Session {
         try await inner.renameSession(id: id, name: name)
     }
     func deleteSession(id: String) async throws { try await inner.deleteSession(id: id) }

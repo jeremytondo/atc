@@ -66,8 +66,9 @@ const (
 // domain value; the API layer owns its own wire types and serialization, so this
 // struct carries no JSON tags.
 type Session struct {
-	ID   string
-	Name string
+	ID           string
+	SessionIndex int
+	Name         string
 	// ActionID and ActionName are immutable launch provenance. Both are empty
 	// for the Interactive Shell.
 	ActionID    string
@@ -231,9 +232,14 @@ func (s *Store) MarkEnded(ctx context.Context, id string) (Session, error) {
 
 // RenameSession updates a Live session's display name. It does not affect
 // process identity or lifecycle state.
-func (s *Store) RenameSession(ctx context.Context, id, name string) (Session, error) {
-	if strings.TrimSpace(name) == "" {
-		return Session{}, errors.New("rename session: name is required")
+func (s *Store) RenameSession(ctx context.Context, id string, name *string) (Session, error) {
+	var storedName any
+	if name != nil {
+		trimmed := strings.TrimSpace(*name)
+		if trimmed == "" {
+			return Session{}, errors.New("rename session: name is required")
+		}
+		storedName = trimmed
 	}
 	q := s.queries()
 	now := q.nowUTC()
@@ -242,7 +248,7 @@ func (s *Store) RenameSession(ctx context.Context, id, name string) (Session, er
 	SET name = ?, updated_at = ?
 	WHERE id = ? AND status = ?
 	RETURNING`+sessionColumnsSQL,
-		name, formatTime(now), id, StatusLive,
+		storedName, formatTime(now), id, StatusLive,
 	)
 }
 
@@ -318,12 +324,33 @@ func (q queries) CreateStarting(ctx context.Context, input CreateSessionInput) (
 	// session under a missing workspace.
 	created, err := q.scanOne(q.runner.QueryRowContext(ctx, `
 	INSERT INTO sessions (
-		id, name, action_id, action_name, is_agent, working_dir, status, workspace_id, created_at, updated_at
+		id, session_index, name, action_id, action_name, is_agent, working_dir, status, workspace_id, created_at, updated_at
 	)
-	SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+	SELECT ?,
+		CASE
+			WHEN NOT EXISTS (
+				SELECT 1
+				FROM sessions
+				WHERE workspace_id = ? AND session_index = 1
+			) THEN 1
+			ELSE (
+				SELECT MIN(current.session_index + 1)
+				FROM sessions AS current
+				WHERE current.workspace_id = ?
+					AND NOT EXISTS (
+						SELECT 1
+						FROM sessions AS successor
+						WHERE successor.workspace_id = current.workspace_id
+							AND successor.session_index = current.session_index + 1
+					)
+			)
+		END,
+		?, ?, ?, ?, ?, ?, ?, ?, ?
 	WHERE EXISTS (SELECT 1 FROM workspaces WHERE id = ?)
 	RETURNING`+sessionColumnsSQL,
 		input.ID,
+		input.WorkspaceID,
+		input.WorkspaceID,
 		nullableString(input.Name),
 		nullableString(input.ActionID),
 		nullableString(input.ActionName),
@@ -519,6 +546,7 @@ func (q queries) nowUTC() time.Time {
 // and project columns) used by reads, which JOIN workspaces and projects.
 const sessionColumnsSQL = `
 		id,
+		COALESCE(session_index, 0),
 		COALESCE(name, ''),
 		COALESCE(action_id, ''),
 		COALESCE(action_name, ''),
@@ -531,6 +559,7 @@ const sessionColumnsSQL = `
 
 const sessionJoinColumnsSQL = `
 		s.id,
+		COALESCE(s.session_index, 0),
 		COALESCE(s.name, ''),
 		COALESCE(s.action_id, ''),
 		COALESCE(s.action_name, ''),
@@ -578,6 +607,7 @@ func scanSessionColumns(row scanner, extra ...any) (Session, error) {
 	var createdAt, updatedAt string
 	dests := []any{
 		&session.ID,
+		&session.SessionIndex,
 		&session.Name,
 		&session.ActionID,
 		&session.ActionName,

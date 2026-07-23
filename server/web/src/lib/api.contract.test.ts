@@ -83,7 +83,7 @@ const sessionRenameContract = {
   ...sessionRename.response,
   status: sessionStatus(sessionRename.response.status)
 } satisfies SessionDetail;
-sessionRename.request satisfies { name: string };
+sessionRename.request satisfies { name: string | null };
 sessionStart.request satisfies StartSessionRequest;
 projectsList.response satisfies { projects: Project[] };
 projectCreate.response satisfies Project;
@@ -129,6 +129,7 @@ describe('api client unwraps fixture responses', () => {
 	mockFetch(sessionsContract);
     const sessions = await listSessions();
     expect(sessions.map((s) => s.id)).toEqual(['ses_fixture01']);
+    expect(sessions[0].sessionIndex).toBe(3);
     expect(sessions[0].project?.id).toBe('prj_fixture01');
     expect(sessions[0].workspace?.id).toBe('wsp_fixture01');
   });
@@ -137,6 +138,7 @@ describe('api client unwraps fixture responses', () => {
 	mockFetch(sessionStartContract);
     const detail = await startSession(sessionStart.request);
 	expect(detail.status).toBe('live');
+    expect(detail.sessionIndex).toBe(3);
     expect(detail.actionName).toBe('Claude');
     expect(detail.isAgent).toBe(true);
     expect(detail.workspace?.id).toBe('wsp_fixture01');
@@ -145,6 +147,7 @@ describe('api client unwraps fixture responses', () => {
   it('getSession returns an Interactive Shell session without action identity', async () => {
     mockFetch(sessionDetailContract);
     const detail = await getSession('ses/fixture 02');
+    expect(detail.sessionIndex).toBe(1);
     expect(detail.actionId).toBeUndefined();
     expect(detail.actionName).toBeUndefined();
     expect(detail.isAgent).toBe(false);
@@ -154,7 +157,7 @@ describe('api client unwraps fixture responses', () => {
   it('renameSession patches the encoded session path and returns updated detail', async () => {
     mockFetch(sessionRenameContract);
     const detail = await renameSession('ses/fixture 01', sessionRename.request.name);
-    expect(detail.name).toBe('Review login fix');
+    expect(detail.name).toBeUndefined();
     expect(fetch).toHaveBeenCalledWith(
       '/api/sessions/ses%2Ffixture%2001',
       expect.objectContaining({

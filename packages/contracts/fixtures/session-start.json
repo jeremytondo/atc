@@ -9,6 +9,7 @@
   },
   "response": {
     "id": "ses_fixture01",
+    "sessionIndex": 3,
     "name": "Fix the login bug",
     "actionId": "act_vpj2tlg9viqd8ms52ptuvao5c4",
     "actionName": "Claude",

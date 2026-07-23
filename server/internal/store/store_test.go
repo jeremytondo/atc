@@ -2,12 +2,18 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/pressly/goose/v3"
 )
 
 func TestOpenCreatesParentAndMigrates(t *testing.T) {
@@ -61,6 +67,71 @@ func TestOpenCreatesParentAndMigrates(t *testing.T) {
 	}
 	if busyTimeout <= 0 {
 		t.Fatalf("busy_timeout = %d, want positive", busyTimeout)
+	}
+}
+
+func TestSessionIndexMigrationBackfillsOldestFirstPerWorkspace(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open(sqliteDriver, sqliteDSN(filepath.Join(t.TempDir(), "atc.db")))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	migrationFS, err := fs.Sub(migrations, "migrations")
+	if err != nil {
+		t.Fatalf("migration fs: %v", err)
+	}
+	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrationFS, goose.WithLogger(goose.NopLogger()))
+	if err != nil {
+		t.Fatalf("new migration provider: %v", err)
+	}
+	if _, err := provider.UpTo(ctx, 1); err != nil {
+		t.Fatalf("apply baseline: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO projects (id, name, working_dir, created_at, updated_at)
+		VALUES ('prj_backfill', 'Backfill', '/work', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+		INSERT INTO workspaces (id, project_id, name, created_at, updated_at)
+		VALUES
+			('wsp_a', 'prj_backfill', 'A', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+			('wsp_b', 'prj_backfill', 'B', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+		INSERT INTO sessions (
+			id, is_agent, working_dir, status, workspace_id, created_at, updated_at
+		) VALUES
+			('ses_b', 1, '/work', 'live', 'wsp_a', '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z'),
+			('ses_oldest', 0, '/work', 'ended', 'wsp_a', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+			('ses_a', 0, '/work', 'live', 'wsp_a', '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z'),
+			('ses_other_workspace', 0, '/work', 'live', 'wsp_b', '2026-01-03T00:00:00Z', '2026-01-03T00:00:00Z')
+	`); err != nil {
+		t.Fatalf("seed pre-migration rows: %v", err)
+	}
+	if _, err := provider.UpTo(ctx, 2); err != nil {
+		t.Fatalf("apply session index migration: %v", err)
+	}
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, session_index
+		FROM sessions
+		ORDER BY workspace_id, session_index
+	`)
+	if err != nil {
+		t.Fatalf("query backfill: %v", err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var id string
+		var index int
+		if err := rows.Scan(&id, &index); err != nil {
+			t.Fatalf("scan backfill: %v", err)
+		}
+		got = append(got, id+":"+fmt.Sprint(index))
+	}
+	want := []string{"ses_oldest:1", "ses_a:2", "ses_b:3", "ses_other_workspace:1"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("backfill = %v, want %v", got, want)
 	}
 }
 
@@ -295,7 +366,7 @@ func TestRenameSessionPersistsAndReturnsHydratedRecord(t *testing.T) {
 	if _, err := st.PromoteToLive(ctx, created.ID); err != nil {
 		t.Fatalf("PromoteToLive: %v", err)
 	}
-	renamed, err := st.RenameSession(ctx, created.ID, "After")
+	renamed, err := st.RenameSession(ctx, created.ID, storeSessionName("After"))
 	if err != nil {
 		t.Fatalf("RenameSession: %v", err)
 	}
@@ -309,14 +380,125 @@ func TestRenameSessionPersistsAndReturnsHydratedRecord(t *testing.T) {
 	if err != nil || got.Name != "After" {
 		t.Fatalf("Get = %+v err=%v", got, err)
 	}
+	cleared, err := st.RenameSession(ctx, created.ID, nil)
+	if err != nil {
+		t.Fatalf("clear RenameSession: %v", err)
+	}
+	if cleared.Name != "" {
+		t.Fatalf("cleared name = %q, want empty domain value", cleared.Name)
+	}
+	var storedName any
+	if err := st.db.QueryRowContext(ctx, `SELECT name FROM sessions WHERE id = ?`, created.ID).Scan(&storedName); err != nil {
+		t.Fatalf("query cleared name: %v", err)
+	}
+	if storedName != nil {
+		t.Fatalf("stored cleared name = %#v, want NULL", storedName)
+	}
 	if _, err := st.MarkEnded(ctx, created.ID); err != nil {
 		t.Fatalf("MarkEnded: %v", err)
 	}
-	if _, err := st.RenameSession(ctx, created.ID, "After ending"); !errors.Is(err, ErrSessionNotFound) {
+	if _, err := st.RenameSession(ctx, created.ID, storeSessionName("After ending")); !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("rename ended err = %v, want ErrSessionNotFound", err)
 	}
-	if _, err := st.RenameSession(ctx, "ses_missing", "After"); !errors.Is(err, ErrSessionNotFound) {
+	if _, err := st.RenameSession(ctx, "ses_missing", storeSessionName("After")); !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("missing err = %v, want ErrSessionNotFound", err)
+	}
+}
+
+func TestSessionIndexesUseSmallestAvailableWorkspaceNumber(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	defer st.Close()
+	seedWorkspace(t, st, "prj_main", "wsp_main")
+	if _, err := st.CreateWorkspace(ctx, CreateWorkspaceInput{ID: "wsp_other", ProjectID: "prj_main", Name: "Other"}); err != nil {
+		t.Fatalf("CreateWorkspace other: %v", err)
+	}
+
+	create := func(id, workspaceID string) Session {
+		t.Helper()
+		created, err := st.CreateStarting(ctx, CreateSessionInput{
+			ID: id, IsAgent: id == "ses_2", WorkingDir: "/work", WorkspaceID: workspaceID,
+		})
+		if err != nil {
+			t.Fatalf("CreateStarting(%s): %v", id, err)
+		}
+		return created
+	}
+
+	first := create("ses_1", "wsp_main")
+	second := create("ses_2", "wsp_main")
+	third := create("ses_3", "wsp_main")
+	if first.SessionIndex != 1 || second.SessionIndex != 2 || third.SessionIndex != 3 {
+		t.Fatalf("sequential indexes = %d, %d, %d", first.SessionIndex, second.SessionIndex, third.SessionIndex)
+	}
+	other := create("ses_other", "wsp_other")
+	if other.SessionIndex != 1 {
+		t.Fatalf("other workspace index = %d, want 1", other.SessionIndex)
+	}
+
+	for _, id := range []string{first.ID, second.ID, third.ID} {
+		if _, err := st.PromoteToLive(ctx, id); err != nil {
+			t.Fatalf("PromoteToLive(%s): %v", id, err)
+		}
+	}
+	if err := st.ForgetSession(ctx, second.ID); err != nil {
+		t.Fatalf("ForgetSession second: %v", err)
+	}
+	reused := create("ses_reused", "wsp_main")
+	if reused.SessionIndex != 2 {
+		t.Fatalf("reused index = %d, want 2", reused.SessionIndex)
+	}
+	if _, err := st.MarkEnded(ctx, first.ID); err != nil {
+		t.Fatalf("MarkEnded first: %v", err)
+	}
+	next := create("ses_next", "wsp_main")
+	if next.SessionIndex != 4 {
+		t.Fatalf("index after ended tombstone = %d, want 4", next.SessionIndex)
+	}
+}
+
+func TestConcurrentSessionIndexAllocationIsUniqueAndGapFree(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	defer st.Close()
+	seedWorkspace(t, st, "prj_main", "wsp_main")
+
+	const count = 20
+	results := make(chan Session, count)
+	errs := make(chan error, count)
+	var wg sync.WaitGroup
+	for i := 0; i < count; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			created, err := st.CreateStarting(ctx, CreateSessionInput{
+				ID: fmt.Sprintf("ses_concurrent_%02d", i), WorkingDir: "/work", WorkspaceID: "wsp_main",
+			})
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- created
+		}(i)
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		t.Fatalf("CreateStarting: %v", err)
+	}
+
+	indexes := make(map[int]bool, count)
+	for created := range results {
+		if indexes[created.SessionIndex] {
+			t.Fatalf("duplicate session index %d", created.SessionIndex)
+		}
+		indexes[created.SessionIndex] = true
+	}
+	for index := 1; index <= count; index++ {
+		if !indexes[index] {
+			t.Fatalf("missing session index %d; got %v", index, indexes)
+		}
 	}
 }
 
@@ -689,6 +871,10 @@ func assertSessionIDs(t *testing.T, sessions []Session, want []string) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("session ids = %v, want %v", got, want)
 	}
+}
+
+func storeSessionName(name string) *string {
+	return &name
 }
 
 type testClock struct {

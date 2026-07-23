@@ -3,11 +3,11 @@
     "PATCH /sessions/{id}"
   ],
   "request": {
-    "name": "Review login fix"
+    "name": null
   },
   "response": {
     "id": "ses_fixture01",
-    "name": "Review login fix",
+    "sessionIndex": 3,
     "actionId": "act_fh9g7e6571qo53r0t647ughtfg",
     "actionName": "Codex",
     "isAgent": true,

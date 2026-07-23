@@ -10,6 +10,7 @@ import {
 
 const session: SessionListItem = {
   id: 'ses_123',
+  sessionIndex: 3,
   name: 'Before',
   actionId: 'act_123',
   actionName: 'Codex',
@@ -27,17 +28,19 @@ const renamed: SessionDetail = {
 };
 
 describe('shared session rename interaction', () => {
-  it('prefills the displayed name and falls back to the displayed id', () => {
+  it('prefills the custom name and leaves unnamed sessions blank', () => {
     expect(sessionRenameDraft(session)).toBe('Before');
-    expect(sessionRenameDraft({ ...session, name: '   ' })).toBe('ses_123');
+    expect(sessionRenameDraft({ ...session, name: '   ' })).toBe('');
   });
 
-  it('disables blank drafts and trims before submitting', async () => {
-    expect(canRenameSession('   ')).toBe(false);
+  it('trims set names and sends null to clear an existing name', async () => {
+    expect(canRenameSession(session, '   ')).toBe(true);
+    expect(canRenameSession({ ...session, name: undefined }, '   ')).toBe(false);
     const rename = vi.fn(async () => renamed);
     await expect(submitSessionRename(session, '  After  ', rename)).resolves.toBe(renamed);
     expect(rename).toHaveBeenCalledWith('ses_123', 'After');
-    await expect(submitSessionRename(session, '   ', rename)).rejects.toThrow('Name is required');
+    await expect(submitSessionRename(session, '   ', rename)).resolves.toBe(renamed);
+    expect(rename).toHaveBeenLastCalledWith('ses_123', null);
   });
 
   it('replaces the authoritative list item returned by rename', () => {

@@ -109,6 +109,7 @@
         {:else}
           <span class="sdot" aria-hidden="true"></span>
         {/if}
+        <span class="badge">[{s.sessionIndex}]</span>
         <div class="sident">
           {#if s.name?.trim()}
             <span class="sname">{s.name}</span>

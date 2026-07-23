@@ -329,12 +329,30 @@ func TestPatchSessionRenamesAndDecodesStrictly(t *testing.T) {
 	if renamed.Status != original.Status || renamed.WorkingDir != original.WorkingDir || len(mux.sessions) != 1 || mux.sessions[0].Name != zmx.NameForID(original.ID) {
 		t.Fatalf("rename changed session identity/config: before=%+v after=%+v", original, renamed)
 	}
+	if renamed.SessionIndex != original.SessionIndex || renamed.SessionIndex == 0 {
+		t.Fatalf("rename changed or omitted session index: before=%+v after=%+v", original, renamed)
+	}
+
+	rec = do(t, env.handler, http.MethodPatch, "/sessions/"+original.ID, `{"name":null}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear status = %d, want 200 (%s)", rec.Code, rec.Body)
+	}
+	var cleared SessionDetail
+	if err := json.NewDecoder(rec.Body).Decode(&cleared); err != nil {
+		t.Fatalf("decode clear: %v", err)
+	}
+	if cleared.Name != "" || cleared.SessionIndex != original.SessionIndex {
+		t.Fatalf("cleared = %+v", cleared)
+	}
 
 	for _, tc := range []struct {
 		name, id, body, code string
 		status               int
 	}{
+		{name: "empty", id: original.ID, body: `{"name":""}`, status: http.StatusBadRequest, code: "invalid_request"},
 		{name: "blank", id: original.ID, body: `{"name":"   "}`, status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "absent name", id: original.ID, body: `{}`, status: http.StatusBadRequest, code: "invalid_request"},
+		{name: "wrong type", id: original.ID, body: `{"name":42}`, status: http.StatusBadRequest, code: "invalid_request"},
 		{name: "unknown field", id: original.ID, body: `{"name":"X","status":"ended"}`, status: http.StatusBadRequest, code: "invalid_request"},
 		{name: "trailing data", id: original.ID, body: `{"name":"X"}{"name":"Y"}`, status: http.StatusBadRequest, code: "invalid_request"},
 		{name: "missing", id: "ses_missing", body: `{"name":"X"}`, status: http.StatusNotFound, code: "session_not_found"},
