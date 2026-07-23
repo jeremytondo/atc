@@ -1,7 +1,7 @@
 import Foundation
 
-struct StartupEntry: Identifiable, Codable, Equatable {
-    enum Target: Codable, Equatable {
+struct StartupEntry: Identifiable, Codable, Equatable, Sendable {
+    enum Target: Codable, Equatable, Sendable {
         case action(id: String)
         case shell
     }
@@ -33,7 +33,7 @@ struct StartupEntry: Identifiable, Codable, Equatable {
 /// Value-semantic startup configuration whose mutations preserve the single
 /// Default Session invariant. Decoding also repairs stale or malformed
 /// default references instead of allowing invalid persisted state into the app.
-struct StartupConfiguration: Codable, Equatable {
+struct StartupConfiguration: Codable, Equatable, Sendable {
     private(set) var entries: [StartupEntry]
     private(set) var defaultEntryID: UUID?
 
@@ -105,7 +105,7 @@ struct StartupConfiguration: Codable, Equatable {
     }
 }
 
-enum ProjectStartupMode: String, Codable, CaseIterable, Equatable {
+enum ProjectStartupMode: String, Codable, CaseIterable, Equatable, Sendable {
     case useConnectionDefaults
     case custom
 }

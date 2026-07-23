@@ -1,14 +1,14 @@
 import Foundation
 import ATCAPI
 
-enum StartupEntryAvailability: Equatable {
+enum StartupEntryAvailability: Equatable, Sendable {
     case valid
     case disabled
     case missing
     case unableToValidate
 }
 
-struct ValidatedStartupEntry: Identifiable, Equatable {
+struct ValidatedStartupEntry: Identifiable, Equatable, Sendable {
     let entryID: UUID
     let availability: StartupEntryAvailability
     let cachedActionName: String?
@@ -16,7 +16,7 @@ struct ValidatedStartupEntry: Identifiable, Equatable {
     var id: UUID { entryID }
 }
 
-struct StartupConfigurationValidation: Equatable {
+struct StartupConfigurationValidation: Equatable, Sendable {
     let entries: [ValidatedStartupEntry]
     let canEdit: Bool
 

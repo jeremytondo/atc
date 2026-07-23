@@ -22,11 +22,11 @@ A Server-owned task context within one Project. In the initial version, every Wo
 _Avoid_: Checkout, worktree
 
 **Workspace Startup Configuration**:
-The local macOS preference that lists Action and Interactive Shell entries for Workspace startup. Each Connection has defaults; a Project either uses those defaults with live inheritance or has a Custom configuration copied once and then independent. An explicitly empty Custom configuration suppresses the Connection defaults.
+The local macOS preference that lists Action and Interactive Shell entries launched when a Workspace is created. Each Connection has defaults; a Project either uses those defaults with live inheritance or has a Custom configuration copied once and then independent. An explicitly empty Custom configuration suppresses the Connection defaults.
 _Avoid_: Workspace template, server startup configuration
 
 **Default Session**:
-The one entry designated as the Default in every nonempty Workspace Startup Configuration. The first entry added becomes Default, the designation can be transferred, and removing it promotes the earliest remaining entry.
+The one entry designated as the Default in every nonempty Workspace Startup Configuration. It launches first during Workspace creation, and the new Workspace opens with that Session selected after it starts. The first entry added becomes Default, the designation can be transferred, and removing it promotes the earliest remaining entry.
 _Avoid_: Primary Session, first Session
 
 **Session**:

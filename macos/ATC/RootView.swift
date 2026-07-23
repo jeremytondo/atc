@@ -59,10 +59,24 @@ struct RootView: View {
         .sheet(isPresented: $windowState.isCreateProjectPresented) {
             CreateProjectSheet()
         }
-        .sheet(item: $windowState.createWorkspaceContext) { context in
-            CreateWorkspaceSheet(context: context) { ref in
-                _ = windowState.activateWorkspace(ref, in: appModel)
-            }
+        .sheet(item: $windowState.createWorkspaceContext, onDismiss: {
+            windowState.presentPendingWorkspaceStartupEditor()
+        }) { context in
+            CreateWorkspaceSheet(
+                context: context,
+                onCreated: { workspaceRef, sessionRef in
+                    guard windowState.activateWorkspace(workspaceRef, in: appModel) else {
+                        return
+                    }
+                    if let sessionRef {
+                        _ = windowState.selectSession(sessionRef, in: appModel)
+                    }
+                },
+                onNotice: { windowState.startupNotice = $0 },
+                onEditStartupSettings: {
+                    windowState.editWorkspaceStartupAfterCreateSheetDismisses($0)
+                }
+            )
         }
         .sheet(item: $windowState.startSessionKind, onDismiss: {
             windowState.requestTerminalFocus()
@@ -80,6 +94,16 @@ struct RootView: View {
             appModel.reconcileTerminalLifecycle()
             windowState.reconcile(in: appModel)
         }
+        .overlay(alignment: .top) {
+            if let notice = windowState.startupNotice {
+                StartupNoticeBanner(notice: notice) {
+                    windowState.startupNotice = nil
+                }
+                .padding(Spacing.md)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy, value: windowState.startupNotice?.id)
     }
 
     private var mainContent: some View {
@@ -134,6 +158,40 @@ struct RootView: View {
             newTerminal: { windowState.startSessionKind = .terminal },
             creationEnabled: windowState.canStartSession(in: appModel)
         )
+    }
+}
+
+private struct StartupNoticeBanner: View {
+    let notice: StartupNotice
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Spacing.md) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: Spacing.xs) {
+                Text("Workspace Startup — \(notice.workspaceName)")
+                    .font(.callout.weight(.semibold))
+                ForEach(notice.messages, id: \.self) {
+                    Text($0)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: Spacing.md)
+            Button("Dismiss", systemImage: "xmark", action: onDismiss)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+        }
+        .padding(Spacing.md)
+        .frame(maxWidth: 560)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.5))
+        }
+        .shadow(radius: 8, y: 3)
+        .accessibilityElement(children: .contain)
     }
 }
 

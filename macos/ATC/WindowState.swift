@@ -49,12 +49,18 @@ final class WindowState {
     var createWorkspaceContext: CreateWorkspaceContext?
     var startSessionKind: StartSessionKind?
     var workspaceStartupProject: ProjectRef?
+    var startupNotice: StartupNotice?
+
+    /// Defers the startup editor until the creation sheet has fully
+    /// dismissed; AppKit cannot present the two sibling sheets together.
+    private(set) var pendingWorkspaceStartupProject: ProjectRef?
 
     var isSheetPresented: Bool {
         isCreateProjectPresented
             || createWorkspaceContext != nil
             || startSessionKind != nil
             || workspaceStartupProject != nil
+            || pendingWorkspaceStartupProject != nil
     }
 
     /// Advances for every explicit request to type in the selected Terminal
@@ -181,6 +187,10 @@ final class WindowState {
            appModel.runtime(id: projectRef.connectionID) == nil {
             workspaceStartupProject = nil
         }
+        if let pending = pendingWorkspaceStartupProject,
+           appModel.runtime(id: pending.connectionID) == nil {
+            pendingWorkspaceStartupProject = nil
+        }
         guard let activeWorkspace else { return }
         guard let runtime = appModel.runtime(id: activeWorkspace.connectionID) else {
             selectionMemory.forget(connectionID: activeWorkspace.connectionID)
@@ -270,6 +280,17 @@ final class WindowState {
         } else {
             createWorkspaceContext = CreateWorkspaceContext(mode: .free)
         }
+    }
+
+    func editWorkspaceStartupAfterCreateSheetDismisses(_ ref: ProjectRef) {
+        pendingWorkspaceStartupProject = ref
+        createWorkspaceContext = nil
+    }
+
+    func presentPendingWorkspaceStartupEditor() {
+        guard let ref = pendingWorkspaceStartupProject else { return }
+        pendingWorkspaceStartupProject = nil
+        workspaceStartupProject = ref
     }
 
     private func validRememberedSelection(
