@@ -11,6 +11,8 @@ import actionDetail from '../../../../packages/contracts/fixtures/action-detail.
 import actionUpdate from '../../../../packages/contracts/fixtures/action-update.json';
 import actionsList from '../../../../packages/contracts/fixtures/actions-list.json';
 import errorFixture from '../../../../packages/contracts/fixtures/error.json';
+import sessionEndedErrorFixture from '../../../../packages/contracts/fixtures/error-session-ended.json';
+import zmxUnavailableErrorFixture from '../../../../packages/contracts/fixtures/error-zmx-unavailable.json';
 import projectCreate from '../../../../packages/contracts/fixtures/project-create.json';
 import projectsList from '../../../../packages/contracts/fixtures/projects-list.json';
 import sessionDetail from '../../../../packages/contracts/fixtures/session-detail.json';
@@ -101,6 +103,8 @@ actionUpdate.request satisfies ActionPatch;
 actionUpdate.response satisfies Action;
 actionDelete.response satisfies Record<string, never>;
 errorFixture.response satisfies ErrorResponse;
+sessionEndedErrorFixture.response satisfies ErrorResponse;
+zmxUnavailableErrorFixture.response satisfies ErrorResponse;
 
 function mockFetch(body: unknown, status = 200) {
   vi.stubGlobal(
@@ -260,6 +264,17 @@ describe('api client unwraps fixture responses', () => {
     await expect(failure).rejects.toMatchObject({
       status: 404,
       code: 'session_not_found'
+    } satisfies Partial<ApiError>);
+  });
+
+  it.each([
+    [sessionEndedErrorFixture.response, 409, 'session_ended'],
+    [zmxUnavailableErrorFixture.response, 503, 'zmx_unavailable']
+  ])('surfaces lifecycle error fixtures', async (response, status, code) => {
+    mockFetch(response, status);
+    await expect(listSessions()).rejects.toMatchObject({
+      status,
+      code
     } satisfies Partial<ApiError>);
   });
 });

@@ -18,7 +18,11 @@ extension AppModel {
             try await store.delete(id: ref.sessionID)
             self.disconnectTerminal(ref: ref)
             if windowState.selectedSession == ref {
-                windowState.showWorkspaceEmpty()
+                let workspaceExists = windowState.activeWorkspace.map {
+                    self.runtime(id: $0.connectionID)?
+                        .workspaces.workspace(id: $0.workspaceID) != nil
+                } ?? false
+                windowState.showWorkspaceEmpty(workspaceExists: workspaceExists)
             }
         }
     }

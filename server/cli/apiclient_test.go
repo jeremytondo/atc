@@ -77,3 +77,30 @@ func TestAPIClientGetReturnsClearErrorForNonSuccessAPIResponse(t *testing.T) {
 		t.Fatalf("error = %q, want HTTP 503", err)
 	}
 }
+
+func TestAPIErrorPresentsSessionLifecycleFailures(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{
+			name: "zmx unavailable", status: http.StatusServiceUnavailable,
+			body: `{"error":"zmx_unavailable","message":"zmx session inventory is unavailable"}`,
+			want: "zmx is unavailable; session state could not be confirmed — retry shortly",
+		},
+		{
+			name: "session ended", status: http.StatusConflict,
+			body: `{"error":"session_ended","message":"session ended: ses_dead","sessionId":"ses_dead"}`,
+			want: "session ended: ses_dead",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := apiError(tt.status, []byte(tt.body)).Error(); !strings.Contains(got, tt.want) {
+				t.Fatalf("error = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

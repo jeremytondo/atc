@@ -112,8 +112,15 @@ struct WorkspaceNavigatorView: View {
                 isSelected: windowState.selectedSession == row.ref,
                 action: { _ = windowState.selectSession(row.ref, in: appModel) }
             ) { _ in
-                Text(row.title)
-                    .lineLimit(1)
+                HStack(spacing: Spacing.xs) {
+                    Text(row.title)
+                        .lineLimit(1)
+                    if row.session.status == .ended {
+                        StatusDot(color: .red)
+                            .accessibilityLabel("Ended")
+                            .help("Ended")
+                    }
+                }
             } actions: {
                 EmptyView()
             }
@@ -129,15 +136,17 @@ struct WorkspaceNavigatorView: View {
 
     @ViewBuilder
     private func sessionMenu(_ row: Row) -> some View {
-        Button("Rename…", systemImage: "pencil") {
-            renameRequest = SessionRenameRequest(
-                ref: row.ref,
-                title: row.title,
-                kind: row.kind
-            )
+        if row.session.status == .live {
+            Button("Rename…", systemImage: "pencil") {
+                renameRequest = SessionRenameRequest(
+                    ref: row.ref,
+                    title: row.title,
+                    kind: row.kind
+                )
+            }
+            .disabled(!isConnected)
+            Divider()
         }
-        .disabled(!isConnected)
-        Divider()
         Button("Delete…", systemImage: "trash", role: .destructive) {
             deletingSession = row
         }

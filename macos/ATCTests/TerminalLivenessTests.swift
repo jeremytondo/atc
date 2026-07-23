@@ -50,8 +50,8 @@ struct TerminalLivenessTests {
     }
 
     @MainActor
-    @Test("a socket-reported session end reconciles the store and removes the terminal")
-    func socketEndReconcilesStoreAndRemovesTerminal() async throws {
+    @Test("only a session_ended close reconciles the store and removes the terminal")
+    func socketEndRequiresAuthoritativeReason() async throws {
         let appModel = AppModel.preview()
         let runtime = try #require(appModel.runtimes.first)
         for _ in 0..<100 where runtime.sessions.sessions.isEmpty {
@@ -63,13 +63,49 @@ struct TerminalLivenessTests {
         appModel.attachIfNeeded(to: session, connectionID: runtime.id)
         let controller = try #require(appModel.terminals[ref])
 
-        // The controller reporting an authoritative end (409 stale attach or
-        // a normal WebSocket closure) must flip the stored session to Ended
-        // and tear the terminal down so input is impossible.
-        controller.onSessionEnded?()
+        let plainClose = AttachConnection.endReason(
+            closeCode: .normalClosure,
+            closeReason: nil,
+            errorDescription: "closed"
+        )
+        #expect(plainClose == .transportFailure("closed"))
+        #expect(runtime.sessions.sessions.first { $0.id == session.id }?.status == .live)
+        #expect(appModel.terminals[ref] != nil)
+
+        let confirmedClose = AttachConnection.endReason(
+            closeCode: .normalClosure,
+            closeReason: Data("session_ended".utf8),
+            errorDescription: "closed"
+        )
+        #expect(confirmedClose == .sessionEnded)
+        if confirmedClose == .sessionEnded {
+            controller.onSessionEnded?()
+        }
         let reconciled = try #require(runtime.sessions.sessions.first { $0.id == session.id })
         #expect(reconciled.status == .ended)
         #expect(appModel.terminals[ref] == nil)
+    }
+
+    @Test("retryable close reasons never classify as a session end")
+    func retryableCloseReasonsStayLive() {
+        for reason in ["attach_failed", "zmx_unavailable"] {
+            #expect(AttachConnection.endReason(
+                closeCode: .internalServerError,
+                closeReason: Data(reason.utf8),
+                errorDescription: reason
+            ) == .serverError)
+        }
+        #expect(AttachConnection.endReason(
+            closeCode: .normalClosure,
+            closeReason: Data("other".utf8),
+            errorDescription: "other"
+        ) == .transportFailure("other"))
+        #expect(AttachConnection.endReason(
+            statusCode: 409,
+            closeCode: .normalClosure,
+            closeReason: nil,
+            errorDescription: "handshake"
+        ) == .sessionEnded)
     }
 
     @MainActor

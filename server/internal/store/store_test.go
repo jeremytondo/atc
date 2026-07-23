@@ -312,9 +312,8 @@ func TestRenameSessionPersistsAndReturnsHydratedRecord(t *testing.T) {
 	if _, err := st.MarkEnded(ctx, created.ID); err != nil {
 		t.Fatalf("MarkEnded: %v", err)
 	}
-	ended, err := st.RenameSession(ctx, created.ID, "After ending")
-	if err != nil || ended.Name != "After ending" || ended.Status != StatusEnded {
-		t.Fatalf("rename ended = %+v err=%v", ended, err)
+	if _, err := st.RenameSession(ctx, created.ID, "After ending"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("rename ended err = %v, want ErrSessionNotFound", err)
 	}
 	if _, err := st.RenameSession(ctx, "ses_missing", "After"); !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("missing err = %v, want ErrSessionNotFound", err)

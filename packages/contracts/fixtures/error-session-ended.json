@@ -1,0 +1,8 @@
+{
+  "routes": [],
+  "response": {
+    "error": "session_ended",
+    "message": "session ended: ses_fixture01",
+    "sessionId": "ses_fixture01"
+  }
+}

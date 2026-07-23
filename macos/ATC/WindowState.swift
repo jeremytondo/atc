@@ -158,9 +158,14 @@ final class WindowState {
         isInspectorPresented = false
     }
 
-    func showWorkspaceEmpty() {
-        guard let activeWorkspace else { return }
-        selectionMemory.forget(activeWorkspace)
+    func showWorkspaceEmpty(workspaceExists: Bool = true) {
+        if let activeWorkspace {
+            selectionMemory.forget(activeWorkspace)
+        }
+        guard workspaceExists, let activeWorkspace else {
+            showDashboard()
+            return
+        }
         selectedContent = .workspace(activeWorkspace)
         isInspectorPresented = false
     }

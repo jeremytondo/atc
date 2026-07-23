@@ -84,6 +84,12 @@
           if (event.code === 1000 && event.reason === 'session_ended') {
             status = 'session_ended';
             message = 'session ended';
+          } else if (
+            event.reason === 'zmx_unavailable' ||
+            event.reason === 'attach_failed'
+          ) {
+            status = 'disconnected';
+            message = 'connection lost — retry';
           } else if (event.code === 1011 && event.reason === 'internal_error') {
             status = 'internal_error';
             message = 'internal error';

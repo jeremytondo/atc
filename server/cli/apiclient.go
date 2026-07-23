@@ -155,10 +155,16 @@ func (client *apiClient) serviceUnavailableError(err error) error {
 // structured { "error", "message" } body when present.
 func apiError(status int, body []byte) error {
 	var e struct {
+		Code    string `json:"error"`
 		Message string `json:"message"`
 	}
-	if err := json.Unmarshal(body, &e); err == nil && e.Message != "" {
-		return fmt.Errorf("%s (HTTP %d)", e.Message, status)
+	if err := json.Unmarshal(body, &e); err == nil {
+		if e.Code == "zmx_unavailable" {
+			return fmt.Errorf("zmx is unavailable; session state could not be confirmed — retry shortly (HTTP %d)", status)
+		}
+		if e.Message != "" {
+			return fmt.Errorf("%s (HTTP %d)", e.Message, status)
+		}
 	}
 	return fmt.Errorf("atc service API returned HTTP %d", status)
 }

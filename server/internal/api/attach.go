@@ -149,7 +149,7 @@ func (routes apiRoutes) attachSession(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if readErr != nil {
-				closeSessionEnded(conn)
+				confirmAttachFailure(routes.sessions, conn, id)
 				return
 			}
 		}
@@ -180,7 +180,7 @@ func (routes apiRoutes) attachSession(w http.ResponseWriter, r *http.Request) {
 
 	for _, data := range initial.binary {
 		if _, err := pty.Write(data); err != nil {
-			closeSessionEnded(conn)
+			confirmAttachFailure(routes.sessions, conn, id)
 			return
 		}
 	}
@@ -194,7 +194,7 @@ func (routes apiRoutes) attachSession(w http.ResponseWriter, r *http.Request) {
 		switch typ {
 		case websocket.MessageBinary:
 			if _, err := pty.Write(data); err != nil {
-				closeSessionEnded(conn)
+				confirmAttachFailure(routes.sessions, conn, id)
 				return
 			}
 		case websocket.MessageText:
@@ -263,7 +263,27 @@ func closeAttachError(conn *websocket.Conn, err error) {
 		closeSessionEnded(conn)
 		return
 	}
+	if errors.Is(err, session.ErrZmxUnavailable) {
+		_ = conn.Close(websocket.StatusInternalError, "zmx_unavailable")
+		return
+	}
 	_ = conn.Close(websocket.StatusInternalError, "internal_error")
+}
+
+func confirmAttachFailure(sessions *session.Service, conn *websocket.Conn, id string) {
+	ended, err := sessions.ConfirmEnded(context.Background(), id)
+	switch {
+	case ended:
+		closeSessionEnded(conn)
+	case errors.Is(err, session.ErrSessionNotFound), errors.Is(err, session.ErrSessionEnded):
+		closeSessionEnded(conn)
+	case errors.Is(err, session.ErrZmxUnavailable):
+		_ = conn.Close(websocket.StatusInternalError, "zmx_unavailable")
+	case err != nil:
+		_ = conn.Close(websocket.StatusInternalError, "internal_error")
+	default:
+		_ = conn.Close(websocket.StatusInternalError, "attach_failed")
+	}
 }
 
 func closeSessionEnded(conn *websocket.Conn) {

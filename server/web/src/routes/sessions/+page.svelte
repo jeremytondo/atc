@@ -16,23 +16,6 @@
   let error = $state('');
   let busyId = $state('');
 
-  const ORDER: SessionListItem['status'][] = ['live', 'ended'];
-  const LABELS: Record<SessionListItem['status'], string> = {
-    live: 'Live',
-    ended: 'Ended'
-  };
-
-  function dotColor(status: string) {
-    return (
-      (
-        {
-          live: 'var(--dc-green)',
-          ended: 'var(--dc-dim)'
-        } as Record<string, string>
-      )[status] ?? 'var(--dc-dim)'
-    );
-  }
-
   function timeAgo(value?: string) {
     if (!value) return '';
     const then = new Date(value).getTime();
@@ -45,19 +28,6 @@
     if (hrs < 24) return `${hrs}h ago`;
     return `${Math.round(hrs / 24)}d ago`;
   }
-
-  let groups = $derived.by(() => {
-    const present = [
-      ...ORDER.filter((st) => sessions.some((s) => s.status === st)),
-      ...[...new Set(sessions.map((s) => s.status))].filter((st) => !ORDER.includes(st))
-    ];
-    return present.map((st) => ({
-      status: st,
-      label: LABELS[st] ?? st,
-      count: sessions.filter((s) => s.status === st).length,
-      items: sessions.filter((s) => s.status === st)
-    }));
-  });
 
   async function load() {
     loading = true;
@@ -125,60 +95,59 @@
     </div>
   {/if}
 
-  {#each groups as g (g.status)}
-    <div class="grouphead">
-      <span class="tri"></span>
-      <span
-        style={`width:9px;height:9px;border-radius:50%;display:inline-block;background:${dotColor(g.status)}`}
-      ></span>
-      {g.label}<span class="gcount">{g.count}</span>
-    </div>
-    <div style="margin:2px 0 16px">
-      {#each g.items as s (s.id)}
-        <div class="irow">
-          <span class="sdot" style={`background:${dotColor(s.status)}`}></span>
-          <div class="sident">
-            {#if s.name?.trim()}
-              <span class="sname">{s.name}</span>
-              <span class="ssub">{s.id}</span>
-            {:else}
-              <span class="sname asid">{s.id}</span>
-            {/if}
-          </div>
-          <div class="imeta">
-            {#if s.project}
-              <a
-                class="badge"
-                href={`/projects/${encodeURIComponent(s.project.id)}`}
-                style="color:var(--dc-acc);text-decoration:none">{s.project.name}</a
-              >
-            {/if}
-            {#if s.workspace}
-              <a
-                class="badge"
-                href={`/workspaces/${encodeURIComponent(s.workspace.id)}`}
-                style="color:var(--dc-acc);text-decoration:none">{s.workspace.name}</a
-              >
-            {/if}
-            <span class="badge">{sessionActionLabel(s)}</span>
-            {#if s.isAgent}<span class="badge">Agent</span>{/if}
-            <span class="stime">{timeAgo(s.createdAt)}</span>
-            <div class="iacts">
-              {#if s.status === 'live'}
-                <a class="btn xs" href={`/sessions/${encodeURIComponent(s.id)}`}>Open</a>
-              {/if}
+  <div style="margin:2px 0 16px">
+    {#each sessions as s (s.id)}
+      <div class="irow">
+        {#if s.status === 'ended'}
+          <span
+            class="sdot"
+            style="background:var(--dc-red)"
+            role="img"
+            aria-label="Ended"
+            title="Ended"
+          ></span>
+        {:else}
+          <span class="sdot" aria-hidden="true"></span>
+        {/if}
+        <div class="sident">
+          {#if s.name?.trim()}
+            <span class="sname">{s.name}</span>
+            <span class="ssub">{s.id}</span>
+          {:else}
+            <span class="sname asid">{s.id}</span>
+          {/if}
+        </div>
+        <div class="imeta">
+          {#if s.project}
+            <a
+              class="badge"
+              href={`/projects/${encodeURIComponent(s.project.id)}`}
+              style="color:var(--dc-acc);text-decoration:none">{s.project.name}</a
+            >
+          {/if}
+          {#if s.workspace}
+            <a
+              class="badge"
+              href={`/workspaces/${encodeURIComponent(s.workspace.id)}`}
+              style="color:var(--dc-acc);text-decoration:none">{s.workspace.name}</a
+            >
+          {/if}
+          <span class="badge">{sessionActionLabel(s)}</span>
+          {#if s.isAgent}<span class="badge">Agent</span>{/if}
+          <span class="stime">{timeAgo(s.createdAt)}</span>
+          <div class="iacts">
+            {#if s.status === 'live'}
+              <a class="btn xs" href={`/sessions/${encodeURIComponent(s.id)}`}>Open</a>
               <SessionRowActions
                 session={s}
                 disabled={busyId !== ''}
                 onRenamed={(renamed) => (sessions = replaceRenamedSession(sessions, renamed))}
               />
-              <button class="btn xs" onclick={() => remove(s)} disabled={busyId !== ''}
-                >Delete</button
-              >
-            </div>
+            {/if}
+            <button class="btn xs" onclick={() => remove(s)} disabled={busyId !== ''}>Delete</button>
           </div>
         </div>
-      {/each}
-    </div>
-  {/each}
+      </div>
+    {/each}
+  </div>
 </div>

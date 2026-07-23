@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jeremytondo/atc/internal/project"
@@ -41,6 +42,7 @@ var (
 	ErrUnknownKey         = errors.New("unknown key")
 	ErrSessionNotFound    = errors.New("session not found")
 	ErrSessionEnded       = errors.New("session ended")
+	ErrZmxUnavailable     = errors.New("zmx session inventory is unavailable")
 	ErrInvalidSessionName = errors.New("invalid session name")
 	ErrActionNotFound     = errors.New("action not found")
 	ErrActionDisabled     = errors.New("action is disabled")
@@ -51,6 +53,18 @@ var (
 	// multiplexer launch failure.
 	ErrInvalidWorkingDir = project.ErrInvalidWorkingDir
 )
+
+// ZmxUnavailableError preserves the failed inventory query for logs while
+// exposing ErrZmxUnavailable as the stable domain error.
+type ZmxUnavailableError struct {
+	Err error
+}
+
+func (e *ZmxUnavailableError) Error() string {
+	return fmt.Sprintf("%s: %v", ErrZmxUnavailable, e.Err)
+}
+
+func (e *ZmxUnavailableError) Unwrap() error { return ErrZmxUnavailable }
 
 // EndedError identifies the stale Session involved in an interaction while
 // preserving ErrSessionEnded for errors.Is checks.
@@ -146,6 +160,8 @@ type Service struct {
 	mux        Multiplexer
 	workspaces WorkspaceResolver
 	logger     *slog.Logger
+	inFlightMu sync.Mutex
+	inFlight   map[string]struct{}
 }
 
 // NewService returns a Service backed by st and mux. A nil workspaces resolver
@@ -154,7 +170,10 @@ func NewService(st *store.Store, mux Multiplexer, workspaces WorkspaceResolver, 
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{store: st, mux: mux, workspaces: workspaces, logger: logger}
+	return &Service{
+		store: st, mux: mux, workspaces: workspaces, logger: logger,
+		inFlight: make(map[string]struct{}),
+	}
 }
 
 // Start validates, records, launches, and returns a new distinct session. An
@@ -187,6 +206,8 @@ func (s *Service) Start(ctx context.Context, input StartInput) (Session, error) 
 	if err != nil {
 		return Session{}, err
 	}
+	s.setStartInFlight(id, true)
+	defer s.setStartInFlight(id, false)
 	record, err := s.store.CreateStarting(ctx, store.CreateSessionInput{
 		ID:          id,
 		Name:        input.Name,
@@ -275,28 +296,24 @@ type ListScope struct {
 	ProjectID   string
 }
 
-// List returns public Sessions newest-first, reconciling live records when the
-// multiplexer can be queried. Provisional records are excluded by the store.
+// List returns public Sessions newest-first, reconciling every stored record
+// when the multiplexer can be queried. Provisional records remain private.
 func (s *Service) List(ctx context.Context, statusFilter Status, scope ListScope) ([]Session, error) {
 	if statusFilter != "" && !validStatus(statusFilter) {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidStatus, statusFilter)
 	}
-	records, err := s.store.List(ctx, store.ListFilter{
+	records, err := s.reconcileStored(ctx, store.ListFilter{
 		WorkspaceID: scope.WorkspaceID,
 		ProjectID:   scope.ProjectID,
 	})
 	if err != nil {
-		return nil, translateStoreErr(err)
+		return nil, err
 	}
 
-	live, ok := s.liveNameSet(ctx)
 	sessions := make([]Session, 0, len(records))
 	for _, record := range records {
-		if ok {
-			record, err = s.reconcileReadRecord(ctx, record, live)
-			if err != nil {
-				return nil, err
-			}
+		if record.Status == store.StatusStarting {
+			continue
 		}
 		publicStatus, err := publicStatus(record.Status)
 		if err != nil {
@@ -314,36 +331,45 @@ func (s *Service) List(ctx context.Context, statusFilter Status, scope ListScope
 	return sessions, nil
 }
 
-// Read loads a public Session and reconciles live liveness when available.
-// Provisional records behave as not found.
+// Read loads a public Session after a demand-driven reconciliation sweep.
+// Provisional records still in flight behave as not found.
 func (s *Service) Read(ctx context.Context, id string) (Session, error) {
-	record, err := s.store.Get(ctx, id)
+	records, err := s.reconcileStored(ctx, store.ListFilter{})
 	if err != nil {
-		return Session{}, translateStoreErr(err)
+		return Session{}, err
 	}
 
-	if record.Status == store.StatusStarting {
-		return Session{}, fmt.Errorf("%w: %s", ErrSessionNotFound, id)
-	}
-	live, ok := s.liveNameSet(ctx)
-	if ok {
-		record, err = s.reconcileReadRecord(ctx, record, live)
-		if err != nil {
-			return Session{}, err
+	for _, record := range records {
+		if record.ID == id && record.Status != store.StatusStarting {
+			return domainSession(record)
 		}
 	}
-	return domainSession(record)
+	return Session{}, fmt.Errorf("%w: %s", ErrSessionNotFound, id)
 }
 
-// Rename updates only a session's persisted display name. Live and ended
-// sessions are both renameable; provisional records remain private.
+// Rename updates only a Live session's persisted display name.
 func (s *Service) Rename(ctx context.Context, id, name string) (Session, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return Session{}, fmt.Errorf("%w: name is required", ErrInvalidSessionName)
 	}
+	current, err := s.store.Get(ctx, id)
+	if err != nil {
+		return Session{}, translateStoreErr(err)
+	}
+	if current.Status == store.StatusStarting {
+		return Session{}, fmt.Errorf("%w: %s", ErrSessionNotFound, id)
+	}
+	if current.Status == store.StatusEnded {
+		return Session{}, &EndedError{SessionID: id}
+	}
 	record, err := s.store.RenameSession(ctx, id, name)
 	if err != nil {
+		if errors.Is(err, store.ErrSessionNotFound) {
+			if settled, getErr := s.store.Get(ctx, id); getErr == nil && settled.Status == store.StatusEnded {
+				return Session{}, &EndedError{SessionID: id}
+			}
+		}
 		return Session{}, translateStoreErr(err)
 	}
 	return domainSession(record)
@@ -358,7 +384,7 @@ func (s *Service) SendText(ctx context.Context, id, text string) error {
 	name := zmx.NameForID(record.ID)
 	if err := s.mux.Send(ctx, name, []byte(text)); err != nil {
 		s.logger.Error("session send failed", "id", record.ID, "zmx_name", name, "err", err)
-		return err
+		return s.confirmSendFailure(ctx, record.ID, err)
 	}
 	return nil
 }
@@ -376,7 +402,7 @@ func (s *Service) SendKey(ctx context.Context, id, keyName string) error {
 	name := zmx.NameForID(record.ID)
 	if err := s.mux.Send(ctx, name, payload); err != nil {
 		s.logger.Error("session key failed", "id", record.ID, "zmx_name", name, "key", keyName, "err", err)
-		return err
+		return s.confirmSendFailure(ctx, record.ID, err)
 	}
 	return nil
 }
@@ -398,9 +424,51 @@ func (s *Service) Attach(ctx context.Context, id string, rows, cols uint16) (zmx
 	return s.mux.Attach(ctx, zmx.NameForID(record.ID), rows, cols)
 }
 
+// confirmSendFailure applies the authoritative absence rule after a failed
+// send. The send error stands while the Session is still listed; a successful
+// inventory that omits it converts the failure into session_ended, and an
+// unavailable inventory is reported as the availability failure it is.
+func (s *Service) confirmSendFailure(ctx context.Context, id string, cause error) error {
+	ended, err := s.ConfirmEnded(ctx, id)
+	if ended {
+		return &EndedError{SessionID: id}
+	}
+	if errors.Is(err, ErrZmxUnavailable) {
+		return err
+	}
+	return cause
+}
+
+// ConfirmEnded applies the authoritative absence rule after an attach failure.
+// Only a complete inventory that omits the zmx name may end the Session.
+func (s *Service) ConfirmEnded(ctx context.Context, id string) (bool, error) {
+	record, err := s.store.Get(ctx, id)
+	if err != nil {
+		return false, translateStoreErr(err)
+	}
+	if record.Status == store.StatusStarting {
+		return false, fmt.Errorf("%w: %s", ErrSessionNotFound, id)
+	}
+	if record.Status == store.StatusEnded {
+		return true, nil
+	}
+	live, err := s.liveNames(ctx)
+	if err != nil {
+		return false, err
+	}
+	if live[zmx.NameForID(id)] {
+		return false, nil
+	}
+	_, _, err = s.reconcileRecord(ctx, record, live)
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // Delete is the sole public lifecycle action. A Live process is ended and
-// marked ended before its record is removed; an ended record is removed
-// directly. Provisional records behave as not found.
+// forgotten; an ended tombstone is removed directly. Provisional records
+// behave as not found.
 func (s *Service) Delete(ctx context.Context, id string) error {
 	record, err := s.store.Get(ctx, id)
 	if err != nil {
@@ -418,14 +486,14 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 			name := zmx.NameForID(id)
 			if err := s.mux.Terminate(ctx, name); err != nil {
 				s.logger.Error("session terminate during delete failed", "id", id, "zmx_name", name, "err", err)
-				return err
+				stillLive, inventoryErr := s.isLive(ctx, id)
+				if inventoryErr != nil || stillLive {
+					return err
+				}
 			}
 		}
-		if _, err := s.store.MarkEnded(ctx, id); err != nil {
-			return translateStoreErr(err)
-		}
 	}
-	if err := s.store.DeleteSession(ctx, id); err != nil {
+	if err := s.store.ForgetSession(ctx, id); err != nil {
 		return translateStoreErr(err)
 	}
 	s.logger.Info("session deleted", "id", id)
@@ -458,6 +526,13 @@ func (s *Service) End(ctx context.Context, id string) error {
 				s.logger.Error("session end failed", "id", id, "zmx_name", name, "err", err)
 				return err
 			}
+			isLive, err = s.isLive(ctx, id)
+			if err != nil {
+				return err
+			}
+			if isLive {
+				return fmt.Errorf("session %s remained in zmx inventory after termination", id)
+			}
 		}
 		if record.Status == store.StatusStarting {
 			err := s.store.DeleteStarting(ctx, id)
@@ -477,20 +552,8 @@ func (s *Service) End(ctx context.Context, id string) error {
 // Reconcile performs the startup pass over provisional/live records. A
 // multiplexer liveness failure is logged and leaves stored state untouched.
 func (s *Service) Reconcile(ctx context.Context) error {
-	records, err := s.store.ListAll(ctx, store.ListFilter{})
-	if err != nil {
-		return translateStoreErr(err)
-	}
-	live, ok := s.liveNameSet(ctx)
-	if !ok {
-		return nil
-	}
-	for _, record := range records {
-		if err := s.reconcileStartupRecord(ctx, record, live); err != nil {
-			return err
-		}
-	}
-	return nil
+	_, err := s.reconcileStored(ctx, store.ListFilter{})
+	return err
 }
 
 func (s *Service) requireLive(ctx context.Context, id string) (store.Session, error) {
@@ -518,41 +581,83 @@ func (s *Service) requireLive(ctx context.Context, id string) (store.Session, er
 	return record, nil
 }
 
-func (s *Service) reconcileReadRecord(ctx context.Context, record store.Session, live map[string]bool) (store.Session, error) {
-	if record.Status != store.StatusLive {
-		return record, nil
-	}
-	if live[zmx.NameForID(record.ID)] {
-		return record, nil
-	}
-	record, err := s.store.MarkEnded(ctx, record.ID)
-	if err != nil {
-		return store.Session{}, translateStoreErr(err)
-	}
-	return record, nil
-}
-
-func (s *Service) reconcileStartupRecord(ctx context.Context, record store.Session, live map[string]bool) error {
+func (s *Service) reconcileRecord(ctx context.Context, record store.Session, live map[string]bool) (store.Session, bool, error) {
 	isLive := live[zmx.NameForID(record.ID)]
 	switch record.Status {
 	case store.StatusStarting:
-		if isLive {
-			_, err := s.store.PromoteToLive(ctx, record.ID)
-			return translateStoreErr(err)
-		} else {
-			err := s.store.DeleteStarting(ctx, record.ID)
-			if errors.Is(err, store.ErrSessionNotFound) {
-				return nil
-			}
-			return err
+		if s.startInFlight(record.ID) {
+			return record, true, nil
 		}
+		if isLive {
+			promoted, err := s.store.PromoteToLive(ctx, record.ID)
+			if errors.Is(err, store.ErrSessionNotFound) {
+				return store.Session{}, false, nil
+			}
+			if errors.Is(err, store.ErrSessionNotStarting) {
+				settled, getErr := s.store.Get(ctx, record.ID)
+				if errors.Is(getErr, store.ErrSessionNotFound) {
+					return store.Session{}, false, nil
+				}
+				if getErr != nil {
+					return store.Session{}, false, translateStoreErr(getErr)
+				}
+				return s.reconcileRecord(ctx, settled, live)
+			}
+			if err != nil {
+				return store.Session{}, false, translateStoreErr(err)
+			}
+			return promoted, true, nil
+		}
+		err := s.store.DeleteStarting(ctx, record.ID)
+		if errors.Is(err, store.ErrSessionNotFound) {
+			return store.Session{}, false, nil
+		}
+		if errors.Is(err, store.ErrSessionNotStarting) {
+			settled, getErr := s.store.Get(ctx, record.ID)
+			if errors.Is(getErr, store.ErrSessionNotFound) {
+				return store.Session{}, false, nil
+			}
+			if getErr != nil {
+				return store.Session{}, false, translateStoreErr(getErr)
+			}
+			return s.reconcileRecord(ctx, settled, live)
+		}
+		return store.Session{}, false, translateStoreErr(err)
 	case store.StatusLive:
 		if !isLive {
-			_, err := s.store.MarkEnded(ctx, record.ID)
-			return translateStoreErr(err)
+			ended, err := s.store.MarkEnded(ctx, record.ID)
+			if errors.Is(err, store.ErrSessionNotFound) {
+				return store.Session{}, false, nil
+			}
+			if err != nil {
+				return store.Session{}, false, translateStoreErr(err)
+			}
+			return ended, true, nil
 		}
 	}
-	return nil
+	return record, true, nil
+}
+
+func (s *Service) reconcileStored(ctx context.Context, filter store.ListFilter) ([]store.Session, error) {
+	records, err := s.store.ListAll(ctx, filter)
+	if err != nil {
+		return nil, translateStoreErr(err)
+	}
+	live, ok := s.liveNameSet(ctx)
+	if !ok {
+		return records, nil
+	}
+	reconciled := make([]store.Session, 0, len(records))
+	for _, record := range records {
+		record, exists, err := s.reconcileRecord(ctx, record, live)
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			reconciled = append(reconciled, record)
+		}
+	}
+	return reconciled, nil
 }
 
 func (s *Service) isLive(ctx context.Context, id string) (bool, error) {
@@ -575,13 +680,30 @@ func (s *Service) liveNameSet(ctx context.Context) (map[string]bool, bool) {
 func (s *Service) liveNames(ctx context.Context) (map[string]bool, error) {
 	raw, err := s.mux.List(ctx)
 	if err != nil {
-		return nil, err
+		return nil, &ZmxUnavailableError{Err: err}
 	}
 	live := make(map[string]bool, len(raw))
 	for _, r := range raw {
 		live[r.Name] = true
 	}
 	return live, nil
+}
+
+func (s *Service) setStartInFlight(id string, inFlight bool) {
+	s.inFlightMu.Lock()
+	defer s.inFlightMu.Unlock()
+	if inFlight {
+		s.inFlight[id] = struct{}{}
+	} else {
+		delete(s.inFlight, id)
+	}
+}
+
+func (s *Service) startInFlight(id string) bool {
+	s.inFlightMu.Lock()
+	defer s.inFlightMu.Unlock()
+	_, ok := s.inFlight[id]
+	return ok
 }
 
 func domainSession(record store.Session) (Session, error) {
