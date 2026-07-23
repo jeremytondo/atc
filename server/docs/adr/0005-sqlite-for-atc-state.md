@@ -9,6 +9,11 @@
 > longer persisted; a provisional Launch Attempt is deleted unless it becomes
 > Live.
 
+> **Session-index amendment (2026-07):** SQLite also owns each Session's
+> immutable positive Workspace-local index. It is allocated with the
+> provisional Launch Attempt, retained by an Ended tombstone, and released only
+> when the record is deleted.
+
 atc will use a local SQLite database for atc-owned application state,
 starting with the persistent session registry. Earlier specs deliberately
 avoided persistence for the terminal-session proof loop, but the next backend

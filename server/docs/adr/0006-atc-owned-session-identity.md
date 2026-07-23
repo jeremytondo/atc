@@ -8,6 +8,12 @@
 > only after a successful, complete zmx inventory confirms absence. Inventory
 > failure changes no Session state.
 
+> **Identity amendment (2026-07):** `Session.id` remains the global API
+> identity. Each Session also exposes an immutable positive Workspace-local
+> index as a human-facing address. Its optional custom name is supporting
+> context and can be set or cleared while Live; neither the index nor name
+> replaces Action or Agent identity.
+
 Supersedes [ADR 0002](0002-session-identity-in-zmx-name.md).
 
 atc sessions will expose a stable atc-owned `Session.id` as their public
