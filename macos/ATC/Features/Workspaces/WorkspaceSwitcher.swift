@@ -22,9 +22,16 @@ struct WorkspaceSwitcher: View {
             )
         } ?? .noActiveWorkspace
 
-        HStack(spacing: 0) {
+        HStack(spacing: Spacing.xs) {
+            if let project = presentation.projectName {
+                Text(project)
+                    .foregroundStyle(.secondary)
+                    .layoutPriority(1)
+                contextSeparator
+            }
             workspaceRegion(presentation)
             if let session = presentation.session {
+                contextSeparator
                 sessionRegion(session, help: presentation.help)
             }
         }
@@ -40,13 +47,6 @@ struct WorkspaceSwitcher: View {
             isWorkspacePickerPresented.toggle()
         } label: {
             HStack(spacing: Spacing.xs) {
-                if let project = presentation.projectName {
-                    Text(project)
-                        .foregroundStyle(.secondary)
-                        .layoutPriority(1)
-                    Text("›")
-                        .foregroundStyle(.tertiary)
-                }
                 Text(presentation.workspaceName)
                     .fontWeight(.medium)
                     .layoutPriority(3)
@@ -73,8 +73,6 @@ struct WorkspaceSwitcher: View {
             isSessionPickerPresented.toggle()
         } label: {
             HStack(spacing: Spacing.xs) {
-                Text("›")
-                    .foregroundStyle(.tertiary)
                 if let index = identity.index {
                     SessionIndexBadge(index)
                         .layoutPriority(4)
@@ -102,6 +100,12 @@ struct WorkspaceSwitcher: View {
         .help(help)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Choose Session, \(identity.accessibilityLabel)")
+    }
+
+    private var contextSeparator: some View {
+        Text("›")
+            .foregroundStyle(.tertiary)
+            .accessibilityHidden(true)
     }
 
     private func regionChevron(isHighlighted: Bool) -> some View {
