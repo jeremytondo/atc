@@ -6,6 +6,7 @@ import ATCAPI
 /// destination inside the stable window split view.
 struct DashboardView: View {
     @Environment(AppModel.self) private var appModel
+    @Environment(WindowState.self) private var windowState
     /// Opens a Workspace in the shell.
     var onOpenWorkspace: (WorkspaceRef) -> Void
     /// Presents the create-Workspace sheet fixed to a Project.
@@ -151,10 +152,9 @@ struct DashboardView: View {
             )
         ) {
             Button("Delete Project", role: .destructive) {
-                if let card = deletingProject,
-                   let store = appModel.runtime(id: card.ref.connectionID)?.projects {
+                if let card = deletingProject {
                     appModel.run(on: card.ref.connectionID, reporting: $actionError) {
-                        try await store.delete(id: card.project.id)
+                        try await appModel.deleteProject(card.ref)
                     }
                 }
             }
@@ -353,6 +353,9 @@ struct DashboardView: View {
             renamingProject = card
         }
         .disabled(!reachable)
+        Button("Workspace Startup…", systemImage: "rectangle.stack.badge.plus") {
+            windowState.workspaceStartupProject = card.ref
+        }
         Divider()
         Button("Delete Project…", systemImage: "trash", role: .destructive) {
             deletingProject = card
@@ -516,5 +519,6 @@ struct DashboardView: View {
         onWorkspaceDeleted: { _ in }
     )
         .environment(AppModel.preview())
+        .environment(WindowState())
         .preferredColorScheme(.dark)
 }

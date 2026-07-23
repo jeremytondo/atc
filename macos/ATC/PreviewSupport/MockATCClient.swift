@@ -12,7 +12,8 @@ extension AppModel {
         return AppModel(
             connections: store,
             clientFactory: { _ in client },
-            terminalRecoveryMonitor: .disabled()
+            terminalRecoveryMonitor: .disabled(),
+            workspaceStartupDefaults: defaults
         )
     }
 
@@ -37,7 +38,8 @@ extension AppModel {
         return AppModel(
             connections: store,
             clientFactory: { clientsByID[$0.id] ?? MockATCClient() },
-            terminalRecoveryMonitor: .disabled()
+            terminalRecoveryMonitor: .disabled(),
+            workspaceStartupDefaults: defaults
         )
     }
 }

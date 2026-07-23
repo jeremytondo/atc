@@ -10,10 +10,13 @@ struct SessionRef: Hashable, Sendable {
     let sessionID: String
 }
 
-/// Composite identity for a project (see `SessionRef`).
-struct ProjectRef: Hashable, Sendable {
+/// Composite identity for a project (see `SessionRef`). Identifiable so a
+/// ProjectRef can drive item-based sheet presentation directly.
+struct ProjectRef: Hashable, Sendable, Identifiable {
     let connectionID: UUID
     let projectID: String
+
+    var id: Self { self }
 }
 
 /// Composite identity for a workspace (see `SessionRef`).

@@ -34,6 +34,7 @@ struct WindowNavigationSnapshot: Equatable {
 @Observable
 final class AppModel {
     let connections: ConnectionsStore
+    let workspaceStartup: WorkspaceStartupStore
     private(set) var runtimes: [ConnectionRuntime] = []
 
     /// Live terminal attaches by composite ref. Connections and surfaces
@@ -65,10 +66,12 @@ final class AppModel {
         clientFactory: ((ConnectionRecord) -> any ATCClient)? = nil,
         terminalControllerFactory: ((String, any ATCClient) -> TerminalSessionController)? = nil,
         terminalRecoveryMonitor: TerminalRecoveryMonitor? = nil,
+        workspaceStartupDefaults: UserDefaults = .standard,
         attachmentBudget: Int = 12
     ) {
         self.attachmentBudget = attachmentBudget
         self.connections = connections ?? ConnectionsStore()
+        self.workspaceStartup = WorkspaceStartupStore(defaults: workspaceStartupDefaults)
         self.clientFactory = clientFactory ?? { record in
             // makeRuntime rejects records whose urlString doesn't parse, so
             // the unwrap here can't be reached with a corrupted record.
@@ -214,9 +217,27 @@ final class AppModel {
     /// navigation references are reconciled by `WindowState`.
     func removeConnection(id: UUID) {
         connections.remove(id: id)
+        workspaceStartup.removeConnection(connectionID: id)
         guard let index = runtimes.firstIndex(where: { $0.id == id }) else { return }
         teardown(runtimes[index])
         runtimes.remove(at: index)
+    }
+
+    /// Deletes a Project on its server, then removes its local startup
+    /// override only after the server mutation succeeds.
+    func deleteProject(_ ref: ProjectRef) async throws {
+        guard let runtime = runtime(id: ref.connectionID) else {
+            throw ATCError.api(
+                code: "connection_not_found",
+                message: "This connection no longer exists.",
+                sessionID: nil
+            )
+        }
+        try await runtime.projects.delete(id: ref.projectID)
+        workspaceStartup.removeProject(
+            connectionID: ref.connectionID,
+            projectID: ref.projectID
+        )
     }
 
     // MARK: - Terminal registry

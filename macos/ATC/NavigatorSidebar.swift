@@ -193,10 +193,9 @@ struct ProjectsNavigatorView: View {
             )
         ) {
             Button("Delete Project", role: .destructive) {
-                if let group = deletingProject,
-                   let store = appModel.runtime(id: group.ref.connectionID)?.projects {
+                if let group = deletingProject {
                     appModel.run(on: group.ref.connectionID, reporting: $actionError) {
-                        try await store.delete(id: group.project.id)
+                        try await appModel.deleteProject(group.ref)
                     }
                 }
             }
@@ -284,6 +283,9 @@ struct ProjectsNavigatorView: View {
             renamingProject = group
         }
         .disabled(group.reachability != .connected)
+        Button("Workspace Startup…", systemImage: "rectangle.stack.badge.plus") {
+            windowState.workspaceStartupProject = group.ref
+        }
         Divider()
         Button("Delete Project…", systemImage: "trash", role: .destructive) {
             deletingProject = group
