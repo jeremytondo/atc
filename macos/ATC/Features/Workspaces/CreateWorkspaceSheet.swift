@@ -8,13 +8,17 @@ struct CreateWorkspaceSheet: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
     let context: CreateWorkspaceContext
-    /// Called with the new Workspace's ref so the window activates it.
-    var onCreated: (WorkspaceRef) -> Void = { _ in }
+    /// Called after dismissal so the window activates the Workspace and,
+    /// for configured startup, selects the real Default Session.
+    var onCreated: (WorkspaceRef, SessionRef?) -> Void = { _, _ in }
+    var onNotice: (StartupNotice) -> Void = { _ in }
+    var onEditStartupSettings: (ProjectRef) -> Void = { _ in }
 
     @State private var selectedProject: ProjectRef?
     @State private var name = ""
     @State private var isSubmitting = false
     @State private var submitError: String?
+    @State private var coordinator: WorkspaceStartupCoordinator?
 
     /// Dashboard invocations fix the Project; the in-shell and File-menu
     /// forms keep the picker enabled.
@@ -42,11 +46,15 @@ struct CreateWorkspaceSheet: View {
         SheetScaffold(
             title: "New Workspace",
             systemImage: "square.on.square",
-            primaryLabel: "Create Workspace",
-            isBusy: isSubmitting,
+            primaryLabel: primaryLabel,
+            isBusy: isBusy,
             canSubmit: canSubmit,
+            cancelDisabled: isDismissDisabled,
+            primaryIndicator: primaryIndicator,
+            secondaryLabel: secondaryLabel,
+            onSecondary: secondaryAction,
             onCancel: { dismiss() },
-            onSubmit: { Task { await submit() } }
+            onSubmit: { handlePrimaryAction() }
         ) {
             Section {
                 if isProjectFixed {
@@ -72,8 +80,37 @@ struct CreateWorkspaceSheet: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            .disabled(inputsDisabled)
 
-            if let message = submitError ?? availabilityError {
+            if cue == .defaultUnavailable {
+                Section {
+                    Label(
+                        "Configured Default Session is unavailable.",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .foregroundStyle(.orange)
+                    .font(.callout)
+                    Button("Edit Startup Settings") {
+                        // The handler dismisses this sheet by clearing its
+                        // presentation state, then presents the editor.
+                        guard let selectedProject else { return }
+                        onEditStartupSettings(selectedProject)
+                    }
+                }
+            }
+
+            if let progressLabel = coordinator?.progressLabel {
+                Section {
+                    Label {
+                        Text(progressLabel)
+                    } icon: {
+                        ProgressView().controlSize(.small)
+                    }
+                    .font(.callout)
+                }
+            }
+
+            if let message = submitError ?? coordinator?.errorMessage ?? availabilityError {
                 Section {
                     Label(message, systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.red)
@@ -81,7 +118,8 @@ struct CreateWorkspaceSheet: View {
                 }
             }
         }
-        .frame(width: 460, height: 280)
+        .frame(width: 460, height: resolvedConfiguration.entries.isEmpty ? 280 : 340)
+        .interactiveDismissDisabled(isDismissDisabled)
         .onAppear {
             switch context.mode {
             case .fixed(let ref), .preselected(let ref):
@@ -99,8 +137,92 @@ struct CreateWorkspaceSheet: View {
         return project.name
     }
 
+    private var resolvedConfiguration: StartupConfiguration {
+        guard let selectedProject else { return .empty }
+        return appModel.workspaceStartup.resolvedConfiguration(
+            connectionID: selectedProject.connectionID,
+            projectID: selectedProject.projectID
+        )
+    }
+
+    private var validation: StartupConfigurationValidation {
+        guard let selectedProject,
+              let runtime = appModel.runtime(id: selectedProject.connectionID)
+        else {
+            return StartupConfigurationValidation(entries: [], canEdit: false)
+        }
+        let isReachable: Bool
+        if case .connected = runtime.reachability {
+            isReachable = true
+        } else {
+            isReachable = false
+        }
+        return StartupEntryValidator.validate(
+            configuration: resolvedConfiguration,
+            actions: runtime.actions.actions,
+            hasLoadedOnce: runtime.actions.hasLoadedOnce,
+            isReachable: isReachable
+        )
+    }
+
+    private var cue: WorkspaceStartupCreationCue {
+        WorkspaceStartupCreationCue.resolve(
+            configuration: resolvedConfiguration,
+            validation: validation
+        )
+    }
+
+    private var primaryIndicator: SheetPrimaryIndicator? {
+        guard coordinator == nil, !isSubmitting else { return nil }
+        switch cue {
+        case .none:
+            return nil
+        case .configured:
+            return SheetPrimaryIndicator(
+                systemImage: "bolt.fill",
+                color: .accentColor,
+                accessibilityLabel: "Starts configured Sessions"
+            )
+        case .defaultUnavailable:
+            return SheetPrimaryIndicator(
+                systemImage: "exclamationmark.triangle.fill",
+                color: .orange,
+                accessibilityLabel: "Configured Default Session is unavailable."
+            )
+        }
+    }
+
+    private var primaryLabel: String {
+        coordinator?.primaryActionTitle ?? "Create Workspace"
+    }
+
+    private var secondaryLabel: String? {
+        coordinator?.secondaryActionTitle
+    }
+
+    private var secondaryAction: (() -> Void)? {
+        guard secondaryLabel != nil else { return nil }
+        return { coordinator?.performSecondaryAction() }
+    }
+
+    private var isBusy: Bool {
+        isSubmitting || coordinator?.isInProgress == true
+    }
+
+    private var isDismissDisabled: Bool {
+        coordinator?.isDismissDisabled == true
+    }
+
+    private var inputsDisabled: Bool {
+        coordinator != nil
+    }
+
     private var canSubmit: Bool {
-        !isSubmitting
+        if case .failedDefault = coordinator?.state { return true }
+        if case .ambiguous = coordinator?.state { return true }
+        return !isBusy
+            && coordinator?.workspaceRef == nil
+            && cue != .defaultUnavailable
             && (selectedProject.map { appModel.canCreateWorkspace(in: $0) } ?? false)
             && !name.trimmingCharacters(in: .whitespaces).isEmpty
     }
@@ -113,6 +235,16 @@ struct CreateWorkspaceSheet: View {
         return nil
     }
 
+    private func handlePrimaryAction() {
+        if let coordinator, coordinator.primaryActionTitle != nil {
+            Task { await coordinator.performPrimaryAction() }
+            return
+        }
+        // A failed creation left nothing durable; a fresh submit starts over.
+        coordinator = nil
+        Task { await submit() }
+    }
+
     private func submit() async {
         guard let ref = selectedProject,
               appModel.canCreateWorkspace(in: ref),
@@ -120,16 +252,58 @@ struct CreateWorkspaceSheet: View {
             submitError = "This project's connection is unavailable."
             return
         }
+
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        let configuration = resolvedConfiguration
+        if !configuration.entries.isEmpty {
+            guard cue != .defaultUnavailable,
+                  let plan = WorkspaceStartupLaunchPlan(
+                    configuration: configuration,
+                    validation: validation
+                  )
+            else { return }
+            submitError = nil
+            let newCoordinator = WorkspaceStartupCoordinator(
+                connectionID: ref.connectionID,
+                plan: plan,
+                operations: .init(
+                    createWorkspace: { projectID, name in
+                        try await runtime.workspaces.create(
+                            projectID: projectID,
+                            name: name
+                        )
+                    },
+                    startSession: { request in
+                        try await runtime.sessions.start(request)
+                    },
+                    refreshSessions: {
+                        await runtime.sessions.refresh()
+                    }
+                ),
+                onActivate: { workspaceRef, sessionRef in
+                    dismiss()
+                    onCreated(workspaceRef, sessionRef)
+                },
+                onNotice: onNotice
+            )
+            coordinator = newCoordinator
+            await newCoordinator.start(projectID: ref.projectID, name: trimmedName)
+            return
+        }
+
         isSubmitting = true
         defer { isSubmitting = false }
         do {
             let workspace = try await runtime.workspaces.create(
                 projectID: ref.projectID,
-                name: name.trimmingCharacters(in: .whitespaces)
+                name: trimmedName
             )
             submitError = nil
             dismiss()
-            onCreated(WorkspaceRef(connectionID: ref.connectionID, workspaceID: workspace.id))
+            onCreated(
+                WorkspaceRef(connectionID: ref.connectionID, workspaceID: workspace.id),
+                nil
+            )
         } catch {
             submitError = error.localizedDescription
         }

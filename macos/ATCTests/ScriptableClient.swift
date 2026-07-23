@@ -9,6 +9,7 @@ nonisolated final class ScriptableClient: ATCClient, @unchecked Sendable {
     private let lock = NSLock()
     private var _shouldFail = false
     private var _delay: Duration?
+    private var _startSessionRequests: [StartSessionRequest] = []
 
     var shouldFail: Bool {
         get { lock.withLock { _shouldFail } }
@@ -18,6 +19,10 @@ nonisolated final class ScriptableClient: ATCClient, @unchecked Sendable {
     var delay: Duration? {
         get { lock.withLock { _delay } }
         set { lock.withLock { _delay = newValue } }
+    }
+
+    var startSessionRequests: [StartSessionRequest] {
+        lock.withLock { _startSessionRequests }
     }
 
     private func gate() async throws {
@@ -39,6 +44,7 @@ nonisolated final class ScriptableClient: ATCClient, @unchecked Sendable {
         try await gate(); return try await inner.session(id: id)
     }
     func startSession(_ request: StartSessionRequest) async throws -> Session {
+        lock.withLock { _startSessionRequests.append(request) }
         try await gate(); return try await inner.startSession(request)
     }
     func renameSession(id: String, name: String?) async throws -> Session {
