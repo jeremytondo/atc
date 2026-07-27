@@ -442,11 +442,34 @@ async function zeroTurnRecoveryScenario(
     rawLogPath: resumeLogPath,
   });
   try {
-    const resumeResult = await resumingClient.request("thread/resume", {
-      threadId,
-      approvalPolicy: "never",
-      sandbox: "read-only",
-    });
+    let resumeResult: JsonObject;
+    try {
+      resumeResult = await resumingClient.request("thread/resume", {
+        threadId,
+        approvalPolicy: "never",
+        sandbox: "read-only",
+      });
+    } catch (error) {
+      const resumeError =
+        error instanceof Error ? error.message : String(error);
+      await writeGateRecord(resultPath, {
+        version: 1,
+        provider: "codex",
+        scenario: "zero-turn-recovery",
+        cwd: options.cwd,
+        completedAt: new Date().toISOString(),
+        evidence: {
+          outcome: "fail",
+          threadId,
+          marker,
+          resumeError,
+          firstTurnStarted: false,
+        },
+        rawLogs: relativeLogs(resultPath, [createLogPath, resumeLogPath]),
+      });
+      console.log(`FAILURE ARTIFACT: ${relative(process.cwd(), resultPath)}`);
+      throw error;
+    }
     const thread = verifyResumedThread(
       sessionExpectation(threadId, marker, options.cwd, createLogPath),
       resumeResult,
@@ -476,6 +499,7 @@ async function zeroTurnRecoveryScenario(
       cwd: options.cwd,
       completedAt: new Date().toISOString(),
       evidence: {
+        outcome: "pass",
         threadId,
         marker,
         resumedWithTurnCount: 0,
