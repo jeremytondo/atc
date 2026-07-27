@@ -45,12 +45,22 @@ test("parseArgs rejects a non-positive dormant interval", () => {
   );
 });
 
+test("parseArgs configures the interactive request hold interval", () => {
+  const options = parseArgs(["input-request", "--hold-seconds", "1.5"]);
+  assert.equal(options.command, "input-request");
+  assert.equal(options.holdMs, 1_500);
+});
+
 test("parseArgs accepts every Codex gate command", () => {
   for (const command of [
     "zero-turn-recovery",
     "invalid-resume",
     "multiplex",
     "tui-round-trip",
+    "input-request",
+    "permission-request",
+    "interrupt",
+    "observer-writer",
   ]) {
     assert.equal(parseArgs([command]).command, command);
   }

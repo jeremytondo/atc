@@ -36,7 +36,20 @@ export interface AppServerClientOptions {
   cwd: string;
   rawLogPath: string;
   requestTimeoutMs?: number;
+  handleServerRequest?: ServerRequestHandler;
 }
+
+export interface ServerRequest {
+  id: number | string;
+  method: string;
+  params: JsonObject;
+  sequence: number;
+  receivedAt: string;
+}
+
+export type ServerRequestHandler = (
+  request: ServerRequest,
+) => Promise<JsonObject>;
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
@@ -48,6 +61,7 @@ export class AppServerClient {
   private readonly errors: Interface;
   private readonly rawLog: WriteStream;
   private readonly requestTimeoutMs: number;
+  private readonly handleServerRequestOption?: ServerRequestHandler;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly waiters = new Set<MessageWaiter>();
   private readonly receivedMessages: ProtocolMessage[] = [];
@@ -64,6 +78,7 @@ export class AppServerClient {
     this.rawLogPath = options.rawLogPath;
     this.requestTimeoutMs =
       options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.handleServerRequestOption = options.handleServerRequest;
     this.child = child;
     this.rawLog = rawLog;
     this.output = createInterface({ input: child.stdout });
@@ -243,7 +258,7 @@ export class AppServerClient {
     if (message.id !== undefined && message.method === undefined) {
       this.resolveResponse(message);
     } else if (message.id !== undefined && message.method !== undefined) {
-      this.rejectServerRequest(message);
+      void this.handleServerRequest(message);
     }
 
     for (const waiter of this.waiters) {
@@ -277,15 +292,63 @@ export class AppServerClient {
     pending.resolve(message.result ?? {});
   }
 
-  private rejectServerRequest(message: ProtocolMessage): void {
-    console.log(
-      `→ rejecting server request ${message.method ?? "unknown"} (safe POC default)`,
-    );
-    this.send({
+  private async handleServerRequest(message: ProtocolMessage): Promise<void> {
+    const request = this.serverRequestFromMessage(message);
+    if (this.handleServerRequestOption === undefined) {
+      console.log(
+        `→ rejecting server request ${request.method} (safe POC default)`,
+      );
+      this.sendServerRequestError(
+        request.id,
+        -32601,
+        "ATC read-only POC does not handle server requests",
+      );
+      return;
+    }
+
+    try {
+      const result = await this.handleServerRequestOption(request);
+      if (!this.stopped && this.child.exitCode === null) {
+        console.log(
+          `→ response to server request #${String(request.id)} ${request.method}`,
+        );
+        this.send({ id: request.id, result });
+      }
+    } catch (error) {
+      if (!this.stopped && this.child.exitCode === null) {
+        const message =
+          error instanceof Error ? error.message : String(error);
+        console.log(
+          `→ rejecting server request #${String(request.id)} ${request.method}: ${message}`,
+        );
+        this.sendServerRequestError(request.id, -32000, message);
+      }
+    }
+  }
+
+  private serverRequestFromMessage(message: ProtocolMessage): ServerRequest {
+    if (message.id === undefined || message.method === undefined) {
+      throw new Error("Cannot create server request from notification");
+    }
+    return {
       id: message.id,
+      method: message.method,
+      params: message.params ?? {},
+      sequence: this.eventSequence,
+      receivedAt: new Date().toISOString(),
+    };
+  }
+
+  private sendServerRequestError(
+    id: number | string,
+    code: number,
+    message: string,
+  ): void {
+    this.send({
+      id,
       error: {
-        code: -32601,
-        message: "ATC read-only POC does not handle server requests",
+        code,
+        message,
       },
     });
   }

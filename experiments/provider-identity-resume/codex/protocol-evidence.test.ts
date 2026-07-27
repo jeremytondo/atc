@@ -4,10 +4,13 @@ import test from "node:test";
 import {
   threadIdsFromList,
   threadIdsFromLoadedList,
+  verifyInputQuestion,
   verifyNoReplacementThreads,
+  verifyServerRequestAttribution,
   verifyThreadContainsAgentMarker,
   verifyThreadHasNoTurns,
   verifyTurnEventAttribution,
+  verifyWaitingStatus,
 } from "./protocol-evidence.ts";
 
 test("extracts IDs from thread list responses", () => {
@@ -135,5 +138,96 @@ test("finds a native TUI marker in resumed agent history", () => {
         "resumed thread",
       ),
     /did not contain agent marker/,
+  );
+});
+
+test("verifies provider-owned waiting status flags", () => {
+  const event = {
+    method: "thread/status/changed",
+    params: {
+      threadId: "thread-a",
+      status: {
+        type: "active",
+        activeFlags: ["waitingOnUserInput"],
+      },
+    },
+  };
+  assert.doesNotThrow(() =>
+    verifyWaitingStatus(
+      event,
+      "thread-a",
+      "waitingOnUserInput",
+      "input wait",
+    ),
+  );
+  assert.throws(
+    () =>
+      verifyWaitingStatus(
+        event,
+        "thread-a",
+        "waitingOnApproval",
+        "approval wait",
+      ),
+    /waitingOnApproval/,
+  );
+});
+
+test("verifies server request and turn attribution", () => {
+  const request = {
+    id: 9,
+    method: "item/tool/requestUserInput",
+    params: {
+      threadId: "thread-a",
+      turnId: "turn-a",
+      itemId: "item-a",
+    },
+    sequence: 14,
+    receivedAt: "2026-07-27T00:00:00.000Z",
+  };
+  assert.equal(
+    verifyServerRequestAttribution(
+      request,
+      "thread-a",
+      "item/tool/requestUserInput",
+      "input request",
+    ),
+    "turn-a",
+  );
+  assert.throws(
+    () =>
+      verifyServerRequestAttribution(
+        request,
+        "thread-b",
+        "item/tool/requestUserInput",
+        "input request",
+      ),
+    /thread-b/,
+  );
+});
+
+test("verifies the exact input question and ordered options", () => {
+  const request = {
+    id: 9,
+    method: "item/tool/requestUserInput",
+    params: {
+      questions: [
+        {
+          id: "choice",
+          options: [
+            { label: "Alpha", description: "first" },
+            { label: "Beta", description: "second" },
+          ],
+        },
+      ],
+    },
+    sequence: 14,
+    receivedAt: "2026-07-27T00:00:00.000Z",
+  };
+  assert.doesNotThrow(() =>
+    verifyInputQuestion(request, "choice", ["Alpha", "Beta"]),
+  );
+  assert.throws(
+    () => verifyInputQuestion(request, "choice", ["Beta", "Alpha"]),
+    /option mismatch/,
   );
 });

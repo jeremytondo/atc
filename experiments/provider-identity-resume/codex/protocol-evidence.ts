@@ -1,6 +1,7 @@
 import {
   type JsonObject,
   type ProtocolMessage,
+  type ServerRequest,
   isObject,
   objectAt,
   stringAt,
@@ -92,6 +93,83 @@ export function verifyTurnEventAttribution(
     }
   }
   return attributed.length;
+}
+
+export function verifyWaitingStatus(
+  message: ProtocolMessage,
+  expectedThreadId: string,
+  expectedFlag: "waitingOnApproval" | "waitingOnUserInput",
+  context: string,
+): void {
+  if (message.method !== "thread/status/changed") {
+    throw new Error(`${context} was not a thread/status/changed event`);
+  }
+  if (message.params?.threadId !== expectedThreadId) {
+    throw new Error(
+      `${context} was attributed to ${String(message.params?.threadId)} instead of ${expectedThreadId}`,
+    );
+  }
+  const status = objectAt(message.params, "status");
+  if (status?.type !== "active" || !Array.isArray(status.activeFlags)) {
+    throw new Error(`${context} did not report an active thread status`);
+  }
+  if (!status.activeFlags.includes(expectedFlag)) {
+    throw new Error(`${context} did not include ${expectedFlag}`);
+  }
+}
+
+export function verifyServerRequestAttribution(
+  request: ServerRequest,
+  expectedThreadId: string,
+  expectedMethod: string,
+  context: string,
+): string {
+  if (request.method !== expectedMethod) {
+    throw new Error(
+      `${context} expected ${expectedMethod}, received ${request.method}`,
+    );
+  }
+  if (request.params.threadId !== expectedThreadId) {
+    throw new Error(
+      `${context} was attributed to ${String(request.params.threadId)} instead of ${expectedThreadId}`,
+    );
+  }
+  return requireString(request.params, "turnId", context);
+}
+
+export function verifyInputQuestion(
+  request: ServerRequest,
+  expectedQuestionId: string,
+  expectedLabels: string[],
+): void {
+  const questions = request.params.questions;
+  if (!Array.isArray(questions) || questions.length !== 1) {
+    throw new Error(
+      `Input request expected exactly one question, received ${Array.isArray(questions) ? questions.length : "no questions array"}`,
+    );
+  }
+  const question = questions[0];
+  if (!isObject(question) || question.id !== expectedQuestionId) {
+    throw new Error(
+      `Input request did not contain question ${expectedQuestionId}`,
+    );
+  }
+  if (!Array.isArray(question.options)) {
+    throw new Error("Input request question did not contain options");
+  }
+  const labels = question.options.map((option) =>
+    isObject(option)
+      ? requireString(option, "label", "input request option")
+      : "",
+  );
+  if (
+    labels.length !== expectedLabels.length ||
+    labels.some((label, index) => label !== expectedLabels[index])
+  ) {
+    throw new Error(
+      `Input request option mismatch: expected ${expectedLabels.join(", ")}, received ${labels.join(", ")}`,
+    );
+  }
 }
 
 export function verifyThreadContainsAgentMarker(

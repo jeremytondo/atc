@@ -8,18 +8,23 @@ import { fileURLToPath } from "node:url";
 import {
   AppServerClient,
   type JsonObject,
+  type ProtocolMessage,
   objectAt,
   stringAt,
 } from "./app-server-client.ts";
+import { PendingServerRequest } from "./pending-server-request.ts";
 import {
   requireString,
   requireThread,
   threadIdsFromList,
   threadIdsFromLoadedList,
+  verifyInputQuestion,
   verifyNoReplacementThreads,
+  verifyServerRequestAttribution,
   verifyThreadContainsAgentMarker,
   verifyThreadHasNoTurns,
   verifyTurnEventAttribution,
+  verifyWaitingStatus,
 } from "./protocol-evidence.ts";
 
 interface ProbeOptions {
@@ -30,12 +35,17 @@ interface ProbeOptions {
     | "zero-turn-recovery"
     | "invalid-resume"
     | "multiplex"
-    | "tui-round-trip";
+    | "tui-round-trip"
+    | "input-request"
+    | "permission-request"
+    | "interrupt"
+    | "observer-writer";
   cwd: string;
   marker?: string;
   sessionPath?: string;
   timeoutMs: number;
   waitMs: number;
+  holdMs: number;
 }
 
 interface SessionRecord {
@@ -53,6 +63,18 @@ interface TurnResult {
   status: string;
   agentText: string;
   attributedEventCount: number;
+}
+
+interface TurnRequestOptions {
+  approvalPolicy?: "never" | "on-request";
+  approvalsReviewer?: "user";
+  sandboxPolicy?: JsonObject;
+}
+
+interface ActiveTurn {
+  id: string;
+  firstEventIndex: number;
+  completed: Promise<ProtocolMessage>;
 }
 
 interface DormantRunRecord {
@@ -76,7 +98,11 @@ interface GateRunRecord {
     | "zero-turn-recovery"
     | "invalid-resume"
     | "shared-process-multiplexing"
-    | "native-tui-round-trip";
+    | "native-tui-round-trip"
+    | "input-request"
+    | "permission-request"
+    | "active-turn-interruption"
+    | "observer-writer";
   cwd: string;
   completedAt: string;
   evidence: JsonObject;
@@ -101,8 +127,16 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     await invalidResumeScenario(options);
   } else if (options.command === "multiplex") {
     await multiplexScenario(options);
-  } else {
+  } else if (options.command === "tui-round-trip") {
     await tuiRoundTripScenario(options);
+  } else if (options.command === "input-request") {
+    await inputRequestScenario(options);
+  } else if (options.command === "permission-request") {
+    await permissionRequestScenario(options);
+  } else if (options.command === "interrupt") {
+    await interruptScenario(options);
+  } else {
+    await observerWriterScenario(options);
   }
 }
 
@@ -115,7 +149,11 @@ export function parseArgs(argv: string[]): ProbeOptions {
     command !== "zero-turn-recovery" &&
     command !== "invalid-resume" &&
     command !== "multiplex" &&
-    command !== "tui-round-trip"
+    command !== "tui-round-trip" &&
+    command !== "input-request" &&
+    command !== "permission-request" &&
+    command !== "interrupt" &&
+    command !== "observer-writer"
   ) {
     throw new Error(usage());
   }
@@ -125,6 +163,7 @@ export function parseArgs(argv: string[]): ProbeOptions {
   let sessionPath: string | undefined;
   let timeoutMs = 300_000;
   let waitMs = 30_000;
+  let holdMs = 2_000;
 
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index];
@@ -159,6 +198,14 @@ export function parseArgs(argv: string[]): ProbeOptions {
         waitMs = seconds * 1_000;
         break;
       }
+      case "--hold-seconds": {
+        const seconds = Number(value);
+        if (!Number.isFinite(seconds) || seconds <= 0) {
+          throw new Error("--hold-seconds must be a positive number");
+        }
+        holdMs = seconds * 1_000;
+        break;
+      }
       default:
         throw new Error(`Unknown option: ${flag}\n\n${usage()}`);
     }
@@ -176,6 +223,7 @@ export function parseArgs(argv: string[]): ProbeOptions {
     sessionPath,
     timeoutMs,
     waitMs,
+    holdMs,
   };
 }
 
@@ -807,6 +855,753 @@ async function tuiRoundTripScenario(options: ProbeOptions): Promise<void> {
   }
 }
 
+async function inputRequestScenario(options: ProbeOptions): Promise<void> {
+  const marker =
+    options.marker ?? `ATC-INPUT-${randomUUID().slice(0, 8).toUpperCase()}`;
+  const runId = makeRunId();
+  const rawLogPath = resolve(runsRoot, `${runId}.input-request.jsonl`);
+  const resultPath = resolve(runsRoot, `${runId}.input-request.json`);
+  const pending = new PendingServerRequest("item/tool/requestUserInput");
+
+  console.log("Codex provider identity/resume POC — input request");
+  console.log(`cwd: ${options.cwd}`);
+  console.log(`marker: ${marker}`);
+  console.log(`pending hold: ${options.holdMs}ms`);
+  console.log("safety: request_user_input only; no command or file tools");
+
+  const client = await AppServerClient.start({
+    cwd: options.cwd,
+    rawLogPath,
+    handleServerRequest: pending.handle,
+  });
+  try {
+    const threadId = await startDurableThread(client, options.cwd);
+    const waitingStatus = waitForWaitingStatus(
+      client,
+      threadId,
+      "waitingOnUserInput",
+      options.timeoutMs,
+    );
+    const turnPromise = runTurn(
+      client,
+      threadId,
+      [
+        "This is a bounded provider input-state POC.",
+        "Do not use commands, files, network access, or any tool except request_user_input.",
+        "Call request_user_input exactly once with one question:",
+        'id "choice", header "Choice", question "Choose the POC answer",',
+        'and exactly two options in order: "Alpha" then "Beta".',
+        `After receiving the answer, reply with exactly: INPUT RECEIVED: Alpha ${marker}`,
+      ].join(" "),
+      options.timeoutMs,
+    );
+
+    const [request, statusMessage] = await Promise.all([
+      pending.wait(options.timeoutMs),
+      waitingStatus,
+    ]);
+    const turnId = verifyServerRequestAttribution(
+      request,
+      threadId,
+      "item/tool/requestUserInput",
+      "Codex input request",
+    );
+    verifyInputQuestion(request, "choice", ["Alpha", "Beta"]);
+    verifyWaitingStatus(
+      statusMessage,
+      threadId,
+      "waitingOnUserInput",
+      "Codex input wait",
+    );
+    console.log(
+      `NEEDS INPUT VERIFIED: turn ${turnId} emitted waitingOnUserInput with request #${String(request.id)}`,
+    );
+
+    await delay(options.holdMs);
+    const respondedAt = new Date().toISOString();
+    pending.respond({
+      answers: {
+        choice: {
+          answers: ["Alpha"],
+        },
+      },
+    });
+
+    const result = await turnPromise;
+    assertSuccessfulTurn(result, "input request turn");
+    assertMarker(result, marker, "input request turn");
+    if (!result.agentText.includes("INPUT RECEIVED: Alpha")) {
+      throw new Error("Input request turn did not use the correlated answer");
+    }
+
+    await writeGateRecord(resultPath, {
+      version: 1,
+      provider: "codex",
+      scenario: "input-request",
+      cwd: options.cwd,
+      completedAt: new Date().toISOString(),
+      evidence: {
+        threadId,
+        turnId,
+        marker,
+        requestId: request.id,
+        requestMethod: request.method,
+        requestSequence: request.sequence,
+        requestReceivedAt: request.receivedAt,
+        respondedAt,
+        answer: "Alpha",
+        waitingFlag: "waitingOnUserInput",
+        turnStatus: result.status,
+        attributedEventCount: result.attributedEventCount,
+      },
+      rawLogs: relativeLogs(resultPath, [rawLogPath]),
+    });
+
+    console.log("");
+    console.log(
+      "PASS: Codex exposed a correlated input request and authoritative waitingOnUserInput state, accepted the answer, and returned to a completed turn.",
+    );
+    console.log(`result artifact: ${relative(process.cwd(), resultPath)}`);
+  } finally {
+    await client.stop();
+  }
+}
+
+async function permissionRequestScenario(
+  options: ProbeOptions,
+): Promise<void> {
+  const marker =
+    options.marker ??
+    `ATC-PERMISSION-${randomUUID().slice(0, 8).toUpperCase()}`;
+  const runId = makeRunId();
+  const rawLogPath = resolve(runsRoot, `${runId}.permission-request.jsonl`);
+  const resultPath = resolve(runsRoot, `${runId}.permission-request.json`);
+  const pending = new PendingServerRequest(
+    "item/commandExecution/requestApproval",
+  );
+
+  console.log("Codex provider identity/resume POC — permission request");
+  console.log(`cwd: ${options.cwd}`);
+  console.log(`marker: ${marker}`);
+  console.log(`pending hold: ${options.holdMs}ms`);
+  console.log("safety: exact pwd command only; no compound command or write");
+
+  const client = await AppServerClient.start({
+    cwd: options.cwd,
+    rawLogPath,
+    handleServerRequest: pending.handle,
+  });
+  try {
+    const threadId = await startDurableThread(client, options.cwd);
+    const waitingStatus = waitForWaitingStatus(
+      client,
+      threadId,
+      "waitingOnApproval",
+      options.timeoutMs,
+    );
+    const turnPromise = runTurn(
+      client,
+      threadId,
+      [
+        "This is a bounded harmless permission POC.",
+        "Use exec_command exactly once with cmd exactly \"pwd\",",
+        `workdir exactly ${JSON.stringify(options.cwd)},`,
+        'and sandbox_permissions exactly "require_escalated" so the client receives an approval request.',
+        "Do not use shell wrappers, arguments, compound commands, or any other tool.",
+        `After the command succeeds, reply with exactly: PERMISSION COMPLETE: ${options.cwd} ${marker}`,
+      ].join(" "),
+      options.timeoutMs,
+      {
+        approvalPolicy: "on-request",
+        approvalsReviewer: "user",
+        sandboxPolicy: {
+          type: "readOnly",
+          networkAccess: false,
+        },
+      },
+    );
+
+    const [request, statusMessage] = await Promise.all([
+      pending.wait(options.timeoutMs),
+      waitingStatus,
+    ]);
+    const turnId = verifyServerRequestAttribution(
+      request,
+      threadId,
+      "item/commandExecution/requestApproval",
+      "Codex permission request",
+    );
+    if (request.params.command !== "pwd") {
+      pending.reject("Permission probe accepts only the exact command pwd");
+      throw new Error(
+        `Permission request command mismatch: received ${String(request.params.command)}`,
+      );
+    }
+    const requestCwd = requireString(
+      request.params,
+      "cwd",
+      "Codex permission request",
+    );
+    if (canonicalPath(requestCwd) !== options.cwd) {
+      pending.reject("Permission probe cwd mismatch");
+      throw new Error(
+        `Permission request cwd mismatch: expected ${options.cwd}, received ${requestCwd}`,
+      );
+    }
+    verifyWaitingStatus(
+      statusMessage,
+      threadId,
+      "waitingOnApproval",
+      "Codex permission wait",
+    );
+    console.log(
+      `PERMISSION WAIT VERIFIED: turn ${turnId} requested exact pwd with waitingOnApproval`,
+    );
+
+    await delay(options.holdMs);
+    const respondedAt = new Date().toISOString();
+    pending.respond({ decision: "accept" });
+
+    const result = await turnPromise;
+    assertSuccessfulTurn(result, "permission request turn");
+    assertMarker(result, marker, "permission request turn");
+    if (!result.agentText.includes(options.cwd)) {
+      throw new Error(
+        "Permission request turn did not return the expected working directory",
+      );
+    }
+
+    await writeGateRecord(resultPath, {
+      version: 1,
+      provider: "codex",
+      scenario: "permission-request",
+      cwd: options.cwd,
+      completedAt: new Date().toISOString(),
+      evidence: {
+        threadId,
+        turnId,
+        marker,
+        requestId: request.id,
+        requestMethod: request.method,
+        requestSequence: request.sequence,
+        requestReceivedAt: request.receivedAt,
+        respondedAt,
+        command: request.params.command,
+        commandCwd: requestCwd,
+        decision: "accept",
+        waitingFlag: "waitingOnApproval",
+        turnStatus: result.status,
+        attributedEventCount: result.attributedEventCount,
+      },
+      rawLogs: relativeLogs(resultPath, [rawLogPath]),
+    });
+
+    console.log("");
+    console.log(
+      "PASS: Codex exposed a correlated harmless approval request and authoritative waitingOnApproval state, then completed exact pwd after acceptance.",
+    );
+    console.log(`result artifact: ${relative(process.cwd(), resultPath)}`);
+  } finally {
+    await client.stop();
+  }
+}
+
+async function interruptScenario(options: ProbeOptions): Promise<void> {
+  const marker =
+    options.marker ??
+    `ATC-INTERRUPT-${randomUUID().slice(0, 8).toUpperCase()}`;
+  const runId = makeRunId();
+  const interruptLogPath = resolve(runsRoot, `${runId}.interrupt.jsonl`);
+  const resumeLogPath = resolve(runsRoot, `${runId}.interrupt.resume.jsonl`);
+  const resultPath = resolve(runsRoot, `${runId}.interrupt.json`);
+
+  console.log("Codex provider identity/resume POC — active turn interruption");
+  console.log(`cwd: ${options.cwd}`);
+  console.log(`seed marker: ${marker}`);
+  console.log(`active hold: ${options.holdMs}ms`);
+  console.log("safety: bounded sleep 30 command in read-only sandbox");
+
+  const client = await AppServerClient.start({
+    cwd: options.cwd,
+    rawLogPath: interruptLogPath,
+  });
+  let threadId: string;
+  let interruptedTurnId: string;
+  let interruptedEventCount: number;
+  let commandItemId: string;
+  let command: string;
+  let interruptRequestedAt: string;
+  let interruptCompletedAt: string;
+  try {
+    threadId = await startDurableThread(client, options.cwd);
+    const seed = await runMarkerTurn(
+      client,
+      threadId,
+      marker,
+      "interrupt seed",
+      options.timeoutMs,
+    );
+    console.log(
+      `SEED VERIFIED: turn ${seed.id} materialized resumable history`,
+    );
+
+    const commandStarted = client.waitForNotification(
+      "item/started",
+      (params) => {
+        const item = objectAt(params, "item");
+        return (
+          params.threadId === threadId &&
+          stringAt(item, "type") === "commandExecution" &&
+          stringAt(item, "command")?.includes("sleep 30") === true
+        );
+      },
+      options.timeoutMs,
+    );
+    const activeStatus = client.waitForNotification(
+      "thread/status/changed",
+      (params) =>
+        params.threadId === threadId &&
+        objectAt(params, "status")?.type === "active",
+      options.timeoutMs,
+    );
+    const activeTurn = await startTurn(
+      client,
+      threadId,
+      [
+        "This is a bounded active-turn interruption POC.",
+        'Use exec_command exactly once with cmd exactly "sleep 30",',
+        `workdir exactly ${JSON.stringify(options.cwd)}, and do not run it in the background.`,
+        "Do not use any other tool or modify files.",
+        "After the command finishes, reply with INTERRUPT COMMAND FINISHED.",
+      ].join(" "),
+      options.timeoutMs,
+    );
+    interruptedTurnId = activeTurn.id;
+
+    const [commandMessage] = await Promise.all([
+      commandStarted,
+      activeStatus,
+    ]);
+    const commandItem = objectAt(commandMessage.params, "item");
+    commandItemId = requireString(
+      commandItem,
+      "id",
+      "interrupt command item",
+    );
+    command = requireString(
+      commandItem,
+      "command",
+      "interrupt command item",
+    );
+    if (commandMessage.params?.turnId !== interruptedTurnId) {
+      throw new Error(
+        `Interrupt command item belonged to ${String(commandMessage.params?.turnId)} instead of ${interruptedTurnId}`,
+      );
+    }
+    console.log(
+      `ACTIVE TURN VERIFIED: turn ${interruptedTurnId} is running command ${JSON.stringify(command)}`,
+    );
+
+    await delay(options.holdMs);
+    interruptRequestedAt = new Date().toISOString();
+    await client.request("turn/interrupt", {
+      threadId,
+      turnId: interruptedTurnId,
+    });
+    interruptCompletedAt = new Date().toISOString();
+    console.log(
+      `INTERRUPT RECEIPT: turn/interrupt accepted for ${interruptedTurnId}`,
+    );
+
+    const completedMessage = await activeTurn.completed;
+    const completedTurn = objectAt(completedMessage.params, "turn");
+    const completedId = requireString(
+      completedTurn,
+      "id",
+      "interrupted turn/completed",
+    );
+    if (completedId !== interruptedTurnId) {
+      throw new Error(
+        `Interrupted turn identity mismatch: expected ${interruptedTurnId}, received ${completedId}`,
+      );
+    }
+    const interruptedStatus = requireString(
+      completedTurn,
+      "status",
+      "interrupted turn/completed",
+    );
+    if (interruptedStatus !== "interrupted") {
+      throw new Error(
+        `Interrupted turn completed with status ${interruptedStatus}`,
+      );
+    }
+    interruptedEventCount = verifyTurnEventAttribution(
+      client.messagesSince(activeTurn.firstEventIndex),
+      threadId,
+      interruptedTurnId,
+      `interrupted turn ${interruptedTurnId}`,
+    );
+    console.log(
+      `INTERRUPTED STATE VERIFIED: turn/completed status=${interruptedStatus}`,
+    );
+  } finally {
+    await client.stop();
+  }
+
+  const resumeClient = await AppServerClient.start({
+    cwd: options.cwd,
+    rawLogPath: resumeLogPath,
+  });
+  try {
+    const resumedThread = verifyResumedThread(
+      sessionExpectation(threadId, marker, options.cwd, interruptLogPath),
+      await resumeClient.request("thread/resume", {
+        threadId,
+        approvalPolicy: "never",
+        sandbox: "read-only",
+      }),
+    );
+    const interruptedTurns = Array.isArray(resumedThread.turns)
+      ? resumedThread.turns.filter(
+          (turn) =>
+            isRecord(turn) &&
+            turn.id === interruptedTurnId &&
+            turn.status === "interrupted",
+        ).length
+      : 0;
+    if (interruptedTurns !== 1) {
+      throw new Error(
+        `Resumed history did not contain interrupted turn ${interruptedTurnId}`,
+      );
+    }
+    const verification = await runRecallTurn(
+      resumeClient,
+      threadId,
+      marker,
+      "post-interrupt resume",
+      options.timeoutMs,
+    );
+
+    await writeGateRecord(resultPath, {
+      version: 1,
+      provider: "codex",
+      scenario: "active-turn-interruption",
+      cwd: options.cwd,
+      completedAt: new Date().toISOString(),
+      evidence: {
+        threadId,
+        seedMarker: marker,
+        interruptedTurnId,
+        commandItemId,
+        command,
+        interruptRequestedAt,
+        interruptCompletedAt,
+        interruptedStatus: "interrupted",
+        interruptedEventCount,
+        resumedInterruptedTurnCount: interruptedTurns,
+        resumeVerificationTurnId: verification.id,
+        resumeVerificationAttributedEventCount:
+          verification.attributedEventCount,
+      },
+      rawLogs: relativeLogs(resultPath, [
+        interruptLogPath,
+        resumeLogPath,
+      ]),
+    });
+
+    console.log("");
+    console.log(
+      "PASS: Codex interrupted a provably active command turn, persisted status interrupted, and resumed the exact thread and context in a fresh process.",
+    );
+    console.log(`result artifact: ${relative(process.cwd(), resultPath)}`);
+  } finally {
+    await resumeClient.stop();
+  }
+}
+
+async function observerWriterScenario(
+  options: ProbeOptions,
+): Promise<void> {
+  const seedMarker =
+    options.marker ??
+    `ATC-OBSERVER-SEED-${randomUUID().slice(0, 8).toUpperCase()}`;
+  const markerA = `ATC-OBSERVER-A-${randomUUID().slice(0, 8).toUpperCase()}`;
+  const markerB = `ATC-OBSERVER-B-${randomUUID().slice(0, 8).toUpperCase()}`;
+  const runId = makeRunId();
+  const writerALogPath = resolve(
+    runsRoot,
+    `${runId}.observer-writer.a.jsonl`,
+  );
+  const clientBLogPath = resolve(
+    runsRoot,
+    `${runId}.observer-writer.b.jsonl`,
+  );
+  const resumeLogPath = resolve(
+    runsRoot,
+    `${runId}.observer-writer.resume.jsonl`,
+  );
+  const resultPath = resolve(runsRoot, `${runId}.observer-writer.json`);
+  const pendingA = new PendingServerRequest("item/tool/requestUserInput");
+
+  console.log("Codex provider identity/resume POC — observer and writer");
+  console.log(`cwd: ${options.cwd}`);
+  console.log(`markers: ${seedMarker}, ${markerA}, ${markerB}`);
+  console.log(
+    "safety: writer A waits on structured input; writer B uses a no-tool marker turn",
+  );
+
+  const writerA = await AppServerClient.start({
+    cwd: options.cwd,
+    rawLogPath: writerALogPath,
+    handleServerRequest: pendingA.handle,
+  });
+  let clientB: AppServerClient | undefined;
+  let threadId: string;
+  let turnAId: string;
+  let writerAResult: TurnResult;
+  let clientBResumeError: string | undefined;
+  let clientBResumeTurnIds: string[] = [];
+  let writerBStartError: string | undefined;
+  let writerBTurnId: string | undefined;
+  let writerBStatus: string | undefined;
+  let writerBText = "";
+  let clientBSawWriterAEvents = false;
+  try {
+    threadId = await startDurableThread(writerA, options.cwd);
+    await runMarkerTurn(
+      writerA,
+      threadId,
+      seedMarker,
+      "observer seed",
+      options.timeoutMs,
+    );
+
+    const waitingA = waitForWaitingStatus(
+      writerA,
+      threadId,
+      "waitingOnUserInput",
+      options.timeoutMs,
+    );
+    const turnAPromise = runTurn(
+      writerA,
+      threadId,
+      [
+        "This is writer A in a controlled second-client POC.",
+        "Do not use commands, files, network access, or any tool except request_user_input.",
+        "Call request_user_input exactly once with one question:",
+        'id "continue", header "Continue", question "Release writer A",',
+        'and exactly two options in order: "Alpha" then "Beta".',
+        `After receiving Alpha, reply with exactly: WRITER A: ${markerA}`,
+      ].join(" "),
+      options.timeoutMs,
+    );
+    const [requestA, waitingAMessage] = await Promise.all([
+      pendingA.wait(options.timeoutMs),
+      waitingA,
+    ]);
+    turnAId = verifyServerRequestAttribution(
+      requestA,
+      threadId,
+      "item/tool/requestUserInput",
+      "writer A input request",
+    );
+    verifyInputQuestion(requestA, "continue", ["Alpha", "Beta"]);
+    verifyWaitingStatus(
+      waitingAMessage,
+      threadId,
+      "waitingOnUserInput",
+      "writer A wait",
+    );
+    console.log(
+      `WRITER A HELD: turn ${turnAId} is waitingOnUserInput`,
+    );
+
+    clientB = await AppServerClient.start({
+      cwd: options.cwd,
+      rawLogPath: clientBLogPath,
+      requestTimeoutMs: Math.min(options.timeoutMs, 30_000),
+    });
+    let clientBResumeResult: JsonObject | undefined;
+    try {
+      clientBResumeResult = await clientB.request("thread/resume", {
+        threadId,
+        approvalPolicy: "never",
+        sandbox: "read-only",
+      });
+      const resumed = verifyResumedThread(
+        sessionExpectation(
+          threadId,
+          seedMarker,
+          options.cwd,
+          writerALogPath,
+        ),
+        clientBResumeResult,
+      );
+      clientBResumeTurnIds = turnIds(resumed);
+      console.log(
+        `SECOND CLIENT RESUMED: exact thread ${threadId} with ${clientBResumeTurnIds.length} visible turn(s)`,
+      );
+    } catch (error) {
+      clientBResumeError =
+        error instanceof Error ? error.message : String(error);
+      console.log(`SECOND CLIENT RESUME REJECTED: ${clientBResumeError}`);
+    }
+
+    const observerEventIndex = clientB.messageCount;
+    let writerBActive: ActiveTurn | undefined;
+    if (clientBResumeResult !== undefined) {
+      try {
+        writerBActive = await startTurn(
+          clientB,
+          threadId,
+          [
+            "This is writer B in a controlled concurrent-writer POC.",
+            "Do not use tools, commands, files, or network access.",
+            `Reply with exactly: WRITER B: ${markerB}`,
+          ].join(" "),
+          options.timeoutMs,
+        );
+        writerBTurnId = writerBActive.id;
+        console.log(
+          `SECOND WRITER ACCEPTED: turn/start returned ${writerBTurnId} while writer A was pending`,
+        );
+      } catch (error) {
+        writerBStartError =
+          error instanceof Error ? error.message : String(error);
+        console.log(`SECOND WRITER REJECTED: ${writerBStartError}`);
+      }
+    }
+
+    await delay(options.holdMs);
+    pendingA.respond({
+      answers: {
+        continue: {
+          answers: ["Alpha"],
+        },
+      },
+    });
+    writerAResult = await turnAPromise;
+    assertSuccessfulTurn(writerAResult, "writer A turn");
+    assertMarker(writerAResult, markerA, "writer A turn");
+
+    if (writerBActive !== undefined) {
+      const completedB = await writerBActive.completed;
+      const completedTurnB = objectAt(completedB.params, "turn");
+      const completedBId = requireString(
+        completedTurnB,
+        "id",
+        "writer B turn/completed",
+      );
+      if (completedBId !== writerBActive.id) {
+        throw new Error(
+          `Writer B turn identity mismatch: expected ${writerBActive.id}, received ${completedBId}`,
+        );
+      }
+      writerBStatus = requireString(
+        completedTurnB,
+        "status",
+        "writer B turn/completed",
+      );
+      writerBText = agentTextFromTurn(completedTurnB);
+      console.log(
+        `SECOND WRITER TERMINAL STATE: ${completedBId} status=${writerBStatus}`,
+      );
+    }
+
+    await delay(Math.min(options.holdMs, 2_000));
+    clientBSawWriterAEvents = clientB
+      .messagesSince(observerEventIndex)
+      .some(
+        (message) =>
+          message.params?.threadId === threadId &&
+          (message.params?.turnId === turnAId ||
+            stringAt(objectAt(message.params, "turn"), "id") === turnAId),
+      );
+    console.log(
+      `LIVE OBSERVER VISIBILITY: ${clientBSawWriterAEvents ? "writer A events received" : "no writer A events received"}`,
+    );
+  } finally {
+    await writerA.stop();
+    await clientB?.stop();
+  }
+
+  const resumeClient = await AppServerClient.start({
+    cwd: options.cwd,
+    rawLogPath: resumeLogPath,
+  });
+  try {
+    const resumedThread = verifyResumedThread(
+      sessionExpectation(threadId, seedMarker, options.cwd, writerALogPath),
+      await resumeClient.request("thread/resume", {
+        threadId,
+        approvalPolicy: "never",
+        sandbox: "read-only",
+      }),
+    );
+    const freshResumeTurnIds = turnIds(resumedThread);
+    const freshResumeHasWriterA = threadHasAgentMarker(
+      resumedThread,
+      markerA,
+    );
+    const freshResumeHasWriterB = threadHasAgentMarker(
+      resumedThread,
+      markerB,
+    );
+    if (!freshResumeHasWriterA) {
+      throw new Error(
+        "Fresh resume lost the completed writer A turn from the primary client",
+      );
+    }
+    const verification = await runRecallTurn(
+      resumeClient,
+      threadId,
+      markerA,
+      "observer post-resume",
+      options.timeoutMs,
+    );
+
+    await writeGateRecord(resultPath, {
+      version: 1,
+      provider: "codex",
+      scenario: "observer-writer",
+      cwd: options.cwd,
+      completedAt: new Date().toISOString(),
+      evidence: {
+        threadId,
+        seedMarker,
+        writerAMarker: markerA,
+        writerBMarker: markerB,
+        writerATurnId: turnAId,
+        writerAStatus: writerAResult.status,
+        clientBResumeError: clientBResumeError ?? null,
+        clientBResumeTurnIds,
+        clientBSawWriterAEvents,
+        writerBStartError: writerBStartError ?? null,
+        writerBTurnId: writerBTurnId ?? null,
+        writerBStatus: writerBStatus ?? null,
+        writerBReturnedMarker: writerBText.includes(markerB),
+        freshResumeTurnIds,
+        freshResumeHasWriterA,
+        freshResumeHasWriterB,
+        resumeVerificationTurnId: verification.id,
+      },
+      rawLogs: relativeLogs(resultPath, [
+        writerALogPath,
+        clientBLogPath,
+        resumeLogPath,
+      ]),
+    });
+
+    console.log("");
+    console.log(
+      "PASS: recorded Codex second-client observer visibility, concurrent writer behavior, and exact fresh-process resume state.",
+    );
+    console.log(`result artifact: ${relative(process.cwd(), resultPath)}`);
+  } finally {
+    await resumeClient.stop();
+  }
+}
+
 async function resumeScenario(options: ProbeOptions): Promise<void> {
   const sessionPath = options.sessionPath;
   if (sessionPath === undefined) {
@@ -895,8 +1690,8 @@ async function runTurn(
   threadId: string,
   prompt: string,
   timeoutMs: number,
+  options: TurnRequestOptions = {},
 ): Promise<TurnResult> {
-  const firstEventIndex = client.messageCount;
   const agentMessagePromise = client.waitForNotification(
     "item/completed",
     (params) =>
@@ -904,25 +1699,18 @@ async function runTurn(
       stringAt(objectAt(params, "item"), "type") === "agentMessage",
     timeoutMs,
   );
-  const completedPromise = client.waitForNotification(
-    "turn/completed",
-    (params) => params.threadId === threadId,
-    timeoutMs,
-  );
   try {
-    const result = await client.request("turn/start", {
+    const activeTurn = await startTurn(
+      client,
       threadId,
-      input: [{ type: "text", text: prompt, text_elements: [] }],
-      cwd: undefined,
-      approvalPolicy: "never",
-      sandboxPolicy: { type: "readOnly", networkAccess: false },
-    });
-    const initialTurn = objectAt(result, "turn");
-    const turnId = requireString(initialTurn, "id", "turn/start response");
+      prompt,
+      timeoutMs,
+      options,
+    );
 
     const [agentMessage, completedMessage] = await Promise.all([
       agentMessagePromise,
-      completedPromise,
+      activeTurn.completed,
     ]);
     const completedTurn = objectAt(completedMessage.params, "turn");
     const completedId = requireString(
@@ -930,18 +1718,18 @@ async function runTurn(
       "id",
       "turn/completed notification",
     );
-    if (completedId !== turnId) {
+    if (completedId !== activeTurn.id) {
       throw new Error(
-        `Turn identity mismatch: turn/start returned ${turnId}, turn/completed returned ${completedId}`,
+        `Turn identity mismatch: turn/start returned ${activeTurn.id}, turn/completed returned ${completedId}`,
       );
     }
 
     const completedItem = objectAt(agentMessage.params, "item");
     const attributedEventCount = verifyTurnEventAttribution(
-      client.messagesSince(firstEventIndex),
+      client.messagesSince(activeTurn.firstEventIndex),
       threadId,
-      turnId,
-      `turn ${turnId}`,
+      activeTurn.id,
+      `turn ${activeTurn.id}`,
     );
     return {
       id: completedId,
@@ -954,9 +1742,74 @@ async function runTurn(
     };
   } catch (error) {
     void agentMessagePromise.catch(() => undefined);
-    void completedPromise.catch(() => undefined);
     throw error;
   }
+}
+
+async function startTurn(
+  client: AppServerClient,
+  threadId: string,
+  prompt: string,
+  timeoutMs: number,
+  options: TurnRequestOptions = {},
+): Promise<ActiveTurn> {
+  const firstEventIndex = client.messageCount;
+  let expectedTurnId: string | undefined;
+  const completed = client.waitForNotification(
+    "turn/completed",
+    (params) =>
+      params.threadId === threadId &&
+      stringAt(objectAt(params, "turn"), "id") === expectedTurnId,
+    timeoutMs,
+  );
+  try {
+    const result = await client.request("turn/start", {
+      threadId,
+      input: [{ type: "text", text: prompt, text_elements: [] }],
+      cwd: undefined,
+      approvalPolicy: options.approvalPolicy ?? "never",
+      approvalsReviewer: options.approvalsReviewer,
+      sandboxPolicy: options.sandboxPolicy ?? {
+        type: "readOnly",
+        networkAccess: false,
+      },
+    });
+    const initialTurn = objectAt(result, "turn");
+    expectedTurnId = requireString(
+      initialTurn,
+      "id",
+      "turn/start response",
+    );
+    return {
+      id: expectedTurnId,
+      firstEventIndex,
+      completed,
+    };
+  } catch (error) {
+    void completed.catch(() => undefined);
+    throw error;
+  }
+}
+
+function waitForWaitingStatus(
+  client: AppServerClient,
+  threadId: string,
+  flag: "waitingOnApproval" | "waitingOnUserInput",
+  timeoutMs: number,
+): Promise<ProtocolMessage> {
+  return client.waitForNotification(
+    "thread/status/changed",
+    (params) => {
+      const status = objectAt(params, "status");
+      return (
+        params.threadId === threadId &&
+        status?.type === "active" &&
+        Array.isArray(status.activeFlags) &&
+        status.activeFlags.includes(flag)
+      );
+    },
+    timeoutMs,
+  );
 }
 
 async function runMarkerTurn(
@@ -1133,6 +1986,27 @@ function relativeLogs(resultPath: string, paths: string[]): string[] {
   return paths.map((path) => relative(dirname(resultPath), path));
 }
 
+function turnIds(thread: JsonObject): string[] {
+  if (!Array.isArray(thread.turns)) {
+    throw new Error("Thread did not include a turns array");
+  }
+  return thread.turns.map((turn, index) => {
+    if (!isRecord(turn)) {
+      throw new Error(`Thread turn ${index} was not an object`);
+    }
+    return requireString(turn, "id", `thread turn ${index}`);
+  });
+}
+
+function threadHasAgentMarker(thread: JsonObject, marker: string): boolean {
+  try {
+    verifyThreadContainsAgentMarker(thread, marker, "resumed thread");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function agentTextFromTurn(turn: JsonObject | undefined): string {
   const items = turn?.items;
   if (!Array.isArray(items)) {
@@ -1207,6 +2081,10 @@ function usage(): string {
     "  pnpm codex invalid-resume [--cwd <path>]",
     "  pnpm codex multiplex [--cwd <path>] [--marker <thread-a-marker>] [--timeout-seconds <n>]",
     "  pnpm codex tui-round-trip [--cwd <path>] [--marker <text>] [--timeout-seconds <n>]",
+    "  pnpm codex input-request [--cwd <path>] [--marker <text>] [--hold-seconds <n>] [--timeout-seconds <n>]",
+    "  pnpm codex permission-request [--cwd <path>] [--marker <text>] [--hold-seconds <n>] [--timeout-seconds <n>]",
+    "  pnpm codex interrupt [--cwd <path>] [--marker <seed-marker>] [--hold-seconds <n>] [--timeout-seconds <n>]",
+    "  pnpm codex observer-writer [--cwd <path>] [--marker <seed-marker>] [--hold-seconds <n>] [--timeout-seconds <n>]",
   ].join("\n");
 }
 
