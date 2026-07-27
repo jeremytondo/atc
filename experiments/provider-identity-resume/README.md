@@ -8,8 +8,9 @@ The Codex checkpoints cover conversation creation, same-process turns,
 fresh-process resume, dormant and restarted zero-turn behavior, invalid resume
 safety, shared-process multiplexing, and native-TUI interoperability. The
 Claude checkpoints cover session creation, a second same-process SDK query,
-fresh-process exact-session resume, and invalid or missing resume safety with
-explicit replacement-session detection.
+fresh-process exact-session resume, invalid or missing resume safety with
+explicit replacement-session detection, and bounded streaming lifecycle
+evidence.
 
 ## Setup
 
@@ -86,6 +87,33 @@ Omitting `resume` normally tells the SDK to create a session, so the missing-ID
 case is enforced at the probe boundary: it must fail before `query()` starts.
 The result artifact records both errors, every emitted session ID, the
 before/after inventories, and the relative raw JSONL path.
+
+## Claude lifecycle signals
+
+```sh
+pnpm claude lifecycle --cwd ../..
+```
+
+This command uses SDK streaming input and keeps the input side open for two
+seconds after the successful result. The bounded window tests whether Claude
+emits explicit `system/session_state_changed` messages while a turn runs or
+settles without leaving the probe hung when no state event arrives. Configure
+the window with `--observation-seconds <n>`.
+
+The structured result records:
+
+- the first provider activity message after `system/init`;
+- the successful result boundary;
+- every explicit `running`, `idle`, or `requires_action` transition;
+- the capabilities reported by `system/init`; and
+- an observed/not-observed summary for ATC's `working`, `idle`, and
+  `needs_input` candidates.
+
+Observed on Agent SDK `0.3.220` / Claude Code `2.1.220`: the safe no-tool turn
+reported `msg_lifecycle_v1`, assistant output, and a successful result, but no
+`session_state_changed` message. The probe records the output and result
+boundaries without treating them as provider state events. A live
+`requires_action` mapping remains for the separate interactive-request round.
 
 ## Codex create and same-process turns
 
@@ -232,6 +260,9 @@ After the marker appears, exit the TUI with `/exit`. A fresh app-server then:
 - Gate `*.json` files record IDs, errors, markers, turn attribution counts,
   and relative raw-log paths. Failed zero-turn recovery also produces a result
   artifact before the command exits nonzero.
+- Claude `*.lifecycle.json` files record streaming mode, the bounded
+  post-result window, provider capabilities, message boundaries, and explicit
+  lifecycle states or their observed absence.
 
 Review a raw event stream with:
 

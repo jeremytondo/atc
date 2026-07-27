@@ -13,7 +13,7 @@ come from reviewed run artifacts, not protocol assumptions.
 | Invalid or missing resume ID | pass | pass |
 | Shared-process multiplexing | pass | not tested |
 | Working directory after resume | pass | pass |
-| `working`, `idle`, and `needs_input` signals | partial | not tested |
+| `working`, `idle`, and `needs_input` signals | partial | partial |
 | Read-only permission or tool request | not tested | not tested |
 | Active turn interruption | not tested | not tested |
 | Second observer visibility and writer behavior | not tested | not tested |
@@ -191,6 +191,32 @@ Environment: `codex-cli 0.145.0`, working directory
   `runs/claude/2026-07-27T16-49-15-611Z-a48a602b.invalid-resume.json` and its
   one-message sibling JSONL.
 
+### Claude lifecycle signals — 2026-07-27
+
+- Environment: `@anthropic-ai/claude-agent-sdk 0.3.220`, Claude Code
+  `2.1.220`, working directory
+  `/Users/jeremytondo/Projects/ATC/atc-agent-poc`.
+- Session `202e384c-949a-48a0-919e-863b9b425fe4` used streaming SDK input
+  held open for a bounded 2,000 ms after the successful result.
+- `system/init` reported the expected cwd, no tools, `dontAsk`, and capability
+  `msg_lifecycle_v1`. All five messages retained the same session ID.
+- The first post-init activity was assistant output at event 2. Event 5 was
+  `result/success` with one turn and `stop_reason: "end_turn"`.
+- No `system/session_state_changed` message was emitted. Therefore no live
+  provider `running`, `idle`, or `requires_action` state was observed.
+- Assistant output proves response activity and the successful result proves
+  turn completion, but this round does not relabel those boundaries as
+  provider state events.
+- ATC must not claim that Claude reported `working` or `idle` in this version.
+  If the future adapter maps client dispatch to `working` and successful result
+  to `idle`, those are adapter-owned operation states.
+- `needs_input` remains unproven. The next permission/input round must capture
+  a live blocking request and determine whether `requires_action` is emitted
+  before accepting that mapping.
+- Reviewed artifacts:
+  `runs/claude/2026-07-27T17-06-31-255Z-30bac63f.lifecycle.json` and its
+  five-message sibling JSONL.
+
 ## Codex gate conclusion
 
 Three remaining checks passed, but zero-turn recovery failed. Starting the
@@ -199,8 +225,10 @@ not recoverable across app-server restarts until a first turn has materialized
 the rollout.
 
 That constraint was accepted in ATC-68. Claude identity/resume and
-invalid-resume safety now pass. Claude activity and input-state signals are the
-next narrow lifecycle gate.
+invalid-resume safety pass. The bounded Claude lifecycle round found usable
+operation boundaries but no explicit provider state events; the next narrow
+gate is a harmless interactive request to test `requires_action` and
+`needs_input`.
 
 ## Adapter recommendations
 

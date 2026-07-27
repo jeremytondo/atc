@@ -9,12 +9,14 @@ import {
   type SDKAssistantMessage,
   type SDKMessage,
   type SDKResultMessage,
+  type SDKSessionStateChangedMessage,
   type SDKSystemMessage,
+  type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 
 export interface ClaudeTurnOptions {
   cwd: string;
-  prompt: string;
+  prompt: string | AsyncIterable<SDKUserMessage>;
   rawLogPath: string;
   timeoutMs: number;
   expectedSessionId?: string;
@@ -36,6 +38,30 @@ export interface ClaudeTurnObservation {
   stateTransitions: string[];
 }
 
+export interface ClaudeLifecycleTransition {
+  sequence: number;
+  state: SDKSessionStateChangedMessage["state"];
+}
+
+export interface ClaudeMessageBoundary {
+  sequence: number;
+  type: string;
+  subtype?: string;
+}
+
+export interface ClaudeLifecycleObservation
+  extends Omit<ClaudeTurnObservation, "stateTransitions"> {
+  capabilities: string[];
+  firstActivity: ClaudeMessageBoundary;
+  result: ClaudeMessageBoundary;
+  stateTransitions: ClaudeLifecycleTransition[];
+}
+
+type ClaudeObservedQuery = Omit<
+  ClaudeLifecycleObservation,
+  "firstActivity" | "result"
+>;
+
 export interface ClaudeResumeFailureObservation {
   error: string;
   messageCount: number;
@@ -48,11 +74,91 @@ export interface ClaudeResumeFailureObservation {
 export async function runClaudeTurn(
   options: ClaudeTurnOptions,
 ): Promise<ClaudeTurnObservation> {
+  const observation = await observeClaudeQuery(options);
+  return {
+    ...observation,
+    stateTransitions: observation.stateTransitions.map(
+      (transition) => transition.state,
+    ),
+  };
+}
+
+export async function runClaudeLifecycle(
+  options: Omit<ClaudeTurnOptions, "prompt"> & {
+    prompt: string;
+    postResultWaitMs: number;
+  },
+): Promise<ClaudeLifecycleObservation> {
+  const input = createStreamingPrompt(options.prompt);
+  let closeTimer: NodeJS.Timeout | undefined;
+  let firstActivity: ClaudeMessageBoundary | undefined;
+  let resultBoundary: ClaudeMessageBoundary | undefined;
+
+  try {
+    const observation = await observeClaudeQuery(
+      {
+        cwd: options.cwd,
+        prompt: input.messages,
+        rawLogPath: options.rawLogPath,
+        timeoutMs: options.timeoutMs,
+        expectedSessionId: options.expectedSessionId,
+      },
+      (sequence, message) => {
+        if (
+          firstActivity === undefined &&
+          !(
+            message.type === "system" &&
+            message.subtype === "init"
+          ) &&
+          message.type !== "rate_limit_event" &&
+          message.type !== "result"
+        ) {
+          firstActivity = messageBoundary(sequence, message);
+        }
+        if (
+          message.type === "system" &&
+          message.subtype === "session_state_changed" &&
+          message.state === "idle"
+        ) {
+          clearTimeout(closeTimer);
+          input.close();
+        } else if (message.type === "result") {
+          resultBoundary = messageBoundary(sequence, message);
+          closeTimer = setTimeout(
+            () => input.close(),
+            options.postResultWaitMs,
+          );
+        }
+      },
+    );
+    if (firstActivity === undefined) {
+      throw new Error(
+        "Claude lifecycle probe emitted no activity message before its result",
+      );
+    }
+    if (resultBoundary === undefined) {
+      throw new Error("Claude lifecycle probe emitted no result boundary");
+    }
+    return {
+      ...observation,
+      firstActivity,
+      result: resultBoundary,
+    };
+  } finally {
+    clearTimeout(closeTimer);
+    input.close();
+  }
+}
+
+async function observeClaudeQuery(
+  options: ClaudeTurnOptions,
+  inspectMessage?: (sequence: number, message: SDKMessage) => void,
+): Promise<ClaudeObservedQuery> {
   let sessionId: string | undefined;
   let firstIdentity: ClaudeIdentityAvailability | undefined;
   let init: SDKSystemMessage | undefined;
   let result: SDKResultMessage | undefined;
-  const stateTransitions: string[] = [];
+  const stateTransitions: ClaudeLifecycleTransition[] = [];
 
   const messageCount = await consumeClaudeQuery(
     options,
@@ -88,10 +194,14 @@ export async function runClaudeTurn(
         message.type === "system" &&
         message.subtype === "session_state_changed"
       ) {
-        stateTransitions.push(message.state);
+        stateTransitions.push({
+          sequence,
+          state: message.state,
+        });
       } else if (message.type === "result") {
         result = message;
       }
+      inspectMessage?.(sequence, message);
     },
   );
 
@@ -134,10 +244,22 @@ export async function runClaudeTurn(
     sessionId,
     cwd: canonicalPath(init.cwd),
     claudeCodeVersion: init.claude_code_version,
+    capabilities: init.capabilities ?? [],
     firstIdentity,
     messageCount,
     resultText: result.result,
     stateTransitions,
+  };
+}
+
+function messageBoundary(
+  sequence: number,
+  message: SDKMessage,
+): ClaudeMessageBoundary {
+  return {
+    sequence,
+    type: message.type,
+    subtype: subtypeOf(message),
   };
 }
 
@@ -269,6 +391,15 @@ function printReadableMessage(sequence: number, message: SDKMessage): void {
     }
     return;
   }
+  if (
+    message.type === "system" &&
+    message.subtype === "session_state_changed"
+  ) {
+    console.log(
+      `← #${sequence} ${label}${identity} state=${message.state}`,
+    );
+    return;
+  }
   if (message.type === "result") {
     console.log(
       `← #${sequence} ${label}${identity} turns=${message.num_turns} cost=$${message.total_cost_usd.toFixed(6)}`,
@@ -277,6 +408,39 @@ function printReadableMessage(sequence: number, message: SDKMessage): void {
   }
 
   console.log(`← #${sequence} ${label}${identity}`);
+}
+
+function createStreamingPrompt(prompt: string): {
+  messages: AsyncIterable<SDKUserMessage>;
+  close: () => void;
+} {
+  let release: (() => void) | undefined;
+  let closed = false;
+  const closedPromise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  return {
+    messages: {
+      async *[Symbol.asyncIterator]() {
+        yield {
+          type: "user",
+          message: {
+            role: "user",
+            content: prompt,
+          },
+          parent_tool_use_id: null,
+        };
+        await closedPromise;
+      },
+    },
+    close() {
+      if (!closed) {
+        closed = true;
+        release?.();
+      }
+    },
+  };
 }
 
 async function consumeClaudeQuery(

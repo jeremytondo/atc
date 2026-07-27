@@ -7,18 +7,22 @@ import { fileURLToPath } from "node:url";
 import {
   listClaudeSessionIds,
   requireClaudeResumeFailure,
+  runClaudeLifecycle,
   runClaudeTurn,
   type ClaudeIdentityAvailability,
+  type ClaudeLifecycleObservation,
+  type ClaudeLifecycleTransition,
   type ClaudeResumeFailureObservation,
   type ClaudeTurnObservation,
 } from "./sdk-query.ts";
 
 interface ProbeOptions {
-  command: "create" | "resume" | "invalid-resume";
+  command: "create" | "resume" | "invalid-resume" | "lifecycle";
   cwd: string;
   marker?: string;
   sessionPath?: string;
   timeoutMs: number;
+  lifecycleObservationMs: number;
 }
 
 interface ClaudeSessionRecord {
@@ -43,8 +47,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     await createScenario(options);
   } else if (options.command === "resume") {
     await resumeScenario(options);
-  } else {
+  } else if (options.command === "invalid-resume") {
     await invalidResumeScenario(options);
+  } else {
+    await lifecycleScenario(options);
   }
 }
 
@@ -53,7 +59,8 @@ export function parseArgs(argv: string[]): ProbeOptions {
   if (
     command !== "create" &&
     command !== "resume" &&
-    command !== "invalid-resume"
+    command !== "invalid-resume" &&
+    command !== "lifecycle"
   ) {
     throw new Error(usage());
   }
@@ -62,6 +69,7 @@ export function parseArgs(argv: string[]): ProbeOptions {
   let marker: string | undefined;
   let sessionPath: string | undefined;
   let timeoutMs = 300_000;
+  let lifecycleObservationMs = 2_000;
 
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index];
@@ -88,6 +96,16 @@ export function parseArgs(argv: string[]): ProbeOptions {
         timeoutMs = seconds * 1_000;
         break;
       }
+      case "--observation-seconds": {
+        const seconds = Number(value);
+        if (!Number.isFinite(seconds) || seconds < 0) {
+          throw new Error(
+            "--observation-seconds must be a non-negative number",
+          );
+        }
+        lifecycleObservationMs = seconds * 1_000;
+        break;
+      }
       default:
         throw new Error(`Unknown option: ${flag}\n\n${usage()}`);
     }
@@ -104,6 +122,7 @@ export function parseArgs(argv: string[]): ProbeOptions {
     marker,
     sessionPath,
     timeoutMs,
+    lifecycleObservationMs,
   };
 }
 
@@ -191,6 +210,44 @@ export function verifyInvalidResumeFailure(
   if (attempt.resultSubtype === "success") {
     throw new Error("Invalid resume unexpectedly returned a successful result");
   }
+}
+
+export function verifyLifecycleTransitions(
+  transitions: ClaudeLifecycleTransition[],
+): void {
+  const runningIndex = transitions.findIndex(
+    (transition) => transition.state === "running",
+  );
+  const idleIndex = transitions.findIndex(
+    (transition, index) =>
+      index > runningIndex && transition.state === "idle",
+  );
+
+  if (runningIndex !== -1 && idleIndex === -1) {
+    throw new Error(
+      "Claude lifecycle probe emitted no idle event after running",
+    );
+  }
+}
+
+export function summarizeLifecycleSignals(
+  observation: Pick<ClaudeLifecycleObservation, "stateTransitions">,
+): {
+  working: LifecycleSignalSummary;
+  idle: LifecycleSignalSummary;
+  needsInput: LifecycleSignalSummary;
+} {
+  return {
+    working: summarizeLifecycleSignal(
+      "running",
+      observation.stateTransitions,
+    ),
+    idle: summarizeLifecycleSignal("idle", observation.stateTransitions),
+    needsInput: summarizeLifecycleSignal(
+      "requires_action",
+      observation.stateTransitions,
+    ),
+  };
 }
 
 async function createScenario(options: ProbeOptions): Promise<void> {
@@ -387,6 +444,129 @@ async function invalidResumeScenario(options: ProbeOptions): Promise<void> {
   console.log(`result artifact: ${relative(process.cwd(), resultPath)}`);
 }
 
+async function lifecycleScenario(options: ProbeOptions): Promise<void> {
+  const runId = makeRunId();
+  const rawLogPath = resolve(runsRoot, `${runId}.lifecycle.jsonl`);
+  const resultPath = resolve(runsRoot, `${runId}.lifecycle.json`);
+  const marker =
+    options.marker ??
+    `ATC-CLAUDE-LIFECYCLE-${randomUUID().slice(0, 8).toUpperCase()}`;
+
+  console.log("Claude Agent SDK provider identity/resume POC — lifecycle signals");
+  console.log(`cwd: ${options.cwd}`);
+  console.log(`marker: ${marker}`);
+  console.log("mode: streaming input with a bounded post-result observation window");
+  console.log("safety: no built-in tools, no settings sources, dontAsk mode");
+
+  const observation = await runClaudeLifecycle({
+    cwd: options.cwd,
+    prompt: [
+      "This is a read-only lifecycle-signal POC.",
+      "Do not use tools, run commands, or modify files.",
+      `Reply with exactly: LIFECYCLE COMPLETE: ${marker}`,
+    ].join(" "),
+    rawLogPath,
+    timeoutMs: options.timeoutMs,
+    postResultWaitMs: options.lifecycleObservationMs,
+  });
+  if (!observation.resultText.includes(marker)) {
+    throw new Error(
+      `Lifecycle turn completed without the expected marker ${marker}`,
+    );
+  }
+  verifyLifecycleTransitions(observation.stateTransitions);
+  const signals = summarizeLifecycleSignals(observation);
+
+  const result = {
+    version: 1,
+    provider: "claude",
+    scenario: "lifecycle",
+    cwd: observation.cwd,
+    sessionId: observation.sessionId,
+    claudeCodeVersion: observation.claudeCodeVersion,
+    completedAt: new Date().toISOString(),
+    evidence: {
+      inputMode: "streaming",
+      marker,
+      messageCount: observation.messageCount,
+      capabilities: observation.capabilities,
+      firstActivity: observation.firstActivity,
+      result: observation.result,
+      postResultObservationMs: options.lifecycleObservationMs,
+      stateTransitions: observation.stateTransitions,
+      signals,
+      tools: [],
+      permissionMode: "dontAsk",
+      settingSources: [],
+    },
+    rawLogs: [relative(dirname(resultPath), rawLogPath)],
+  };
+  await writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`, {
+    flag: "wx",
+  });
+
+  if (signals.working.status === "observed") {
+    console.log(
+      `WORKING SIGNAL OBSERVED: running at event #${signals.working.sequences.join(", #")}`,
+    );
+  } else {
+    console.log(
+      `WORKING STATE NOT OBSERVED: first activity was ${formatBoundary(observation.firstActivity)}.`,
+    );
+  }
+  if (signals.idle.status === "observed") {
+    console.log(
+      `IDLE SIGNAL OBSERVED: idle at event #${signals.idle.sequences.join(", #")}`,
+    );
+  } else {
+    console.log(
+      `IDLE STATE NOT OBSERVED: successful turn completion was ${formatBoundary(observation.result)}.`,
+    );
+  }
+  if (signals.needsInput.status === "observed") {
+    console.log(
+      `NEEDS_INPUT SIGNAL OBSERVED: requires_action at event #${signals.needsInput.sequences.join(", #")}`,
+    );
+  } else {
+    console.log(
+      "NEEDS_INPUT STATE NOT OBSERVED: requires_action needs a separate interactive-request scenario.",
+    );
+  }
+  console.log("");
+  console.log(
+    "PASS: bounded streaming lifecycle evidence was captured without tools or repository changes.",
+  );
+  console.log(`result artifact: ${relative(process.cwd(), resultPath)}`);
+}
+
+interface LifecycleSignalSummary {
+  providerState: ClaudeLifecycleTransition["state"];
+  status: "observed" | "not_observed";
+  sequences: number[];
+}
+
+function summarizeLifecycleSignal(
+  providerState: ClaudeLifecycleTransition["state"],
+  transitions: ClaudeLifecycleTransition[],
+): LifecycleSignalSummary {
+  const sequences = transitions
+    .filter((transition) => transition.state === providerState)
+    .map((transition) => transition.sequence);
+  return {
+    providerState,
+    status: sequences.length > 0 ? "observed" : "not_observed",
+    sequences,
+  };
+}
+
+function formatBoundary(boundary: {
+  sequence: number;
+  type: string;
+  subtype?: string;
+}): string {
+  return `event #${boundary.sequence} ${boundary.type}${boundary.subtype === undefined ? "" : `/${boundary.subtype}`}`;
+}
+
 function canonicalPath(path: string): string {
   const absolute = resolve(path);
   if (!existsSync(absolute)) {
@@ -432,6 +612,7 @@ function usage(): string {
     "  pnpm claude create [--cwd <path>] [--marker <value>] [--timeout-seconds <n>]",
     "  pnpm claude resume --session <path> [--timeout-seconds <n>]",
     "  pnpm claude invalid-resume [--cwd <path>] [--timeout-seconds <n>]",
+    "  pnpm claude lifecycle [--cwd <path>] [--marker <value>] [--observation-seconds <n>] [--timeout-seconds <n>]",
   ].join("\n");
 }
 

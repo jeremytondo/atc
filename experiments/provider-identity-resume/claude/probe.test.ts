@@ -8,7 +8,9 @@ import {
   assertSessionRecord,
   parseArgs,
   requireResumeId,
+  summarizeLifecycleSignals,
   verifyInvalidResumeFailure,
+  verifyLifecycleTransitions,
   verifyNoReplacementSessions,
   verifyContinuity,
 } from "./probe.ts";
@@ -37,6 +39,10 @@ test("parseArgs accepts the invalid-resume gate command", () => {
   assert.equal(parseArgs(["invalid-resume"]).command, "invalid-resume");
 });
 
+test("parseArgs accepts the lifecycle gate command", () => {
+  assert.equal(parseArgs(["lifecycle"]).command, "lifecycle");
+});
+
 test("parseArgs canonicalizes the requested cwd", () => {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), "atc-claude-")));
   const options = parseArgs(["create", "--cwd", directory]);
@@ -47,6 +53,15 @@ test("parseArgs canonicalizes the requested cwd", () => {
 test("parseArgs configures a positive timeout", () => {
   const options = parseArgs(["create", "--timeout-seconds", "12.5"]);
   assert.equal(options.timeoutMs, 12_500);
+});
+
+test("parseArgs configures the lifecycle observation window", () => {
+  const options = parseArgs([
+    "lifecycle",
+    "--observation-seconds",
+    "1.5",
+  ]);
+  assert.equal(options.lifecycleObservationMs, 1_500);
 });
 
 test("parseArgs rejects a non-positive timeout", () => {
@@ -211,5 +226,57 @@ test("verifyInvalidResumeFailure rejects an unrelated provider error", () => {
         observedSessionIds: [],
       }),
     /did not return a clear session-specific failure/,
+  );
+});
+
+test("verifyLifecycleTransitions accepts ordered running then idle evidence", () => {
+  assert.doesNotThrow(() =>
+    verifyLifecycleTransitions([
+      { sequence: 2, state: "running" },
+      { sequence: 6, state: "idle" },
+    ]),
+  );
+});
+
+test("verifyLifecycleTransitions accepts absent explicit state evidence", () => {
+  assert.doesNotThrow(() => verifyLifecycleTransitions([]));
+});
+
+test("verifyLifecycleTransitions rejects running without a later idle", () => {
+  assert.throws(
+    () =>
+      verifyLifecycleTransitions([
+        { sequence: 2, state: "idle" },
+        { sequence: 3, state: "running" },
+      ]),
+    /no idle event after running/,
+  );
+});
+
+test("summarizeLifecycleSignals distinguishes observed and unobserved states", () => {
+  assert.deepEqual(
+    summarizeLifecycleSignals({
+      stateTransitions: [
+        { sequence: 2, state: "running" },
+        { sequence: 6, state: "idle" },
+      ],
+    }),
+    {
+      working: {
+        providerState: "running",
+        status: "observed",
+        sequences: [2],
+      },
+      idle: {
+        providerState: "idle",
+        status: "observed",
+        sequences: [6],
+      },
+      needsInput: {
+        providerState: "requires_action",
+        status: "not_observed",
+        sequences: [],
+      },
+    },
   );
 });
