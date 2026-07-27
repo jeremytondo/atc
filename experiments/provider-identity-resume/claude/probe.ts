@@ -2,8 +2,16 @@ import { randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
+import * as readline from "node:readline/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
+import type { PermissionResult } from "@anthropic-ai/claude-agent-sdk";
+
+import {
+  ClaudeControlTimeline,
+  type ClaudeControlTimelineEvent,
+} from "./control-timeline.ts";
 import {
   listClaudeSessionIds,
   requireClaudeResumeFailure,
@@ -17,12 +25,19 @@ import {
 } from "./sdk-query.ts";
 
 interface ProbeOptions {
-  command: "create" | "resume" | "invalid-resume" | "lifecycle";
+  command:
+    | "create"
+    | "resume"
+    | "invalid-resume"
+    | "lifecycle"
+    | "input-request";
   cwd: string;
   marker?: string;
   sessionPath?: string;
   timeoutMs: number;
   lifecycleObservationMs: number;
+  answer?: string;
+  responseDelayMs: number;
 }
 
 interface ClaudeSessionRecord {
@@ -49,8 +64,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     await resumeScenario(options);
   } else if (options.command === "invalid-resume") {
     await invalidResumeScenario(options);
-  } else {
+  } else if (options.command === "lifecycle") {
     await lifecycleScenario(options);
+  } else {
+    await inputRequestScenario(options);
   }
 }
 
@@ -60,7 +77,8 @@ export function parseArgs(argv: string[]): ProbeOptions {
     command !== "create" &&
     command !== "resume" &&
     command !== "invalid-resume" &&
-    command !== "lifecycle"
+    command !== "lifecycle" &&
+    command !== "input-request"
   ) {
     throw new Error(usage());
   }
@@ -70,6 +88,8 @@ export function parseArgs(argv: string[]): ProbeOptions {
   let sessionPath: string | undefined;
   let timeoutMs = 300_000;
   let lifecycleObservationMs = 2_000;
+  let answer: string | undefined;
+  let responseDelayMs = 2_000;
 
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index];
@@ -87,6 +107,9 @@ export function parseArgs(argv: string[]): ProbeOptions {
         break;
       case "--session":
         sessionPath = resolve(value);
+        break;
+      case "--answer":
+        answer = value;
         break;
       case "--timeout-seconds": {
         const seconds = Number(value);
@@ -106,6 +129,16 @@ export function parseArgs(argv: string[]): ProbeOptions {
         lifecycleObservationMs = seconds * 1_000;
         break;
       }
+      case "--response-delay-seconds": {
+        const seconds = Number(value);
+        if (!Number.isFinite(seconds) || seconds < 0) {
+          throw new Error(
+            "--response-delay-seconds must be a non-negative number",
+          );
+        }
+        responseDelayMs = seconds * 1_000;
+        break;
+      }
       default:
         throw new Error(`Unknown option: ${flag}\n\n${usage()}`);
     }
@@ -123,6 +156,8 @@ export function parseArgs(argv: string[]): ProbeOptions {
     sessionPath,
     timeoutMs,
     lifecycleObservationMs,
+    answer,
+    responseDelayMs,
   };
 }
 
@@ -539,6 +574,303 @@ async function lifecycleScenario(options: ProbeOptions): Promise<void> {
   console.log(`result artifact: ${relative(process.cwd(), resultPath)}`);
 }
 
+async function inputRequestScenario(options: ProbeOptions): Promise<void> {
+  const runId = makeRunId();
+  const rawLogPath = resolve(runsRoot, `${runId}.input-request.jsonl`);
+  const timelinePath = resolve(
+    runsRoot,
+    `${runId}.input-request.timeline.jsonl`,
+  );
+  const resultPath = resolve(runsRoot, `${runId}.input-request.json`);
+  const marker =
+    options.marker ??
+    `ATC-CLAUDE-INPUT-${randomUUID().slice(0, 8).toUpperCase()}`;
+  const timeline = new ClaudeControlTimeline();
+  let selectedAnswer: string | undefined;
+
+  console.log("Claude Agent SDK provider identity/resume POC — input request");
+  console.log(`cwd: ${options.cwd}`);
+  console.log(`marker: ${marker}`);
+  console.log("tool exposure: AskUserQuestion only");
+  console.log("safety: no filesystem, shell, network, or settings tools");
+
+  let observation: ClaudeLifecycleObservation;
+  try {
+    observation = await runClaudeLifecycle({
+      cwd: options.cwd,
+      prompt: [
+        "This is a provider input-request POC.",
+        "Use AskUserQuestion exactly once before replying.",
+        'Ask exactly: "Which marker path should ATC use?"',
+        'Offer exactly two single-select options: "Alpha" and "Beta".',
+        "Do not use any other tool.",
+        `After the answer, reply with: INPUT RECEIVED: <answer> ${marker}`,
+      ].join(" "),
+      rawLogPath,
+      timeoutMs: options.timeoutMs,
+      postResultWaitMs: options.lifecycleObservationMs,
+      queryPolicy: {
+        tools: ["AskUserQuestion"],
+        permissionMode: "default",
+        maxTurns: 2,
+        canUseTool: async (toolName, input, callbackOptions) => {
+          if (toolName !== "AskUserQuestion") {
+            throw new Error(`Unexpected interactive tool request: ${toolName}`);
+          }
+          timeline.recordRequest({
+            requestId: callbackOptions.requestId,
+            toolUseId: callbackOptions.toolUseID,
+            toolName,
+            input,
+          });
+
+          selectedAnswer =
+            options.answer ?? await promptForQuestionAnswer(input);
+          if (options.responseDelayMs > 0) {
+            await delay(options.responseDelayMs, undefined, {
+              signal: callbackOptions.signal,
+            });
+          }
+          const result = buildAskUserQuestionResult(input, selectedAnswer);
+          timeline.recordResponse({
+            requestId: callbackOptions.requestId,
+            toolUseId: callbackOptions.toolUseID,
+            toolName,
+            result,
+          });
+          return result;
+        },
+      },
+      onMessage: (sequence, message) => {
+        timeline.recordMessage(sequence, message);
+      },
+    });
+  } finally {
+    await writeFile(timelinePath, timeline.toJsonLines(), { flag: "wx" });
+  }
+
+  if (selectedAnswer === undefined) {
+    throw new Error("Claude did not request an AskUserQuestion answer");
+  }
+  if (
+    !observation.resultText.includes(marker) ||
+    !observation.resultText.includes(selectedAnswer)
+  ) {
+    throw new Error(
+      `Input-request result did not preserve answer ${selectedAnswer} and marker ${marker}`,
+    );
+  }
+  verifyNeedsInputTransitions(observation.stateTransitions);
+  verifyInputRequestTimeline(timeline.events);
+
+  const signals = summarizeLifecycleSignals(observation);
+  const result = {
+    version: 1,
+    provider: "claude",
+    scenario: "input-request",
+    cwd: observation.cwd,
+    sessionId: observation.sessionId,
+    claudeCodeVersion: observation.claudeCodeVersion,
+    completedAt: new Date().toISOString(),
+    evidence: {
+      inputMode: "streaming",
+      marker,
+      answer: selectedAnswer,
+      messageCount: observation.messageCount,
+      stateTransitions: observation.stateTransitions,
+      signals,
+      tools: ["AskUserQuestion"],
+      permissionMode: "default",
+      settingSources: [],
+      callbackEvents: timeline.events.filter(
+        (event) => event.source === "callback",
+      ),
+    },
+    rawLogs: [
+      relative(dirname(resultPath), rawLogPath),
+      relative(dirname(resultPath), timelinePath),
+    ],
+  };
+  await writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`, {
+    flag: "wx",
+  });
+
+  console.log(
+    `NEEDS_INPUT SIGNAL OBSERVED: requires_action at event #${signals.needsInput.sequences.join(", #")}`,
+  );
+  console.log(`ANSWER ACCEPTED: ${selectedAnswer}`);
+  console.log("");
+  console.log(
+    "PASS: AskUserQuestion blocked for input and resumed the exact session without repository-capable tools.",
+  );
+  console.log(`result artifact: ${relative(process.cwd(), resultPath)}`);
+}
+
+export function buildAskUserQuestionResult(
+  input: Record<string, unknown>,
+  answer: string,
+): PermissionResult {
+  const questions = questionsOf(input);
+  const question = questions[0];
+  if (questions.length !== 1 || question === undefined) {
+    throw new Error(
+      `Expected exactly one AskUserQuestion question, received ${questions.length}`,
+    );
+  }
+  const selectedAnswer = answer.trim();
+  if (selectedAnswer.length === 0) {
+    throw new Error("AskUserQuestion answer must not be blank");
+  }
+
+  return {
+    behavior: "allow",
+    updatedInput: {
+      questions: input.questions,
+      answers: {
+        [question.question]: selectedAnswer,
+      },
+    },
+  };
+}
+
+export function verifyNeedsInputTransitions(
+  transitions: ClaudeLifecycleTransition[],
+): void {
+  const needsInputIndex = transitions.findIndex(
+    (transition) => transition.state === "requires_action",
+  );
+  if (needsInputIndex === -1) {
+    throw new Error(
+      "Claude input-request probe emitted no requires_action state",
+    );
+  }
+  const idleAfterInput = transitions
+    .slice(needsInputIndex + 1)
+    .some((transition) => transition.state === "idle");
+  if (!idleAfterInput) {
+    throw new Error(
+      "Claude input-request probe emitted no idle state after requires_action",
+    );
+  }
+}
+
+export function verifyInputRequestTimeline(
+  events: ClaudeControlTimelineEvent[],
+): void {
+  const requests = events.filter(
+    (event) => event.source === "callback" && event.event === "request",
+  );
+  const responses = events.filter(
+    (event) => event.source === "callback" && event.event === "response",
+  );
+  if (requests.length !== 1 || responses.length !== 1) {
+    throw new Error(
+      `Expected one callback request and response, received ${requests.length} and ${responses.length}`,
+    );
+  }
+  const request = requests[0];
+  const response = responses[0];
+  if (request === undefined || response === undefined) {
+    throw new Error("Missing callback request or response");
+  }
+  if (
+    request.requestId !== response.requestId ||
+    request.toolUseId !== response.toolUseId
+  ) {
+    throw new Error("Callback response correlation did not match its request");
+  }
+  const requiresAction = events.find(
+    (event) =>
+      event.source === "sdk" &&
+      event.event === "message" &&
+      event.state === "requires_action",
+  );
+  if (
+    requiresAction === undefined ||
+    requiresAction.sequence <= request.sequence ||
+    requiresAction.sequence >= response.sequence
+  ) {
+    throw new Error(
+      "requires_action was not observed while the callback was pending",
+    );
+  }
+}
+
+async function promptForQuestionAnswer(
+  input: Record<string, unknown>,
+): Promise<string> {
+  const questions = questionsOf(input);
+  const question = questions[0];
+  if (questions.length !== 1 || question === undefined) {
+    throw new Error(
+      `Expected exactly one AskUserQuestion question, received ${questions.length}`,
+    );
+  }
+
+  console.log("");
+  console.log(`${question.header}: ${question.question}`);
+  question.options.forEach((option, index) => {
+    console.log(`  ${index + 1}. ${option.label} — ${option.description}`);
+  });
+
+  const terminal = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  try {
+    const response = (await terminal.question("Your choice: ")).trim();
+    const optionIndex = Number(response) - 1;
+    return Number.isInteger(optionIndex) &&
+      optionIndex >= 0 &&
+      optionIndex < question.options.length
+      ? question.options[optionIndex]?.label ?? response
+      : response;
+  } finally {
+    terminal.close();
+  }
+}
+
+function questionsOf(input: Record<string, unknown>): Array<{
+  question: string;
+  header: string;
+  options: Array<{ label: string; description: string }>;
+}> {
+  if (!Array.isArray(input.questions)) {
+    throw new Error("AskUserQuestion input did not contain questions");
+  }
+  return input.questions.map((value) => {
+    if (
+      !isRecord(value) ||
+      typeof value.question !== "string" ||
+      typeof value.header !== "string" ||
+      !Array.isArray(value.options)
+    ) {
+      throw new Error("AskUserQuestion question had an invalid shape");
+    }
+    const options = value.options.map((option) => {
+      if (
+        !isRecord(option) ||
+        typeof option.label !== "string" ||
+        typeof option.description !== "string"
+      ) {
+        throw new Error("AskUserQuestion option had an invalid shape");
+      }
+      return {
+        label: option.label,
+        description: option.description,
+      };
+    });
+    if (options.length < 2) {
+      throw new Error("AskUserQuestion requires at least two options");
+    }
+    return {
+      question: value.question,
+      header: value.header,
+      options,
+    };
+  });
+}
+
 interface LifecycleSignalSummary {
   providerState: ClaudeLifecycleTransition["state"];
   status: "observed" | "not_observed";
@@ -613,6 +945,7 @@ function usage(): string {
     "  pnpm claude resume --session <path> [--timeout-seconds <n>]",
     "  pnpm claude invalid-resume [--cwd <path>] [--timeout-seconds <n>]",
     "  pnpm claude lifecycle [--cwd <path>] [--marker <value>] [--observation-seconds <n>] [--timeout-seconds <n>]",
+    "  pnpm claude input-request [--cwd <path>] [--marker <value>] [--answer <value>] [--response-delay-seconds <n>] [--timeout-seconds <n>]",
   ].join("\n");
 }
 

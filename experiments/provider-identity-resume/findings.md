@@ -13,7 +13,7 @@ come from reviewed run artifacts, not protocol assumptions.
 | Invalid or missing resume ID | pass | pass |
 | Shared-process multiplexing | pass | not tested |
 | Working directory after resume | pass | pass |
-| `working`, `idle`, and `needs_input` signals | partial | partial |
+| `working`, `idle`, and `needs_input` signals | partial | pass |
 | Read-only permission or tool request | not tested | not tested |
 | Active turn interruption | not tested | not tested |
 | Second observer visibility and writer behavior | not tested | not tested |
@@ -218,6 +218,29 @@ Environment: `codex-cli 0.145.0`, working directory
   `runs/claude/2026-07-27T17-42-57-368Z-3d6af251.lifecycle.json` plus its
   nine-message sibling JSONL for the corrected pass.
 
+### Claude input request — 2026-07-27
+
+- Session `b73e071e-92f6-4735-9aac-7e26d2d4a6ba` exposed only
+  `AskUserQuestion`, used `permissionMode: "default"`, loaded no settings
+  sources, and retained the expected repository cwd.
+- The SDK emitted `running` at event 1. The `canUseTool` callback received one
+  `AskUserQuestion` request correlated by request ID and tool-use ID.
+- `requires_action` arrived at provider event 5 while that callback remained
+  pending. The deterministic probe answered `Alpha` after 2,004 ms.
+- The exact callback correlation resumed the same provider session: `running`
+  arrived at event 7, and the assistant returned
+  `INPUT RECEIVED: Alpha ATC-CLAUDE-INPUT-01`.
+- `result/success` arrived at event 10 and authoritative `idle` at event 11.
+  Claude therefore provides provider-owned evidence for mapping
+  `requires_action` to ATC `needs_input`.
+- The raw SDK stream remains unmodified. A separate derived timeline preserves
+  the ordering of SDK messages and callback request/response observations.
+- This closes Claude's `needs_input` signal. A distinct harmless generic tool
+  approval remains required before the permission/tool-request row passes.
+- Reviewed artifacts:
+  `runs/claude/2026-07-27T17-50-20-226Z-42d8dfad.input-request.json`, its
+  11-message raw SDK JSONL, and its 13-entry callback/provider timeline.
+
 ## Codex gate conclusion
 
 Three remaining checks passed, but zero-turn recovery failed. Starting the
@@ -227,8 +250,8 @@ the rollout.
 
 That constraint was accepted in ATC-68. Claude identity/resume,
 invalid-resume safety, and provider-owned `working`/`idle` evidence pass. The
-next narrow gate is a harmless interactive request to test `requires_action`
-and `needs_input`.
+Claude input-request round proves provider-owned `requires_action` and
+`needs_input`. The next narrow gate is a distinct harmless permission request.
 
 ## Adapter recommendations
 

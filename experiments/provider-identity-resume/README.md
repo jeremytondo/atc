@@ -10,7 +10,7 @@ safety, shared-process multiplexing, and native-TUI interoperability. The
 Claude checkpoints cover session creation, a second same-process SDK query,
 fresh-process exact-session resume, invalid or missing resume safety with
 explicit replacement-session detection, and bounded streaming lifecycle
-evidence.
+evidence, including a blocking `AskUserQuestion` input request.
 
 ## Setup
 
@@ -113,8 +113,31 @@ The probe enables Anthropic's required
 `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1` subprocess setting while preserving
 the inherited environment. Observed on Agent SDK `0.3.220` / Claude Code
 `2.1.220`: `running` arrived before `system/init`, and authoritative `idle`
-arrived after `result/success`. A live `requires_action` mapping remains for
-the separate interactive-request round.
+arrived after `result/success`. The following input-request round tests
+`requires_action` separately.
+
+## Claude input request
+
+```sh
+pnpm claude input-request --cwd ../..
+```
+
+The probe exposes only `AskUserQuestion`, prints the provider-generated
+question, and waits for a terminal answer. It records the unmodified SDK
+message stream plus a separate derived control timeline that correlates the
+`canUseTool` request and response by request and tool-use ID.
+
+For a repeatable non-interactive run:
+
+```sh
+pnpm claude input-request --cwd ../.. --answer Alpha
+```
+
+The deterministic path holds the callback for two seconds by default so the
+probe can require `requires_action` while the callback is pending. Configure
+that window with `--response-delay-seconds <n>`. The scenario fails unless the
+same session resumes after the answer and reaches authoritative `idle`. No
+filesystem, shell, network, or settings tool is exposed.
 
 ## Codex create and same-process turns
 

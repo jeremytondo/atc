@@ -46,3 +46,29 @@ test("buildQueryOptions disables tools and filesystem settings", () => {
   assert.equal(options.persistSession, true);
   assert.equal(options.env?.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS, "1");
 });
+
+test("buildQueryOptions applies an interactive query policy without auto-allowing its tool", () => {
+  const canUseTool = async () => ({
+    behavior: "deny" as const,
+    message: "test",
+  });
+  const options = buildQueryOptions(
+    {
+      cwd: "/tmp/project",
+      queryPolicy: {
+        tools: ["AskUserQuestion"],
+        permissionMode: "default",
+        maxTurns: 2,
+        canUseTool,
+      },
+    },
+    new AbortController(),
+  );
+
+  assert.deepEqual(options.tools, ["AskUserQuestion"]);
+  assert.deepEqual(options.allowedTools, []);
+  assert.equal(options.permissionMode, "default");
+  assert.equal(options.maxTurns, 2);
+  assert.equal(options.canUseTool, canUseTool);
+  assert.deepEqual(options.settingSources, []);
+});

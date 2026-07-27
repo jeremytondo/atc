@@ -5,7 +5,9 @@ import { dirname } from "node:path";
 import {
   listSessions,
   query,
+  type CanUseTool,
   type Options,
+  type PermissionMode,
   type SDKAssistantMessage,
   type SDKMessage,
   type SDKResultMessage,
@@ -20,6 +22,17 @@ export interface ClaudeTurnOptions {
   rawLogPath: string;
   timeoutMs: number;
   expectedSessionId?: string;
+  queryPolicy?: ClaudeQueryPolicy;
+  onMessage?: (sequence: number, message: SDKMessage) => void;
+}
+
+export interface ClaudeQueryPolicy {
+  tools: string[];
+  permissionMode: PermissionMode;
+  maxTurns: number;
+  allowedTools?: string[];
+  canUseTool?: CanUseTool;
+  settings?: Options["settings"];
 }
 
 export interface ClaudeIdentityAvailability {
@@ -102,8 +115,10 @@ export async function runClaudeLifecycle(
         rawLogPath: options.rawLogPath,
         timeoutMs: options.timeoutMs,
         expectedSessionId: options.expectedSessionId,
+        queryPolicy: options.queryPolicy,
       },
       (sequence, message) => {
+        options.onMessage?.(sequence, message);
         if (
           firstActivity === undefined &&
           !(
@@ -202,6 +217,7 @@ async function observeClaudeQuery(
         result = message;
       }
       inspectMessage?.(sequence, message);
+      options.onMessage?.(sequence, message);
     },
   );
 
@@ -229,14 +245,15 @@ async function observeClaudeQuery(
       `Working-directory mismatch: expected ${options.cwd}, received ${init.cwd}`,
     );
   }
-  if (init.permissionMode !== "dontAsk") {
+  const policy = queryPolicyOf(options);
+  if (init.permissionMode !== policy.permissionMode) {
     throw new Error(
-      `Unsafe permission mode: expected dontAsk, received ${init.permissionMode}`,
+      `Permission mode mismatch: expected ${policy.permissionMode}, received ${init.permissionMode}`,
     );
   }
-  if (init.tools.length !== 0) {
+  if (!sameStringSet(init.tools, policy.tools)) {
     throw new Error(
-      `Read-only probe expected no tools, but init exposed: ${init.tools.join(", ")}`,
+      `Tool exposure mismatch: expected ${policy.tools.join(", ") || "none"}, received ${init.tools.join(", ") || "none"}`,
     );
   }
 
@@ -339,21 +356,46 @@ export async function listClaudeSessionIds(cwd: string): Promise<string[]> {
 }
 
 export function buildQueryOptions(
-  options: Pick<ClaudeTurnOptions, "cwd" | "expectedSessionId">,
+  options: Pick<
+    ClaudeTurnOptions,
+    "cwd" | "expectedSessionId" | "queryPolicy"
+  >,
   abortController: AbortController,
 ): Options {
+  const policy = queryPolicyOf(options);
   return {
     abortController,
-    allowedTools: [],
+    allowedTools: policy.allowedTools ?? [],
+    canUseTool: policy.canUseTool,
     cwd: options.cwd,
     env: buildClaudeEnvironment(process.env),
-    maxTurns: 1,
-    permissionMode: "dontAsk",
+    maxTurns: policy.maxTurns,
+    permissionMode: policy.permissionMode,
     persistSession: true,
     resume: options.expectedSessionId,
     settingSources: [],
-    tools: [],
+    settings: policy.settings,
+    tools: policy.tools,
   };
+}
+
+function queryPolicyOf(
+  options: Pick<ClaudeTurnOptions, "queryPolicy">,
+): ClaudeQueryPolicy {
+  return (
+    options.queryPolicy ?? {
+      tools: [],
+      permissionMode: "dontAsk",
+      maxTurns: 1,
+    }
+  );
+}
+
+function sameStringSet(left: string[], right: string[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((value) => right.includes(value))
+  );
 }
 
 export function buildClaudeEnvironment(

@@ -6,11 +6,14 @@ import test from "node:test";
 
 import {
   assertSessionRecord,
+  buildAskUserQuestionResult,
   parseArgs,
   requireResumeId,
   summarizeLifecycleSignals,
   verifyInvalidResumeFailure,
+  verifyInputRequestTimeline,
   verifyLifecycleTransitions,
+  verifyNeedsInputTransitions,
   verifyNoReplacementSessions,
   verifyContinuity,
 } from "./probe.ts";
@@ -41,6 +44,19 @@ test("parseArgs accepts the invalid-resume gate command", () => {
 
 test("parseArgs accepts the lifecycle gate command", () => {
   assert.equal(parseArgs(["lifecycle"]).command, "lifecycle");
+});
+
+test("parseArgs accepts deterministic input-request answers", () => {
+  const options = parseArgs([
+    "input-request",
+    "--answer",
+    "Alpha",
+    "--response-delay-seconds",
+    "1.5",
+  ]);
+  assert.equal(options.command, "input-request");
+  assert.equal(options.answer, "Alpha");
+  assert.equal(options.responseDelayMs, 1_500);
 });
 
 test("parseArgs canonicalizes the requested cwd", () => {
@@ -278,5 +294,104 @@ test("summarizeLifecycleSignals distinguishes observed and unobserved states", (
         sequences: [],
       },
     },
+  );
+});
+
+test("buildAskUserQuestionResult returns the correlated answer shape", () => {
+  assert.deepEqual(
+    buildAskUserQuestionResult(
+      {
+        questions: [
+          {
+            question: "Which path?",
+            header: "Path",
+            options: [
+              { label: "Alpha", description: "First" },
+              { label: "Beta", description: "Second" },
+            ],
+            multiSelect: false,
+          },
+        ],
+      },
+      "Alpha",
+    ),
+    {
+      behavior: "allow",
+      updatedInput: {
+        questions: [
+          {
+            question: "Which path?",
+            header: "Path",
+            options: [
+              { label: "Alpha", description: "First" },
+              { label: "Beta", description: "Second" },
+            ],
+            multiSelect: false,
+          },
+        ],
+        answers: {
+          "Which path?": "Alpha",
+        },
+      },
+    },
+  );
+});
+
+test("verifyNeedsInputTransitions requires requires_action followed by idle", () => {
+  assert.doesNotThrow(() =>
+    verifyNeedsInputTransitions([
+      { sequence: 1, state: "running" },
+      { sequence: 4, state: "requires_action" },
+      { sequence: 6, state: "running" },
+      { sequence: 9, state: "idle" },
+    ]),
+  );
+  assert.throws(
+    () =>
+      verifyNeedsInputTransitions([
+        { sequence: 1, state: "running" },
+        { sequence: 4, state: "idle" },
+      ]),
+    /no requires_action/,
+  );
+});
+
+test("verifyInputRequestTimeline requires needs_input while callback is pending", () => {
+  assert.doesNotThrow(() =>
+    verifyInputRequestTimeline([
+      {
+        sequence: 1,
+        observedAt: "2026-07-27T00:00:00.000Z",
+        source: "callback",
+        event: "request",
+        requestId: "request-1",
+        toolUseId: "tool-1",
+        toolName: "AskUserQuestion",
+        input: {},
+      },
+      {
+        sequence: 2,
+        observedAt: "2026-07-27T00:00:01.000Z",
+        source: "sdk",
+        event: "message",
+        messageSequence: 4,
+        type: "system",
+        subtype: "session_state_changed",
+        state: "requires_action",
+      },
+      {
+        sequence: 3,
+        observedAt: "2026-07-27T00:00:02.000Z",
+        source: "callback",
+        event: "response",
+        requestId: "request-1",
+        toolUseId: "tool-1",
+        toolName: "AskUserQuestion",
+        result: {
+          behavior: "allow",
+          updatedInput: {},
+        },
+      },
+    ]),
   );
 });
