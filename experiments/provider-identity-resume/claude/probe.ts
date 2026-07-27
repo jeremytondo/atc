@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
@@ -6,7 +7,10 @@ import * as readline from "node:readline/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
-import type { PermissionResult } from "@anthropic-ai/claude-agent-sdk";
+import type {
+  PermissionResult,
+  SDKMessage,
+} from "@anthropic-ai/claude-agent-sdk";
 
 import {
   ClaudeControlTimeline,
@@ -15,8 +19,10 @@ import {
 import {
   listClaudeSessionIds,
   requireClaudeResumeFailure,
+  runClaudeInterruptedTurn,
   runClaudeLifecycle,
   runClaudeTurn,
+  assistantText,
   type ClaudeIdentityAvailability,
   type ClaudeLifecycleObservation,
   type ClaudeLifecycleTransition,
@@ -31,7 +37,10 @@ interface ProbeOptions {
     | "invalid-resume"
     | "lifecycle"
     | "input-request"
-    | "permission-request";
+    | "permission-request"
+    | "interrupt"
+    | "observer-writer"
+    | "tui-round-trip";
   cwd: string;
   marker?: string;
   sessionPath?: string;
@@ -39,6 +48,7 @@ interface ProbeOptions {
   lifecycleObservationMs: number;
   answer?: string;
   responseDelayMs: number;
+  interruptDelayMs: number;
   decision?: "allow" | "deny";
 }
 
@@ -70,8 +80,14 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     await lifecycleScenario(options);
   } else if (options.command === "input-request") {
     await inputRequestScenario(options);
-  } else {
+  } else if (options.command === "permission-request") {
     await permissionRequestScenario(options);
+  } else if (options.command === "interrupt") {
+    await interruptionScenario(options);
+  } else if (options.command === "observer-writer") {
+    await observerWriterScenario(options);
+  } else {
+    await tuiRoundTripScenario(options);
   }
 }
 
@@ -83,7 +99,10 @@ export function parseArgs(argv: string[]): ProbeOptions {
     command !== "invalid-resume" &&
     command !== "lifecycle" &&
     command !== "input-request" &&
-    command !== "permission-request"
+    command !== "permission-request" &&
+    command !== "interrupt" &&
+    command !== "observer-writer" &&
+    command !== "tui-round-trip"
   ) {
     throw new Error(usage());
   }
@@ -95,6 +114,7 @@ export function parseArgs(argv: string[]): ProbeOptions {
   let lifecycleObservationMs = 2_000;
   let answer: string | undefined;
   let responseDelayMs = 2_000;
+  let interruptDelayMs = 1_000;
   let decision: "allow" | "deny" | undefined;
 
   for (let index = 0; index < rest.length; index += 1) {
@@ -151,6 +171,16 @@ export function parseArgs(argv: string[]): ProbeOptions {
         responseDelayMs = seconds * 1_000;
         break;
       }
+      case "--interrupt-delay-seconds": {
+        const seconds = Number(value);
+        if (!Number.isFinite(seconds) || seconds < 0) {
+          throw new Error(
+            "--interrupt-delay-seconds must be a non-negative number",
+          );
+        }
+        interruptDelayMs = seconds * 1_000;
+        break;
+      }
       default:
         throw new Error(`Unknown option: ${flag}\n\n${usage()}`);
     }
@@ -170,6 +200,7 @@ export function parseArgs(argv: string[]): ProbeOptions {
     lifecycleObservationMs,
     answer,
     responseDelayMs,
+    interruptDelayMs,
     decision,
   };
 }
@@ -862,6 +893,714 @@ async function permissionRequestScenario(options: ProbeOptions): Promise<void> {
   console.log(`result artifact: ${relative(process.cwd(), resultPath)}`);
 }
 
+async function interruptionScenario(options: ProbeOptions): Promise<void> {
+  const runId = makeRunId();
+  const seedLogPath = resolve(runsRoot, `${runId}.interrupt.seed.jsonl`);
+  const rawLogPath = resolve(runsRoot, `${runId}.interrupt.jsonl`);
+  const timelinePath = resolve(runsRoot, `${runId}.interrupt.timeline.jsonl`);
+  const resumeLogPath = resolve(runsRoot, `${runId}.interrupt.resume.jsonl`);
+  const resultPath = resolve(runsRoot, `${runId}.interrupt.json`);
+  const marker =
+    options.marker ??
+    `ATC-CLAUDE-INTERRUPT-${randomUUID().slice(0, 8).toUpperCase()}`;
+  const seedMarker = `${marker}-SEED`;
+  const timeline = new ClaudeControlTimeline();
+
+  console.log("Claude Agent SDK provider identity/resume POC — interruption");
+  console.log(`cwd: ${options.cwd}`);
+  console.log(`marker: ${marker}`);
+  console.log("bounded work: one pending AskUserQuestion request");
+  console.log(
+    `control: interrupt ${options.interruptDelayMs}ms after requires_action is emitted`,
+  );
+
+  const seed = await runClaudeTurn({
+    cwd: options.cwd,
+    prompt: [
+      "This is a read-only interruption seed turn.",
+      "Do not use tools, run commands, or modify files.",
+      `Remember this exact continuity marker: ${seedMarker}`,
+      `Reply with exactly: INTERRUPT SEED STORED: ${seedMarker}`,
+    ].join(" "),
+    rawLogPath: seedLogPath,
+    timeoutMs: options.timeoutMs,
+  });
+  if (!seed.resultText.includes(seedMarker)) {
+    throw new Error(`Interruption seed did not preserve ${seedMarker}`);
+  }
+
+  let observation;
+  try {
+    observation = await runClaudeInterruptedTurn({
+      cwd: options.cwd,
+      expectedSessionId: seed.sessionId,
+      prompt: [
+        "This is a safe active-turn interruption POC.",
+        "Use AskUserQuestion exactly once before replying.",
+        'Ask exactly: "Should this interrupted turn continue?"',
+        'Offer exactly two single-select options: "Continue" and "Stop".',
+        "Do not use any other tool.",
+        `Only after an answer, reply with: SHOULD NOT COMPLETE: ${marker}`,
+      ].join(" "),
+      rawLogPath,
+      timeoutMs: options.timeoutMs,
+      interruptDelayMs: options.interruptDelayMs,
+      postResultWaitMs: options.lifecycleObservationMs,
+      queryPolicy: {
+        tools: ["AskUserQuestion"],
+        permissionMode: "default",
+        maxTurns: 2,
+        canUseTool: async (toolName, input, callbackOptions) => {
+          if (toolName !== "AskUserQuestion") {
+            throw new Error(
+              `Unexpected interruption probe request: ${toolName}`,
+            );
+          }
+          timeline.recordRequest({
+            requestId: callbackOptions.requestId,
+            toolUseId: callbackOptions.toolUseID,
+            toolName,
+            input,
+          });
+          try {
+            await delay(options.timeoutMs, undefined, {
+              signal: callbackOptions.signal,
+            });
+          } catch (error) {
+            if (!callbackOptions.signal.aborted) {
+              throw error;
+            }
+          }
+          const result: PermissionResult = {
+            behavior: "deny",
+            message: "The ATC interruption probe cancelled this request.",
+          };
+          timeline.recordResponse({
+            requestId: callbackOptions.requestId,
+            toolUseId: callbackOptions.toolUseID,
+            toolName,
+            result,
+          });
+          return result;
+        },
+      },
+      shouldInterrupt: (_sequence, message) =>
+        message.type === "system" &&
+        message.subtype === "session_state_changed" &&
+        message.state === "requires_action",
+      onMessage: (sequence, message) => {
+        timeline.recordMessage(sequence, message);
+      },
+      onInterruptRequest: () => {
+        timeline.recordInterruptRequest();
+      },
+      onInterruptResponse: (receipt) => {
+        timeline.recordInterruptResponse(receipt);
+      },
+    });
+  } finally {
+    await writeFile(timelinePath, timeline.toJsonLines(), { flag: "wx" });
+  }
+
+  verifyInterruptedTurn(observation, seed.sessionId, timeline.events);
+
+  const resumed = await runClaudeLifecycle({
+    cwd: options.cwd,
+    expectedSessionId: seed.sessionId,
+    prompt: [
+      "This is the post-interruption resume verification.",
+      "Do not use tools, run commands, or modify files.",
+      "Reply with only the exact continuity marker from the seed turn.",
+    ].join(" "),
+    rawLogPath: resumeLogPath,
+    timeoutMs: options.timeoutMs,
+    postResultWaitMs: options.lifecycleObservationMs,
+  });
+  if (
+    resumed.sessionId !== seed.sessionId ||
+    !resumed.resultText.includes(seedMarker)
+  ) {
+    throw new Error(
+      "Fresh query did not resume the interrupted session with seed continuity",
+    );
+  }
+  verifyLifecycleTransitions(resumed.stateTransitions);
+
+  const result = {
+    version: 1,
+    provider: "claude",
+    scenario: "active-turn-interruption",
+    cwd: observation.cwd,
+    sessionId: observation.sessionId,
+    claudeCodeVersion: observation.claudeCodeVersion,
+    completedAt: new Date().toISOString(),
+    evidence: {
+      marker,
+      seedMarker,
+      controlPoint: "pending AskUserQuestion requires_action",
+      interruptDelayMs: options.interruptDelayMs,
+      capabilities: observation.capabilities,
+      interruptedMessageCount: observation.messageCount,
+      interruptedStateTransitions: observation.stateTransitions,
+      abortedAssistantMessages: observation.abortedAssistantMessages,
+      result: observation.result,
+      interruptReceipt: observation.interruptReceipt,
+      resumedStateTransitions: resumed.stateTransitions,
+      resumedResultText: resumed.resultText,
+      tools: ["AskUserQuestion"],
+      permissionMode: "default",
+      settingSources: [],
+    },
+    rawLogs: [
+      relative(dirname(resultPath), seedLogPath),
+      relative(dirname(resultPath), rawLogPath),
+      relative(dirname(resultPath), timelinePath),
+      relative(dirname(resultPath), resumeLogPath),
+    ],
+  };
+  await writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`, {
+    flag: "wx",
+  });
+
+  console.log(
+    `INTERRUPT RESULT: ${observation.result.subtype} at event #${observation.result.sequence}`,
+  );
+  console.log(
+    `LIFECYCLE VERIFIED: ${observation.stateTransitions.map((transition) => transition.state).join(" → ")}`,
+  );
+  console.log(`RESUME VERIFIED: ${seed.sessionId} recalled ${seedMarker}`);
+  console.log("");
+  console.log(
+    "PASS: a bounded active turn was interrupted and the exact session resumed afterward.",
+  );
+  console.log(`result artifact: ${relative(process.cwd(), resultPath)}`);
+}
+
+async function observerWriterScenario(options: ProbeOptions): Promise<void> {
+  const runId = makeRunId();
+  const seedLogPath = resolve(runsRoot, `${runId}.observer-writer.seed.jsonl`);
+  const clientALogPath = resolve(
+    runsRoot,
+    `${runId}.observer-writer.client-a.jsonl`,
+  );
+  const clientBLogPath = resolve(
+    runsRoot,
+    `${runId}.observer-writer.client-b.jsonl`,
+  );
+  const verificationLogPath = resolve(
+    runsRoot,
+    `${runId}.observer-writer.verify.jsonl`,
+  );
+  const resultPath = resolve(runsRoot, `${runId}.observer-writer.json`);
+  const markerPrefix =
+    options.marker ??
+    `ATC-CLAUDE-CONCURRENT-${randomUUID().slice(0, 8).toUpperCase()}`;
+  const seedMarker = `${markerPrefix}-SEED`;
+  const clientAMarker = `${markerPrefix}-A`;
+  const clientBMarker = `${markerPrefix}-B`;
+
+  console.log(
+    "Claude Agent SDK provider identity/resume POC — observer and writer behavior",
+  );
+  console.log(`cwd: ${options.cwd}`);
+  console.log(`markers: ${clientAMarker}, ${clientBMarker}`);
+  console.log(
+    "attachment model: the local SDK has no read-only live observer API; a second query(resume) is an independent writer",
+  );
+
+  const seed = await runClaudeTurn({
+    cwd: options.cwd,
+    prompt: [
+      "This is a read-only concurrency seed turn.",
+      "Do not use tools, run commands, or modify files.",
+      `Remember this exact continuity marker: ${seedMarker}`,
+      `Reply with exactly: CONCURRENCY SEED STORED: ${seedMarker}`,
+    ].join(" "),
+    rawLogPath: seedLogPath,
+    timeoutMs: options.timeoutMs,
+  });
+  if (!seed.resultText.includes(seedMarker)) {
+    throw new Error(`Concurrency seed did not preserve ${seedMarker}`);
+  }
+
+  const clientAReady = createDeferred<void>();
+  const releaseClientA = createDeferred<void>();
+  const clientAMessageUuids = new Set<string>();
+  const clientBMessageUuids = new Set<string>();
+  let clientASawBMarker = false;
+  let clientBSawAMarker = false;
+
+  const clientAPromise = captureOutcome(() =>
+    runClaudeLifecycle({
+      cwd: options.cwd,
+      expectedSessionId: seed.sessionId,
+      prompt: [
+        "This is concurrent writer A.",
+        "Use AskUserQuestion exactly once before replying.",
+        'Ask exactly: "Release concurrent writer A?"',
+        'Offer exactly two single-select options: "Release" and "Hold".',
+        "Do not use any other tool.",
+        `After the answer, reply with exactly: WRITER A COMPLETE: ${clientAMarker}`,
+      ].join(" "),
+      rawLogPath: clientALogPath,
+      timeoutMs: options.timeoutMs,
+      postResultWaitMs: options.lifecycleObservationMs,
+      queryPolicy: {
+        tools: ["AskUserQuestion"],
+        permissionMode: "default",
+        maxTurns: 2,
+        canUseTool: async (toolName, input) => {
+          if (toolName !== "AskUserQuestion") {
+            throw new Error(`Unexpected writer A tool request: ${toolName}`);
+          }
+          clientAReady.resolve();
+          await releaseClientA.promise;
+          return buildAskUserQuestionResult(input, "Release");
+        },
+      },
+      onMessage: (_sequence, message) => {
+        addMessageUuid(clientAMessageUuids, message);
+        clientASawBMarker ||= messageContains(message, clientBMarker);
+      },
+    }),
+  );
+
+  try {
+    await waitFor(clientAReady.promise, options.timeoutMs, "writer A input gate");
+  } catch (error) {
+    releaseClientA.resolve();
+    await clientAPromise;
+    throw error;
+  }
+
+  let clientBOutcome;
+  try {
+    clientBOutcome = await captureOutcome(() =>
+      runClaudeLifecycle({
+        cwd: options.cwd,
+        expectedSessionId: seed.sessionId,
+        prompt: [
+          "This is concurrent writer B.",
+          "Do not use tools, run commands, or modify files.",
+          `Reply with exactly: WRITER B COMPLETE: ${clientBMarker}`,
+        ].join(" "),
+        rawLogPath: clientBLogPath,
+        timeoutMs: options.timeoutMs,
+        postResultWaitMs: options.lifecycleObservationMs,
+        onMessage: (_sequence, message) => {
+          addMessageUuid(clientBMessageUuids, message);
+          clientBSawAMarker ||= messageContains(message, clientAMarker);
+        },
+      }),
+    );
+  } finally {
+    releaseClientA.resolve();
+  }
+  const clientAOutcome = await clientAPromise;
+
+  const verificationOutcome = await captureOutcome(() =>
+    runClaudeLifecycle({
+      cwd: options.cwd,
+      expectedSessionId: seed.sessionId,
+      prompt: [
+        "This is a fresh-process concurrency verification.",
+        "Do not use tools, run commands, or modify files.",
+        "Reply with the exact markers from concurrent writer A and writer B.",
+        "Use exactly two lines prefixed A: and B:.",
+      ].join(" "),
+      rawLogPath: verificationLogPath,
+      timeoutMs: options.timeoutMs,
+      postResultWaitMs: options.lifecycleObservationMs,
+    }),
+  );
+
+  const sharedMessageUuids = [...clientAMessageUuids].filter((uuid) =>
+    clientBMessageUuids.has(uuid)
+  );
+  const verificationText =
+    verificationOutcome.status === "completed"
+      ? verificationOutcome.value.resultText
+      : "";
+  const recalledA = verificationText.includes(clientAMarker);
+  const recalledB = verificationText.includes(clientBMarker);
+  const bothWritersCompleted =
+    clientAOutcome.status === "completed" &&
+    clientBOutcome.status === "completed";
+  const writerBehavior =
+    !bothWritersCompleted
+      ? "single-writer-enforced-or-failed"
+      : recalledA && recalledB
+        ? "both-writes-visible-after-resume"
+        : "concurrent-writes-diverged";
+
+  const result = {
+    version: 1,
+    provider: "claude",
+    scenario: "observer-writer",
+    cwd: options.cwd,
+    sessionId: seed.sessionId,
+    completedAt: new Date().toISOString(),
+    evidence: {
+      seedMarker,
+      clientAMarker,
+      clientBMarker,
+      observerAttachment: {
+        status: "unsupported",
+        reason:
+          "The local Agent SDK exposes query(resume) as a new CLI-backed writer, not a read-only attachment to another query's event stream.",
+      },
+      clientA: summarizeOutcome(clientAOutcome),
+      clientB: summarizeOutcome(clientBOutcome),
+      eventVisibility: {
+        sharedMessageUuids,
+        clientASawBMarker,
+        clientBSawAMarker,
+        fanoutObserved:
+          sharedMessageUuids.length > 0 ||
+          clientASawBMarker ||
+          clientBSawAMarker,
+      },
+      freshResume: {
+        outcome: summarizeOutcome(verificationOutcome),
+        recalledA,
+        recalledB,
+      },
+      writerBehavior,
+      tools: {
+        clientA: ["AskUserQuestion"],
+        clientB: [],
+        verification: [],
+      },
+      settingSources: [],
+    },
+    rawLogs: [
+      relative(dirname(resultPath), seedLogPath),
+      relative(dirname(resultPath), clientALogPath),
+      relative(dirname(resultPath), clientBLogPath),
+      relative(dirname(resultPath), verificationLogPath),
+    ],
+  };
+  await writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`, {
+    flag: "wx",
+  });
+
+  console.log("OBSERVER ATTACHMENT: unsupported by the local Agent SDK");
+  console.log(
+    `EVENT FAN-OUT: ${result.evidence.eventVisibility.fanoutObserved ? "observed" : "not observed"}`,
+  );
+  console.log(`WRITER BEHAVIOR: ${writerBehavior}`);
+  console.log(
+    `FRESH RESUME RECALL: writer A=${recalledA ? "yes" : "no"}, writer B=${recalledB ? "yes" : "no"}`,
+  );
+  console.log("");
+  console.log(
+    "PASS: unsupported observer attachment and concurrent writer behavior were captured without repository-capable tools.",
+  );
+  console.log(`result artifact: ${relative(process.cwd(), resultPath)}`);
+}
+
+async function tuiRoundTripScenario(options: ProbeOptions): Promise<void> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error(
+      "tui-round-trip requires an interactive terminal so the native Claude TUI can be observed and exited",
+    );
+  }
+
+  const runId = makeRunId();
+  const seedLogPath = resolve(runsRoot, `${runId}.tui-round-trip.seed.jsonl`);
+  const resumeLogPath = resolve(
+    runsRoot,
+    `${runId}.tui-round-trip.resume.jsonl`,
+  );
+  const resultPath = resolve(runsRoot, `${runId}.tui-round-trip.json`);
+  const marker =
+    options.marker ??
+    `ATC-CLAUDE-TUI-${randomUUID().slice(0, 8).toUpperCase()}`;
+  const seedMarker = `${marker}-SEED`;
+
+  console.log("Claude provider identity/resume POC — native TUI round trip");
+  console.log(`cwd: ${options.cwd}`);
+  console.log(`marker: ${marker}`);
+  console.log("safety: no tools, dontAsk mode, safe mode, no settings sources");
+
+  const seed = await runClaudeTurn({
+    cwd: options.cwd,
+    prompt: [
+      "This is a read-only native-TUI seed turn.",
+      "Do not use tools, run commands, or modify files.",
+      `Remember this exact continuity marker: ${seedMarker}`,
+      `Reply with exactly: TUI SEED STORED: ${seedMarker}`,
+    ].join(" "),
+    rawLogPath: seedLogPath,
+    timeoutMs: options.timeoutMs,
+  });
+  if (!seed.resultText.includes(seedMarker)) {
+    throw new Error(`Native-TUI seed did not preserve ${seedMarker}`);
+  }
+
+  console.log("");
+  console.log(`OPENING NATIVE CLAUDE TUI FOR EXACT SESSION: ${seed.sessionId}`);
+  console.log(
+    "Wait for the exact marker response, then press Ctrl-D twice to continue verification.",
+  );
+  await runNativeClaudeTui(seed.sessionId, options.cwd, marker);
+
+  const resumed = await runClaudeLifecycle({
+    cwd: options.cwd,
+    expectedSessionId: seed.sessionId,
+    prompt: [
+      "This is the Agent SDK leg after the native TUI.",
+      "Do not use tools, run commands, or modify files.",
+      "Reply with only the exact marker from the native-TUI response",
+      "whose prefix was NATIVE TUI ROUND TRIP:.",
+      "Do not repeat the SDK seed marker.",
+    ].join(" "),
+    rawLogPath: resumeLogPath,
+    timeoutMs: options.timeoutMs,
+    postResultWaitMs: options.lifecycleObservationMs,
+  });
+  if (!resumed.resultText.includes(marker)) {
+    throw new Error(
+      `Post-TUI SDK resume did not contain native marker ${marker}`,
+    );
+  }
+  verifyLifecycleTransitions(resumed.stateTransitions);
+
+  const result = {
+    version: 1,
+    provider: "claude",
+    scenario: "native-tui-round-trip",
+    cwd: resumed.cwd,
+    sessionId: resumed.sessionId,
+    claudeCodeVersion: resumed.claudeCodeVersion,
+    completedAt: new Date().toISOString(),
+    evidence: {
+      marker,
+      seedMarker,
+      nativeCommand: "claude --resume <session-id>",
+      postTuiMessageCount: resumed.messageCount,
+      postTuiStateTransitions: resumed.stateTransitions,
+      postTuiResultText: resumed.resultText,
+      tools: [],
+      permissionMode: "dontAsk",
+      settingSources: [],
+    },
+    rawLogs: [
+      relative(dirname(resultPath), seedLogPath),
+      relative(dirname(resultPath), resumeLogPath),
+    ],
+  };
+  await writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`, {
+    flag: "wx",
+  });
+
+  console.log(`IDENTITY VERIFIED: ${resumed.sessionId}`);
+  console.log(`CWD VERIFIED: ${resumed.cwd}`);
+  console.log(`TUI CONTINUITY VERIFIED: ${marker}`);
+  console.log("");
+  console.log(
+    "PASS: the exact Claude session round-tripped through the native TUI and back to a fresh Agent SDK query.",
+  );
+  console.log(`result artifact: ${relative(process.cwd(), resultPath)}`);
+}
+
+async function runNativeClaudeTui(
+  sessionId: string,
+  cwd: string,
+  marker: string,
+): Promise<void> {
+  const prompt = [
+    "This turn is the native TUI leg of a provider identity round trip.",
+    "Do not use tools, run commands, or modify files.",
+    `Reply with exactly: NATIVE TUI ROUND TRIP: ${marker}`,
+  ].join(" ");
+  const child = spawn(
+    "claude",
+    [
+      "--resume",
+      sessionId,
+      "--permission-mode",
+      "dontAsk",
+      "--tools",
+      "",
+      "--setting-sources",
+      "",
+      "--safe-mode",
+      "--no-chrome",
+      "--disable-slash-commands",
+      prompt,
+    ],
+    {
+      cwd,
+      env: process.env,
+      stdio: "inherit",
+    },
+  );
+  const exitCode = await new Promise<number | null>((resolveExit, reject) => {
+    child.once("error", reject);
+    child.once("exit", resolveExit);
+  });
+  if (exitCode !== 0) {
+    throw new Error(`native Claude TUI exited with code ${String(exitCode)}`);
+  }
+}
+
+type CapturedOutcome<T> =
+  | { status: "completed"; value: T }
+  | { status: "failed"; error: string };
+
+async function captureOutcome<T>(
+  action: () => Promise<T>,
+): Promise<CapturedOutcome<T>> {
+  try {
+    return { status: "completed", value: await action() };
+  } catch (error) {
+    return {
+      status: "failed",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function summarizeOutcome<T extends {
+  sessionId: string;
+  cwd: string;
+  messageCount: number;
+  resultText: string;
+  stateTransitions: ClaudeLifecycleTransition[];
+}>(outcome: CapturedOutcome<T>): Record<string, unknown> {
+  if (outcome.status === "failed") {
+    return { status: "failed", error: outcome.error };
+  }
+  return {
+    status: "completed",
+    sessionId: outcome.value.sessionId,
+    cwd: outcome.value.cwd,
+    messageCount: outcome.value.messageCount,
+    resultText: outcome.value.resultText,
+    stateTransitions: outcome.value.stateTransitions,
+  };
+}
+
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolvePromise: ((value: T) => void) | undefined;
+  const promise = new Promise<T>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return {
+    promise,
+    resolve(value) {
+      resolvePromise?.(value);
+    },
+  };
+}
+
+async function waitFor<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  const abortController = new AbortController();
+  const timeout = delay(timeoutMs, undefined, {
+    signal: abortController.signal,
+  }).then(() => {
+    throw new Error(`Timed out after ${timeoutMs}ms waiting for ${label}`);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    abortController.abort();
+  }
+}
+
+function addMessageUuid(target: Set<string>, message: SDKMessage): void {
+  if ("uuid" in message && typeof message.uuid === "string") {
+    target.add(message.uuid);
+  }
+}
+
+function messageContains(message: SDKMessage, marker: string): boolean {
+  if (message.type === "assistant") {
+    return assistantText(message).includes(marker);
+  }
+  return (
+    message.type === "result" &&
+    message.subtype === "success" &&
+    message.result.includes(marker)
+  );
+}
+
+export function verifyInterruptedTurn(
+  observation: Awaited<ReturnType<typeof runClaudeInterruptedTurn>>,
+  expectedSessionId: string,
+  timeline: ClaudeControlTimelineEvent[],
+): void {
+  if (observation.sessionId !== expectedSessionId) {
+    throw new Error(
+      `Interrupted turn changed identity from ${expectedSessionId} to ${observation.sessionId}`,
+    );
+  }
+  const running = observation.stateTransitions.find(
+    (transition) => transition.state === "running",
+  );
+  const requiresAction = observation.stateTransitions.find(
+    (transition) => transition.state === "requires_action",
+  );
+  const idle = observation.stateTransitions.find(
+    (transition) =>
+      transition.state === "idle" &&
+      transition.sequence > observation.result.sequence,
+  );
+  if (
+    running === undefined ||
+    requiresAction === undefined ||
+    idle === undefined
+  ) {
+    throw new Error(
+      "Interrupted turn did not transition through running, requires_action, and post-result idle",
+    );
+  }
+  if (
+    observation.capabilities.includes("interrupt_receipt_v1") &&
+    observation.interruptReceipt === undefined
+  ) {
+    throw new Error(
+      "Claude advertised interrupt_receipt_v1 but returned no interrupt receipt",
+    );
+  }
+  verifyInterruptTimeline(timeline);
+}
+
+export function verifyInterruptTimeline(
+  events: ClaudeControlTimelineEvent[],
+): void {
+  const requests = events.filter(
+    (event) =>
+      event.source === "client" && event.event === "interrupt_request",
+  );
+  const responses = events.filter(
+    (event) =>
+      event.source === "client" && event.event === "interrupt_response",
+  );
+  if (requests.length !== 1 || responses.length !== 1) {
+    throw new Error(
+      `Expected one interrupt request and response, received ${requests.length} and ${responses.length}`,
+    );
+  }
+  const request = requests[0];
+  const response = responses[0];
+  if (
+    request === undefined ||
+    response === undefined ||
+    response.sequence <= request.sequence
+  ) {
+    throw new Error("Interrupt response did not follow its request");
+  }
+}
+
 export function requireExactPwdRequest(
   toolName: string,
   input: Record<string, unknown>,
@@ -1163,6 +1902,9 @@ function usage(): string {
     "  pnpm claude lifecycle [--cwd <path>] [--marker <value>] [--observation-seconds <n>] [--timeout-seconds <n>]",
     "  pnpm claude input-request [--cwd <path>] [--marker <value>] [--answer <value>] [--response-delay-seconds <n>] [--timeout-seconds <n>]",
     "  pnpm claude permission-request [--cwd <path>] [--marker <value>] [--decision <allow|deny>] [--response-delay-seconds <n>] [--timeout-seconds <n>]",
+    "  pnpm claude interrupt [--cwd <path>] [--marker <value>] [--interrupt-delay-seconds <n>] [--timeout-seconds <n>]",
+    "  pnpm claude observer-writer [--cwd <path>] [--marker <value>] [--timeout-seconds <n>]",
+    "  pnpm claude tui-round-trip [--cwd <path>] [--marker <value>] [--timeout-seconds <n>]",
   ].join("\n");
 }
 

@@ -8,7 +8,9 @@ import {
   type CanUseTool,
   type Options,
   type PermissionMode,
+  type Query,
   type SDKAssistantMessage,
+  type SDKControlInterruptResponse,
   type SDKMessage,
   type SDKResultMessage,
   type SDKSessionStateChangedMessage,
@@ -24,6 +26,8 @@ export interface ClaudeTurnOptions {
   expectedSessionId?: string;
   queryPolicy?: ClaudeQueryPolicy;
   onMessage?: (sequence: number, message: SDKMessage) => void;
+  onQuery?: (query: Query) => void;
+  acceptErrorResult?: boolean;
 }
 
 export interface ClaudeQueryPolicy {
@@ -82,6 +86,26 @@ export interface ClaudeResumeFailureObservation {
   resultSubtype?: string;
   numTurns?: number;
   totalCostUsd?: number;
+}
+
+export interface ClaudeInterruptedTurnObservation {
+  sessionId: string;
+  cwd: string;
+  claudeCodeVersion: string;
+  capabilities: string[];
+  firstIdentity: ClaudeIdentityAvailability;
+  messageCount: number;
+  stateTransitions: ClaudeLifecycleTransition[];
+  abortedAssistantMessages: number;
+  result: {
+    sequence: number;
+    subtype: SDKResultMessage["subtype"];
+    isError: boolean;
+    numTurns: number;
+    totalCostUsd: number;
+    errors: string[];
+  };
+  interruptReceipt?: SDKControlInterruptResponse;
 }
 
 export async function runClaudeTurn(
@@ -165,6 +189,162 @@ export async function runClaudeLifecycle(
   }
 }
 
+export async function runClaudeInterruptedTurn(
+  options: Omit<ClaudeTurnOptions, "prompt" | "onQuery"> & {
+    prompt: string;
+    interruptDelayMs: number;
+    postResultWaitMs: number;
+    shouldInterrupt: (sequence: number, message: SDKMessage) => boolean;
+    onInterruptRequest?: () => void;
+    onInterruptResponse?: (
+      receipt: SDKControlInterruptResponse | undefined,
+    ) => void;
+  },
+): Promise<ClaudeInterruptedTurnObservation> {
+  const input = createStreamingPrompt(options.prompt);
+  let closeTimer: NodeJS.Timeout | undefined;
+  let interruptTimer: NodeJS.Timeout | undefined;
+  let queryHandle: Query | undefined;
+  let interruptPromise:
+    | Promise<SDKControlInterruptResponse | undefined>
+    | undefined;
+  let sessionId: string | undefined;
+  let firstIdentity: ClaudeIdentityAvailability | undefined;
+  let init: SDKSystemMessage | undefined;
+  let result:
+    | { sequence: number; message: SDKResultMessage }
+    | undefined;
+  let abortedAssistantMessages = 0;
+  const stateTransitions: ClaudeLifecycleTransition[] = [];
+
+  try {
+    const messageCount = await consumeClaudeQuery(
+      {
+        ...options,
+        prompt: input.messages,
+        acceptErrorResult: true,
+        onQuery: (query) => {
+          queryHandle = query;
+        },
+      },
+      (sequence, message) => {
+        options.onMessage?.(sequence, message);
+        const messageSessionId = sessionIdOf(message);
+        if (messageSessionId !== undefined) {
+          if (sessionId === undefined) {
+            sessionId = messageSessionId;
+            firstIdentity = {
+              sequence,
+              type: message.type,
+              subtype: subtypeOf(message),
+            };
+          } else if (messageSessionId !== sessionId) {
+            throw new Error(
+              `Session identity changed within interrupted query: expected ${sessionId}, received ${messageSessionId}`,
+            );
+          }
+          if (
+            options.expectedSessionId !== undefined &&
+            messageSessionId !== options.expectedSessionId
+          ) {
+            throw new Error(
+              `Identity mismatch during interruption: expected ${options.expectedSessionId}, received ${messageSessionId}`,
+            );
+          }
+        }
+
+        if (message.type === "system" && message.subtype === "init") {
+          init = message;
+        } else if (
+          message.type === "system" &&
+          message.subtype === "session_state_changed"
+        ) {
+          stateTransitions.push({ sequence, state: message.state });
+          if (message.state === "idle") {
+            clearTimeout(closeTimer);
+            input.close();
+          }
+        } else if (message.type === "assistant" && message.aborted === true) {
+          abortedAssistantMessages += 1;
+        } else if (message.type === "result") {
+          result = { sequence, message };
+          closeTimer = setTimeout(
+            () => input.close(),
+            options.postResultWaitMs,
+          );
+        }
+
+        if (
+          interruptTimer === undefined &&
+          interruptPromise === undefined &&
+          options.shouldInterrupt(sequence, message)
+        ) {
+          if (queryHandle === undefined) {
+            throw new Error(
+              "Claude interruption trigger fired before query control was available",
+            );
+          }
+          const control = queryHandle;
+          interruptTimer = setTimeout(() => {
+            options.onInterruptRequest?.();
+            interruptPromise = control.interrupt().then((receipt) => {
+              options.onInterruptResponse?.(receipt);
+              return receipt;
+            });
+          }, options.interruptDelayMs);
+        }
+      },
+    );
+
+    if (interruptPromise === undefined) {
+      throw new Error(
+        "Claude turn ended before the bounded interrupt was issued",
+      );
+    }
+    const interruptReceipt = await interruptPromise;
+    if (
+      sessionId === undefined ||
+      firstIdentity === undefined ||
+      init === undefined
+    ) {
+      throw new Error(
+        "Interrupted Claude turn did not expose stable session initialization",
+      );
+    }
+    if (result === undefined) {
+      throw new Error("Interrupted Claude turn emitted no terminal result");
+    }
+    verifyClaudeInit(options, init);
+
+    return {
+      sessionId,
+      cwd: canonicalPath(init.cwd),
+      claudeCodeVersion: init.claude_code_version,
+      capabilities: init.capabilities ?? [],
+      firstIdentity,
+      messageCount,
+      stateTransitions,
+      abortedAssistantMessages,
+      result: {
+        sequence: result.sequence,
+        subtype: result.message.subtype,
+        isError: result.message.is_error,
+        numTurns: result.message.num_turns,
+        totalCostUsd: result.message.total_cost_usd,
+        errors:
+          result.message.subtype === "success"
+            ? []
+            : result.message.errors,
+      },
+      interruptReceipt,
+    };
+  } finally {
+    clearTimeout(closeTimer);
+    clearTimeout(interruptTimer);
+    input.close();
+  }
+}
+
 async function observeClaudeQuery(
   options: ClaudeTurnOptions,
   inspectMessage?: (sequence: number, message: SDKMessage) => void,
@@ -240,22 +420,7 @@ async function observeClaudeQuery(
       `Result identity mismatch: expected ${sessionId}, received ${result.session_id}`,
     );
   }
-  if (canonicalPath(init.cwd) !== canonicalPath(options.cwd)) {
-    throw new Error(
-      `Working-directory mismatch: expected ${options.cwd}, received ${init.cwd}`,
-    );
-  }
-  const policy = queryPolicyOf(options);
-  if (init.permissionMode !== policy.permissionMode) {
-    throw new Error(
-      `Permission mode mismatch: expected ${policy.permissionMode}, received ${init.permissionMode}`,
-    );
-  }
-  if (!sameStringSet(init.tools, policy.tools)) {
-    throw new Error(
-      `Tool exposure mismatch: expected ${policy.tools.join(", ") || "none"}, received ${init.tools.join(", ") || "none"}`,
-    );
-  }
+  verifyClaudeInit(options, init);
 
   return {
     sessionId,
@@ -391,6 +556,28 @@ function queryPolicyOf(
   );
 }
 
+function verifyClaudeInit(
+  options: Pick<ClaudeTurnOptions, "cwd" | "queryPolicy">,
+  init: SDKSystemMessage,
+): void {
+  if (canonicalPath(init.cwd) !== canonicalPath(options.cwd)) {
+    throw new Error(
+      `Working-directory mismatch: expected ${options.cwd}, received ${init.cwd}`,
+    );
+  }
+  const policy = queryPolicyOf(options);
+  if (init.permissionMode !== policy.permissionMode) {
+    throw new Error(
+      `Permission mode mismatch: expected ${policy.permissionMode}, received ${init.permissionMode}`,
+    );
+  }
+  if (!sameStringSet(init.tools, policy.tools)) {
+    throw new Error(
+      `Tool exposure mismatch: expected ${policy.tools.join(", ") || "none"}, received ${init.tools.join(", ") || "none"}`,
+    );
+  }
+}
+
 function sameStringSet(left: string[], right: string[]): boolean {
   return (
     left.length === right.length &&
@@ -507,11 +694,14 @@ async function consumeClaudeQuery(
     prompt: options.prompt,
     options: buildQueryOptions(options, abortController),
   });
+  options.onQuery?.(stream);
   let sequence = 0;
+  let emittedResult = false;
 
   try {
     for await (const message of stream) {
       sequence += 1;
+      emittedResult ||= message.type === "result";
       await rawLog.writeFile(`${JSON.stringify(message)}\n`);
       printReadableMessage(sequence, message);
       inspectMessage(sequence, message);
@@ -519,6 +709,9 @@ async function consumeClaudeQuery(
     return sequence;
   } catch (error) {
     stream.close();
+    if (options.acceptErrorResult === true && emittedResult) {
+      return sequence;
+    }
     if (abortController.signal.aborted) {
       throw new Error(
         `Timed out after ${options.timeoutMs}ms waiting for Claude Agent SDK`,

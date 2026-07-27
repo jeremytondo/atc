@@ -1,7 +1,7 @@
 # Provider identity and resume findings
 
-Status values are `pass`, `fail`, `partial`, or `not tested`. Observations must
-come from reviewed run artifacts, not protocol assumptions.
+Status values are `pass`, `fail`, `unsupported`, `partial`, or `not tested`.
+Observations must come from reviewed run artifacts, not protocol assumptions.
 
 | Experiment | Codex | Claude |
 | --- | --- | --- |
@@ -15,9 +15,9 @@ come from reviewed run artifacts, not protocol assumptions.
 | Working directory after resume | pass | pass |
 | `working`, `idle`, and `needs_input` signals | partial | pass |
 | Read-only permission or tool request | not tested | pass |
-| Active turn interruption | not tested | not tested |
-| Second observer visibility and writer behavior | not tested | not tested |
-| Native TUI interoperability | pass | not tested |
+| Active turn interruption | not tested | pass |
+| Second observer visibility and writer behavior | not tested | unsupported |
+| Native TUI interoperability | pass | pass |
 
 ## Reviewed observations
 
@@ -266,6 +266,68 @@ Environment: `codex-cli 0.145.0`, working directory
   `runs/claude/2026-07-27T17-54-37-801Z-1bce62e7.permission-request.json`,
   its 11-message raw SDK JSONL, and its 13-entry callback/provider timeline.
 
+### Claude active-turn interruption — 2026-07-27
+
+- Session `4f1688a7-91b2-4844-bed2-2190d3bb09e7` was seeded with
+  `ATC-CLAUDE-INTERRUPT-03-SEED`, then resumed with only
+  `AskUserQuestion` exposed.
+- The interrupted turn emitted `running` at event 1 and `requires_action` at
+  event 4 while the correlated callback remained pending.
+- The client called the SDK's `interrupt()` control method 1,000 ms later.
+  Claude Code advertised `interrupt_receipt_v1` and returned
+  `still_queued: []`.
+- The callback's abort signal fired with the control request. The interrupted
+  turn emitted `result/error_during_execution` at event 9 with terminal reason
+  `aborted_streaming`, followed by authoritative `idle` at event 10.
+- A fresh SDK query resumed the exact session and cwd, recalled the seed marker
+  without receiving it in the prompt, and transitioned `running` → `idle`.
+- This passes active-turn interruption. The error result is the provider's
+  truthful terminal representation of an interrupted turn, not a failed
+  control request.
+- Reviewed artifacts:
+  `runs/claude/2026-07-27T18-31-00-074Z-bde110ea.interrupt.json`, its seed,
+  interrupted-turn, and resume raw JSONL streams, and its 14-entry
+  callback/provider/control timeline.
+
+### Claude observer and concurrent writer behavior — 2026-07-27
+
+- The local Agent SDK exposes no read-only attachment to another local
+  `query()` process. A second `query({ resume: <same ID> })` is an independent
+  writer, so provider-native second-observer attachment is unsupported.
+- Session `f7a23151-4610-42a0-b96a-8283069981a1` held writer A at
+  `requires_action` while writer B resumed the same exact ID and cwd.
+- Both writers completed successfully under the same provider session ID.
+  Neither raw stream contained the other's message UUIDs, and neither client
+  saw the other's marker; there was no live event fan-out.
+- Writer B completed first with `ATC-CLAUDE-OBSERVER-01-B`. Writer A then
+  completed with `ATC-CLAUDE-OBSERVER-01-A`.
+- A fresh resume recalled writer A but explicitly reported no writer B turn.
+  The concurrent writes therefore formed divergent history, with the later A
+  branch selected on resume.
+- Adapter constraint: ATC must enforce one active Claude writer per session.
+  It must not model a second resumed SDK query as an observer and must not rely
+  on concurrent writes merging.
+- Reviewed artifact:
+  `runs/claude/2026-07-27T18-31-28-417Z-443767c4.observer-writer.json` and its
+  four raw SDK streams.
+
+### Claude native-TUI round trip — 2026-07-27
+
+- Agent SDK session `bbda0915-7ab2-4c87-8d4d-35ef0a46df67` was seeded under
+  the exact repository cwd with `ATC-CLAUDE-TUI-01-SEED`.
+- Native Claude Code `2.1.218` opened that exact ID with `claude --resume` in
+  safe mode, with no tools or filesystem settings sources, and returned
+  `NATIVE TUI ROUND TRIP: ATC-CLAUDE-TUI-01`.
+- The older native CLI did not recognize the SDK session's
+  `claude-opus-5` model identifier and explicitly fell back to its default
+  model. Session identity and conversation continuity were unaffected.
+- After the TUI exited, the Agent SDK's embedded Claude Code `2.1.220` resumed
+  the exact ID and cwd and recalled `ATC-CLAUDE-TUI-01` without receiving the
+  marker in its prompt.
+- Reviewed artifact:
+  `runs/claude/2026-07-27T18-31-59-691Z-fa8cb4b8.tui-round-trip.json` and its
+  seed and post-TUI raw SDK streams.
+
 ## Codex gate conclusion
 
 Three remaining checks passed, but zero-turn recovery failed. Starting the
@@ -276,7 +338,10 @@ the rollout.
 That constraint was accepted in ATC-68. Claude identity/resume,
 invalid-resume safety, and provider-owned `working`/`idle` evidence pass. The
 Claude input-request round proves provider-owned `requires_action` and
-`needs_input`; the separate harmless permission request also passes.
+`needs_input`; the separate harmless permission request also passes. Active
+turn interruption and native-TUI interoperability pass. A read-only local
+observer attachment is unsupported, and concurrent resumed writers diverge,
+so the adapter must serialize writes per Claude session.
 
 ## Adapter recommendations
 

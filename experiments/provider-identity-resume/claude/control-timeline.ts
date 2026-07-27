@@ -1,5 +1,6 @@
 import type {
   PermissionResult,
+  SDKControlInterruptResponse,
   SDKMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 
@@ -33,6 +34,19 @@ export type ClaudeControlTimelineEvent =
       toolUseId: string;
       toolName: string;
       result: PermissionResult;
+    }
+  | {
+      sequence: number;
+      observedAt: string;
+      source: "client";
+      event: "interrupt_request";
+    }
+  | {
+      sequence: number;
+      observedAt: string;
+      source: "client";
+      event: "interrupt_response";
+      receipt?: SDKControlInterruptResponse;
     };
 
 export class ClaudeControlTimeline {
@@ -75,6 +89,25 @@ export class ClaudeControlTimeline {
       source: "callback",
       event: "response",
       ...response,
+    });
+  }
+
+  recordInterruptRequest(): void {
+    this.events.push({
+      ...this.baseEvent(),
+      source: "client",
+      event: "interrupt_request",
+    });
+  }
+
+  recordInterruptResponse(
+    receipt: SDKControlInterruptResponse | undefined,
+  ): void {
+    this.events.push({
+      ...this.baseEvent(),
+      source: "client",
+      event: "interrupt_response",
+      receipt,
     });
   }
 

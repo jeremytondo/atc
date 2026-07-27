@@ -11,7 +11,9 @@ Claude checkpoints cover session creation, a second same-process SDK query,
 fresh-process exact-session resume, invalid or missing resume safety with
 explicit replacement-session detection, and bounded streaming lifecycle
 evidence, including blocking `AskUserQuestion` and harmless Bash permission
-requests.
+requests. Claude control/interoperability coverage also includes active-turn
+interruption, concurrent resume behavior, and an Agent SDK → native TUI →
+fresh Agent SDK round trip.
 
 ## Setup
 
@@ -161,6 +163,53 @@ and verifies that an allowed command returns the exact requested cwd before
 the same session becomes authoritative `idle`. The raw SDK messages and
 derived callback/provider timeline are retained separately.
 
+## Claude active-turn interruption
+
+```sh
+pnpm claude interrupt --cwd ../..
+```
+
+The probe seeds a durable session, resumes it with only `AskUserQuestion`
+exposed, and deliberately holds the request unanswered. After Claude emits
+authoritative `requires_action`, the client calls the SDK's `interrupt()`
+control method. It records the callback/provider/control timeline, interrupt
+receipt, terminal result, and transition back to `idle`.
+
+A fresh SDK query must then resume the exact session ID and cwd and recall the
+seed marker. Configure the bounded delay between `requires_action` and the
+control request with `--interrupt-delay-seconds <n>`.
+
+## Claude observer and writer behavior
+
+```sh
+pnpm claude observer-writer --cwd ../..
+```
+
+The local Agent SDK has no read-only API for attaching to another local
+query's live event stream. Calling `query({ options: { resume } })` starts an
+independent CLI-backed writer instead.
+
+The probe holds writer A at `requires_action`, starts writer B against the same
+session ID, then completes A and opens a fresh verifier. It records whether
+either client receives the other's event UUIDs or marker, whether both writers
+complete, and which markers remain visible after a fresh resume. This is a
+negative-capability experiment: an unsupported observer attachment or unsafe
+writer concurrency is a reviewed outcome, not a probe failure.
+
+## Claude native-TUI round trip
+
+This command requires an interactive terminal:
+
+```sh
+pnpm claude tui-round-trip --cwd ../..
+```
+
+It creates and seeds a session through the Agent SDK, closes that client, and
+opens the exact ID with the native `claude --resume` TUI in safe mode with no
+tools or filesystem settings sources. After the marker response appears,
+press Ctrl-D twice to exit. A fresh Agent SDK query then verifies the exact
+session ID, cwd, and native-TUI marker continuity.
+
 ## Codex create and same-process turns
 
 ```sh
@@ -309,6 +358,10 @@ After the marker appears, exit the TUI with `/exit`. A fresh app-server then:
 - Claude `*.lifecycle.json` files record streaming mode, the bounded
   post-result window, provider capabilities, message boundaries, and explicit
   lifecycle states or their observed absence.
+- Claude interruption artifacts include the terminal result, interrupt receipt,
+  lifecycle transitions, and a derived callback/provider/control timeline.
+- Claude observer/writer artifacts keep separate raw streams for both
+  concurrent clients and the fresh resume verifier.
 
 Review a raw event stream with:
 

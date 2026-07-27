@@ -13,6 +13,7 @@ import {
   requireExactPwdRequest,
   summarizeLifecycleSignals,
   verifyInvalidResumeFailure,
+  verifyInterruptTimeline,
   verifyBlockingCallbackTimeline,
   verifyLifecycleTransitions,
   verifyNeedsInputTransitions,
@@ -69,6 +70,18 @@ test("parseArgs accepts deterministic permission decisions", () => {
   ]);
   assert.equal(options.command, "permission-request");
   assert.equal(options.decision, "allow");
+});
+
+test("parseArgs accepts interruption and interoperability commands", () => {
+  const interrupt = parseArgs([
+    "interrupt",
+    "--interrupt-delay-seconds",
+    "0.5",
+  ]);
+  assert.equal(interrupt.command, "interrupt");
+  assert.equal(interrupt.interruptDelayMs, 500);
+  assert.equal(parseArgs(["observer-writer"]).command, "observer-writer");
+  assert.equal(parseArgs(["tui-round-trip"]).command, "tui-round-trip");
 });
 
 test("parseArgs rejects unsupported permission decisions", () => {
@@ -378,6 +391,30 @@ test("permission result allows or denies only exact pwd", () => {
   assert.throws(
     () => requireExactPwdRequest("Read", { command: "pwd" }),
     /Unsafe permission probe request/,
+  );
+});
+
+test("interrupt timeline requires one ordered control round trip", () => {
+  assert.doesNotThrow(() =>
+    verifyInterruptTimeline([
+      {
+        sequence: 1,
+        observedAt: "2026-07-27T00:00:00.000Z",
+        source: "client",
+        event: "interrupt_request",
+      },
+      {
+        sequence: 2,
+        observedAt: "2026-07-27T00:00:01.000Z",
+        source: "client",
+        event: "interrupt_response",
+        receipt: { still_queued: [] },
+      },
+    ]),
+  );
+  assert.throws(
+    () => verifyInterruptTimeline([]),
+    /Expected one interrupt request and response/,
   );
 });
 
