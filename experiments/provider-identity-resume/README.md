@@ -109,11 +109,12 @@ The structured result records:
 - an observed/not-observed summary for ATC's `working`, `idle`, and
   `needs_input` candidates.
 
-Observed on Agent SDK `0.3.220` / Claude Code `2.1.220`: the safe no-tool turn
-reported `msg_lifecycle_v1`, assistant output, and a successful result, but no
-`session_state_changed` message. The probe records the output and result
-boundaries without treating them as provider state events. A live
-`requires_action` mapping remains for the separate interactive-request round.
+The probe enables Anthropic's required
+`CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1` subprocess setting while preserving
+the inherited environment. Observed on Agent SDK `0.3.220` / Claude Code
+`2.1.220`: `running` arrived before `system/init`, and authoritative `idle`
+arrived after `result/success`. A live `requires_action` mapping remains for
+the separate interactive-request round.
 
 ## Codex create and same-process turns
 

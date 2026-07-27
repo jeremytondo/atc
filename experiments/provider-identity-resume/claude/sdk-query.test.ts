@@ -1,7 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildQueryOptions } from "./sdk-query.ts";
+import {
+  buildClaudeEnvironment,
+  buildQueryOptions,
+} from "./sdk-query.ts";
+
+test("buildClaudeEnvironment preserves inherited values and enables lifecycle events", () => {
+  assert.deepEqual(
+    buildClaudeEnvironment({
+      PATH: "/test/bin",
+      CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "0",
+    }),
+    {
+      PATH: "/test/bin",
+      CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
+    },
+  );
+});
 
 test("buildQueryOptions wires the exact expected session into resume", () => {
   const options = buildQueryOptions(
@@ -28,4 +44,5 @@ test("buildQueryOptions disables tools and filesystem settings", () => {
   assert.deepEqual(options.settingSources, []);
   assert.equal(options.permissionMode, "dontAsk");
   assert.equal(options.persistSession, true);
+  assert.equal(options.env?.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS, "1");
 });

@@ -196,26 +196,27 @@ Environment: `codex-cli 0.145.0`, working directory
 - Environment: `@anthropic-ai/claude-agent-sdk 0.3.220`, Claude Code
   `2.1.220`, working directory
   `/Users/jeremytondo/Projects/ATC/atc-agent-poc`.
-- Session `202e384c-949a-48a0-919e-863b9b425fe4` used streaming SDK input
-  held open for a bounded 2,000 ms after the successful result.
-- `system/init` reported the expected cwd, no tools, `dontAsk`, and capability
-  `msg_lifecycle_v1`. All five messages retained the same session ID.
-- The first post-init activity was assistant output at event 2. Event 5 was
-  `result/success` with one turn and `stop_reason: "end_turn"`.
-- No `system/session_state_changed` message was emitted. Therefore no live
-  provider `running`, `idle`, or `requires_action` state was observed.
-- Assistant output proves response activity and the successful result proves
-  turn completion, but this round does not relabel those boundaries as
-  provider state events.
-- ATC must not claim that Claude reported `working` or `idle` in this version.
-  If the future adapter maps client dispatch to `working` and successful result
-  to `idle`, those are adapter-owned operation states.
+- The initial session `202e384c-949a-48a0-919e-863b9b425fe4` omitted Anthropic's
+  required lifecycle opt-in. Its five-message stream contained no
+  `session_state_changed` event; that absence is the documented default rather
+  than evidence that the SDK lacks provider lifecycle status.
+- The corrected probe preserves the inherited subprocess environment and sets
+  `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`.
+- Corrected session `469d859f-7068-4255-b110-7499c0f3abb3` emitted
+  `system/session_state_changed/running` at event 1 before `system/init` at
+  event 2. The exact session ID and cwd remained stable.
+- Event 8 was `result/success`; authoritative
+  `system/session_state_changed/idle` followed at event 9.
+- Claude therefore provides provider-owned evidence for mapping `running` to
+  ATC `working` and `idle` to ATC `idle` when the opt-in is enabled.
 - `needs_input` remains unproven. The next permission/input round must capture
   a live blocking request and determine whether `requires_action` is emitted
   before accepting that mapping.
 - Reviewed artifacts:
-  `runs/claude/2026-07-27T17-06-31-255Z-30bac63f.lifecycle.json` and its
-  five-message sibling JSONL.
+  `runs/claude/2026-07-27T17-06-31-255Z-30bac63f.lifecycle.json` for the
+  no-opt-in comparison, and
+  `runs/claude/2026-07-27T17-42-57-368Z-3d6af251.lifecycle.json` plus its
+  nine-message sibling JSONL for the corrected pass.
 
 ## Codex gate conclusion
 
@@ -224,11 +225,10 @@ Claude probe therefore required explicitly accepting that Codex threads are
 not recoverable across app-server restarts until a first turn has materialized
 the rollout.
 
-That constraint was accepted in ATC-68. Claude identity/resume and
-invalid-resume safety pass. The bounded Claude lifecycle round found usable
-operation boundaries but no explicit provider state events; the next narrow
-gate is a harmless interactive request to test `requires_action` and
-`needs_input`.
+That constraint was accepted in ATC-68. Claude identity/resume,
+invalid-resume safety, and provider-owned `working`/`idle` evidence pass. The
+next narrow gate is a harmless interactive request to test `requires_action`
+and `needs_input`.
 
 ## Adapter recommendations
 

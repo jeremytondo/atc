@@ -346,12 +346,22 @@ export function buildQueryOptions(
     abortController,
     allowedTools: [],
     cwd: options.cwd,
+    env: buildClaudeEnvironment(process.env),
     maxTurns: 1,
     permissionMode: "dontAsk",
     persistSession: true,
     resume: options.expectedSessionId,
     settingSources: [],
     tools: [],
+  };
+}
+
+export function buildClaudeEnvironment(
+  inheritedEnvironment: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  return {
+    ...inheritedEnvironment,
+    CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
   };
 }
 
