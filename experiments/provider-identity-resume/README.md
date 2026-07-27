@@ -4,10 +4,11 @@ This directory contains deliberately independent provider probes for
 [ATC-68](https://linear.app/elevenideas/issue/ATC-68/poc-provider-identity-and-resume-with-codex-app-server-and-claude).
 They are experiments, not ATC production session or adapter code.
 
-The Codex checkpoints cover conversation creation, a second turn in the same
-app-server process, verified resume from a fresh app-server process, and the
-dormant zero-turn lifecycle. The Claude probe and the remaining test matrix
-will follow after the current gate output is reviewed.
+The Codex checkpoints cover conversation creation, same-process turns,
+fresh-process resume, dormant and restarted zero-turn behavior, invalid resume
+safety, shared-process multiplexing, and native-TUI interoperability. The
+Claude probe remains gated because Codex zero-turn recovery currently fails on
+`codex-cli 0.145.0`.
 
 ## Setup
 
@@ -94,6 +95,62 @@ CONTINUITY VERIFIED: first post-dormancy turn returned <marker>
 PASS: thread <same id> accepted its first turn after remaining dormant for <observed>ms.
 ```
 
+## Codex zero-turn recovery
+
+This scenario starts a durable thread without a turn, stops app-server, starts
+a fresh app-server, and attempts to resume the exact ID before sending the
+first turn:
+
+```sh
+pnpm codex zero-turn-recovery --cwd ../..
+```
+
+The command writes separate raw logs for the create and resume processes. It
+also writes a structured result artifact on either pass or resume failure.
+
+Observed on `codex-cli 0.145.0`: **fail**. `thread/start` returns a durable ID,
+cwd, and empty turns, but the fresh process rejects `thread/resume` with
+`-32600 no rollout found for thread id <same id>`. No first turn is attempted.
+
+## Codex invalid-resume safety
+
+```sh
+pnpm codex invalid-resume --cwd ../..
+```
+
+The probe records every thread ID returned by `thread/list`, attempts both a
+well-formed nonexistent ID and a request with no `threadId`, then lists again.
+It requires clear errors and fails if any replacement ID appears.
+
+## Codex shared-process multiplexing
+
+```sh
+pnpm codex multiplex --cwd ../..
+```
+
+The probe creates two durable threads in one app-server, requires both IDs in
+`thread/loaded/list`, then runs A1 → B1 → A2 → B2. Each thread gets a distinct
+marker. Every turn and item event is correlated by `turnId` and must carry the
+expected `threadId`; unrelated lifecycle events for the other loaded thread
+remain visible in the raw stream.
+
+## Codex native-TUI round trip
+
+This command requires an interactive terminal:
+
+```sh
+pnpm codex tui-round-trip --cwd ../..
+```
+
+It creates and seeds a thread through app-server, stops app-server, opens that
+exact ID with `codex resume`, and supplies a harmless native-TUI marker prompt.
+After the marker appears, exit the TUI with `/exit`. A fresh app-server then:
+
+1. resumes the exact ID and cwd;
+2. finds the distinct TUI marker in the returned turn history; and
+3. completes another turn that recalls the TUI marker without including it in
+   the prompt.
+
 ## Artifacts
 
 `runs/` is ignored by source control.
@@ -106,6 +163,9 @@ PASS: thread <same id> accepted its first turn after remaining dormant for <obse
 - `*.dormant-zero-turn.json` records the dormant scenario's identity and
   timing evidence. Its sibling JSONL file remains the unmodified provider
   event stream.
+- Gate `*.json` files record IDs, errors, markers, turn attribution counts,
+  and relative raw-log paths. Failed zero-turn recovery also produces a result
+  artifact before the command exits nonzero.
 
 Review a raw event stream with:
 

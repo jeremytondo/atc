@@ -7,15 +7,17 @@ come from reviewed run artifacts, not protocol assumptions.
 | --- | --- | --- |
 | Durable ID availability | pass | not tested |
 | Dormant zero-turn lifecycle | pass | not tested |
+| Zero-turn recovery after provider restart | fail | not tested |
 | Second turn in same process | pass | not tested |
 | Fresh-process resume with identity verification | pass | not tested |
-| Invalid or missing resume ID | not tested | not tested |
+| Invalid or missing resume ID | pass | not tested |
+| Shared-process multiplexing | pass | not tested |
 | Working directory after resume | pass | not tested |
 | `working`, `idle`, and `needs_input` signals | partial | not tested |
 | Read-only permission or tool request | not tested | not tested |
 | Active turn interruption | not tested | not tested |
 | Second observer visibility and writer behavior | not tested | not tested |
-| Native TUI interoperability | not tested | not tested |
+| Native TUI interoperability | pass | not tested |
 
 ## Reviewed observations
 
@@ -72,6 +74,79 @@ come from reviewed run artifacts, not protocol assumptions.
 - Reviewed artifacts:
   `runs/codex/2026-07-27T15-18-33-436Z-8f35d634.dormant-zero-turn.json` and its
   sibling `.jsonl` file (39 raw server messages).
+
+### Codex gate completion — 2026-07-27
+
+Environment: `codex-cli 0.145.0`, working directory
+`/Users/jeremytondo/Projects/ATC/atc-agent-poc`.
+
+#### Zero-turn recovery — fail
+
+- App-server returned durable thread
+  `019fa43b-47c6-7731-bb9a-d6ea66bb6fa3`, the requested cwd,
+  `ephemeral: false`, and an empty turns array.
+- The first app-server stopped without receiving `turn/start`.
+- A fresh app-server called `thread/resume` for that exact ID and received
+  `-32600 no rollout found for thread id
+  019fa43b-47c6-7731-bb9a-d6ea66bb6fa3`.
+- The probe did not fall back to `thread/start` and did not attempt a first
+  turn. This shows that the ID is durable-looking at `thread/start` time but
+  its rollout is not recoverable until at least one turn materializes it.
+- Reviewed artifacts:
+  `runs/codex/2026-07-27T15-39-35-997Z-073bae99.zero-turn-recovery.json`,
+  its 6-event create JSONL, and its 3-event resume JSONL.
+
+#### Invalid and missing resume IDs — pass
+
+- Before and after `thread/list` each returned the same 93 IDs.
+- Nonexistent ID `e4af06db-6ccb-4c5c-a331-165790e4cb13` returned
+  `-32600 no rollout found for thread id ...`.
+- Omitting `threadId` returned
+  `-32600 Invalid request: missing field threadId`.
+- Neither attempt created a replacement conversation.
+- Reviewed artifacts:
+  `runs/codex/2026-07-27T15-32-13-277Z-b5342fa5.invalid-resume.json` and its
+  6-event sibling JSONL.
+
+#### Shared-process multiplexing — pass
+
+- One app-server created distinct threads
+  `019fa435-76b9-7871-b114-45faccbdec61` and
+  `019fa435-7722-7392-ac5f-622d9cdd584d`.
+- `thread/loaded/list` returned both exact IDs.
+- Four turns completed in A1 → B1 → A2 → B2 order. Each thread recalled only
+  its own marker on the second turn.
+- The validator correlated 28, 24, 26, and 22 turn-scoped events,
+  respectively. Every correlated event carried the expected `threadId`.
+- Delayed MCP-startup notifications for the other loaded thread can interleave
+  with a turn; these are lifecycle events without that turn's `turnId`, not
+  attribution leakage.
+- Reviewed artifacts:
+  `runs/codex/2026-07-27T15-33-14-802Z-0884639b.multiplex.json` and its
+  131-event sibling JSONL.
+
+#### Native TUI round trip — pass
+
+- App-server created thread
+  `019fa438-6452-7343-8b77-22d53fc8f9c9` and completed one seed turn so the
+  rollout existed before handoff.
+- `codex resume` opened that exact ID in the native TUI and completed a turn
+  with marker `ATC-CODEX-ATC68-TUI-02`.
+- A fresh app-server resumed the same ID and cwd. Its response contained
+  exactly the seed turn and TUI turn, including the exact TUI marker.
+- A subsequent app-server turn recalled the TUI-specific marker without the
+  marker being repeated in its prompt. All 27 correlated turn events carried
+  the same thread ID.
+- Reviewed artifacts:
+  `runs/codex/2026-07-27T15-36-26-730Z-b13bf0bf.tui-round-trip.json`, its
+  36-event create JSONL, and its 41-event resume JSONL.
+
+## Gate conclusion
+
+Three remaining checks pass, but zero-turn recovery fails. Do not start the
+Claude probe under the current gate without explicitly accepting that Codex
+threads are not recoverable across app-server restarts until a first turn has
+materialized the rollout.
 
 ## Adapter recommendations
 
