@@ -7,11 +7,13 @@ import test from "node:test";
 import {
   assertSessionRecord,
   buildAskUserQuestionResult,
+  buildPermissionResult,
   parseArgs,
   requireResumeId,
+  requireExactPwdRequest,
   summarizeLifecycleSignals,
   verifyInvalidResumeFailure,
-  verifyInputRequestTimeline,
+  verifyBlockingCallbackTimeline,
   verifyLifecycleTransitions,
   verifyNeedsInputTransitions,
   verifyNoReplacementSessions,
@@ -57,6 +59,23 @@ test("parseArgs accepts deterministic input-request answers", () => {
   assert.equal(options.command, "input-request");
   assert.equal(options.answer, "Alpha");
   assert.equal(options.responseDelayMs, 1_500);
+});
+
+test("parseArgs accepts deterministic permission decisions", () => {
+  const options = parseArgs([
+    "permission-request",
+    "--decision",
+    "allow",
+  ]);
+  assert.equal(options.command, "permission-request");
+  assert.equal(options.decision, "allow");
+});
+
+test("parseArgs rejects unsupported permission decisions", () => {
+  assert.throws(
+    () => parseArgs(["permission-request", "--decision", "always"]),
+    /allow or deny/,
+  );
 });
 
 test("parseArgs canonicalizes the requested cwd", () => {
@@ -337,6 +356,31 @@ test("buildAskUserQuestionResult returns the correlated answer shape", () => {
   );
 });
 
+test("permission result allows or denies only exact pwd", () => {
+  assert.doesNotThrow(() =>
+    requireExactPwdRequest("Bash", {
+      command: "pwd",
+      description: "Print working directory",
+    }),
+  );
+  assert.deepEqual(buildPermissionResult({ command: "pwd" }, "allow"), {
+    behavior: "allow",
+    updatedInput: { command: "pwd" },
+  });
+  assert.deepEqual(buildPermissionResult({ command: "pwd" }, "deny"), {
+    behavior: "deny",
+    message: "User denied the harmless ATC permission probe.",
+  });
+  assert.throws(
+    () => requireExactPwdRequest("Bash", { command: "pwd && ls" }),
+    /Unsafe permission probe request/,
+  );
+  assert.throws(
+    () => requireExactPwdRequest("Read", { command: "pwd" }),
+    /Unsafe permission probe request/,
+  );
+});
+
 test("verifyNeedsInputTransitions requires requires_action followed by idle", () => {
   assert.doesNotThrow(() =>
     verifyNeedsInputTransitions([
@@ -356,9 +400,9 @@ test("verifyNeedsInputTransitions requires requires_action followed by idle", ()
   );
 });
 
-test("verifyInputRequestTimeline requires needs_input while callback is pending", () => {
+test("verifyBlockingCallbackTimeline requires needs_input while callback is pending", () => {
   assert.doesNotThrow(() =>
-    verifyInputRequestTimeline([
+    verifyBlockingCallbackTimeline([
       {
         sequence: 1,
         observedAt: "2026-07-27T00:00:00.000Z",
@@ -391,6 +435,63 @@ test("verifyInputRequestTimeline requires needs_input while callback is pending"
           behavior: "allow",
           updatedInput: {},
         },
+      },
+      {
+        sequence: 4,
+        observedAt: "2026-07-27T00:00:03.000Z",
+        source: "sdk",
+        event: "message",
+        messageSequence: 5,
+        type: "system",
+        subtype: "session_state_changed",
+        state: "running",
+      },
+    ]),
+  );
+  assert.doesNotThrow(() =>
+    verifyBlockingCallbackTimeline([
+      {
+        sequence: 1,
+        observedAt: "2026-07-27T00:00:00.000Z",
+        source: "sdk",
+        event: "message",
+        messageSequence: 4,
+        type: "system",
+        subtype: "session_state_changed",
+        state: "requires_action",
+      },
+      {
+        sequence: 2,
+        observedAt: "2026-07-27T00:00:01.000Z",
+        source: "callback",
+        event: "request",
+        requestId: "request-1",
+        toolUseId: "tool-1",
+        toolName: "Bash",
+        input: { command: "pwd" },
+      },
+      {
+        sequence: 3,
+        observedAt: "2026-07-27T00:00:02.000Z",
+        source: "callback",
+        event: "response",
+        requestId: "request-1",
+        toolUseId: "tool-1",
+        toolName: "Bash",
+        result: {
+          behavior: "allow",
+          updatedInput: { command: "pwd" },
+        },
+      },
+      {
+        sequence: 4,
+        observedAt: "2026-07-27T00:00:03.000Z",
+        source: "sdk",
+        event: "message",
+        messageSequence: 5,
+        type: "system",
+        subtype: "session_state_changed",
+        state: "running",
       },
     ]),
   );

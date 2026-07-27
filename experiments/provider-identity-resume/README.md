@@ -10,7 +10,8 @@ safety, shared-process multiplexing, and native-TUI interoperability. The
 Claude checkpoints cover session creation, a second same-process SDK query,
 fresh-process exact-session resume, invalid or missing resume safety with
 explicit replacement-session detection, and bounded streaming lifecycle
-evidence, including a blocking `AskUserQuestion` input request.
+evidence, including blocking `AskUserQuestion` and harmless Bash permission
+requests.
 
 ## Setup
 
@@ -138,6 +139,27 @@ probe can require `requires_action` while the callback is pending. Configure
 that window with `--response-delay-seconds <n>`. The scenario fails unless the
 same session resumes after the answer and reaches authoritative `idle`. No
 filesystem, shell, network, or settings tool is exposed.
+
+## Claude permission request
+
+```sh
+pnpm claude permission-request --cwd ../..
+```
+
+This command exposes only `Bash`, installs an inline `Bash(pwd)` ask rule, and
+refuses every callback whose tool name or command differs from exact
+`Bash`/`pwd`. The terminal prompt can allow or deny the request. For a
+repeatable approval run:
+
+```sh
+pnpm claude permission-request --cwd ../.. --decision allow
+```
+
+The probe requires the permission callback to overlap the provider's
+`requires_action` interval, correlates the response by request and tool-use ID,
+and verifies that an allowed command returns the exact requested cwd before
+the same session becomes authoritative `idle`. The raw SDK messages and
+derived callback/provider timeline are retained separately.
 
 ## Codex create and same-process turns
 

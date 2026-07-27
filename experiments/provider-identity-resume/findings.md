@@ -14,7 +14,7 @@ come from reviewed run artifacts, not protocol assumptions.
 | Shared-process multiplexing | pass | not tested |
 | Working directory after resume | pass | pass |
 | `working`, `idle`, and `needs_input` signals | partial | pass |
-| Read-only permission or tool request | not tested | not tested |
+| Read-only permission or tool request | not tested | pass |
 | Active turn interruption | not tested | not tested |
 | Second observer visibility and writer behavior | not tested | not tested |
 | Native TUI interoperability | pass | not tested |
@@ -241,6 +241,31 @@ Environment: `codex-cli 0.145.0`, working directory
   `runs/claude/2026-07-27T17-50-20-226Z-42d8dfad.input-request.json`, its
   11-message raw SDK JSONL, and its 13-entry callback/provider timeline.
 
+### Claude permission request — 2026-07-27
+
+- Session `0830f458-fc54-4f19-a3d9-87f4e4eada70` exposed only `Bash`, used
+  `permissionMode: "default"`, and forced the exact `Bash(pwd)` call through
+  an inline ask rule.
+- The callback rejects any tool name other than `Bash` and any command other
+  than the exact string `pwd`; no compound command or repository write can be
+  approved by this scenario.
+- `requires_action` arrived at provider event 5 while the approval callback
+  remained pending. The callback received one request and returned `allow`
+  after 2,003 ms with matching request and tool-use IDs.
+- The same provider session returned to `running` at event 7. The tool result
+  reported the exact repository cwd, and the assistant returned
+  `PERMISSION COMPLETE: /Users/jeremytondo/Projects/ATC/atc-agent-poc
+  ATC-CLAUDE-PERMISSION-02`.
+- `result/success` arrived at event 10 and authoritative `idle` at event 11.
+  This passes Claude's harmless permission/tool-request gate without modifying
+  the repository.
+- The first live run also exposed a valid ordering variant: `requires_action`
+  can precede callback delivery. The verifier therefore checks interval
+  overlap rather than assuming which event is observed first.
+- Reviewed artifacts:
+  `runs/claude/2026-07-27T17-54-37-801Z-1bce62e7.permission-request.json`,
+  its 11-message raw SDK JSONL, and its 13-entry callback/provider timeline.
+
 ## Codex gate conclusion
 
 Three remaining checks passed, but zero-turn recovery failed. Starting the
@@ -251,7 +276,7 @@ the rollout.
 That constraint was accepted in ATC-68. Claude identity/resume,
 invalid-resume safety, and provider-owned `working`/`idle` evidence pass. The
 Claude input-request round proves provider-owned `requires_action` and
-`needs_input`. The next narrow gate is a distinct harmless permission request.
+`needs_input`; the separate harmless permission request also passes.
 
 ## Adapter recommendations
 

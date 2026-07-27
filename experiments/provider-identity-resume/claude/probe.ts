@@ -30,7 +30,8 @@ interface ProbeOptions {
     | "resume"
     | "invalid-resume"
     | "lifecycle"
-    | "input-request";
+    | "input-request"
+    | "permission-request";
   cwd: string;
   marker?: string;
   sessionPath?: string;
@@ -38,6 +39,7 @@ interface ProbeOptions {
   lifecycleObservationMs: number;
   answer?: string;
   responseDelayMs: number;
+  decision?: "allow" | "deny";
 }
 
 interface ClaudeSessionRecord {
@@ -66,8 +68,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     await invalidResumeScenario(options);
   } else if (options.command === "lifecycle") {
     await lifecycleScenario(options);
-  } else {
+  } else if (options.command === "input-request") {
     await inputRequestScenario(options);
+  } else {
+    await permissionRequestScenario(options);
   }
 }
 
@@ -78,7 +82,8 @@ export function parseArgs(argv: string[]): ProbeOptions {
     command !== "resume" &&
     command !== "invalid-resume" &&
     command !== "lifecycle" &&
-    command !== "input-request"
+    command !== "input-request" &&
+    command !== "permission-request"
   ) {
     throw new Error(usage());
   }
@@ -90,6 +95,7 @@ export function parseArgs(argv: string[]): ProbeOptions {
   let lifecycleObservationMs = 2_000;
   let answer: string | undefined;
   let responseDelayMs = 2_000;
+  let decision: "allow" | "deny" | undefined;
 
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index];
@@ -110,6 +116,12 @@ export function parseArgs(argv: string[]): ProbeOptions {
         break;
       case "--answer":
         answer = value;
+        break;
+      case "--decision":
+        if (value !== "allow" && value !== "deny") {
+          throw new Error("--decision must be allow or deny");
+        }
+        decision = value;
         break;
       case "--timeout-seconds": {
         const seconds = Number(value);
@@ -158,6 +170,7 @@ export function parseArgs(argv: string[]): ProbeOptions {
     lifecycleObservationMs,
     answer,
     responseDelayMs,
+    decision,
   };
 }
 
@@ -661,7 +674,7 @@ async function inputRequestScenario(options: ProbeOptions): Promise<void> {
     );
   }
   verifyNeedsInputTransitions(observation.stateTransitions);
-  verifyInputRequestTimeline(timeline.events);
+  verifyBlockingCallbackTimeline(timeline.events);
 
   const signals = summarizeLifecycleSignals(observation);
   const result = {
@@ -704,6 +717,197 @@ async function inputRequestScenario(options: ProbeOptions): Promise<void> {
     "PASS: AskUserQuestion blocked for input and resumed the exact session without repository-capable tools.",
   );
   console.log(`result artifact: ${relative(process.cwd(), resultPath)}`);
+}
+
+async function permissionRequestScenario(options: ProbeOptions): Promise<void> {
+  const runId = makeRunId();
+  const rawLogPath = resolve(runsRoot, `${runId}.permission-request.jsonl`);
+  const timelinePath = resolve(
+    runsRoot,
+    `${runId}.permission-request.timeline.jsonl`,
+  );
+  const resultPath = resolve(runsRoot, `${runId}.permission-request.json`);
+  const marker =
+    options.marker ??
+    `ATC-CLAUDE-PERMISSION-${randomUUID().slice(0, 8).toUpperCase()}`;
+  const timeline = new ClaudeControlTimeline();
+  let permissionDecision: "allow" | "deny" | undefined;
+
+  console.log(
+    "Claude Agent SDK provider identity/resume POC — permission request",
+  );
+  console.log(`cwd: ${options.cwd}`);
+  console.log(`marker: ${marker}`);
+  console.log("tool exposure: Bash only; inline ask rule: Bash(pwd)");
+  console.log("safety: the callback rejects every command except exact pwd");
+
+  let observation: ClaudeLifecycleObservation;
+  try {
+    observation = await runClaudeLifecycle({
+      cwd: options.cwd,
+      prompt: [
+        "This is a harmless provider permission-request POC.",
+        "Use Bash exactly once with the exact command pwd.",
+        "Do not combine it with another command or use shell operators.",
+        "After the tool result, reply with:",
+        `PERMISSION COMPLETE: <absolute working directory> ${marker}`,
+      ].join(" "),
+      rawLogPath,
+      timeoutMs: options.timeoutMs,
+      postResultWaitMs: options.lifecycleObservationMs,
+      queryPolicy: {
+        tools: ["Bash"],
+        permissionMode: "default",
+        maxTurns: 2,
+        settings: {
+          permissions: {
+            ask: ["Bash(pwd)"],
+          },
+        },
+        canUseTool: async (toolName, input, callbackOptions) => {
+          requireExactPwdRequest(toolName, input);
+          timeline.recordRequest({
+            requestId: callbackOptions.requestId,
+            toolUseId: callbackOptions.toolUseID,
+            toolName,
+            input,
+          });
+
+          permissionDecision =
+            options.decision ?? await promptForPermission(input);
+          if (options.responseDelayMs > 0) {
+            await delay(options.responseDelayMs, undefined, {
+              signal: callbackOptions.signal,
+            });
+          }
+          const result = buildPermissionResult(input, permissionDecision);
+          timeline.recordResponse({
+            requestId: callbackOptions.requestId,
+            toolUseId: callbackOptions.toolUseID,
+            toolName,
+            result,
+          });
+          return result;
+        },
+      },
+      onMessage: (sequence, message) => {
+        timeline.recordMessage(sequence, message);
+      },
+    });
+  } finally {
+    await writeFile(timelinePath, timeline.toJsonLines(), { flag: "wx" });
+  }
+
+  if (permissionDecision === undefined) {
+    throw new Error("Claude did not emit a Bash permission request");
+  }
+  if (!observation.resultText.includes(marker)) {
+    throw new Error(
+      `Permission-request result did not preserve marker ${marker}`,
+    );
+  }
+  if (
+    permissionDecision === "allow" &&
+    !observation.resultText.includes(options.cwd)
+  ) {
+    throw new Error(
+      `Allowed pwd result did not report expected cwd ${options.cwd}`,
+    );
+  }
+  verifyNeedsInputTransitions(observation.stateTransitions);
+  verifyBlockingCallbackTimeline(timeline.events);
+
+  const signals = summarizeLifecycleSignals(observation);
+  const result = {
+    version: 1,
+    provider: "claude",
+    scenario: "permission-request",
+    cwd: observation.cwd,
+    sessionId: observation.sessionId,
+    claudeCodeVersion: observation.claudeCodeVersion,
+    completedAt: new Date().toISOString(),
+    evidence: {
+      inputMode: "streaming",
+      marker,
+      decision: permissionDecision,
+      messageCount: observation.messageCount,
+      stateTransitions: observation.stateTransitions,
+      signals,
+      tools: ["Bash"],
+      command: "pwd",
+      permissionMode: "default",
+      permissionAskRules: ["Bash(pwd)"],
+      settingSources: [],
+      callbackEvents: timeline.events.filter(
+        (event) => event.source === "callback",
+      ),
+    },
+    rawLogs: [
+      relative(dirname(resultPath), rawLogPath),
+      relative(dirname(resultPath), timelinePath),
+    ],
+  };
+  await writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`, {
+    flag: "wx",
+  });
+
+  console.log(
+    `PERMISSION SIGNAL OBSERVED: requires_action at event #${signals.needsInput.sequences.join(", #")}`,
+  );
+  console.log(`DECISION APPLIED: ${permissionDecision}`);
+  console.log("");
+  console.log(
+    "PASS: exact pwd required approval and the same session returned to idle without modifying the repository.",
+  );
+  console.log(`result artifact: ${relative(process.cwd(), resultPath)}`);
+}
+
+export function requireExactPwdRequest(
+  toolName: string,
+  input: Record<string, unknown>,
+): void {
+  if (toolName !== "Bash" || input.command !== "pwd") {
+    throw new Error(
+      `Unsafe permission probe request: expected Bash pwd, received ${toolName} ${String(input.command)}`,
+    );
+  }
+}
+
+export function buildPermissionResult(
+  input: Record<string, unknown>,
+  decision: "allow" | "deny",
+): PermissionResult {
+  requireExactPwdRequest("Bash", input);
+  return decision === "allow"
+    ? {
+        behavior: "allow",
+        updatedInput: input,
+      }
+    : {
+        behavior: "deny",
+        message: "User denied the harmless ATC permission probe.",
+      };
+}
+
+async function promptForPermission(
+  input: Record<string, unknown>,
+): Promise<"allow" | "deny"> {
+  console.log("");
+  console.log(`Claude requests Bash command: ${String(input.command)}`);
+  const terminal = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  try {
+    const response = (
+      await terminal.question("Allow this exact command? (y/N): ")
+    )
+      .trim()
+      .toLowerCase();
+    return response === "y" || response === "yes" ? "allow" : "deny";
+  } finally {
+    terminal.close();
+  }
 }
 
 export function buildAskUserQuestionResult(
@@ -754,7 +958,7 @@ export function verifyNeedsInputTransitions(
   }
 }
 
-export function verifyInputRequestTimeline(
+export function verifyBlockingCallbackTimeline(
   events: ClaudeControlTimelineEvent[],
 ): void {
   const requests = events.filter(
@@ -785,13 +989,25 @@ export function verifyInputRequestTimeline(
       event.event === "message" &&
       event.state === "requires_action",
   );
+  const stateAfterAction = events.find(
+    (event) =>
+      requiresAction !== undefined &&
+      event.sequence > requiresAction.sequence &&
+      event.source === "sdk" &&
+      event.event === "message" &&
+      event.subtype === "session_state_changed" &&
+      event.state !== "requires_action",
+  );
   if (
     requiresAction === undefined ||
-    requiresAction.sequence <= request.sequence ||
-    requiresAction.sequence >= response.sequence
+    request.sequence >= response.sequence ||
+    requiresAction.sequence >= response.sequence ||
+    stateAfterAction === undefined ||
+    stateAfterAction.sequence <= request.sequence ||
+    stateAfterAction.sequence <= response.sequence
   ) {
     throw new Error(
-      "requires_action was not observed while the callback was pending",
+      "The callback interval did not overlap the provider requires_action interval",
     );
   }
 }
@@ -946,6 +1162,7 @@ function usage(): string {
     "  pnpm claude invalid-resume [--cwd <path>] [--timeout-seconds <n>]",
     "  pnpm claude lifecycle [--cwd <path>] [--marker <value>] [--observation-seconds <n>] [--timeout-seconds <n>]",
     "  pnpm claude input-request [--cwd <path>] [--marker <value>] [--answer <value>] [--response-delay-seconds <n>] [--timeout-seconds <n>]",
+    "  pnpm claude permission-request [--cwd <path>] [--marker <value>] [--decision <allow|deny>] [--response-delay-seconds <n>] [--timeout-seconds <n>]",
   ].join("\n");
 }
 
