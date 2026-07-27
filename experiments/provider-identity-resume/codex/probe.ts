@@ -905,6 +905,7 @@ async function runTurn(
     const attributedEventCount = verifyTurnEventAttribution(
       client.messagesSince(firstEventIndex),
       threadId,
+      turnId,
       `turn ${turnId}`,
     );
     return {

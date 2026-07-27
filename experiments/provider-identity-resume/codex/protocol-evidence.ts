@@ -48,13 +48,28 @@ export function verifyThreadHasNoTurns(
 export function verifyTurnEventAttribution(
   messages: ProtocolMessage[],
   expectedThreadId: string,
+  expectedTurnId: string,
   context: string,
 ): number {
-  const attributed = messages.filter(
-    (message) => typeof message.params?.threadId === "string",
+  const attributed = messages.filter((message) => {
+    const notificationTurn = objectAt(message.params, "turn");
+    return (
+      message.params?.turnId === expectedTurnId ||
+      stringAt(notificationTurn, "id") === expectedTurnId
+    );
+  });
+  const missingThreadIds = attributed.filter(
+    (message) => typeof message.params?.threadId !== "string",
   );
   if (attributed.length === 0) {
-    throw new Error(`${context} emitted no thread-attributed notifications`);
+    throw new Error(`${context} emitted no turn-attributed notifications`);
+  }
+  if (missingThreadIds.length > 0) {
+    throw new Error(
+      `${context} emitted turn event(s) without threadId: ${missingThreadIds
+        .map((message) => message.method ?? "unknown")
+        .join(", ")}`,
+    );
   }
 
   const mismatches = attributed.filter(

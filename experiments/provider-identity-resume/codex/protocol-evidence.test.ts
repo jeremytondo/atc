@@ -53,19 +53,19 @@ test("verifies every turn notification is attributed to one thread", () => {
   const events = [
     {
       method: "turn/started",
-      params: { threadId: "thread-a" },
+      params: { threadId: "thread-a", turn: { id: "turn-a" } },
     },
     {
       method: "item/completed",
-      params: { threadId: "thread-a" },
+      params: { threadId: "thread-a", turnId: "turn-a" },
     },
     {
       method: "turn/completed",
-      params: { threadId: "thread-a" },
+      params: { threadId: "thread-a", turn: { id: "turn-a" } },
     },
   ];
   assert.equal(
-    verifyTurnEventAttribution(events, "thread-a", "turn a"),
+    verifyTurnEventAttribution(events, "thread-a", "turn-a", "turn a"),
     events.length,
   );
   assert.throws(
@@ -75,14 +75,38 @@ test("verifies every turn notification is attributed to one thread", () => {
           ...events,
           {
             method: "item/completed",
-            params: { threadId: "thread-b" },
+            params: { threadId: "thread-b", turnId: "turn-a" },
           },
         ],
         "thread-a",
+        "turn-a",
         "turn a",
       ),
     /another thread/,
   );
+});
+
+test("ignores lifecycle events for another loaded thread", () => {
+  const eventCount = verifyTurnEventAttribution(
+    [
+      {
+        method: "mcpServer/startupStatus/updated",
+        params: { threadId: "thread-b" },
+      },
+      {
+        method: "turn/started",
+        params: { threadId: "thread-a", turn: { id: "turn-a" } },
+      },
+      {
+        method: "turn/completed",
+        params: { threadId: "thread-a", turn: { id: "turn-a" } },
+      },
+    ],
+    "thread-a",
+    "turn-a",
+    "turn a",
+  );
+  assert.equal(eventCount, 2);
 });
 
 test("finds a native TUI marker in resumed agent history", () => {
