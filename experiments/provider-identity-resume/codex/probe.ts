@@ -748,11 +748,10 @@ async function tuiRoundTripScenario(options: ProbeOptions): Promise<void> {
       `TUI TURN VERIFIED IN RESUMED HISTORY: found marker ${marker}`,
     );
 
-    const verification = await runRecallTurn(
+    const verification = await runTuiRecallTurn(
       resumingClient,
       threadId,
       marker,
-      "app-server post-TUI",
       options.timeoutMs,
     );
 
@@ -974,6 +973,30 @@ async function runRecallTurn(
       "Without using tools, running commands, or modifying files,",
       "repeat the exact marker from the earlier turn in this thread.",
       `Prefix the response with ${label}:`,
+    ].join(" "),
+    timeoutMs,
+  );
+  assertSuccessfulTurn(result, label);
+  assertMarker(result, marker, label);
+  return result;
+}
+
+async function runTuiRecallTurn(
+  client: AppServerClient,
+  threadId: string,
+  marker: string,
+  timeoutMs: number,
+): Promise<TurnResult> {
+  const label = "app-server post-TUI";
+  const result = await runTurn(
+    client,
+    threadId,
+    [
+      "Without using tools, running commands, or modifying files,",
+      "repeat the exact marker from the earlier native-TUI response",
+      "whose prefix was NATIVE TUI ROUND TRIP:.",
+      "Do not repeat the app-server seed marker.",
+      "Prefix the response with APP-SERVER AFTER TUI:",
     ].join(" "),
     timeoutMs,
   );
