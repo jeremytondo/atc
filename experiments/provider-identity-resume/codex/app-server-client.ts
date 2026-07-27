@@ -37,6 +37,7 @@ export interface AppServerClientOptions {
   rawLogPath: string;
   requestTimeoutMs?: number;
   handleServerRequest?: ServerRequestHandler;
+  experimentalApi?: boolean;
 }
 
 export interface ServerRequest {
@@ -62,6 +63,7 @@ export class AppServerClient {
   private readonly rawLog: WriteStream;
   private readonly requestTimeoutMs: number;
   private readonly handleServerRequestOption?: ServerRequestHandler;
+  private readonly experimentalApi: boolean;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly waiters = new Set<MessageWaiter>();
   private readonly receivedMessages: ProtocolMessage[] = [];
@@ -79,6 +81,7 @@ export class AppServerClient {
     this.requestTimeoutMs =
       options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.handleServerRequestOption = options.handleServerRequest;
+    this.experimentalApi = options.experimentalApi ?? false;
     this.child = child;
     this.rawLog = rawLog;
     this.output = createInterface({ input: child.stdout });
@@ -227,7 +230,9 @@ export class AppServerClient {
         title: "ATC Provider Identity and Resume POC",
         version: "0.1.0",
       },
-      capabilities: null,
+      capabilities: this.experimentalApi
+        ? { experimentalApi: true }
+        : null,
     });
     this.notify("initialized");
   }

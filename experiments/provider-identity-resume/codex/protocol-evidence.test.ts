@@ -4,7 +4,9 @@ import test from "node:test";
 import {
   threadIdsFromList,
   threadIdsFromLoadedList,
+  turnIdsContainingAgentMarker,
   verifyInputQuestion,
+  verifyExactPwdApproval,
   verifyNoReplacementThreads,
   verifyServerRequestAttribution,
   verifyThreadContainsAgentMarker,
@@ -117,6 +119,7 @@ test("finds a native TUI marker in resumed agent history", () => {
     {
       turns: [
         {
+          id: "native-turn",
           items: [
             {
               type: "agentMessage",
@@ -130,10 +133,26 @@ test("finds a native TUI marker in resumed agent history", () => {
     "resumed thread",
   );
   assert.equal(matchingTurns, 1);
+  assert.deepEqual(
+    turnIdsContainingAgentMarker(
+      {
+        turns: [
+          {
+            id: "turn-a",
+            items: [
+              { type: "agentMessage", text: "marker ATC-TUI-TEST" },
+            ],
+          },
+        ],
+      },
+      "ATC-TUI-TEST",
+    ),
+    ["turn-a"],
+  );
   assert.throws(
     () =>
       verifyThreadContainsAgentMarker(
-        { turns: [{ items: [] }] },
+        { turns: [{ id: "missing-turn", items: [] }] },
         "ATC-TUI-MISSING",
         "resumed thread",
       ),
@@ -229,5 +248,30 @@ test("verifies the exact input question and ordered options", () => {
   assert.throws(
     () => verifyInputQuestion(request, "choice", ["Beta", "Alpha"]),
     /option mismatch/,
+  );
+});
+
+test("verifies exact pwd approval despite provider shell normalization", () => {
+  const request = {
+    id: 0,
+    method: "item/commandExecution/requestApproval",
+    params: {
+      command: "/bin/zsh -lc pwd",
+      commandActions: [{ type: "unknown", command: "pwd" }],
+    },
+    sequence: 18,
+    receivedAt: "2026-07-27T00:00:00.000Z",
+  };
+  assert.equal(verifyExactPwdApproval(request), "/bin/zsh -lc pwd");
+  assert.throws(
+    () =>
+      verifyExactPwdApproval({
+        ...request,
+        params: {
+          command: "/bin/zsh -lc 'pwd; whoami'",
+          commandActions: [{ type: "unknown", command: "pwd; whoami" }],
+        },
+      }),
+    /command mismatch/,
   );
 });

@@ -6,7 +6,9 @@ They are experiments, not ATC production session or adapter code.
 
 The Codex checkpoints cover conversation creation, same-process turns,
 fresh-process resume, dormant and restarted zero-turn behavior, invalid resume
-safety, shared-process multiplexing, and native-TUI interoperability. The
+safety, shared-process multiplexing, native-TUI interoperability, structured
+input and approval requests, active-turn interruption, and second-client
+observer/writer behavior. The
 Claude checkpoints cover session creation, a second same-process SDK query,
 fresh-process exact-session resume, invalid or missing resume safety with
 explicit replacement-session detection, and bounded streaming lifecycle
@@ -335,6 +337,72 @@ After the marker appears, exit the TUI with `/exit`. A fresh app-server then:
 3. completes another turn that recalls the TUI marker without including it in
    the prompt.
 
+## Codex input request
+
+```sh
+pnpm codex input-request --cwd ../..
+```
+
+`request_user_input` is unavailable in Codex Default mode. The probe opts into
+App Server's experimental API, reads the advertised Plan-mode preset with
+`collaborationMode/list`, and applies that preset to the bounded turn. It then:
+
+1. holds the correlated `item/tool/requestUserInput` server request;
+2. requires `thread/status/changed` to report
+   `activeFlags: ["waitingOnUserInput"]` while the request is pending;
+3. validates the exact question and ordered choices;
+4. responds to the request ID with `Alpha`; and
+5. requires the same turn to use the answer and complete.
+
+Use `--hold-seconds <n>` to change the observable pending interval.
+
+## Codex permission request
+
+```sh
+pnpm codex permission-request --cwd ../..
+```
+
+The probe asks Codex to run exact `pwd` with an explicit sandbox escalation.
+It accepts only the provider's exact shell-normalized
+`/bin/zsh -lc pwd` representation with one structured `pwd` action and the
+expected cwd. While the request is pending, the provider must report
+`waitingOnApproval`. The client then returns `{ decision: "accept" }` to the
+correlated request ID and requires the command and turn to complete without a
+repository change.
+
+## Codex active-turn interruption
+
+```sh
+pnpm codex interrupt --cwd ../..
+```
+
+The scenario seeds resumable context, starts a bounded foreground `sleep 30`
+command, waits until its `commandExecution` item is active, and calls
+`turn/interrupt` with the exact thread and turn IDs. It requires:
+
+- a successful interrupt response;
+- terminal `turn/completed` status `interrupted`;
+- the interrupted turn in fresh-process resumed history; and
+- exact ID, cwd, and seed-marker continuity in a subsequent turn.
+
+## Codex observer and writer behavior
+
+```sh
+pnpm codex observer-writer --cwd ../..
+```
+
+Writer A is held on a structured Plan-mode input request while a second App
+Server resumes the exact thread. The second client records the active snapshot,
+attempts a concurrent marker turn, and checks whether writer A's later events
+are fanned out live. After both clients stop, a third App Server records the
+persisted turn and marker attribution and verifies exact-session continuity.
+
+Reviewed behavior on `codex-cli 0.145.0`: the second client can resume and
+write, but receives no live events from writer A. Both writes can complete,
+yet fresh history can detach an agent response from its original provider turn
+into a synthetic rollout turn. Treat second-client live observation as
+unsupported and enforce one active writer per Codex thread.
+
 ## Artifacts
 
 `runs/` is ignored by source control.
@@ -362,6 +430,13 @@ After the marker appears, exit the TUI with `/exit`. A fresh app-server then:
   lifecycle transitions, and a derived callback/provider/control timeline.
 - Claude observer/writer artifacts keep separate raw streams for both
   concurrent clients and the fresh resume verifier.
+- Codex input and permission artifacts record request IDs, provider sequence,
+  pending-state flags, response timestamps, and terminal turn state.
+- Codex interruption artifacts record the exact control target, interrupt
+  receipt timing, terminal `interrupted` state, and fresh resume evidence.
+- Codex observer/writer artifacts keep separate streams for writer A, the
+  second client, and the fresh resume verifier, plus persisted marker-to-turn
+  attribution.
 
 Review a raw event stream with:
 
@@ -383,7 +458,9 @@ version for this POC.
 - Thread and turn requests use the read-only sandbox and approval policy
   `never`.
 - Prompts explicitly prohibit tools, commands, and file changes.
-- Any server-initiated approval or input request is rejected by the probe.
+- Server-initiated requests are rejected by default. The input and permission
+  scenarios install one exact fail-closed handler and reject any other method,
+  duplicate request, command, cwd, question, or option shape.
 - Claude SDK queries expose no built-in tools, load no filesystem setting
   sources, and use `dontAsk`; the probe verifies all three from `system/init`.
 - Protocol errors, timeouts, identity mismatches, cwd mismatches, non-completed

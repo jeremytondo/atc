@@ -13,10 +13,10 @@ Observations must come from reviewed run artifacts, not protocol assumptions.
 | Invalid or missing resume ID | pass | pass |
 | Shared-process multiplexing | pass | not tested |
 | Working directory after resume | pass | pass |
-| `working`, `idle`, and `needs_input` signals | partial | pass |
-| Read-only permission or tool request | not tested | pass |
-| Active turn interruption | not tested | pass |
-| Second observer visibility and writer behavior | not tested | unsupported |
+| `working`, `idle`, and `needs_input` signals | pass | pass |
+| Read-only permission or tool request | pass | pass |
+| Active turn interruption | pass | pass |
+| Second observer visibility and writer behavior | unsupported | unsupported |
 | Native TUI interoperability | pass | pass |
 
 ## Reviewed observations
@@ -140,6 +140,93 @@ Environment: `codex-cli 0.145.0`, working directory
 - Reviewed artifacts:
   `runs/codex/2026-07-27T15-36-26-730Z-b13bf0bf.tui-round-trip.json`, its
   36-event create JSONL, and its 41-event resume JSONL.
+
+### Codex input request — 2026-07-27
+
+- Session `019fa4fe-e1e4-7971-847d-28a11b1c7db1` opted into App Server's
+  experimental API and selected the advertised Plan preset. The provider
+  reported model `gpt-5.6-sol` and Plan reasoning effort `medium`.
+- `request_user_input` had first been exercised in Default mode and the
+  provider explicitly rejected it as unavailable. Plan mode is therefore a
+  capability requirement, not an incidental prompt choice.
+- Turn `019fa4fe-e247-7e93-a560-352dc30352cd` emitted
+  `thread/status/changed` with `waitingOnUserInput`, then correlated
+  `item/tool/requestUserInput` request ID `0`.
+- The request was held for 2,003 ms. Its exact question ID was `choice`, with
+  ordered `Alpha` and `Beta` options. The client answered `Alpha` by request
+  ID.
+- `serverRequest/resolved` followed, the provider returned to active work, and
+  the same turn completed with `INPUT RECEIVED: Alpha ATC-CODEX-INPUT-01`.
+- This supplies authoritative `needs_input` evidence. Map
+  `waitingOnUserInput` to ATC `needs_input`; do not infer the state from
+  transcript text.
+- Reviewed artifacts:
+  `runs/codex/2026-07-27T19-13-15-030Z-3aec25b6.input-request.json` and its
+  43-event sibling JSONL.
+
+### Codex permission request — 2026-07-27
+
+- Session `019fa501-8382-7100-904f-786da9822f2e`, turn
+  `019fa501-83e3-7991-853a-1984076e934d`, requested one harmless approval.
+- The provider normalized exact `pwd` to `/bin/zsh -lc pwd` while preserving
+  one structured command action with command `pwd` and the exact repository
+  cwd. The probe rejects every other command/action/cwd shape.
+- `thread/status/changed` reported `waitingOnApproval` while correlated
+  `item/commandExecution/requestApproval` request ID `0` was pending.
+- After a 2,001 ms hold, the client responded with decision `accept`. The
+  provider emitted `serverRequest/resolved`, completed the command, returned
+  the exact cwd, and completed the turn.
+- Map `waitingOnApproval` to ATC `needs_input` with request kind `approval`.
+  Correlate the response by provider request ID and retain the exact proposed
+  operation for policy and UI.
+- Reviewed artifacts:
+  `runs/codex/2026-07-27T19-16-07-470Z-818bb155.permission-request.json` and
+  its 73-event sibling JSONL.
+
+### Codex active-turn interruption — 2026-07-27
+
+- Session `019fa501-dea0-7f91-b03c-ad779434ff05` first stored seed marker
+  `ATC-CODEX-INTERRUPT-01-SEED`.
+- Turn `019fa501-eb98-7823-82ee-d9893e8510a4` was provably active in a
+  foreground `/bin/zsh -lc 'sleep 30'` command item when the client called
+  `turn/interrupt` with the exact thread and turn IDs.
+- App Server returned a successful empty interrupt response in 10 ms. It then
+  emitted idle thread status and terminal `turn/completed` status
+  `interrupted`.
+- A fresh App Server resumed the exact ID and cwd. Returned history contained
+  the interrupted turn exactly once, and a later turn recalled the seed marker
+  without receiving it in the prompt.
+- Treat a successful `turn/interrupt` response plus the terminal
+  `interrupted` turn and following idle state as the authoritative outcome.
+- Reviewed artifacts:
+  `runs/codex/2026-07-27T19-16-30-819Z-bc69a66f.interrupt.json`, its 57-event
+  active-client JSONL, and its 39-event fresh-resume JSONL.
+
+### Codex observer and concurrent writer behavior — 2026-07-27
+
+- Writer A held turn `019fa504-c572-77e3-a9bc-0a6256ff50c6` at
+  `waitingOnUserInput` on session
+  `019fa504-b665-7693-b89c-626a936a8bc2`.
+- A second App Server resumed that exact active ID and cwd. Its initial
+  snapshot contained the seed turn and writer A's in-progress turn.
+- The second client accepted concurrent turn
+  `019fa504-d686-75f3-b9cc-fd7de238b2b0`. Writer B completed with its marker,
+  then writer A completed with its own marker.
+- The second client received no live writer-A turn or item events after
+  resume. A resumed snapshot is therefore not a live observer attachment.
+- A third App Server resumed both completed markers. Writer B's response
+  remained on its provider turn, while writer A's response appeared in a
+  synthetic `rollout-36` turn rather than writer A's original provider turn.
+  The exact thread and conversation remained resumable, but turn attribution
+  was not safe under concurrent writers.
+- Adapter constraint: report second-client live observation as unsupported
+  and enforce one active writer per Codex thread. Do not accept concurrent
+  success responses as proof that provider history retained stable turn
+  ownership.
+- Reviewed artifact:
+  `runs/codex/2026-07-27T19-19-37-154Z-18f97277.observer-writer.json`, its
+  72-event writer-A stream, 37-event second-client stream, and 43-event
+  fresh-resume stream.
 
 ### Claude create and resume — 2026-07-27
 
@@ -330,10 +417,13 @@ Environment: `codex-cli 0.145.0`, working directory
 
 ## Codex gate conclusion
 
-Three remaining checks passed, but zero-turn recovery failed. Starting the
-Claude probe therefore required explicitly accepting that Codex threads are
-not recoverable across app-server restarts until a first turn has materialized
-the rollout.
+The Codex matrix is complete. Zero-turn recovery remains the accepted lifecycle
+failure: a first turn must materialize the rollout before restart-safe resume.
+Codex otherwise passes durable identity, exact resume, cwd, structured
+activity/input/approval signals, interruption, and native-TUI interoperability.
+`request_user_input` requires experimental Plan mode. A second App Server is
+not a live observer, and concurrent writers can destabilize persisted turn
+attribution, so the adapter must serialize writes.
 
 That constraint was accepted in ATC-68. Claude identity/resume,
 invalid-resume safety, and provider-owned `working`/`idle` evidence pass. The
@@ -343,6 +433,26 @@ turn interruption and native-TUI interoperability pass. A read-only local
 observer attachment is unsupported, and concurrent resumed writers diverge,
 so the adapter must serialize writes per Claude session.
 
-## Adapter recommendations
+## Adapter recommendation status
 
-Deferred until identity and resume experiments have passed for both providers.
+All capability rows now have reviewed outcomes for both providers. The next
+ATC-68 gate is to turn these findings into the final minimal provider interface
+and API/CLI recommendation.
+
+Provider constraints already established by the evidence:
+
+- Separate create from resume and fail closed on identity or cwd mismatch.
+- Track Codex zero-turn materialization before claiming restart-safe resume.
+- Drive Codex lifecycle from `thread/status/changed`; map
+  `waitingOnUserInput` and `waitingOnApproval` to typed `needs_input`
+  requests.
+- Treat Codex Plan mode and `request_user_input` as an experimental,
+  mode-dependent capability.
+- Correlate Codex request responses and interrupts with provider request,
+  thread, and turn IDs.
+- Treat provider terminal status, not assistant prose, as the interruption
+  result.
+- Enforce one active writer per provider session for both Codex and Claude.
+- Report local live observer attachment as unsupported for both providers.
+- Preserve raw provider events for diagnostics, especially when persisted
+  provider turn attribution is malformed or divergent.

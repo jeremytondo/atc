@@ -18,7 +18,9 @@ import {
   requireThread,
   threadIdsFromList,
   threadIdsFromLoadedList,
+  turnIdsContainingAgentMarker,
   verifyInputQuestion,
+  verifyExactPwdApproval,
   verifyNoReplacementThreads,
   verifyServerRequestAttribution,
   verifyThreadContainsAgentMarker,
@@ -69,12 +71,18 @@ interface TurnRequestOptions {
   approvalPolicy?: "never" | "on-request";
   approvalsReviewer?: "user";
   sandboxPolicy?: JsonObject;
+  collaborationMode?: JsonObject;
 }
 
 interface ActiveTurn {
   id: string;
   firstEventIndex: number;
   completed: Promise<ProtocolMessage>;
+}
+
+interface StartedThread {
+  id: string;
+  model: string;
 }
 
 interface DormantRunRecord {
@@ -873,9 +881,18 @@ async function inputRequestScenario(options: ProbeOptions): Promise<void> {
     cwd: options.cwd,
     rawLogPath,
     handleServerRequest: pending.handle,
+    experimentalApi: true,
   });
   try {
-    const threadId = await startDurableThread(client, options.cwd);
+    const startedThread = await startDurableThreadDetails(
+      client,
+      options.cwd,
+    );
+    const threadId = startedThread.id;
+    const collaborationMode = await planCollaborationMode(
+      client,
+      startedThread.model,
+    );
     const waitingStatus = waitForWaitingStatus(
       client,
       threadId,
@@ -894,6 +911,9 @@ async function inputRequestScenario(options: ProbeOptions): Promise<void> {
         `After receiving the answer, reply with exactly: INPUT RECEIVED: Alpha ${marker}`,
       ].join(" "),
       options.timeoutMs,
+      {
+        collaborationMode,
+      },
     );
 
     const [request, statusMessage] = await Promise.all([
@@ -1031,11 +1051,13 @@ async function permissionRequestScenario(
       "item/commandExecution/requestApproval",
       "Codex permission request",
     );
-    if (request.params.command !== "pwd") {
+    let command: string;
+    try {
+      command = verifyExactPwdApproval(request);
+    } catch (error) {
       pending.reject("Permission probe accepts only the exact command pwd");
-      throw new Error(
-        `Permission request command mismatch: received ${String(request.params.command)}`,
-      );
+      void turnPromise.catch(() => undefined);
+      throw error;
     }
     const requestCwd = requireString(
       request.params,
@@ -1044,6 +1066,7 @@ async function permissionRequestScenario(
     );
     if (canonicalPath(requestCwd) !== options.cwd) {
       pending.reject("Permission probe cwd mismatch");
+      void turnPromise.catch(() => undefined);
       throw new Error(
         `Permission request cwd mismatch: expected ${options.cwd}, received ${requestCwd}`,
       );
@@ -1086,7 +1109,7 @@ async function permissionRequestScenario(
         requestSequence: request.sequence,
         requestReceivedAt: request.receivedAt,
         respondedAt,
-        command: request.params.command,
+        command,
         commandCwd: requestCwd,
         decision: "accept",
         waitingFlag: "waitingOnApproval",
@@ -1354,6 +1377,7 @@ async function observerWriterScenario(
     cwd: options.cwd,
     rawLogPath: writerALogPath,
     handleServerRequest: pendingA.handle,
+    experimentalApi: true,
   });
   let clientB: AppServerClient | undefined;
   let threadId: string;
@@ -1367,13 +1391,21 @@ async function observerWriterScenario(
   let writerBText = "";
   let clientBSawWriterAEvents = false;
   try {
-    threadId = await startDurableThread(writerA, options.cwd);
+    const startedThread = await startDurableThreadDetails(
+      writerA,
+      options.cwd,
+    );
+    threadId = startedThread.id;
     await runMarkerTurn(
       writerA,
       threadId,
       seedMarker,
       "observer seed",
       options.timeoutMs,
+    );
+    const collaborationMode = await planCollaborationMode(
+      writerA,
+      startedThread.model,
     );
 
     const waitingA = waitForWaitingStatus(
@@ -1394,6 +1426,9 @@ async function observerWriterScenario(
         `After receiving Alpha, reply with exactly: WRITER A: ${markerA}`,
       ].join(" "),
       options.timeoutMs,
+      {
+        collaborationMode,
+      },
     );
     const [requestA, waitingAMessage] = await Promise.all([
       pendingA.wait(options.timeoutMs),
@@ -1502,7 +1537,11 @@ async function observerWriterScenario(
         "status",
         "writer B turn/completed",
       );
-      writerBText = agentTextFromTurn(completedTurnB);
+      writerBText = agentTextFromMessages(
+        clientB.messagesSince(writerBActive.firstEventIndex),
+        threadId,
+        writerBActive.id,
+      );
       console.log(
         `SECOND WRITER TERMINAL STATE: ${completedBId} status=${writerBStatus}`,
       );
@@ -1547,16 +1586,26 @@ async function observerWriterScenario(
       resumedThread,
       markerB,
     );
+    const writerAMarkerTurnIds = turnIdsContainingAgentMarker(
+      resumedThread,
+      markerA,
+    );
+    const writerBMarkerTurnIds = turnIdsContainingAgentMarker(
+      resumedThread,
+      markerB,
+    );
+    const markersShareTurn = writerAMarkerTurnIds.some((turnId) =>
+      writerBMarkerTurnIds.includes(turnId),
+    );
     if (!freshResumeHasWriterA) {
       throw new Error(
         "Fresh resume lost the completed writer A turn from the primary client",
       );
     }
-    const verification = await runRecallTurn(
+    const verification = await runObserverRecallTurn(
       resumeClient,
       threadId,
       markerA,
-      "observer post-resume",
       options.timeoutMs,
     );
 
@@ -1583,6 +1632,9 @@ async function observerWriterScenario(
         freshResumeTurnIds,
         freshResumeHasWriterA,
         freshResumeHasWriterB,
+        writerAMarkerTurnIds,
+        writerBMarkerTurnIds,
+        markersShareTurn,
         resumeVerificationTurnId: verification.id,
       },
       rawLogs: relativeLogs(resultPath, [
@@ -1672,6 +1724,13 @@ async function startDurableThread(
   client: AppServerClient,
   cwd: string,
 ): Promise<string> {
+  return (await startDurableThreadDetails(client, cwd)).id;
+}
+
+async function startDurableThreadDetails(
+  client: AppServerClient,
+  cwd: string,
+): Promise<StartedThread> {
   const startResult = await client.request("thread/start", {
     cwd,
     approvalPolicy: "never",
@@ -1681,8 +1740,13 @@ async function startDurableThread(
   });
   const thread = verifyStartedThread(cwd, startResult);
   const threadId = requireString(thread, "id", "thread/start thread");
+  const model = requireString(
+    startResult,
+    "model",
+    "thread/start response",
+  );
   console.log(`IDENTITY AVAILABLE: thread/start response id=${threadId}`);
-  return threadId;
+  return { id: threadId, model };
 }
 
 async function runTurn(
@@ -1692,58 +1756,68 @@ async function runTurn(
   timeoutMs: number,
   options: TurnRequestOptions = {},
 ): Promise<TurnResult> {
-  const agentMessagePromise = client.waitForNotification(
-    "item/completed",
-    (params) =>
-      params.threadId === threadId &&
-      stringAt(objectAt(params, "item"), "type") === "agentMessage",
+  const activeTurn = await startTurn(
+    client,
+    threadId,
+    prompt,
     timeoutMs,
+    options,
   );
-  try {
-    const activeTurn = await startTurn(
-      client,
-      threadId,
-      prompt,
-      timeoutMs,
-      options,
+  const completedMessage = await activeTurn.completed;
+  const completedTurn = objectAt(completedMessage.params, "turn");
+  const completedId = requireString(
+    completedTurn,
+    "id",
+    "turn/completed notification",
+  );
+  if (completedId !== activeTurn.id) {
+    throw new Error(
+      `Turn identity mismatch: turn/start returned ${activeTurn.id}, turn/completed returned ${completedId}`,
     );
-
-    const [agentMessage, completedMessage] = await Promise.all([
-      agentMessagePromise,
-      activeTurn.completed,
-    ]);
-    const completedTurn = objectAt(completedMessage.params, "turn");
-    const completedId = requireString(
-      completedTurn,
-      "id",
-      "turn/completed notification",
-    );
-    if (completedId !== activeTurn.id) {
-      throw new Error(
-        `Turn identity mismatch: turn/start returned ${activeTurn.id}, turn/completed returned ${completedId}`,
-      );
-    }
-
-    const completedItem = objectAt(agentMessage.params, "item");
-    const attributedEventCount = verifyTurnEventAttribution(
-      client.messagesSince(activeTurn.firstEventIndex),
-      threadId,
-      activeTurn.id,
-      `turn ${activeTurn.id}`,
-    );
-    return {
-      id: completedId,
-      status:
-        stringAt(completedTurn, "status") ??
-        throwValue("turn/completed notification did not include status"),
-      agentText:
-        stringAt(completedItem, "text") ?? agentTextFromTurn(completedTurn),
-      attributedEventCount,
-    };
-  } catch (error) {
-    void agentMessagePromise.catch(() => undefined);
-    throw error;
   }
+
+  const turnMessages = client.messagesSince(activeTurn.firstEventIndex);
+  const attributedEventCount = verifyTurnEventAttribution(
+    turnMessages,
+    threadId,
+    activeTurn.id,
+    `turn ${activeTurn.id}`,
+  );
+  const completedAgentText = agentTextFromMessages(
+    turnMessages,
+    threadId,
+    activeTurn.id,
+  );
+  return {
+    id: completedId,
+    status:
+      stringAt(completedTurn, "status") ??
+      throwValue("turn/completed notification did not include status"),
+    agentText:
+      completedAgentText.length > 0
+        ? completedAgentText
+        : agentTextFromTurn(completedTurn),
+    attributedEventCount,
+  };
+}
+
+function agentTextFromMessages(
+  messages: ProtocolMessage[],
+  threadId: string,
+  turnId: string,
+): string {
+  return messages
+    .filter(
+      (message) =>
+        message.method === "item/completed" &&
+        message.params?.threadId === threadId &&
+        message.params?.turnId === turnId &&
+        stringAt(objectAt(message.params, "item"), "type") ===
+          "agentMessage",
+    )
+    .map((message) => stringAt(objectAt(message.params, "item"), "text"))
+    .filter((text): text is string => text !== undefined)
+    .join("\n");
 }
 
 async function startTurn(
@@ -1773,6 +1847,7 @@ async function startTurn(
         type: "readOnly",
         networkAccess: false,
       },
+      collaborationMode: options.collaborationMode,
     });
     const initialTurn = objectAt(result, "turn");
     expectedTurnId = requireString(
@@ -1882,6 +1957,29 @@ async function runTuiRecallTurn(
   return result;
 }
 
+async function runObserverRecallTurn(
+  client: AppServerClient,
+  threadId: string,
+  marker: string,
+  timeoutMs: number,
+): Promise<TurnResult> {
+  const label = "observer post-resume";
+  const result = await runTurn(
+    client,
+    threadId,
+    [
+      "Without using tools, commands, files, or network access,",
+      "repeat the exact marker from the earlier response whose prefix was WRITER A:.",
+      "Do not return the observer seed or the WRITER B marker.",
+      "Prefix the response with OBSERVER POST-RESUME:",
+    ].join(" "),
+    timeoutMs,
+  );
+  assertSuccessfulTurn(result, label);
+  assertMarker(result, marker, label);
+  return result;
+}
+
 async function listAllThreadIds(client: AppServerClient): Promise<string[]> {
   const ids: string[] = [];
   let cursor: string | undefined;
@@ -1897,6 +1995,43 @@ async function listAllThreadIds(client: AppServerClient): Promise<string[]> {
       typeof result.nextCursor === "string" ? result.nextCursor : undefined;
   } while (cursor !== undefined);
   return ids;
+}
+
+async function planCollaborationMode(
+  client: AppServerClient,
+  defaultModel: string,
+): Promise<JsonObject> {
+  const result = await client.request("collaborationMode/list");
+  if (!Array.isArray(result.data)) {
+    throw new Error(
+      "collaborationMode/list response did not include a data array",
+    );
+  }
+  const plan = result.data.find(
+    (mode) => isRecord(mode) && mode.mode === "plan",
+  );
+  if (!isRecord(plan)) {
+    throw new Error(
+      "collaborationMode/list did not advertise a Plan mode",
+    );
+  }
+  const model =
+    typeof plan.model === "string" ? plan.model : defaultModel;
+  const reasoningEffort =
+    typeof plan.reasoning_effort === "string"
+      ? plan.reasoning_effort
+      : null;
+  console.log(
+    `PLAN MODE AVAILABLE: model=${model} reasoning=${reasoningEffort ?? "default"}`,
+  );
+  return {
+    mode: "plan",
+    settings: {
+      model,
+      reasoning_effort: reasoningEffort,
+      developer_instructions: null,
+    },
+  };
 }
 
 async function requireRequestError(

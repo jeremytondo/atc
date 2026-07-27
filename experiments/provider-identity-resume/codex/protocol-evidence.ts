@@ -172,31 +172,66 @@ export function verifyInputQuestion(
   }
 }
 
+export function verifyExactPwdApproval(request: ServerRequest): string {
+  const command = requireString(
+    request.params,
+    "command",
+    "Codex permission request",
+  );
+  if (command !== "pwd" && command !== "/bin/zsh -lc pwd") {
+    throw new Error(
+      `Permission request command mismatch: received ${command}`,
+    );
+  }
+  const actions = request.params.commandActions;
+  if (
+    !Array.isArray(actions) ||
+    actions.length !== 1 ||
+    !isObject(actions[0]) ||
+    actions[0].command !== "pwd"
+  ) {
+    throw new Error(
+      "Permission request did not contain exactly one structured pwd action",
+    );
+  }
+  return command;
+}
+
 export function verifyThreadContainsAgentMarker(
   thread: JsonObject,
   marker: string,
   context: string,
 ): number {
+  const matchingTurnIds = turnIdsContainingAgentMarker(thread, marker);
+  if (matchingTurnIds.length === 0) {
+    throw new Error(`${context} did not contain agent marker ${marker}`);
+  }
+  return matchingTurnIds.length;
+}
+
+export function turnIdsContainingAgentMarker(
+  thread: JsonObject,
+  marker: string,
+): string[] {
   if (!Array.isArray(thread.turns)) {
-    throw new Error(`${context} did not include a turns array`);
+    throw new Error("Thread did not include a turns array");
   }
 
-  const matchingTurns = thread.turns.filter((turn) => {
+  return thread.turns.flatMap((turn) => {
     if (!isObject(turn) || !Array.isArray(turn.items)) {
-      return false;
+      return [];
     }
-    return turn.items.some(
+    const matches = turn.items.some(
       (item) =>
         isObject(item) &&
         item.type === "agentMessage" &&
         typeof item.text === "string" &&
         item.text.includes(marker),
     );
+    return matches
+      ? [requireString(turn, "id", "thread turn containing marker")]
+      : [];
   });
-  if (matchingTurns.length === 0) {
-    throw new Error(`${context} did not contain agent marker ${marker}`);
-  }
-  return matchingTurns.length;
 }
 
 export function requireThread(
