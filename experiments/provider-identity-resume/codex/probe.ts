@@ -680,6 +680,7 @@ async function tuiRoundTripScenario(options: ProbeOptions): Promise<void> {
 
   const marker =
     options.marker ?? `ATC-TUI-${randomUUID().slice(0, 8).toUpperCase()}`;
+  const seedMarker = `ATC-TUI-SEED-${randomUUID().slice(0, 8).toUpperCase()}`;
   const runId = makeRunId();
   const createLogPath = resolve(
     runsRoot,
@@ -703,6 +704,16 @@ async function tuiRoundTripScenario(options: ProbeOptions): Promise<void> {
   let threadId: string;
   try {
     threadId = await startDurableThread(creatingClient, options.cwd);
+    const seed = await runMarkerTurn(
+      creatingClient,
+      threadId,
+      seedMarker,
+      "app-server seed",
+      options.timeoutMs,
+    );
+    console.log(
+      `APP-SERVER SEED VERIFIED: turn ${seed.id} made thread resumable before the TUI handoff`,
+    );
   } finally {
     await creatingClient.stop();
   }
@@ -754,6 +765,7 @@ async function tuiRoundTripScenario(options: ProbeOptions): Promise<void> {
       evidence: {
         threadId,
         marker,
+        seedMarker,
         matchingTuiTurns,
         appServerVerificationTurnId: verification.id,
         appServerVerificationAttributedEventCount:
