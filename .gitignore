@@ -8,3 +8,8 @@ DerivedData/
 # SwiftPM
 .build/
 .swiftpm/
+
+# Provider POC artifacts
+experiments/provider-identity-resume/node_modules/
+experiments/provider-identity-resume/.generated/
+experiments/provider-identity-resume/runs/

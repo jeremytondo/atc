@@ -1,0 +1,16 @@
+{
+  "name": "@atc/provider-identity-resume-poc",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "packageManager": "pnpm@10.25.0",
+  "scripts": {
+    "check": "tsc --noEmit && node --experimental-strip-types --test codex/*.test.ts",
+    "codex": "node --experimental-strip-types codex/probe.ts",
+    "schema:codex": "codex app-server generate-ts --out .generated/codex"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "6.0.3"
+  }
+}

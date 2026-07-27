@@ -1,0 +1,12 @@
+[tools]
+node = "25.6.0"
+pnpm = "10.25.0"
+
+[tasks.setup]
+description = "Install provider identity/resume POC dependencies"
+run = "pnpm install --frozen-lockfile"
+
+[tasks.check]
+description = "Type-check and test the provider identity/resume POC"
+depends = ["setup"]
+run = "pnpm check"
