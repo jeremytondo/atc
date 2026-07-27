@@ -7,8 +7,9 @@ They are experiments, not ATC production session or adapter code.
 The Codex checkpoints cover conversation creation, same-process turns,
 fresh-process resume, dormant and restarted zero-turn behavior, invalid resume
 safety, shared-process multiplexing, and native-TUI interoperability. The
-first Claude checkpoint covers session creation, a second same-process SDK
-query, and fresh-process exact-session resume.
+Claude checkpoints cover session creation, a second same-process SDK query,
+fresh-process exact-session resume, and invalid or missing resume safety with
+explicit replacement-session detection.
 
 ## Setup
 
@@ -68,6 +69,23 @@ CWD VERIFIED: <same cwd>
 CONTINUITY VERIFIED: resumed turn returned <same marker>
 PASS: a fresh SDK client process resumed the exact Claude session, cwd, and context.
 ```
+
+## Claude invalid-resume safety
+
+```sh
+pnpm claude invalid-resume --cwd ../..
+```
+
+The probe inventories programmatic Claude sessions for the exact working
+directory, attempts to resume a well-formed nonexistent UUID, and inventories
+the sessions again. It fails if the SDK emits a different session ID or if any
+new session appears, including a newly created session using the requested
+invalid UUID.
+
+Omitting `resume` normally tells the SDK to create a session, so the missing-ID
+case is enforced at the probe boundary: it must fail before `query()` starts.
+The result artifact records both errors, every emitted session ID, the
+before/after inventories, and the relative raw JSONL path.
 
 ## Codex create and same-process turns
 

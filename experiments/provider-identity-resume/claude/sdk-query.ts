@@ -3,6 +3,7 @@ import { mkdir, open } from "node:fs/promises";
 import { dirname } from "node:path";
 
 import {
+  listSessions,
   query,
   type Options,
   type SDKAssistantMessage,
@@ -35,31 +36,27 @@ export interface ClaudeTurnObservation {
   stateTransitions: string[];
 }
 
+export interface ClaudeResumeFailureObservation {
+  error: string;
+  messageCount: number;
+  observedSessionIds: string[];
+  resultSubtype?: string;
+  numTurns?: number;
+  totalCostUsd?: number;
+}
+
 export async function runClaudeTurn(
   options: ClaudeTurnOptions,
 ): Promise<ClaudeTurnObservation> {
-  await mkdir(dirname(options.rawLogPath), { recursive: true });
-  const rawLog = await open(options.rawLogPath, "wx");
-  const abortController = new AbortController();
-  const timeout = setTimeout(() => abortController.abort(), options.timeoutMs);
-  const stream = query({
-    prompt: options.prompt,
-    options: buildQueryOptions(options, abortController),
-  });
-
-  let sequence = 0;
   let sessionId: string | undefined;
   let firstIdentity: ClaudeIdentityAvailability | undefined;
   let init: SDKSystemMessage | undefined;
   let result: SDKResultMessage | undefined;
   const stateTransitions: string[] = [];
 
-  try {
-    for await (const message of stream) {
-      sequence += 1;
-      await rawLog.writeFile(`${JSON.stringify(message)}\n`);
-      printReadableMessage(sequence, message);
-
+  const messageCount = await consumeClaudeQuery(
+    options,
+    (sequence, message) => {
       const messageSessionId = sessionIdOf(message);
       if (messageSessionId !== undefined) {
         if (sessionId === undefined) {
@@ -95,20 +92,8 @@ export async function runClaudeTurn(
       } else if (message.type === "result") {
         result = message;
       }
-    }
-  } catch (error) {
-    stream.close();
-    if (abortController.signal.aborted) {
-      throw new Error(
-        `Timed out after ${options.timeoutMs}ms waiting for Claude Agent SDK`,
-        { cause: error },
-      );
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-    await rawLog.close();
-  }
+    },
+  );
 
   if (sessionId === undefined || firstIdentity === undefined) {
     throw new Error("Claude Agent SDK emitted no durable session ID");
@@ -150,10 +135,85 @@ export async function runClaudeTurn(
     cwd: canonicalPath(init.cwd),
     claudeCodeVersion: init.claude_code_version,
     firstIdentity,
-    messageCount: sequence,
+    messageCount,
     resultText: result.result,
     stateTransitions,
   };
+}
+
+export async function requireClaudeResumeFailure(
+  options: ClaudeTurnOptions & { expectedSessionId: string },
+): Promise<ClaudeResumeFailureObservation> {
+  const observedSessionIds = new Set<string>();
+  let result: SDKResultMessage | undefined;
+  let messageCount = 0;
+  let streamError: string | undefined;
+
+  try {
+    messageCount = await consumeClaudeQuery(options, (sequence, message) => {
+      messageCount = sequence;
+      const sessionId = sessionIdOf(message);
+      if (sessionId !== undefined) {
+        observedSessionIds.add(sessionId);
+      }
+      if (message.type === "result") {
+        result = message;
+      }
+    });
+  } catch (error) {
+    streamError = errorMessage(error);
+  }
+
+  if (result?.subtype === "success") {
+    throw new Error(
+      `Invalid resume unexpectedly completed successfully as session ${result.session_id}`,
+    );
+  }
+
+  const observation = {
+    messageCount,
+    observedSessionIds: [...observedSessionIds],
+    resultSubtype: result?.subtype,
+    numTurns: result?.num_turns,
+    totalCostUsd: result?.total_cost_usd,
+  };
+  if (streamError !== undefined) {
+    return {
+      ...observation,
+      error: streamError,
+    };
+  }
+  if (result === undefined) {
+    throw new Error(
+      "Invalid resume completed without an explicit SDK error or result",
+    );
+  }
+
+  return {
+    ...observation,
+    error: `Claude result ${result.subtype}: ${result.errors.join("; ")}`,
+  };
+}
+
+export async function listClaudeSessionIds(cwd: string): Promise<string[]> {
+  const pageSize = 100;
+  const sessionIds = new Set<string>();
+
+  for (let offset = 0; ; offset += pageSize) {
+    const page = await listSessions({
+      dir: cwd,
+      includeProgrammatic: true,
+      includeWorktrees: false,
+      limit: pageSize,
+      offset,
+    });
+    for (const session of page) {
+      sessionIds.add(session.sessionId);
+    }
+    if (page.length < pageSize) {
+      return [...sessionIds].sort();
+    }
+  }
 }
 
 export function buildQueryOptions(
@@ -219,6 +279,43 @@ function printReadableMessage(sequence: number, message: SDKMessage): void {
   console.log(`← #${sequence} ${label}${identity}`);
 }
 
+async function consumeClaudeQuery(
+  options: ClaudeTurnOptions,
+  inspectMessage: (sequence: number, message: SDKMessage) => void,
+): Promise<number> {
+  await mkdir(dirname(options.rawLogPath), { recursive: true });
+  const rawLog = await open(options.rawLogPath, "wx");
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => abortController.abort(), options.timeoutMs);
+  const stream = query({
+    prompt: options.prompt,
+    options: buildQueryOptions(options, abortController),
+  });
+  let sequence = 0;
+
+  try {
+    for await (const message of stream) {
+      sequence += 1;
+      await rawLog.writeFile(`${JSON.stringify(message)}\n`);
+      printReadableMessage(sequence, message);
+      inspectMessage(sequence, message);
+    }
+    return sequence;
+  } catch (error) {
+    stream.close();
+    if (abortController.signal.aborted) {
+      throw new Error(
+        `Timed out after ${options.timeoutMs}ms waiting for Claude Agent SDK`,
+        { cause: error },
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    await rawLog.close();
+  }
+}
+
 function subtypeOf(message: SDKMessage): string | undefined {
   return "subtype" in message && typeof message.subtype === "string"
     ? message.subtype
@@ -227,4 +324,8 @@ function subtypeOf(message: SDKMessage): string | undefined {
 
 function canonicalPath(path: string): string {
   return realpathSync(path);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

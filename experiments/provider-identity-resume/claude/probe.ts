@@ -5,13 +5,16 @@ import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  listClaudeSessionIds,
+  requireClaudeResumeFailure,
   runClaudeTurn,
   type ClaudeIdentityAvailability,
+  type ClaudeResumeFailureObservation,
   type ClaudeTurnObservation,
 } from "./sdk-query.ts";
 
 interface ProbeOptions {
-  command: "create" | "resume";
+  command: "create" | "resume" | "invalid-resume";
   cwd: string;
   marker?: string;
   sessionPath?: string;
@@ -38,14 +41,20 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const options = parseArgs(argv);
   if (options.command === "create") {
     await createScenario(options);
-  } else {
+  } else if (options.command === "resume") {
     await resumeScenario(options);
+  } else {
+    await invalidResumeScenario(options);
   }
 }
 
 export function parseArgs(argv: string[]): ProbeOptions {
   const [command, ...rest] = argv;
-  if (command !== "create" && command !== "resume") {
+  if (
+    command !== "create" &&
+    command !== "resume" &&
+    command !== "invalid-resume"
+  ) {
     throw new Error(usage());
   }
 
@@ -131,6 +140,56 @@ export function verifyContinuity(
     throw new Error(
       `Continuity check failed: Claude response did not contain ${marker}`,
     );
+  }
+}
+
+export function requireResumeId(sessionId: string | undefined): string {
+  if (sessionId === undefined || sessionId.trim() === "") {
+    throw new Error(
+      "Missing Claude resume ID; refusing to start a query that would create a new session",
+    );
+  }
+  return sessionId;
+}
+
+export function verifyNoReplacementSessions(
+  beforeSessionIds: string[],
+  afterSessionIds: string[],
+  invalidSessionId: string,
+  attempt: ClaudeResumeFailureObservation,
+): void {
+  const before = new Set(beforeSessionIds);
+  const added = afterSessionIds.filter((sessionId) => !before.has(sessionId));
+  const unexpectedObserved = attempt.observedSessionIds.filter(
+    (sessionId) => sessionId !== invalidSessionId,
+  );
+
+  if (unexpectedObserved.length > 0) {
+    throw new Error(
+      `Invalid resume emitted replacement session IDs: ${unexpectedObserved.join(", ")}`,
+    );
+  }
+  if (added.length > 0) {
+    throw new Error(
+      `Invalid resume created replacement sessions: ${added.join(", ")}`,
+    );
+  }
+}
+
+export function verifyInvalidResumeFailure(
+  invalidSessionId: string,
+  attempt: ClaudeResumeFailureObservation,
+): void {
+  if (
+    !attempt.error.includes(invalidSessionId) ||
+    !/(conversation|session)/i.test(attempt.error)
+  ) {
+    throw new Error(
+      `Invalid resume did not return a clear session-specific failure: ${attempt.error}`,
+    );
+  }
+  if (attempt.resultSubtype === "success") {
+    throw new Error("Invalid resume unexpectedly returned a successful result");
   }
 }
 
@@ -252,6 +311,82 @@ async function resumeScenario(options: ProbeOptions): Promise<void> {
   );
 }
 
+async function invalidResumeScenario(options: ProbeOptions): Promise<void> {
+  const runId = makeRunId();
+  const rawLogPath = resolve(runsRoot, `${runId}.invalid-resume.jsonl`);
+  const resultPath = resolve(runsRoot, `${runId}.invalid-resume.json`);
+  const beforeSessionIds = await listClaudeSessionIds(options.cwd);
+  let invalidSessionId = randomUUID();
+  while (beforeSessionIds.includes(invalidSessionId)) {
+    invalidSessionId = randomUUID();
+  }
+
+  console.log("Claude Agent SDK provider identity/resume POC — invalid resume safety");
+  console.log(`cwd: ${options.cwd}`);
+  console.log(`invalid session_id: ${invalidSessionId}`);
+  console.log("safety: resume only; missing IDs fail before query()");
+
+  const missingError = captureExpectedError(
+    () => requireResumeId(undefined),
+    "missing resume ID",
+  );
+  const attempt = await requireClaudeResumeFailure({
+    cwd: options.cwd,
+    expectedSessionId: requireResumeId(invalidSessionId),
+    prompt: [
+      "This is a read-only invalid-resume POC.",
+      "Do not use tools, run commands, or modify files.",
+      "Reply with exactly: INVALID RESUME SHOULD NOT RUN",
+    ].join(" "),
+    rawLogPath,
+    timeoutMs: options.timeoutMs,
+  });
+  verifyInvalidResumeFailure(invalidSessionId, attempt);
+  const afterSessionIds = await listClaudeSessionIds(options.cwd);
+  verifyNoReplacementSessions(
+    beforeSessionIds,
+    afterSessionIds,
+    invalidSessionId,
+    attempt,
+  );
+
+  const result = {
+    version: 1,
+    provider: "claude",
+    scenario: "invalid-resume",
+    cwd: options.cwd,
+    completedAt: new Date().toISOString(),
+    evidence: {
+      invalidSessionId,
+      beforeSessionIds,
+      afterSessionIds,
+      invalidError: attempt.error,
+      missingError,
+      observedSessionIds: attempt.observedSessionIds,
+      messageCount: attempt.messageCount,
+      resultSubtype: attempt.resultSubtype,
+      numTurns: attempt.numTurns,
+      totalCostUsd: attempt.totalCostUsd,
+      replacementSessionCount: 0,
+    },
+    rawLogs: [relative(dirname(resultPath), rawLogPath)],
+  };
+  await writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`, {
+    flag: "wx",
+  });
+
+  console.log(`EXPECTED ERROR (invalid): ${attempt.error}`);
+  console.log(`EXPECTED ERROR (missing): ${missingError}`);
+  console.log(
+    `SESSION LIST VERIFIED: ${beforeSessionIds.length} before, ${afterSessionIds.length} after, no replacement IDs`,
+  );
+  console.log("");
+  console.log(
+    "PASS: invalid and missing resume IDs failed clearly without creating or accepting a replacement session.",
+  );
+  console.log(`result artifact: ${relative(process.cwd(), resultPath)}`);
+}
+
 function canonicalPath(path: string): string {
   const absolute = resolve(path);
   if (!existsSync(absolute)) {
@@ -279,11 +414,24 @@ function makeRunId(): string {
   return `${new Date().toISOString().replaceAll(":", "-").replace(".", "-")}-${randomUUID().slice(0, 8)}`;
 }
 
+function captureExpectedError(
+  action: () => unknown,
+  label: string,
+): string {
+  try {
+    action();
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  throw new Error(`Expected ${label} to fail`);
+}
+
 function usage(): string {
   return [
     "Usage:",
     "  pnpm claude create [--cwd <path>] [--marker <value>] [--timeout-seconds <n>]",
     "  pnpm claude resume --session <path> [--timeout-seconds <n>]",
+    "  pnpm claude invalid-resume [--cwd <path>] [--timeout-seconds <n>]",
   ].join("\n");
 }
 

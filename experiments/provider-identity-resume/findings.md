@@ -10,7 +10,7 @@ come from reviewed run artifacts, not protocol assumptions.
 | Zero-turn recovery after provider restart | fail | not tested |
 | Second turn in same process | pass | pass |
 | Fresh-process resume with identity verification | pass | pass |
-| Invalid or missing resume ID | pass | not tested |
+| Invalid or missing resume ID | pass | pass |
 | Shared-process multiplexing | pass | not tested |
 | Working directory after resume | pass | pass |
 | `working`, `idle`, and `needs_input` signals | partial | not tested |
@@ -168,6 +168,29 @@ Environment: `codex-cli 0.145.0`, working directory
   four-message create JSONL files, and the four-message
   `2026-07-27T16-35-06-374Z-2695c025.resume-7f5ed6a2-8fde-4bc2-a69b-c4dd44793d12.jsonl`.
 
+### Claude invalid and missing resume IDs — 2026-07-27
+
+- Environment: `@anthropic-ai/claude-agent-sdk 0.3.220`, Claude Code
+  `2.1.220`, working directory
+  `/Users/jeremytondo/Projects/ATC/atc-agent-poc`.
+- Before the invalid attempt, the SDK's exact-directory session inventory
+  contained three session IDs. The same three IDs were present afterward.
+- Resuming well-formed nonexistent session
+  `96e33714-0a7e-4b1e-bca6-ca892afec02a` emitted one
+  `result/error_during_execution` message with the exact requested ID and
+  `No conversation found with session ID` error.
+- The error result reported zero turns, zero cost, and no token usage. No
+  assistant message, model turn, or different session ID was emitted.
+- Omitting the SDK `resume` option normally means create, so the probe requires
+  an explicit nonblank resume ID before calling `query()`. The missing-ID case
+  failed at that boundary and did not start an SDK process.
+- The gate compares both raw emitted identities and SDK `listSessions`
+  inventories. It fails on a different emitted ID, a new replacement ID, or a
+  newly materialized session using the requested invalid UUID.
+- Reviewed artifacts:
+  `runs/claude/2026-07-27T16-49-15-611Z-a48a602b.invalid-resume.json` and its
+  one-message sibling JSONL.
+
 ## Codex gate conclusion
 
 Three remaining checks passed, but zero-turn recovery failed. Starting the
@@ -175,8 +198,9 @@ Claude probe therefore required explicitly accepting that Codex threads are
 not recoverable across app-server restarts until a first turn has materialized
 the rollout.
 
-That constraint was accepted in ATC-68, and the first Claude identity/resume
-checkpoint now passes. Claude invalid-resume safety is the next narrow gate.
+That constraint was accepted in ATC-68. Claude identity/resume and
+invalid-resume safety now pass. Claude activity and input-state signals are the
+next narrow lifecycle gate.
 
 ## Adapter recommendations
 

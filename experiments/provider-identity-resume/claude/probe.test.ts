@@ -7,6 +7,9 @@ import test from "node:test";
 import {
   assertSessionRecord,
   parseArgs,
+  requireResumeId,
+  verifyInvalidResumeFailure,
+  verifyNoReplacementSessions,
   verifyContinuity,
 } from "./probe.ts";
 
@@ -28,6 +31,10 @@ const session = {
 
 test("parseArgs requires a session artifact for resume", () => {
   assert.throws(() => parseArgs(["resume"]), /requires --session/);
+});
+
+test("parseArgs accepts the invalid-resume gate command", () => {
+  assert.equal(parseArgs(["invalid-resume"]).command, "invalid-resume");
 });
 
 test("parseArgs canonicalizes the requested cwd", () => {
@@ -115,5 +122,94 @@ test("verifyContinuity rejects missing marker context", () => {
         session.marker,
       ),
     /Continuity check failed/,
+  );
+});
+
+test("requireResumeId rejects missing IDs before starting the SDK", () => {
+  assert.throws(
+    () => requireResumeId(undefined),
+    /refusing to start a query that would create a new session/,
+  );
+  assert.throws(() => requireResumeId("  "), /Missing Claude resume ID/);
+});
+
+test("requireResumeId accepts an explicit ID", () => {
+  assert.equal(requireResumeId("session-123"), "session-123");
+});
+
+test("verifyNoReplacementSessions accepts unchanged provider inventory", () => {
+  assert.doesNotThrow(() =>
+    verifyNoReplacementSessions(
+      ["session-1", "session-2"],
+      ["session-1", "session-2"],
+      "invalid-session",
+      {
+        error: "No conversation found",
+        messageCount: 0,
+        observedSessionIds: [],
+        resultSubtype: "error_during_execution",
+      },
+    ),
+  );
+});
+
+test("verifyNoReplacementSessions rejects a newly listed session", () => {
+  assert.throws(
+    () =>
+      verifyNoReplacementSessions(
+        ["session-1"],
+        ["session-1", "invalid-session"],
+        "invalid-session",
+        {
+          error: "No conversation found",
+          messageCount: 1,
+          observedSessionIds: ["invalid-session"],
+          resultSubtype: "error_during_execution",
+        },
+      ),
+    /created replacement sessions: invalid-session/,
+  );
+});
+
+test("verifyNoReplacementSessions rejects a different emitted identity", () => {
+  assert.throws(
+    () =>
+      verifyNoReplacementSessions(
+        ["session-1"],
+        ["session-1"],
+        "invalid-session",
+        {
+          error: "Identity mismatch",
+          messageCount: 1,
+          observedSessionIds: ["replacement-session"],
+          resultSubtype: "error_during_execution",
+        },
+      ),
+    /emitted replacement session IDs: replacement-session/,
+  );
+});
+
+test("verifyInvalidResumeFailure accepts a session-specific error", () => {
+  assert.doesNotThrow(() =>
+    verifyInvalidResumeFailure("invalid-session", {
+      error: "No conversation found with session ID: invalid-session",
+      messageCount: 1,
+      observedSessionIds: ["invalid-session"],
+      resultSubtype: "error_during_execution",
+      numTurns: 0,
+      totalCostUsd: 0,
+    }),
+  );
+});
+
+test("verifyInvalidResumeFailure rejects an unrelated provider error", () => {
+  assert.throws(
+    () =>
+      verifyInvalidResumeFailure("invalid-session", {
+        error: "Authentication failed",
+        messageCount: 0,
+        observedSessionIds: [],
+      }),
+    /did not return a clear session-specific failure/,
   );
 });
