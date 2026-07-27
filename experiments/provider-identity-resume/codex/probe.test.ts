@@ -45,6 +45,17 @@ test("parseArgs rejects a non-positive dormant interval", () => {
   );
 });
 
+test("parseArgs accepts every Codex gate command", () => {
+  for (const command of [
+    "zero-turn-recovery",
+    "invalid-resume",
+    "multiplex",
+    "tui-round-trip",
+  ]) {
+    assert.equal(parseArgs([command]).command, command);
+  }
+});
+
 test("assertSessionRecord rejects incomplete artifacts", () => {
   assert.throws(
     () => assertSessionRecord({ provider: "codex" }),

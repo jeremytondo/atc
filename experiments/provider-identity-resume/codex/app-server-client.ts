@@ -50,6 +50,7 @@ export class AppServerClient {
   private readonly requestTimeoutMs: number;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly waiters = new Set<MessageWaiter>();
+  private readonly receivedMessages: ProtocolMessage[] = [];
   private readonly exitPromise: Promise<number | null>;
   private nextRequestId = 1;
   private eventSequence = 0;
@@ -169,6 +170,14 @@ export class AppServerClient {
     });
   }
 
+  get messageCount(): number {
+    return this.receivedMessages.length;
+  }
+
+  messagesSince(index: number): ProtocolMessage[] {
+    return this.receivedMessages.slice(index);
+  }
+
   async stop(): Promise<void> {
     if (this.stopped) {
       return;
@@ -228,6 +237,7 @@ export class AppServerClient {
       return;
     }
 
+    this.receivedMessages.push(message);
     this.printReadableMessage(message);
 
     if (message.id !== undefined && message.method === undefined) {
