@@ -5,12 +5,16 @@
   "type": "module",
   "packageManager": "pnpm@10.25.0",
   "scripts": {
-    "check": "tsc --noEmit && node --experimental-strip-types --test codex/*.test.ts",
+    "check": "tsc --noEmit && node --experimental-strip-types --test codex/*.test.ts claude/*.test.ts",
+    "claude": "node --experimental-strip-types claude/probe.ts",
     "codex": "node --experimental-strip-types codex/probe.ts",
     "schema:codex": "codex app-server generate-ts --out .generated/codex"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
     "typescript": "6.0.3"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.220"
   }
 }

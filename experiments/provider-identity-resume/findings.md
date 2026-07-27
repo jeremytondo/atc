@@ -5,14 +5,14 @@ come from reviewed run artifacts, not protocol assumptions.
 
 | Experiment | Codex | Claude |
 | --- | --- | --- |
-| Durable ID availability | pass | not tested |
+| Durable ID availability | pass | pass |
 | Dormant zero-turn lifecycle | pass | not tested |
 | Zero-turn recovery after provider restart | fail | not tested |
-| Second turn in same process | pass | not tested |
-| Fresh-process resume with identity verification | pass | not tested |
+| Second turn in same process | pass | pass |
+| Fresh-process resume with identity verification | pass | pass |
 | Invalid or missing resume ID | pass | not tested |
 | Shared-process multiplexing | pass | not tested |
-| Working directory after resume | pass | not tested |
+| Working directory after resume | pass | pass |
 | `working`, `idle`, and `needs_input` signals | partial | not tested |
 | Read-only permission or tool request | not tested | not tested |
 | Active turn interruption | not tested | not tested |
@@ -141,12 +141,42 @@ Environment: `codex-cli 0.145.0`, working directory
   `runs/codex/2026-07-27T15-36-26-730Z-b13bf0bf.tui-round-trip.json`, its
   36-event create JSONL, and its 41-event resume JSONL.
 
-## Gate conclusion
+### Claude create and resume — 2026-07-27
 
-Three remaining checks pass, but zero-turn recovery fails. Do not start the
-Claude probe under the current gate without explicitly accepting that Codex
-threads are not recoverable across app-server restarts until a first turn has
-materialized the rollout.
+- Environment: `@anthropic-ai/claude-agent-sdk 0.3.220`, Claude Code
+  `2.1.220`, working directory
+  `/Users/jeremytondo/Projects/ATC/atc-agent-poc`.
+- Marker: `ATC-CLAUDE-ATC68-01`.
+- Durable session ID: `7f5ed6a2-8fde-4bc2-a69b-c4dd44793d12`.
+- The ID first appeared directly on event 1, the `system/init` message. The
+  successful result repeated the same ID.
+- `system/init` reported the requested cwd, `permissionMode: "dontAsk"`, and
+  an empty tools array. Filesystem settings were disabled in the SDK options.
+- A second `query()` call in the same Node.js process passed the exact ID to
+  `resume`. Its init and result retained the ID and the response recalled the
+  marker without the marker appearing in the prompt.
+- A separately launched `pnpm claude resume` process loaded the session
+  artifact and resumed the same ID and cwd. Its response also recalled the
+  marker without the marker appearing in the prompt.
+- All 12 reviewed messages across the three queries carried the same session
+  ID. Each query emitted `system/init`, `assistant`, `rate_limit_event`, and
+  `result/success`.
+- None of these basic turns emitted `session_state_changed`; activity mapping
+  remains not tested until the dedicated lifecycle scenarios.
+- Reviewed artifacts:
+  `runs/claude/2026-07-27T16-34-53-080Z-7b591836.session.json`, its two
+  four-message create JSONL files, and the four-message
+  `2026-07-27T16-35-06-374Z-2695c025.resume-7f5ed6a2-8fde-4bc2-a69b-c4dd44793d12.jsonl`.
+
+## Codex gate conclusion
+
+Three remaining checks passed, but zero-turn recovery failed. Starting the
+Claude probe therefore required explicitly accepting that Codex threads are
+not recoverable across app-server restarts until a first turn has materialized
+the rollout.
+
+That constraint was accepted in ATC-68, and the first Claude identity/resume
+checkpoint now passes. Claude invalid-resume safety is the next narrow gate.
 
 ## Adapter recommendations
 
