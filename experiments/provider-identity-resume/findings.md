@@ -1,23 +1,33 @@
 # Provider identity and resume findings
 
-Status values are `pass`, `fail`, `unsupported`, `partial`, or `not tested`.
+Status: complete
+
+The final production recommendation is in
+[`adapter-recommendation.md`](adapter-recommendation.md).
+
+Cross-provider status values are `Pass`, `Fail`, or `Unsupported`.
 Observations must come from reviewed run artifacts, not protocol assumptions.
 
 | Experiment | Codex | Claude |
 | --- | --- | --- |
-| Durable ID availability | pass | pass |
-| Dormant zero-turn lifecycle | pass | not tested |
-| Zero-turn recovery after provider restart | fail | not tested |
-| Second turn in same process | pass | pass |
-| Fresh-process resume with identity verification | pass | pass |
-| Invalid or missing resume ID | pass | pass |
-| Shared-process multiplexing | pass | not tested |
-| Working directory after resume | pass | pass |
-| `working`, `idle`, and `needs_input` signals | pass | pass |
-| Read-only permission or tool request | pass | pass |
-| Active turn interruption | pass | pass |
-| Second observer visibility and writer behavior | unsupported | unsupported |
-| Native TUI interoperability | pass | pass |
+| Durable ID availability | Pass | Pass |
+| Second turn in same process | Pass | Pass |
+| Fresh-process resume with identity verification | Pass | Pass |
+| Invalid or missing resume ID | Pass | Pass |
+| Working directory after resume | Pass | Pass |
+| `working`, `idle`, and `needs_input` signals | Pass | Pass |
+| Read-only permission or tool request | Pass | Pass |
+| Active turn interruption | Pass | Pass |
+| Second observer visibility and writer behavior | Unsupported | Unsupported |
+| Native TUI interoperability | Pass | Pass |
+
+Provider-specific operational results:
+
+| Experiment | Provider | Result |
+| --- | --- | --- |
+| Dormant zero-turn lifecycle | Codex | Pass |
+| Zero-turn recovery after provider restart | Codex | Fail |
+| Shared-process multiplexing | Codex | Pass |
 
 ## Reviewed observations
 
@@ -433,26 +443,19 @@ turn interruption and native-TUI interoperability pass. A read-only local
 observer attachment is unsupported, and concurrent resumed writers diverge,
 so the adapter must serialize writes per Claude session.
 
-## Adapter recommendation status
+## Adapter recommendation
 
-All capability rows now have reviewed outcomes for both providers. The next
-ATC-68 gate is to turn these findings into the final minimal provider interface
-and API/CLI recommendation.
+The final cross-provider recommendation is complete in
+[`adapter-recommendation.md`](adapter-recommendation.md). It defines:
 
-Provider constraints already established by the evidence:
+- the minimal create, resume, send, interrupt, observe, and
+  respond-to-request boundary;
+- ATC-owned identity, lifecycle, activity, concurrency, and event fan-out;
+- provider-specific mappings and implementation choices;
+- fail-closed identity, cwd, request, and control behavior; and
+- mirrored future HTTP API and CLI operations.
 
-- Separate create from resume and fail closed on identity or cwd mismatch.
-- Track Codex zero-turn materialization before claiming restart-safe resume.
-- Drive Codex lifecycle from `thread/status/changed`; map
-  `waitingOnUserInput` and `waitingOnApproval` to typed `needs_input`
-  requests.
-- Treat Codex Plan mode and `request_user_input` as an experimental,
-  mode-dependent capability.
-- Correlate Codex request responses and interrupts with provider request,
-  thread, and turn IDs.
-- Treat provider terminal status, not assistant prose, as the interruption
-  result.
-- Enforce one active writer per provider session for both Codex and Claude.
-- Report local live observer attachment as unsupported for both providers.
-- Preserve raw provider events for diagnostics, especially when persisted
-  provider turn attribution is malformed or divergent.
+The core decision is to use a multiplexed Codex App Server adapter and a
+Claude Agent SDK helper behind one ATC-owned interface. Both enforce one active
+writer. Observation is server-side fan-out from that active connection, never
+a second provider resume.

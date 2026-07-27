@@ -4,6 +4,11 @@ This directory contains deliberately independent provider probes for
 [ATC-68](https://linear.app/elevenideas/issue/ATC-68/poc-provider-identity-and-resume-with-codex-app-server-and-claude).
 They are experiments, not ATC production session or adapter code.
 
+The POC is complete. See [`findings.md`](findings.md) for reviewed evidence and
+the normalized capability matrix, and
+[`adapter-recommendation.md`](adapter-recommendation.md) for the final
+production adapter, API, and CLI recommendation.
+
 The Codex checkpoints cover conversation creation, same-process turns,
 fresh-process resume, dormant and restarted zero-turn behavior, invalid resume
 safety, shared-process multiplexing, native-TUI interoperability, structured
