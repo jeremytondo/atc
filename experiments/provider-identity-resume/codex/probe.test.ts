@@ -8,6 +8,7 @@ import {
   assertSessionRecord,
   parseArgs,
   verifyResumedThread,
+  verifyStartedThread,
 } from "./probe.ts";
 
 const session = {
@@ -29,6 +30,19 @@ test("parseArgs canonicalizes the requested cwd", () => {
   const options = parseArgs(["create", "--cwd", directory]);
   assert.equal(options.cwd, directory);
   assert.equal(options.command, "create");
+});
+
+test("parseArgs configures the dormant zero-turn interval", () => {
+  const options = parseArgs(["dormant", "--wait-seconds", "12.5"]);
+  assert.equal(options.command, "dormant");
+  assert.equal(options.waitMs, 12_500);
+});
+
+test("parseArgs rejects a non-positive dormant interval", () => {
+  assert.throws(
+    () => parseArgs(["dormant", "--wait-seconds", "0"]),
+    /positive number/,
+  );
 });
 
 test("assertSessionRecord rejects incomplete artifacts", () => {
@@ -88,5 +102,44 @@ test("verifyResumedThread rejects ephemeral threads", () => {
         },
       }),
     /not durable/,
+  );
+});
+
+test("verifyStartedThread accepts matching durable identity and cwd", () => {
+  const result = verifyStartedThread(session.cwd, {
+    thread: {
+      id: session.threadId,
+      cwd: session.cwd,
+      ephemeral: false,
+    },
+  });
+  assert.equal(result.id, session.threadId);
+});
+
+test("verifyStartedThread rejects cwd mismatch", () => {
+  assert.throws(
+    () =>
+      verifyStartedThread(session.cwd, {
+        thread: {
+          id: session.threadId,
+          cwd: "/tmp/other-project",
+          ephemeral: false,
+        },
+      }),
+    /thread\/start cwd mismatch/,
+  );
+});
+
+test("verifyStartedThread rejects ephemeral threads", () => {
+  assert.throws(
+    () =>
+      verifyStartedThread(session.cwd, {
+        thread: {
+          id: session.threadId,
+          cwd: session.cwd,
+          ephemeral: true,
+        },
+      }),
+    /ephemeral/,
   );
 });

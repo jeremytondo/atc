@@ -12,11 +12,12 @@ import {
 } from "./app-server-client.ts";
 
 interface ProbeOptions {
-  command: "create" | "resume";
+  command: "create" | "resume" | "dormant";
   cwd: string;
   marker?: string;
   sessionPath?: string;
   timeoutMs: number;
+  waitMs: number;
 }
 
 interface SessionRecord {
@@ -35,6 +36,20 @@ interface TurnResult {
   agentText: string;
 }
 
+interface DormantRunRecord {
+  version: 1;
+  provider: "codex";
+  scenario: "dormant-zero-turn";
+  threadId: string;
+  marker: string;
+  cwd: string;
+  waitStartedAt: string;
+  firstTurnStartedAt: string;
+  requestedWaitMs: number;
+  observedWaitMs: number;
+  rawLog: string;
+}
+
 const probeRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(probeRoot, "../..");
 const runsRoot = resolve(probeRoot, "runs/codex");
@@ -43,14 +58,16 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const options = parseArgs(argv);
   if (options.command === "create") {
     await createScenario(options);
-  } else {
+  } else if (options.command === "resume") {
     await resumeScenario(options);
+  } else {
+    await dormantScenario(options);
   }
 }
 
 export function parseArgs(argv: string[]): ProbeOptions {
   const [command, ...rest] = argv;
-  if (command !== "create" && command !== "resume") {
+  if (command !== "create" && command !== "resume" && command !== "dormant") {
     throw new Error(usage());
   }
 
@@ -58,6 +75,7 @@ export function parseArgs(argv: string[]): ProbeOptions {
   let marker: string | undefined;
   let sessionPath: string | undefined;
   let timeoutMs = 300_000;
+  let waitMs = 30_000;
 
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index];
@@ -84,6 +102,14 @@ export function parseArgs(argv: string[]): ProbeOptions {
         timeoutMs = seconds * 1_000;
         break;
       }
+      case "--wait-seconds": {
+        const seconds = Number(value);
+        if (!Number.isFinite(seconds) || seconds <= 0) {
+          throw new Error("--wait-seconds must be a positive number");
+        }
+        waitMs = seconds * 1_000;
+        break;
+      }
       default:
         throw new Error(`Unknown option: ${flag}\n\n${usage()}`);
     }
@@ -94,7 +120,14 @@ export function parseArgs(argv: string[]): ProbeOptions {
     throw new Error(`resume requires --session <path>\n\n${usage()}`);
   }
 
-  return { command, cwd: canonicalPath(cwd), marker, sessionPath, timeoutMs };
+  return {
+    command,
+    cwd: canonicalPath(cwd),
+    marker,
+    sessionPath,
+    timeoutMs,
+    waitMs,
+  };
 }
 
 export function assertSessionRecord(value: unknown): SessionRecord {
@@ -147,6 +180,24 @@ export function verifyResumedThread(
   return thread;
 }
 
+export function verifyStartedThread(
+  expectedCwd: string,
+  result: JsonObject,
+): JsonObject {
+  const thread = requireThread(result, "thread/start");
+  const responseCwd = requireString(thread, "cwd", "thread/start thread");
+  if (canonicalPath(responseCwd) !== canonicalPath(expectedCwd)) {
+    throw new Error(
+      `thread/start cwd mismatch: requested ${expectedCwd}, received ${responseCwd}`,
+    );
+  }
+  if (thread.ephemeral === true) {
+    throw new Error("thread/start unexpectedly returned an ephemeral thread");
+  }
+  requireString(thread, "id", "thread/start thread");
+  return thread;
+}
+
 async function createScenario(options: ProbeOptions): Promise<void> {
   const marker =
     options.marker ?? `ATC-CODEX-${randomUUID().slice(0, 8).toUpperCase()}`;
@@ -166,25 +217,7 @@ async function createScenario(options: ProbeOptions): Promise<void> {
   });
 
   try {
-    const startResult = await client.request("thread/start", {
-      cwd: options.cwd,
-      approvalPolicy: "never",
-      sandbox: "read-only",
-      serviceName: "atc_provider_identity_resume_poc",
-      ephemeral: false,
-    });
-    const thread = requireThread(startResult, "thread/start");
-    const threadId = requireString(thread, "id", "thread/start thread");
-    const responseCwd = requireString(thread, "cwd", "thread/start thread");
-    if (canonicalPath(responseCwd) !== options.cwd) {
-      throw new Error(
-        `thread/start cwd mismatch: requested ${options.cwd}, received ${responseCwd}`,
-      );
-    }
-    if (thread.ephemeral === true) {
-      throw new Error("thread/start unexpectedly returned an ephemeral thread");
-    }
-    console.log(`IDENTITY AVAILABLE: thread/start response id=${threadId}`);
+    const threadId = await startDurableThread(client, options.cwd);
 
     const first = await runTurn(
       client,
@@ -234,6 +267,84 @@ async function createScenario(options: ProbeOptions): Promise<void> {
     console.log(
       `pnpm codex resume --session ${shellQuote(relative(process.cwd(), sessionPath))}`,
     );
+  } finally {
+    await client.stop();
+  }
+}
+
+async function dormantScenario(options: ProbeOptions): Promise<void> {
+  const marker =
+    options.marker ?? `ATC-DORMANT-${randomUUID().slice(0, 8).toUpperCase()}`;
+  const runId = makeRunId();
+  const rawLogPath = resolve(runsRoot, `${runId}.dormant-zero-turn.jsonl`);
+  const resultPath = resolve(runsRoot, `${runId}.dormant-zero-turn.json`);
+
+  console.log("Codex provider identity/resume POC — dormant zero-turn");
+  console.log(`cwd: ${options.cwd}`);
+  console.log(`marker: ${marker}`);
+  console.log(`requested dormant interval: ${options.waitMs}ms`);
+  console.log(`raw provider log: ${relative(process.cwd(), rawLogPath)}`);
+  console.log("safety: read-only sandbox, approval policy never");
+
+  const client = await AppServerClient.start({
+    cwd: options.cwd,
+    rawLogPath,
+  });
+
+  try {
+    const threadId = await startDurableThread(client, options.cwd);
+    const waitStartedAtMs = Date.now();
+    console.log(
+      `DORMANT: keeping thread ${threadId} turnless for ${options.waitMs}ms`,
+    );
+    await delay(options.waitMs);
+    const firstTurnStartedAtMs = Date.now();
+    const observedWaitMs = firstTurnStartedAtMs - waitStartedAtMs;
+    if (observedWaitMs < options.waitMs) {
+      throw new Error(
+        `Dormant interval ended early: expected at least ${options.waitMs}ms, observed ${observedWaitMs}ms`,
+      );
+    }
+    console.log(
+      `DORMANT INTERVAL VERIFIED: observed ${observedWaitMs}ms without turn/start`,
+    );
+
+    const first = await runTurn(
+      client,
+      threadId,
+      [
+        "This is the first turn after a dormant zero-turn interval.",
+        "Do not use tools, run commands, or modify files.",
+        `Reply with exactly: DORMANT THREAD ACTIVE: ${marker}`,
+      ].join(" "),
+      options.timeoutMs,
+    );
+    assertSuccessfulTurn(first, "first post-dormancy turn");
+    assertMarker(first, marker, "first post-dormancy turn");
+
+    const record: DormantRunRecord = {
+      version: 1,
+      provider: "codex",
+      scenario: "dormant-zero-turn",
+      threadId,
+      marker,
+      cwd: options.cwd,
+      waitStartedAt: new Date(waitStartedAtMs).toISOString(),
+      firstTurnStartedAt: new Date(firstTurnStartedAtMs).toISOString(),
+      requestedWaitMs: options.waitMs,
+      observedWaitMs,
+      rawLog: relative(dirname(resultPath), rawLogPath),
+    };
+    await writeFile(resultPath, `${JSON.stringify(record, null, 2)}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+    });
+
+    console.log("");
+    console.log(
+      `PASS: thread ${threadId} accepted its first turn after remaining dormant for ${observedWaitMs}ms.`,
+    );
+    console.log(`result artifact: ${relative(process.cwd(), resultPath)}`);
   } finally {
     await client.stop();
   }
@@ -303,6 +414,23 @@ async function resumeScenario(options: ProbeOptions): Promise<void> {
   } finally {
     await client.stop();
   }
+}
+
+async function startDurableThread(
+  client: AppServerClient,
+  cwd: string,
+): Promise<string> {
+  const startResult = await client.request("thread/start", {
+    cwd,
+    approvalPolicy: "never",
+    sandbox: "read-only",
+    serviceName: "atc_provider_identity_resume_poc",
+    ephemeral: false,
+  });
+  const thread = verifyStartedThread(cwd, startResult);
+  const threadId = requireString(thread, "id", "thread/start thread");
+  console.log(`IDENTITY AVAILABLE: thread/start response id=${threadId}`);
+  return threadId;
 }
 
 async function runTurn(
@@ -432,6 +560,12 @@ function makeRunId(): string {
   return `${new Date().toISOString().replaceAll(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
 }
 
+async function delay(milliseconds: number): Promise<void> {
+  await new Promise<void>((resolveDelay) =>
+    setTimeout(resolveDelay, milliseconds),
+  );
+}
+
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
@@ -449,6 +583,7 @@ function usage(): string {
     "Usage:",
     "  pnpm codex create [--cwd <path>] [--marker <text>] [--timeout-seconds <n>]",
     "  pnpm codex resume --session <path> [--timeout-seconds <n>]",
+    "  pnpm codex dormant [--cwd <path>] [--marker <text>] [--wait-seconds <n>] [--timeout-seconds <n>]",
   ].join("\n");
 }
 

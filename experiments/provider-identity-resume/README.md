@@ -4,10 +4,10 @@ This directory contains deliberately independent provider probes for
 [ATC-68](https://linear.app/elevenideas/issue/ATC-68/poc-provider-identity-and-resume-with-codex-app-server-and-claude).
 They are experiments, not ATC production session or adapter code.
 
-The first checkpoint covers Codex conversation creation, a second turn in the
-same app-server process, and verified resume from a fresh app-server process.
-The Claude probe and the remaining test matrix will follow after this output is
-reviewed.
+The Codex checkpoints cover conversation creation, a second turn in the same
+app-server process, verified resume from a fresh app-server process, and the
+dormant zero-turn lifecycle. The Claude probe and the remaining test matrix
+will follow after the current gate output is reviewed.
 
 ## Setup
 
@@ -69,6 +69,31 @@ CONTINUITY VERIFIED: resumed turn returned <same marker>
 PASS: a fresh app-server process resumed the exact thread, cwd, and context.
 ```
 
+## Codex dormant zero-turn lifecycle
+
+This scenario creates a durable thread but deliberately does not call
+`turn/start` during a configurable dormant interval. It then sends the
+thread's first turn and verifies that the response is attributed to the
+original thread.
+
+```sh
+cd experiments/provider-identity-resume
+pnpm codex dormant --cwd ../.. --wait-seconds 30
+```
+
+For a longer manual check, increase `--wait-seconds`. The default is 30
+seconds. On success, the command writes an ignored result artifact containing
+the exact thread ID, cwd, requested and observed wait, timestamps, marker, and
+raw-log path.
+
+Expected final lines:
+
+```text
+DORMANT INTERVAL VERIFIED: observed <at-least-requested>ms without turn/start
+CONTINUITY VERIFIED: first post-dormancy turn returned <marker>
+PASS: thread <same id> accepted its first turn after remaining dormant for <observed>ms.
+```
+
 ## Artifacts
 
 `runs/` is ignored by source control.
@@ -78,6 +103,9 @@ PASS: a fresh app-server process resumed the exact thread, cwd, and context.
   stream.
 - `*.session.json` contains only the thread ID, marker, cwd, timestamp, and
   relative create-log path needed for the resume check.
+- `*.dormant-zero-turn.json` records the dormant scenario's identity and
+  timing evidence. Its sibling JSONL file remains the unmodified provider
+  event stream.
 
 Review a raw event stream with:
 
