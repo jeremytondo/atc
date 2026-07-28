@@ -150,8 +150,8 @@ POSTed to the ATC App Server. Verified against a real TUI, they deliver
   polling that command produced the transition
   `absent` → `busy` → `idle` across one turn, keyed by the exact session ID.
 - This is an out-of-band but provider-owned activity signal for TUI-driven
-  Claude sessions — the only one found. Latency is bounded by the poll
-  interval.
+  Claude sessions, retained as a reconciliation and discovery aid — hooks
+  (below) are the primary feed. Latency is bounded by the poll interval.
 
 ### Claude Code hooks as an HTTP status feed — 2026-07-28 (recommended path)
 
@@ -254,8 +254,10 @@ depending on `SessionStart`/`SessionEnd`, and re-verify if they are wanted.
 The unit of exclusivity is the **writer role**, not the connection.
 
 1. **One active writer per provider conversation** — unchanged (ATC-68).
-2. **Holding a connection passively is safe** for both providers. The
-   adapter should not disconnect when a TUI attaches.
+2. **Holding a connection passively is safe** for both providers. Safety
+   alone does not decide whether to keep it: Codex keeps its connection
+   (it is the status feed); Claude releases its `query()` once the TUI
+   launches (see V1 status source below).
 3. **Observation depends on transport, not on the provider being "closed".**
    Codex fans events out to every client of the same app-server process;
    two *separate* app-server processes share nothing but the rollout file.
@@ -281,7 +283,9 @@ observe, so status comes from hooks registered at TUI launch via
 `working` (`UserPromptSubmit`, `PreToolUse`/`PostToolUse`), `needs_input`
 (`PermissionRequest`, `Notification.permission_prompt` /
 `elicitation_dialog` / `agent_needs_input`), and `idle` (`Stop`,
-`Notification.idle_prompt`), each carrying the exact `session_id`. Use
+`StopFailure`, `Notification.idle_prompt` — `Stop` alone is insufficient;
+it does not fire when a turn ends on an error path), each carrying the
+exact `session_id`. Use
 `claude agents --json` only to reconcile after an App Server restart.
 
 The Claude adapter should therefore **close its `query()` once the TUI is
