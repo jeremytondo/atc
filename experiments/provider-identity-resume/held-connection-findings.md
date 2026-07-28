@@ -19,11 +19,13 @@ app-server — which is how ATC would actually run it — give the adapter a
 complete live event stream while a real `codex resume --remote` TUI drives
 the conversation. Codex live status is available in V1.
 
-**Claude has no equivalent transport.** A held SDK `query()` receives
-nothing from a separate driving process, and the SDK exposes no cross-process
-event channel. Claude status must come from out-of-band sources:
-`claude agents --json` (live per-session `busy`/`idle`) or Claude Code hooks
-fired by the driving process. Both are verified against a real TUI.
+**Claude has no equivalent transport, but hooks are a first-class
+substitute.** A held SDK `query()` receives nothing from a separate driving
+process, and the SDK exposes no cross-process event channel — so the adapter
+should release its connection once the TUI is running. Status instead comes
+from Claude Code hooks with an HTTP transport, registered at TUI launch and
+POSTed to the ATC App Server. Verified against a real TUI, they deliver
+`working`, `needs_input`, and `idle` with the exact `session_id`.
 
 ## Vocabulary
 
@@ -38,10 +40,11 @@ fired by the driving process. Both are verified against a real TUI.
 | --- | --- | --- | --- |
 | Live events for turns driven by another process | **Full fan-out** | None | None |
 | Passive hold corrupts history/attribution/resume | No | No | No |
-| Provider activity signal while a TUI drives | **Yes, `thread/status/changed`** | No (`thread/read` status stays `idle`) | Not from the connection — use `claude agents --json` |
+| Provider activity signal while a TUI drives | **Yes, `thread/status/changed`** | No (`thread/read` status stays `idle`) | Not from the connection — use **HTTP hooks** |
 | Structured history read on the held connection | `thread/read` | `thread/read` (~2 s lag) | None |
 | Serialized stale write | Linear history, context-blind | Linear history, context-blind | **Rewrites history — external turn dropped** |
 | Clean observer release | `thread/unsubscribe` | `thread/unsubscribe` | Close the streaming query |
+| `needs_input` while a TUI drives | Via `thread/status/changed` flags | No | **Yes — `PermissionRequest` / `Notification`** |
 
 ## Reviewed observations
 
@@ -150,18 +153,84 @@ fired by the driving process. Both are verified against a real TUI.
   Claude sessions — the only one found. Latency is bounded by the poll
   interval.
 
-### Provider push hooks — 2026-07-28
+### Claude Code hooks as an HTTP status feed — 2026-07-28 (recommended path)
 
-- **Claude Code hooks** (`UserPromptSubmit`, `Stop`, `Notification`)
-  configured through `--settings` fired for both `claude -p --resume` and a
-  **real interactive `claude --resume` TUI**, delivering JSON on stdin
-  containing the exact `session_id` and `transcript_path`.
+Claude Code hooks are a documented first-class feature that fires in
+interactive TUI sessions, support an **HTTP transport**, and are configured
+at launch with `claude --settings <file-or-json>` — all of which ATC
+controls. This makes them a webhook feed into the App Server rather than a
+scraping workaround.
+
+A local HTTP sink was registered for `SessionStart`, `UserPromptSubmit`,
+`PreToolUse`, `PostToolUse`, `PermissionRequest`, `Notification`, `Stop`,
+and `SessionEnd`, then a **real interactive `claude` TUI** was driven
+through a pty.
+
+Turn with an auto-approved tool call:
+
+```
++ 0.0s  UserPromptSubmit   permission_mode=default
++ 3.0s  PreToolUse         tool=Bash
++ 3.1s  PostToolUse        tool=Bash
++ 5.5s  Stop
++65.5s  Notification       notification_type=idle_prompt
+```
+
+Turn that blocks on user input:
+
+```
++ 0.0s  UserPromptSubmit
++ 4.7s  PreToolUse         tool=AskUserQuestion
++ 4.7s  PermissionRequest  tool=AskUserQuestion
++10.7s  Notification       notification_type=permission_prompt
+```
+
+Every payload carries `session_id`, `transcript_path`, `cwd`, and
+`permission_mode`, so ATC correlates by exact provider session ID with no
+polling and no transcript parsing.
+
+This **overturns the earlier conclusion that `needs_input` is unavailable
+while a TUI drives Claude**. `PermissionRequest` and
+`Notification.notification_type` (`permission_prompt`, `idle_prompt`,
+`elicitation_dialog`, `agent_needs_input`) give ATC a complete
+`working` / `needs_input` / `idle` state machine for TUI-driven sessions.
+
+Caveat observed: `SessionStart` did not arrive when hooks were supplied via
+`--settings` on an interactive launch, though `Stop`, `Notification`, and
+the tool events did. Treat lifecycle as ATC-owned (process/zmx) rather than
+depending on `SessionStart`/`SessionEnd`, and re-verify if they are wanted.
+
+### Provider push signals — 2026-07-28
+
 - **Codex `notify`** configured with `-c notify=[...]` fired from a **real
   `codex resume` TUI**, delivering
   `{"type":"agent-turn-complete","thread-id":…,"turn-id":…,"client":"codex-tui",
   "last-assistant-message":…}`.
-- Both are launch-time configuration ATC controls when it starts the TUI, so
-  they need no provider cooperation beyond flags.
+- **`claude agents --json`** lists live sessions with a per-session
+  `status`; `claude agents --help` documents it as covering "interactive and
+  background" sessions, and polling it across a real TUI turn showed
+  `absent` → `busy` → `idle`. The published `agent-view` doc page describes
+  the roster as background-only, so treat this as a reconciliation and
+  discovery aid, not the primary feed.
+- Background agents (`claude --bg`) additionally expose documented
+  `state` (`working|blocked|done|failed|stopped`) and `waitingFor`
+  (`permission prompt|input needed|…`) fields, relevant only if ATC ever
+  hosts sessions as background agents instead of TUIs.
+
+### Surfaces evaluated and rejected
+
+- **Remote Control** (`claude remote-control`, `--remote-control`, `/rc`):
+  routes through Anthropic servers, requires a claude.ai subscription
+  (no API keys), and stores transcripts server-side. It is a
+  phone/browser-to-local bridge, not a local observation API. Not viable
+  for ATC.
+- **Agent SDK observation modes**: none exist. There is no listening-server
+  equivalent to Codex's `--listen`, and `spawnClaudeCodeProcess` (alpha)
+  only replaces *how* the SDK launches its own child, for VM/container
+  execution — it does not attach to an existing process.
+- **`sessionStore` / `sessionStoreFlush`** (alpha): mirrors transcripts of
+  sessions the SDK itself drives to an external store. It does not observe
+  sessions driven by another process.
 
 ### Claude TUI attach to an adapter-created session — 2026-07-28
 
@@ -206,12 +275,19 @@ then receives `thread/status/changed`, turn lifecycle, and item events for
 TUI-driven turns, so `activityState` can be `working`/`idle` with provider
 truth. Keep `notify` configured as a redundant turn-completion signal.
 
-**Claude — status is out-of-band.** The adapter connection cannot observe.
-Use, in order: Claude Code hooks configured at TUI launch (push, exact
-`session_id`, no polling), with `claude agents --json` as a
-discovery/reconciliation poll for `busy`/`idle`. Reserve `activityState:
-unknown` for the window before those signals are wired, not as the steady
-state.
+**Claude — HTTP hooks are the status feed.** The adapter connection cannot
+observe, so status comes from hooks registered at TUI launch via
+`--settings`, POSTed as webhooks to the ATC App Server. They cover
+`working` (`UserPromptSubmit`, `PreToolUse`/`PostToolUse`), `needs_input`
+(`PermissionRequest`, `Notification.permission_prompt` /
+`elicitation_dialog` / `agent_needs_input`), and `idle` (`Stop`,
+`Notification.idle_prompt`), each carrying the exact `session_id`. Use
+`claude agents --json` only to reconcile after an App Server restart.
+
+The Claude adapter should therefore **close its `query()` once the TUI is
+launched**. Holding it buys nothing (it observes nothing) and only creates
+the stale-write hazard. Reopen a fresh resume when ATC takes the writer
+role back.
 
 Lifecycle continues to come from ATC-owned process and zmx state.
 Transcript text is never a correctness dependency.
