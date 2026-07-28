@@ -60,14 +60,14 @@ interface SessionRecord {
   createLog: string;
 }
 
-interface TurnResult {
+export interface TurnResult {
   id: string;
   status: string;
   agentText: string;
   attributedEventCount: number;
 }
 
-interface TurnRequestOptions {
+export interface TurnRequestOptions {
   approvalPolicy?: "never" | "on-request";
   approvalsReviewer?: "user";
   sandboxPolicy?: JsonObject;
@@ -99,7 +99,7 @@ interface DormantRunRecord {
   rawLog: string;
 }
 
-interface GateRunRecord {
+export interface GateRunRecord {
   version: 1;
   provider: "codex";
   scenario:
@@ -110,7 +110,10 @@ interface GateRunRecord {
     | "input-request"
     | "permission-request"
     | "active-turn-interruption"
-    | "observer-writer";
+    | "observer-writer"
+    | "held-connection-passive"
+    | "held-connection-stale-write"
+    | "held-connection-poll-observe";
   cwd: string;
   completedAt: string;
   evidence: JsonObject;
@@ -1720,14 +1723,14 @@ async function resumeScenario(options: ProbeOptions): Promise<void> {
   }
 }
 
-async function startDurableThread(
+export async function startDurableThread(
   client: AppServerClient,
   cwd: string,
 ): Promise<string> {
   return (await startDurableThreadDetails(client, cwd)).id;
 }
 
-async function startDurableThreadDetails(
+export async function startDurableThreadDetails(
   client: AppServerClient,
   cwd: string,
 ): Promise<StartedThread> {
@@ -1749,7 +1752,7 @@ async function startDurableThreadDetails(
   return { id: threadId, model };
 }
 
-async function runTurn(
+export async function runTurn(
   client: AppServerClient,
   threadId: string,
   prompt: string,
@@ -2107,7 +2110,7 @@ function sessionExpectation(
   };
 }
 
-async function writeGateRecord(
+export async function writeGateRecord(
   path: string,
   record: GateRunRecord,
 ): Promise<void> {
@@ -2121,7 +2124,7 @@ function relativeLogs(resultPath: string, paths: string[]): string[] {
   return paths.map((path) => relative(dirname(resultPath), path));
 }
 
-function turnIds(thread: JsonObject): string[] {
+export function turnIds(thread: JsonObject): string[] {
   if (!Array.isArray(thread.turns)) {
     throw new Error("Thread did not include a turns array");
   }
@@ -2142,7 +2145,7 @@ function threadHasAgentMarker(thread: JsonObject, marker: string): boolean {
   }
 }
 
-function agentTextFromTurn(turn: JsonObject | undefined): string {
+export function agentTextFromTurn(turn: JsonObject | undefined): string {
   const items = turn?.items;
   if (!Array.isArray(items)) {
     return "";
@@ -2158,7 +2161,7 @@ function agentTextFromTurn(turn: JsonObject | undefined): string {
     .join("\n");
 }
 
-function assertSuccessfulTurn(result: TurnResult, label: string): void {
+export function assertSuccessfulTurn(result: TurnResult, label: string): void {
   if (result.status !== "completed") {
     throw new Error(
       `${label} ${result.id} finished with status ${result.status}`,
@@ -2166,7 +2169,7 @@ function assertSuccessfulTurn(result: TurnResult, label: string): void {
   }
 }
 
-function assertMarker(
+export function assertMarker(
   result: TurnResult,
   marker: string,
   label: string,
@@ -2179,16 +2182,16 @@ function assertMarker(
   console.log(`CONTINUITY VERIFIED: ${label} returned ${marker}`);
 }
 
-function canonicalPath(path: string): string {
+export function canonicalPath(path: string): string {
   const absolute = resolve(path);
   return existsSync(absolute) ? realpathSync(absolute) : absolute;
 }
 
-function makeRunId(): string {
+export function makeRunId(): string {
   return `${new Date().toISOString().replaceAll(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
 }
 
-async function delay(milliseconds: number): Promise<void> {
+export async function delay(milliseconds: number): Promise<void> {
   await new Promise<void>((resolveDelay) =>
     setTimeout(resolveDelay, milliseconds),
   );

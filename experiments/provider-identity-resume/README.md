@@ -458,6 +458,36 @@ pnpm schema:codex
 Generated schemas are ignored because the installed CLI is the authoritative
 version for this POC.
 
+## Held-connection experiments (ATC-83)
+
+These scenarios sharpen the one-writer rule: they hold the adapter's
+connection open while a separate provider process (the TUI-equivalent
+resume path) drives the same conversation. Findings live in
+[`held-connection-findings.md`](held-connection-findings.md).
+
+```sh
+pnpm codex:held passive-hold
+pnpm codex:held stale-write
+pnpm codex:held poll-observe
+pnpm claude:held passive-hold
+pnpm claude:held stale-write
+```
+
+- `passive-hold` — the held connection never writes while two external
+  turns run; verifies it observes nothing, that history stays intact
+  across an adapter restart, and (Codex) that `thread/read` and
+  `thread/unsubscribe` work on the held connection.
+- `stale-write` — the held connection writes once, serialized, after an
+  external turn; characterizes context blindness and (Claude) history
+  divergence.
+- `poll-observe` — Codex only; polls `thread/read` during an active
+  external turn to measure visibility latency and whether `thread.status`
+  reflects another process's activity (it does not).
+
+External writers use `codex exec resume` and `claude -p --resume`, the
+same separate-process resume paths as the native TUIs. Each run writes a
+JSON evidence record plus raw JSONL streams under `runs/`.
+
 ## Safety and failure behavior
 
 - Thread and turn requests use the read-only sandbox and approval policy

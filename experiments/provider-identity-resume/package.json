@@ -7,7 +7,9 @@
   "scripts": {
     "check": "tsc --noEmit && node --experimental-strip-types --test codex/*.test.ts claude/*.test.ts",
     "claude": "node --experimental-strip-types claude/probe.ts",
+    "claude:held": "node --experimental-strip-types claude/held-connection.ts",
     "codex": "node --experimental-strip-types codex/probe.ts",
+    "codex:held": "node --experimental-strip-types codex/held-connection.ts",
     "schema:codex": "codex app-server generate-ts --out .generated/codex"
   },
   "devDependencies": {

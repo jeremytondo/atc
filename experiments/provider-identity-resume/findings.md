@@ -5,6 +5,12 @@ Status: complete
 The final production recommendation is in
 [`adapter-recommendation.md`](adapter-recommendation.md).
 
+The one-writer rule recorded here was later sharpened by the ATC-83
+held-connection experiments in
+[`held-connection-findings.md`](held-connection-findings.md): passively held
+adapter connections are safe (but observe nothing), and the "second
+observer unsupported" rows below are refined into writer-role rules there.
+
 Cross-provider status values are `Pass`, `Fail`, or `Unsupported`.
 Observations must come from reviewed run artifacts, not protocol assumptions.
 
