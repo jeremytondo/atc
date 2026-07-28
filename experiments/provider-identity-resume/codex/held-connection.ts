@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
-import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { createWriteStream, existsSync, realpathSync } from "node:fs";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,6 +26,7 @@ import {
   type GateRunRecord,
 } from "./probe.ts";
 import { requireString } from "./protocol-evidence.ts";
+import { WsAppServerClient } from "./ws-client.ts";
 
 /**
  * ATC-83 held-connection experiments.
@@ -49,10 +50,17 @@ import { requireString } from "./protocol-evidence.ts";
  */
 
 interface HeldConnectionOptions {
-  command: "passive-hold" | "stale-write" | "poll-observe";
+  command:
+    | "passive-hold"
+    | "stale-write"
+    | "poll-observe"
+    | "passive-hold-wait"
+    | "shared-server";
   cwd: string;
   timeoutMs: number;
   settleMs: number;
+  awaitMarker?: string;
+  awaitTimeoutMs: number;
 }
 
 interface ExternalTurnResult {
@@ -78,8 +86,12 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     await passiveHoldScenario(options);
   } else if (options.command === "stale-write") {
     await staleWriteScenario(options);
-  } else {
+  } else if (options.command === "poll-observe") {
     await pollObserveScenario(options);
+  } else if (options.command === "passive-hold-wait") {
+    await passiveHoldWaitScenario(options);
+  } else {
+    await sharedServerScenario(options);
   }
 }
 
@@ -88,7 +100,9 @@ function parseArgs(argv: string[]): HeldConnectionOptions {
   if (
     command !== "passive-hold" &&
     command !== "stale-write" &&
-    command !== "poll-observe"
+    command !== "poll-observe" &&
+    command !== "passive-hold-wait" &&
+    command !== "shared-server"
   ) {
     throw new Error(usage());
   }
@@ -96,6 +110,8 @@ function parseArgs(argv: string[]): HeldConnectionOptions {
   let cwd = repoRoot;
   let timeoutMs = 300_000;
   let settleMs = 5_000;
+  let awaitMarker: string | undefined;
+  let awaitTimeoutMs = 240_000;
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index];
     const value = rest[index + 1];
@@ -112,10 +128,20 @@ function parseArgs(argv: string[]): HeldConnectionOptions {
       case "--settle-seconds":
         settleMs = requirePositive(value, flag) * 1_000;
         break;
+      case "--await-marker":
+        awaitMarker = value;
+        break;
+      case "--await-timeout-seconds":
+        awaitTimeoutMs = requirePositive(value, flag) * 1_000;
+        break;
       default:
         throw new Error(`Unknown option: ${flag}\n\n${usage()}`);
     }
     index += 1;
+  }
+
+  if (command === "passive-hold-wait" && awaitMarker === undefined) {
+    throw new Error(`passive-hold-wait requires --await-marker\n\n${usage()}`);
   }
 
   return {
@@ -123,6 +149,8 @@ function parseArgs(argv: string[]): HeldConnectionOptions {
     cwd: existsSync(cwd) ? realpathSync(cwd) : cwd,
     timeoutMs,
     settleMs,
+    awaitMarker,
+    awaitTimeoutMs,
   };
 }
 
@@ -440,6 +468,407 @@ async function staleWriteScenario(
   };
   await writeGateRecord(resultPath, record);
   console.log(`stale-write evidence written to ${relative(process.cwd(), resultPath)}`);
+}
+
+/**
+ * Real-TUI variant of passive-hold. Seeds a thread through the held
+ * connection, prints the thread ID, then waits for an EXTERNAL process —
+ * a human or an expect-driven `codex resume` TUI started by the caller —
+ * to write --await-marker into the rollout. While waiting, it records
+ * everything the held connection observes, then verifies integrity with a
+ * fresh resume, exactly like passive-hold.
+ */
+async function passiveHoldWaitScenario(
+  options: HeldConnectionOptions,
+): Promise<void> {
+  const runId = makeRunId();
+  const seedMarker = `ATC-CODEX-TUIHOLD-SEED-${runId.slice(-8).toUpperCase()}`;
+  const externalMarker = options.awaitMarker as string;
+  const heldLogPath = resolve(runsRoot, `${runId}.tui-hold.app-server.jsonl`);
+  const resumeLogPath = resolve(runsRoot, `${runId}.tui-hold.fresh-resume.jsonl`);
+  const resultPath = resolve(runsRoot, `${runId}.tui-hold.json`);
+
+  console.log("Codex held-connection experiment — passive-hold-wait (ATC-83)");
+  console.log(`cwd: ${options.cwd}`);
+  console.log("safety: read-only sandbox, approval policy never");
+
+  const held = await AppServerClient.start({
+    cwd: options.cwd,
+    rawLogPath: heldLogPath,
+    requestTimeoutMs: options.timeoutMs,
+  });
+
+  let threadId: string;
+  let heldWindow: HeldWindowObservation;
+  let threadReadAfterExternal: JsonObject;
+  let waitedMs = 0;
+  try {
+    threadId = await startDurableThread(held, options.cwd);
+    const seed = await runTurn(
+      held,
+      threadId,
+      [
+        "This is a read-only held-connection experiment.",
+        "Do not use tools, run commands, or modify files.",
+        `Remember this exact continuity marker for later turns: ${seedMarker}`,
+        `Reply with exactly: MARKER STORED: ${seedMarker}`,
+      ].join(" "),
+      options.timeoutMs,
+    );
+    assertSuccessfulTurn(seed, "seed turn");
+    assertMarker(seed, seedMarker, "seed turn");
+
+    const rolloutPath = await findRolloutPath(threadId);
+    const watermark = held.messageCount;
+    console.log(`THREAD_ID: ${threadId}`);
+    console.log(`SEED_MARKER: ${seedMarker}`);
+    console.log(
+      `waiting up to ${options.awaitTimeoutMs}ms for ${externalMarker} to appear in the rollout...`,
+    );
+
+    const waitStartedAt = Date.now();
+    let found = false;
+    while (Date.now() - waitStartedAt < options.awaitTimeoutMs) {
+      const text = await readFileOrEmpty(rolloutPath);
+      if (text.includes(externalMarker)) {
+        found = true;
+        break;
+      }
+      await delay(2_000);
+    }
+    waitedMs = Date.now() - waitStartedAt;
+    if (!found) {
+      throw new Error(
+        `external marker ${externalMarker} never appeared in ${rolloutPath}`,
+      );
+    }
+    console.log(`external marker observed in rollout after ${waitedMs}ms`);
+
+    await delay(options.settleMs);
+    heldWindow = observeHeldWindow(held.messagesSince(watermark), threadId);
+    console.log(
+      `held connection observed ${heldWindow.messageCount} messages during the external TUI turn (methods: ${heldWindow.methods.join(", ") || "none"})`,
+    );
+
+    threadReadAfterExternal = await recordRequest(held, "thread/read", {
+      threadId,
+      includeTurns: true,
+    });
+  } finally {
+    await held.stop();
+  }
+
+  const fresh = await AppServerClient.start({
+    cwd: options.cwd,
+    rawLogPath: resumeLogPath,
+    requestTimeoutMs: options.timeoutMs,
+  });
+  let resumeEvidence: JsonObject;
+  try {
+    const resumeResult = await fresh.request("thread/resume", {
+      threadId,
+      cwd: options.cwd,
+    });
+    const thread = verifyResumedThread(
+      { version: 1, provider: "codex", threadId, marker: seedMarker, cwd: options.cwd, createdAt: "", createLog: "" },
+      resumeResult,
+    );
+    const resumedTurnIds = turnIds(thread);
+    const threadText = JSON.stringify(thread);
+    const recall = await runTurn(
+      fresh,
+      threadId,
+      [
+        "Do not use tools, run commands, or modify files.",
+        "Repeat every continuity marker you have been told in this conversation,",
+        "oldest first, separated by spaces. Reply with exactly:",
+        "ALL MARKERS: <markers>",
+      ].join(" "),
+      options.timeoutMs,
+    );
+    assertSuccessfulTurn(recall, "post-restart recall turn");
+    assertMarker(recall, seedMarker, "post-restart recall turn");
+    assertMarker(recall, externalMarker, "post-restart recall turn");
+
+    resumeEvidence = {
+      turnCount: resumedTurnIds.length,
+      turnIds: resumedTurnIds,
+      syntheticTurnIds: resumedTurnIds.filter((id) => !isUuid(id)),
+      historyContainsSeedMarker: threadText.includes(seedMarker),
+      historyContainsExternalMarker: threadText.includes(externalMarker),
+      recallText: recall.agentText,
+    };
+  } finally {
+    await fresh.stop();
+  }
+
+  const record: GateRunRecord = {
+    version: 1,
+    provider: "codex",
+    scenario: "held-connection-passive-tui",
+    cwd: options.cwd,
+    completedAt: new Date().toISOString(),
+    evidence: {
+      threadId,
+      seedMarker,
+      externalMarker,
+      externalWriter: "native codex resume TUI (caller-driven)",
+      waitedMs,
+      heldConnectionDuringExternalTurn: { ...heldWindow },
+      threadReadAfterExternal: summarizeThreadRead(threadReadAfterExternal, [
+        seedMarker,
+        externalMarker,
+      ]),
+      freshResumeAfterRestart: resumeEvidence,
+    },
+    rawLogs: [heldLogPath, resumeLogPath].map((path) =>
+      relative(dirname(resultPath), path),
+    ),
+  };
+  await writeGateRecord(resultPath, record);
+  console.log(
+    `PASS: passive-hold-wait evidence written to ${relative(process.cwd(), resultPath)}`,
+  );
+}
+
+/**
+ * Two clients of ONE `codex app-server --listen ws://...` process — the
+ * topology where ATC runs the app-server and the TUI attaches to it with
+ * `codex resume --remote`. Client A (the "adapter") creates and seeds a
+ * thread, then holds passively. Client B resumes the same thread on the
+ * same server — the documented "rejoin a running thread" path — and drives
+ * a turn. Measures whether the server fans B's turn events out to A.
+ * With --await-marker, a second leg waits for a caller-driven
+ * `codex resume --remote` TUI turn and measures A's fan-out again.
+ */
+async function sharedServerScenario(
+  options: HeldConnectionOptions,
+): Promise<void> {
+  const runId = makeRunId();
+  const seedMarker = `ATC-CODEX-SHARED-SEED-${runId.slice(-8).toUpperCase()}`;
+  const extMarker = `ATC-CODEX-SHARED-EXT-${runId.slice(-8).toUpperCase()}`;
+  const observerLogPath = resolve(runsRoot, `${runId}.shared-server.observer.jsonl`);
+  const writerLogPath = resolve(runsRoot, `${runId}.shared-server.writer.jsonl`);
+  const serverLogPath = resolve(runsRoot, `${runId}.shared-server.server.log`);
+  const resultPath = resolve(runsRoot, `${runId}.shared-server.json`);
+  const port = 17_000 + Math.floor(Math.random() * 1_000);
+  const url = `ws://127.0.0.1:${port}`;
+
+  console.log("Codex held-connection experiment — shared-server (ATC-83)");
+  console.log(`cwd: ${options.cwd}`);
+  console.log("safety: read-only sandbox, approval policy never");
+  console.log(`starting dedicated codex app-server --listen ${url}`);
+
+  await mkdir(dirname(serverLogPath), { recursive: true });
+  const serverLog = createWriteStream(serverLogPath, { flags: "wx" });
+  const server = spawn("codex", ["app-server", "--listen", url], {
+    cwd: options.cwd,
+    env: process.env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  server.stdout.pipe(serverLog);
+  server.stderr.pipe(serverLog);
+  try {
+    await waitForReady(`http://127.0.0.1:${port}/readyz`, 20_000);
+    console.log("app-server ready");
+
+    const observer = await WsAppServerClient.connect({
+      url,
+      clientName: "atc-observer",
+      rawLogPath: observerLogPath,
+      requestTimeoutMs: options.timeoutMs,
+    });
+
+    let threadId: string;
+    let heldWindow: HeldWindowObservation;
+    let observerSawWriterTurn: JsonObject;
+    let writerTurnEvidence: JsonObject;
+    let tuiLeg: JsonObject | undefined;
+    try {
+      threadId = await startDurableThread(observer, options.cwd);
+      const seed = await runTurn(
+        observer,
+        threadId,
+        [
+          "This is a read-only held-connection experiment.",
+          "Do not use tools, run commands, or modify files.",
+          `Remember this exact continuity marker for later turns: ${seedMarker}`,
+          `Reply with exactly: MARKER STORED: ${seedMarker}`,
+        ].join(" "),
+        options.timeoutMs,
+      );
+      assertSuccessfulTurn(seed, "seed turn");
+      assertMarker(seed, seedMarker, "seed turn");
+
+      const watermark = observer.messageCount;
+      const writer = await WsAppServerClient.connect({
+        url,
+        clientName: "atc-writer",
+        rawLogPath: writerLogPath,
+        requestTimeoutMs: options.timeoutMs,
+      });
+      try {
+        const resumeResult = await writer.request("thread/resume", {
+          threadId,
+          cwd: options.cwd,
+        });
+        const resumedThread = verifyResumedThread(
+          { version: 1, provider: "codex", threadId, marker: seedMarker, cwd: options.cwd, createdAt: "", createLog: "" },
+          resumeResult,
+        );
+        console.log(
+          `writer rejoined running thread with ${turnIds(resumedThread).length} existing turns`,
+        );
+
+        const external = await runTurn(
+          writer,
+          threadId,
+          [
+            "Do not use tools, run commands, or modify files.",
+            "First repeat the continuity marker from earlier in this conversation,",
+            `then remember a second marker: ${extMarker}.`,
+            `Reply with exactly: EXTERNAL TURN ONE: <earlier marker> ${extMarker}`,
+          ].join(" "),
+          options.timeoutMs,
+        );
+        assertSuccessfulTurn(external, "writer-client turn");
+        assertMarker(external, seedMarker, "writer-client turn");
+        assertMarker(external, extMarker, "writer-client turn");
+        writerTurnEvidence = {
+          turnId: external.id,
+          status: external.status,
+          agentText: external.agentText,
+        };
+      } finally {
+        await writer.stop();
+      }
+
+      await delay(options.settleMs);
+      const heldMessages = observer.messagesSince(watermark);
+      heldWindow = observeHeldWindow(heldMessages, threadId);
+      observerSawWriterTurn = summarizeFanOut(heldMessages, threadId, extMarker);
+      console.log(
+        `observer during writer turn: ${heldWindow.messageCount} messages, ${JSON.stringify(observerSawWriterTurn)}`,
+      );
+
+      if (options.awaitMarker !== undefined) {
+        const tuiMarker = options.awaitMarker;
+        const tuiWatermark = observer.messageCount;
+        const rolloutPath = await findRolloutPath(threadId);
+        console.log(`THREAD_ID: ${threadId}`);
+        console.log(`PORT: ${port}`);
+        console.log(
+          `waiting up to ${options.awaitTimeoutMs}ms for ${tuiMarker} in the rollout...`,
+        );
+        const waitStartedAt = Date.now();
+        let found = false;
+        while (Date.now() - waitStartedAt < options.awaitTimeoutMs) {
+          const text = await readFileOrEmpty(rolloutPath);
+          if (text.includes(tuiMarker)) {
+            found = true;
+            break;
+          }
+          await delay(2_000);
+        }
+        if (!found) {
+          throw new Error(`TUI marker ${tuiMarker} never appeared in rollout`);
+        }
+        await delay(options.settleMs);
+        const tuiMessages = observer.messagesSince(tuiWatermark);
+        tuiLeg = {
+          marker: tuiMarker,
+          waitedMs: Date.now() - waitStartedAt,
+          heldWindow: { ...observeHeldWindow(tuiMessages, threadId) },
+          fanOut: summarizeFanOut(tuiMessages, threadId, tuiMarker),
+        };
+        console.log(`observer during TUI turn: ${JSON.stringify(tuiLeg.fanOut)}`);
+      }
+    } finally {
+      await observer.stop();
+    }
+
+    const record: GateRunRecord = {
+      version: 1,
+      provider: "codex",
+      scenario: "held-connection-shared-server",
+      cwd: options.cwd,
+      completedAt: new Date().toISOString(),
+      evidence: {
+        threadId,
+        seedMarker,
+        extMarker,
+        transport: `dedicated codex app-server --listen ${url}`,
+        heldConnectionDuringWriterTurn: { ...heldWindow },
+        observerSawWriterTurn,
+        writerTurn: writerTurnEvidence,
+        tuiLeg: tuiLeg ?? "not exercised",
+      },
+      rawLogs: [observerLogPath, writerLogPath].map((path) =>
+        relative(dirname(resultPath), path),
+      ),
+    };
+    await writeGateRecord(resultPath, record);
+    console.log(
+      `PASS: shared-server evidence written to ${relative(process.cwd(), resultPath)}`,
+    );
+  } finally {
+    server.kill("SIGTERM");
+    serverLog.end();
+  }
+}
+
+export function summarizeFanOut(
+  messages: ProtocolMessage[],
+  threadId: string,
+  marker: string,
+): JsonObject {
+  return {
+    turnStarted: messages.some(
+      (message) =>
+        message.method === "turn/started" &&
+        message.params?.threadId === threadId,
+    ),
+    turnCompleted: messages.some(
+      (message) =>
+        message.method === "turn/completed" &&
+        message.params?.threadId === threadId,
+    ),
+    itemCompleted: messages.some(
+      (message) =>
+        message.method === "item/completed" &&
+        message.params?.threadId === threadId,
+    ),
+    statusChanges: messages.filter(
+      (message) =>
+        message.method === "thread/status/changed" &&
+        message.params?.threadId === threadId,
+    ).length,
+    sawMarkerInEvents: JSON.stringify(messages).includes(marker),
+  };
+}
+
+async function waitForReady(url: string, timeoutMs: number): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const response = await fetch(url);
+      if (response.ok) {
+        return;
+      }
+    } catch {
+      // Server not accepting connections yet.
+    }
+    await delay(500);
+  }
+  throw new Error(`app-server did not become ready at ${url}`);
+}
+
+async function readFileOrEmpty(path: string): Promise<string> {
+  try {
+    return await readFile(path, "utf8");
+  } catch {
+    return "";
+  }
 }
 
 /**

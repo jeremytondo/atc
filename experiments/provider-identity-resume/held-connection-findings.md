@@ -2,139 +2,181 @@
 
 Status: complete
 
-These experiments sharpen the one-writer rule established by the ATC-68 POC.
-ATC-68 proved that two **concurrent writers** corrupt Codex turn attribution
-and diverge Claude history. It did not test whether a **passively held**
-adapter connection is unsafe while another surface drives the conversation.
-ATC-83 answers that, and settles where live status can come from in the
-terminal-first flow.
+These experiments sharpen the one-writer rule established by the ATC-68 POC
+and settle where live Agent Session status comes from in the terminal-first
+flow, where ATC's adapter creates the conversation and a provider TUI drives
+it.
 
 Environment: `codex-cli 0.145.0`, `@anthropic-ai/claude-agent-sdk 0.3.220`
 (Claude Code 2.1.220), working directory
-`/Users/jeremytondo/Projects/ATC/atc-agent-poc` — the same provider versions
-as the ATC-68 evidence.
+`/Users/jeremytondo/Projects/ATC/atc-agent-poc`.
 
-Method note: the external writer is `codex exec resume <threadId>` /
-`claude -p --resume <sessionId>`. Both are separate processes using the same
-core resume path as the interactive TUIs (ATC-68 separately verified real
-TUI round trips). The observation results depend only on process separation,
-so they generalize to a TUI driving the conversation.
+## Headline
+
+**Transport choice decides everything for Codex.** A held connection to a
+*private* app-server observes nothing, but two clients of *one shared*
+app-server — which is how ATC would actually run it — give the adapter a
+complete live event stream while a real `codex resume --remote` TUI drives
+the conversation. Codex live status is available in V1.
+
+**Claude has no equivalent transport.** A held SDK `query()` receives
+nothing from a separate driving process, and the SDK exposes no cross-process
+event channel. Claude status must come from out-of-band sources:
+`claude agents --json` (live per-session `busy`/`idle`) or Claude Code hooks
+fired by the driving process. Both are verified against a real TUI.
 
 ## Vocabulary
 
-- **Writer** — a connection that advances the conversation (sends turns or
-  responds to provider requests).
-- **Observer** — a connection that stays attached, may read, and never
-  sends.
-- **Stale connection** — a connection whose in-memory conversation state
-  predates turns written by another process.
+- **Writer** — a connection that advances the conversation.
+- **Observer** — a connection that stays attached and never sends.
+- **Stale connection** — one whose in-memory state predates turns written by
+  another process.
 
 ## Results
 
-| Question | Codex App Server | Claude Agent SDK |
-| --- | --- | --- |
-| Held connection receives live events for externally driven turns | No | No |
-| Passive hold corrupts history, attribution, or resume | No | No |
-| External process can drive turns while the connection is held | Yes | Yes, same session ID |
-| History after external turns + adapter restart | Intact, no synthetic turns | Intact |
-| Serialized stale write: persisted history | Linear and intact | **Divergent — external turn dropped from active history** |
-| Serialized stale write: model context | Blind to external turns | Blind to external turns |
-| Structured read of external turns through the held connection | `thread/read` (visible in ~2s) | None (no SDK read API) |
-| Provider activity signal for externally driven turns | `thread/read` status stays `idle` (not authoritative) | No events emitted to the held query |
-| Clean observer release | `thread/unsubscribe` → `{"status":"unsubscribed"}` | End the streaming input (close the query) |
+| Question | Codex, shared app-server | Codex, private app-server | Claude Agent SDK |
+| --- | --- | --- | --- |
+| Live events for turns driven by another process | **Full fan-out** | None | None |
+| Passive hold corrupts history/attribution/resume | No | No | No |
+| Provider activity signal while a TUI drives | **Yes, `thread/status/changed`** | No (`thread/read` status stays `idle`) | Not from the connection — use `claude agents --json` |
+| Structured history read on the held connection | `thread/read` | `thread/read` (~2 s lag) | None |
+| Serialized stale write | Linear history, context-blind | Linear history, context-blind | **Rewrites history — external turn dropped** |
+| Clean observer release | `thread/unsubscribe` | `thread/unsubscribe` | Close the streaming query |
 
 ## Reviewed observations
 
-### Codex passive hold — 2026-07-28
+### Codex shared app-server with a real remote TUI — 2026-07-28 (decisive)
 
-- Thread `019fa9dc-16aa-7773-9ed1-a2b4908f46f2` was created and seeded
-  through a held app-server connection, which then went passive while
-  `codex exec resume` drove two external turns that recalled and extended
-  the continuity markers.
-- During both external turns the held connection received exactly **one**
-  message: a thread-scoped `mcpServer/startupStatus/updated` notification.
-  No `turn/*`, `item/*`, or `thread/status/changed` events for the external
-  turns arrived. A held app-server connection is not a live observer of
-  turns driven by another process.
-- The external turns appended to the same rollout file
-  (44,635 → 59,460 bytes).
-- `thread/read { includeTurns: true }` on the held connection returned all
-  three turns including both external markers — the read reflects the
-  rollout on disk, not the connection's stale in-memory view.
-- `thread/unsubscribe` on the held connection succeeded with
-  `{"status":"unsubscribed"}`.
-- After stopping the held process, a fresh app-server resumed the exact ID
-  and cwd: 3 provider turn IDs, no synthetic turns, all three markers in
-  history, and a recall turn returned
-  `ALL MARKERS: <seed> <ext1> <ext2>` exactly.
-- Reviewed artifact: `runs/codex/2026-07-28T17-53-21-028Z-f719f1c3.held-passive.json`
-  and its app-server/fresh-resume JSONL streams.
+- One dedicated `codex app-server --listen ws://127.0.0.1:<port>` process.
+  An "adapter" WebSocket client created and seeded thread
+  `019faa03-dffd-72f2-a7e5-5e7ad042a629`, then held passively.
+- A second WebSocket client resumed the same thread on the same server (the
+  documented rejoin-a-running-thread path) and drove a turn. The held
+  observer received **48 messages**, including `turn/started`,
+  `item/started`, `item/completed`, `item/agentMessage/delta`, two
+  `thread/status/changed` transitions, and `turn/completed` — plus the
+  external turn's marker text.
+- A **real native TUI** then attached with
+  `codex resume --remote ws://127.0.0.1:<port>` and drove a turn. The held
+  observer received **47 messages (45 thread-scoped)** with the same full
+  event set: `turn/started`, `item/completed`, agent-message deltas, two
+  `thread/status/changed` transitions, `turn/completed`, and the marker.
+- This is ATC's intended topology working end to end: the adapter is a
+  passive observer with a complete live event stream while the user drives
+  the conversation in the TUI.
+- Reviewed artifacts:
+  `runs/codex/2026-07-28T18-35-50-433Z-b803975f.shared-server.json` (two
+  app-server clients) and
+  `runs/codex/2026-07-28T18-36-47-972Z-fde7c6ea.shared-server.json`
+  (adds the real `--remote` TUI leg), with observer and writer JSONL streams.
 
-### Codex serialized stale write — 2026-07-28
+### Codex private app-server, separate TUI process — 2026-07-28
 
-- Thread `019fa9de-5263-7d60-9ae4-ee379afed44f`: seed through the held
-  connection, one external `codex exec resume` turn, then — without
-  re-resuming — one more turn from the held connection.
-- The held connection observed **zero** messages during the external turn.
-- The stale turn completed successfully but its model context omitted the
-  external turn: it recalled the seed and its own new marker only
-  (`sawExternalMarker: false`).
-- A fresh resume showed **linear, intact history**: 3 provider turn IDs in
-  order (seed, external, stale), no synthetic `rollout-N` turns, and all
-  three markers present.
-- Contrast with ATC-68's concurrent-writer run, where attribution moved to
-  a synthetic `rollout-36` turn. Codex persistence corruption requires
-  **concurrent** sends; a serialized stale write persists cleanly but
-  produces a turn whose model never saw the external context.
-- Reviewed artifact: `runs/codex/2026-07-28T17-55-47-079Z-0fba44ca.stale-write.json`.
+- The adapter ran its own stdio `codex app-server` and held the connection
+  while a separate `codex` process drove the thread. Two variants were run:
+  `codex exec resume` (thread `019fa9dc-16aa-…`) and a **real
+  expect-driven `codex resume` TUI** (thread `019fa9f7-cd56-…`).
+- In both, the held connection observed **no** turn or status events for the
+  external turns — 1 unrelated MCP-startup notification in the first, 0 in
+  the TUI run.
+- History stayed intact in both: after an app-server restart a fresh resume
+  returned all real turn IDs with no synthetic turns, and a recall turn
+  returned every marker exactly.
+- `thread/read { includeTurns: true }` on the held connection surfaced the
+  external turns (they are read from the rollout on disk), and
+  `thread/unsubscribe` succeeded with `{"status":"unsubscribed"}`.
+- Reviewed artifacts:
+  `runs/codex/2026-07-28T17-53-21-028Z-f719f1c3.held-passive.json` and
+  `runs/codex/2026-07-28T18-23-36-903Z-0e372177.tui-hold.json`.
 
 ### Codex poll-observe — 2026-07-28
 
-- While `codex exec resume` drove a 4.4 s external turn, the held
-  connection polled `thread/read` every 2 s.
-- The external turn's completed agent message became visible through
-  `thread/read` at the 2,018 ms poll — before the external process exited.
+- While an external turn ran for 4.4 s, the held private-app-server
+  connection polled `thread/read` every 2 s. The completed agent message
+  appeared at the 2,018 ms poll, before the external process exited.
 - `thread.status` reported `idle` in every poll, including while the
-  external turn was demonstrably active. The held connection's status field
-  does **not** reflect another process's activity and cannot power
-  `activityState`.
-- Reviewed artifact: `runs/codex/2026-07-28T17-58-24-385Z-f67ba0e4.poll-observe.json`.
+  external turn was demonstrably active. On a private app-server,
+  `thread/read` gives history visibility, never activity truth.
+- Reviewed artifact:
+  `runs/codex/2026-07-28T17-58-24-385Z-f67ba0e4.poll-observe.json`.
+
+### Codex serialized stale write — 2026-07-28
+
+- Seed through the held connection, one external turn, then one more turn
+  from the held connection **without re-resuming**.
+- The stale turn completed successfully but its model context omitted the
+  external turn (`sawExternalMarker: false`).
+- A fresh resume showed linear, intact history: three real turn IDs in
+  order, no synthetic `rollout-N` turns, all markers present.
+- Codex persistence corruption therefore requires *concurrent* sends
+  (ATC-68). A serialized stale write persists cleanly but is context-blind.
+- Reviewed artifact:
+  `runs/codex/2026-07-28T17-55-47-079Z-0fba44ca.stale-write.json`.
 
 ### Claude passive hold — 2026-07-28
 
-- Session `a18349f8-6e67-45e8-99bb-844f3054f3a7` was created and seeded by
-  a streaming SDK `query()` with `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`,
-  which then stayed open without sending while `claude -p --resume` drove
-  two external turns.
-- Both external turns preserved the exact session ID (no fork) and
-  recalled the prior markers, completing in ~3 s each.
-- The held query observed **zero** messages during the external turns — no
-  session-state events, no assistant messages. Session-state events are
-  visible only to the driving process.
-- The session file grew from 3 to 7 entries and contained all three
-  markers; the session inventory still contained the held session.
-- After closing the held query without writing, a fresh SDK resume of the
-  exact ID recalled `ALL MARKERS: <seed> <ext1> <ext2>` exactly. Passive
-  hold caused no divergence.
-- Reviewed artifact: `runs/claude/2026-07-28T17-55-48-514Z-363e5fff.held-passive.json`.
+- A streaming SDK `query()` with `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`
+  seeded session `a18349f8-6e67-45e8-99bb-844f3054f3a7` and stayed open
+  while `claude -p --resume` drove two turns.
+- The held query observed **zero** messages during both external turns. The
+  external turns preserved the exact session ID and recalled prior markers.
+- The session file grew from 3 to 7 entries; a fresh resume after closing
+  the held query recalled every marker exactly. Passive hold caused no
+  divergence.
+- Reviewed artifact:
+  `runs/claude/2026-07-28T17-55-48-514Z-363e5fff.held-passive.json`.
 
 ### Claude serialized stale write — 2026-07-28
 
-- Session `b8d11031-856c-4454-b16e-4f8a31761bd0`: seed through the held
-  query, one external `claude -p --resume` turn, then — without
-  re-resuming — one more message through the held query.
-- The held query observed only its own seed turn's trailing `idle` event;
-  nothing from the external turn.
-- The stale write succeeded but its context omitted the external turn
-  (`sawExternalMarker: false`).
-- A fresh resume of the exact ID recalled the **seed and stale markers
-  only**. The external turn's text still exists in the session file, but
-  the stale write formed a divergent branch that won on resume and dropped
-  the external turn from the active conversation.
-- Unlike Codex, a Claude stale write does not need a concurrent send to
-  damage the conversation: **any** write from a connection that predates an
-  external turn rewrites the active history.
-- Reviewed artifact: `runs/claude/2026-07-28T17-56-20-282Z-78711d3e.stale-write.json`.
+- Seed through the held query, one external turn, then one more message from
+  the held query **without re-resuming**.
+- The stale write succeeded but was context-blind, and a fresh resume
+  recalled the **seed and stale markers only**. The external turn's text
+  survives in the session file on a losing branch.
+- Unlike Codex, a Claude stale write damages the conversation without any
+  concurrency: any write from a connection that predates an external turn
+  rewrites the active history.
+- Reviewed artifact:
+  `runs/claude/2026-07-28T17-56-20-282Z-78711d3e.stale-write.json`.
+
+### Claude live status via `claude agents --json` — 2026-07-28
+
+- `claude agents --json` enumerates live Claude Code processes with
+  `sessionId`, `cwd`, `pid`, `kind`, and a `status` field.
+- Driving a **real interactive `claude --resume` TUI** through a pty while
+  polling that command produced the transition
+  `absent` → `busy` → `idle` across one turn, keyed by the exact session ID.
+- This is an out-of-band but provider-owned activity signal for TUI-driven
+  Claude sessions — the only one found. Latency is bounded by the poll
+  interval.
+
+### Provider push hooks — 2026-07-28
+
+- **Claude Code hooks** (`UserPromptSubmit`, `Stop`, `Notification`)
+  configured through `--settings` fired for both `claude -p --resume` and a
+  **real interactive `claude --resume` TUI**, delivering JSON on stdin
+  containing the exact `session_id` and `transcript_path`.
+- **Codex `notify`** configured with `-c notify=[...]` fired from a **real
+  `codex resume` TUI**, delivering
+  `{"type":"agent-turn-complete","thread-id":…,"turn-id":…,"client":"codex-tui",
+  "last-assistant-message":…}`.
+- Both are launch-time configuration ATC controls when it starts the TUI, so
+  they need no provider cooperation beyond flags.
+
+### Claude TUI attach to an adapter-created session — 2026-07-28
+
+- A controlled three-leg test attached a real `claude --resume` TUI to an
+  SDK-created session at T+0 s while the adapter held it, again at T+98 s
+  still held, and at T+158 s after release. **All three attached** and saw
+  the seeded conversation.
+- Earlier orchestrated runs intermittently hit
+  `No conversation found with session ID` while several experiments ran
+  concurrently. Treat hot-attach as working but re-verify on a quiet machine
+  before ATC depends on attaching within seconds of session creation.
+- Operational note: a fresh-environment TUI launch can hit Claude Code's
+  first-run trust dialog (for this repo, the `@AGENTS.md` import in
+  `CLAUDE.md`). ATC must expect provider TUIs to open with a blocking
+  first-run prompt.
 
 ## Conclusions
 
@@ -142,74 +184,51 @@ so they generalize to a TUI driving the conversation.
 
 The unit of exclusivity is the **writer role**, not the connection.
 
-1. **One active writer per provider conversation** — unchanged from ATC-68.
+1. **One active writer per provider conversation** — unchanged (ATC-68).
 2. **Holding a connection passively is safe** for both providers. The
-   adapter does not need to disconnect when a TUI attaches. Passive holds
-   corrupt nothing: history, attribution, and resume stayed intact across
-   external turns and an adapter restart for both providers.
-3. **A passive connection is not an observer.** Neither provider delivers
-   live events for turns driven by another process. Local live observation
-   remains unsupported; ATC-owned fan-out remains the only observation
-   path.
-4. **A connection that lost the writer role is stale and must never write
-   again without refreshing.** This is the sharpened constraint the
-   original rule was missing:
-   - Claude: a stale write actively **rewrites history** — the externally
-     driven turns are dropped from the resumed conversation even though the
-     writes were serialized. The adapter must close the held query and
-     re-resume before writing after any external turn.
-   - Codex: a stale write persists linearly but the turn's model context
-     silently omits the external turns. The adapter must re-resume (or
-     refresh from `thread/read`) before writing after any external turn.
+   adapter should not disconnect when a TUI attaches.
+3. **Observation depends on transport, not on the provider being "closed".**
+   Codex fans events out to every client of the same app-server process;
+   two *separate* app-server processes share nothing but the rollout file.
+   Claude has no cross-process event channel at all.
+4. **A connection that lost the writer role is stale and must not write
+   again without refreshing.** Claude: close the held `query()` and
+   re-resume — a stale write silently drops the TUI's turns. Codex:
+   re-resume or reload via `thread/read` — a stale write persists cleanly
+   but its model context omits the external turns.
 
 ### V1 status source
 
-While a provider TUI holds the writer role, no provider gives the adapter
-an authoritative live activity signal:
+**Codex — live status is available.** Run one supervised
+`codex app-server --listen` per ATC App Server profile and launch the TUI
+with `codex resume --remote <endpoint>`. The adapter's observer connection
+then receives `thread/status/changed`, turn lifecycle, and item events for
+TUI-driven turns, so `activityState` can be `working`/`idle` with provider
+truth. Keep `notify` configured as a redundant turn-completion signal.
 
-- The held connection's event stream is silent for external turns (both
-  providers).
-- Codex `thread/read` polling through the held connection reflects
-  externally driven turns within ~2 s, but its `status` field stays `idle`,
-  so it is history visibility, not activity truth.
-- Claude has no SDK read surface at all; the only local signal is session
-  file append activity.
+**Claude — status is out-of-band.** The adapter connection cannot observe.
+Use, in order: Claude Code hooks configured at TUI launch (push, exact
+`session_id`, no polling), with `claude agents --json` as a
+discovery/reconciliation poll for `busy`/`idle`. Reserve `activityState:
+unknown` for the window before those signals are wired, not as the steady
+state.
 
-Settled V1 answer for the terminal-first flow:
+Lifecycle continues to come from ATC-owned process and zmx state.
+Transcript text is never a correctness dependency.
 
-- **Lifecycle** comes from ATC-owned process/zmx state, as already
-  accepted.
-- **`activityState` is `unknown` while a TUI holds the writer role.** The
-  `unknown` value in the contract is load-bearing, not a placeholder. ATC
-  reports precise activity only when the adapter connection is itself the
-  writer (create/seed, future native mode, headless operations).
-- The adapter keeps its connection during TUI sessions anyway: it is safe,
-  it preserves instant `thread/read` history access for Codex, and it
-  avoids a reconnect penalty on writer handback. It must treat that
-  connection as read-only until it re-verifies state.
+### Protocol facts discovered
 
-Post-V1 upgrade paths for live status, in preference order:
-
-1. Provider push hooks fired by the driving process — Claude Code hooks
-   (`Stop`, `Notification`, `UserPromptSubmit`) and Codex `notify`
-   (`agent-turn-complete`) run in the TUI's own process and can call back
-   into ATC. Structured, provider-owned, and works while the TUI drives.
-   Not exercised in these runs; requires config management design.
-2. Codex `thread/read` polling for turn-boundary evidence (verified above,
-   ~2 s latency).
-3. Session/rollout file append activity as a coarse "something happened"
-   signal — never parsed for correctness, per the accepted architecture.
-
-### Protocol facts discovered along the way
-
-- `thread/unsubscribe` exists and works — a clean observer-release
-  operation for a multiplexed app-server client.
-- `ThreadResumeParams` documents that resuming a thread already running in
-  the same app-server "rejoins" it. Cross-client rejoin fan-out inside one
-  app-server process was not exercised (ATC's adapter is the app-server's
-  only client) and remains unverified.
-- Claude Agent SDK 0.3.220 has an alpha daemon/multi-client surface
-  ("agent view", `--bg`, multi-client fan-out transports). It applies to
-  daemon-hosted background sessions, not to a locally driven TUI session,
-  and is not a V1 dependency. Worth re-evaluating when Native mode is
-  designed.
+- `codex app-server --listen ws://…` serves the same JSON-RPC protocol over
+  WebSocket, with `/readyz` and `/healthz`. `codex resume --remote` attaches
+  a native TUI to it. `codex app-server proxy --sock` reaches the shared
+  daemon socket, but the machine-wide daemon started by the Codex desktop
+  integration held the control socket, so ATC should run its own listener
+  rather than share that one.
+- `thread/unsubscribe` is a clean observer-release operation.
+- `claude agents --json` is an undocumented-but-stable-looking live session
+  registry including interactive TUI sessions.
+- Claude Code disables transcript saving when nested-session environment
+  markers (`CLAUDE_CODE_CHILD_SESSION` and friends) are inherited. Probes
+  scrub them so spawned processes behave like a production ATC deployment;
+  ATC should scrub them too if it ever launches providers from inside
+  another Claude Code session.

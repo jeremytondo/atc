@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   isUuid,
   observeHeldWindow,
+  summarizeFanOut,
   summarizeThreadRead,
 } from "./held-connection.ts";
 
@@ -72,4 +73,46 @@ test("isUuid accepts provider turn IDs and rejects synthetic rollout turns", () 
   assert.equal(isUuid("019fa9de-ab77-7843-9be7-34b063f194dd"), true);
   assert.equal(isUuid("rollout-36"), false);
   assert.equal(isUuid(""), false);
+});
+
+test("summarizeFanOut detects a fully observed external turn", () => {
+  const summary = summarizeFanOut(
+    [
+      { method: "turn/started", params: { threadId: "t-1" } },
+      { method: "thread/status/changed", params: { threadId: "t-1" } },
+      {
+        method: "item/completed",
+        params: { threadId: "t-1", item: { type: "agentMessage", text: "M-ONE" } },
+      },
+      { method: "thread/status/changed", params: { threadId: "t-1" } },
+      { method: "turn/completed", params: { threadId: "t-1" } },
+    ],
+    "t-1",
+    "M-ONE",
+  );
+  assert.deepEqual(summary, {
+    turnStarted: true,
+    turnCompleted: true,
+    itemCompleted: true,
+    statusChanges: 2,
+    sawMarkerInEvents: true,
+  });
+});
+
+test("summarizeFanOut ignores events belonging to another thread", () => {
+  const summary = summarizeFanOut(
+    [
+      { method: "turn/started", params: { threadId: "other" } },
+      { method: "turn/completed", params: { threadId: "other" } },
+    ],
+    "t-1",
+    "M-ONE",
+  );
+  assert.deepEqual(summary, {
+    turnStarted: false,
+    turnCompleted: false,
+    itemCompleted: false,
+    statusChanges: 0,
+    sawMarkerInEvents: false,
+  });
 });

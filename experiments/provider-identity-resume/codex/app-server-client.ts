@@ -38,6 +38,12 @@ export interface AppServerClientOptions {
   requestTimeoutMs?: number;
   handleServerRequest?: ServerRequestHandler;
   experimentalApi?: boolean;
+  /**
+   * Arguments passed to the `codex` binary. Defaults to a private stdio
+   * app-server; pass ["app-server", "proxy"] to attach to the running
+   * shared app-server daemon through its control socket.
+   */
+  codexArgs?: string[];
 }
 
 export interface ServerRequest {
@@ -51,6 +57,24 @@ export interface ServerRequest {
 export type ServerRequestHandler = (
   request: ServerRequest,
 ) => Promise<JsonObject>;
+
+
+/**
+ * The JSON-RPC surface shared by stdio and WebSocket app-server clients.
+ * Probe helpers accept this interface so either transport can drive turns.
+ */
+export interface AppServerRpc {
+  request(method: string, params?: JsonObject): Promise<JsonObject>;
+  notify(method: string, params?: JsonObject): void;
+  waitForNotification(
+    method: string,
+    predicate?: (params: JsonObject) => boolean,
+    timeoutMs?: number,
+  ): Promise<ProtocolMessage>;
+  readonly messageCount: number;
+  messagesSince(index: number): ProtocolMessage[];
+  stop(): Promise<void>;
+}
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
@@ -120,7 +144,7 @@ export class AppServerClient {
       rawLog.once("error", reject);
     });
 
-    const child = spawn("codex", ["app-server", "--stdio"], {
+    const child = spawn("codex", options.codexArgs ?? ["app-server", "--stdio"], {
       cwd: options.cwd,
       env: process.env,
       stdio: ["pipe", "pipe", "pipe"],

@@ -21,6 +21,33 @@ import {
 } from "./sdk-query.ts";
 
 /**
+ * These probes may themselves run inside a Claude Code session. Anything
+ * they spawn would then inherit nested-session markers, and Claude Code
+ * disables transcript saving for such child sessions — which silently
+ * breaks resume-based experiments. Scrub the markers so spawned processes
+ * behave like a production ATC deployment (which never has them).
+ */
+const NESTED_SESSION_VARIABLES = [
+  "CLAUDE_CODE_CHILD_SESSION",
+  "CLAUDECODE",
+  "CLAUDE_CODE_ENTRYPOINT",
+  "CLAUDE_CODE_SSE_PORT",
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_CODE_BRIDGE_SESSION_ID",
+  "CLAUDE_PID",
+];
+
+export function cleanClaudeEnvironment(
+  inherited: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  const environment = buildClaudeEnvironment(inherited);
+  for (const name of NESTED_SESSION_VARIABLES) {
+    delete environment[name];
+  }
+  return environment;
+}
+
+/**
  * ATC-83 held-connection experiments.
  *
  * The ATC-68 POC proved that two concurrent Claude SDK writers form
@@ -42,10 +69,16 @@ import {
  */
 
 interface HeldOptions {
-  command: "passive-hold" | "stale-write";
+  command:
+    | "passive-hold"
+    | "stale-write"
+    | "passive-hold-wait"
+    | "agents-status";
   cwd: string;
   timeoutMs: number;
   settleMs: number;
+  awaitMarker?: string;
+  awaitTimeoutMs: number;
 }
 
 interface RecordedMessage {
@@ -79,19 +112,30 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const options = parseArgs(argv);
   if (options.command === "passive-hold") {
     await passiveHoldScenario(options);
-  } else {
+  } else if (options.command === "stale-write") {
     await staleWriteScenario(options);
+  } else if (options.command === "passive-hold-wait") {
+    await passiveHoldWaitScenario(options);
+  } else {
+    await agentsStatusScenario(options);
   }
 }
 
 function parseArgs(argv: string[]): HeldOptions {
   const [command, ...rest] = argv;
-  if (command !== "passive-hold" && command !== "stale-write") {
+  if (
+    command !== "passive-hold" &&
+    command !== "stale-write" &&
+    command !== "passive-hold-wait" &&
+    command !== "agents-status"
+  ) {
     throw new Error(usage());
   }
   let cwd = repoRoot;
   let timeoutMs = 300_000;
   let settleMs = 5_000;
+  let awaitMarker: string | undefined;
+  let awaitTimeoutMs = 240_000;
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index];
     const value = rest[index + 1];
@@ -108,17 +152,317 @@ function parseArgs(argv: string[]): HeldOptions {
       case "--settle-seconds":
         settleMs = requirePositive(value, flag) * 1_000;
         break;
+      case "--await-marker":
+        awaitMarker = value;
+        break;
+      case "--await-timeout-seconds":
+        awaitTimeoutMs = requirePositive(value, flag) * 1_000;
+        break;
       default:
         throw new Error(`Unknown option: ${flag}\n\n${usage()}`);
     }
     index += 1;
+  }
+  if (
+    (command === "passive-hold-wait" || command === "agents-status") &&
+    awaitMarker === undefined
+  ) {
+    throw new Error(`${command} requires --await-marker\n\n${usage()}`);
   }
   return {
     command,
     cwd: existsSync(cwd) ? realpathSync(cwd) : cwd,
     timeoutMs,
     settleMs,
+    awaitMarker,
+    awaitTimeoutMs,
   };
+}
+
+/**
+ * `claude agents --json` enumerates live Claude Code processes with a
+ * per-session activity status. This scenario measures whether that status
+ * tracks a session driven by a separate TUI process — the missing live
+ * status source for the terminal-first flow.
+ *
+ * The probe seeds a session, prints its ID, then polls `claude agents
+ * --json` once a second while a caller-driven TUI runs one turn, recording
+ * the status timeline against the moment the turn's marker is persisted.
+ */
+async function agentsStatusScenario(options: HeldOptions): Promise<void> {
+  const runId = makeRunId();
+  const suffix = runId.slice(-8).toUpperCase();
+  const seedMarker = `ATC-CLAUDE-AGENTS-SEED-${suffix}`;
+  const externalMarker = options.awaitMarker as string;
+  const heldLogPath = resolve(runsRoot, `${runId}.agents-status.held-query.jsonl`);
+  const resultPath = resolve(runsRoot, `${runId}.agents-status.json`);
+  const pollIntervalMs = 1_000;
+
+  console.log("Claude held-connection experiment — agents-status (ATC-83)");
+  console.log(`cwd: ${options.cwd}`);
+
+  const held = await startHeldQuery(options.cwd, heldLogPath, options.timeoutMs);
+  const polls: Record<string, unknown>[] = [];
+  let markerSeenAtMs: number | undefined;
+  let sessionFilePath: string;
+  try {
+    const seed = await held.sendAndAwaitResult(
+      [
+        "This is a read-only held-connection experiment.",
+        "Do not use tools, run commands, or modify files.",
+        `Remember this exact continuity marker for later turns: ${seedMarker}`,
+        `Reply with exactly: MARKER STORED: ${seedMarker}`,
+      ].join(" "),
+      options.timeoutMs,
+    );
+    requireSuccess(seed, seedMarker, "seed turn");
+    sessionFilePath = await findSessionFile(held.sessionId());
+
+    console.log(`SESSION_ID: ${held.sessionId()}`);
+    console.log(`SEED_MARKER: ${seedMarker}`);
+    console.log(`polling claude agents --json for ${externalMarker}...`);
+
+    const startedAt = Date.now();
+    let sawBusy = false;
+    let idleAfterMarker = false;
+    while (Date.now() - startedAt < options.awaitTimeoutMs) {
+      const status = await readAgentsStatus(held.sessionId());
+      const text = await readFile(sessionFilePath, "utf8").catch(() => "");
+      const markerPresent = text.includes(externalMarker);
+      if (markerPresent && markerSeenAtMs === undefined) {
+        markerSeenAtMs = Date.now() - startedAt;
+      }
+      polls.push({
+        atMs: Date.now() - startedAt,
+        status,
+        markerPersisted: markerPresent,
+      });
+      sawBusy ||= status === "busy";
+      if (markerPresent && status === "idle") {
+        idleAfterMarker = true;
+        break;
+      }
+      await delay(pollIntervalMs);
+    }
+    if (markerSeenAtMs === undefined) {
+      throw new Error(`external marker ${externalMarker} never appeared`);
+    }
+    if (!sawBusy) {
+      throw new Error(
+        "claude agents --json never reported busy during the external turn",
+      );
+    }
+    if (!idleAfterMarker) {
+      throw new Error(
+        "claude agents --json never returned to idle after the external turn",
+      );
+    }
+    console.log(
+      `status timeline captured: busy observed, idle after marker at ${markerSeenAtMs}ms`,
+    );
+  } finally {
+    await held.close();
+  }
+
+  const record = {
+    version: 1,
+    provider: "claude",
+    scenario: "agents-status-observation",
+    cwd: options.cwd,
+    completedAt: new Date().toISOString(),
+    evidence: {
+      sessionId: held.sessionId(),
+      seedMarker,
+      externalMarker,
+      externalWriter: "native claude --resume TUI (caller-driven)",
+      source: "claude agents --json",
+      pollIntervalMs,
+      markerPersistedAtMs: markerSeenAtMs,
+      statusesObserved: [...new Set(polls.map((poll) => poll.status))],
+      polls,
+    },
+    rawLogs: [relative(dirname(resultPath), heldLogPath)],
+  };
+  await writeFile(resultPath, `${JSON.stringify(record, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+  });
+  console.log(
+    `PASS: agents-status evidence written to ${relative(process.cwd(), resultPath)}`,
+  );
+}
+
+/**
+ * Reads the activity status Claude Code publishes for a live session.
+ * Returns "absent" when no live process is serving that session ID.
+ */
+export async function readAgentsStatus(sessionId: string): Promise<string> {
+  const output = await runCommand("claude", ["agents", "--json"]);
+  return agentStatusFrom(output, sessionId);
+}
+
+export function agentStatusFrom(output: string, sessionId: string): string {
+  let rows: unknown;
+  try {
+    rows = JSON.parse(output);
+  } catch {
+    return "unparsed";
+  }
+  if (!Array.isArray(rows)) {
+    return "unparsed";
+  }
+  const match = rows.find(
+    (row): row is { sessionId: string; status?: unknown } =>
+      typeof row === "object" &&
+      row !== null &&
+      (row as { sessionId?: unknown }).sessionId === sessionId,
+  );
+  if (match === undefined) {
+    return "absent";
+  }
+  return typeof match.status === "string" ? match.status : "unknown";
+}
+
+async function runCommand(command: string, args: string[]): Promise<string> {
+  return await new Promise<string>((resolveOutput) => {
+    const child = spawn(command, args, {
+      env: cleanClaudeEnvironment(process.env),
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    let stdout = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    child.once("error", () => resolveOutput(""));
+    child.once("exit", () => resolveOutput(stdout));
+  });
+}
+
+/**
+ * Real-TUI variant of passive-hold. Seeds a session through the held
+ * query, prints the session ID, then waits for an EXTERNAL process — a
+ * human or an expect-driven `claude --resume` TUI started by the caller —
+ * to write --await-marker into the session file. While waiting, it records
+ * everything the held query observes, then closes without writing and
+ * verifies history integrity with a fresh resume.
+ */
+async function passiveHoldWaitScenario(options: HeldOptions): Promise<void> {
+  const runId = makeRunId();
+  const suffix = runId.slice(-8).toUpperCase();
+  const seedMarker = `ATC-CLAUDE-TUIHOLD-SEED-${suffix}`;
+  const externalMarker = options.awaitMarker as string;
+  const heldLogPath = resolve(runsRoot, `${runId}.tui-hold.held-query.jsonl`);
+  const resumeLogPath = resolve(runsRoot, `${runId}.tui-hold.fresh-resume.jsonl`);
+  const resultPath = resolve(runsRoot, `${runId}.tui-hold.json`);
+
+  console.log("Claude held-connection experiment — passive-hold-wait (ATC-83)");
+  console.log(`cwd: ${options.cwd}`);
+  console.log("safety: no tools exposed, dontAsk permission mode");
+
+  const held = await startHeldQuery(options.cwd, heldLogPath, options.timeoutMs);
+  let heldObservation: Record<string, unknown>;
+  let waitedMs = 0;
+  let sessionFilePath: string;
+  try {
+    const seed = await held.sendAndAwaitResult(
+      [
+        "This is a read-only held-connection experiment.",
+        "Do not use tools, run commands, or modify files.",
+        `Remember this exact continuity marker for later turns: ${seedMarker}`,
+        `Reply with exactly: MARKER STORED: ${seedMarker}`,
+      ].join(" "),
+      options.timeoutMs,
+    );
+    requireSuccess(seed, seedMarker, "seed turn");
+    sessionFilePath = await findSessionFile(held.sessionId());
+
+    const watermark = held.messageCount();
+    console.log(`SESSION_ID: ${held.sessionId()}`);
+    console.log(`SEED_MARKER: ${seedMarker}`);
+    console.log(
+      `waiting up to ${options.awaitTimeoutMs}ms for ${externalMarker} to appear in the session file...`,
+    );
+
+    const waitStartedAt = Date.now();
+    let found = false;
+    while (Date.now() - waitStartedAt < options.awaitTimeoutMs) {
+      const text = await readFile(sessionFilePath, "utf8").catch(() => "");
+      if (text.includes(externalMarker)) {
+        found = true;
+        break;
+      }
+      await delay(2_000);
+    }
+    waitedMs = Date.now() - waitStartedAt;
+    if (!found) {
+      throw new Error(
+        `external marker ${externalMarker} never appeared in ${sessionFilePath}`,
+      );
+    }
+    console.log(`external marker observed in session file after ${waitedMs}ms`);
+
+    await delay(options.settleMs);
+    const heldNew = held.messagesSince(watermark);
+    heldObservation = {
+      messageCount: heldNew.length,
+      types: [...new Set(heldNew.map((entry) => labelOf(entry.message)))],
+    };
+    console.log(
+      `held query observed ${heldNew.length} messages during the external TUI turn`,
+    );
+  } finally {
+    await held.close();
+  }
+
+  const fresh = await runSingleTurnResume(
+    held.sessionId(),
+    options.cwd,
+    [
+      "Do not use tools, run commands, or modify files.",
+      "Repeat every continuity marker you have been told in this conversation,",
+      "oldest first, separated by spaces. Reply with exactly:",
+      "ALL MARKERS: <markers>",
+    ].join(" "),
+    resumeLogPath,
+    options.timeoutMs,
+  );
+  for (const marker of [seedMarker, externalMarker]) {
+    if (!fresh.text.includes(marker)) {
+      throw new Error(`fresh resume did not recall ${marker}: ${fresh.text}`);
+    }
+    console.log(`CONTINUITY VERIFIED: fresh resume recalled ${marker}`);
+  }
+
+  const record = {
+    version: 1,
+    provider: "claude",
+    scenario: "held-connection-passive-tui",
+    cwd: options.cwd,
+    completedAt: new Date().toISOString(),
+    evidence: {
+      sessionId: held.sessionId(),
+      seedMarker,
+      externalMarker,
+      externalWriter: "native claude --resume TUI (caller-driven)",
+      waitedMs,
+      heldQueryDuringExternalTurn: heldObservation,
+      sessionFile: { path: sessionFilePath },
+      freshResume: {
+        resultSubtype: fresh.resultSubtype,
+        recallText: fresh.text,
+      },
+    },
+    rawLogs: [heldLogPath, resumeLogPath].map((path) =>
+      relative(dirname(resultPath), path),
+    ),
+  };
+  await writeFile(resultPath, `${JSON.stringify(record, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+  });
+  console.log(
+    `PASS: passive-hold-wait evidence written to ${relative(process.cwd(), resultPath)}`,
+  );
 }
 
 async function passiveHoldScenario(options: HeldOptions): Promise<void> {
@@ -437,7 +781,7 @@ async function startHeldQuery(
     abortController,
     allowedTools: [],
     cwd,
-    env: buildClaudeEnvironment(process.env),
+    env: cleanClaudeEnvironment(process.env),
     maxTurns: 25,
     permissionMode: "dontAsk",
     persistSession: true,
@@ -574,7 +918,7 @@ async function runExternalClaudeTurn(
   const child = spawn(
     "claude",
     ["-p", "--resume", sessionId, "--output-format", "json", prompt],
-    { cwd, env: buildClaudeEnvironment(process.env), stdio: ["ignore", "pipe", "pipe"] },
+    { cwd, env: cleanClaudeEnvironment(process.env), stdio: ["ignore", "pipe", "pipe"] },
   );
   let stdout = "";
   let stderr = "";
@@ -671,7 +1015,7 @@ async function runSingleTurnResume(
       abortController,
       allowedTools: [],
       cwd,
-      env: buildClaudeEnvironment(process.env),
+      env: cleanClaudeEnvironment(process.env),
       maxTurns: 1,
       permissionMode: "dontAsk",
       persistSession: true,
@@ -792,6 +1136,8 @@ function usage(): string {
     "Usage:",
     "  pnpm claude:held passive-hold [--cwd <path>] [--timeout-seconds <n>] [--settle-seconds <n>]",
     "  pnpm claude:held stale-write [--cwd <path>] [--timeout-seconds <n>] [--settle-seconds <n>]",
+    "  pnpm claude:held passive-hold-wait --await-marker <text> [--cwd <path>] [--await-timeout-seconds <n>]",
+    "  pnpm claude:held agents-status --await-marker <text> [--cwd <path>] [--await-timeout-seconds <n>]",
   ].join("\n");
 }
 

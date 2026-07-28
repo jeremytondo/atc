@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  agentStatusFrom,
+  cleanClaudeEnvironment,
   labelOf,
   requireExternalSuccess,
   summarizeExternal,
@@ -82,4 +84,36 @@ test("labelOf renders session-state labels with their state", () => {
     "system/session_state_changed state=idle",
   );
   assert.equal(labelOf({ type: "assistant" } as never), "assistant");
+});
+
+test("agentStatusFrom reads the live status for a session", () => {
+  const output = JSON.stringify([
+    { sessionId: "other", status: "idle" },
+    { sessionId: "target", status: "busy" },
+  ]);
+  assert.equal(agentStatusFrom(output, "target"), "busy");
+});
+
+test("agentStatusFrom reports absent, unknown, and unparsed cases", () => {
+  assert.equal(agentStatusFrom(JSON.stringify([]), "target"), "absent");
+  assert.equal(
+    agentStatusFrom(JSON.stringify([{ sessionId: "target" }]), "target"),
+    "unknown",
+  );
+  assert.equal(agentStatusFrom("not json", "target"), "unparsed");
+  assert.equal(agentStatusFrom(JSON.stringify({}), "target"), "unparsed");
+});
+
+test("cleanClaudeEnvironment keeps the lifecycle opt-in and drops nested markers", () => {
+  const environment = cleanClaudeEnvironment({
+    PATH: "/usr/bin",
+    CLAUDECODE: "1",
+    CLAUDE_CODE_CHILD_SESSION: "1",
+    CLAUDE_CODE_SESSION_ID: "abc",
+  });
+  assert.equal(environment.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS, "1");
+  assert.equal(environment.PATH, "/usr/bin");
+  assert.equal(environment.CLAUDECODE, undefined);
+  assert.equal(environment.CLAUDE_CODE_CHILD_SESSION, undefined);
+  assert.equal(environment.CLAUDE_CODE_SESSION_ID, undefined);
 });

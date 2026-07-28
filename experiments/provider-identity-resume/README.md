@@ -460,33 +460,49 @@ version for this POC.
 
 ## Held-connection experiments (ATC-83)
 
-These scenarios sharpen the one-writer rule: they hold the adapter's
-connection open while a separate provider process (the TUI-equivalent
-resume path) drives the same conversation. Findings live in
+These scenarios sharpen the one-writer rule and settle where live status
+comes from while a provider TUI drives the conversation. Findings are in
 [`held-connection-findings.md`](held-connection-findings.md).
 
 ```sh
+# Codex: ATC's intended topology — one shared app-server, adapter observes
+# while a second client (and a real `codex resume --remote` TUI) drives.
+pnpm codex:held shared-server
+pnpm codex:held shared-server --await-marker ATC-DEMO-01   # adds a real remote-TUI leg
+
+# Codex: private app-server variants
 pnpm codex:held passive-hold
 pnpm codex:held stale-write
 pnpm codex:held poll-observe
+pnpm codex:held passive-hold-wait --await-marker ATC-DEMO-02
+
+# Claude
 pnpm claude:held passive-hold
 pnpm claude:held stale-write
+pnpm claude:held passive-hold-wait --await-marker ATC-DEMO-03
+pnpm claude:held agents-status --await-marker ATC-DEMO-04
 ```
 
-- `passive-hold` — the held connection never writes while two external
-  turns run; verifies it observes nothing, that history stays intact
-  across an adapter restart, and (Codex) that `thread/read` and
-  `thread/unsubscribe` work on the held connection.
+- `shared-server` — starts a dedicated `codex app-server --listen ws://…`,
+  holds one client passively while another drives, and records the fan-out.
+  This is the scenario that proves Codex live observation works.
+- `passive-hold` — the held connection never writes while external turns
+  run; verifies it observes nothing, that history survives an adapter
+  restart, and that `thread/read` / `thread/unsubscribe` work while held.
 - `stale-write` — the held connection writes once, serialized, after an
   external turn; characterizes context blindness and (Claude) history
   divergence.
-- `poll-observe` — Codex only; polls `thread/read` during an active
-  external turn to measure visibility latency and whether `thread.status`
-  reflects another process's activity (it does not).
+- `poll-observe` — Codex only; polls `thread/read` during an active external
+  turn to measure visibility latency and whether `thread.status` reflects
+  another process's activity (it does not).
+- `agents-status` — Claude only; polls `claude agents --json` while a real
+  TUI drives, recording the `busy`/`idle` timeline.
 
-External writers use `codex exec resume` and `claude -p --resume`, the
-same separate-process resume paths as the native TUIs. Each run writes a
-JSON evidence record plus raw JSONL streams under `runs/`.
+The `--await-marker` scenarios print `THREAD_ID:` / `SESSION_ID:` and then
+wait for that marker to appear in the provider's rollout or session file, so
+a caller (script or human) can drive a real TUI against the exact
+conversation. Each run writes a JSON evidence record plus raw JSONL streams
+under `runs/`.
 
 ## Safety and failure behavior
 

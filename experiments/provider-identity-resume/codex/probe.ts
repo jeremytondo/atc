@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   AppServerClient,
+  type AppServerRpc,
   type JsonObject,
   type ProtocolMessage,
   objectAt,
@@ -113,7 +114,9 @@ export interface GateRunRecord {
     | "observer-writer"
     | "held-connection-passive"
     | "held-connection-stale-write"
-    | "held-connection-poll-observe";
+    | "held-connection-poll-observe"
+    | "held-connection-passive-tui"
+    | "held-connection-shared-server";
   cwd: string;
   completedAt: string;
   evidence: JsonObject;
@@ -1724,14 +1727,14 @@ async function resumeScenario(options: ProbeOptions): Promise<void> {
 }
 
 export async function startDurableThread(
-  client: AppServerClient,
+  client: AppServerRpc,
   cwd: string,
 ): Promise<string> {
   return (await startDurableThreadDetails(client, cwd)).id;
 }
 
 export async function startDurableThreadDetails(
-  client: AppServerClient,
+  client: AppServerRpc,
   cwd: string,
 ): Promise<StartedThread> {
   const startResult = await client.request("thread/start", {
@@ -1753,7 +1756,7 @@ export async function startDurableThreadDetails(
 }
 
 export async function runTurn(
-  client: AppServerClient,
+  client: AppServerRpc,
   threadId: string,
   prompt: string,
   timeoutMs: number,
@@ -1824,7 +1827,7 @@ function agentTextFromMessages(
 }
 
 async function startTurn(
-  client: AppServerClient,
+  client: AppServerRpc,
   threadId: string,
   prompt: string,
   timeoutMs: number,
@@ -1870,7 +1873,7 @@ async function startTurn(
 }
 
 function waitForWaitingStatus(
-  client: AppServerClient,
+  client: AppServerRpc,
   threadId: string,
   flag: "waitingOnApproval" | "waitingOnUserInput",
   timeoutMs: number,
@@ -1891,7 +1894,7 @@ function waitForWaitingStatus(
 }
 
 async function runMarkerTurn(
-  client: AppServerClient,
+  client: AppServerRpc,
   threadId: string,
   marker: string,
   label: string,
@@ -1914,7 +1917,7 @@ async function runMarkerTurn(
 }
 
 async function runRecallTurn(
-  client: AppServerClient,
+  client: AppServerRpc,
   threadId: string,
   marker: string,
   label: string,
@@ -1937,7 +1940,7 @@ async function runRecallTurn(
 }
 
 async function runTuiRecallTurn(
-  client: AppServerClient,
+  client: AppServerRpc,
   threadId: string,
   marker: string,
   timeoutMs: number,
@@ -1961,7 +1964,7 @@ async function runTuiRecallTurn(
 }
 
 async function runObserverRecallTurn(
-  client: AppServerClient,
+  client: AppServerRpc,
   threadId: string,
   marker: string,
   timeoutMs: number,
@@ -1983,7 +1986,7 @@ async function runObserverRecallTurn(
   return result;
 }
 
-async function listAllThreadIds(client: AppServerClient): Promise<string[]> {
+async function listAllThreadIds(client: AppServerRpc): Promise<string[]> {
   const ids: string[] = [];
   let cursor: string | undefined;
   do {
@@ -2001,7 +2004,7 @@ async function listAllThreadIds(client: AppServerClient): Promise<string[]> {
 }
 
 async function planCollaborationMode(
-  client: AppServerClient,
+  client: AppServerRpc,
   defaultModel: string,
 ): Promise<JsonObject> {
   const result = await client.request("collaborationMode/list");
