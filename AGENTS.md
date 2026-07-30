@@ -16,6 +16,32 @@ Long term maintainability is a core priority. If you add new functionality, firs
 
 The server stands on its own and is meant as a flexible resource that other apps can connect to and be built on top of. The Web UI is more admin interface than API client. It's meant as a place to manage all aspects of the server and document the CLI and API. The CLI and API should mirror each other in terms of functionality unless there is a good reason they should not.
 
+## App Server (app-server/)
+
+The TypeScript/Bun successor to the Go server. Conventions established there:
+
+- One Bun package: one `package.json`, one committed `bun.lock`. Install with
+  `bun install --frozen-lockfile` (the `install` mise task).
+- The Bun version is pinned exactly in `app-server/mise.toml`; no floating
+  channels.
+- Dependencies are pinned exactly and stay minimal. Hono and Commander are the
+  only runtime dependencies; adding another requires concrete justification.
+- Prettier is the single formatting solution; strict `tsc --noEmit` is the
+  type gate. No overlapping lint/format systems.
+- Boundaries: `src/main.ts` (entrypoint) → `src/cli/` (Commander registration
+  and parsing) → `src/server/` (serve lifecycle, listener start/stop, app
+  factory, routes) → `src/buildInfo.ts` (injected build metadata). The HTTP
+  app is constructible without a listener; build metadata, listener address,
+  and process lifecycle are injectable in tests.
+- Public HTTP routes are versioned under `/api/v1`; responses are typed JSON
+  with camelCase fields.
+- Tests live in `app-server/tests/` and run with `bun test`; they include a
+  black-box test that spawns the real entrypoint on an ephemeral loopback
+  port and verifies clean SIGTERM shutdown.
+- Workflows are mise tasks (`install`, `dev`, `fmt`, `fmt:check`, `typecheck`,
+  `test`, `check`); root `check`/`test` fan out to the package, and CI runs
+  the same `mise run check`.
+
 ## Source Control
 
 Jujutsu (jj) Protocol: You are in a jj repository; strictly do not use git

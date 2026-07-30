@@ -9,10 +9,10 @@ This repository is a monorepo holding every atc surface:
 | Directory | Surface |
 | --- | --- |
 | [`server/`](server/) | atc server — the standalone Go service, HTTP/WebSocket API, `atc` CLI, and embedded admin web UI |
+| [`app-server/`](app-server/) | ATC App Server — the in-progress TypeScript/Bun successor to the Go server |
 | [`macos/`](macos/) | atc for macOS — the native SwiftUI client |
 | `ios/` | Reserved for a future atc for iOS client |
 | [`packages/`](packages/) | Shared cross-surface libraries (currently `ATCKit`, the Swift API client) |
-| [`docs/`](docs/) | Product, architecture, and planning documentation |
 | [`scripts/`](scripts/) | Repo-level helper scripts |
 
 ## atc server
@@ -116,7 +116,7 @@ Tasks are run with [mise](https://mise.jdx.dev). From the repo root:
 
 ```sh
 mise run check   # every gate: gofmt, go vet, Go tests, web type check,
-                 # web tests, ATCKit tests, macOS app tests
+                 # web tests, App Server check, ATCKit tests, macOS app tests
 mise run test    # all test suites
 ```
 
@@ -127,9 +127,7 @@ green local `check` means a green build.
 
 The HTTP API's wire shapes are pinned by shared fixtures in
 [`packages/contracts/`](packages/contracts/) that the Go server, Swift
-client, and web client all test against. Platform and security decisions
-(macOS floor, sandbox/ATS stance, token storage) live in
-[`docs/platform-policy.md`](docs/platform-policy.md).
+client, and web client all test against.
 
 Each surface builds, tests, and releases independently; see the workflows in
 `.github/workflows/`.

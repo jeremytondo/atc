@@ -1,0 +1,16 @@
+{
+  "name": "atc-app-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ATC App Server — the TypeScript server and atc CLI",
+  "dependencies": {
+    "commander": "15.0.0",
+    "hono": "4.12.32"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "prettier": "3.9.6",
+    "typescript": "7.0.2"
+  }
+}
