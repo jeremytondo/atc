@@ -3,12 +3,12 @@
 # "is the repo healthy?" the same way locally and in CI.
 
 [tasks.check]
-description = "All gates: server fmt/vet/tests + web check, Kit tests, macOS app tests"
-depends = ["server:check", "kit:test", "macos:test"]
+description = "All gates: server fmt/vet/tests + web check, App Server check, Kit tests, macOS app tests"
+depends = ["server:check", "app-server:check", "kit:test", "macos:test"]
 
 [tasks.test]
-description = "All tests: server Go suite, ATCKit, macOS app"
-depends = ["server:test", "kit:test", "macos:test"]
+description = "All tests: server Go suite, App Server, ATCKit, macOS app"
+depends = ["server:test", "app-server:test", "kit:test", "macos:test"]
 
 # --- Server (Go API + embedded web UI) ---
 
@@ -27,6 +27,16 @@ run = "mise run -C server build"
 [tasks."web:check"]
 description = "Type-check the web UI (svelte-check)"
 run = "mise run -C server web:check"
+
+# --- App Server (TypeScript/Effect on Bun) ---
+
+[tasks."app-server:check"]
+description = "App Server format check, strict type check, tests"
+run = "mise run -C app-server check"
+
+[tasks."app-server:test"]
+description = "App Server test suite"
+run = "mise run -C app-server test"
 
 # --- Swift surfaces ---
 

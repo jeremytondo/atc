@@ -1,0 +1,44 @@
+[tools]
+bun = "1.3.14"
+
+# --- Primary entrypoints ---
+
+[tasks.dev]
+description = "Run the App Server in the foreground (temporary dev default: http://127.0.0.1:7332)"
+depends = ["install"]
+run = "bun run src/main.ts serve"
+
+[tasks.check]
+description = "All App Server gates: format check, strict type check, tests"
+depends = ["fmt:check", "typecheck", "test"]
+
+# --- Building blocks ---
+
+# fmt:check/typecheck/test share install as a dependency instead of each
+# installing themselves: mise runs tasks in parallel, and concurrent installs
+# into the same node_modules race. A shared dependency runs exactly once.
+[tasks.install]
+description = "Install dependencies from the committed lockfile"
+run = "bun install --frozen-lockfile"
+
+[tasks.fmt]
+description = "Format TypeScript, JSON, and Markdown with Prettier"
+depends = ["install"]
+run = "bun run prettier --write ."
+
+[tasks."fmt:check"]
+description = "Fail if any file is not Prettier-clean"
+depends = ["install"]
+run = "bun run prettier --check ."
+
+[tasks.typecheck]
+description = "Strict TypeScript type check (no emit)"
+depends = ["install"]
+run = "bun run tsc --noEmit"
+
+# --bun forces the Bun runtime (vitest's shebang would otherwise pick node),
+# so tests exercise the same runtime the server ships on.
+[tasks.test]
+description = "Run the vitest suite on the Bun runtime"
+depends = ["install"]
+run = "bun --bun vitest run"
