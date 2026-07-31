@@ -1,6 +1,5 @@
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
-import { buildInfo } from "./buildInfo.ts"
 
 // The public HTTP contract. The server implementation (handlers.ts), the
 // OpenAPI document, and future typed clients all derive from this module.
@@ -25,8 +24,8 @@ export class V1 extends HttpApiGroup.make("v1")
   // before this line so they stay under /api/v1.
   .prefix("/api/v1") {}
 
+// The OpenAPI version is the contract version, not the build version, so this
+// module stays client-safe with no dependency on server internals.
 export class Api extends HttpApi.make("atc")
   .add(V1)
-  .annotateMerge(
-    OpenApi.annotations({ title: "ATC App Server API", version: buildInfo.version }),
-  ) {}
+  .annotateMerge(OpenApi.annotations({ title: "ATC App Server API", version: "v1" })) {}

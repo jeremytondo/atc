@@ -5,12 +5,12 @@ import * as Server from "./server.ts"
 // Temporary dev default so the Go server on 7331 can run alongside.
 export const DEFAULT_PORT = 7332
 
+/** The one reusable port contract for CLI (and later config/API) inputs. */
+export const Port = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }))
+
 export const port = Flag.integer("port").pipe(
   Flag.withDefault(DEFAULT_PORT),
-  Flag.filter(
-    (value) => value >= 1 && value <= 65535,
-    () => "port must be between 1 and 65535",
-  ),
+  Flag.withSchema(Port),
   Flag.withDescription(`TCP port to listen on (loopback only, default ${DEFAULT_PORT})`),
 )
 
