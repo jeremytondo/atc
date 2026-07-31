@@ -5,9 +5,14 @@ import * as Server from "../src/server.ts"
 import { TestBuildInfoLayer } from "./testBuildInfo.ts"
 
 describe("server layer", () => {
-  it.effect("binds loopback, serves the API, and releases the port when closed", () =>
+  // it.live: this test does real socket I/O, and the platform's shutdown
+  // timeout must run on the real clock, not it.effect's TestClock.
+  it.live("binds loopback, serves the API, and releases the port when closed", () =>
     Effect.gen(function* () {
+      // A manual scope so the server can be closed mid-test; the finalizer
+      // guarantees the listener dies even when an assertion fails first.
       const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
       const context = yield* Layer.build(
         Server.layer({ port: 0 }).pipe(Layer.provide(TestBuildInfoLayer)),
       ).pipe(Effect.provideService(Scope.Scope, scope))

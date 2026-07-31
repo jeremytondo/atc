@@ -55,7 +55,8 @@ deliberately). Write new code the same way:
 
 - Services are `Context.Service` classes with `Layer` implementations
   (`Layer.succeed` / `Layer.effect`). One service per module; export the class
-  and its `layer`.
+  and its `layer`. `HttpApiBuilder.group` handler layers are the exception:
+  name them `<Group>Handlers`.
 - Errors are Schema-based tagged error classes (`Schema.TaggedErrorClass`).
   API-visible errors carry an `httpApiStatus` annotation so HTTP status
   mapping derives from the contract. No plain `throw`/`Error` for domain

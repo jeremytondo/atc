@@ -33,18 +33,26 @@ describe("serve --port validation", () => {
     }),
   )
 
+  // --port=value keeps negative values from being tokenized as flags, so
+  // every case exercises the integer parse or the range filter itself.
   it.effect.each([
-    ["not a number", "abc"],
-    ["zero", "0"],
-    ["negative", "-1"],
-    ["above 65535", "70000"],
-  ] as const)("rejects %s with a CLI error", ([, value]) =>
+    ["not a number", "--port=abc"],
+    ["zero", "--port=0"],
+    ["negative", "--port=-1"],
+    ["above 65535", "--port=70000"],
+  ] as const)("rejects %s as an invalid value", ([, flag]) =>
     Effect.gen(function* () {
-      const { parsed, result } = yield* parsePort(["--port", value])
+      const { parsed, result } = yield* parsePort([flag])
       assert.strictEqual(parsed, undefined)
       assert.strictEqual(result._tag, "Failure")
       if (result._tag === "Failure") {
+        // Parse failures surface as ShowHelp wrapping the real error; a bare
+        // --help would be ShowHelp with no errors, so assert the wrapped tag.
         assert.strictEqual(CliError.isCliError(result.failure), true)
+        assert.strictEqual(result.failure._tag, "ShowHelp")
+        if (result.failure._tag === "ShowHelp") {
+          assert.strictEqual(result.failure.errors[0]?._tag, "InvalidValue")
+        }
       }
     }),
   )
