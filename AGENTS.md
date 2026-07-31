@@ -35,6 +35,18 @@ Codex Desktop App (https://chatgpt.com/codex): Greate user experience
 AGTerm (https://github.com/umputun/agterm): LibGhostty app with a lot of similar features.
 CMUX (https://github.com/manaflow-ai/cmux): Agentic coding focused terminal based on libghostty.
 
+## Reference Source Checkouts
+
+`mise run refs` shallow-clones read-only reference source into `repos/` (gitignored):
+the Effect monorepo pinned to the app-server's Effect version, plus T3Code and
+OpenCode (https://github.com/sst/opencode) as Effect architecture references.
+
+- Treat everything under `repos/` as read-only reference material. Never import
+  from it, edit it, or copy files out of it wholesale.
+- For Effect v4 APIs and idioms, prefer reading this source over web search or
+  training data — both skew heavily toward Effect v3.
+- To update a checkout, delete its directory and re-run `mise run refs`.
+
 ## Code Style
 
 - Always strive for simplicity. This is not a complex enterprise app.

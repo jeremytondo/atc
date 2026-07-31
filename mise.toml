@@ -45,6 +45,24 @@ xcodebuild test \
   CODE_SIGNING_ALLOWED=NO
 """
 
+[tasks.refs]
+description = "Fetch read-only reference source into repos/ (gitignored); delete a checkout and re-run to update"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+clone() {
+  if [ -d "repos/$1" ]; then
+    echo "repos/$1 already present; delete it and re-run to update"
+  else
+    git clone --depth 1 "${@:2}" "repos/$1"
+  fi
+}
+# Keep the Effect tag in sync with the version pinned in app-server.
+clone effect --branch 'effect@4.0.0-beta.102' https://github.com/Effect-TS/effect.git
+clone t3code https://github.com/pingdotgg/t3code.git
+clone opencode https://github.com/sst/opencode.git
+"""
+
 [tasks."macos:release-dev"]
 description = "Build and publish a notarized dev DMG to GitHub Releases"
 run = "ATC_NOTARY_PROFILE=ateliercode-notary scripts/release-dev.sh --upload"

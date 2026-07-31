@@ -31,6 +31,9 @@ coverage/
 # Logs
 *.log
 
+# Read-only reference checkouts (mise run refs)
+/repos/
+
 # Provider POC artifacts
 experiments/provider-identity-resume/.generated/
 experiments/provider-identity-resume/runs/
