@@ -38,6 +38,14 @@ run = "mise run -C app-server check"
 description = "App Server test suite"
 run = "mise run -C app-server test"
 
+[tasks."app-server:build"]
+description = "Compile the standalone App Server atc executable for this machine"
+run = "mise run -C app-server build"
+
+[tasks."app-server:build:all"]
+description = "Cross-compile standalone App Server atc executables for every release target"
+run = "mise run -C app-server 'build:all'"
+
 # --- Swift surfaces ---
 
 [tasks."kit:test"]
