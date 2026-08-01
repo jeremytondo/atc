@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "vitest"
-import { compiledBinaryPath, freePort, spawnServe, waitForHealth } from "./blackbox.ts"
+import { compiledBinaryPath, freePort, runCli, spawnServe, waitForHealth } from "./blackbox.ts"
 
 // Black-box validation of the compiled artifact: the standalone executable
 // must serve health/version with real injected build metadata and shut down
@@ -46,6 +46,18 @@ describe.skipIf(!enabled)("compiled atc artifact (opt-in: mise run test:compiled
       // Local builds from an edited tree carry a -dirty marker; CI is exact.
       expect(body.commit).toMatch(/^[0-9a-f]{40}(-dirty)?$/)
       expect(Number.isNaN(Date.parse(body.builtAt))).toBe(false)
+
+      // The client-backed commands ship in the same executable and must work
+      // against a live server from outside the repository too.
+      const healthCli = await runCli([compiledBinaryPath], ["health", "--url", base], outsideCwd)
+      expect(healthCli.stdout).toBe('{\n  "status": "ok"\n}\n')
+      expect(healthCli.stderr).toBe("")
+      expect(healthCli.exitCode).toBe(0)
+
+      const versionCli = await runCli([compiledBinaryPath], ["version", "--url", base], outsideCwd)
+      expect(JSON.parse(versionCli.stdout)).toEqual(body)
+      expect(versionCli.stderr).toBe("")
+      expect(versionCli.exitCode).toBe(0)
 
       proc.kill("SIGTERM")
       expect(await proc.exited).toBe(130)

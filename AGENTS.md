@@ -94,8 +94,8 @@ hand, and never maintain a parallel route-description layer.
   `check` and CI) fails on drift.
 - Every endpoint pins a stable operation id with
   `.annotate(OpenApi.Identifier, "...")`: camelCase verb+resource (e.g.
-  `getHealth`), unique across the whole API. Generated clients key off these
-  ids — renaming one is a breaking change.
+  `getHealth`), unique across the whole API. Generated clients and the CLI
+  parity registry key off these ids — renaming one is a breaking change.
 - Every request/response schema carries an `identifier` annotation (PascalCase
   type name, e.g. `HealthResponse`) so it becomes a named component schema,
   plus a short `description`. Endpoints carry an `OpenApi.Description`.
@@ -108,6 +108,40 @@ hand, and never maintain a parallel route-description layer.
 - `openapi.json` is generated output: `src/openapi.ts` is its single
   formatting authority, and it sits in `.prettierignore` so `fmt` never
   rewrites it.
+
+## Clients and CLI Parity (App Server)
+
+Both public clients derive from the same contract:
+
+- **TypeScript** (`app-server/src/client.ts`): derived directly from the
+  contract module with Effect's `HttpApiClient` — no generated artifact, so
+  nothing can go stale. It depends only on `api.ts`, never server internals.
+- **Swift** (`ATCAppServerAPI` in `packages/ATCKit`): generated at build time
+  by the Apple Swift OpenAPI Generator plugin from
+  `Sources/ATCAppServerAPI/openapi.json`, a symlink to the checked-in
+  `app-server/openapi.json`. Generator, runtime, and transport versions are
+  exact-pinned in `Package.swift`; upgrade them deliberately and rerun
+  `mise run kit:test`. The legacy `ATCAPI` product (Go server contract) is
+  unchanged and coexists until the app migrates.
+
+CLI commands backed by API operations use the contract-derived TypeScript
+client (`atc health`, `atc version`): JSON payload on stdout and exit 0 on
+success; diagnostics on stderr with exit 1 on invalid usage or request
+failure. `--url` is explicit for now; keep base-URL resolution isolated in
+`cli.ts` so later configuration work can make it optional.
+
+`app-server/src/parity.ts` is the API-to-CLI parity registry: every public
+operation id maps to exactly one canonical command path (a `Record`, so
+double-mapping is structurally impossible), or carries an inline justified
+exclusion. Process commands (`serve`, `smoke`) stay outside API parity.
+`test/parity.test.ts` validates the registry in-process against the generated
+document's operation ids and the real CLI command tree, so CI fails on
+missing, stale, duplicate-command, or unknown-command mappings and on
+operations both mapped and excluded.
+
+After any contract change: `mise run app-server:openapi` to regenerate the
+artifact, then `mise run contract:check` (OpenAPI drift + parity + TS client
+tests + Swift client build/tests) to verify the whole pipeline.
 
 ## Compiled Executable and Subprocesses (App Server)
 

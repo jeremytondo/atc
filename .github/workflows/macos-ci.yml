@@ -5,6 +5,9 @@ on:
     paths:
       - "macos/**"
       - "packages/**"
+      # The ATCAppServerAPI Swift client is generated from this artifact at
+      # build time, so contract changes must rebuild the Swift surfaces.
+      - "app-server/openapi.json"
       - "mise.toml"
       - ".github/workflows/macos-ci.yml"
   push:
@@ -13,6 +16,7 @@ on:
     paths:
       - "macos/**"
       - "packages/**"
+      - "app-server/openapi.json"
       - "mise.toml"
       - ".github/workflows/macos-ci.yml"
 
