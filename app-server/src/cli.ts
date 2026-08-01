@@ -1,9 +1,8 @@
 import { Console, Effect, Layer, Runtime, Schema } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
+import { DEFAULT_PORT } from "./api.ts"
 import * as Server from "./server.ts"
 import { smoke } from "./smoke.ts"
-
-export const DEFAULT_PORT = 7332
 
 /** The one reusable port contract for CLI (and later config/API) inputs. */
 export const Port = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }))

@@ -80,6 +80,35 @@ deliberately). Write new code the same way:
   (`mise run refs`) and follow T3Code/OpenCode patterns; web search and
   training data skew to Effect v3.
 
+## OpenAPI Contract (App Server)
+
+The `HttpApi` contract module (`app-server/src/api.ts`) is the single source of
+truth for the public API. The checked-in OpenAPI document
+(`app-server/openapi.json`) is generated from it — never edit the document by
+hand, and never maintain a parallel route-description layer.
+
+- Regenerate with `mise run -C app-server openapi` (or `mise run
+  app-server:openapi` at the root) after any contract change and commit the
+  result. Generation is pure (`OpenApi.fromApi`, no server) and byte-identical
+  for unchanged source; `mise run -C app-server openapi:check` (part of
+  `check` and CI) fails on drift.
+- Every endpoint pins a stable operation id with
+  `.annotate(OpenApi.Identifier, "...")`: camelCase verb+resource (e.g.
+  `getHealth`), unique across the whole API. Generated clients key off these
+  ids — renaming one is a breaking change.
+- Every request/response schema carries an `identifier` annotation (PascalCase
+  type name, e.g. `HealthResponse`) so it becomes a named component schema,
+  plus a short `description`. Endpoints carry an `OpenApi.Description`.
+- JSON fields are camelCase. Fields the server always returns are
+  non-optional in the schema and appear in `required`; health/version have no
+  optional fields yet, so no optionality convention exists beyond that.
+- The document version is the contract version (`v1`), never the compile-time
+  build metadata (`commit`/`builtAt`), which would break deterministic
+  generation.
+- `openapi.json` is generated output: `src/openapi.ts` is its single
+  formatting authority, and it sits in `.prettierignore` so `fmt` never
+  rewrites it.
+
 ## Compiled Executable and Subprocesses (App Server)
 
 - `mise run -C app-server build` compiles the standalone `atc` executable for

@@ -9,8 +9,8 @@ depends = ["install"]
 run = "bun run src/main.ts serve"
 
 [tasks.check]
-description = "All App Server gates: format check, strict type check, tests"
-depends = ["fmt:check", "typecheck", "test"]
+description = "All App Server gates: format check, strict type check, tests, OpenAPI drift"
+depends = ["fmt:check", "typecheck", "test", "openapi:check"]
 
 [tasks.build]
 description = "Compile the standalone atc executable for this machine into dist/"
@@ -30,6 +30,16 @@ run = "bun run scripts/build.ts --all"
 [tasks.install]
 description = "Install dependencies from the committed lockfile"
 run = "bun install --frozen-lockfile"
+
+[tasks.openapi]
+description = "Regenerate the checked-in OpenAPI artifact (openapi.json) from the contract"
+depends = ["install"]
+run = "bun run scripts/openapi.ts"
+
+[tasks."openapi:check"]
+description = "Fail if openapi.json is stale relative to the contract"
+depends = ["install"]
+run = "bun run scripts/openapi.ts --check"
 
 [tasks.fmt]
 description = "Format TypeScript, JSON, and Markdown with Prettier"

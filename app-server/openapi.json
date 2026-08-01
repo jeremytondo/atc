@@ -1,0 +1,124 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "ATC App Server API",
+    "version": "v1"
+  },
+  "paths": {
+    "/api/v1/health": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "getHealth",
+        "parameters": [],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Result of the liveness probe.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        },
+        "description": "Liveness probe: confirms the server is accepting requests."
+      }
+    },
+    "/api/v1/version": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "getVersion",
+        "parameters": [],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Build and contract version information for the running server.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionResponse"
+                }
+              }
+            }
+          }
+        },
+        "description": "Report the server's build metadata and API version."
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HealthResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "additionalProperties": false,
+        "description": "Result of the liveness probe."
+      },
+      "VersionResponse": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "string",
+            "description": "App Server release version."
+          },
+          "apiVersion": {
+            "type": "string",
+            "enum": [
+              "v1"
+            ]
+          },
+          "commit": {
+            "type": "string",
+            "description": "Commit the executable was built from (\"dev\" when running from source)."
+          },
+          "builtAt": {
+            "type": "string",
+            "description": "Build timestamp of the executable (\"dev\" when running from source)."
+          }
+        },
+        "required": [
+          "version",
+          "apiVersion",
+          "commit",
+          "builtAt"
+        ],
+        "additionalProperties": false,
+        "description": "Build and contract version information for the running server."
+      }
+    },
+    "securitySchemes": {}
+  },
+  "security": [],
+  "tags": [
+    {
+      "name": "v1"
+    }
+  ],
+  "servers": [
+    {
+      "url": "http://127.0.0.1:{port}",
+      "description": "Local App Server",
+      "variables": {
+        "port": {
+          "default": "7332"
+        }
+      }
+    }
+  ]
+}

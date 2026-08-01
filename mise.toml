@@ -31,12 +31,16 @@ run = "mise run -C server web:check"
 # --- App Server (TypeScript/Effect on Bun) ---
 
 [tasks."app-server:check"]
-description = "App Server format check, strict type check, tests"
+description = "App Server format check, strict type check, tests, OpenAPI drift"
 run = "mise run -C app-server check"
 
 [tasks."app-server:test"]
 description = "App Server test suite"
 run = "mise run -C app-server test"
+
+[tasks."app-server:openapi"]
+description = "Regenerate the checked-in App Server OpenAPI artifact from the contract"
+run = "mise run -C app-server openapi"
 
 [tasks."app-server:build"]
 description = "Compile the standalone App Server atc executable for this machine"
