@@ -3,12 +3,12 @@
 # "is the repo healthy?" the same way locally and in CI.
 
 [tasks.check]
-description = "All gates: server fmt/vet/tests + web check, Kit tests, macOS app tests"
-depends = ["server:check", "kit:test", "macos:test"]
+description = "All gates: server fmt/vet/tests + web check, App Server check, Kit tests, macOS app tests"
+depends = ["server:check", "app-server:check", "kit:test", "macos:test"]
 
 [tasks.test]
-description = "All tests: server Go suite, ATCKit, macOS app"
-depends = ["server:test", "kit:test", "macos:test"]
+description = "All tests: server Go suite, App Server, ATCKit, macOS app"
+depends = ["server:test", "app-server:test", "kit:test", "macos:test"]
 
 # --- Server (Go API + embedded web UI) ---
 
@@ -28,6 +28,16 @@ run = "mise run -C server build"
 description = "Type-check the web UI (svelte-check)"
 run = "mise run -C server web:check"
 
+# --- App Server (TypeScript/Effect on Bun) ---
+
+[tasks."app-server:check"]
+description = "App Server format check, strict type check, tests"
+run = "mise run -C app-server check"
+
+[tasks."app-server:test"]
+description = "App Server test suite"
+run = "mise run -C app-server test"
+
 # --- Swift surfaces ---
 
 [tasks."kit:test"]
@@ -43,6 +53,24 @@ xcodebuild test \
   -scheme atc \
   -destination platform=macOS \
   CODE_SIGNING_ALLOWED=NO
+"""
+
+[tasks.refs]
+description = "Fetch read-only reference source into repos/ (gitignored); delete a checkout and re-run to update"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+clone() {
+  if [ -d "repos/$1" ]; then
+    echo "repos/$1 already present; delete it and re-run to update"
+  else
+    git clone --depth 1 "${@:2}" "repos/$1"
+  fi
+}
+# Keep the Effect tag in sync with the version pinned in app-server.
+clone effect --branch 'effect@4.0.0-beta.102' https://github.com/Effect-TS/effect.git
+clone t3code https://github.com/pingdotgg/t3code.git
+clone opencode https://github.com/sst/opencode.git
 """
 
 [tasks."macos:release-dev"]

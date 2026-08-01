@@ -1,0 +1,44 @@
+name: App Server CI
+
+on:
+  pull_request:
+    paths:
+      - "app-server/**"
+      - "mise.toml"
+      - ".github/workflows/app-server-ci.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "app-server/**"
+      - "mise.toml"
+      - ".github/workflows/app-server-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-server-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: app-server
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: jdx/mise-action@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          working_directory: app-server
+
+      # Same gates as local `mise run check`: frozen-lockfile install,
+      # Prettier format check, strict tsc, and the vitest suite (which
+      # includes the black-box serve/shutdown test over loopback TCP).
+      - name: Check
+        run: mise run check

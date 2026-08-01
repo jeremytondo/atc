@@ -35,6 +35,51 @@ Codex Desktop App (https://chatgpt.com/codex): Greate user experience
 AGTerm (https://github.com/umputun/agterm): LibGhostty app with a lot of similar features.
 CMUX (https://github.com/manaflow-ai/cmux): Agentic coding focused terminal based on libghostty.
 
+## Reference Source Checkouts
+
+`mise run refs` shallow-clones read-only reference source into `repos/` (gitignored):
+the Effect monorepo pinned to the app-server's Effect version, plus T3Code and
+OpenCode (https://github.com/sst/opencode) as Effect architecture references.
+
+- Treat everything under `repos/` as read-only reference material. Never import
+  from it, edit it, or copy files out of it wholesale.
+- For Effect v4 APIs and idioms, prefer reading this source over web search or
+  training data — both skew heavily toward Effect v3.
+- To update a checkout, delete its directory and re-run `mise run refs`.
+
+## Effect Conventions (App Server)
+
+All TypeScript App Server code (`app-server/`) is written on Effect
+(`effect@4.0.0-beta.x` line + `@effect/platform-bun`, exact-pinned and upgraded
+deliberately). Write new code the same way:
+
+- Services are `Context.Service` classes with `Layer` implementations
+  (`Layer.succeed` / `Layer.effect`). One service per module; export the class
+  and its `layer`. `HttpApiBuilder.group` handler layers are the exception:
+  name them `<Group>Handlers`.
+- Errors are Schema-based tagged error classes (`Schema.TaggedErrorClass`).
+  API-visible errors carry an `httpApiStatus` annotation so HTTP status
+  mapping derives from the contract. No plain `throw`/`Error` for domain
+  failures.
+- HTTP is schema-first: endpoints are declared in the `HttpApi` contract
+  (`src/api.ts`) with Schema-typed responses, implemented with
+  `HttpApiBuilder.group`. The server, OpenAPI document, and typed clients all
+  derive from the contract.
+- All validation and domain types are Effect Schema. No zod or hand-rolled
+  parsing.
+- Exactly one runtime entrypoint: `BunRuntime.runMain` in `src/main.ts`. No
+  `runPromise`/manual runtimes anywhere else — tests use `@effect/vitest`
+  (`it.effect`), which manages the runtime for you.
+- Lifecycle is structured concurrency: resources live in Layers/Scopes so
+  SIGINT/SIGTERM interruption releases them. No hand-rolled signal listeners
+  or drain loops.
+- Tests substitute test Layers for production Layers; prefer in-process tests
+  (e.g. `HttpApiTest`) and reserve real listeners for lifecycle/black-box
+  coverage.
+- For Effect v4 APIs and idioms, read the pinned source under `repos/`
+  (`mise run refs`) and follow T3Code/OpenCode patterns; web search and
+  training data skew to Effect v3.
+
 ## Code Style
 
 - Always strive for simplicity. This is not a complex enterprise app.
