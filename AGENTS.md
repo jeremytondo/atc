@@ -90,8 +90,8 @@ deliberately). Write new code the same way:
   `scripts/build.ts` via `--define`; running from source reports `dev`.
 - Compiled behavior must never depend on the working directory. `.env`/bunfig
   autoloading is disabled at compile; assets that ship with the executable
-  (e.g. the packaged Claude Code binary staged at `dist/claude`) resolve
-  relative to `process.execPath`.
+  (e.g. the packaged Claude Code binary staged at `dist/claude-<os>-<arch>`)
+  resolve relative to `process.execPath` under target-scoped names.
 - All child processes go through the `Subprocess` service
   (`src/subprocess.ts`): scoped acquisition (scope close terminates the child,
   SIGTERM escalating to SIGKILL), bounded stderr diagnostics, explicit

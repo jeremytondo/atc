@@ -34,13 +34,16 @@ export interface SpawnSpec {
 
 export interface Child {
   readonly pid: number
-  /** stdout as a line stream. Consume it while the child runs. */
+  /**
+   * stdout as a line stream. Single-consumer: run it exactly once, and
+   * consume it while the child runs so the pipe never fills.
+   */
   readonly stdoutLines: Stream.Stream<string, SubprocessError>
   /** Snapshot of the most recent stderr lines, for failure diagnostics. */
   readonly stderrTail: Effect.Effect<ReadonlyArray<string>>
-  /** Write one line to the child's stdin. */
-  readonly writeLine: (line: string) => Effect.Effect<void>
-  /** Close the child's stdin (EOF). */
+  /** Write one line to the child's stdin; fails once stdin is closed. */
+  readonly writeLine: (line: string) => Effect.Effect<void, SubprocessError>
+  /** Close the child's stdin (EOF). Idempotent. */
   readonly endInput: Effect.Effect<void>
   /** Await exit. Fails if the child was terminated by a signal. */
   readonly exitCode: Effect.Effect<number, SubprocessError>
@@ -52,6 +55,33 @@ export class Subprocess extends Context.Service<
     readonly spawn: (spec: SpawnSpec) => Effect.Effect<Child, SubprocessError, Scope.Scope>
   }
 >()("app-server/Subprocess") {}
+
+/** True while `pid` refers to a live (or not yet reaped) process. */
+export const isProcessAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Poll until `pid` is gone; resolves to whether it exited within the window.
+ * Scope close already awaits child termination, so callers use this as an
+ * explicit post-condition check, not as cleanup.
+ */
+export const waitForProcessExit = (
+  pid: number,
+  options?: { readonly attempts?: number; readonly interval?: Duration.Input },
+): Effect.Effect<boolean> =>
+  Effect.gen(function* () {
+    const attempts = options?.attempts ?? 40
+    for (let attempt = 0; attempt < attempts && isProcessAlive(pid); attempt++) {
+      yield* Effect.sleep(options?.interval ?? "50 millis")
+    }
+    return !isProcessAlive(pid)
+  })
 
 const truncate = (line: string): string =>
   line.length > MAX_CAPTURED_LINE_LENGTH ? `${line.slice(0, MAX_CAPTURED_LINE_LENGTH)}…` : line
@@ -80,8 +110,15 @@ const spawn = Effect.fnUntraced(function* (
     )
     .pipe(Effect.mapError(mapPlatformError(spec.executable, "spawn")))
 
-  // Drain stderr concurrently into a bounded tail so a chatty child can
-  // neither fill the pipe (deadlock) nor grow diagnostics without limit.
+  // End stdin once the child exits so later writes fail loudly instead of
+  // vanishing into a dead pipe. (A write in the instant between exit and its
+  // observation can still be lost — inherent to pipes.)
+  yield* handle.exitCode.pipe(Effect.ignore, Effect.andThen(Queue.end(stdin)), Effect.forkScoped)
+
+  // Drain stderr concurrently into a bounded tail so a chatty child cannot
+  // fill the pipe (deadlock) or grow diagnostics without limit. Note the
+  // bound is per line after splitting: output with no newlines at all still
+  // accumulates in splitLines before truncation applies.
   const stderrTail: Array<string> = []
   yield* handle.stderr.pipe(
     Stream.decodeText,
@@ -104,7 +141,20 @@ const spawn = Effect.fnUntraced(function* (
       Stream.mapError(mapPlatformError(spec.executable, "stdout")),
     ),
     stderrTail: Effect.sync(() => [...stderrTail]),
-    writeLine: (line) => Effect.asVoid(Queue.offer(stdin, encoder.encode(`${line}\n`))),
+    writeLine: (line) =>
+      Queue.offer(stdin, encoder.encode(`${line}\n`)).pipe(
+        Effect.flatMap((accepted) =>
+          accepted
+            ? Effect.void
+            : Effect.fail(
+                new SubprocessError({
+                  executable: spec.executable,
+                  operation: "stdin",
+                  message: "stdin is closed (input ended or child exited)",
+                }),
+              ),
+        ),
+      ),
     endInput: Effect.asVoid(Queue.end(stdin)),
     exitCode: handle.exitCode.pipe(
       Effect.map((code) => code as number),

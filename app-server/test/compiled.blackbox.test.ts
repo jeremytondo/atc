@@ -43,7 +43,8 @@ describe.skipIf(!enabled)("compiled atc artifact (opt-in: mise run test:compiled
       }
       expect(body.apiVersion).toBe("v1")
       // Compiled builds must carry real injected metadata, not dev fallbacks.
-      expect(body.commit).toMatch(/^[0-9a-f]{40}$/)
+      // Local builds from an edited tree carry a -dirty marker; CI is exact.
+      expect(body.commit).toMatch(/^[0-9a-f]{40}(-dirty)?$/)
       expect(Number.isNaN(Date.parse(body.builtAt))).toBe(false)
 
       proc.kill("SIGTERM")

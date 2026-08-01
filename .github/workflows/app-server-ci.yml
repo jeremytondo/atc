@@ -61,6 +61,7 @@ jobs:
         run: mise run build:all
 
       - name: Verify deterministic artifact names
+        # Keep this target list in sync with TARGETS in app-server/scripts/build.ts.
         run: |
           for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
             test -x "dist/atc-$target" || { echo "missing dist/atc-$target"; exit 1; }
@@ -83,6 +84,11 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           working_directory: app-server
+
+      # The fast suite exercises the OS-sensitive subprocess seam (process
+      # groups, signal escalation), so run it natively on both platforms too.
+      - name: Fast suite
+        run: mise run test
 
       - name: Compiled artifact black-box tests
         run: mise run test:compiled

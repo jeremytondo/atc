@@ -18,9 +18,13 @@ const runSmoke = async (provider: "codex" | "claude") => {
     stdout: "pipe",
     stderr: "pipe",
   })
-  const exitCode = await proc.exited
-  const stdout = await new Response(proc.stdout as ReadableStream).text()
-  const stderr = await new Response(proc.stderr as ReadableStream).text()
+  // Drain the pipes while awaiting exit so verbose output can never block
+  // the child on a full pipe.
+  const [exitCode, stdout, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout as ReadableStream).text(),
+    new Response(proc.stderr as ReadableStream).text(),
+  ])
   expect(exitCode, `atc smoke ${provider} failed\nstdout:\n${stdout}\nstderr:\n${stderr}`).toBe(0)
   expect(stdout).toContain("PASS")
 }
@@ -44,7 +48,7 @@ describe.skipIf(!enabled)("live provider smoke (opt-in: mise run test:smoke)", (
   }, 120_000)
 
   test("Claude Agent SDK round trip", async () => {
-    const staged = join(dirname(compiledBinaryPath), "claude")
+    const staged = join(dirname(compiledBinaryPath), `claude-${process.platform}-${process.arch}`)
     const resolvable = process.env["ATC_CLAUDE_CODE_EXECUTABLE"] !== undefined || existsSync(staged)
     expect(
       resolvable,

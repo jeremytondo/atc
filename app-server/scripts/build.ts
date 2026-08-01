@@ -12,18 +12,16 @@ import { copyFile, mkdir } from "node:fs/promises"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 
-export const TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"] as const
+// Keep in sync with the artifact checks in .github/workflows/app-server-ci.yml.
+const TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"] as const
 type Target = (typeof TARGETS)[number]
 
 const appServerRoot = fileURLToPath(new URL("..", import.meta.url))
 
-const hostTarget = (): Target => {
-  const target = `${process.platform}-${process.arch}`
-  if (!(TARGETS as readonly string[]).includes(target)) {
-    throw new Error(`unsupported host platform ${target}; expected one of: ${TARGETS.join(", ")}`)
-  }
-  return target as Target
-}
+const host = `${process.platform}-${process.arch}`
+const hostTarget: Target | null = (TARGETS as readonly string[]).includes(host)
+  ? (host as Target)
+  : null
 
 const run = (cmd: ReadonlyArray<string>): string => {
   const result = Bun.spawnSync([...cmd], { cwd: appServerRoot, stdout: "pipe", stderr: "inherit" })
@@ -33,9 +31,20 @@ const run = (cmd: ReadonlyArray<string>): string => {
   return result.stdout.toString().trim()
 }
 
-const commit = run(["git", "rev-parse", "HEAD"])
+// The stamped commit is git HEAD (the working-copy parent in a colocated jj
+// repo), so mark builds whose tree differs from it.
+const dirty = run(["git", "status", "--porcelain"]) === "" ? "" : "-dirty"
+const commit = run(["git", "rev-parse", "HEAD"]) + dirty
 const builtAt = new Date().toISOString()
-const targets: ReadonlyArray<Target> = process.argv.includes("--all") ? TARGETS : [hostTarget()]
+
+const targets: ReadonlyArray<Target> = process.argv.includes("--all")
+  ? TARGETS
+  : hostTarget !== null
+    ? [hostTarget]
+    : []
+if (targets.length === 0) {
+  throw new Error(`unsupported host platform ${host}; expected one of: ${TARGETS.join(", ")}`)
+}
 
 for (const target of targets) {
   const outfile = `dist/atc-${target}`
@@ -54,22 +63,25 @@ for (const target of targets) {
     `--outfile=${outfile}`,
     "src/main.ts",
   ])
-  console.log(`built ${outfile} (commit ${commit.slice(0, 12)}, ${builtAt})`)
+  console.log(`built ${outfile} (commit ${commit.slice(0, 12)}${dirty}, ${builtAt})`)
 }
 
 // Stage the Claude Agent SDK's packaged platform-specific Claude Code binary
-// next to the compiled executable. The smoke command resolves it relative to
-// the executable's own location (never the working directory). Bun only
-// installs the host's platform package, so cross-compiled targets ship
-// without it until the release milestone settles per-target acquisition.
-const claudeSource = join(
-  appServerRoot,
-  "node_modules",
-  `@anthropic-ai/claude-agent-sdk-${hostTarget()}`,
-  "claude",
-)
-if (targets.includes(hostTarget()) && existsSync(claudeSource)) {
-  await mkdir(join(appServerRoot, "dist"), { recursive: true })
-  await copyFile(claudeSource, join(appServerRoot, "dist", "claude"))
-  console.log("staged dist/claude (packaged Claude Code executable for the host platform)")
+// next to the compiled executable, under a target-scoped name so an artifact
+// can never pair with a wrong-platform binary. Bun only installs the host's
+// platform package, so cross-compiled targets ship without one until the
+// release milestone settles per-target acquisition.
+if (hostTarget !== null && targets.includes(hostTarget)) {
+  const claudeSource = join(
+    appServerRoot,
+    "node_modules",
+    `@anthropic-ai/claude-agent-sdk-${hostTarget}`,
+    "claude",
+  )
+  if (existsSync(claudeSource)) {
+    const staged = `dist/claude-${hostTarget}`
+    await mkdir(join(appServerRoot, "dist"), { recursive: true })
+    await copyFile(claudeSource, join(appServerRoot, staged))
+    console.log(`staged ${staged} (packaged Claude Code executable)`)
+  }
 }

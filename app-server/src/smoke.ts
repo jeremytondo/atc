@@ -1,5 +1,5 @@
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk"
-import { Console, Duration, Effect, Option, Runtime, Schema, Stream } from "effect"
+import { Console, Deferred, Duration, Effect, Runtime, Schema, Stream } from "effect"
 import { Command } from "effect/unstable/cli"
 import { existsSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
@@ -43,15 +43,17 @@ export const resolveCodexExecutable = Effect.suspend(() => {
 
 /**
  * Claude Code: explicit env override, then the packaged platform binary staged
- * next to this executable (compiled distribution), then the platform package
- * in node_modules (running from source). Never the working directory.
+ * next to this executable (compiled distribution; target-scoped name so a
+ * wrong-platform binary can never pair), then the platform package in
+ * node_modules (running from source). Never the working directory.
  */
 export const resolveClaudeCodeExecutable = Effect.suspend(() => {
   const override = process.env["ATC_CLAUDE_CODE_EXECUTABLE"]
   if (override !== undefined && override !== "") return Effect.succeed(override)
-  const adjacent = join(dirname(process.execPath), "claude")
+  const platformTarget = `${process.platform}-${process.arch}`
+  const adjacent = join(dirname(process.execPath), `claude-${platformTarget}`)
   if (existsSync(adjacent)) return Effect.succeed(adjacent)
-  const platformPackage = `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`
+  const platformPackage = `@anthropic-ai/claude-agent-sdk-${platformTarget}`
   try {
     const resolved = createRequire(import.meta.url).resolve(`${platformPackage}/claude`)
     if (existsSync(resolved)) return Effect.succeed(resolved)
@@ -71,21 +73,13 @@ export const resolveClaudeCodeExecutable = Effect.suspend(() => {
 
 // --- Shared termination checks ----------------------------------------------
 
-const isAlive = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
-}
-
+// Scope close already awaits child termination (SIGTERM + SIGKILL
+// escalation), so this is not cleanup: it is the explicit no-orphan proof the
+// smoke checks exist to provide.
 const verifyProcessGone = (provider: "codex" | "claude", pid: number) =>
   Effect.gen(function* () {
-    for (let attempt = 0; attempt < 40 && isAlive(pid); attempt++) {
-      yield* Effect.sleep("50 millis")
-    }
-    if (isAlive(pid)) {
+    const exited = yield* Subprocess.waitForProcessExit(pid)
+    if (!exited) {
       return yield* Effect.fail(
         new SmokeError({ provider, message: `child process ${pid} is still alive after cleanup` }),
       )
@@ -110,7 +104,13 @@ const verifyNoChildOrphans = (provider: "codex" | "claude") =>
           yield* pgrep.exitCode // 0 = matches, 1 = none; either is a clean run
           return lines.filter((line) => line.trim() !== "")
         }),
-      ).pipe(Effect.mapError((e) => new SmokeError({ provider, message: e.message })))
+      ).pipe(
+        Effect.mapError(
+          // A broken check is not a provider failure; say which one it is.
+          (error) =>
+            new SmokeError({ provider, message: `orphan check could not run: ${error.message}` }),
+        ),
+      )
       if (survivors.length === 0) return
       if (attempt >= 20) {
         return yield* Effect.fail(
@@ -126,27 +126,46 @@ const verifyNoChildOrphans = (provider: "codex" | "claude") =>
 
 // --- Codex: one JSON-RPC initialize round trip over stdio --------------------
 
-interface JsonRpcMessage {
-  readonly id?: unknown
-  readonly result?: unknown
-  readonly error?: { readonly code?: unknown; readonly message?: unknown }
+/** The one message shape this smoke check inspects; `error: null` counts as absent. */
+const InitializeResponse = Schema.Struct({
+  error: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        code: Schema.optional(Schema.Number),
+        message: Schema.optional(Schema.String),
+      }),
+    ),
+  ),
+})
+
+const INITIALIZE_REQUEST_ID = 1
+
+/** Loose parse: provider stdout noise (banners, warnings) is tolerated. */
+const parseResponseLine = (line: string): unknown | undefined => {
+  try {
+    const parsed: unknown = JSON.parse(line)
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      (parsed as { id?: unknown }).id === INITIALIZE_REQUEST_ID
+    ) {
+      return parsed
+    }
+  } catch {
+    // Not protocol JSON; skip.
+  }
+  return undefined
 }
 
-const parseJsonRpcLine = (line: string) =>
-  Effect.try({
-    try: () => JSON.parse(line) as JsonRpcMessage,
-    catch: () =>
-      new SmokeError({
-        provider: "codex",
-        message: `invalid JSON on codex app-server stdout: ${line.slice(0, 200)}`,
-      }),
-  })
+const stderrSuffix = (tail: ReadonlyArray<string>): string =>
+  tail.length === 0 ? "" : `\nprovider stderr:\n${tail.join("\n")}`
 
 const failWithStderr = (child: Subprocess.Child, message: string) =>
   Effect.gen(function* () {
     const tail = yield* child.stderrTail
-    const diagnostics = tail.length === 0 ? "" : `\nprovider stderr:\n${tail.join("\n")}`
-    return yield* Effect.fail(new SmokeError({ provider: "codex", message: message + diagnostics }))
+    return yield* Effect.fail(
+      new SmokeError({ provider: "codex", message: message + stderrSuffix(tail) }),
+    )
   })
 
 /**
@@ -162,15 +181,41 @@ export const codexSmoke = (
     const initializeTimeout = options?.initializeTimeout ?? "15 seconds"
     const build = yield* BuildInfo.BuildInfo
     const subprocess = yield* Subprocess.Subprocess
-    let pid = 0
+    let pid: number | null = null
     yield* Effect.scoped(
       Effect.gen(function* () {
         const child = yield* subprocess.spawn(spec)
         pid = child.pid
         yield* Console.log(`launched ${spec.executable} (pid ${pid})`)
+
+        // Consume stdout exactly once for the child's whole lifetime, so the
+        // pipe can never fill: the initialize response resolves the deferred
+        // and everything else keeps draining.
+        const responseSlot = yield* Deferred.make<unknown, SmokeError>()
+        yield* Effect.gen(function* () {
+          yield* child.stdoutLines.pipe(
+            Stream.runForEach((line) => {
+              const response = parseResponseLine(line)
+              return response === undefined
+                ? Effect.void
+                : Effect.asVoid(Deferred.succeed(responseSlot, response))
+            }),
+            Effect.ignore,
+          )
+          // Stream end without a response = child closed stdout early.
+          const tail = yield* child.stderrTail
+          yield* Deferred.fail(
+            responseSlot,
+            new SmokeError({
+              provider: "codex",
+              message: "codex app-server closed stdout before responding" + stderrSuffix(tail),
+            }),
+          )
+        }).pipe(Effect.forkScoped)
+
         yield* child.writeLine(
           JSON.stringify({
-            id: 1,
+            id: INITIALIZE_REQUEST_ID,
             method: "initialize",
             params: {
               clientInfo: { name: "atc", title: "ATC App Server", version: build.version },
@@ -178,10 +223,7 @@ export const codexSmoke = (
             },
           }),
         )
-        const response = yield* child.stdoutLines.pipe(
-          Stream.mapEffect(parseJsonRpcLine),
-          Stream.filter((message) => message.id === 1),
-          Stream.runHead,
+        const raw = yield* Deferred.await(responseSlot).pipe(
           Effect.timeoutOrElse({
             duration: initializeTimeout,
             orElse: () =>
@@ -191,13 +233,19 @@ export const codexSmoke = (
               ),
           }),
         )
-        if (Option.isNone(response)) {
-          return yield* failWithStderr(child, "codex app-server closed stdout before responding")
-        }
-        if (response.value.error !== undefined) {
+        const response = yield* Schema.decodeUnknownEffect(InitializeResponse)(raw).pipe(
+          Effect.mapError(
+            (error) =>
+              new SmokeError({
+                provider: "codex",
+                message: `unexpected initialize response shape: ${error.message}`,
+              }),
+          ),
+        )
+        if (response.error !== undefined && response.error !== null) {
           return yield* failWithStderr(
             child,
-            `initialize failed: ${JSON.stringify(response.value.error)}`,
+            `initialize failed: ${JSON.stringify(response.error)}`,
           )
         }
         yield* Console.log("initialize round trip OK")
@@ -212,7 +260,7 @@ export const codexSmoke = (
           : Console.log(`codex app-server exited with code ${exitCode}`)
       }),
     )
-    yield* verifyProcessGone("codex", pid)
+    if (pid !== null) yield* verifyProcessGone("codex", pid)
     yield* Console.log("PASS: codex app-server round trip complete; child terminated")
   })
 
@@ -268,7 +316,8 @@ const claudeRoundTrip = async (
 /**
  * One bounded round trip through the Claude Agent SDK using an explicitly
  * resolved packaged Claude Code executable, from a working directory outside
- * any repository.
+ * any repository. The no-orphan check runs on success *and* failure — the
+ * failure path is exactly where orphans are likely.
  */
 export const claudeSmoke = (claudeExecutable: string) =>
   Effect.scoped(
@@ -280,25 +329,46 @@ export const claudeSmoke = (claudeExecutable: string) =>
       )
       const abortController = new AbortController()
       yield* Effect.addFinalizer(() => Effect.sync(() => abortController.abort()))
-      const summary = yield* Effect.tryPromise({
-        try: () => claudeRoundTrip(claudeExecutable, cwd, abortController),
-        catch: (error) => new SmokeError({ provider: "claude", message: describeError(error) }),
-      }).pipe(
-        Effect.timeoutOrElse({
-          duration: "180 seconds",
-          orElse: () =>
-            Effect.fail(
-              new SmokeError({
+      const attempt = yield* Effect.result(
+        Effect.tryPromise({
+          // Wire Effect interruption straight through to the SDK.
+          try: (signal) => {
+            signal.addEventListener("abort", () => abortController.abort())
+            return claudeRoundTrip(claudeExecutable, cwd, abortController)
+          },
+          catch: (error) => new SmokeError({ provider: "claude", message: describeError(error) }),
+        }).pipe(
+          Effect.timeoutOrElse({
+            duration: "180 seconds",
+            orElse: () =>
+              Effect.fail(
+                new SmokeError({
+                  provider: "claude",
+                  message: "timed out after 180s waiting for the Claude round trip",
+                }),
+              ),
+          }),
+        ),
+      )
+      // Whatever happened, the SDK's child must be gone before we finish
+      // (and before the temp cwd is removed underneath it). Keep the original
+      // failure primary so an orphan report never masks the root cause.
+      abortController.abort()
+      const orphanCheck = yield* Effect.result(verifyNoChildOrphans("claude"))
+      if (attempt._tag === "Failure") {
+        return yield* Effect.fail(
+          orphanCheck._tag === "Failure"
+            ? new SmokeError({
                 provider: "claude",
-                message: "timed out after 180s waiting for the Claude round trip",
-              }),
-            ),
-        }),
-      )
+                message: `${attempt.failure.message}\nadditionally: ${orphanCheck.failure.message}`,
+              })
+            : attempt.failure,
+        )
+      }
+      if (orphanCheck._tag === "Failure") return yield* Effect.fail(orphanCheck.failure)
       yield* Console.log(
-        `claude session ${summary.sessionId} answered: ${JSON.stringify(summary.text)}`,
+        `claude session ${attempt.success.sessionId} answered: ${JSON.stringify(attempt.success.text)}`,
       )
-      yield* verifyNoChildOrphans("claude")
       yield* Console.log("PASS: Claude Agent SDK round trip complete; no orphaned children")
     }),
   )
@@ -306,7 +376,9 @@ export const claudeSmoke = (claudeExecutable: string) =>
 // --- CLI wiring ---------------------------------------------------------------
 
 /** Print the failure as actionable diagnostics, then fail quietly. */
-const reported = <A, R>(effect: Effect.Effect<A, SmokeError | Subprocess.SubprocessError, R>) =>
+const reportFailures = <A, R>(
+  effect: Effect.Effect<A, SmokeError | Subprocess.SubprocessError, R>,
+) =>
   effect.pipe(
     Effect.catchTag(["SmokeError", "SubprocessError"], (error) =>
       Console.error(
@@ -318,7 +390,7 @@ const reported = <A, R>(effect: Effect.Effect<A, SmokeError | Subprocess.Subproc
   )
 
 const codexCommand = Command.make("codex", {}, () =>
-  reported(
+  reportFailures(
     Effect.gen(function* () {
       const executable = yield* resolveCodexExecutable
       yield* codexSmoke({
@@ -333,7 +405,7 @@ const codexCommand = Command.make("codex", {}, () =>
 ).pipe(Command.withDescription("[unstable] Codex app-server launch and initialize round trip"))
 
 const claudeCommand = Command.make("claude", {}, () =>
-  reported(
+  reportFailures(
     Effect.gen(function* () {
       const executable = yield* resolveClaudeCodeExecutable
       yield* claudeSmoke(executable)

@@ -21,22 +21,10 @@ const fixture = (name: string): Subprocess.SpawnSpec => ({
   env: {},
 })
 
-const isAlive = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
-}
-
 // The release finalizer awaits exit, but give the OS a moment to reap.
 const expectDead = (pid: number) =>
   Effect.gen(function* () {
-    for (let attempt = 0; attempt < 20 && isAlive(pid); attempt++) {
-      yield* Effect.sleep("50 millis")
-    }
-    assert.strictEqual(isAlive(pid), false)
+    assert.strictEqual(yield* Subprocess.waitForProcessExit(pid), true)
   })
 
 describe("Subprocess", () => {
@@ -67,6 +55,25 @@ describe("Subprocess", () => {
       assert.deepStrictEqual(first, Option.some("echo:ping"))
       yield* child.endInput
       assert.strictEqual(yield* child.exitCode, 0)
+    }).pipe(Effect.scoped, Effect.provide(TestLayer)),
+  )
+
+  it.live("fails writes once the child has exited instead of dropping them", () =>
+    Effect.gen(function* () {
+      const subprocess = yield* Subprocess.Subprocess
+      const child = yield* subprocess.spawn(fixture("exit-code"))
+      assert.strictEqual(yield* child.exitCode, 7)
+      // stdin closes when exit is observed by a background fiber; poll until
+      // the write is rejected rather than silently dropped.
+      for (let attempt = 0; ; attempt++) {
+        const result = yield* Effect.result(child.writeLine("after-death"))
+        if (result._tag === "Failure") {
+          assert.strictEqual(result.failure.operation, "stdin")
+          break
+        }
+        assert.isBelow(attempt, 50, "writeLine kept succeeding after child exit")
+        yield* Effect.sleep("20 millis")
+      }
     }).pipe(Effect.scoped, Effect.provide(TestLayer)),
   )
 
@@ -106,7 +113,7 @@ describe("Subprocess", () => {
         const subprocess = yield* Subprocess.Subprocess
         return yield* subprocess.spawn(fixture("sleep-forever"))
       }).pipe(Scope.provide(scope))
-      assert.strictEqual(isAlive(child.pid), true)
+      assert.strictEqual(Subprocess.isProcessAlive(child.pid), true)
       yield* Scope.close(scope, Exit.void)
       yield* expectDead(child.pid)
     }).pipe(Effect.provide(TestLayer)),
