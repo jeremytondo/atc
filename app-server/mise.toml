@@ -12,6 +12,16 @@ run = "bun run src/main.ts serve"
 description = "All App Server gates: format check, strict type check, tests"
 depends = ["fmt:check", "typecheck", "test"]
 
+[tasks.build]
+description = "Compile the standalone atc executable for this machine into dist/"
+depends = ["install"]
+run = "bun run scripts/build.ts"
+
+[tasks."build:all"]
+description = "Cross-compile standalone atc executables for every release target into dist/"
+depends = ["install"]
+run = "bun run scripts/build.ts --all"
+
 # --- Building blocks ---
 
 # fmt:check/typecheck/test share install as a dependency instead of each
