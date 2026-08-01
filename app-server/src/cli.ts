@@ -1,6 +1,7 @@
 import { Console, Effect, Layer, Runtime, Schema } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
 import * as Server from "./server.ts"
+import { smoke } from "./smoke.ts"
 
 export const DEFAULT_PORT = 7332
 
@@ -40,5 +41,5 @@ const serve = Command.make("serve", { port }, ({ port }) =>
 
 export const atc = Command.make("atc").pipe(
   Command.withDescription("ATC App Server"),
-  Command.withSubcommands([serve]),
+  Command.withSubcommands([serve, smoke]),
 )
