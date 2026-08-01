@@ -1,11 +1,9 @@
 import { query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk"
 import { Console, Deferred, Duration, Effect, Runtime, Schema, Stream } from "effect"
 import { Command } from "effect/unstable/cli"
-import { existsSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
-import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { join } from "node:path"
 import * as BuildInfo from "./buildInfo.ts"
 import * as Subprocess from "./subprocess.ts"
 
@@ -42,31 +40,22 @@ export const resolveCodexExecutable = Effect.suspend(() => {
 })
 
 /**
- * Claude Code: explicit env override, then the packaged platform binary staged
- * next to this executable (compiled distribution; target-scoped name so a
- * wrong-platform binary can never pair), then the platform package in
- * node_modules (running from source). Never the working directory.
+ * Claude Code: explicit env override, then the user's installed `claude` on
+ * PATH — the same bring-your-own-CLI rule as codex. atc does not ship a
+ * Claude Code binary; the user's install also carries the credentials the
+ * SDK needs.
  */
 export const resolveClaudeCodeExecutable = Effect.suspend(() => {
   const override = process.env["ATC_CLAUDE_CODE_EXECUTABLE"]
   if (override !== undefined && override !== "") return Effect.succeed(override)
-  const platformTarget = `${process.platform}-${process.arch}`
-  const adjacent = join(dirname(process.execPath), `claude-${platformTarget}`)
-  if (existsSync(adjacent)) return Effect.succeed(adjacent)
-  const platformPackage = `@anthropic-ai/claude-agent-sdk-${platformTarget}`
-  try {
-    const resolved = createRequire(import.meta.url).resolve(`${platformPackage}/claude`)
-    if (existsSync(resolved)) return Effect.succeed(resolved)
-  } catch {
-    // No node_modules in a compiled executable; fall through to the error.
-  }
+  const found = Bun.which("claude")
+  if (found !== null) return Effect.succeed(found)
   return Effect.fail(
     new SmokeError({
       provider: "claude",
       message:
-        "Claude Code executable not found; tried $ATC_CLAUDE_CODE_EXECUTABLE, " +
-        `${adjacent}, and ${platformPackage} in node_modules. ` +
-        "Run `mise run build` to stage it, or set ATC_CLAUDE_CODE_EXECUTABLE.",
+        "claude not found on PATH; install and authenticate Claude Code " +
+        "or set ATC_CLAUDE_CODE_EXECUTABLE",
     }),
   )
 })

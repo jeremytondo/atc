@@ -1,6 +1,5 @@
 import { existsSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
 import { describe, expect, test } from "vitest"
 import { compiledBinaryPath } from "./blackbox.ts"
 
@@ -48,11 +47,11 @@ describe.skipIf(!enabled)("live provider smoke (opt-in: mise run test:smoke)", (
   }, 120_000)
 
   test("Claude Agent SDK round trip", async () => {
-    const staged = join(dirname(compiledBinaryPath), `claude-${process.platform}-${process.arch}`)
-    const resolvable = process.env["ATC_CLAUDE_CODE_EXECUTABLE"] !== undefined || existsSync(staged)
+    const resolvable =
+      process.env["ATC_CLAUDE_CODE_EXECUTABLE"] !== undefined || Bun.which("claude") !== null
     expect(
       resolvable,
-      `packaged Claude Code executable not staged at ${staged}; run \`mise run build\` or set ATC_CLAUDE_CODE_EXECUTABLE`,
+      "claude not found; install and authenticate Claude Code or set ATC_CLAUDE_CODE_EXECUTABLE",
     ).toBe(true)
     await runSmoke("claude")
   }, 300_000)

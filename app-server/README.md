@@ -27,10 +27,11 @@ The server listens on port 7332 by default; pass `--port` to override.
 One Bun package, one `package.json`, one committed `bun.lock`. Runtime
 dependencies are pinned exactly and kept minimal: `effect` (the application
 spine — HTTP, CLI, Schema, concurrency), `@effect/platform-bun` (the Bun
-adapter), and `@anthropic-ai/claude-agent-sdk` (the Claude provider seam,
-including its packaged platform-specific Claude Code executable), upgraded
-deliberately, never floated. `mise run refs` (repo root) checks out the
-matching Effect source for API reference.
+adapter), and `@anthropic-ai/claude-agent-sdk` (the Claude provider seam),
+upgraded deliberately, never floated. Provider executables are not shipped:
+the user's installed `codex` and `claude` are resolved from an env override
+or PATH. `mise run refs` (repo root) checks out the matching Effect source
+for API reference.
 
 | Path                | Responsibility                                                      |
 | ------------------- | ------------------------------------------------------------------- |

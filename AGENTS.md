@@ -89,17 +89,18 @@ deliberately). Write new code the same way:
 - Build metadata (commit, build time) is injected at compile time by
   `scripts/build.ts` via `--define`; running from source reports `dev`.
 - Compiled behavior must never depend on the working directory. `.env`/bunfig
-  autoloading is disabled at compile; assets that ship with the executable
-  (e.g. the packaged Claude Code binary staged at `dist/claude-<os>-<arch>`)
-  resolve relative to `process.execPath` under target-scoped names.
+  autoloading is disabled at compile; any asset that ships with the
+  executable must resolve relative to `process.execPath`, never the cwd.
 - All child processes go through the `Subprocess` service
   (`src/subprocess.ts`): scoped acquisition (scope close terminates the child,
   SIGTERM escalating to SIGKILL), bounded stderr diagnostics, explicit
   environment. No ad-hoc `Bun.spawn` in server code.
-- Provider executables resolve explicitly, never implicitly: env override
-  first (`ATC_CODEX_EXECUTABLE` / `ATC_CLAUDE_CODE_EXECUTABLE`), then a known
-  location (PATH for codex; the executable-adjacent staged binary, then the
-  platform package in `node_modules`, for Claude Code).
+- atc ships no provider binaries: the user installs and authenticates the
+  Codex CLI and Claude Code themselves. Provider executables resolve
+  explicitly, never implicitly: env override first (`ATC_CODEX_EXECUTABLE` /
+  `ATC_CLAUDE_CODE_EXECUTABLE`), then the user's install on PATH. The Claude
+  Agent SDK is always given an explicit `pathToClaudeCodeExecutable`; its
+  packaged platform binaries are never relied on.
 - Cross-compilation success is not runtime validation. CI runs the compiled
   black-box suite natively on macOS arm64 and Linux x64 only; darwin-x64 and
   linux-arm64 stay cross-compile-only until the release milestone.

@@ -7,9 +7,6 @@
 // Output names are deterministic (dist/atc-<os>-<arch>) so CI and release
 // tooling can consume them without discovery logic.
 
-import { existsSync } from "node:fs"
-import { copyFile, mkdir } from "node:fs/promises"
-import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 // Keep in sync with the artifact checks in .github/workflows/app-server-ci.yml.
@@ -64,24 +61,4 @@ for (const target of targets) {
     "src/main.ts",
   ])
   console.log(`built ${outfile} (commit ${commit.slice(0, 12)}${dirty}, ${builtAt})`)
-}
-
-// Stage the Claude Agent SDK's packaged platform-specific Claude Code binary
-// next to the compiled executable, under a target-scoped name so an artifact
-// can never pair with a wrong-platform binary. Bun only installs the host's
-// platform package, so cross-compiled targets ship without one until the
-// release milestone settles per-target acquisition.
-if (hostTarget !== null && targets.includes(hostTarget)) {
-  const claudeSource = join(
-    appServerRoot,
-    "node_modules",
-    `@anthropic-ai/claude-agent-sdk-${hostTarget}`,
-    "claude",
-  )
-  if (existsSync(claudeSource)) {
-    const staged = `dist/claude-${hostTarget}`
-    await mkdir(join(appServerRoot, "dist"), { recursive: true })
-    await copyFile(claudeSource, join(appServerRoot, staged))
-    console.log(`staged ${staged} (packaged Claude Code executable)`)
-  }
 }
