@@ -116,22 +116,36 @@ const spawn = Effect.fnUntraced(function* (
   yield* handle.exitCode.pipe(Effect.ignore, Effect.andThen(Queue.end(stdin)), Effect.forkScoped)
 
   // Drain stderr concurrently into a bounded tail so a chatty child cannot
-  // fill the pipe (deadlock) or grow diagnostics without limit. Note the
-  // bound is per line after splitting: output with no newlines at all still
-  // accumulates in splitLines before truncation applies.
+  // fill the pipe (deadlock) or grow diagnostics without limit. Lines are
+  // split by hand rather than with Stream.splitLines so the pending fragment
+  // stays capped even when the child never writes a newline.
   const stderrTail: Array<string> = []
-  yield* handle.stderr.pipe(
-    Stream.decodeText,
-    Stream.splitLines,
-    Stream.runForEach((line) =>
-      Effect.sync(() => {
-        stderrTail.push(truncate(line))
-        if (stderrTail.length > STDERR_TAIL_LINES) stderrTail.shift()
-      }),
-    ),
-    Effect.ignore,
-    Effect.forkScoped,
-  )
+  const pushLine = (line: string): void => {
+    stderrTail.push(truncate(line))
+    if (stderrTail.length > STDERR_TAIL_LINES) stderrTail.shift()
+  }
+  let pendingLine = ""
+  yield* Effect.gen(function* () {
+    yield* handle.stderr.pipe(
+      Stream.decodeText,
+      Stream.runForEach((chunk) =>
+        Effect.sync(() => {
+          pendingLine += chunk
+          let newline
+          while ((newline = pendingLine.indexOf("\n")) !== -1) {
+            pushLine(pendingLine.slice(0, newline).replace(/\r$/, ""))
+            pendingLine = pendingLine.slice(newline + 1)
+          }
+          // Cap the unterminated fragment; overflow is dropped, and truncate
+          // marks the eventual line as cut.
+          if (pendingLine.length > MAX_CAPTURED_LINE_LENGTH) {
+            pendingLine = pendingLine.slice(0, MAX_CAPTURED_LINE_LENGTH + 1)
+          }
+        }),
+      ),
+    )
+    if (pendingLine !== "") pushLine(pendingLine)
+  }).pipe(Effect.ignore, Effect.forkScoped)
 
   const child: Child = {
     pid: handle.pid,

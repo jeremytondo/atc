@@ -29,6 +29,28 @@ describe("codexSmoke against a fixture app-server", () => {
     codexSmoke(fixtureSpec()).pipe(Effect.provide(TestLayer)),
   )
 
+  it.live("fails when the response carries neither result nor error", () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.result(codexSmoke(fixtureSpec("empty")))
+      assert.strictEqual(result._tag, "Failure")
+      if (result._tag === "Failure") {
+        assert.instanceOf(result.failure, SmokeError)
+        assert.match(result.failure.message, /neither result nor error/)
+      }
+    }).pipe(Effect.provide(TestLayer)),
+  )
+
+  it.live("fails when the server exits non-zero after the round trip", () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.result(codexSmoke(fixtureSpec("exit-nonzero")))
+      assert.strictEqual(result._tag, "Failure")
+      if (result._tag === "Failure") {
+        assert.instanceOf(result.failure, SmokeError)
+        assert.match(result.failure.message, /exited with code 3/)
+      }
+    }).pipe(Effect.provide(TestLayer)),
+  )
+
   it.live("fails with diagnostics when initialize is rejected", () =>
     Effect.gen(function* () {
       const result = yield* Effect.result(codexSmoke(fixtureSpec("error")))

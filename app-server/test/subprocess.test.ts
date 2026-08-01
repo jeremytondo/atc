@@ -92,6 +92,20 @@ describe("Subprocess", () => {
     }).pipe(Effect.scoped, Effect.provide(TestLayer)),
   )
 
+  it.live("keeps the tail bounded when stderr never contains a newline", () =>
+    Effect.gen(function* () {
+      const subprocess = yield* Subprocess.Subprocess
+      const child = yield* subprocess.spawn(fixture("stderr-no-newline"))
+      assert.strictEqual(yield* child.exitCode, 0)
+      const tail = yield* child.stderrTail
+      assert.strictEqual(tail.length, 1)
+      const only = tail[0]!
+      assert.strictEqual(only.startsWith("start "), true)
+      assert.strictEqual(only.length, 2_001)
+      assert.strictEqual(only.endsWith("…"), true)
+    }).pipe(Effect.scoped, Effect.provide(TestLayer)),
+  )
+
   it.live("fails to spawn a missing executable with a tagged error", () =>
     Effect.gen(function* () {
       const subprocess = yield* Subprocess.Subprocess

@@ -62,6 +62,9 @@ export const resolveClaudeCodeExecutable = Effect.suspend(() => {
 
 // --- Shared termination checks ----------------------------------------------
 
+const stderrSuffix = (tail: ReadonlyArray<string>): string =>
+  tail.length === 0 ? "" : `\nprovider stderr:\n${tail.join("\n")}`
+
 // Scope close already awaits child termination (SIGTERM + SIGKILL
 // escalation), so this is not cleanup: it is the explicit no-orphan proof the
 // smoke checks exist to provide.
@@ -79,7 +82,9 @@ const verifyProcessGone = (provider: "codex" | "claude", pid: number) =>
 const verifyNoChildOrphans = (provider: "codex" | "claude") =>
   Effect.gen(function* () {
     const subprocess = yield* Subprocess.Subprocess
-    // The SDK reaps its child asynchronously, so allow a short settle window.
+    // The settle window must outlast the Agent SDK's full termination
+    // escalation — abort closes stdin, SIGTERM follows after 2s, SIGKILL
+    // after 5 more — because its timers are unref'ed and die with us.
     for (let attempt = 0; ; attempt++) {
       const survivors = yield* Effect.scoped(
         Effect.gen(function* () {
@@ -90,18 +95,29 @@ const verifyNoChildOrphans = (provider: "codex" | "claude") =>
             extendEnv: true,
           })
           const lines = yield* Stream.runCollect(pgrep.stdoutLines)
-          yield* pgrep.exitCode // 0 = matches, 1 = none; either is a clean run
+          // 0 = matches, 1 = none; anything else means the check itself broke.
+          const exitCode = yield* pgrep.exitCode
+          if (exitCode > 1) {
+            const tail = yield* pgrep.stderrTail
+            return yield* Effect.fail(
+              new SmokeError({
+                provider,
+                message: `orphan check could not run: pgrep exited with ${exitCode}${stderrSuffix(tail)}`,
+              }),
+            )
+          }
           return lines.filter((line) => line.trim() !== "")
         }),
       ).pipe(
-        Effect.mapError(
+        Effect.catchTag("SubprocessError", (error) =>
           // A broken check is not a provider failure; say which one it is.
-          (error) =>
+          Effect.fail(
             new SmokeError({ provider, message: `orphan check could not run: ${error.message}` }),
+          ),
         ),
       )
       if (survivors.length === 0) return
-      if (attempt >= 20) {
+      if (attempt >= 100) {
         return yield* Effect.fail(
           new SmokeError({
             provider,
@@ -115,8 +131,12 @@ const verifyNoChildOrphans = (provider: "codex" | "claude") =>
 
 // --- Codex: one JSON-RPC initialize round trip over stdio --------------------
 
-/** The one message shape this smoke check inspects; `error: null` counts as absent. */
+/**
+ * The one message shape this smoke check inspects. A real round trip must
+ * carry a `result` object or an `error` object; `null` counts as absent.
+ */
 const InitializeResponse = Schema.Struct({
+  result: Schema.optional(Schema.NullOr(Schema.Record(Schema.String, Schema.Unknown))),
   error: Schema.optional(
     Schema.NullOr(
       Schema.Struct({
@@ -145,9 +165,6 @@ const parseResponseLine = (line: string): unknown | undefined => {
   }
   return undefined
 }
-
-const stderrSuffix = (tail: ReadonlyArray<string>): string =>
-  tail.length === 0 ? "" : `\nprovider stderr:\n${tail.join("\n")}`
 
 const failWithStderr = (child: Subprocess.Child, message: string) =>
   Effect.gen(function* () {
@@ -237,6 +254,12 @@ export const codexSmoke = (
             `initialize failed: ${JSON.stringify(response.error)}`,
           )
         }
+        if (response.result === undefined || response.result === null) {
+          return yield* failWithStderr(
+            child,
+            "initialize response carried neither result nor error",
+          )
+        }
         yield* Console.log("initialize round trip OK")
         yield* child.writeLine(JSON.stringify({ method: "initialized", params: {} }))
         yield* child.endInput
@@ -244,9 +267,17 @@ export const codexSmoke = (
           Effect.timeoutOrElse({ duration: "5 seconds", orElse: () => Effect.succeed(null) }),
           Effect.orElseSucceed(() => null),
         )
+        // A clean shutdown means exit 0; the null branch is the deliberate
+        // forced-cleanup path (EOF ignored, scope close terminates).
+        if (exitCode !== null && exitCode !== 0) {
+          return yield* failWithStderr(
+            child,
+            `codex app-server exited with code ${exitCode} after the round trip`,
+          )
+        }
         yield* exitCode === null
           ? Console.log("codex app-server did not exit on stdin EOF; terminating it")
-          : Console.log(`codex app-server exited with code ${exitCode}`)
+          : Console.log("codex app-server exited cleanly on stdin EOF")
       }),
     )
     if (pid !== null) yield* verifyProcessGone("codex", pid)
