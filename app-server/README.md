@@ -1,9 +1,7 @@
 # ATC App Server
 
 The TypeScript implementation of the ATC server and `atc` CLI, built on
-[Effect](https://effect.website) and [Bun](https://bun.sh). It lives alongside
-the existing Go server in [`../server/`](../server/) until cutover; the Go
-server remains the installed product today.
+[Effect](https://effect.website) and [Bun](https://bun.sh).
 
 Bun is pinned in [`mise.toml`](mise.toml) and installed automatically by
 [mise](https://mise.jdx.dev). All workflows are mise tasks:
@@ -18,17 +16,15 @@ mise run typecheck  # strict TypeScript type check
 mise run check      # everything CI runs: fmt:check + typecheck + test
 ```
 
-The dev port 7332 is a temporary development default (the Go server uses
-7331); production listener behavior is settled in later work.
+The server listens on port 7332 by default; pass `--port` to override.
 
 ## Structure
 
 One Bun package, one `package.json`, one committed `bun.lock`. Runtime
 dependencies are pinned exactly and kept minimal: `effect` (the application
 spine — HTTP, CLI, Schema, concurrency) and `@effect/platform-bun` (the Bun
-adapter). Effect is on the `4.0.0-beta.x` line, upgraded deliberately, never
-floated. `mise run refs` (repo root) checks out the matching Effect source for
-API reference.
+adapter), upgraded deliberately, never floated. `mise run refs` (repo root)
+checks out the matching Effect source for API reference.
 
 | Path               | Responsibility                                                    |
 | ------------------ | ----------------------------------------------------------------- |

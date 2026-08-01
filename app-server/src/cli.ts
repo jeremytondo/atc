@@ -2,7 +2,6 @@ import { Console, Effect, Layer, Runtime, Schema } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
 import * as Server from "./server.ts"
 
-// Temporary dev default so the Go server on 7331 can run alongside.
 export const DEFAULT_PORT = 7332
 
 /** The one reusable port contract for CLI (and later config/API) inputs. */
