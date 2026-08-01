@@ -80,6 +80,33 @@ deliberately). Write new code the same way:
   (`mise run refs`) and follow T3Code/OpenCode patterns; web search and
   training data skew to Effect v3.
 
+## Compiled Executable and Subprocesses (App Server)
+
+- `mise run -C app-server build` compiles the standalone `atc` executable for
+  the host into `app-server/dist/atc-<os>-<arch>`; `build:all` cross-compiles
+  all four release targets (darwin/linux × arm64/x64). Artifact names are
+  deterministic — CI and release tooling rely on them.
+- Build metadata (commit, build time) is injected at compile time by
+  `scripts/build.ts` via `--define`; running from source reports `dev`.
+- Compiled behavior must never depend on the working directory. `.env`/bunfig
+  autoloading is disabled at compile; assets that ship with the executable
+  (e.g. the packaged Claude Code binary staged at `dist/claude`) resolve
+  relative to `process.execPath`.
+- All child processes go through the `Subprocess` service
+  (`src/subprocess.ts`): scoped acquisition (scope close terminates the child,
+  SIGTERM escalating to SIGKILL), bounded stderr diagnostics, explicit
+  environment. No ad-hoc `Bun.spawn` in server code.
+- Provider executables resolve explicitly, never implicitly: env override
+  first (`ATC_CODEX_EXECUTABLE` / `ATC_CLAUDE_CODE_EXECUTABLE`), then a known
+  location (PATH for codex; the executable-adjacent staged binary, then the
+  platform package in `node_modules`, for Claude Code).
+- Cross-compilation success is not runtime validation. CI runs the compiled
+  black-box suite natively on macOS arm64 and Linux x64 only; darwin-x64 and
+  linux-arm64 stay cross-compile-only until the release milestone.
+- After upgrading Bun, Effect, or the Claude Agent SDK, rerun
+  `mise run -C app-server test:compiled` and the opt-in live
+  `mise run -C app-server test:smoke` suite.
+
 ## Code Style
 
 - Always strive for simplicity. This is not a complex enterprise app.

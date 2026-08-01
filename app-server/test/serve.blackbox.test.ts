@@ -1,44 +1,15 @@
-import { fileURLToPath } from "node:url"
 import { describe, expect, test } from "vitest"
+import { appServerRoot, freePort, spawnServe, waitForHealth } from "./blackbox.ts"
 
 // Black-box tests of the real entrypoint: spawn `bun src/main.ts serve` on a
 // loopback port, exercise both endpoints over TCP, and verify clean shutdown
 // on SIGTERM and SIGINT (exit 130 = interrupted by signal), including with an
 // open half-sent request at signal time.
 
-const appServerRoot = fileURLToPath(new URL("..", import.meta.url))
-
 // Tests run under `bun --bun vitest`, so execPath is the pinned bun binary —
 // no PATH lookup for the child.
-const spawnServe = (port: number) =>
-  Bun.spawn([process.execPath, "src/main.ts", "serve", "--port", String(port)], {
-    cwd: appServerRoot,
-    stdout: "pipe",
-    stderr: "pipe",
-  })
-
-// Bind-then-release to pick a port for the child. Racy in principle (another
-// process could grab it in between), but --port 0 is deliberately rejected by
-// validation, so this is the practical option; stderr is surfaced on failure.
-const freePort = async (): Promise<number> => {
-  const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") })
-  const port = probe.port!
-  await probe.stop(true)
-  return port
-}
-
-const waitForHealth = async (base: string, proc: Bun.Subprocess): Promise<Response> => {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    try {
-      return await fetch(`${base}/api/v1/health`)
-    } catch {
-      await Bun.sleep(50)
-    }
-  }
-  proc.kill()
-  const stderr = await new Response(proc.stderr as ReadableStream).text()
-  throw new Error(`server at ${base} never became healthy; stderr:\n${stderr}`)
-}
+const spawnFromSource = (port: number) =>
+  spawnServe([process.execPath, "src/main.ts"], port, appServerRoot)
 
 describe("atc serve (black box)", () => {
   test.each(["SIGTERM", "SIGINT"] as const)(
@@ -46,7 +17,7 @@ describe("atc serve (black box)", () => {
     async (signal) => {
       const port = await freePort()
       const base = `http://127.0.0.1:${port}`
-      const proc = spawnServe(port)
+      const proc = spawnFromSource(port)
       try {
         const health = await waitForHealth(base, proc)
         expect(health.status).toBe(200)
@@ -85,7 +56,7 @@ describe("atc serve (black box)", () => {
 
   test("fails with one friendly stderr line when the port is taken", async () => {
     const occupant = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") })
-    const proc = spawnServe(occupant.port!)
+    const proc = spawnFromSource(occupant.port!)
     try {
       expect(await proc.exited).toBe(1)
       const stderr = await new Response(proc.stderr as ReadableStream).text()

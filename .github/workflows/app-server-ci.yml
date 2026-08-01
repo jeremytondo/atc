@@ -42,3 +42,47 @@ jobs:
       # includes the black-box serve/shutdown test over loopback TCP).
       - name: Check
         run: mise run check
+
+  # Proves all four release targets compile. Cross-compilation alone says
+  # nothing about runtime behavior — that is what native-validate is for.
+  cross-compile:
+    name: cross-compile (build only, no runtime validation)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: jdx/mise-action@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          working_directory: app-server
+
+      - name: Build all targets
+        run: mise run build:all
+
+      - name: Verify deterministic artifact names
+        run: |
+          for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
+            test -x "dist/atc-$target" || { echo "missing dist/atc-$target"; exit 1; }
+          done
+
+  # Native runtime validation of the compiled artifact: macOS arm64 and
+  # Linux x64 on hosted runners. The other two targets are cross-compile-only
+  # until the release/packaging milestone adds native coverage.
+  native-validate:
+    name: native compiled validation (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [macos-14, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: jdx/mise-action@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          working_directory: app-server
+
+      - name: Compiled artifact black-box tests
+        run: mise run test:compiled

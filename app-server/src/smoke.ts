@@ -282,8 +282,7 @@ export const claudeSmoke = (claudeExecutable: string) =>
       yield* Effect.addFinalizer(() => Effect.sync(() => abortController.abort()))
       const summary = yield* Effect.tryPromise({
         try: () => claudeRoundTrip(claudeExecutable, cwd, abortController),
-        catch: (error) =>
-          new SmokeError({ provider: "claude", message: describeError(error) }),
+        catch: (error) => new SmokeError({ provider: "claude", message: describeError(error) }),
       }).pipe(
         Effect.timeoutOrElse({
           duration: "180 seconds",

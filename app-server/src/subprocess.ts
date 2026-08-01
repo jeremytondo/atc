@@ -13,14 +13,11 @@ const STDERR_TAIL_LINES = 100
 /** Individual captured lines are truncated to keep diagnostics bounded. */
 const MAX_CAPTURED_LINE_LENGTH = 2_000
 
-export class SubprocessError extends Schema.TaggedErrorClass<SubprocessError>()(
-  "SubprocessError",
-  {
-    executable: Schema.String,
-    operation: Schema.Literals(["spawn", "stdin", "stdout", "exit"]),
-    message: Schema.String,
-  },
-) {}
+export class SubprocessError extends Schema.TaggedErrorClass<SubprocessError>()("SubprocessError", {
+  executable: Schema.String,
+  operation: Schema.Literals(["spawn", "stdin", "stdout", "exit"]),
+  message: Schema.String,
+}) {}
 
 export interface SpawnSpec {
   /** Absolute path or executable name; resolution happens before spawning. */
