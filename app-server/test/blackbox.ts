@@ -22,6 +22,25 @@ export const spawnServe = (
     stderr: "pipe",
   })
 
+/**
+ * Run `<command> ...args` to completion, capturing stdout, stderr, and exit
+ * code. `cwd` is required: compiled-artifact tests must run outside the
+ * repository, so no caller should silently inherit the repo cwd.
+ */
+export const runCli = async (
+  command: ReadonlyArray<string>,
+  args: ReadonlyArray<string>,
+  cwd: string,
+) => {
+  const proc = Bun.spawn([...command, ...args], { cwd, stdout: "pipe", stderr: "pipe" })
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ])
+  return { stdout, stderr, exitCode }
+}
+
 // Bind-then-release to pick a port for the child. Racy in principle (another
 // process could grab it in between), but --port 0 is deliberately rejected by
 // validation, so this is the practical option; stderr is surfaced on failure.

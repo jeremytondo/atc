@@ -14,7 +14,7 @@ Long term maintainability is a core priority. If you add new functionality, firs
 
 ## Server
 
-The server stands on its own and is meant as a flexible resource that other apps can connect to and be built on top of. The Web UI is more admin interface than API client. It's meant as a place to manage all aspects of the server and document the CLI and API. The CLI and API should mirror each other in terms of functionality unless there is a good reason they should not.
+The server stands on its own and is meant as a flexible resource that other apps can connect to and be built on top of. The Web UI is more admin interface than API client. It's meant as a place to manage all aspects of the server and document the CLI and API. The CLI is a thin client of the API; its purpose is to give agents and scripts access to the app's functionality. Design its command surface for that job — it does not need to mirror the API operation-for-operation, and no tooling should enforce such a mapping.
 
 ## Source Control
 
@@ -80,6 +80,67 @@ deliberately). Write new code the same way:
   (`mise run refs`) and follow T3Code/OpenCode patterns; web search and
   training data skew to Effect v3.
 
+## OpenAPI Contract (App Server)
+
+The `HttpApi` contract module (`app-server/src/api.ts`) is the single source of
+truth for the public API. The checked-in OpenAPI document
+(`app-server/openapi.json`) is generated from it — never edit the document by
+hand, and never maintain a parallel route-description layer.
+
+- Regenerate with `mise run -C app-server openapi` (or `mise run
+  app-server:openapi` at the root) after any contract change and commit the
+  result. Generation is pure (`OpenApi.fromApi`, no server) and byte-identical
+  for unchanged source; `mise run -C app-server openapi:check` (part of
+  `check` and CI) fails on drift.
+- Every endpoint pins a stable operation id with
+  `.annotate(OpenApi.Identifier, "...")`: camelCase verb+resource (e.g.
+  `getHealth`), unique across the whole API. Generated clients key off these
+  ids — renaming one is a breaking change.
+- Every request/response schema carries an `identifier` annotation (PascalCase
+  type name, e.g. `HealthResponse`) so it becomes a named component schema,
+  plus a short `description`. Endpoints carry an `OpenApi.Description`.
+- JSON fields are camelCase. Fields the server always returns are
+  non-optional in the schema and appear in `required`; health/version have no
+  optional fields yet, so no optionality convention exists beyond that.
+- The document version is the contract version (`v1`), never the compile-time
+  build metadata (`commit`/`builtAt`), which would break deterministic
+  generation.
+- `openapi.json` is generated output: `src/openapi.ts` is its single
+  formatting authority, and it sits in `.prettierignore` so `fmt` never
+  rewrites it.
+
+## Clients and the CLI (App Server)
+
+Both public clients derive from the same contract:
+
+- **TypeScript** (`app-server/src/client.ts`): derived directly from the
+  contract module with Effect's `HttpApiClient` — no generated artifact, so
+  nothing can go stale. It depends only on `api.ts`, never server internals.
+- **Swift** (`ATCAppServerAPI` in `packages/ATCKit`): generated at build time
+  by the Apple Swift OpenAPI Generator plugin from
+  `Sources/ATCAppServerAPI/openapi.json`, a symlink to the checked-in
+  `app-server/openapi.json`. Generator, runtime, and transport versions are
+  exact-pinned in `Package.swift`; upgrade them deliberately and rerun
+  `mise run kit:test`. The legacy `ATCAPI` product (Go server contract) is
+  unchanged and coexists until the app migrates.
+
+CLI commands backed by API operations use the contract-derived TypeScript
+client (`atc health`, `atc version`): JSON payload on stdout and exit 0 on
+success; diagnostics on stderr with exit 1 on invalid usage or request
+failure. `--url` is explicit for now; keep base-URL resolution isolated in
+`cli.ts` so later configuration work can make it optional.
+
+The CLI command surface is curated, not a 1:1 mirror of the API: commands
+exist to give agents and scripts good access to the app's functionality, and
+one command may compose several API calls (or an endpoint may have no command
+at all). API-backed commands go through the contract-derived TypeScript
+client — never re-implement server logic in the CLI. Process commands
+(`serve`, `smoke`) run the server rather than call it.
+
+After any contract change: `mise run app-server:openapi` to regenerate the
+artifact, then `mise run contract:check` (OpenAPI drift + TS client tests +
+Swift client build/tests) to verify the whole pipeline.
+
 ## Compiled Executable and Subprocesses (App Server)
 
 - `mise run -C app-server build` compiles the standalone `atc` executable for
@@ -122,6 +183,10 @@ When starting sub agents or running workflows, be smart about which agents to ch
 ## Using Linear
 
 When doing work in Linear, always work within the atc team: https://linear.app/elevenideas/team/ATC.
+
+Current work lives in the "Application Refactor" project. The canceled
+"Archived - Application Refactor" project is stale planning reference from a
+superseded planning pass — never treat its issues as open or current work.
 
 ## Working With XCode
 

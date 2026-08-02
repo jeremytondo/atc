@@ -1,24 +1,6 @@
 {
-  "originHash" : "75a02c60da655fc3bb0907186b2eb33f99827f4938d682fb76a00ca99832d77a",
+  "originHash" : "3e6d96b48456624b3fc739a463424afb2e1c588378f8e03f9dadbd501e5c631b",
   "pins" : [
-    {
-      "identity" : "libghostty-spm",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Lakr233/libghostty-spm.git",
-      "state" : {
-        "revision" : "839f269bcd5193d03293cb6717ed2582dde265ef",
-        "version" : "1.2.8"
-      }
-    },
-    {
-      "identity" : "msdisplaylink",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Lakr233/MSDisplayLink.git",
-      "state" : {
-        "revision" : "1ba3e769b734e456317fa7e45321fa7f53eefb67",
-        "version" : "2.1.0"
-      }
-    },
     {
       "identity" : "openapikit",
       "kind" : "remoteSourceControl",
@@ -98,15 +80,6 @@
       "state" : {
         "revision" : "08796d36c99ad2318929bfa1d1e40f82194b65cc",
         "version" : "1.3.1"
-      }
-    },
-    {
-      "identity" : "tomldecoder",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/dduan/TOMLDecoder",
-      "state" : {
-        "revision" : "a2bbd2796fe3064e107de18cb56031052c4fa899",
-        "version" : "0.4.5"
       }
     },
     {

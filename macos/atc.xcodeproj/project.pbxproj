@@ -13,6 +13,7 @@
 		AC00000000000000000000B4 /* GhosttyTheme in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A4 /* GhosttyTheme */; };
 		AC00000000000000000000B5 /* ATCAPI in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A5 /* ATCAPI */; };
 		AC00000000000000000000B6 /* TOMLDecoder in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A6 /* TOMLDecoder */; };
+		AC00000000000000000000B7 /* ATCAppServerAPI in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A7 /* ATCAppServerAPI */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -57,6 +58,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AC00000000000000000000B1 /* ATCAPI in Frameworks */,
+				AC00000000000000000000B7 /* ATCAppServerAPI in Frameworks */,
 				AC00000000000000000000B2 /* GhosttyKit in Frameworks */,
 				AC00000000000000000000B3 /* GhosttyTerminal in Frameworks */,
 				AC00000000000000000000B4 /* GhosttyTheme in Frameworks */,
@@ -129,6 +131,7 @@
 			name = atc;
 			packageProductDependencies = (
 				AC00000000000000000000A1 /* ATCAPI */,
+				AC00000000000000000000A7 /* ATCAppServerAPI */,
 				AC00000000000000000000A2 /* GhosttyKit */,
 				AC00000000000000000000A3 /* GhosttyTerminal */,
 				AC00000000000000000000A4 /* GhosttyTheme */,
@@ -534,6 +537,10 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AC00000000000000000000C3 /* XCRemoteSwiftPackageReference "TOMLDecoder" */;
 			productName = TOMLDecoder;
+		};
+		AC00000000000000000000A7 /* ATCAppServerAPI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ATCAppServerAPI;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

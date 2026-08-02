@@ -13,7 +13,9 @@ mise run test          # run the vitest suite on the Bun runtime
 mise run fmt           # format with Prettier
 mise run fmt:check     # fail if formatting is needed
 mise run typecheck     # strict TypeScript type check
-mise run check         # standing CI gates: fmt:check + typecheck + test
+mise run openapi       # regenerate the checked-in OpenAPI artifact (openapi.json)
+mise run openapi:check # fail if openapi.json is stale relative to the contract
+mise run check         # standing CI gates: fmt:check + typecheck + test + openapi:check
 mise run build         # compile the standalone atc executable (dist/atc-<os>-<arch>)
 mise run build:all     # cross-compile all four release targets
 mise run test:compiled # black-box tests of the compiled artifact (builds first)
@@ -21,6 +23,26 @@ mise run test:smoke    # opt-in live provider smoke tests (Codex + Claude creden
 ```
 
 The server listens on port 7332 by default; pass `--port` to override.
+
+## CLI
+
+`atc serve` runs the server. API-backed commands use the contract-derived
+client and an explicit `--url` (connection profiles are later work):
+
+```sh
+atc health --url http://127.0.0.1:7332    # prints the JSON payload, e.g. { "status": "ok" }
+atc version --url http://127.0.0.1:7332   # prints build metadata + apiVersion as JSON
+```
+
+`atc --version` reports this executable's own version; `atc version --url …`
+reports the version of a running server.
+
+Success prints the JSON payload on stdout and exits `0`. Failures exit `1`:
+request failures print one `atc <command>: …` diagnostic line on stderr;
+invalid usage prints an `ERROR` block on stderr (help goes to stdout). The
+command surface is curated for agent and script access to the app's
+functionality — it does not mirror the API operation-for-operation, but
+API-backed commands always go through the contract-derived client.
 
 ## Structure
 
@@ -33,22 +55,29 @@ the user's installed `codex` and `claude` are resolved from an env override
 or PATH. `mise run refs` (repo root) checks out the matching Effect source
 for API reference.
 
-| Path                | Responsibility                                                      |
-| ------------------- | ------------------------------------------------------------------- |
-| `src/main.ts`       | Entrypoint for the `atc` executable; the only `runMain`             |
-| `src/cli.ts`        | CLI commands and flags (Effect CLI); friendly startup failures      |
-| `src/api.ts`        | The `/api/v1` HttpApi contract: endpoints and response schemas      |
-| `src/handlers.ts`   | Contract implementation (handler Layer, no listener)                |
-| `src/server.ts`     | Server assembly: routes + loopback Bun listener Layer               |
-| `src/buildInfo.ts`  | Build metadata service (version, commit, builtAt)                   |
-| `src/subprocess.ts` | Subprocess service: scoped child processes, bounded diagnostics     |
-| `src/smoke.ts`      | Hidden, unstable `atc smoke` provider round trips (ATC-88)          |
-| `scripts/build.ts`  | Standalone-executable compile (Bun `--compile`, metadata injection) |
-| `test/`             | `@effect/vitest` tests, including black-box and opt-in live suites  |
+| Path                 | Responsibility                                                                                                        |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `src/main.ts`        | Entrypoint for the `atc` executable; the only `runMain`                                                               |
+| `src/cli.ts`         | CLI commands and flags (Effect CLI); friendly startup failures                                                        |
+| `src/api.ts`         | The `/api/v1` HttpApi contract: endpoints and response schemas                                                        |
+| `src/openapi.ts`     | The OpenAPI document derived from the contract (pure, no server)                                                      |
+| `src/client.ts`      | Contract-derived typed client (`HttpApiClient`, no server imports)                                                    |
+| `src/handlers.ts`    | Contract implementation (handler Layer, no listener)                                                                  |
+| `src/server.ts`      | Server assembly: routes + loopback Bun listener Layer                                                                 |
+| `src/buildInfo.ts`   | Build metadata service (version, commit, builtAt)                                                                     |
+| `src/subprocess.ts`  | Subprocess service: scoped child processes, bounded diagnostics                                                       |
+| `src/smoke.ts`       | Hidden, unstable `atc smoke` provider round trips (ATC-88)                                                            |
+| `scripts/build.ts`   | Standalone-executable compile (Bun `--compile`, metadata injection)                                                   |
+| `scripts/openapi.ts` | Writes/checks the checked-in `openapi.json` artifact                                                                  |
+| `openapi.json`       | Generated OpenAPI 3.1 document — regenerate, never edit; symlinked into `packages/ATCKit` for Swift client generation |
+| `test/`              | `@effect/vitest` tests, including black-box and opt-in live suites                                                    |
 
-The contract module is structured so the server implementation, an OpenAPI
-document, and generated typed clients all derive from the same `HttpApi`
-definition; OpenAPI serving and clients are follow-up work.
+The contract module is structured so the server implementation, the checked-in
+OpenAPI document (`openapi.json`), the contract-derived TypeScript client
+(`src/client.ts`), and the generated Swift client (`ATCAppServerAPI` in
+`packages/ATCKit`) all derive from the same `HttpApi` definition. See "OpenAPI
+Contract" and "Clients and the CLI" in the repository `AGENTS.md` for the
+conventions; OpenAPI serving over HTTP is follow-up work.
 
 Public HTTP routes are versioned under `/api/v1`:
 
