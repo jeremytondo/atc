@@ -42,6 +42,32 @@ describe("configuration", () => {
       assert.strictEqual(config.stateDir, join(home, ".local", "state", "atc"))
       assert.strictEqual(config.dbFile, join(home, ".local", "share", "atc", "atc.db"))
       assert.strictEqual(config.logFile, join(home, ".local", "state", "atc", "atc.log"))
+      assert.strictEqual(config.zmxExecutable, "zmx")
+      assert.strictEqual(
+        config.terminalSocketDir,
+        join(home, ".local", "state", "atc", "terminals"),
+      )
+    }),
+  )
+
+  it.effect("zmxExecutable follows the precedence rule: env beats file", () =>
+    Effect.gen(function* () {
+      const file = writeConfig(`zmxExecutable = "/opt/from-file/zmx"\n`)
+      assert.strictEqual((yield* load({ ATC_CONFIG: file })).zmxExecutable, "/opt/from-file/zmx")
+      assert.strictEqual(
+        (yield* load({ ATC_CONFIG: file, ATC_ZMX_EXECUTABLE: "/opt/from-env/zmx" })).zmxExecutable,
+        "/opt/from-env/zmx",
+      )
+    }),
+  )
+
+  it.effect("a relative zmxExecutable path is rejected (never cwd-dependent)", () =>
+    Effect.gen(function* () {
+      const error = yield* loadError({ ATC_ZMX_EXECUTABLE: "bin/zmx" })
+      assert.include(error.message, "bare name or an absolute path")
+      assert.include(error.source, "ATC_ZMX_EXECUTABLE")
+      // Bare names stay valid — they resolve on PATH.
+      assert.strictEqual((yield* load({ ATC_ZMX_EXECUTABLE: "my-zmx" })).zmxExecutable, "my-zmx")
     }),
   )
 
