@@ -43,11 +43,11 @@ description = "Regenerate the checked-in App Server OpenAPI artifact from the co
 run = "mise run -C app-server openapi"
 
 # The full contract pipeline after a contract change: regenerate with
-# app-server:openapi, then this verifies OpenAPI drift, API-to-CLI parity,
-# client integration tests (app-server:check) and compiles/tests the
-# generated Swift client (kit:test).
+# app-server:openapi, then this verifies OpenAPI drift and client integration
+# tests (app-server:check) and compiles/tests the generated Swift client
+# (kit:test).
 [tasks."contract:check"]
-description = "Verify the API contract end to end: drift, parity, TS client tests, Swift client build"
+description = "Verify the API contract end to end: drift, TS client tests, Swift client build"
 depends = ["app-server:check", "kit:test"]
 
 [tasks."app-server:build"]

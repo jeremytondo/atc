@@ -40,8 +40,8 @@ jobs:
       # Same gates as local `mise run check`: frozen-lockfile install,
       # Prettier format check, strict tsc, the vitest suite (black-box
       # serve/shutdown and CLI tests over loopback TCP, client integration
-      # tests, API-to-CLI parity), and OpenAPI drift detection
-      # (openapi.json must match the contract).
+      # tests), and OpenAPI drift detection (openapi.json must match the
+      # contract).
       - name: Check
         run: mise run check
 

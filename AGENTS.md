@@ -14,7 +14,7 @@ Long term maintainability is a core priority. If you add new functionality, firs
 
 ## Server
 
-The server stands on its own and is meant as a flexible resource that other apps can connect to and be built on top of. The Web UI is more admin interface than API client. It's meant as a place to manage all aspects of the server and document the CLI and API. The CLI and API should mirror each other in terms of functionality unless there is a good reason they should not.
+The server stands on its own and is meant as a flexible resource that other apps can connect to and be built on top of. The Web UI is more admin interface than API client. It's meant as a place to manage all aspects of the server and document the CLI and API. The CLI is a thin client of the API; its purpose is to give agents and scripts access to the app's functionality. Design its command surface for that job — it does not need to mirror the API operation-for-operation, and no tooling should enforce such a mapping.
 
 ## Source Control
 
@@ -94,8 +94,8 @@ hand, and never maintain a parallel route-description layer.
   `check` and CI) fails on drift.
 - Every endpoint pins a stable operation id with
   `.annotate(OpenApi.Identifier, "...")`: camelCase verb+resource (e.g.
-  `getHealth`), unique across the whole API. Generated clients and the CLI
-  parity registry key off these ids — renaming one is a breaking change.
+  `getHealth`), unique across the whole API. Generated clients key off these
+  ids — renaming one is a breaking change.
 - Every request/response schema carries an `identifier` annotation (PascalCase
   type name, e.g. `HealthResponse`) so it becomes a named component schema,
   plus a short `description`. Endpoints carry an `OpenApi.Description`.
@@ -109,7 +109,7 @@ hand, and never maintain a parallel route-description layer.
   formatting authority, and it sits in `.prettierignore` so `fmt` never
   rewrites it.
 
-## Clients and CLI Parity (App Server)
+## Clients and the CLI (App Server)
 
 Both public clients derive from the same contract:
 
@@ -130,18 +130,16 @@ success; diagnostics on stderr with exit 1 on invalid usage or request
 failure. `--url` is explicit for now; keep base-URL resolution isolated in
 `cli.ts` so later configuration work can make it optional.
 
-`app-server/src/apiCliParity.ts` is the API-to-CLI parity registry: every
-public operation id maps to exactly one canonical command path (a `Record`, so
-double-mapping is structurally impossible), or carries an inline justified
-exclusion. Process commands (`serve`, `smoke`) stay outside API parity.
-`test/apiCliParity.test.ts` validates the registry in-process against the generated
-document's operation ids and the real CLI command tree, so CI fails on
-missing, stale, duplicate-command, or unknown-command mappings and on
-operations both mapped and excluded.
+The CLI command surface is curated, not a 1:1 mirror of the API: commands
+exist to give agents and scripts good access to the app's functionality, and
+one command may compose several API calls (or an endpoint may have no command
+at all). API-backed commands go through the contract-derived TypeScript
+client — never re-implement server logic in the CLI. Process commands
+(`serve`, `smoke`) run the server rather than call it.
 
 After any contract change: `mise run app-server:openapi` to regenerate the
-artifact, then `mise run contract:check` (OpenAPI drift + parity + TS client
-tests + Swift client build/tests) to verify the whole pipeline.
+artifact, then `mise run contract:check` (OpenAPI drift + TS client tests +
+Swift client build/tests) to verify the whole pipeline.
 
 ## Compiled Executable and Subprocesses (App Server)
 
