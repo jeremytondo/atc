@@ -71,14 +71,15 @@ struct ClientTests {
         #expect(try Servers.Server1.url() == URL(string: "http://127.0.0.1:7332"))
     }
 
-    // Regression: optional contract fields must survive generation. An earlier
-    // schema shape (nullable unions) made the pinned generator silently drop
-    // them — UpdateProjectRequest generated as an empty struct.
-    @Test("updateProject can send both PATCH fields")
+    // Regression: optional contract fields must survive generation as plain
+    // strings. Earlier schema shapes made the pinned generator either drop
+    // the fields entirely (nullable unions) or wrap them in single-value
+    // payload structs (allOf check fragments).
+    @Test("updateProject can send both PATCH fields as plain strings")
     func updateProjectFields() throws {
         let payload = Components.Schemas.UpdateProjectRequest(
-            name: .init(value1: "Renamed"),
-            defaultWorkingDirectory: .init(value1: "/code/atc")
+            name: "Renamed",
+            defaultWorkingDirectory: "/code/atc"
         )
         let encoded = try JSONEncoder().encode(payload)
         let json = try JSONSerialization.jsonObject(with: encoded) as? [String: String]

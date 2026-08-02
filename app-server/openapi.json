@@ -276,12 +276,8 @@
             "in": "query",
             "schema": {
               "type": "string",
-              "allOf": [
-                {
-                  "pattern": "^\\/",
-                  "description": "a server-host absolute path (starting with /)"
-                }
-              ]
+              "pattern": "^\\/",
+              "description": "a server-host absolute path (starting with /)"
             },
             "required": true
           }
@@ -361,12 +357,8 @@
           },
           "name": {
             "type": "string",
-            "allOf": [
-              {
-                "minLength": 1,
-                "description": "Human-readable project name."
-              }
-            ]
+            "minLength": 1,
+            "description": "Human-readable project name."
           },
           "defaultWorkingDirectory": {
             "type": "string",
@@ -403,21 +395,13 @@
         "properties": {
           "name": {
             "type": "string",
-            "allOf": [
-              {
-                "minLength": 1,
-                "description": "Human-readable project name."
-              }
-            ]
+            "minLength": 1,
+            "description": "Human-readable project name."
           },
           "defaultWorkingDirectory": {
             "type": "string",
-            "allOf": [
-              {
-                "pattern": "^\\/",
-                "description": "Existing directory; stored canonicalized (symlinks resolved)."
-              }
-            ]
+            "pattern": "^\\/",
+            "description": "Existing directory; stored canonicalized (symlinks resolved)."
           }
         },
         "required": [
@@ -498,21 +482,13 @@
         "properties": {
           "name": {
             "type": "string",
-            "allOf": [
-              {
-                "minLength": 1,
-                "description": "Human-readable project name."
-              }
-            ]
+            "minLength": 1,
+            "description": "Human-readable project name."
           },
           "defaultWorkingDirectory": {
             "type": "string",
-            "allOf": [
-              {
-                "pattern": "^\\/",
-                "description": "Existing directory; stored canonicalized (symlinks resolved)."
-              }
-            ]
+            "pattern": "^\\/",
+            "description": "Existing directory; stored canonicalized (symlinks resolved)."
           }
         },
         "additionalProperties": false,
