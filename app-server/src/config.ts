@@ -53,16 +53,22 @@ export class AppConfig extends Context.Service<
   }
 >()("app-server/AppConfig") {}
 
+// Empty environment values mean "unset" everywhere in the pipeline, matching
+// how ConfigProvider.fromEnv treats them for the ATC_* settings.
+const nonEmpty = (value: string | undefined) =>
+  value !== undefined && value !== "" ? value : undefined
+
 const xdgDir = (env: Env, xdgVar: string, homeFallback: ReadonlyArray<string>) => {
-  const base = env[xdgVar]
-  return base !== undefined && base !== ""
+  const base = nonEmpty(env[xdgVar])
+  return base !== undefined
     ? path.join(base, "atc")
-    : path.join(os.homedir(), ...homeFallback, "atc")
+    : path.join(nonEmpty(env["HOME"]) ?? os.homedir(), ...homeFallback, "atc")
 }
 
 /** The config file path: ATC_CONFIG, or the XDG config location. */
 const configFilePath = (env: Env) =>
-  env["ATC_CONFIG"] ?? path.join(xdgDir(env, "XDG_CONFIG_HOME", [".config"]), "config.toml")
+  nonEmpty(env["ATC_CONFIG"]) ??
+  path.join(xdgDir(env, "XDG_CONFIG_HOME", [".config"]), "config.toml")
 
 // The settings a config.toml may define. Keys are camelCase, matching the
 // system-wide JSON convention; unknown keys fail fast (a typo silently
@@ -134,6 +140,14 @@ export const load = (
 ): Effect.Effect<AppConfig["Service"], ConfigLoadError, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const configFile = configFilePath(env)
+    if (!configFile.startsWith("/")) {
+      return yield* Effect.fail(
+        new ConfigLoadError({
+          source: "ATC_CONFIG / XDG_CONFIG_HOME",
+          message: `config file path must be absolute, got "${configFile}"`,
+        }),
+      )
+    }
     const fs = yield* FileSystem.FileSystem
 
     const fileTable = yield* fs.readFileString(configFile).pipe(
@@ -173,6 +187,17 @@ export const load = (
         ),
       ),
     )
+
+    // A relative data directory would silently fork the database by working
+    // directory — compiled behavior must never depend on the cwd.
+    if (!settings.dataDir.startsWith("/")) {
+      return yield* Effect.fail(
+        new ConfigLoadError({
+          source: `${configFile} / ATC_DATA_DIR`,
+          message: `dataDir must be an absolute path, got "${settings.dataDir}"`,
+        }),
+      )
+    }
 
     const stateDir = xdgDir(env, "XDG_STATE_HOME", [".local", "state"])
     return {

@@ -27,11 +27,14 @@ export const layer: Layer.Layer<never, unknown, AppConfig | BuildInfo | FileSyst
         Logger.toFile(Logger.formatJson, config.logFile, { flag: "a" }),
         // Keeps log lines attached to the active request span as span events.
         Logger.tracerLogger,
-        ...(build.commit === "dev" ? [Logger.consolePretty({ stderr: true })] : []),
+        ...(build.commit === "dev" ? [Logger.consolePretty()] : []),
       ]
       return Layer.mergeAll(
         Logger.layer(loggers, { mergeWithExisting: false }),
         Layer.succeed(References.MinimumLogLevel, config.logLevel),
+        // consolePretty ignores its own stderr option; this reference is what
+        // actually routes console loggers to stderr, keeping stdout clean.
+        Layer.succeed(References.LogToStderr, true),
       )
     }),
   )

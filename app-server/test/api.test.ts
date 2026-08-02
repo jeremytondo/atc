@@ -187,6 +187,12 @@ describe("/api/v1/fs/check", () => {
 
       const notDirectory = yield* client.v1.checkDirectory({ query: { path: filePath } })
       assert.strictEqual(notDirectory.state, "not_directory")
+
+      // A path component that exists but is a file (ENOTDIR), not ENOENT.
+      const throughFile = yield* client.v1.checkDirectory({
+        query: { path: join(filePath, "sub") },
+      })
+      assert.strictEqual(throughFile.state, "not_directory")
     }).pipe(Effect.provide(TestLayer)),
   )
 })

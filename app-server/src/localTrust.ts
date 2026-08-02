@@ -8,6 +8,9 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 // page's request carries its Origin). Requests must present a recognized
 // loopback Host, and browser requests (Origin present) must come from a
 // loopback origin. Non-browser clients send no Origin and pass untouched.
+// Origin-less browser requests (e.g. a cross-site <img>) can only be simple
+// GETs — safe while every GET is side-effect-free and responses are
+// unreadable cross-origin; revisit if a GET ever gains a side effect.
 // The remote-auth pass later relaxes this deliberately for tokened clients.
 
 const LOOPBACK_NAMES = new Set(["localhost", "127.0.0.1", "[::1]"])

@@ -104,6 +104,10 @@ export const FsCheckResponse = Schema.Struct({
   description: "Result of a directory health check. Never persisted.",
 })
 
+// The error classes carry human `message`s so every consumer (the CLI above
+// all) can print a real diagnostic — a TaggedErrorClass message is otherwise
+// empty.
+
 /** Unknown project id. */
 export class ProjectNotFound extends Schema.TaggedErrorClass<ProjectNotFound>()(
   "ProjectNotFound",
@@ -113,7 +117,11 @@ export class ProjectNotFound extends Schema.TaggedErrorClass<ProjectNotFound>()(
     description: "No project exists with the given id.",
     httpApiStatus: 404,
   },
-) {}
+) {
+  override get message(): string {
+    return `no project with id ${this.projectId}`
+  }
+}
 
 /** The directory failed validation; `state` carries the tagged failure. */
 export class DirectoryUnavailable extends Schema.TaggedErrorClass<DirectoryUnavailable>()(
@@ -127,7 +135,18 @@ export class DirectoryUnavailable extends Schema.TaggedErrorClass<DirectoryUnava
     description: "The directory does not exist, is not a directory, or cannot be read/traversed.",
     httpApiStatus: 422,
   },
-) {}
+) {
+  override get message(): string {
+    switch (this.state) {
+      case "missing":
+        return `directory ${this.path} does not exist`
+      case "inaccessible":
+        return `directory ${this.path} cannot be read or traversed`
+      case "not_directory":
+        return `${this.path} is not a directory`
+    }
+  }
+}
 
 /** The bounded directory check did not complete; retryable, fail-closed. */
 export class DirectoryCheckTimedOut extends Schema.TaggedErrorClass<DirectoryCheckTimedOut>()(
@@ -139,7 +158,11 @@ export class DirectoryCheckTimedOut extends Schema.TaggedErrorClass<DirectoryChe
       "The directory check did not complete within its bounded timeout. Retryable — a timeout is not proof the path is missing.",
     httpApiStatus: 422,
   },
-) {}
+) {
+  override get message(): string {
+    return `the check of directory ${this.path} timed out; retry`
+  }
+}
 
 const projectIdParam = { projectId: Schema.String }
 

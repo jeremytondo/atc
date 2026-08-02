@@ -39,10 +39,12 @@ const failReported = (message: string) => {
   return Console.error(line).pipe(Effect.andThen(Effect.fail(new ReportedError({ message: line }))))
 }
 
+// Contract error classes carry human messages (api.ts); the String fallback
+// covers any Error subclass whose message is empty.
 const describeError = (error: unknown): string =>
   error instanceof ConfigLoadError
     ? `${error.source}: ${error.message}`
-    : error instanceof Error
+    : error instanceof Error && error.message !== ""
       ? error.message
       : String(error)
 
@@ -110,7 +112,10 @@ const clientCommand = <const Name extends string, Params extends Command.Command
       const baseUrl = yield* resolveBaseUrl
       const client = yield* Client.make({ baseUrl })
       const result = yield* call(client, parsed)
-      yield* Console.log(JSON.stringify(result, null, 2))
+      // Void results (e.g. delete) print nothing — stdout stays pure JSON.
+      if (result !== undefined) {
+        yield* Console.log(JSON.stringify(result, null, 2))
+      }
     }).pipe(
       Effect.provide([BunHttpClient.layer, appConfigLayer]),
       Effect.catch((error) => failReported(`atc ${diagnosticName}: ${describeError(error)}`)),
@@ -194,28 +199,20 @@ const yesFlag = Flag.boolean("yes").pipe(
   Flag.withDescription("Confirm the deletion (required; the CLI never prompts)"),
 )
 
-const projectDelete = Command.make(
+const projectDelete = clientCommand(
   "delete",
+  "Delete a project record (never touches the filesystem)",
   { projectId: projectIdArgument, yes: yesFlag },
-  ({ projectId, yes }) =>
-    Effect.gen(function* () {
-      if (!yes) {
-        return yield* failReported(
-          "atc project delete: refusing to delete without --yes (deletes the project record only, never the directory)",
-        )
-      }
-      const baseUrl = yield* resolveBaseUrl
-      const client = yield* Client.make({ baseUrl })
-      yield* client.v1.deleteProject({ params: { projectId } })
-    }).pipe(
-      Effect.provide([BunHttpClient.layer, appConfigLayer]),
-      Effect.catch((error) =>
-        error instanceof ReportedError
-          ? Effect.fail(error)
-          : failReported(`atc project delete: ${describeError(error)}`),
-      ),
-    ),
-).pipe(Command.withDescription("Delete a project record (never touches the filesystem)"))
+  (client, { projectId, yes }) =>
+    yes
+      ? client.v1.deleteProject({ params: { projectId } })
+      : Effect.fail(
+          new Error(
+            "refusing to delete without --yes (deletes the project record only, never the directory)",
+          ),
+        ),
+  "project delete",
+)
 
 const project = Command.make("project").pipe(
   Command.withDescription("Manage projects"),

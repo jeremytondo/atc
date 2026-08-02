@@ -79,7 +79,7 @@ describe("atc health/version (black box)", () => {
     // parallel test worker could rebind.
     const result = await cli(["health"], { ATC_PORT: "1" })
     expect(result.stdout).toBe("")
-    expect(result.stderr).toMatch(/^atc health: /)
+    expect(result.stderr).toMatch(/^atc health: \S/)
     expect(result.stderr.trim().split("\n")).toHaveLength(1)
     expect(result.exitCode).toBe(1)
   })
@@ -87,7 +87,8 @@ describe("atc health/version (black box)", () => {
   test("invalid configuration is one stderr line naming the source and exit 1", async () => {
     const result = await cli(["health"], { ATC_PORT: "70000" })
     expect(result.stdout).toBe("")
-    expect(result.stderr).toMatch(/^atc health: /)
+    expect(result.stderr).toMatch(/^atc health: \S/)
+    expect(result.stderr).toContain("65535")
     expect(result.stderr.trim().split("\n")).toHaveLength(1)
     expect(result.exitCode).toBe(1)
   })
@@ -101,7 +102,7 @@ describe("atc health/version (black box)", () => {
     try {
       const result = await cli(["health"], { ATC_PORT: String(misbehaving.port) })
       expect(result.stdout).toBe("")
-      expect(result.stderr).toMatch(/^atc health: /)
+      expect(result.stderr).toMatch(/^atc health: \S/)
       // Schema decode errors are multi-line by default; the CLI must collapse
       // them to keep the one-line diagnostic contract.
       expect(result.stderr.trim().split("\n")).toHaveLength(1)
@@ -145,8 +146,14 @@ describe("atc project / atc fs (black box)", () => {
     expect(refused.exitCode).toBe(1)
 
     const deleted = await cli(["project", "delete", project.id, "--yes"])
+    expect(deleted.stdout).toBe("")
     expect(deleted.stderr).toBe("")
     expect(deleted.exitCode).toBe(0)
+
+    // A second delete of the same id is a real diagnostic, not an empty line.
+    const gone = await cli(["project", "delete", project.id, "--yes"])
+    expect(gone.stderr.trim()).toBe(`atc project delete: no project with id ${project.id}`)
+    expect(gone.exitCode).toBe(1)
 
     const empty = await cli(["project", "list"])
     expect(JSON.parse(empty.stdout)).toEqual([])
@@ -162,7 +169,9 @@ describe("atc project / atc fs (black box)", () => {
       join(scratch, "does-not-exist"),
     ])
     expect(result.stdout).toBe("")
-    expect(result.stderr).toMatch(/^atc project create: /)
+    // The tagged API error surfaces as a human diagnostic, never a bare tag
+    // or an empty line.
+    expect(result.stderr).toMatch(/^atc project create: directory .* does not exist$/m)
     expect(result.exitCode).toBe(1)
   })
 

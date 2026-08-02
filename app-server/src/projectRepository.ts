@@ -95,39 +95,39 @@ export const layer = Layer.effect(ProjectRepository)(
       execute: (id) => sql`DELETE FROM projects WHERE id = ${id} RETURNING id`,
     })
 
+    const firstProject = (rows: ReadonlyArray<typeof ProjectRow.Type>) =>
+      Option.fromNullishOr(rows[0]).pipe(Option.map(toProject))
+
+    const get = (id: string) => getRows(id).pipe(Effect.map(firstProject), Effect.orDie)
+
     return {
       list: () =>
         listRows().pipe(
           Effect.map((rows) => rows.map(toProject)),
           Effect.orDie,
         ),
-      create: (input) =>
-        Effect.suspend(() => {
-          const now = new Date().toISOString()
-          const row = {
-            id: Bun.randomUUIDv7(),
-            name: input.name,
-            default_working_directory: input.defaultWorkingDirectory,
-            created_at: now,
-            updated_at: now,
-          }
-          return insertRow(row).pipe(Effect.as(toProject(row)), Effect.orDie)
-        }),
-      get: (id) =>
-        getRows(id).pipe(
-          Effect.map((rows) => Option.fromNullishOr(rows[0]).pipe(Option.map(toProject))),
-          Effect.orDie,
-        ),
+      create: (input) => {
+        const now = new Date().toISOString()
+        const row = {
+          id: Bun.randomUUIDv7(),
+          name: input.name,
+          default_working_directory: input.defaultWorkingDirectory,
+          created_at: now,
+          updated_at: now,
+        }
+        return insertRow(row).pipe(Effect.as(toProject(row)), Effect.orDie)
+      },
+      get,
       update: (id, patch) =>
-        updateRows({
-          id,
-          name: patch.name ?? null,
-          default_working_directory: patch.defaultWorkingDirectory ?? null,
-          updated_at: new Date().toISOString(),
-        }).pipe(
-          Effect.map((rows) => Option.fromNullishOr(rows[0]).pipe(Option.map(toProject))),
-          Effect.orDie,
-        ),
+        // An empty patch changes nothing — including updatedAt.
+        patch.name === undefined && patch.defaultWorkingDirectory === undefined
+          ? get(id)
+          : updateRows({
+              id,
+              name: patch.name ?? null,
+              default_working_directory: patch.defaultWorkingDirectory ?? null,
+              updated_at: new Date().toISOString(),
+            }).pipe(Effect.map(firstProject), Effect.orDie),
       delete: (id) =>
         deleteRows(id).pipe(
           Effect.map((rows) => rows.length > 0),

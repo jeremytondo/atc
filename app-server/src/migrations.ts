@@ -8,7 +8,7 @@ import { SqlClient } from "effect/unstable/sql"
 // without any filesystem dependency.
 //
 // `Migrator.fromRecord` silently drops keys that don't match /^(\d+)_(.+)$/;
-// migrations.test.ts asserts the loaded count equals the record size so a
+// persistence.test.ts asserts the loaded count equals the record size so a
 // malformed key cannot silently skip a migration.
 
 export const migrations: Record<string, Effect.Effect<void, unknown, SqlClient.SqlClient>> = {

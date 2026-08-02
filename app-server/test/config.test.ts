@@ -2,7 +2,7 @@ import { assert, describe, it } from "@effect/vitest"
 import { BunFileSystem } from "@effect/platform-bun"
 import { Effect } from "effect"
 import { mkdtempSync, rmSync } from "node:fs"
-import { tmpdir, homedir } from "node:os"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll } from "vitest"
 import { DEFAULT_PORT } from "../src/api.ts"
@@ -21,22 +21,27 @@ const writeConfig = (contents: string) => {
   return file
 }
 
-const load = (env: Config.Env) => Config.load(env).pipe(Effect.provide(BunFileSystem.layer))
+// Every test injects HOME so results never depend on the developer's real
+// ~/.config/atc/config.toml.
+const home = join(scratch, "home")
+
+const load = (env: Config.Env) =>
+  Config.load({ HOME: home, ...env }).pipe(Effect.provide(BunFileSystem.layer))
 
 const loadError = (env: Config.Env) =>
-  Config.load(env).pipe(Effect.flip, Effect.provide(BunFileSystem.layer))
+  Config.load({ HOME: home, ...env }).pipe(Effect.flip, Effect.provide(BunFileSystem.layer))
 
 describe("configuration", () => {
-  it.effect("defaults: XDG locations and default port", () =>
+  it.effect("defaults: XDG locations under HOME and the default port", () =>
     Effect.gen(function* () {
       const config = yield* load({})
       assert.strictEqual(config.port, DEFAULT_PORT)
       assert.strictEqual(config.logLevel, "Info")
-      assert.strictEqual(config.configFile, join(homedir(), ".config", "atc", "config.toml"))
-      assert.strictEqual(config.dataDir, join(homedir(), ".local", "share", "atc"))
-      assert.strictEqual(config.stateDir, join(homedir(), ".local", "state", "atc"))
-      assert.strictEqual(config.dbFile, join(homedir(), ".local", "share", "atc", "atc.db"))
-      assert.strictEqual(config.logFile, join(homedir(), ".local", "state", "atc", "atc.log"))
+      assert.strictEqual(config.configFile, join(home, ".config", "atc", "config.toml"))
+      assert.strictEqual(config.dataDir, join(home, ".local", "share", "atc"))
+      assert.strictEqual(config.stateDir, join(home, ".local", "state", "atc"))
+      assert.strictEqual(config.dbFile, join(home, ".local", "share", "atc", "atc.db"))
+      assert.strictEqual(config.logFile, join(home, ".local", "state", "atc", "atc.log"))
     }),
   )
 
@@ -124,6 +129,29 @@ describe("configuration", () => {
     Effect.gen(function* () {
       const config = yield* load({ ATC_LOG_LEVEL: "ERROR" })
       assert.strictEqual(config.logLevel, "Error")
+    }),
+  )
+
+  it.effect("empty environment values mean unset, including ATC_CONFIG", () =>
+    Effect.gen(function* () {
+      const config = yield* load({ ATC_CONFIG: "", ATC_PORT: "" })
+      assert.strictEqual(config.configFile, join(home, ".config", "atc", "config.toml"))
+      assert.strictEqual(config.port, DEFAULT_PORT)
+    }),
+  )
+
+  it.effect("a relative data directory is rejected (never cwd-dependent)", () =>
+    Effect.gen(function* () {
+      const error = yield* loadError({ ATC_DATA_DIR: "relative/data" })
+      assert.include(error.message, "absolute")
+      assert.include(error.source, "ATC_DATA_DIR")
+    }),
+  )
+
+  it.effect("a relative config file path is rejected", () =>
+    Effect.gen(function* () {
+      const error = yield* loadError({ ATC_CONFIG: "relative.toml" })
+      assert.include(error.message, "absolute")
     }),
   )
 })

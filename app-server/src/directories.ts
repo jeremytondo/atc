@@ -1,7 +1,7 @@
 import { Context, Effect, Layer } from "effect"
 import { constants } from "node:fs"
 import * as fs from "node:fs/promises"
-import { DirectoryCheckTimedOut, DirectoryUnavailable } from "./api.ts"
+import { DirectoryCheckTimedOut, DirectoryUnavailable, DirectoryState } from "./api.ts"
 
 // Demand-driven directory health (ATC-121, Domain Model rules): checks run
 // only when an operation needs a directory or a client asks explicitly —
@@ -16,7 +16,7 @@ export const CHECK_TIMEOUT_MILLIS = 2000
 
 export type DirectoryCheckResult = {
   readonly path: string
-  readonly state: "available" | "missing" | "inaccessible" | "not_directory" | "unknown"
+  readonly state: typeof DirectoryState.Type
   readonly checkedAt: string
   readonly reason: string | null
 }
@@ -42,7 +42,7 @@ export class Directories extends Context.Service<
 
 type Probe =
   | { readonly ok: true; readonly canonical: string }
-  | { readonly ok: false; readonly state: "missing" | "inaccessible" | "not_directory" }
+  | { readonly ok: false; readonly state: DirectoryUnavailable["state"] }
 
 // One filesystem probe: canonicalize, require a directory, require
 // read+traversal. Node errno codes map onto the tagged states.
@@ -52,9 +52,15 @@ const probe = (path: string): Promise<Probe> =>
     try {
       canonical = await fs.realpath(path)
     } catch (error) {
+      // ENOTDIR: a path component exists but is not a directory.
       return {
         ok: false as const,
-        state: errno(error) === "ENOENT" || errno(error) === "ENOTDIR" ? "missing" : "inaccessible",
+        state:
+          errno(error) === "ENOENT"
+            ? "missing"
+            : errno(error) === "ENOTDIR"
+              ? "not_directory"
+              : "inaccessible",
       }
     }
     let isDirectory: boolean
