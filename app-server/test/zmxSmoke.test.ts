@@ -5,13 +5,8 @@ import { afterAll } from "vitest"
 import * as Subprocess from "../src/subprocess.ts"
 import { TerminalAdapter } from "../src/terminalAdapter.ts"
 import * as Zmx from "../src/zmxAdapter.ts"
-import {
-  cleanupTempDirs,
-  collectText,
-  makeShortSocketDir,
-  testAppConfig,
-  waitForText,
-} from "./testLayers.ts"
+import { cleanupTempDirs, makeShortSocketDir } from "./blackbox.ts"
+import { collectText, testAppConfig, waitForText } from "./testLayers.ts"
 
 // Opt-in smoke tests against the real, user-installed zmx binary
 // (mise run test:zmx). They prove the pinned behavioral assumptions — attach

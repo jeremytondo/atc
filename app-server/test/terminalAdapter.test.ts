@@ -2,9 +2,7 @@ import { assert, describe, it } from "@effect/vitest"
 import { BunServices } from "@effect/platform-bun"
 import { Effect, Layer, Stream } from "effect"
 import * as fs from "node:fs"
-import * as os from "node:os"
 import * as path from "node:path"
-import { fileURLToPath } from "node:url"
 import { afterAll } from "vitest"
 import * as Subprocess from "../src/subprocess.ts"
 import {
@@ -14,48 +12,20 @@ import {
 } from "../src/terminalAdapter.ts"
 import * as Zmx from "../src/zmxAdapter.ts"
 import { makeFakeAdapter } from "./fakeTerminalAdapter.ts"
-import {
-  cleanupTempDirs,
-  collectText,
-  makeShortSocketDir,
-  testAppConfig,
-  trackTempDir,
-  waitForText,
-} from "./testLayers.ts"
+import { cleanupTempDirs } from "./blackbox.ts"
+import { collectText, makeFakeZmxSandbox, testAppConfig, waitForText } from "./testLayers.ts"
 
 // TerminalAdapter coverage: pure helpers, the zmx adapter against the
 // fake-zmx fixture (deterministic, no zmx install), and the fake in-memory
 // adapter's honesty tests. The real zmx binary is exercised by the opt-in
 // zmxSmoke tests.
 
-const fixturePath = fileURLToPath(new URL("fixtures/fake-zmx.ts", import.meta.url))
-
 afterAll(cleanupTempDirs)
-
-/**
- * Per-test sandbox. The wrapper script is the configured "zmx executable":
- * the adapter owns argv and environment, so per-test fixture configuration
- * is baked into the wrapper itself — no process.env mutation anywhere.
- */
-const makeSandbox = (vars: Record<string, string> = {}) => {
-  const base = trackTempDir(fs.mkdtempSync(path.join(os.tmpdir(), "atc-zmx-")))
-  const stateDir = path.join(base, "state")
-  const wrapper = path.join(base, "fake-zmx")
-  const assignments = Object.entries({ FAKE_ZMX_STATE: stateDir, ...vars })
-    .map(([key, value]) => `${key}='${value}'`)
-    .join(" ")
-  fs.writeFileSync(
-    wrapper,
-    `#!/bin/sh\n${assignments} exec "${process.execPath}" "${fixturePath}" "$@"\n`,
-  )
-  fs.chmodSync(wrapper, 0o755)
-  return { base, stateDir, wrapper, socketDir: makeShortSocketDir() }
-}
 
 const TIGHT: Zmx.ZmxOptions = { pollInterval: "25 millis", verifyPasses: 8 }
 
 const adapterLayer = (
-  sandbox: ReturnType<typeof makeSandbox>,
+  sandbox: ReturnType<typeof makeFakeZmxSandbox>,
   options: Zmx.ZmxOptions = TIGHT,
   zmxExecutable: string = sandbox.wrapper,
 ) =>
@@ -65,7 +35,7 @@ const adapterLayer = (
     Layer.provideMerge(BunServices.layer),
   )
 
-const readSessionRecord = (sandbox: ReturnType<typeof makeSandbox>, name: string) =>
+const readSessionRecord = (sandbox: ReturnType<typeof makeFakeZmxSandbox>, name: string) =>
   JSON.parse(fs.readFileSync(path.join(sandbox.stateDir, name), "utf8")) as {
     startDir: string
     command: Array<string>
@@ -131,7 +101,7 @@ describe("zmxChildEnv", () => {
 
 describe("zmx adapter against fake-zmx", () => {
   it.live("creates a session, settles, and detaches the creation client", () => {
-    const sandbox = makeSandbox()
+    const sandbox = makeFakeZmxSandbox()
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
       yield* adapter.createSession({ name: "atc-aaaa", cwd: sandbox.base })
@@ -150,7 +120,7 @@ describe("zmx adapter against fake-zmx", () => {
   })
 
   it.live("re-tightens a pre-existing permissive socket directory at boot", () => {
-    const sandbox = makeSandbox()
+    const sandbox = makeFakeZmxSandbox()
     // A prior or manual zmx invocation could have left the directory more
     // open than ATC's guarantee; boot must restore 0700, not just claim it.
     fs.chmodSync(sandbox.socketDir, 0o755)
@@ -161,7 +131,7 @@ describe("zmx adapter against fake-zmx", () => {
   })
 
   it.live("passes an exec-style argv through and accepts a finished command", () => {
-    const sandbox = makeSandbox({ FAKE_ZMX_ATTACH_MODE: "exit" })
+    const sandbox = makeFakeZmxSandbox({ FAKE_ZMX_ATTACH_MODE: "exit" })
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
       yield* adapter.createSession({
@@ -174,7 +144,7 @@ describe("zmx adapter against fake-zmx", () => {
   })
 
   it.live("refuses to create over an existing session", () => {
-    const sandbox = makeSandbox()
+    const sandbox = makeFakeZmxSandbox()
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
       yield* adapter.createSession({ name: "atc-dupe", cwd: sandbox.base })
@@ -192,7 +162,7 @@ describe("zmx adapter against fake-zmx", () => {
   it.live("never treats an unreachable inventory entry as a settled create", () => {
     // Regression: a wedged socket produces an err= entry; creating that name
     // must fail (the path is held), not silently report success.
-    const sandbox = makeSandbox({ FAKE_ZMX_UNREACHABLE: "atc-wedged" })
+    const sandbox = makeFakeZmxSandbox({ FAKE_ZMX_UNREACHABLE: "atc-wedged" })
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
       const result = yield* Effect.result(
@@ -207,7 +177,7 @@ describe("zmx adapter against fake-zmx", () => {
   })
 
   it.live("fails a launch whose session never appears, with diagnostics", () => {
-    const sandbox = makeSandbox({ FAKE_ZMX_ATTACH_MODE: "fail-fast" })
+    const sandbox = makeFakeZmxSandbox({ FAKE_ZMX_ATTACH_MODE: "fail-fast" })
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
       const result = yield* Effect.result(
@@ -222,7 +192,7 @@ describe("zmx adapter against fake-zmx", () => {
   })
 
   it.live("fails a launch that never settles within the verification passes", () => {
-    const sandbox = makeSandbox({ FAKE_ZMX_SETTLE_MS: "60000" })
+    const sandbox = makeFakeZmxSandbox({ FAKE_ZMX_SETTLE_MS: "60000" })
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
       const result = yield* Effect.result(
@@ -237,7 +207,7 @@ describe("zmx adapter against fake-zmx", () => {
   })
 
   it.live("rejects a working directory that does not exist as a conclusive failure", () => {
-    const sandbox = makeSandbox()
+    const sandbox = makeFakeZmxSandbox()
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
       const result = yield* Effect.result(
@@ -252,7 +222,7 @@ describe("zmx adapter against fake-zmx", () => {
   })
 
   it.live("reports an unavailable inventory instead of guessing", () => {
-    const sandbox = makeSandbox({ FAKE_ZMX_LIST_MODE: "fail" })
+    const sandbox = makeFakeZmxSandbox({ FAKE_ZMX_LIST_MODE: "fail" })
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
       const result = yield* Effect.result(adapter.listSessions())
@@ -265,7 +235,7 @@ describe("zmx adapter against fake-zmx", () => {
   })
 
   it.live("kills a session and verifies its delayed disappearance", () => {
-    const sandbox = makeSandbox({ FAKE_ZMX_ATTACH_MODE: "exit", FAKE_ZMX_KILL_MS: "200" })
+    const sandbox = makeFakeZmxSandbox({ FAKE_ZMX_ATTACH_MODE: "exit", FAKE_ZMX_KILL_MS: "200" })
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
       yield* adapter.createSession({ name: "atc-gggg", cwd: sandbox.base })
@@ -275,7 +245,7 @@ describe("zmx adapter against fake-zmx", () => {
   })
 
   it.live("treats killing an absent session as success", () => {
-    const sandbox = makeSandbox()
+    const sandbox = makeFakeZmxSandbox()
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
       yield* adapter.killSession("atc-not-there")
@@ -283,7 +253,10 @@ describe("zmx adapter against fake-zmx", () => {
   })
 
   it.live("fails kill when the session refuses to die", () => {
-    const sandbox = makeSandbox({ FAKE_ZMX_ATTACH_MODE: "exit", FAKE_ZMX_KILL_MODE: "ignore" })
+    const sandbox = makeFakeZmxSandbox({
+      FAKE_ZMX_ATTACH_MODE: "exit",
+      FAKE_ZMX_KILL_MODE: "ignore",
+    })
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
       yield* adapter.createSession({ name: "atc-hhhh", cwd: sandbox.base })
@@ -297,7 +270,7 @@ describe("zmx adapter against fake-zmx", () => {
   })
 
   it.live("refuses to attach to a session missing from the inventory", () => {
-    const sandbox = makeSandbox()
+    const sandbox = makeFakeZmxSandbox()
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
       const result = yield* Effect.result(
@@ -311,7 +284,7 @@ describe("zmx adapter against fake-zmx", () => {
   })
 
   it.live("refuses to attach to an unreachable session (it would resurrect it)", () => {
-    const sandbox = makeSandbox({ FAKE_ZMX_UNREACHABLE: "atc-wedged" })
+    const sandbox = makeFakeZmxSandbox({ FAKE_ZMX_UNREACHABLE: "atc-wedged" })
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
       const result = yield* Effect.result(
@@ -326,7 +299,7 @@ describe("zmx adapter against fake-zmx", () => {
   })
 
   it.live("attaches and round-trips terminal bytes", () => {
-    const sandbox = makeSandbox()
+    const sandbox = makeFakeZmxSandbox()
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
       yield* adapter.createSession({ name: "atc-iiii", cwd: sandbox.base })
@@ -340,7 +313,7 @@ describe("zmx adapter against fake-zmx", () => {
   })
 
   it.live("fails with one actionable line when the executable is missing", () => {
-    const sandbox = makeSandbox()
+    const sandbox = makeFakeZmxSandbox()
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
       const result = yield* Effect.result(adapter.listSessions())
@@ -353,7 +326,7 @@ describe("zmx adapter against fake-zmx", () => {
   })
 
   it.live("refuses to boot when socket paths would exceed the unix limit", () => {
-    const sandbox = makeSandbox()
+    const sandbox = makeFakeZmxSandbox()
     const deepDir = path.join(sandbox.base, "x".repeat(120))
     return Effect.gen(function* () {
       const result = yield* Effect.result(

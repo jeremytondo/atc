@@ -74,6 +74,6 @@ depends = ["build"]
 run = "ATC_SMOKE=1 bun --bun vitest run test/provider.smoke.test.ts"
 
 [tasks."test:zmx"]
-description = "Opt-in smoke tests against the real installed zmx binary"
-depends = ["install"]
-run = "ATC_ZMX_SMOKE=1 bun --bun vitest run test/zmxSmoke.test.ts"
+description = "Opt-in tests against the real installed zmx: adapter smoke and compiled restart recovery"
+depends = ["build"]
+run = "ATC_ZMX_SMOKE=1 bun --bun vitest run test/zmxSmoke.test.ts test/zmxRecovery.blackbox.test.ts"

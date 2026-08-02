@@ -24,4 +24,25 @@ export const migrations: Record<string, Effect.Effect<void, unknown, SqlClient.S
       ) STRICT
     `
   }),
+  // `command` is a JSON argv array or NULL (interactive login shell).
+  // `status` is 'starting' (internal, crash-mid-create marker), 'live', or
+  // 'ended' (tombstone until deleted). ON DELETE RESTRICT enforces the
+  // project-deletion rule at the storage layer too.
+  "0002_terminals": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`
+      CREATE TABLE terminals (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+        name TEXT,
+        command TEXT,
+        initial_working_directory TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('starting', 'live', 'ended')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        ended_at TEXT
+      ) STRICT
+    `
+    yield* sql`CREATE INDEX terminals_project_id ON terminals(project_id)`
+  }),
 }

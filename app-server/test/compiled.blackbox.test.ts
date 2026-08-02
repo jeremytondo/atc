@@ -49,7 +49,7 @@ describe.skipIf(!enabled)("compiled atc artifact (opt-in: mise run test:compiled
       // First boot created and migrated the database in the configured
       // data directory, and the log file landed in the state directory.
       expect(existsSync(dbFile)).toBe(true)
-      expect(existsSync(join(outsideCwd, "state", "atc", "atc.log"))).toBe(true)
+      expect(existsSync(join(env.XDG_STATE_HOME, "atc", "atc.log"))).toBe(true)
 
       const version = await fetch(`${base}/api/v1/version`)
       expect(version.status).toBe(200)

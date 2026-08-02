@@ -4,12 +4,12 @@ import * as path from "node:path"
 import { AppConfig } from "./config.ts"
 import { Subprocess } from "./subprocess.ts"
 import type { SubprocessError } from "./subprocess.ts"
+import { ZmxUnavailable } from "./api.ts"
 import {
   SESSION_NAME_PREFIX,
   SessionNotFound,
   SessionOperationFailed,
   TerminalAdapter,
-  ZmxUnavailable,
 } from "./terminalAdapter.ts"
 import type { SessionInfo } from "./terminalAdapter.ts"
 

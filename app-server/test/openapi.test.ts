@@ -80,7 +80,8 @@ describe("openapi document", () => {
     HttpApi.reflect(Api, {
       onGroup() {},
       onEndpoint({ endpoint, mergedAnnotations }) {
-        // OpenApi.Exclude drops an endpoint from the document by design.
+        // OpenApi.Exclude drops an endpoint from the document by design
+        // (the WebSocket attach endpoint is the one current use).
         if (Context.get(mergedAnnotations, OpenApi.Exclude)) return
         expected.push({
           path: endpoint.path.replace(/:(\w+)\??/g, "{$1}"),
@@ -140,8 +141,13 @@ describe("openapi document vs runtime", () => {
       "/api/v1/version",
       "/api/v1/projects",
       "/api/v1/projects/{projectId}",
+      "/api/v1/terminals",
+      "/api/v1/terminals/{terminalId}",
       "/api/v1/fs/check",
     ])
+    // The WebSocket attach endpoint is contract-declared but excluded from
+    // the document — REST clients cannot represent an upgrade.
+    assert.notProperty(openApiDocument.paths, "/api/v1/terminals/{terminalId}/attach")
   })
 
   it.effect("GET /api/v1/health returns the documented payload", () =>
@@ -217,6 +223,57 @@ describe("openapi document vs runtime", () => {
         operation("/api/v1/projects/{projectId}").responses["404"]!.content["application/json"]!
           .schema,
         { $ref: "#/components/schemas/ProjectNotFoundJsonEncoding" },
+      )
+    }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
+  )
+
+  it.effect("/api/v1/terminals: created and listed payloads match the documented schemas", () =>
+    Effect.gen(function* () {
+      const client = yield* rawClient
+      const project = yield* client.post("http://127.0.0.1/api/v1/projects", {
+        body: HttpBody.jsonUnsafe({ name: "Terminal Docs", defaultWorkingDirectory: "/tmp" }),
+      })
+      const projectBody = (yield* project.json) as { id: string }
+
+      const created = yield* client.post("http://127.0.0.1/api/v1/terminals", {
+        body: HttpBody.jsonUnsafe({ projectId: projectBody.id }),
+      })
+      assert.strictEqual(created.status, 200)
+      const createdBody = (yield* created.json) as Record<string, unknown>
+      const schema = componentSchema("Terminal")
+      // A shell terminal without a label carries exactly the required keys;
+      // name/command/endedAt are absent optional keys, never null.
+      assert.sameMembers([...schema.required], Object.keys(createdBody))
+      assert.includeMembers(Object.keys(schema.properties), Object.keys(createdBody))
+      assert.strictEqual(createdBody["status"], "live")
+      assert.deepStrictEqual(
+        operation("/api/v1/terminals", "post").responses["200"]!.content["application/json"]!
+          .schema,
+        { $ref: "#/components/schemas/Terminal" },
+      )
+
+      const listed = yield* client.get("http://127.0.0.1/api/v1/terminals")
+      assert.strictEqual(listed.status, 200)
+      assert.deepStrictEqual(yield* listed.json, [createdBody] as unknown)
+      assert.deepStrictEqual(
+        operation("/api/v1/terminals").responses["200"]!.content["application/json"]!.schema,
+        { $ref: "#/components/schemas/TerminalList" },
+      )
+    }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
+  )
+
+  it.effect("GET /api/v1/terminals/{terminalId} documents and returns the 404 error payload", () =>
+    Effect.gen(function* () {
+      const response = yield* (yield* rawClient).get("http://127.0.0.1/api/v1/terminals/nope")
+      assert.strictEqual(response.status, 404)
+      assert.deepStrictEqual(yield* response.json, {
+        _tag: "TerminalNotFound",
+        terminalId: "nope",
+      })
+      assert.deepStrictEqual(
+        operation("/api/v1/terminals/{terminalId}").responses["404"]!.content["application/json"]!
+          .schema,
+        { $ref: "#/components/schemas/TerminalNotFoundJsonEncoding" },
       )
     }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
   )

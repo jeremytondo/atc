@@ -2,7 +2,15 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, describe, expect, test } from "vitest"
-import { appServerRoot, freePort, isolatedEnv, spawnServe, waitForHealth } from "./blackbox.ts"
+import {
+  appServerRoot,
+  cleanupTempDirs,
+  freePort,
+  isolatedEnv,
+  spawnServe,
+  waitForHealth,
+} from "./blackbox.ts"
+import { makeFakeZmxSandbox } from "./testLayers.ts"
 
 // Black-box tests of the real entrypoint: spawn `bun src/main.ts serve` on a
 // loopback port, exercise both endpoints over TCP, and verify clean shutdown
@@ -13,10 +21,22 @@ import { appServerRoot, freePort, isolatedEnv, spawnServe, waitForHealth } from 
 // no PATH lookup for the child. Isolated locations keep the spawned server's
 // database and log file out of the real user directories.
 const scratch = mkdtempSync(join(tmpdir(), "atc-serve-blackbox-"))
-afterAll(() => rmSync(scratch, { recursive: true, force: true }))
+afterAll(() => {
+  rmSync(scratch, { recursive: true, force: true })
+  cleanupTempDirs()
+})
 
+// Startup terminal reconciliation consults zmx: pin the executable to the
+// deterministic fake so these tests need no zmx install anywhere they run
+// (a missing install would add a startup warning line to stderr).
+const sandbox = makeFakeZmxSandbox()
 const spawnFromSource = (port: number) =>
-  spawnServe([process.execPath, "src/main.ts"], port, appServerRoot, isolatedEnv(scratch))
+  spawnServe(
+    [process.execPath, "src/main.ts"],
+    port,
+    appServerRoot,
+    isolatedEnv(scratch, { ATC_ZMX_EXECUTABLE: sandbox.wrapper }),
+  )
 
 describe("atc serve (black box)", () => {
   test.each(["SIGTERM", "SIGINT"] as const)(

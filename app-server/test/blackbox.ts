@@ -1,3 +1,5 @@
+import { expect } from "vitest"
+import { mkdtempSync, rmSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 
 // Shared helpers for black-box tests that spawn a real `atc serve` process —
@@ -10,16 +12,41 @@ export const appServerRoot = fileURLToPath(new URL("..", import.meta.url))
 export const compiledBinaryPath =
   process.env["ATC_COMPILED_BIN"] ?? `${appServerRoot}dist/atc-${process.platform}-${process.arch}`
 
+const tempDirs: Array<string> = []
+
+/** Track `dir` for removal by `cleanupTempDirs`. */
+export const trackTempDir = (dir: string): string => {
+  tempDirs.push(dir)
+  return dir
+}
+
+export const cleanupTempDirs = (): void => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+}
+
+// Unconditional: suites that allocate tracked dirs (isolatedEnv does it
+// implicitly) must not leak them just because they forgot an afterAll.
+process.on("exit", cleanupTempDirs)
+
 /**
- * Environment pointing every settled location (config, data, state) into
- * `dir`, so spawned servers and CLI commands never touch the real user
- * locations on the machine running the tests.
+ * A throwaway directory short enough for the unix socket-path budget
+ * (~103 bytes) — macOS os.tmpdir() (/var/folders/…) is too deep, /tmp is not.
+ */
+export const makeShortSocketDir = (): string => trackTempDir(mkdtempSync("/tmp/atc-zs-"))
+
+/**
+ * Environment pointing every settled location (config, data, state) away
+ * from the real user locations on the machine running the tests. The state
+ * home gets its own short /tmp path rather than living under `dir`: the
+ * terminal socket directory lives under it and must fit the unix
+ * socket-path budget. Read the location back from the returned env when a
+ * test needs to inspect state files.
  */
 export const isolatedEnv = (dir: string, extra: Record<string, string> = {}) => ({
   ...process.env,
   XDG_CONFIG_HOME: `${dir}/config`,
   XDG_DATA_HOME: `${dir}/data`,
-  XDG_STATE_HOME: `${dir}/state`,
+  XDG_STATE_HOME: trackTempDir(mkdtempSync("/tmp/atc-st-")),
   ...extra,
 })
 
@@ -78,4 +105,23 @@ export const waitForHealth = async (base: string, proc: Bun.Subprocess): Promise
   proc.kill()
   const stderr = await new Response(proc.stderr as ReadableStream).text()
   throw new Error(`server at ${base} never became healthy; stderr:\n${stderr}`)
+}
+
+/** POST a JSON body and return the decoded JSON response (asserting 2xx). */
+export const postJson = async (base: string, pathName: string, body: unknown) => {
+  const response = await fetch(`${base}${pathName}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  })
+  expect(response.ok, `${pathName}: ${response.status} ${await response.clone().text()}`).toBe(true)
+  return (await response.json()) as Record<string, string>
+}
+
+/** Poll until `condition` holds; assertion-bounded. */
+export const waitUntil = async (condition: () => boolean | Promise<boolean>, what: string) => {
+  for (let attempt = 0; !(await condition()); attempt++) {
+    expect(attempt, `timed out waiting for ${what}`).toBeLessThan(200)
+    await Bun.sleep(25)
+  }
 }

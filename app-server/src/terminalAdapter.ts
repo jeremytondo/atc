@@ -1,5 +1,6 @@
 import { Context, Schema } from "effect"
 import type { Effect, Scope, Stream } from "effect"
+import type { ZmxUnavailable } from "./api.ts"
 import type { SubprocessError } from "./subprocess.ts"
 
 // The narrow seam through which ATC talks to the terminal multiplexer
@@ -57,18 +58,9 @@ export interface SessionConnection {
   readonly exitCode: Effect.Effect<number, SubprocessError>
 }
 
-/**
- * The multiplexer cannot be consulted (executable missing, inventory
- * failed). Retryable: it says nothing about any session's existence, so
- * stored state must stay untouched.
- */
-export class ZmxUnavailable extends Schema.TaggedErrorClass<ZmxUnavailable>()("ZmxUnavailable", {
-  reason: Schema.String,
-}) {
-  override get message(): string {
-    return this.reason
-  }
-}
+// `ZmxUnavailable` (retryable: the multiplexer cannot be consulted, stored
+// state must stay untouched) lives in the contract (api.ts) — the API
+// surfaces it directly.
 
 /** A session operation failed conclusively (with diagnostics). */
 export class SessionOperationFailed extends Schema.TaggedErrorClass<SessionOperationFailed>()(

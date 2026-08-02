@@ -1,5 +1,6 @@
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import { SqlClient, SqlSchema } from "effect/unstable/sql"
+import { ProjectNotFound } from "./api.ts"
 import type { Project as ProjectSchema } from "./api.ts"
 
 // The Projects repository (ATC-121): the only module that speaks SQL for
@@ -35,6 +36,8 @@ export class ProjectRepository extends Context.Service<
       readonly defaultWorkingDirectory: string
     }) => Effect.Effect<Project>
     readonly get: (id: string) => Effect.Effect<Option.Option<Project>>
+    /** `get` with the contract's not-found error already applied. */
+    readonly require: (id: string) => Effect.Effect<Project, ProjectNotFound>
     /** Applies the provided fields and bumps `updatedAt`; `None` if unknown. */
     readonly update: (
       id: string,
@@ -118,6 +121,15 @@ export const layer = Layer.effect(ProjectRepository)(
         return insertRow(row).pipe(Effect.as(toProject(row)), Effect.orDie)
       },
       get,
+      require: (id) =>
+        get(id).pipe(
+          Effect.flatMap(
+            Option.match({
+              onNone: () => Effect.fail(new ProjectNotFound({ projectId: id })),
+              onSome: Effect.succeed,
+            }),
+          ),
+        ),
       update: (id, patch) =>
         // An empty patch changes nothing — including updatedAt.
         patch.name === undefined && patch.defaultWorkingDirectory === undefined
