@@ -5,6 +5,7 @@ import * as Client from "../src/client.ts"
 import * as Server from "../src/server.ts"
 import { freePort } from "./blackbox.ts"
 import { TestBuildInfoLayer, testBuildInfo } from "./testBuildInfo.ts"
+import { TestRepositoryLayers } from "./testLayers.ts"
 
 // The contract-derived client against a real ephemeral App Server: a live
 // loopback listener, real HTTP, schema-decoded responses.
@@ -12,7 +13,9 @@ import { TestBuildInfoLayer, testBuildInfo } from "./testBuildInfo.ts"
 const withServer = <A, E, R>(run: (baseUrl: string) => Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const port = yield* Effect.promise(freePort)
-    yield* Layer.build(Server.layer({ port }).pipe(Layer.provide(TestBuildInfoLayer)))
+    yield* Layer.build(
+      Server.layer({ port }).pipe(Layer.provide([TestBuildInfoLayer, TestRepositoryLayers])),
+    )
     return yield* run(`http://127.0.0.1:${port}`)
   }).pipe(Effect.scoped)
 

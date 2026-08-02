@@ -10,14 +10,29 @@ export const appServerRoot = fileURLToPath(new URL("..", import.meta.url))
 export const compiledBinaryPath =
   process.env["ATC_COMPILED_BIN"] ?? `${appServerRoot}dist/atc-${process.platform}-${process.arch}`
 
+/**
+ * Environment pointing every settled location (config, data, state) into
+ * `dir`, so spawned servers and CLI commands never touch the real user
+ * locations on the machine running the tests.
+ */
+export const isolatedEnv = (dir: string, extra: Record<string, string> = {}) => ({
+  ...process.env,
+  XDG_CONFIG_HOME: `${dir}/config`,
+  XDG_DATA_HOME: `${dir}/data`,
+  XDG_STATE_HOME: `${dir}/state`,
+  ...extra,
+})
+
 /** Spawn `<command> serve --port <port>`; `command` is the program plus any leading args. */
 export const spawnServe = (
   command: ReadonlyArray<string>,
   port: number,
   cwd: string = appServerRoot,
+  env: Record<string, string | undefined> = process.env,
 ) =>
   Bun.spawn([...command, "serve", "--port", String(port)], {
     cwd,
+    env,
     stdout: "pipe",
     stderr: "pipe",
   })
@@ -31,8 +46,9 @@ export const runCli = async (
   command: ReadonlyArray<string>,
   args: ReadonlyArray<string>,
   cwd: string,
+  env: Record<string, string | undefined> = process.env,
 ) => {
-  const proc = Bun.spawn([...command, ...args], { cwd, stdout: "pipe", stderr: "pipe" })
+  const proc = Bun.spawn([...command, ...args], { cwd, env, stdout: "pipe", stderr: "pipe" })
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),

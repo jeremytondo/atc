@@ -1,15 +1,14 @@
 import { assert, describe, it } from "@effect/vitest"
 import { BunServices } from "@effect/platform-bun"
-import { Effect } from "effect"
+import { Effect, Option } from "effect"
 import { CliError, Command } from "effect/unstable/cli"
-import { DEFAULT_PORT } from "../src/api.ts"
 import { port } from "../src/cli.ts"
 
 // Parse the real --port flag against a probe command so validation is tested
 // without starting a server.
 const parsePort = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
-    let parsed: number | undefined
+    let parsed: Option.Option<number> | undefined
     const probe = Command.make("probe", { port }, ({ port }) =>
       Effect.sync(() => {
         parsed = port
@@ -20,17 +19,20 @@ const parsePort = (args: ReadonlyArray<string>) =>
   }).pipe(Effect.provide(BunServices.layer))
 
 describe("serve --port validation", () => {
-  it.effect("defaults to the dev port", () =>
+  // The flag is optional: absent means "use the configured port", so the
+  // configuration pipeline (flags > env > file > default) stays the single
+  // source of the effective port.
+  it.effect("is absent by default", () =>
     Effect.gen(function* () {
       const { parsed } = yield* parsePort([])
-      assert.strictEqual(parsed, DEFAULT_PORT)
+      assert.deepStrictEqual(parsed, Option.none())
     }),
   )
 
   it.effect("accepts a valid port", () =>
     Effect.gen(function* () {
       const { parsed } = yield* parsePort(["--port", "8080"])
-      assert.strictEqual(parsed, 8080)
+      assert.deepStrictEqual(parsed, Option.some(8080))
     }),
   )
 

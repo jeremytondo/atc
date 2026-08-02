@@ -5,6 +5,7 @@ import { isLoopbackHost, isLoopbackOrigin } from "../src/localTrust.ts"
 import * as Server from "../src/server.ts"
 import { freePort } from "./blackbox.ts"
 import { TestBuildInfoLayer } from "./testBuildInfo.ts"
+import { TestRepositoryLayers } from "./testLayers.ts"
 
 // Listener hardening: spoofed-Host / cross-Origin requests are rejected with
 // 403 while ordinary local requests pass. Runs against a real loopback
@@ -13,7 +14,9 @@ import { TestBuildInfoLayer } from "./testBuildInfo.ts"
 const withServer = <A, E, R>(run: (port: number) => Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const port = yield* Effect.promise(freePort)
-    yield* Layer.build(Server.layer({ port }).pipe(Layer.provide(TestBuildInfoLayer)))
+    yield* Layer.build(
+      Server.layer({ port }).pipe(Layer.provide([TestBuildInfoLayer, TestRepositoryLayers])),
+    )
     return yield* run(port)
   }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
 

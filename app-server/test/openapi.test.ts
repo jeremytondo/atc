@@ -1,13 +1,21 @@
 import { assert, describe, it } from "@effect/vitest"
 import { BunHttpServer } from "@effect/platform-bun"
 import { Context, Effect, Layer } from "effect"
-import { HttpClient, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import {
+  HttpBody,
+  HttpClient,
+  HttpClientRequest,
+  HttpRouter,
+  HttpServerRequest,
+  HttpServerResponse,
+} from "effect/unstable/http"
 import { HttpApi, OpenApi } from "effect/unstable/httpapi"
 import { Api, DEFAULT_PORT } from "../src/api.ts"
 import { openApiDocument, openApiJson } from "../src/openapi.ts"
 import * as Server from "../src/server.ts"
 import { appServerRoot } from "./blackbox.ts"
 import { TestBuildInfoLayer, testBuildInfo } from "./testBuildInfo.ts"
+import { TestRepositoryLayers } from "./testLayers.ts"
 
 // Contract-generation tests: the document must be deterministic, match the
 // checked-in artifact, cover every contract operation, and agree with what
@@ -15,8 +23,9 @@ import { TestBuildInfoLayer, testBuildInfo } from "./testBuildInfo.ts"
 // separately in api.test.ts, so failures here point at the document, not the
 // handlers.
 
-const operation = (path: string) =>
-  (openApiDocument.paths[path]?.get ?? assert.fail(`no GET operation documented for ${path}`)) as {
+const operation = (path: string, method = "get") =>
+  ((openApiDocument.paths[path] as Record<string, unknown>)?.[method] ??
+    assert.fail(`no ${method.toUpperCase()} operation documented for ${path}`)) as {
     readonly operationId: string
     readonly responses: Record<string, { content: Record<string, { schema: { $ref?: string } }> }>
   }
@@ -85,8 +94,8 @@ describe("openapi document", () => {
     )
     assert.sameDeepMembers(documented, expected)
 
-    const operationIds = Object.keys(openApiDocument.paths).map((path) => {
-      const id = operation(path).operationId
+    const operationIds = documented.map(({ path, method }) => {
+      const id = operation(path, method).operationId
       // Derived ids look like "v1.health" — a forgotten OpenApi.Identifier
       // annotation would ship a bad id whose later fix breaks clients (see
       // AGENTS.md "OpenAPI Contract").
@@ -102,11 +111,15 @@ describe("openapi document", () => {
 // see the raw wire payload instead of contract-decoded values.
 const rawClient = Effect.gen(function* () {
   const handler = yield* HttpRouter.toHttpEffect(
-    Server.routes.pipe(Layer.provide(TestBuildInfoLayer)),
+    Server.routes.pipe(Layer.provide([TestBuildInfoLayer, TestRepositoryLayers])),
   )
   return HttpClient.make(
     Effect.fnUntraced(function* (request) {
-      const serverRequest = HttpServerRequest.fromClientRequest(request)
+      // fromClientRequest synthesizes no Host header; the local-trust guard in
+      // Server.routes requires a loopback one just like a real client sends.
+      const serverRequest = HttpServerRequest.fromClientRequest(
+        HttpClientRequest.setHeader(request, "host", "127.0.0.1"),
+      )
       const response = yield* handler.pipe(
         Effect.provideService(HttpServerRequest.HttpServerRequest, serverRequest),
         Effect.orDie,
@@ -122,12 +135,18 @@ const rawClient = Effect.gen(function* () {
 // here force a new case whenever the contract grows.
 describe("openapi document vs runtime", () => {
   it("these tests cover every documented path", () => {
-    assert.sameMembers(Object.keys(openApiDocument.paths), ["/api/v1/health", "/api/v1/version"])
+    assert.sameMembers(Object.keys(openApiDocument.paths), [
+      "/api/v1/health",
+      "/api/v1/version",
+      "/api/v1/projects",
+      "/api/v1/projects/{projectId}",
+      "/api/v1/fs/check",
+    ])
   })
 
   it.effect("GET /api/v1/health returns the documented payload", () =>
     Effect.gen(function* () {
-      const response = yield* (yield* rawClient).get("http://in-process/api/v1/health")
+      const response = yield* (yield* rawClient).get("http://127.0.0.1/api/v1/health")
       assert.strictEqual(response.status, 200)
       assert.deepStrictEqual(yield* response.json, { status: "ok" })
 
@@ -141,7 +160,7 @@ describe("openapi document vs runtime", () => {
 
   it.effect("GET /api/v1/version returns the documented payload", () =>
     Effect.gen(function* () {
-      const response = yield* (yield* rawClient).get("http://in-process/api/v1/version")
+      const response = yield* (yield* rawClient).get("http://127.0.0.1/api/v1/version")
       assert.strictEqual(response.status, 200)
       assert.deepStrictEqual(yield* response.json, {
         version: testBuildInfo.version,
@@ -160,6 +179,62 @@ describe("openapi document vs runtime", () => {
         "builtAt",
       ])
       assert.sameMembers([...schema.required], ["version", "apiVersion", "commit", "builtAt"])
+    }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
+  )
+
+  it.effect("/api/v1/projects: created and listed payloads match the documented schemas", () =>
+    Effect.gen(function* () {
+      const client = yield* rawClient
+      const created = yield* client.post("http://127.0.0.1/api/v1/projects", {
+        body: HttpBody.jsonUnsafe({ name: "Doc Test", defaultWorkingDirectory: "/tmp" }),
+      })
+      assert.strictEqual(created.status, 200)
+      const createdBody = (yield* created.json) as Record<string, unknown>
+      const schema = componentSchema("Project")
+      assert.sameMembers(Object.keys(schema.properties), Object.keys(createdBody))
+      assert.sameMembers([...schema.required], Object.keys(createdBody))
+      assert.deepStrictEqual(
+        operation("/api/v1/projects", "post").responses["200"]!.content["application/json"]!.schema,
+        { $ref: "#/components/schemas/Project" },
+      )
+
+      const listed = yield* client.get("http://127.0.0.1/api/v1/projects")
+      assert.strictEqual(listed.status, 200)
+      assert.deepStrictEqual(yield* listed.json, [createdBody] as unknown)
+      assert.deepStrictEqual(
+        operation("/api/v1/projects").responses["200"]!.content["application/json"]!.schema,
+        { $ref: "#/components/schemas/ProjectList" },
+      )
+    }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
+  )
+
+  it.effect("GET /api/v1/projects/{projectId} documents and returns the 404 error payload", () =>
+    Effect.gen(function* () {
+      const response = yield* (yield* rawClient).get("http://127.0.0.1/api/v1/projects/nope")
+      assert.strictEqual(response.status, 404)
+      assert.deepStrictEqual(yield* response.json, { _tag: "ProjectNotFound", projectId: "nope" })
+      assert.deepStrictEqual(
+        operation("/api/v1/projects/{projectId}").responses["404"]!.content["application/json"]!
+          .schema,
+        { $ref: "#/components/schemas/ProjectNotFoundJsonEncoding" },
+      )
+    }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
+  )
+
+  it.effect("GET /api/v1/fs/check returns the documented payload", () =>
+    Effect.gen(function* () {
+      const response = yield* (yield* rawClient).get(
+        "http://127.0.0.1/api/v1/fs/check?path=/definitely/not/here",
+      )
+      assert.strictEqual(response.status, 200)
+      const body = (yield* response.json) as Record<string, unknown>
+      assert.strictEqual(body["state"], "missing")
+      const ref =
+        operation("/api/v1/fs/check").responses["200"]!.content["application/json"]!.schema
+      assert.deepStrictEqual(ref, { $ref: "#/components/schemas/FsCheckResponse" })
+      const schema = componentSchema("FsCheckResponse")
+      assert.sameMembers(Object.keys(schema.properties), ["path", "state", "checkedAt", "reason"])
+      assert.sameMembers([...schema.required], ["path", "state", "checkedAt", "reason"])
     }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
   )
 })

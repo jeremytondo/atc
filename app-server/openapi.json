@@ -50,6 +50,257 @@
         },
         "description": "Report the server's build metadata and API version."
       }
+    },
+    "/api/v1/projects": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "listProjects",
+        "parameters": [],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "All projects, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectList"
+                }
+              }
+            }
+          }
+        },
+        "description": "List all projects."
+      },
+      "post": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "createProject",
+        "parameters": [],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "A Project: the user-facing container organizing a body of work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The directory does not exist, is not a directory, or cannot be read/traversed. | The directory check did not complete within its bounded timeout. Retryable — a timeout is not proof the path is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/DirectoryUnavailableJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DirectoryCheckTimedOutJsonEncoding"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "Create a project. The default working directory must be an existing, readable directory; it is stored canonicalized and never created by ATC.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProjectRequest"
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/api/v1/projects/{projectId}": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "getProject",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "A Project: the user-facing container organizing a body of work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No project exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectNotFoundJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "Fetch one project by id."
+      },
+      "patch": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "updateProject",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "A Project: the user-facing container organizing a body of work.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No project exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectNotFoundJsonEncoding"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The directory does not exist, is not a directory, or cannot be read/traversed. | The directory check did not complete within its bounded timeout. Retryable — a timeout is not proof the path is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/DirectoryUnavailableJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DirectoryCheckTimedOutJsonEncoding"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "Update a project's name and/or default working directory. Directory changes affect future Threads and Terminals only.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateProjectRequest"
+              }
+            }
+          },
+          "required": true
+        }
+      },
+      "delete": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "deleteProject",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "204": {
+            "description": "<No Content>"
+          },
+          "404": {
+            "description": "No project exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectNotFoundJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "Delete the project record. Never touches the filesystem or any directory."
+      }
+    },
+    "/api/v1/fs/check": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "checkDirectory",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "pattern": "^\\/",
+                  "description": "a server-host absolute path (starting with /)"
+                }
+              ]
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Result of a directory health check. Never persisted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FsCheckResponse"
+                }
+              }
+            }
+          }
+        },
+        "description": "Demand-driven directory health check with a bounded timeout. Takes a server-host absolute path; the result is never persisted."
+      }
     }
   },
   "components": {
@@ -100,6 +351,232 @@
         ],
         "additionalProperties": false,
         "description": "Build and contract version information for the running server."
+      },
+      "Project": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "UUIDv7 project id."
+          },
+          "name": {
+            "type": "string",
+            "allOf": [
+              {
+                "minLength": 1,
+                "description": "Human-readable project name."
+              }
+            ]
+          },
+          "defaultWorkingDirectory": {
+            "type": "string",
+            "description": "Canonical (symlink-resolved) absolute path new Threads and Terminals default to."
+          },
+          "createdAt": {
+            "type": "string",
+            "description": "Creation time (ISO 8601 UTC)."
+          },
+          "updatedAt": {
+            "type": "string",
+            "description": "Last update time (ISO 8601 UTC)."
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "defaultWorkingDirectory",
+          "createdAt",
+          "updatedAt"
+        ],
+        "additionalProperties": false,
+        "description": "A Project: the user-facing container organizing a body of work."
+      },
+      "ProjectList": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Project"
+        },
+        "description": "All projects, newest first."
+      },
+      "CreateProjectRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "allOf": [
+              {
+                "minLength": 1,
+                "description": "Human-readable project name."
+              }
+            ]
+          },
+          "defaultWorkingDirectory": {
+            "type": "string",
+            "allOf": [
+              {
+                "pattern": "^\\/",
+                "description": "Existing directory; stored canonicalized (symlinks resolved)."
+              }
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "defaultWorkingDirectory"
+        ],
+        "additionalProperties": false,
+        "description": "Payload for creating a project."
+      },
+      "DirectoryUnavailableJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "DirectoryUnavailable"
+            ]
+          },
+          "path": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "missing",
+              "inaccessible",
+              "not_directory"
+            ]
+          }
+        },
+        "required": [
+          "_tag",
+          "path",
+          "state"
+        ],
+        "additionalProperties": false
+      },
+      "DirectoryCheckTimedOutJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "DirectoryCheckTimedOut"
+            ]
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "_tag",
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "ProjectNotFoundJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "ProjectNotFound"
+            ]
+          },
+          "projectId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "_tag",
+          "projectId"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateProjectRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "allOf": [
+                  {
+                    "minLength": 1,
+                    "description": "Human-readable project name."
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "defaultWorkingDirectory": {
+            "anyOf": [
+              {
+                "type": "string",
+                "allOf": [
+                  {
+                    "pattern": "^\\/",
+                    "description": "Existing directory; stored canonicalized (symlinks resolved)."
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "description": "Partial update; affects future Threads and Terminals only."
+      },
+      "DirectoryState": {
+        "type": "string",
+        "enum": [
+          "available",
+          "missing",
+          "inaccessible",
+          "not_directory",
+          "unknown"
+        ],
+        "description": "Tagged result of a demand-driven directory health check."
+      },
+      "FsCheckResponse": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The checked path (canonicalized when the directory is available)."
+          },
+          "state": {
+            "$ref": "#/components/schemas/DirectoryState"
+          },
+          "checkedAt": {
+            "type": "string",
+            "description": "Check time (ISO 8601 UTC)."
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the state is not conclusive (e.g. \"timeout\" for unknown)."
+          }
+        },
+        "required": [
+          "path",
+          "state",
+          "checkedAt",
+          "reason"
+        ],
+        "additionalProperties": false,
+        "description": "Result of a directory health check. Never persisted."
       }
     },
     "securitySchemes": {}
