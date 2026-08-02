@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest"
-import { cliCommandPaths, contractOperations, validateParity } from "../src/parity.ts"
+import { cliCommandPaths, contractOperations, validateParity } from "../src/apiCliParity.ts"
 
 // The real registry must be in full parity with the contract and the CLI;
 // the synthetic cases prove the validator catches every violation CI is

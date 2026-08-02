@@ -41,7 +41,8 @@ Success prints the JSON payload on stdout and exits `0`. Failures exit `1`:
 request failures print one `atc <command>: …` diagnostic line on stderr;
 invalid usage prints an `ERROR` block on stderr (help goes to stdout). Every
 public API operation maps to exactly one CLI command via the parity registry
-(`src/parity.ts`), enforced against the contract by `test/parity.test.ts`.
+(`src/apiCliParity.ts`), enforced against the contract by
+`test/apiCliParity.test.ts`.
 
 ## Structure
 
@@ -54,23 +55,23 @@ the user's installed `codex` and `claude` are resolved from an env override
 or PATH. `mise run refs` (repo root) checks out the matching Effect source
 for API reference.
 
-| Path                 | Responsibility                                                                                                        |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `src/main.ts`        | Entrypoint for the `atc` executable; the only `runMain`                                                               |
-| `src/cli.ts`         | CLI commands and flags (Effect CLI); friendly startup failures                                                        |
-| `src/api.ts`         | The `/api/v1` HttpApi contract: endpoints and response schemas                                                        |
-| `src/openapi.ts`     | The OpenAPI document derived from the contract (pure, no server)                                                      |
-| `src/client.ts`      | Contract-derived typed client (`HttpApiClient`, no server imports)                                                    |
-| `src/parity.ts`      | API-to-CLI parity registry and its contract validation                                                                |
-| `src/handlers.ts`    | Contract implementation (handler Layer, no listener)                                                                  |
-| `src/server.ts`      | Server assembly: routes + loopback Bun listener Layer                                                                 |
-| `src/buildInfo.ts`   | Build metadata service (version, commit, builtAt)                                                                     |
-| `src/subprocess.ts`  | Subprocess service: scoped child processes, bounded diagnostics                                                       |
-| `src/smoke.ts`       | Hidden, unstable `atc smoke` provider round trips (ATC-88)                                                            |
-| `scripts/build.ts`   | Standalone-executable compile (Bun `--compile`, metadata injection)                                                   |
-| `scripts/openapi.ts` | Writes/checks the checked-in `openapi.json` artifact                                                                  |
-| `openapi.json`       | Generated OpenAPI 3.1 document — regenerate, never edit; symlinked into `packages/ATCKit` for Swift client generation |
-| `test/`              | `@effect/vitest` tests, including black-box and opt-in live suites                                                    |
+| Path                  | Responsibility                                                                                                        |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `src/main.ts`         | Entrypoint for the `atc` executable; the only `runMain`                                                               |
+| `src/cli.ts`          | CLI commands and flags (Effect CLI); friendly startup failures                                                        |
+| `src/api.ts`          | The `/api/v1` HttpApi contract: endpoints and response schemas                                                        |
+| `src/openapi.ts`      | The OpenAPI document derived from the contract (pure, no server)                                                      |
+| `src/client.ts`       | Contract-derived typed client (`HttpApiClient`, no server imports)                                                    |
+| `src/apiCliParity.ts` | API-to-CLI parity registry and its contract validation                                                                |
+| `src/handlers.ts`     | Contract implementation (handler Layer, no listener)                                                                  |
+| `src/server.ts`       | Server assembly: routes + loopback Bun listener Layer                                                                 |
+| `src/buildInfo.ts`    | Build metadata service (version, commit, builtAt)                                                                     |
+| `src/subprocess.ts`   | Subprocess service: scoped child processes, bounded diagnostics                                                       |
+| `src/smoke.ts`        | Hidden, unstable `atc smoke` provider round trips (ATC-88)                                                            |
+| `scripts/build.ts`    | Standalone-executable compile (Bun `--compile`, metadata injection)                                                   |
+| `scripts/openapi.ts`  | Writes/checks the checked-in `openapi.json` artifact                                                                  |
+| `openapi.json`        | Generated OpenAPI 3.1 document — regenerate, never edit; symlinked into `packages/ATCKit` for Swift client generation |
+| `test/`               | `@effect/vitest` tests, including black-box and opt-in live suites                                                    |
 
 The contract module is structured so the server implementation, the checked-in
 OpenAPI document (`openapi.json`), the contract-derived TypeScript client

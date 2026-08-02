@@ -130,11 +130,11 @@ success; diagnostics on stderr with exit 1 on invalid usage or request
 failure. `--url` is explicit for now; keep base-URL resolution isolated in
 `cli.ts` so later configuration work can make it optional.
 
-`app-server/src/parity.ts` is the API-to-CLI parity registry: every public
-operation id maps to exactly one canonical command path (a `Record`, so
+`app-server/src/apiCliParity.ts` is the API-to-CLI parity registry: every
+public operation id maps to exactly one canonical command path (a `Record`, so
 double-mapping is structurally impossible), or carries an inline justified
 exclusion. Process commands (`serve`, `smoke`) stay outside API parity.
-`test/parity.test.ts` validates the registry in-process against the generated
+`test/apiCliParity.test.ts` validates the registry in-process against the generated
 document's operation ids and the real CLI command tree, so CI fails on
 missing, stale, duplicate-command, or unknown-command mappings and on
 operations both mapped and excluded.

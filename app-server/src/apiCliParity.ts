@@ -1,11 +1,12 @@
 import { atc } from "./cli.ts"
 import { openApiDocument } from "./openapi.ts"
 
-// The API-to-CLI parity registry: every public contract operation maps to
-// exactly one CLI command (or carries an explicit, justified exclusion).
-// parity.test.ts runs validateParity in CI, so the registry cannot drift from
-// the contract or the CLI. Process-level commands (serve, smoke) are CLI-only
-// and deliberately outside API parity.
+// Enforces the project rule that the CLI and API mirror each other: every
+// public contract operation maps to exactly one CLI command (or carries an
+// explicit, justified exclusion). apiCliParity.test.ts runs validateParity in
+// CI, so the registry cannot drift from the contract or the CLI.
+// Process-level commands (serve, smoke) are CLI-only and deliberately outside
+// API parity.
 
 /**
  * Canonical CLI command path (space-separated, under `atc`) for every public
