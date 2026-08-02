@@ -22,26 +22,55 @@ mise run test:compiled # black-box tests of the compiled artifact (builds first)
 mise run test:smoke    # opt-in live provider smoke tests (Codex + Claude credentials)
 ```
 
-The server listens on port 7332 by default; pass `--port` to override.
+## Configuration and data locations
+
+One precedence rule everywhere: **command flags > environment > config file >
+defaults**. Invalid or malformed configuration fails fast with one stderr line
+naming the offending source — never a partial boot.
+
+Paths follow one XDG rule on every platform (macOS included), honoring `XDG_*`
+overrides:
+
+| Location    | Default                     | Holds                      |
+| ----------- | --------------------------- | -------------------------- |
+| Config file | `~/.config/atc/config.toml` | Settings (TOML, camelCase) |
+| Data dir    | `~/.local/share/atc/`       | SQLite database (`atc.db`) |
+| State dir   | `~/.local/state/atc/`       | JSON log file (`atc.log`)  |
+
+Environment variables are flat `ATC_<KEY>`: `ATC_PORT`, `ATC_LOG_LEVEL`,
+`ATC_DATA_DIR`, and `ATC_CONFIG` (path to an alternate config file). The
+config file may set `port`, `logLevel` (case-insensitive), and `dataDir`;
+unknown keys are rejected. `atc serve --port` overrides the configured port
+for that server only.
 
 ## CLI
 
-`atc serve` runs the server. API-backed commands use the contract-derived
-client and an explicit `--url` (connection profiles are later work):
+`atc serve` runs the server (it creates and migrates the database on boot).
+API-backed commands take zero connection flags — they derive
+`http://127.0.0.1:<port>` from the same settled configuration the server
+reads, so port changes just work:
 
 ```sh
-atc health --url http://127.0.0.1:7332    # prints the JSON payload, e.g. { "status": "ok" }
-atc version --url http://127.0.0.1:7332   # prints build metadata + apiVersion as JSON
+atc health                                    # { "status": "ok" }
+atc version                                   # build metadata + apiVersion
+atc project create --name Demo --directory .  # directory must exist; stored canonicalized
+atc project list
+atc project get <project-id>
+atc project update <project-id> --name Renamed
+atc project delete <project-id> --yes         # record only; never touches the filesystem
+atc fs check <path>                           # tagged directory health, never persisted
 ```
 
-`atc --version` reports this executable's own version; `atc version --url …`
-reports the version of a running server.
+`atc --version` reports this executable's own version; `atc version` reports
+the version of a running server. Relative directory arguments resolve against
+the caller's working directory before the API (which takes absolute paths
+only) sees them.
 
 Success prints the JSON payload on stdout and exits `0`. Failures exit `1`:
-request failures print one `atc <command>: …` diagnostic line on stderr;
-invalid usage prints an `ERROR` block on stderr (help goes to stdout). The
-command surface is curated for agent and script access to the app's
-functionality — it does not mirror the API operation-for-operation, but
+config/request failures print one `atc <command>: …` diagnostic line on
+stderr; invalid usage prints an `ERROR` block on stderr (help goes to
+stdout). The command surface is curated for agent and script access to the
+app's functionality — it does not mirror the API operation-for-operation, but
 API-backed commands always go through the contract-derived client.
 
 ## Structure
@@ -55,22 +84,29 @@ the user's installed `codex` and `claude` are resolved from an env override
 or PATH. `mise run refs` (repo root) checks out the matching Effect source
 for API reference.
 
-| Path                 | Responsibility                                                                                                        |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `src/main.ts`        | Entrypoint for the `atc` executable; the only `runMain`                                                               |
-| `src/cli.ts`         | CLI commands and flags (Effect CLI); friendly startup failures                                                        |
-| `src/api.ts`         | The `/api/v1` HttpApi contract: endpoints and response schemas                                                        |
-| `src/openapi.ts`     | The OpenAPI document derived from the contract (pure, no server)                                                      |
-| `src/client.ts`      | Contract-derived typed client (`HttpApiClient`, no server imports)                                                    |
-| `src/handlers.ts`    | Contract implementation (handler Layer, no listener)                                                                  |
-| `src/server.ts`      | Server assembly: routes + loopback Bun listener Layer                                                                 |
-| `src/buildInfo.ts`   | Build metadata service (version, commit, builtAt)                                                                     |
-| `src/subprocess.ts`  | Subprocess service: scoped child processes, bounded diagnostics                                                       |
-| `src/smoke.ts`       | Hidden, unstable `atc smoke` provider round trips (ATC-88)                                                            |
-| `scripts/build.ts`   | Standalone-executable compile (Bun `--compile`, metadata injection)                                                   |
-| `scripts/openapi.ts` | Writes/checks the checked-in `openapi.json` artifact                                                                  |
-| `openapi.json`       | Generated OpenAPI 3.1 document — regenerate, never edit; symlinked into `packages/ATCKit` for Swift client generation |
-| `test/`              | `@effect/vitest` tests, including black-box and opt-in live suites                                                    |
+| Path                       | Responsibility                                                                                                        |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `src/main.ts`              | Entrypoint for the `atc` executable; the only `runMain`                                                               |
+| `src/cli.ts`               | CLI commands and flags (Effect CLI); base-URL resolution seam; friendly startup failures                              |
+| `src/config.ts`            | `AppConfig` service: settled paths + settings, precedence pipeline, TOML parsing                                      |
+| `src/api.ts`               | The `/api/v1` HttpApi contract: endpoints, schemas, and tagged error classes                                          |
+| `src/openapi.ts`           | The OpenAPI document derived from the contract (pure, no server)                                                      |
+| `src/client.ts`            | Contract-derived typed client (`HttpApiClient`, no server imports)                                                    |
+| `src/handlers.ts`          | Contract implementation (handler Layer, no listener)                                                                  |
+| `src/server.ts`            | Server assembly: guarded routes + tracer + loopback Bun listener Layer                                                |
+| `src/localTrust.ts`        | Listener hardening: loopback `Host`/`Origin` validation, log correlation                                              |
+| `src/persistence.ts`       | SQLite `SqlClient` layer: settled location, documented pragmas, startup migrations                                    |
+| `src/migrations.ts`        | The checked-in, append-only migration record (compiled into the binary)                                               |
+| `src/projectRepository.ts` | Projects repository: the only SQL for projects; row types stay here                                                   |
+| `src/directories.ts`       | Demand-driven directory validation/health with a bounded timeout                                                      |
+| `src/logging.ts`           | Server logging: JSON file in the state dir, pretty stderr in dev, level from config                                   |
+| `src/buildInfo.ts`         | Build metadata service (version, commit, builtAt)                                                                     |
+| `src/subprocess.ts`        | Subprocess service: scoped child processes, bounded diagnostics                                                       |
+| `src/smoke.ts`             | Hidden, unstable `atc smoke` provider round trips (ATC-88)                                                            |
+| `scripts/build.ts`         | Standalone-executable compile (Bun `--compile`, metadata injection)                                                   |
+| `scripts/openapi.ts`       | Writes/checks the checked-in `openapi.json` artifact                                                                  |
+| `openapi.json`             | Generated OpenAPI 3.1 document — regenerate, never edit; symlinked into `packages/ATCKit` for Swift client generation |
+| `test/`                    | `@effect/vitest` tests, including black-box and opt-in live suites                                                    |
 
 The contract module is structured so the server implementation, the checked-in
 OpenAPI document (`openapi.json`), the contract-derived TypeScript client
@@ -83,3 +119,9 @@ Public HTTP routes are versioned under `/api/v1`:
 
 - `GET /api/v1/health` → `{ "status": "ok" }`
 - `GET /api/v1/version` → application version, `apiVersion`, and build metadata
+- `GET/POST /api/v1/projects`, `GET/PATCH/DELETE /api/v1/projects/{projectId}` → Projects CRUD
+- `GET /api/v1/fs/check?path=…` → demand-driven directory health (tagged states, bounded timeout)
+
+The loopback listener validates `Host`/`Origin` on every request (403
+otherwise) — the local half of the settled trust architecture; bearer-token
+remote access is a later, purely additive layer.

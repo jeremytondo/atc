@@ -125,10 +125,14 @@ Both public clients derive from the same contract:
   unchanged and coexists until the app migrates.
 
 CLI commands backed by API operations use the contract-derived TypeScript
-client (`atc health`, `atc version`): JSON payload on stdout and exit 0 on
-success; diagnostics on stderr with exit 1 on invalid usage or request
-failure. `--url` is explicit for now; keep base-URL resolution isolated in
-`cli.ts` so later configuration work can make it optional.
+client (`atc health`, `atc version`, `atc project …`, `atc fs check`): JSON
+payload on stdout and exit 0 on success; diagnostics on stderr with exit 1 on
+invalid usage, configuration, or request failure. API-backed commands take
+zero connection flags: the base URL derives from the settled configuration
+(`http://127.0.0.1:<port>`), resolved in the single seam in `cli.ts` — remote
+endpoint addressing (endpoint + token) lands there with the auth work. The
+CLI may resolve relative directory arguments client-side before calling the
+API (which takes server-host absolute paths only).
 
 The CLI command surface is curated, not a 1:1 mirror of the API: commands
 exist to give agents and scripts good access to the app's functionality, and
@@ -140,6 +144,56 @@ client — never re-implement server logic in the CLI. Process commands
 After any contract change: `mise run app-server:openapi` to regenerate the
 artifact, then `mise run contract:check` (OpenAPI drift + TS client tests +
 Swift client build/tests) to verify the whole pipeline.
+
+## Configuration and Data Locations (App Server)
+
+One precedence rule: **command flags > environment > config file > defaults**,
+implemented in `src/config.ts` (the `AppConfig` service). Everything that
+needs a setting or a path consumes `AppConfig` — never `process.env` or
+re-derived locations. Invalid configuration fails fast with one stderr line
+naming the offending source; never a partial boot.
+
+- Paths: one XDG rule on every platform (macOS included), honoring `XDG_*`
+  overrides. Config `~/.config/atc/config.toml`; data (SQLite `atc.db`)
+  `~/.local/share/atc/`; state (log file `atc.log`) `~/.local/state/atc/`.
+- Environment variables are flat `ATC_<KEY>` (`ATC_PORT`, `ATC_LOG_LEVEL`,
+  `ATC_DATA_DIR`, `ATC_CONFIG`). No sectioned naming.
+- The config file is TOML with camelCase keys (`port`, `logLevel`,
+  `dataDir`); unknown keys are rejected. The TOML format never leaks past
+  `config.ts`.
+- Compiled behavior never depends on the working directory; tests isolate
+  themselves by pointing `XDG_*`/`ATC_*` at temp dirs (`test/blackbox.ts`
+  `isolatedEnv`).
+
+## Persistence (App Server)
+
+SQLite via Effect's SQL tooling (`effect/unstable/sql` +
+`@effect/sql-sqlite-bun`, exact-pinned) — not Drizzle, not flat files. The
+stack stays behind the persistence boundary:
+
+- `src/persistence.ts` provides the migrated `SqlClient` at the configured
+  location with documented pragmas (WAL on by default, `busy_timeout = 5000`,
+  `foreign_keys = ON`). `sql.withTransaction` is the transaction boundary.
+- Migrations are an in-code, append-only record in `src/migrations.ts`
+  (`Migrator.fromRecord`, keys `"0001_init"`, compiled into the binary —
+  never a filesystem dependency). Applied transactionally at startup with
+  library bookkeeping (`effect_sql_migrations`); a failed migration rolls
+  back and halts boot naming the migration. Never edit or remove a shipped
+  entry — append. `test/persistence.test.ts` pins loader count to record
+  size because malformed keys are silently dropped.
+- Repositories (e.g. `src/projectRepository.ts`) are the only modules that
+  speak SQL; row types never leak into contract schemas, handlers, or
+  clients. Database failures are defects (500s), not domain errors.
+- Tests get isolated databases via `Persistence.layerFile` (`:memory:` or a
+  temp file); see `test/testLayers.ts`.
+
+## Local Trust (App Server)
+
+The settled trust architecture: one HTTP-over-TCP transport, loopback-only
+bind, with `Host`/`Origin` validation on every request (`src/localTrust.ts`)
+blocking DNS-rebinding/CSRF. Remote access later adds bearer tokens over the
+same listener, purely additively; non-loopback binding stays refused until
+then.
 
 ## Compiled Executable and Subprocesses (App Server)
 

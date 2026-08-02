@@ -3,6 +3,7 @@ import { Context, Effect, Exit, Layer, Scope } from "effect"
 import { HttpServer } from "effect/unstable/http"
 import * as Server from "../src/server.ts"
 import { TestBuildInfoLayer } from "./testBuildInfo.ts"
+import { TestRepositoryLayers } from "./testLayers.ts"
 
 describe("server layer", () => {
   // it.live: this test does real socket I/O, and the platform's shutdown
@@ -14,7 +15,7 @@ describe("server layer", () => {
       const scope = yield* Scope.make()
       yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
       const context = yield* Layer.build(
-        Server.layer({ port: 0 }).pipe(Layer.provide(TestBuildInfoLayer)),
+        Server.layer({ port: 0 }).pipe(Layer.provide([TestBuildInfoLayer, TestRepositoryLayers])),
       ).pipe(Effect.provideService(Scope.Scope, scope))
 
       const address = Context.get(context, HttpServer.HttpServer).address
