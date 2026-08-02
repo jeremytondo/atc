@@ -95,6 +95,8 @@ clone() {
 clone effect --branch 'effect@4.0.0-beta.102' https://github.com/Effect-TS/effect.git
 clone t3code https://github.com/pingdotgg/t3code.git
 clone opencode https://github.com/sst/opencode.git
+# Keep the zmx tag in sync with the installed zmx binary (brew info zmx).
+clone zmx --branch 'v0.6.0' https://github.com/neurosnap/zmx.git
 """
 
 [tasks."macos:release-dev"]

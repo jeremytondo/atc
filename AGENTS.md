@@ -38,8 +38,10 @@ CMUX (https://github.com/manaflow-ai/cmux): Agentic coding focused terminal base
 ## Reference Source Checkouts
 
 `mise run refs` shallow-clones read-only reference source into `repos/` (gitignored):
-the Effect monorepo pinned to the app-server's Effect version, plus T3Code and
-OpenCode (https://github.com/sst/opencode) as Effect architecture references.
+the Effect monorepo pinned to the app-server's Effect version, T3Code and
+OpenCode (https://github.com/sst/opencode) as Effect architecture references, and
+zmx (https://github.com/neurosnap/zmx) pinned to the installed zmx version as the
+terminal-multiplexer behavior reference.
 
 - Treat everything under `repos/` as read-only reference material. Never import
   from it, edit it, or copy files out of it wholesale.
