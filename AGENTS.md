@@ -186,6 +186,10 @@ When starting sub agents or running workflows, be smart about which agents to ch
 
 When doing work in Linear, always work within the atc team: https://linear.app/elevenideas/team/ATC.
 
+Current work lives in the "Application Refactor" project. The canceled
+"Archived - Application Refactor" project is stale planning reference from a
+superseded planning pass — never treat its issues as open or current work.
+
 ## Working With XCode
 
 If using XcodeBuildMCP, use the installed XcodeBuildMCP skill before calling XcodeBuildMCP tools.
