@@ -67,9 +67,12 @@ export const CreateProjectRequest = Schema.Struct({
   description: "Payload for creating a project.",
 })
 
+// optionalKey (absent key), not optional (key-or-undefined): the undefined
+// union renders as an anyOf-with-null the pinned Swift generator drops,
+// which would strip these fields from the generated client entirely.
 export const UpdateProjectRequest = Schema.Struct({
-  name: Schema.optional(ProjectName),
-  defaultWorkingDirectory: Schema.optional(
+  name: Schema.optionalKey(ProjectName),
+  defaultWorkingDirectory: Schema.optionalKey(
     AbsolutePath.annotate({
       description: "Existing directory; stored canonicalized (symlinks resolved).",
     }),
@@ -96,9 +99,13 @@ export const FsCheckResponse = Schema.Struct({
   }),
   state: DirectoryState,
   checkedAt: Schema.String.annotate({ description: "Check time (ISO 8601 UTC)." }),
-  reason: Schema.NullOr(Schema.String).annotate({
-    description: 'Why the state is not conclusive (e.g. "timeout" for unknown).',
-  }),
+  // Absent when the state is conclusive (not null — see UpdateProjectRequest).
+  reason: Schema.optionalKey(
+    Schema.String.annotate({
+      description:
+        'Why the state is not conclusive (e.g. "timeout" for unknown); absent otherwise.',
+    }),
+  ),
 }).annotate({
   identifier: "FsCheckResponse",
   description: "Result of a directory health check. Never persisted.",

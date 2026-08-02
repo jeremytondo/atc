@@ -70,4 +70,42 @@ struct ClientTests {
     func defaultServer() throws {
         #expect(try Servers.Server1.url() == URL(string: "http://127.0.0.1:7332"))
     }
+
+    // Regression: optional contract fields must survive generation. An earlier
+    // schema shape (nullable unions) made the pinned generator silently drop
+    // them — UpdateProjectRequest generated as an empty struct.
+    @Test("updateProject can send both PATCH fields")
+    func updateProjectFields() throws {
+        let payload = Components.Schemas.UpdateProjectRequest(
+            name: .init(value1: "Renamed"),
+            defaultWorkingDirectory: .init(value1: "/code/atc")
+        )
+        let encoded = try JSONEncoder().encode(payload)
+        let json = try JSONSerialization.jsonObject(with: encoded) as? [String: String]
+        #expect(json == ["name": "Renamed", "defaultWorkingDirectory": "/code/atc"])
+    }
+
+    @Test("fs check decodes payloads with and without a reason")
+    func fsCheckReason() throws {
+        let decoder = JSONDecoder()
+        let conclusive = try decoder.decode(
+            Components.Schemas.FsCheckResponse.self,
+            from: Data(
+                #"{"path":"/code/atc","state":"available","checkedAt":"2026-08-02T12:00:00Z"}"#
+                    .utf8
+            )
+        )
+        #expect(conclusive.state == .available)
+        #expect(conclusive.reason == nil)
+
+        let timedOut = try decoder.decode(
+            Components.Schemas.FsCheckResponse.self,
+            from: Data(
+                #"{"path":"/code/atc","state":"unknown","checkedAt":"2026-08-02T12:00:00Z","reason":"timeout"}"#
+                    .utf8
+            )
+        )
+        #expect(timedOut.state == .unknown)
+        #expect(timedOut.reason == "timeout")
+    }
 }

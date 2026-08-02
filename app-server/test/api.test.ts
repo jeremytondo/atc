@@ -176,7 +176,8 @@ describe("/api/v1/fs/check", () => {
       const available = yield* client.v1.checkDirectory({ query: { path: linkedDir } })
       assert.strictEqual(available.state, "available")
       assert.strictEqual(available.path, realDir)
-      assert.isNull(available.reason)
+      // reason is an absent key (never null) when the state is conclusive.
+      assert.isUndefined(available.reason)
       assert.isFalse(Number.isNaN(Date.parse(available.checkedAt)))
 
       const missing = yield* client.v1.checkDirectory({

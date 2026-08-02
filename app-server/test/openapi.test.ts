@@ -234,7 +234,9 @@ describe("openapi document vs runtime", () => {
       assert.deepStrictEqual(ref, { $ref: "#/components/schemas/FsCheckResponse" })
       const schema = componentSchema("FsCheckResponse")
       assert.sameMembers(Object.keys(schema.properties), ["path", "state", "checkedAt", "reason"])
-      assert.sameMembers([...schema.required], ["path", "state", "checkedAt", "reason"])
+      // reason is optional (absent when conclusive) — and deliberately not a
+      // nullable required field, which the pinned Swift generator would drop.
+      assert.sameMembers([...schema.required], ["path", "state", "checkedAt"])
     }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
   )
 })

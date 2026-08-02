@@ -18,7 +18,8 @@ export type DirectoryCheckResult = {
   readonly path: string
   readonly state: typeof DirectoryState.Type
   readonly checkedAt: string
-  readonly reason: string | null
+  /** Present only when the state is not conclusive (e.g. "timeout"). */
+  readonly reason?: string
 }
 
 export class Directories extends Context.Service<
@@ -104,7 +105,6 @@ export const layer = Layer.succeed(Directories)({
         path: result.ok ? result.canonical : path,
         state: result.ok ? "available" : result.state,
         checkedAt: new Date().toISOString(),
-        reason: null,
       })),
       Effect.catch(() =>
         Effect.succeed<DirectoryCheckResult>({

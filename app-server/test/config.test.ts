@@ -154,4 +154,12 @@ describe("configuration", () => {
       assert.include(error.message, "absolute")
     }),
   )
+
+  it.effect("a relative state directory is rejected", () =>
+    Effect.gen(function* () {
+      const error = yield* loadError({ XDG_STATE_HOME: "relative-state" })
+      assert.include(error.message, "absolute")
+      assert.include(error.source, "XDG_STATE_HOME")
+    }),
+  )
 })

@@ -497,34 +497,20 @@
         "type": "object",
         "properties": {
           "name": {
-            "anyOf": [
+            "type": "string",
+            "allOf": [
               {
-                "type": "string",
-                "allOf": [
-                  {
-                    "minLength": 1,
-                    "description": "Human-readable project name."
-                  }
-                ]
-              },
-              {
-                "type": "null"
+                "minLength": 1,
+                "description": "Human-readable project name."
               }
             ]
           },
           "defaultWorkingDirectory": {
-            "anyOf": [
+            "type": "string",
+            "allOf": [
               {
-                "type": "string",
-                "allOf": [
-                  {
-                    "pattern": "^\\/",
-                    "description": "Existing directory; stored canonicalized (symlinks resolved)."
-                  }
-                ]
-              },
-              {
-                "type": "null"
+                "pattern": "^\\/",
+                "description": "Existing directory; stored canonicalized (symlinks resolved)."
               }
             ]
           }
@@ -558,22 +544,14 @@
             "description": "Check time (ISO 8601 UTC)."
           },
           "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Why the state is not conclusive (e.g. \"timeout\" for unknown)."
+            "type": "string",
+            "description": "Why the state is not conclusive (e.g. \"timeout\" for unknown); absent otherwise."
           }
         },
         "required": [
           "path",
           "state",
-          "checkedAt",
-          "reason"
+          "checkedAt"
         ],
         "additionalProperties": false,
         "description": "Result of a directory health check. Never persisted."

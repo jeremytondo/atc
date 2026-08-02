@@ -185,11 +185,12 @@ const projectUpdate = clientCommand(
   (client, { projectId, name, directory }) =>
     client.v1.updateProject({
       params: { projectId },
+      // The contract uses absent keys (not undefined/null) for omitted fields.
       payload: {
-        name: Option.getOrUndefined(name),
-        defaultWorkingDirectory: Option.getOrUndefined(
-          Option.map(directory, (d) => path.resolve(d)),
-        ),
+        ...(Option.isSome(name) ? { name: name.value } : {}),
+        ...(Option.isSome(directory)
+          ? { defaultWorkingDirectory: path.resolve(directory.value) }
+          : {}),
       },
     }),
   "project update",

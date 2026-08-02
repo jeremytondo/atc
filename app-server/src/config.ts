@@ -139,15 +139,21 @@ export const load = (
   env: Env,
 ): Effect.Effect<AppConfig["Service"], ConfigLoadError, FileSystem.FileSystem> =>
   Effect.gen(function* () {
-    const configFile = configFilePath(env)
-    if (!configFile.startsWith("/")) {
-      return yield* Effect.fail(
-        new ConfigLoadError({
-          source: "ATC_CONFIG / XDG_CONFIG_HOME",
-          message: `config file path must be absolute, got "${configFile}"`,
-        }),
-      )
-    }
+    // Every settled location must be absolute: a relative path would make the
+    // config file, database, or log file depend on the working directory —
+    // compiled behavior never may.
+    const requireAbsolute = (value: string, what: string, source: string) =>
+      value.startsWith("/")
+        ? Effect.succeed(value)
+        : Effect.fail(
+            new ConfigLoadError({ source, message: `${what} must be absolute, got "${value}"` }),
+          )
+
+    const configFile = yield* requireAbsolute(
+      configFilePath(env),
+      "config file path",
+      "ATC_CONFIG / XDG_CONFIG_HOME",
+    )
     const fs = yield* FileSystem.FileSystem
 
     const fileTable = yield* fs.readFileString(configFile).pipe(
@@ -188,25 +194,23 @@ export const load = (
       ),
     )
 
-    // A relative data directory would silently fork the database by working
-    // directory — compiled behavior must never depend on the cwd.
-    if (!settings.dataDir.startsWith("/")) {
-      return yield* Effect.fail(
-        new ConfigLoadError({
-          source: `${configFile} / ATC_DATA_DIR`,
-          message: `dataDir must be an absolute path, got "${settings.dataDir}"`,
-        }),
-      )
-    }
-
-    const stateDir = xdgDir(env, "XDG_STATE_HOME", [".local", "state"])
+    const dataDir = yield* requireAbsolute(
+      settings.dataDir,
+      "dataDir",
+      `${configFile} / ATC_DATA_DIR`,
+    )
+    const stateDir = yield* requireAbsolute(
+      xdgDir(env, "XDG_STATE_HOME", [".local", "state"]),
+      "state directory",
+      "XDG_STATE_HOME",
+    )
     return {
       port: settings.port,
       logLevel: settings.logLevel,
       configFile,
-      dataDir: settings.dataDir,
+      dataDir,
       stateDir,
-      dbFile: path.join(settings.dataDir, "atc.db"),
+      dbFile: path.join(dataDir, "atc.db"),
       logFile: path.join(stateDir, "atc.log"),
     }
   })
