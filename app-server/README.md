@@ -32,10 +32,10 @@ naming the offending source — never a partial boot.
 Paths follow one XDG rule on every platform (macOS included), honoring `XDG_*`
 overrides:
 
-| Location    | Default                     | Holds                                       |
-| ----------- | --------------------------- | ------------------------------------------- |
-| Config file | `~/.config/atc/config.toml` | Settings (TOML, camelCase)                  |
-| Data dir    | `~/.local/share/atc/`       | SQLite database (`atc.db`)                  |
+| Location    | Default                     | Holds                                            |
+| ----------- | --------------------------- | ------------------------------------------------ |
+| Config file | `~/.config/atc/config.toml` | Settings (TOML, camelCase)                       |
+| Data dir    | `~/.local/share/atc/`       | SQLite database (`atc.db`)                       |
 | State dir   | `~/.local/state/atc/`       | JSON log (`atc.log`), zmx sockets (`terminals/`) |
 
 Environment variables are flat `ATC_<KEY>`: `ATC_PORT`, `ATC_LOG_LEVEL`,
@@ -51,37 +51,39 @@ bundle — install it yourself. It resolves from `ATC_ZMX_EXECUTABLE` or
 ## CLI
 
 `atc serve` runs the server (it creates and migrates the database on boot).
-Everything else is a client. Run `atc --help` for the current command surface;
-the groups are:
+Everything else is a client of the HTTP API, which is the complete canonical
+interface: `atc api <method> <path>` (GET, POST, PUT, PATCH, DELETE) reaches
+every operation, and curated commands exist only where they add local
+behavior (relative-path resolution, TTY attach, `--yes` delete guards). Run
+`atc --help` for the command surface and `atc capabilities --json` for the
+machine-readable summary.
 
-| Command   | Purpose                                                          |
-| --------- | ---------------------------------------------------------------- |
-| `health`  | Liveness of a running server                                      |
-| `version` | Server build metadata and `apiVersion`                            |
-| `project` | Projects CRUD (`list`, `get`, `create`, `update`, `delete`)       |
-| `terminal`| Durable project-scoped terminals (`list`, `get`, `create`, `rename`, `delete`, `attach`) |
-| `fs`      | Read-only filesystem checks on the server host                    |
+API-backed commands take zero connection flags — `ATC_ENDPOINT` (a full base
+URL, set automatically in the environment of ATC-launched terminal sessions)
+wins when present; otherwise they derive `http://127.0.0.1:<port>` from the
+same settled configuration the server reads, so port changes just work.
+Relative directory arguments resolve against the caller's working directory
+before the API (which takes absolute paths only) sees them. `atc --version`
+reports this executable's own version; `atc version` reports the version of a
+running server.
 
-API-backed commands take zero connection flags — they derive
-`http://127.0.0.1:<port>` from the same settled configuration the server reads,
-so port changes just work. Relative directory arguments resolve against the
-caller's working directory before the API (which takes absolute paths only)
-sees them. `atc --version` reports this executable's own version; `atc version`
-reports the version of a running server.
-
-Success prints the JSON payload on stdout and exits `0`. Failures exit `1`:
-config/request failures print one `atc <command>: …` diagnostic line on stderr;
-invalid usage prints an `ERROR` block on stderr (help goes to stdout).
-`atc terminal attach` is the one exception — it bridges the local TTY onto the
-WebSocket attach endpoint in raw mode (detach with `Ctrl-]`).
+API-backed commands print the JSON payload on stdout and exit `0` (empty
+responses print nothing; `atc context` and `atc capabilities` print text by
+default and JSON with `--json`). Failures exit `1`: config/request failures
+print one `atc <command>: …` diagnostic line on stderr (`atc api` also
+relays the server's JSON error body there); invalid usage prints an `ERROR`
+block on stderr (help goes to stdout). `atc terminal attach` is the one
+exception — it bridges the local TTY onto the WebSocket attach endpoint in
+raw mode (detach with `Ctrl-]`).
 
 ## API
 
 Public HTTP routes are versioned under `/api/v1`. The contract module
 (`src/api.ts`) is the single source of truth; the generated
 [`openapi.json`](openapi.json) is the readable inventory of every endpoint and
-schema. Regenerate it with `mise run openapi` after any contract change — never
-edit it by hand. It is symlinked into `packages/ATCKit` to generate the Swift
+schema, and a running server serves the identical document at
+`GET /openapi.json`. Regenerate it with `mise run openapi` after any contract
+change — never edit it by hand. It is symlinked into `packages/ATCKit` to generate the Swift
 client, so the server, the TypeScript client (`src/client.ts`), and the Swift
 client all derive from the same definition.
 

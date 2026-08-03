@@ -94,6 +94,7 @@ switch (command) {
           ZMX_SESSION_PREFIX: process.env["ZMX_SESSION_PREFIX"],
           ZMX_DIR: process.env["ZMX_DIR"],
           TERM: process.env["TERM"],
+          ATC_ENDPOINT: process.env["ATC_ENDPOINT"],
         },
       }
       fs.writeFileSync(sessionFile(name), JSON.stringify(record))

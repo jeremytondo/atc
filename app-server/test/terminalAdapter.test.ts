@@ -70,12 +70,17 @@ describe("parseSessionList", () => {
 })
 
 describe("zmxChildEnv", () => {
-  it("scrubs the nested-client traps and pins ZMX_DIR and TERM", () => {
-    const env = Zmx.zmxChildEnv("/sockets", {
+  it("scrubs the nested-client traps and stale ATC_* context; pins ZMX_DIR, TERM, ATC_ENDPOINT", () => {
+    const env = Zmx.zmxChildEnv("/sockets", "http://127.0.0.1:7332", {
       PATH: "/usr/bin",
       HOME: "/home/u",
       ZMX_SESSION: "evil",
       ZMX_SESSION_PREFIX: "pre-",
+      // A server running inside another ATC session inherits that session's
+      // context; none of it may leak into sessions this server launches.
+      ATC_ENDPOINT: "http://127.0.0.1:9999",
+      ATC_PROJECT_ID: "stale-project",
+      ATC_TERMINAL_ID: "stale-terminal",
       EMPTY: undefined,
     })
     assert.deepStrictEqual(env, {
@@ -83,6 +88,7 @@ describe("zmxChildEnv", () => {
       HOME: "/home/u",
       ZMX_DIR: "/sockets",
       TERM: "xterm-256color",
+      ATC_ENDPOINT: "http://127.0.0.1:7332",
     })
   })
 })

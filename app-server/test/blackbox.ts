@@ -67,15 +67,23 @@ export const spawnServe = (
 /**
  * Run `<command> ...args` to completion, capturing stdout, stderr, and exit
  * code. `cwd` is required: compiled-artifact tests must run outside the
- * repository, so no caller should silently inherit the repo cwd.
+ * repository, so no caller should silently inherit the repo cwd. `stdin`
+ * (when given) is fed to the child and closed.
  */
 export const runCli = async (
   command: ReadonlyArray<string>,
   args: ReadonlyArray<string>,
   cwd: string,
   env: Record<string, string | undefined> = process.env,
+  stdin?: string,
 ) => {
-  const proc = Bun.spawn([...command, ...args], { cwd, env, stdout: "pipe", stderr: "pipe" })
+  const proc = Bun.spawn([...command, ...args], {
+    cwd,
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
+    ...(stdin === undefined ? {} : { stdin: Buffer.from(stdin) }),
+  })
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),

@@ -1,7 +1,7 @@
 import { Effect, FileSystem, Layer, Schema, Stream } from "effect"
 import type { Duration } from "effect"
 import * as path from "node:path"
-import { AppConfig } from "./config.ts"
+import { AppConfig, CONTEXT_VARIABLES } from "./config.ts"
 import { resolveExecutable as resolveExecutablePath, Subprocess } from "./subprocess.ts"
 import type { SubprocessError } from "./subprocess.ts"
 import { ZmxUnavailable } from "./api.ts"
@@ -87,10 +87,16 @@ export const parseSessionList = (stdout: ReadonlyArray<string>): Array<SessionIn
 
 /**
  * The environment for every zmx child: the parent environment with the
- * mandatory scrubs applied and ATC's private socket directory pinned.
+ * mandatory scrubs applied, ATC's private socket directory pinned, and this
+ * server's ATC_ENDPOINT injected so agents inside launched sessions can
+ * reach the API (ATC-131 context propagation — no secrets, just the URL).
+ * Every inherited ATC_* context variable is scrubbed first: a server running
+ * inside another ATC session would otherwise leak that session's ids into
+ * every terminal it launches, and stale context is worse than none.
  */
 export const zmxChildEnv = (
   socketDir: string,
+  endpoint: string,
   parent: Record<string, string | undefined> = process.env,
 ): Record<string, string> => {
   const env: Record<string, string> = {}
@@ -99,8 +105,10 @@ export const zmxChildEnv = (
   }
   delete env["ZMX_SESSION"]
   delete env["ZMX_SESSION_PREFIX"]
+  for (const name of CONTEXT_VARIABLES) delete env[name]
   env["ZMX_DIR"] = socketDir
   env["TERM"] = SESSION_TERM_TYPE
+  env["ATC_ENDPOINT"] = endpoint
   return env
 }
 
@@ -136,7 +144,7 @@ export const layerWith = (options: ZmxOptions) =>
       yield* fs.makeDirectory(socketDir, { recursive: true, mode: 0o700 })
       yield* fs.chmod(socketDir, 0o700)
 
-      const childEnv = zmxChildEnv(socketDir)
+      const childEnv = zmxChildEnv(socketDir, `http://127.0.0.1:${config.port}`)
 
       // Explicit resolution, never implicit (the shared resolveExecutable
       // rule), memoized on success — a resolved install does not move mid-run.

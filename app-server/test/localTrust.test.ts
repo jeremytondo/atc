@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest"
 import { BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
 import { isLoopbackHost, isLoopbackOrigin } from "../src/localTrust.ts"
+import { openApiJson } from "../src/openapi.ts"
 import * as Server from "../src/server.ts"
 import { freePort } from "./blackbox.ts"
 import { TestBuildInfoLayer } from "./testBuildInfo.ts"
@@ -21,7 +22,11 @@ const withServer = <A, E, R>(run: (port: number) => Effect.Effect<A, E, R>) =>
   }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
 
 /** Raw HTTP exchange so tests can send arbitrary Host headers (fetch can't). */
-const rawStatus = (port: number, headers: ReadonlyArray<string>): Promise<number> =>
+const rawStatus = (
+  port: number,
+  headers: ReadonlyArray<string>,
+  path = "/api/v1/health",
+): Promise<number> =>
   new Promise((resolve, reject) => {
     let data = ""
     Bun.connect({
@@ -30,7 +35,7 @@ const rawStatus = (port: number, headers: ReadonlyArray<string>): Promise<number
       socket: {
         open(socket) {
           socket.write(
-            ["GET /api/v1/health HTTP/1.1", ...headers, "Connection: close", "", ""].join("\r\n"),
+            [`GET ${path} HTTP/1.1`, ...headers, "Connection: close", "", ""].join("\r\n"),
           )
         },
         data(socket, chunk) {
@@ -96,6 +101,21 @@ describe("hardened listener", () => {
         assert.strictEqual(await rawStatus(port, ["Host: evil.example"]), 403)
         assert.strictEqual(await rawStatus(port, ["Host: 127.0.0.1.evil.example"]), 403)
         assert.strictEqual(await rawStatus(port, [`Host: 127.0.0.1:${port}`]), 200)
+      }),
+    ),
+  )
+
+  it.effect("serves the canonical OpenAPI document at /openapi.json under the same guard", () =>
+    withServer((port) =>
+      Effect.promise(async () => {
+        const response = await fetch(`http://127.0.0.1:${port}/openapi.json`)
+        assert.strictEqual(response.status, 200)
+        assert.include(response.headers.get("content-type") ?? "", "application/json")
+        // Byte-identical to the canonical serialization — the same text the
+        // checked-in openapi.json artifact holds (openapi.test.ts pins that).
+        assert.strictEqual(await response.text(), openApiJson)
+
+        assert.strictEqual(await rawStatus(port, ["Host: evil.example"], "/openapi.json"), 403)
       }),
     ),
   )

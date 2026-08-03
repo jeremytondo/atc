@@ -1,13 +1,12 @@
 import { BunHttpClient } from "@effect/platform-bun"
-import { Console, Effect, Layer, Option, Runtime, Schema } from "effect"
-import type { FileSystem } from "effect"
+import { Console, Effect, FileSystem, Layer, Option, Runtime, Schema } from "effect"
 import { Argument, Command, Flag } from "effect/unstable/cli"
-import type { HttpClient } from "effect/unstable/http"
+import { HttpClient, HttpClientRequest } from "effect/unstable/http"
 import * as path from "node:path"
 import * as AttachClient from "./attachClient.ts"
 import { attachUrl, CLOSE_DETACH } from "./attachProtocol.ts"
 import * as Client from "./client.ts"
-import { AppConfig, ConfigLoadError, layer as appConfigLayer } from "./config.ts"
+import { AppConfig, ConfigLoadError, CONTEXT_VARIABLES, layer as appConfigLayer } from "./config.ts"
 import * as Directories from "./directories.ts"
 import * as Logging from "./logging.ts"
 import * as Persistence from "./persistence.ts"
@@ -70,9 +69,12 @@ const serve = Command.make("serve", { port }, ({ port }) =>
   Effect.gen(function* () {
     const config = yield* AppConfig
     // The flag level of the precedence rule: flags > env > file > defaults.
-    const effectivePort = Option.getOrElse(port, () => config.port)
+    // The override is folded back into the AppConfig the server stack sees,
+    // so consumers of the settled port (e.g. the zmx adapter's ATC_ENDPOINT
+    // injection) always read the port actually being served.
+    const effective = { ...config, port: Option.getOrElse(port, () => config.port) }
     yield* Layer.launch(
-      Server.layer({ port: effectivePort }).pipe(
+      Server.layer({ port: effective.port }).pipe(
         Layer.provide(Terminals.layer),
         Layer.provide([
           ProjectRepository.layer,
@@ -83,7 +85,7 @@ const serve = Command.make("serve", { port }, ({ port }) =>
         Layer.provide(Persistence.layer),
         Layer.provide(Logging.layer),
       ),
-    )
+    ).pipe(Effect.provideService(AppConfig, effective))
   }).pipe(
     Effect.provide(appConfigLayer),
     Effect.catch((error) => failReported(`atc serve: ${describeError(error)}`)),
@@ -95,14 +97,17 @@ const serve = Command.make("serve", { port }, ({ port }) =>
   ),
 ).pipe(Command.withDescription("Run the App Server in the foreground until interrupted"))
 
-// Base-URL resolution seam for client commands: derived from the settled
-// configuration (ATC_PORT > config.toml port > default) — the same pipeline
-// the server reads, so port changes just work with zero connection flags.
-// Remote endpoint addressing (endpoint + token) is later, auth-pass work and
-// should change only this resolution, not the commands.
+// Base-URL resolution seam for client commands: ATC_ENDPOINT (set in the
+// environment of processes ATC launches) wins; otherwise the URL derives
+// from the settled configuration (ATC_PORT > config.toml port > default) —
+// the same pipeline the server reads, so port changes just work with zero
+// connection flags. Remote endpoint addressing (endpoint + token) is later,
+// auth-pass work and should change only this resolution, not the commands.
 const resolveBaseUrl = Effect.gen(function* () {
   const config = yield* AppConfig
-  return new URL(`http://127.0.0.1:${config.port}`)
+  return config.endpoint !== undefined
+    ? new URL(config.endpoint)
+    : new URL(`http://127.0.0.1:${config.port}`)
 })
 
 /**
@@ -112,7 +117,7 @@ const resolveBaseUrl = Effect.gen(function* () {
  */
 const withCliContext = <E>(
   diagnosticName: string,
-  effect: Effect.Effect<void, E, HttpClient.HttpClient | AppConfig>,
+  effect: Effect.Effect<void, E, HttpClient.HttpClient | AppConfig | FileSystem.FileSystem>,
 ): Effect.Effect<void, ReportedError, FileSystem.FileSystem> =>
   effect.pipe(
     Effect.provide([BunHttpClient.layer, appConfigLayer]),
@@ -384,7 +389,207 @@ const fs = Command.make("fs").pipe(
   Command.withSubcommands([fsCheck]),
 )
 
+// --- The agent gateway (ATC-131) ---------------------------------------
+//
+// The HTTP API is the complete, canonical App Server interface; `atc api`
+// gives agents and scripts method-and-path access to all of it, so a curated
+// command only exists where it genuinely improves on raw API access. The
+// gateway is a plain HTTP passthrough over the same base-URL seam the
+// curated commands use — the contract-derived client exposes only typed
+// per-operation functions, and the server validates every request against
+// the contract regardless of origin.
+
+const API_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const
+
+const methodArgument = Argument.string("method").pipe(
+  Argument.mapTryCatch(
+    (raw) => {
+      const method = raw.toUpperCase() as (typeof API_METHODS)[number]
+      if (!API_METHODS.includes(method)) throw new Error()
+      return method
+    },
+    () => `method must be one of ${API_METHODS.join(", ")} (case-insensitive)`,
+  ),
+  Argument.withDescription(`HTTP method: ${API_METHODS.join(", ")} (case-insensitive)`),
+)
+
+/**
+ * Join a server-relative path onto the configured base URL. Strict and
+ * fallible: network-path forms (`//host`, and `/\host` — the URL parser
+ * treats backslash as slash) would silently re-target the request to
+ * another origin, so they are rejected up front and the resolved origin is
+ * verified unchanged. An endpoint with a path prefix (e.g.
+ * `http://host:1234/prefix`) keeps it, matching the typed client's joining.
+ */
+const requestUrl = (baseUrl: URL, requestPath: string): Effect.Effect<URL, Error> => {
+  if (!requestPath.startsWith("/") || /^\/[/\\]/.test(requestPath)) {
+    return Effect.fail(
+      new Error(
+        `path must be server-relative (start with /, but not // or /\\), got "${requestPath}"`,
+      ),
+    )
+  }
+  const prefix = baseUrl.pathname.replace(/\/$/, "")
+  return Effect.try({
+    try: () => new URL(baseUrl.origin + prefix + requestPath),
+    catch: () => new Error(`cannot build a request URL from "${requestPath}"`),
+  }).pipe(
+    Effect.filterOrFail(
+      (url) => url.origin === baseUrl.origin,
+      () => new Error(`path "${requestPath}" escapes the configured endpoint`),
+    ),
+  )
+}
+
+/** Request body source: a file path, or "-" for stdin. */
+const readRequestBody = (source: string) =>
+  source === "-"
+    ? Effect.tryPromise({
+        try: () => Bun.stdin.text(),
+        catch: () => new Error("cannot read the request body from stdin"),
+      })
+    : Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem
+        return yield* fileSystem.readFileString(source)
+      })
+
+const api = Command.make(
+  "api",
+  {
+    method: methodArgument,
+    path: Argument.string("path").pipe(
+      Argument.withDescription("Server-relative request path (e.g. /api/v1/projects)"),
+    ),
+    input: Flag.string("input").pipe(
+      Flag.optional,
+      Flag.withDescription("JSON request body: a file path, or - to read stdin"),
+    ),
+  },
+  ({ method, path: requestPath, input }) =>
+    withCliContext(
+      "api",
+      Effect.gen(function* () {
+        const baseUrl = yield* resolveBaseUrl
+        const url = yield* requestUrl(baseUrl, requestPath)
+        const client = yield* HttpClient.HttpClient
+        const body = Option.isSome(input) ? yield* readRequestBody(input.value) : undefined
+        const request = HttpClientRequest.make(method)(url, {
+          acceptJson: true,
+        }).pipe((base) =>
+          body === undefined ? base : HttpClientRequest.bodyText(base, body, "application/json"),
+        )
+        const response = yield* client.execute(request)
+        const text = yield* response.text
+        if (response.status >= 200 && response.status < 300) {
+          // Success bodies pass through unchanged (plus the trailing
+          // newline); an empty response prints nothing.
+          if (text !== "") yield* Console.log(text)
+          return
+        }
+        // API failures: the machine-readable error body, then the one-line
+        // diagnostic — both on stderr, exit 1 like every other failure.
+        if (text !== "") yield* Console.error(text)
+        return yield* Effect.fail(new Error(`server returned HTTP ${response.status}`))
+      }),
+    ),
+).pipe(
+  Command.withDescription(
+    "Send one request to any App Server API endpoint (the generic gateway; see /openapi.json)",
+  ),
+)
+
+const jsonFlag = Flag.boolean("json").pipe(
+  Flag.withDescription("Emit machine-readable JSON instead of text"),
+)
+
+const context = Command.make("context", { json: jsonFlag }, ({ json }) =>
+  withCliContext(
+    "context",
+    Effect.gen(function* () {
+      const config = yield* AppConfig
+      // Reported in vocabulary order, present variables only — absent ones
+      // are omitted entirely, never invented.
+      if (json) {
+        yield* Console.log(JSON.stringify(config.context, null, 2))
+        return
+      }
+      for (const name of CONTEXT_VARIABLES) {
+        const value = config.context[name]
+        if (value !== undefined) yield* Console.log(`${name}=${value}`)
+      }
+    }),
+  ),
+).pipe(
+  Command.withDescription(
+    "Report the ATC_* agent-context variables present in this process's environment",
+  ),
+)
+
+/**
+ * The stable capability description for agents. Version the shape: additions
+ * bump nothing, breaking changes bump capabilitiesVersion.
+ */
+const CAPABILITIES = {
+  capabilitiesVersion: 1,
+  api: {
+    command: "atc api <method> <path> [--input <file|->]",
+    description:
+      "Complete access to the canonical App Server HTTP API: every operation via GET, POST, PUT, PATCH, or DELETE, JSON body from a file or stdin, the raw JSON response on stdout.",
+    example: "atc api GET /api/v1/projects",
+  },
+  openapi: {
+    path: "/openapi.json",
+    description:
+      "The full OpenAPI document (every operation and schema), served by the App Server.",
+    example: "atc api GET /openapi.json",
+  },
+  context: {
+    command: "atc context --json",
+    description: "The ATC_* context variables present in this process.",
+    variables: CONTEXT_VARIABLES,
+  },
+  workflows: [
+    { command: "atc serve", description: "Run the App Server in the foreground." },
+    {
+      command: "atc project create --name <name> --directory <dir>",
+      description: "Create a project (relative directories resolve against the caller's cwd).",
+    },
+    {
+      command: "atc terminal create --project <id> [command...]",
+      description: "Create a durable terminal and start its session immediately.",
+    },
+    {
+      command: "atc terminal attach <terminal-id>",
+      description: "Attach the local TTY to a live terminal session (detach with Ctrl-]).",
+    },
+  ],
+} as const
+
+const capabilities = Command.make("capabilities", { json: jsonFlag }, ({ json }) =>
+  json
+    ? Console.log(JSON.stringify(CAPABILITIES, null, 2))
+    : Console.log(
+        [
+          `${CAPABILITIES.api.command} — ${CAPABILITIES.api.description}`,
+          `${CAPABILITIES.openapi.example} — ${CAPABILITIES.openapi.description}`,
+          `${CAPABILITIES.context.command} — ${CAPABILITIES.context.description}`,
+          ...CAPABILITIES.workflows.map((w) => `${w.command} — ${w.description}`),
+        ].join("\n"),
+      ),
+).pipe(Command.withDescription("Describe the CLI's agent-facing capabilities (stable, versioned)"))
+
 export const atc = Command.make("atc").pipe(
   Command.withDescription("ATC App Server"),
-  Command.withSubcommands([serve, health, version, project, terminal, fs, smoke]),
+  Command.withSubcommands([
+    serve,
+    api,
+    context,
+    capabilities,
+    health,
+    version,
+    project,
+    terminal,
+    fs,
+    smoke,
+  ]),
 )
