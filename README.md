@@ -1,135 +1,55 @@
 # atc
 
-atc is a product and development workspace for working with remote
-Terminal Sessions: a standalone server that owns Projects and Terminal
-Sessions, plus native client apps that attach to it.
+atc is a product and development workspace for working with remote Terminal
+Sessions: a standalone server that owns Projects and Terminal Sessions, plus
+native client apps that attach to it.
 
-This repository is a monorepo holding every atc surface:
+The server is useful on its own — no native client required. It runs on the
+workstation where your terminal sessions live.
 
-| Directory | Surface |
-| --- | --- |
-| [`server/`](server/) | atc server — the standalone Go service, HTTP/WebSocket API, `atc` CLI, and embedded admin web UI |
-| [`macos/`](macos/) | atc for macOS — the native SwiftUI client |
-| `ios/` | Reserved for a future atc for iOS client |
-| [`packages/`](packages/) | Shared cross-surface libraries (currently `ATCKit`, the Swift API client) |
-| [`docs/`](docs/) | Product, architecture, and planning documentation |
-| [`scripts/`](scripts/) | Repo-level helper scripts |
-
-## atc server
-
-The server is independently installable and useful on its own — no native
-client required. It runs on the workstation where your terminal sessions live.
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/jeremytondo/atc/main/server/install.sh | sh
-```
-
-`atc` is the server's command line interface:
-
-```sh
-atc start
-atc status
-atc projects list
-atc sessions start --project <id>
-atc sessions attach <id>
-```
-
-See [`server/README.md`](server/README.md) for full setup, development, and
-API documentation.
-
-## atc for macOS
-
-The macOS app connects to one or more atc servers, browses their
-Projects, and attaches to Terminal Sessions in a native terminal. Open
-`macos/atc.xcodeproj` in Xcode to build and run it.
-
-### Configuration
-
-The macOS app optionally reads `$XDG_CONFIG_HOME/atc/macos.toml`. If
-`XDG_CONFIG_HOME` is empty or unset, it reads `~/.config/atc/macos.toml`.
-The app never creates the configuration directory or file.
-
-```toml
-[keyboard]
-leader = "cmd+k"                       # default: "cmd+k"
-clear_default_keybindings = false      # default: false
-
-[keybindings]
-"cmd+b" = "view.toggle-sidebar"
-"leader>b" = "view.toggle-sidebar"
-"cmd+r" = "unbind"
-
-[terminal]
-theme = "Catppuccin Mocha"
-font_family = "Berkeley Mono"
-font_size = 14.0
-padding_x = 8
-padding_y = 6
-```
-
-Binding keys are either direct triggers such as `cmd+b` or two-step leader
-sequences such as `leader>b`. Values are command IDs, or `"unbind"` to remove
-a default binding. Configuration uses a closed schema: unknown tables, unknown
-keys, duplicate keys, wrong types, and invalid values reject the entire file.
-When a command has several direct triggers, the menu bar shows one of them,
-chosen deterministically (user bindings beat defaults; ties resolve
-alphabetically).
-
-The scoped Command Palette commands search within a specific navigation type:
-
-| Command ID | Default bindings |
-| --- | --- |
-| `view.search-sessions` | `cmd+shift+s`, `leader>s` |
-| `view.search-terminals` | `cmd+shift+t`, `leader>t` |
-| `view.search-workspaces` | `cmd+shift+o`, `leader>w` |
-
-All `[terminal]` keys are optional. Terminal presentation starts from
-libghostty's compiled defaults, then applies the values set in this table.
-`theme` must name a bundled Ghostty theme; `font_family` must be non-empty; and
-`font_size` must be positive. `padding_x` and `padding_y` are non-negative
-integers and default to `8` and `6`, respectively. Set either padding value to
-`0` for an intentional edge-to-edge layout, which may place content beneath a
-window's rounded corners.
-
-Use **Reload Configuration** in the app menu after editing the file. A valid
-reload replaces the complete application configuration; an invalid reload
-keeps the last-known-good configuration. Deleting the file and reloading
-restores defaults. Most terminal presentation changes apply live to every
-retained surface without recreating terminal sessions or reconnecting
-WebSockets. Padding changes are guaranteed for new terminal surfaces or after
-restarting the app; retained surfaces may not recalculate their padding on
-reload.
-**Reveal Configuration** selects `macos.toml` in Finder when it exists, or
-reveals its expected directory without creating anything.
-
-ATC does not read Ghostty's configuration files. To match an existing Ghostty
-setup, copy the desired presentation values into `[terminal]` in `macos.toml`.
-
-This file belongs only to the macOS process. It is separate from the server's
-`~/.config/atc/server/config.toml`; the app never reads server configuration
-files. Connections are stored by the app, and connection tokens remain in the
-Keychain.
+Two directories hold servers, which their names do not make obvious:
+[`app-server/`](app-server/) is the active implementation (TypeScript, Effect +
+Bun) and owns the `atc` CLI, while [`server/`](server/) is the legacy Go server
+being migrated away from.
 
 ## Development
 
-Tasks are run with [mise](https://mise.jdx.dev). From the repo root:
+Each surface builds, tests, and releases independently; see
+[`.github/workflows/`](.github/workflows/).
+
+Tasks run with [mise](https://mise.jdx.dev), which also installs the pinned
+toolchains. `mise tasks` lists everything; from the repo root:
 
 ```sh
-mise run check   # every gate: gofmt, go vet, Go tests, web type check,
-                 # web tests, ATCKit tests, macOS app tests
-mise run test    # all test suites
+mise run check          # every gate: Go server, web, App Server, ATCKit, macOS app
+mise run test           # every test suite
+mise run refs           # fetch read-only reference source into repos/ (gitignored)
 ```
 
-Per-surface tasks (`server:build`, `web:check`, `kit:test`, `macos:test`, …)
-are listed by `mise tasks`; `server/mise.toml` has the server's own dev/build
-tasks. CI (`.github/workflows/`) runs the same mise tasks on every push, so a
-green local `check` means a green build.
+Working on one surface? Run only its gate:
 
-The HTTP API's wire shapes are pinned by shared fixtures in
-[`packages/contracts/`](packages/contracts/) that the Go server, Swift
-client, and web client all test against. Platform and security decisions
-(macOS floor, sandbox/ATS stance, token storage) live in
-[`docs/platform-policy.md`](docs/platform-policy.md).
+```sh
+mise run app-server:check   # fmt, typecheck, tests, OpenAPI drift
+mise run server:check       # gofmt, go vet, Go tests, web type check
+mise run kit:test           # ATCKit package tests
+mise run macos:test         # macOS app tests
+mise run contract:check     # after any API contract change
+```
 
-Each surface builds, tests, and releases independently; see the workflows in
-`.github/workflows/`.
+Tasks scoped to a surface can also be run from its own directory with
+`mise run -C <dir> <task>` (for example `mise run -C app-server dev`).
+
+CI runs these same mise tasks on every push, so a green local `check` means a
+green build.
+
+## Where to look next
+
+- [`AGENTS.md`](AGENTS.md) — working conventions, code style, and the
+  invariants that hold across surfaces. Read this before changing code.
+- [`app-server/README.md`](app-server/README.md) — server and CLI setup,
+  configuration, and data locations.
+- [`macos/README.md`](macos/README.md) — macOS app configuration.
+- [`server/README.md`](server/README.md) — the legacy Go server.
+
+Subsystem architecture is documented in module header comments, next to the
+code it describes, rather than in this file.
