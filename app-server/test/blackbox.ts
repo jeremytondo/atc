@@ -118,10 +118,47 @@ export const postJson = async (base: string, pathName: string, body: unknown) =>
   return (await response.json()) as Record<string, string>
 }
 
-/** Poll until `condition` holds; assertion-bounded. */
-export const waitUntil = async (condition: () => boolean | Promise<boolean>, what: string) => {
+/** Poll until `condition` holds; assertion-bounded (attempts × 25ms). */
+export const waitUntil = async (
+  condition: () => boolean | Promise<boolean>,
+  what: string,
+  attempts = 200,
+) => {
   for (let attempt = 0; !(await condition()); attempt++) {
-    expect(attempt, `timed out waiting for ${what}`).toBeLessThan(200)
+    expect(attempt, `timed out waiting for ${what}`).toBeLessThan(attempts)
     await Bun.sleep(25)
   }
 }
+
+/** One project owning one terminal — the seed for attach/recovery tests. */
+export const makeTerminal = async (base: string) => {
+  const project = await postJson(base, "/api/v1/projects", {
+    name: "P",
+    defaultWorkingDirectory: "/tmp",
+  })
+  return postJson(base, "/api/v1/terminals", { projectId: project["id"] })
+}
+
+export interface WsSession {
+  readonly socket: WebSocket
+  /** Decoded binary frames, in arrival order. Text frames are ignored. */
+  readonly received: Array<string>
+  readonly closed: Promise<{ code: number; reason: string }>
+}
+
+/** Open a WebSocket collecting decoded binary frames; resolves once open. */
+export const openSocket = (url: string): Promise<WsSession> =>
+  new Promise((resolve, reject) => {
+    const socket = new WebSocket(url)
+    socket.binaryType = "arraybuffer"
+    const received: Array<string> = []
+    const decoder = new TextDecoder()
+    const closed = new Promise<{ code: number; reason: string }>((resolveClose) => {
+      socket.onclose = (event) => resolveClose({ code: event.code, reason: event.reason })
+    })
+    socket.onmessage = (event) => {
+      if (typeof event.data !== "string") received.push(decoder.decode(event.data as ArrayBuffer))
+    }
+    socket.onopen = () => resolve({ socket, received, closed })
+    socket.onerror = () => reject(new Error(`websocket failed to open ${url}`))
+  })

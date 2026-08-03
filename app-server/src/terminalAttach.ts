@@ -3,13 +3,24 @@ import type { Scope } from "effect"
 import type { HttpServerRequest } from "effect/unstable/http"
 import { HttpServerResponse } from "effect/unstable/http"
 import * as Socket from "effect/unstable/socket/Socket"
+import {
+  clampDimension,
+  CLOSE_ATTACH_FAILED,
+  CLOSE_PING_TIMEOUT,
+  CLOSE_TERMINAL_ENDED,
+  CLOSE_ZMX_UNAVAILABLE,
+  decodeControlFrame,
+  encodeControlFrame,
+} from "./attachProtocol.ts"
 import { DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS } from "./subprocess.ts"
+import type { SessionSize } from "./terminalAdapter.ts"
 import type { Terminals } from "./terminals.ts"
 
 // The WebSocket attach bridge (ATC-130): one upgraded socket bridged onto
-// one scoped `zmx attach` PTY client. Wire protocol and close vocabulary
-// are stated once, on the contract endpoint (api.ts `attachTerminal`);
-// this module implements them.
+// one scoped `zmx attach` PTY client. The wire protocol and close
+// vocabulary live in attachProtocol.ts (documented in prose on the contract
+// endpoint, api.ts `attachTerminal`); this module implements the server
+// side.
 //
 // Flow control: Bun's WS writer exposes no send-backpressure signal, so a
 // slow client cannot throttle the PTY. Memory stays bounded anyway — the
@@ -23,34 +34,6 @@ const PING_INTERVAL_MILLIS = 30_000
 const PONG_TIMEOUT_MILLIS = 120_000
 /** Outbound frames buffered ahead of the socket writer. */
 const OUTBOX_CAPACITY = 256
-
-const clampDimension = (raw: string | number | undefined, fallback: number): number => {
-  const parsed = typeof raw === "number" ? raw : Number.parseInt(raw ?? "", 10)
-  return Number.isNaN(parsed) ? fallback : Math.max(1, Math.min(1_000, Math.floor(parsed)))
-}
-
-const decodeControl = (
-  text: string,
-): { type: "resize"; cols: number; rows: number } | { type: "pong" } | { type: "ignored" } => {
-  try {
-    const parsed = JSON.parse(text) as { type?: string; cols?: number; rows?: number }
-    if (
-      parsed.type === "resize" &&
-      typeof parsed.cols === "number" &&
-      typeof parsed.rows === "number"
-    ) {
-      return {
-        type: "resize",
-        cols: clampDimension(parsed.cols, DEFAULT_PTY_COLS),
-        rows: clampDimension(parsed.rows, DEFAULT_PTY_ROWS),
-      }
-    }
-    if (parsed.type === "pong") return { type: "pong" }
-  } catch {
-    // Unknown or malformed control frames are ignored, never fatal.
-  }
-  return { type: "ignored" }
-}
 
 /**
  * The raw handler implementing the contract's `attachTerminal` endpoint.
@@ -120,7 +103,7 @@ export const attachTerminal =
 export const runBridge = (
   terminals: Terminals["Service"],
   terminalId: string,
-  size: { readonly cols: number; readonly rows: number },
+  size: SessionSize,
   socket: Socket.Socket,
 ) =>
   Effect.gen(function* () {
@@ -142,11 +125,11 @@ export const runBridge = (
       terminals.confirmEnded(terminalId).pipe(
         Effect.map((ended) =>
           ended
-            ? new Socket.CloseEvent(1000, "terminal_ended")
+            ? new Socket.CloseEvent(1000, CLOSE_TERMINAL_ENDED)
             : new Socket.CloseEvent(1011, fallbackReason),
         ),
         Effect.catchTag("ZmxUnavailable", () =>
-          Effect.succeed(new Socket.CloseEvent(1011, "zmx_unavailable")),
+          Effect.succeed(new Socket.CloseEvent(1011, CLOSE_ZMX_UNAVAILABLE)),
         ),
       )
 
@@ -157,10 +140,11 @@ export const runBridge = (
       Effect.catchTags({
         // The pre-flight said live but the session is gone: confirm and
         // close with the authoritative code when possible.
-        SessionNotFound: () => bail(closeConfirming("attach_failed")),
-        ZmxUnavailable: () => bail(Effect.succeed(new Socket.CloseEvent(1011, "zmx_unavailable"))),
+        SessionNotFound: () => bail(closeConfirming(CLOSE_ATTACH_FAILED)),
+        ZmxUnavailable: () =>
+          bail(Effect.succeed(new Socket.CloseEvent(1011, CLOSE_ZMX_UNAVAILABLE))),
         SessionOperationFailed: () =>
-          bail(Effect.succeed(new Socket.CloseEvent(1011, "attach_failed"))),
+          bail(Effect.succeed(new Socket.CloseEvent(1011, CLOSE_ATTACH_FAILED))),
       }),
     )
     if (connection === undefined) return
@@ -177,7 +161,7 @@ export const runBridge = (
     yield* connection.output.pipe(
       Stream.runForEach((chunk) => Queue.offer(outbox, chunk)),
       Effect.catchTag("SubprocessError", () => Effect.void),
-      Effect.andThen(closeConfirming("attach_failed")),
+      Effect.andThen(closeConfirming(CLOSE_ATTACH_FAILED)),
       Effect.flatMap((event) => Queue.offer(outbox, event)),
       Effect.forkScoped,
     )
@@ -187,10 +171,10 @@ export const runBridge = (
       for (;;) {
         yield* Effect.sleep(PING_INTERVAL_MILLIS)
         if (Date.now() - lastPong > PONG_TIMEOUT_MILLIS) {
-          yield* Queue.offer(outbox, new Socket.CloseEvent(1011, "ping_timeout"))
+          yield* Queue.offer(outbox, new Socket.CloseEvent(1011, CLOSE_PING_TIMEOUT))
           return
         }
-        yield* Queue.offer(outbox, JSON.stringify({ type: "ping" }))
+        yield* Queue.offer(outbox, encodeControlFrame({ type: "ping" }))
       }
     }).pipe(Effect.forkScoped)
 
@@ -208,18 +192,23 @@ export const runBridge = (
     // without inferring the terminal ended, which only an inventory proves.
     const readSocket = socket.runRaw((message) => {
       if (typeof message === "string") {
-        const control = decodeControl(message)
-        if (control.type === "resize") {
-          return Effect.ignore(connection.resize({ cols: control.cols, rows: control.rows }))
+        const control = decodeControlFrame(message)
+        if (control?.type === "resize") {
+          return Effect.ignore(
+            connection.resize({
+              cols: clampDimension(control.cols, DEFAULT_PTY_COLS),
+              rows: clampDimension(control.rows, DEFAULT_PTY_ROWS),
+            }),
+          )
         }
-        if (control.type === "pong") lastPong = Date.now()
+        if (control?.type === "pong") lastPong = Date.now()
         return undefined
       }
       return connection
         .write(message)
         .pipe(
           Effect.catch(() =>
-            Effect.asVoid(Queue.offer(outbox, new Socket.CloseEvent(1011, "attach_failed"))),
+            Effect.asVoid(Queue.offer(outbox, new Socket.CloseEvent(1011, CLOSE_ATTACH_FAILED))),
           ),
         )
     })

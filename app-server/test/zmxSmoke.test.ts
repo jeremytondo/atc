@@ -1,12 +1,9 @@
 import { assert, describe, it } from "@effect/vitest"
-import { BunServices } from "@effect/platform-bun"
-import { Effect, Layer } from "effect"
+import { Effect } from "effect"
 import { afterAll } from "vitest"
-import * as Subprocess from "../src/subprocess.ts"
 import { TerminalAdapter } from "../src/terminalAdapter.ts"
-import * as Zmx from "../src/zmxAdapter.ts"
 import { cleanupTempDirs, makeShortSocketDir } from "./blackbox.ts"
-import { collectText, testAppConfig, waitForText } from "./testLayers.ts"
+import { collectText, waitForText, zmxAdapterLayer } from "./testLayers.ts"
 
 // Opt-in smoke tests against the real, user-installed zmx binary
 // (mise run test:zmx). They prove the pinned behavioral assumptions — attach
@@ -18,16 +15,10 @@ const enabled = process.env["ATC_ZMX_SMOKE"] === "1"
 afterAll(cleanupTempDirs)
 
 const makeLayer = () =>
-  Zmx.layer.pipe(
-    Layer.provide(
-      testAppConfig({
-        zmxExecutable: process.env["ATC_ZMX_EXECUTABLE"] ?? "zmx",
-        terminalSocketDir: makeShortSocketDir(),
-      }),
-    ),
-    Layer.provide(Subprocess.layer),
-    Layer.provideMerge(BunServices.layer),
-  )
+  zmxAdapterLayer({
+    zmxExecutable: process.env["ATC_ZMX_EXECUTABLE"] ?? "zmx",
+    terminalSocketDir: makeShortSocketDir(),
+  })
 
 describe.skipIf(!enabled)("real zmx smoke (opt-in: mise run test:zmx)", () => {
   it.live(

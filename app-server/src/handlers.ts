@@ -81,9 +81,7 @@ export const V1Handlers = HttpApiBuilder.group(
       .handle("createTerminal", ({ payload }) => terminals.create(payload))
       .handle("getTerminal", ({ params }) => terminals.get(params.terminalId))
       .handle("updateTerminal", ({ params, payload }) =>
-        payload.name === undefined
-          ? terminals.get(params.terminalId)
-          : terminals.rename(params.terminalId, payload.name),
+        terminals.update(params.terminalId, payload),
       )
       .handle("deleteTerminal", ({ params }) => terminals.delete(params.terminalId))
       .handleRaw("attachTerminal", attachTerminal({ terminals, bridgeScope }))

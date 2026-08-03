@@ -1,4 +1,5 @@
 import { assert } from "@effect/vitest"
+import { BunServices } from "@effect/platform-bun"
 import { Effect, Layer, Stream } from "effect"
 import * as fs from "node:fs"
 import * as os from "node:os"
@@ -8,14 +9,15 @@ import { AppConfig } from "../src/config.ts"
 import * as Directories from "../src/directories.ts"
 import * as Persistence from "../src/persistence.ts"
 import * as ProjectRepository from "../src/projectRepository.ts"
+import * as Subprocess from "../src/subprocess.ts"
 import type { TerminalAdapter } from "../src/terminalAdapter.ts"
 import * as TerminalRepository from "../src/terminalRepository.ts"
 import * as Terminals from "../src/terminals.ts"
+import * as Zmx from "../src/zmxAdapter.ts"
 import {
   appServerRoot,
   freePort,
   isolatedEnv,
-  makeShortSocketDir,
   spawnServe,
   trackTempDir,
   waitForHealth,
@@ -23,30 +25,36 @@ import {
 import { makeFakeAdapter } from "./fakeTerminalAdapter.ts"
 import type { FakeTerminalAdapter } from "./fakeTerminalAdapter.ts"
 
+type ServiceLayer = Layer.Layer<
+  | ProjectRepository.ProjectRepository
+  | TerminalRepository.TerminalRepository
+  | Directories.Directories
+  | TerminalAdapter,
+  unknown
+>
+
 /**
  * Handler dependencies for in-process and ephemeral-listener tests: real
- * repositories over one fresh in-memory database, real directory checks,
- * and the fake in-memory terminal adapter (returned for failure injection
- * and assertions).
+ * repositories over one fresh database (in-memory unless a file is given),
+ * real directory checks, and the fake in-memory terminal adapter (returned
+ * for failure injection and assertions). `services` omits Terminals so
+ * startup-reconciliation tests can seed rows before its layer builds.
  */
-export const makeTestServiceLayers = (): {
+export const makeTestServiceLayers = (
+  dbFile = ":memory:",
+): {
   readonly fake: FakeTerminalAdapter
-  readonly layer: Layer.Layer<
-    | ProjectRepository.ProjectRepository
-    | TerminalRepository.TerminalRepository
-    | Terminals.Terminals
-    | Directories.Directories
-    | TerminalAdapter,
-    unknown
-  >
+  readonly services: ServiceLayer
+  readonly layer: Layer.Layer<Layer.Success<ServiceLayer> | Terminals.Terminals, unknown>
 } => {
   const fake = makeFakeAdapter()
   const base = Layer.mergeAll(ProjectRepository.layer, TerminalRepository.layer).pipe(
-    Layer.provide(Persistence.layerFile(":memory:")),
+    Layer.provide(Persistence.layerFile(dbFile)),
   )
   const services = Layer.mergeAll(base, Directories.layer, fake.layer)
   return {
     fake,
+    services,
     layer: Layer.mergeAll(services, Terminals.layer.pipe(Layer.provide(services))),
   }
 }
@@ -68,12 +76,30 @@ export const testAppConfig = (overrides: Partial<AppConfig["Service"]>): Layer.L
     ...overrides,
   })
 
+/** The full zmx-adapter layer stack shared by every in-process adapter test. */
+export const zmxAdapterLayer = (options: {
+  readonly zmxExecutable: string
+  readonly terminalSocketDir: string
+  readonly zmx?: Zmx.ZmxOptions
+}): Layer.Layer<TerminalAdapter, unknown> =>
+  Zmx.layerWith(options.zmx ?? {}).pipe(
+    Layer.provide(
+      testAppConfig({
+        zmxExecutable: options.zmxExecutable,
+        terminalSocketDir: options.terminalSocketDir,
+      }),
+    ),
+    Layer.provide(Subprocess.layer),
+    Layer.provideMerge(BunServices.layer),
+  )
+
 const fakeZmxFixture = fileURLToPath(new URL("fixtures/fake-zmx.ts", import.meta.url))
 
 /**
  * A real `atc serve` (from source) whose zmx executable is the fake-zmx
  * wrapper: the deterministic full-stack seam for black-box terminal tests.
- * Kill `proc` (and await `proc.exited`) when done.
+ * Kill `proc` (and await `proc.exited`) when done — or use
+ * `withFakeZmxServer`, which does it for you.
  */
 export const startFakeZmxServer = async (extraEnv: Record<string, string> = {}) => {
   const sandbox = makeFakeZmxSandbox()
@@ -86,6 +112,20 @@ export const startFakeZmxServer = async (extraEnv: Record<string, string> = {}) 
   const proc = spawnServe([process.execPath, "src/main.ts"], port, appServerRoot, env)
   await waitForHealth(`http://127.0.0.1:${port}`, proc)
   return { base: `http://127.0.0.1:${port}`, port, proc, sandbox, env }
+}
+
+/** Run `use` against a fake-zmx `atc serve`, always reaping the process. */
+export const withFakeZmxServer = async (
+  use: (server: Awaited<ReturnType<typeof startFakeZmxServer>>) => Promise<void>,
+  extraEnv: Record<string, string> = {},
+): Promise<void> => {
+  const server = await startFakeZmxServer(extraEnv)
+  try {
+    await use(server)
+  } finally {
+    server.proc.kill()
+    await server.proc.exited
+  }
 }
 
 /**
@@ -106,7 +146,7 @@ export const makeFakeZmxSandbox = (vars: Record<string, string> = {}) => {
     `#!/bin/sh\n${assignments} exec "${process.execPath}" "${fakeZmxFixture}" "$@"\n`,
   )
   fs.chmodSync(wrapper, 0o755)
-  return { base, stateDir, wrapper, socketDir: makeShortSocketDir() }
+  return { base, stateDir, wrapper }
 }
 
 /** Collect a byte stream into a text sink in the background (scoped). */

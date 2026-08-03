@@ -2,11 +2,11 @@ import { Effect, FileSystem, Layer, Schema, Stream } from "effect"
 import type { Duration } from "effect"
 import * as path from "node:path"
 import { AppConfig } from "./config.ts"
-import { Subprocess } from "./subprocess.ts"
+import { resolveExecutable as resolveExecutablePath, Subprocess } from "./subprocess.ts"
 import type { SubprocessError } from "./subprocess.ts"
 import { ZmxUnavailable } from "./api.ts"
 import {
-  SESSION_NAME_PREFIX,
+  LONGEST_SESSION_NAME,
   SessionNotFound,
   SessionOperationFailed,
   TerminalAdapter,
@@ -76,12 +76,10 @@ export const parseSessionList = (stdout: ReadonlyArray<string>): Array<SessionIn
     const name = fields.get("name")
     if (name === undefined || name === "") continue
     const pid = Number.parseInt(fields.get("pid") ?? "", 10)
-    const createdAt = Number.parseInt(fields.get("created") ?? "", 10)
     sessions.push({
       name,
       reachable: !fields.has("err"),
       ...(Number.isNaN(pid) ? {} : { pid }),
-      ...(Number.isNaN(createdAt) ? {} : { createdAt }),
     })
   }
   return sessions
@@ -122,7 +120,7 @@ export const layerWith = (options: ZmxOptions) =>
       const socketDir = config.terminalSocketDir
       // Socket paths must fit sun_path; validated at boot so a deep state
       // dir fails serve with one actionable line, not on every create.
-      const longestSocketPath = path.join(socketDir, `${SESSION_NAME_PREFIX}${"0".repeat(32)}`)
+      const longestSocketPath = path.join(socketDir, LONGEST_SESSION_NAME)
       if (Buffer.byteLength(longestSocketPath) > MAX_SOCKET_PATH_BYTES) {
         return yield* Effect.fail(
           new ZmxConfigError({
@@ -140,14 +138,13 @@ export const layerWith = (options: ZmxOptions) =>
 
       const childEnv = zmxChildEnv(socketDir)
 
-      // Explicit resolution, never implicit: a bare name resolves on PATH
-      // here so a missing install fails with one actionable diagnostic.
-      // Memoized on success — a resolved install does not move mid-run.
+      // Explicit resolution, never implicit (the shared resolveExecutable
+      // rule), memoized on success — a resolved install does not move mid-run.
       let resolvedExecutable: string | undefined
       const resolveExecutable = Effect.suspend(() => {
         if (resolvedExecutable !== undefined) return Effect.succeed(resolvedExecutable)
         const configured = config.zmxExecutable
-        const resolved = configured.includes("/") ? configured : Bun.which(configured)
+        const resolved = resolveExecutablePath(configured)
         if (resolved !== null) {
           resolvedExecutable = resolved
           return Effect.succeed(resolved)
@@ -206,15 +203,17 @@ export const layerWith = (options: ZmxOptions) =>
 
       /**
        * Up to `verifyPasses` complete inventory passes until `predicate`
-       * accepts one; resolves to whether it ever did.
+       * accepts one; resolves to the accepted inventory (so callers can read
+       * it without another `zmx list`), or undefined if none was accepted.
        */
       const pollInventory = (predicate: (sessions: ReadonlyArray<SessionInfo>) => boolean) =>
         Effect.gen(function* () {
           for (let pass = 0; pass < verifyPasses; pass++) {
             if (pass > 0) yield* Effect.sleep(pollInterval)
-            if (predicate(yield* listSessions())) return true
+            const sessions = yield* listSessions()
+            if (predicate(sessions)) return sessions
           }
-          return false
+          return undefined
         })
 
       const liveSession = (name: string) => (sessions: ReadonlyArray<SessionInfo>) =>
@@ -262,6 +261,8 @@ export const layerWith = (options: ZmxOptions) =>
                 args: ["attach", options.name, ...(options.command ?? [])],
                 cwd: options.cwd,
                 env: childEnv,
+                // The tail is the launch-failure diagnostic below.
+                captureOutputTail: true,
               })
               .pipe(Effect.catchTag("SubprocessError", (e) => Effect.fail(unavailable(e))))
             const settled = yield* Effect.raceFirst(
@@ -269,11 +270,11 @@ export const layerWith = (options: ZmxOptions) =>
               // A client that dies first (bad command, zmx error) ends the
               // wait early; the final check below stays the authority.
               child.exitCode.pipe(
-                Effect.as(false),
-                Effect.catchTag("SubprocessError", () => Effect.succeed(false)),
+                Effect.as(undefined),
+                Effect.catchTag("SubprocessError", () => Effect.succeed(undefined)),
               ),
             )
-            return { settled, tail: yield* child.outputTail }
+            return { settled: settled !== undefined, tail: yield* child.outputTail }
           }).pipe(Effect.scoped)
 
           if (client.settled) return
@@ -294,7 +295,7 @@ export const layerWith = (options: ZmxOptions) =>
           // proof. The inventory is the only authority.
           yield* runZmx(["kill", name])
           const gone = yield* pollInventory((sessions) => !sessions.some((s) => s.name === name))
-          if (!gone) {
+          if (gone === undefined) {
             return yield* Effect.fail(
               new SessionOperationFailed({
                 operation: "kill",
@@ -339,7 +340,7 @@ export const layerWith = (options: ZmxOptions) =>
           // session's identity — a changed pid means a resurrected phantom,
           // which is killed and reported as the original being gone.
           const settled = yield* pollInventory(liveSession(name))
-          const after = settled ? yield* findSession(name) : undefined
+          const after = settled?.find((s) => s.name === name)
           if (after === undefined || after.pid !== before.pid) {
             yield* runZmx(["kill", name]).pipe(Effect.ignore)
             return yield* Effect.fail(new SessionNotFound({ sessionName: name }))

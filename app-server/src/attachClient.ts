@@ -1,11 +1,12 @@
 import { Effect } from "effect"
+import { CLOSE_DETACH, decodeControlFrame, encodeControlFrame } from "./attachProtocol.ts"
 
 // The CLI side of `atc terminal attach` (ATC-130): a raw-terminal WebSocket
 // client bridging the local TTY onto the server's attach endpoint — the
-// e2e vehicle for the whole terminal transport. Binary frames are terminal
-// bytes both ways; text frames are the JSON control protocol (resize from
-// us, ping/pong keepalive from the server). Ctrl-] detaches locally
-// (the session keeps running server-side).
+// e2e vehicle for the whole terminal transport. The wire protocol lives in
+// attachProtocol.ts (binary frames are terminal bytes both ways; text
+// frames are JSON control: resize from us, ping/pong keepalive from the
+// server). Ctrl-] detaches locally (the session keeps running server-side).
 
 const DETACH_BYTE = 0x1d // Ctrl-]
 
@@ -36,18 +37,14 @@ export const runAttach = (url: URL): Effect.Effect<AttachResult, Error> =>
       stdin.off("data", onStdin)
       process.off("SIGWINCH", onResize)
       if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
-        socket.close(1000, "detach")
+        socket.close(1000, CLOSE_DETACH)
       }
     }
-    const succeed = (result: AttachResult) => {
-      const first = !done
+    /** Resolve exactly once, restoring the terminal first. */
+    const finish = (outcome: Effect.Effect<AttachResult, Error>) => {
+      if (done) return
       cleanup()
-      if (first) resume(Effect.succeed(result))
-    }
-    const fail = (error: Error) => {
-      const first = !done
-      cleanup()
-      if (first) resume(Effect.fail(error))
+      resume(outcome)
     }
 
     const onStdin = (chunk: Buffer) => {
@@ -56,13 +53,13 @@ export const runAttach = (url: URL): Effect.Effect<AttachResult, Error> =>
       if (payload.length > 0 && socket.readyState === WebSocket.OPEN) {
         socket.send(new Uint8Array(payload))
       }
-      if (detachAt !== -1) succeed({ code: 1000, reason: "detach" })
+      if (detachAt !== -1) finish(Effect.succeed({ code: 1000, reason: CLOSE_DETACH }))
     }
 
     const onResize = () => {
       if (socket.readyState === WebSocket.OPEN && process.stdout.isTTY === true) {
         socket.send(
-          JSON.stringify({
+          encodeControlFrame({
             type: "resize",
             cols: process.stdout.columns,
             rows: process.stdout.rows,
@@ -79,21 +76,18 @@ export const runAttach = (url: URL): Effect.Effect<AttachResult, Error> =>
     }
     socket.onmessage = (event) => {
       if (typeof event.data === "string") {
-        try {
-          const control = JSON.parse(event.data) as { type?: string }
-          if (control.type === "ping") socket.send(JSON.stringify({ type: "pong" }))
-        } catch {
-          // Unknown control frames are ignored.
+        if (decodeControlFrame(event.data)?.type === "ping") {
+          socket.send(encodeControlFrame({ type: "pong" }))
         }
         return
       }
       process.stdout.write(new Uint8Array(event.data as ArrayBuffer))
     }
     socket.onerror = () => {
-      fail(new Error(`cannot connect to ${url.host}; is the App Server running?`))
+      finish(Effect.fail(new Error(`cannot connect to ${url.host}; is the App Server running?`)))
     }
     socket.onclose = (event) => {
-      succeed({ code: event.code, reason: event.reason })
+      finish(Effect.succeed({ code: event.code, reason: event.reason }))
     }
 
     // Interruption (e.g. SIGINT through runMain): restore the terminal and

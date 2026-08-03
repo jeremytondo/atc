@@ -32,6 +32,8 @@ export interface FakeTerminalAdapter {
   readonly setCreateFails: (fails: boolean) => void
   /** Emit output bytes to every open connection of `name`. */
   readonly emitOutput: (name: string, data: Uint8Array) => void
+  /** Insert a session directly (no createSession), e.g. recovery seeding. */
+  readonly seed: (name: string, overrides?: Partial<Omit<FakeSession, "name">>) => FakeSession
 }
 
 export const makeFakeAdapter = (): FakeTerminalAdapter => {
@@ -159,6 +161,20 @@ export const makeFakeAdapter = (): FakeTerminalAdapter => {
     },
     emitOutput: (name, data) => {
       for (const queue of connections.get(name) ?? []) Queue.offerUnsafe(queue, data)
+    },
+    seed: (name, overrides) => {
+      const session: FakeSession = {
+        name,
+        cwd: "/",
+        command: undefined,
+        written: [],
+        lastResize: undefined,
+        reachable: true,
+        writeFails: false,
+        ...overrides,
+      }
+      sessions.set(name, session)
+      return session
     },
   }
 }

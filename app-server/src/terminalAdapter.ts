@@ -14,19 +14,14 @@ export const SESSION_NAME_PREFIX = "atc-"
 
 /**
  * The derived (never persisted) session name for a terminal id:
- * `atc-` + the UUID's 32 hex chars — reversible for debugging.
+ * `atc-` + the UUID's 32 hex chars — reversible for debugging (strip the
+ * prefix, re-insert the dashes).
  */
 export const sessionNameForTerminalId = (terminalId: string): string =>
   SESSION_NAME_PREFIX + terminalId.replaceAll("-", "").toLowerCase()
 
-/** Reverse of `sessionNameForTerminalId`; undefined for foreign names. */
-export const terminalIdForSessionName = (sessionName: string): string | undefined => {
-  const hex = sessionName.startsWith(SESSION_NAME_PREFIX)
-    ? sessionName.slice(SESSION_NAME_PREFIX.length)
-    : undefined
-  if (hex === undefined || !/^[0-9a-f]{32}$/.test(hex)) return undefined
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
-}
+/** The longest name the derivation produces — the socket-path length guard. */
+export const LONGEST_SESSION_NAME = sessionNameForTerminalId("00000000-0000-0000-0000-000000000000")
 
 /**
  * One entry of a complete session inventory. `reachable: false` marks a
@@ -38,8 +33,6 @@ export interface SessionInfo {
   readonly reachable: boolean
   /** Daemon pid — the session's identity across a name reuse. */
   readonly pid?: number
-  /** Creation time as reported by the multiplexer (epoch seconds). */
-  readonly createdAt?: number
 }
 
 export interface SessionSize {

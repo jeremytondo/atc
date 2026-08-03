@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Option } from "effect"
+import { Context, Effect, Layer } from "effect"
 import type { Scope } from "effect"
 import {
   ProjectNotFound,
@@ -33,8 +33,9 @@ export type Terminal = typeof TerminalSchema.Type
 //     Inventory unavailable ⇒ stored state untouched; operations requiring
 //     certainty fail with the retryable ZmxUnavailable.
 //   - Demand-driven: reconciliation runs at startup (during layer build,
-//     before the API can serve any request) and on list/read/attach — no
-//     background watcher.
+//     before the API can serve any request) and on list/read — attach
+//     reconciles through the bridge's pre-flight `get`, so `attach` itself
+//     is a bare pass-through. No background watcher.
 //   - `starting` rows are internal and owned by their in-flight create (or
 //     by startup recovery after a crash). Request-time reconciliation never
 //     touches them, which is why the startup pass and the request-time pass
@@ -49,15 +50,8 @@ export type Terminal = typeof TerminalSchema.Type
  * only be live or ended.
  */
 const toTerminal = (record: TerminalRecord): Terminal => ({
-  id: record.id,
-  projectId: record.projectId,
-  ...(record.name !== undefined ? { name: record.name } : {}),
-  ...(record.command !== undefined ? { command: record.command } : {}),
-  initialWorkingDirectory: record.initialWorkingDirectory,
+  ...record,
   status: record.status === "ended" ? "ended" : "live",
-  createdAt: record.createdAt,
-  updatedAt: record.updatedAt,
-  ...(record.endedAt !== undefined ? { endedAt: record.endedAt } : {}),
 })
 
 export class Terminals extends Context.Service<
@@ -78,7 +72,11 @@ export class Terminals extends Context.Service<
       | ZmxUnavailable
       | TerminalLaunchFailed
     >
-    readonly rename: (id: string, name: string) => Effect.Effect<Terminal, TerminalNotFound>
+    /** Patch mutable fields; an empty patch changes nothing, updatedAt included. */
+    readonly update: (
+      id: string,
+      patch: { readonly name?: string | undefined },
+    ) => Effect.Effect<Terminal, TerminalNotFound>
     /** Kill if present → verify absence → remove the record. */
     readonly delete: (id: string) => Effect.Effect<void, TerminalNotFound | ZmxUnavailable>
     /** Open a live attach connection onto the terminal's session. */
@@ -113,20 +111,45 @@ export const layer = Layer.effect(Terminals)(
       .pipe(Effect.map((sessions) => new Set(sessions.map((s) => s.name))))
 
     /**
-     * Tombstone every live row whose session a complete inventory omits.
-     * Rows are read first — see the header's authoritative-absence bullet.
+     * The one tombstoning step both reconciliation passes share: mark every
+     * live row whose session a complete inventory omits as ended (one batch
+     * statement) and return the records with the tombstones applied.
      */
-    const reconcile = Effect.gen(function* () {
-      const records = yield* repository.list()
-      const present = yield* presentSessionNames
-      for (const record of records) {
-        if (record.status === "live" && !present.has(sessionNameForTerminalId(record.id))) {
-          yield* repository.markEnded(record.id)
-        }
-      }
-    })
+    const tombstoneAbsent = (
+      records: ReadonlyArray<TerminalRecord>,
+      present: ReadonlySet<string>,
+    ): Effect.Effect<ReadonlyArray<TerminalRecord>> =>
+      Effect.gen(function* () {
+        const dead = new Set(
+          records
+            .filter((r) => r.status === "live" && !present.has(sessionNameForTerminalId(r.id)))
+            .map((r) => r.id),
+        )
+        if (dead.size === 0) return records
+        const endedAt = yield* repository.markEnded([...dead])
+        return records.map((record) =>
+          dead.has(record.id)
+            ? { ...record, status: "ended" as const, endedAt, updatedAt: endedAt }
+            : record,
+        )
+      })
 
-    const reconcileBestEffort = reconcile.pipe(Effect.catchTag("ZmxUnavailable", () => Effect.void))
+    /**
+     * Request-time pass: reconcile and return the post-reconcile records, so
+     * list/get never re-query what was just read. Rows are read first — see
+     * the header's authoritative-absence bullet. An unavailable inventory
+     * leaves stored state untouched and returns it as-is.
+     */
+    const reconciledRecords: Effect.Effect<ReadonlyArray<TerminalRecord>> = Effect.gen(
+      function* () {
+        const records = yield* repository.list()
+        const present = yield* presentSessionNames.pipe(
+          Effect.catchTag("ZmxUnavailable", () => Effect.succeed(undefined)),
+        )
+        if (present === undefined) return records
+        return yield* tombstoneAbsent(records, present)
+      },
+    )
 
     // Startup pass: additionally resolves crash-mid-create rows and cleans
     // orphans — safe only here, while no create can be in flight. Runs
@@ -137,13 +160,13 @@ export const layer = Layer.effect(Terminals)(
       const sessions = yield* adapter.listSessions()
       const present = new Set(sessions.map((s) => s.name))
       const reachable = new Set(sessions.filter((s) => s.reachable).map((s) => s.name))
+      yield* tombstoneAbsent(records, present)
       const claimed = new Set<string>()
       for (const record of records) {
         const sessionName = sessionNameForTerminalId(record.id)
         switch (record.status) {
           case "live":
-            if (!present.has(sessionName)) yield* repository.markEnded(record.id)
-            else claimed.add(sessionName)
+            if (present.has(sessionName)) claimed.add(sessionName)
             break
           case "starting":
             // Crash mid-create: adopt the session if it made it — only a
@@ -171,9 +194,12 @@ export const layer = Layer.effect(Terminals)(
       // Everything in ATC's private dir is provably ours: sessions no live
       // record claims (foreign names included) are orphans. Best-effort —
       // a kill that cannot be verified is logged and retried next startup.
-      for (const session of sessions) {
-        if (!claimed.has(session.name)) {
-          yield* adapter
+      // Kills are independent and mostly sleep in verification polling, so
+      // a bounded batch keeps a crash's worth of orphans off the boot time.
+      yield* Effect.forEach(
+        sessions.filter((session) => !claimed.has(session.name)),
+        (session) =>
+          adapter
             .killSession(session.name)
             .pipe(
               Effect.catch((error) =>
@@ -181,9 +207,9 @@ export const layer = Layer.effect(Terminals)(
                   Effect.annotateLogs({ session: session.name, reason: error.message }),
                 ),
               ),
-            )
-        }
-      }
+            ),
+        { concurrency: 4, discard: true },
+      )
     })
 
     yield* reconcileAtStartup.pipe(
@@ -194,17 +220,12 @@ export const layer = Layer.effect(Terminals)(
       ),
     )
 
+    // starting rows belong to their in-flight create, so they are invisible.
     const requireRecord = (id: string) =>
-      repository.get(id).pipe(
-        Effect.flatMap((found) =>
-          Option.match(found, {
-            // starting rows belong to their in-flight create.
-            onNone: () => Effect.fail(new TerminalNotFound({ terminalId: id })),
-            onSome: (record) =>
-              record.status === "starting"
-                ? Effect.fail(new TerminalNotFound({ terminalId: id }))
-                : Effect.succeed(record),
-          }),
+      repository.require(id).pipe(
+        Effect.filterOrFail(
+          (record) => record.status !== "starting",
+          () => new TerminalNotFound({ terminalId: id }),
         ),
       )
 
@@ -235,7 +256,7 @@ export const layer = Layer.effect(Terminals)(
             Effect.catchTag("SessionOperationFailed", (error) =>
               Effect.fail(new TerminalLaunchFailed({ reason: error.reason })),
             ),
-            Effect.andThen(Effect.suspend(() => repository.markLive(record.id))),
+            Effect.andThen(repository.markLive(record.id)),
             Effect.onExit((exit) => (exit._tag === "Failure" ? cleanup : Effect.void)),
           )
         return toTerminal(live)
@@ -259,24 +280,43 @@ export const layer = Layer.effect(Terminals)(
 
     return {
       list: (projectId) =>
-        reconcileBestEffort.pipe(
-          Effect.andThen(repository.list(projectId)),
+        reconciledRecords.pipe(
           Effect.map((records) =>
-            records.filter((record) => record.status !== "starting").map(toTerminal),
+            records
+              .filter(
+                (record) =>
+                  record.status !== "starting" &&
+                  (projectId === undefined || record.projectId === projectId),
+              )
+              .map(toTerminal),
           ),
         ),
       get: (id) =>
-        reconcileBestEffort.pipe(Effect.andThen(requireRecord(id)), Effect.map(toTerminal)),
+        reconciledRecords.pipe(
+          Effect.flatMap((records) => {
+            const record = records.find((r) => r.id === id)
+            return record === undefined || record.status === "starting"
+              ? Effect.fail(new TerminalNotFound({ terminalId: id }))
+              : Effect.succeed(toTerminal(record))
+          }),
+        ),
       create,
-      rename: (id, name) =>
-        requireRecord(id).pipe(Effect.andThen(repository.rename(id, name)), Effect.map(toTerminal)),
+      update: (id, patch) =>
+        // An empty patch changes nothing — including updatedAt (the same
+        // rule ProjectRepository.update applies).
+        patch.name === undefined
+          ? requireRecord(id).pipe(Effect.map(toTerminal))
+          : requireRecord(id).pipe(
+              Effect.andThen(repository.rename(id, patch.name)),
+              Effect.map(toTerminal),
+            ),
       delete: del,
       attach: (id, size) => adapter.attachSession(sessionNameForTerminalId(id), size),
       confirmEnded: (id) =>
         Effect.gen(function* () {
           const present = yield* presentSessionNames
           if (present.has(sessionNameForTerminalId(id))) return false
-          yield* repository.markEnded(id)
+          yield* repository.markEnded([id])
           return true
         }),
       countForProject: (projectId) => repository.countForProject(projectId),

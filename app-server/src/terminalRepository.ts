@@ -1,5 +1,6 @@
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import { SqlClient, SqlSchema } from "effect/unstable/sql"
+import { TerminalNotFound } from "./api.ts"
 
 // The Terminals repository (ATC-130): the only module that speaks SQL for
 // terminals. Row types stay here — the service and handlers see camelCase
@@ -58,17 +59,21 @@ export class TerminalRepository extends Context.Service<
     /** All records (every status), newest first; optionally one project's. */
     readonly list: (projectId?: string) => Effect.Effect<ReadonlyArray<TerminalRecord>>
     readonly get: (id: string) => Effect.Effect<Option.Option<TerminalRecord>>
+    readonly require: (id: string) => Effect.Effect<TerminalRecord, TerminalNotFound>
     /**
      * `starting` → `live`. Callers hold the record; a vanished row is a
      * defect, like every other database failure.
      */
     readonly markLive: (id: string) => Effect.Effect<TerminalRecord>
-    /** Tombstone: `ended` with `endedAt`; idempotent for already-ended. */
-    readonly markEnded: (id: string) => Effect.Effect<void>
+    /**
+     * Tombstone in one statement: `ended` with `endedAt`; idempotent for
+     * already-ended rows. Returns the `endedAt` stamp it wrote so callers
+     * can apply the same tombstone to records already in hand.
+     */
+    readonly markEnded: (ids: ReadonlyArray<string>) => Effect.Effect<string>
     /** Update the display label; callers hold the record (see markLive). */
     readonly rename: (id: string, name: string) => Effect.Effect<TerminalRecord>
-    /** `false` if no such terminal existed. */
-    readonly delete: (id: string) => Effect.Effect<boolean>
+    readonly delete: (id: string) => Effect.Effect<void>
     readonly countForProject: (projectId: string) => Effect.Effect<number>
   }
 >()("app-server/TerminalRepository") {}
@@ -112,13 +117,13 @@ export const layer = Layer.effect(TerminalRepository)(
     // Idempotent tombstoning: the first observation of death wins, so a
     // re-reconcile never rewrites endedAt.
     const markEndedRows = SqlSchema.void({
-      Request: Schema.Struct({ id: Schema.String, ended_at: Schema.String }),
+      Request: Schema.Struct({ ids: Schema.Array(Schema.String), ended_at: Schema.String }),
       execute: (patch) => sql`
         UPDATE terminals SET
           status = 'ended',
           ended_at = COALESCE(ended_at, ${patch.ended_at}),
           updated_at = CASE WHEN status = 'ended' THEN updated_at ELSE ${patch.ended_at} END
-        WHERE id = ${patch.id}
+        WHERE ${sql.in("id", patch.ids)}
       `,
     })
 
@@ -132,10 +137,9 @@ export const layer = Layer.effect(TerminalRepository)(
       `,
     })
 
-    const deleteRows = SqlSchema.findAll({
+    const deleteRows = SqlSchema.void({
       Request: Schema.String,
-      Result: Schema.Struct({ id: Schema.String }),
-      execute: (id) => sql`DELETE FROM terminals WHERE id = ${id} RETURNING id`,
+      execute: (id) => sql`DELETE FROM terminals WHERE id = ${id}`,
     })
 
     const countRows = SqlSchema.findAll({
@@ -154,45 +158,59 @@ export const layer = Layer.effect(TerminalRepository)(
         ? Effect.succeed(toRecord(rows[0]))
         : Effect.die(new Error(`${what}: terminal row vanished mid-update`))
 
+    const get = (id: string) => getRows(id).pipe(Effect.map(firstRecord), Effect.orDie)
+
+    // Timestamps (and the generated id) are captured inside Effect.suspend so
+    // an effect built early and run later stamps the run time, not the build
+    // time.
     return {
-      create: (input) => {
-        const now = new Date().toISOString()
-        const row: typeof TerminalRow.Type = {
-          id: Bun.randomUUIDv7(),
-          project_id: input.projectId,
-          name: input.name ?? null,
-          command: input.command !== undefined ? JSON.stringify(input.command) : null,
-          initial_working_directory: input.initialWorkingDirectory,
-          status: "starting",
-          created_at: now,
-          updated_at: now,
-          ended_at: null,
-        }
-        return insertRow(row).pipe(Effect.as(toRecord(row)), Effect.orDie)
-      },
+      create: (input) =>
+        Effect.suspend(() => {
+          const now = new Date().toISOString()
+          const row: typeof TerminalRow.Type = {
+            id: Bun.randomUUIDv7(),
+            project_id: input.projectId,
+            name: input.name ?? null,
+            command: input.command !== undefined ? JSON.stringify(input.command) : null,
+            initial_working_directory: input.initialWorkingDirectory,
+            status: "starting",
+            created_at: now,
+            updated_at: now,
+            ended_at: null,
+          }
+          return insertRow(row).pipe(Effect.as(toRecord(row)))
+        }).pipe(Effect.orDie),
       list: (projectId) =>
         listRows(projectId ?? null).pipe(
           Effect.map((rows) => rows.map(toRecord)),
           Effect.orDie,
         ),
-      get: (id) => getRows(id).pipe(Effect.map(firstRecord), Effect.orDie),
+      get,
+      require: (id) =>
+        get(id).pipe(
+          Effect.flatMap(
+            Option.match({
+              onNone: () => Effect.fail(new TerminalNotFound({ terminalId: id })),
+              onSome: Effect.succeed,
+            }),
+          ),
+        ),
       markLive: (id) =>
-        markLiveRows({ id, updated_at: new Date().toISOString() }).pipe(
+        Effect.suspend(() => markLiveRows({ id, updated_at: new Date().toISOString() })).pipe(
           Effect.orDie,
           Effect.flatMap(requireFirst("markLive")),
         ),
-      markEnded: (id) =>
-        markEndedRows({ id, ended_at: new Date().toISOString() }).pipe(Effect.orDie),
+      markEnded: (ids) =>
+        Effect.suspend(() => {
+          const endedAt = new Date().toISOString()
+          return markEndedRows({ ids, ended_at: endedAt }).pipe(Effect.as(endedAt))
+        }).pipe(Effect.orDie),
       rename: (id, name) =>
-        renameRows({ id, name, updated_at: new Date().toISOString() }).pipe(
+        Effect.suspend(() => renameRows({ id, name, updated_at: new Date().toISOString() })).pipe(
           Effect.orDie,
           Effect.flatMap(requireFirst("rename")),
         ),
-      delete: (id) =>
-        deleteRows(id).pipe(
-          Effect.map((rows) => rows.length > 0),
-          Effect.orDie,
-        ),
+      delete: (id) => deleteRows(id).pipe(Effect.orDie),
       countForProject: (projectId) =>
         countRows(projectId).pipe(
           Effect.map((rows) => rows[0]?.n ?? 0),

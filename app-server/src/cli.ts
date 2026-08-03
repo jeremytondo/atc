@@ -5,6 +5,7 @@ import { Argument, Command, Flag } from "effect/unstable/cli"
 import type { HttpClient } from "effect/unstable/http"
 import * as path from "node:path"
 import * as AttachClient from "./attachClient.ts"
+import { attachUrl, CLOSE_DETACH } from "./attachProtocol.ts"
 import * as Client from "./client.ts"
 import { AppConfig, ConfigLoadError, layer as appConfigLayer } from "./config.ts"
 import * as Directories from "./directories.ts"
@@ -119,6 +120,27 @@ const withCliContext = <E>(
   )
 
 /**
+ * The one place a server connection is constructed: settled configuration,
+ * base URL, contract-derived client, and the `withCliContext` diagnostic.
+ * Remote endpoint addressing lands here, not in the commands.
+ */
+const withClient = <E>(
+  diagnosticName: string,
+  use: (
+    client: Client.AppServerClient,
+    baseUrl: URL,
+  ) => Effect.Effect<void, E, HttpClient.HttpClient>,
+) =>
+  withCliContext(
+    diagnosticName,
+    Effect.gen(function* () {
+      const baseUrl = yield* resolveBaseUrl
+      const client = yield* Client.make({ baseUrl })
+      yield* use(client, baseUrl)
+    }),
+  )
+
+/**
  * A CLI command backed by the contract-derived client: JSON result on
  * stdout, exit 0. `diagnosticName` is the full command path ("terminal
  * list"); the subcommand name is its last word, so the two can't drift.
@@ -133,11 +155,8 @@ const clientCommand = <Params extends Command.Command.Config, A>(
   ) => Effect.Effect<A, unknown>,
 ) =>
   Command.make(diagnosticName.split(" ").at(-1)!, params, (parsed) =>
-    withCliContext(
-      diagnosticName,
+    withClient(diagnosticName, (client) =>
       Effect.gen(function* () {
-        const baseUrl = yield* resolveBaseUrl
-        const client = yield* Client.make({ baseUrl })
         const result = yield* call(client, parsed)
         // Void results (e.g. delete) print nothing — stdout stays pure JSON.
         if (result !== undefined) {
@@ -164,11 +183,15 @@ const version = clientCommand(
 // Directory arguments may be relative (e.g. "."): the CLI shares a filesystem
 // with the local server, so they resolve against the caller's cwd before the
 // API sees them. The API itself takes server-host absolute paths only.
-const directoryFlag = Flag.string("directory").pipe(
-  Flag.withDescription("Project default working directory (must already exist; may be relative)"),
-)
+const directoryFlag = (description: string) =>
+  Flag.string("directory").pipe(Flag.withDescription(description))
 
-const nameFlag = Flag.string("name").pipe(Flag.withDescription("Project name"))
+const nameFlag = (description: string) =>
+  Flag.string("name").pipe(Flag.withDescription(description))
+
+const projectDirectoryFlag = directoryFlag(
+  "Project default working directory (must already exist; may be relative)",
+)
 
 const projectIdArgument = Argument.string("project-id")
 
@@ -186,7 +209,7 @@ const projectGet = clientCommand(
 const projectCreate = clientCommand(
   "project create",
   "Create a project (the directory must already exist; ATC never creates it)",
-  { name: nameFlag, directory: directoryFlag },
+  { name: nameFlag("Project name"), directory: projectDirectoryFlag },
   (client, { name, directory }) =>
     client.v1.createProject({
       payload: { name, defaultWorkingDirectory: path.resolve(directory) },
@@ -198,8 +221,8 @@ const projectUpdate = clientCommand(
   "Update a project's name and/or default working directory",
   {
     projectId: projectIdArgument,
-    name: Flag.optional(nameFlag),
-    directory: Flag.optional(directoryFlag),
+    name: Flag.optional(nameFlag("Project name")),
+    directory: Flag.optional(projectDirectoryFlag),
   },
   (client, { projectId, name, directory }) =>
     client.v1.updateProject({
@@ -263,13 +286,9 @@ const terminalCreate = clientCommand(
   "Create a terminal and start its zmx session (an interactive shell, or the given command argv)",
   {
     project: projectFlag,
-    name: Flag.optional(Flag.string("name").pipe(Flag.withDescription("Display label"))),
+    name: Flag.optional(nameFlag("Display label")),
     directory: Flag.optional(
-      Flag.string("directory").pipe(
-        Flag.withDescription(
-          "Working directory (may be relative; defaults to the project's default)",
-        ),
-      ),
+      directoryFlag("Working directory (may be relative; defaults to the project's default)"),
     ),
     command: Argument.string("command").pipe(
       Argument.atLeast(0),
@@ -290,7 +309,7 @@ const terminalCreate = clientCommand(
 const terminalRename = clientCommand(
   "terminal rename",
   "Update a terminal's display label",
-  { terminalId: terminalIdArgument, name: Flag.string("name") },
+  { terminalId: terminalIdArgument, name: nameFlag("New display label") },
   (client, { terminalId, name }) =>
     client.v1.updateTerminal({ params: { terminalId }, payload: { name } }),
 )
@@ -309,27 +328,22 @@ const terminalAttach = Command.make(
   "attach",
   { terminalId: terminalIdArgument },
   ({ terminalId }) =>
-    withCliContext(
-      "terminal attach",
+    withClient("terminal attach", (client, baseUrl) =>
       Effect.gen(function* () {
-        const baseUrl = yield* resolveBaseUrl
         // Pre-flight over the typed API: the WebSocket handshake cannot carry
         // the contract's diagnostics (a browser-style client only sees
         // "connection failed"), so unknown or ended terminals are reported
         // here, with the real error, before any socket opens.
-        const client = yield* Client.make({ baseUrl })
         const terminal = yield* client.v1.getTerminal({ params: { terminalId } })
         if (terminal.status === "ended") {
           return yield* Effect.fail(new Error(`terminal ${terminalId} has ended`))
         }
-        const url = new URL(`/api/v1/terminals/${encodeURIComponent(terminalId)}/attach`, baseUrl)
-        url.protocol = "ws:"
-        if (process.stdout.isTTY === true) {
-          url.searchParams.set("cols", String(process.stdout.columns))
-          url.searchParams.set("rows", String(process.stdout.rows))
-        }
-        const result = yield* AttachClient.runAttach(url)
-        if (result.code === 1000 && result.reason === "detach") {
+        const size =
+          process.stdout.isTTY === true
+            ? { cols: process.stdout.columns, rows: process.stdout.rows }
+            : undefined
+        const result = yield* AttachClient.runAttach(attachUrl(baseUrl, terminalId, size))
+        if (result.code === 1000 && result.reason === CLOSE_DETACH) {
           yield* Console.error("detached (session keeps running)")
         } else if (result.code === 1000) {
           yield* Console.error("terminal ended")

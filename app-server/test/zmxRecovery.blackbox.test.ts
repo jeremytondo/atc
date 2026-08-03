@@ -7,7 +7,8 @@ import {
   compiledBinaryPath,
   freePort,
   isolatedEnv,
-  postJson,
+  makeTerminal,
+  openSocket,
   spawnServe,
   waitForHealth,
   waitUntil,
@@ -45,11 +46,7 @@ describe.skipIf(!enabled)("terminal restart recovery (compiled, real zmx)", () =
     let server = spawnServe([compiledBinaryPath], port, scratch, env)
     try {
       await waitForHealth(base, server)
-      const project = await postJson(base, "/api/v1/projects", {
-        name: "Recovery",
-        defaultWorkingDirectory: "/tmp",
-      })
-      const terminal = await postJson(base, "/api/v1/terminals", { projectId: project["id"] })
+      const terminal = await makeTerminal(base)
       const sessionName = sessionNameForTerminalId(terminal["id"] ?? "")
       expect(zmxList(socketDir)).toContain(sessionName)
 
@@ -77,28 +74,13 @@ describe.skipIf(!enabled)("terminal restart recovery (compiled, real zmx)", () =
       expect(zmxList(socketDir)).toContain(sessionName)
 
       // The transport works against the recovered session.
-      const marker = await new Promise<string>((resolve, reject) => {
-        const ws = new WebSocket(`ws://127.0.0.1:${port}/api/v1/terminals/${terminal["id"]}/attach`)
-        ws.binaryType = "arraybuffer"
-        const decoder = new TextDecoder()
-        let seen = ""
-        const timer = setTimeout(() => reject(new Error(`no marker; saw ${seen}`)), 15_000)
-        ws.onopen = () => ws.send(new TextEncoder().encode("printf 'MARKER-%s\\n' recovered\n"))
-        ws.onmessage = (event) => {
-          if (typeof event.data === "string") return
-          seen += decoder.decode(event.data as ArrayBuffer)
-          if (seen.includes("MARKER-recovered")) {
-            clearTimeout(timer)
-            ws.close()
-            resolve(seen)
-          }
-        }
-        ws.onerror = () => {
-          clearTimeout(timer)
-          reject(new Error("websocket error"))
-        }
-      })
-      expect(marker).toContain("MARKER-recovered")
+      const ws = await openSocket(
+        `ws://127.0.0.1:${port}/api/v1/terminals/${terminal["id"]}/attach`,
+      )
+      ws.socket.send(new TextEncoder().encode("printf 'MARKER-%s\\n' recovered\n"))
+      // 600 × 25ms — a real login shell can be slow to come up.
+      await waitUntil(() => ws.received.join("").includes("MARKER-recovered"), "marker", 600)
+      ws.socket.close()
 
       // Delete kills the real session and verifies absence.
       const deleted = await fetch(`${base}/api/v1/terminals/${terminal["id"]}`, {
@@ -110,12 +92,10 @@ describe.skipIf(!enabled)("terminal restart recovery (compiled, real zmx)", () =
       server.kill()
       await server.exited
       // Best-effort: no zmx daemons may outlive the test.
-      for (const line of zmxList(join(env.XDG_STATE_HOME, "atc", "terminals")).split("\n")) {
+      for (const line of zmxList(socketDir).split("\n")) {
         const name = /name=(\S+)/.exec(line)?.[1]
         if (name !== undefined) {
-          Bun.spawnSync(["zmx", "kill", name], {
-            env: { ...process.env, ZMX_DIR: join(env.XDG_STATE_HOME, "atc", "terminals") },
-          })
+          Bun.spawnSync(["zmx", "kill", name], { env: { ...process.env, ZMX_DIR: socketDir } })
         }
       }
     }

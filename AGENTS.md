@@ -268,8 +268,10 @@ bytes; policy and transports live above it.
 - The WebSocket attach endpoint is contract-declared (`attachTerminal`)
   and marked `OpenApi.Exclude`, so it never enters the serialized OpenAPI
   document (REST clients and the Swift generator cannot represent it). Wire protocol
-  and close vocabulary live in the contract description and
-  `src/terminalAttach.ts`: binary frames are bytes, text frames are JSON
+  and close vocabulary have one code home, `src/attachProtocol.ts` (Schema-typed
+  control frames, close reasons, the attach URL builder), consumed by both the
+  server bridge (`src/terminalAttach.ts`) and the CLI client and documented in
+  prose on the contract endpoint: binary frames are bytes, text frames are JSON
   control (`resize`, `ping`/`pong`), close 1000 `terminal_ended` is
   authoritative, 1011 reasons are retryable. Attach bridges are forked into
   the handler layer's scope — Bun aborts the upgraded request's fiber — and

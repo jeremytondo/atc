@@ -1,16 +1,13 @@
 import { assert, describe, it } from "@effect/vitest"
-import { Effect, Layer, Option } from "effect"
+import { Effect, Option } from "effect"
 import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll } from "vitest"
-import * as Directories from "../src/directories.ts"
-import * as Persistence from "../src/persistence.ts"
 import * as ProjectRepository from "../src/projectRepository.ts"
 import { sessionNameForTerminalId } from "../src/terminalAdapter.ts"
 import * as TerminalRepository from "../src/terminalRepository.ts"
 import * as Terminals from "../src/terminals.ts"
-import { makeFakeAdapter } from "./fakeTerminalAdapter.ts"
 import { makeTestServiceLayers } from "./testLayers.ts"
 
 // The Terminals domain service under the ATC-122 reconciliation invariants,
@@ -145,16 +142,18 @@ describe("Terminals service", () => {
     }).pipe(Effect.provide(layer))
   })
 
-  it.effect("rename updates the label and nothing else", () => {
+  it.effect("update renames the label; an empty patch changes nothing", () => {
     const { layer } = makeTestServiceLayers()
     return Effect.gen(function* () {
       const project = yield* makeProject
       const terminals = yield* Terminals.Terminals
       const created = yield* terminals.create({ projectId: project.id })
-      const renamed = yield* terminals.rename(created.id, "logs")
+      const renamed = yield* terminals.update(created.id, { name: "logs" })
       assert.strictEqual(renamed.name, "logs")
       assert.strictEqual(renamed.status, "live")
-      const missing = yield* Effect.flip(terminals.rename("nope", "x"))
+      // An empty patch is a no-op read: same record, same updatedAt.
+      assert.deepStrictEqual(yield* terminals.update(created.id, {}), renamed)
+      const missing = yield* Effect.flip(terminals.update("nope", { name: "x" }))
       assert.strictEqual(missing._tag, "TerminalNotFound")
     }).pipe(Effect.provide(layer))
   })
@@ -211,27 +210,11 @@ describe("Terminals service", () => {
 
 describe("Terminals startup reconciliation", () => {
   it.effect("resolves live, starting, and orphan sessions before serving", () => {
-    const fake = makeFakeAdapter()
     // A file-backed database so the seeding phase and the Terminals build
     // (whose layer runs the startup pass) see the same rows across two
     // separate provides.
-    const services = Layer.mergeAll(
-      Layer.mergeAll(ProjectRepository.layer, TerminalRepository.layer).pipe(
-        Layer.provide(Persistence.layerFile(join(scratch, "startup.db"))),
-      ),
-      Directories.layer,
-      fake.layer,
-    )
-    const fakeSession = (name: string) =>
-      fake.sessions.set(name, {
-        name,
-        cwd: scratch,
-        command: undefined,
-        written: [],
-        lastResize: undefined,
-        reachable: true,
-        writeFails: false,
-      })
+    const { fake, services, layer } = makeTestServiceLayers(join(scratch, "startup.db"))
+    const fakeSession = (name: string) => fake.seed(name, { cwd: scratch })
 
     // Phase 1 — seed the world a crash would leave behind.
     const seeded = Effect.gen(function* () {
@@ -278,9 +261,7 @@ describe("Terminals startup reconciliation", () => {
           const wedgedRow = yield* repo.get(wedged.id)
           assert.strictEqual(Option.getOrUndefined(wedgedRow)?.status, "starting")
           assert.isTrue(fake.sessions.has(sessionNameForTerminalId(wedged.id)))
-        }).pipe(
-          Effect.provide(Layer.mergeAll(services, Terminals.layer.pipe(Layer.provide(services)))),
-        ),
+        }).pipe(Effect.provide(layer)),
       ),
     )
   })

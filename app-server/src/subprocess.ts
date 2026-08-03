@@ -54,6 +54,13 @@ export interface PtySpawnSpec extends SpawnSpec {
   /** Initial pseudo-terminal size. */
   readonly cols?: number
   readonly rows?: number
+  /**
+   * Capture a decoded tail of recent output for failure diagnostics
+   * (`PtyChild.outputTail`). Off by default: the tail costs a decode pass
+   * and string churn on every output chunk, which long-lived attach clients
+   * must not pay.
+   */
+  readonly captureOutputTail?: boolean
 }
 
 /** Default PTY size when the caller has no client-provided dimensions yet. */
@@ -86,7 +93,7 @@ export interface PtyChild {
    * buffer fills.
    */
   readonly output: Stream.Stream<Uint8Array, SubprocessError>
-  /** Snapshot of recent decoded output, for failure diagnostics. */
+  /** Snapshot of recent decoded output; empty unless `captureOutputTail`. */
   readonly outputTail: Effect.Effect<string>
   /** Write raw bytes to the PTY — the child sees them as terminal input. */
   readonly write: (data: Uint8Array | string) => Effect.Effect<void, SubprocessError>
@@ -111,6 +118,16 @@ export class Subprocess extends Context.Service<
     readonly spawnPty: (spec: PtySpawnSpec) => Effect.Effect<PtyChild, SubprocessError, Scope.Scope>
   }
 >()("app-server/Subprocess") {}
+
+/**
+ * The one explicit-resolution rule for user-installed executables (zmx,
+ * provider CLIs): a configured value containing a slash is used verbatim
+ * (config validation already rejects relative paths), a bare name resolves
+ * on PATH. Returns null when nothing resolves — the caller owns the one
+ * actionable "install it or set <setting>" diagnostic.
+ */
+export const resolveExecutable = (configured: string): string | null =>
+  configured.includes("/") ? configured : Bun.which(configured)
 
 /** True while `pid` refers to a live (or not yet reaped) process. */
 export const isProcessAlive = (pid: number): boolean => {
@@ -259,7 +276,8 @@ const spawnPty = Effect.fnUntraced(function* (spec: PtySpawnSpec) {
     capacity: PTY_OUTPUT_QUEUE_CAPACITY,
     strategy: "sliding",
   })
-  const decoder = new TextDecoder("utf-8", { fatal: false })
+  const decoder =
+    spec.captureOutputTail === true ? new TextDecoder("utf-8", { fatal: false }) : null
   let outputTail = ""
   // Closure is tracked explicitly because Bun's terminal.write can keep
   // reporting full byte counts briefly after the child exits (observed on
@@ -281,10 +299,12 @@ const spawnPty = Effect.fnUntraced(function* (spec: PtySpawnSpec) {
             rows: spec.rows ?? DEFAULT_PTY_ROWS,
             // Bun may reuse the buffer between callbacks; copy before queueing.
             data: (_terminal, data) => {
-              Queue.offerUnsafe(output, Uint8Array.from(data))
-              outputTail = (outputTail + decoder.decode(data, { stream: true })).slice(
-                -PTY_OUTPUT_TAIL_LENGTH,
-              )
+              Queue.offerUnsafe(output, data.slice())
+              if (decoder !== null) {
+                outputTail = (outputTail + decoder.decode(data, { stream: true })).slice(
+                  -PTY_OUTPUT_TAIL_LENGTH,
+                )
+              }
             },
             exit: () => {
               markClosed()
