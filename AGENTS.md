@@ -6,9 +6,7 @@ Effect + Bun) is the active implementation; `server/` is the legacy Go server
 still being migrated away from.
 
 This file holds what you cannot learn by reading the code: priorities, taste,
-protocol, and the invariants that are invisible from the call site. Subsystem
-architecture is documented in module header comments — read those, and keep
-them current instead of restating them here.
+protocol, and the invariants that are invisible from the call site.
 
 ## Core Priorities
 
@@ -35,6 +33,27 @@ adding local logic to solve a problem.
   developers coming into the project.
 - Developer ergonomics is important. It should be easy for developers to work
   with and test the codebase.
+
+## Documentation
+
+Documentation defaults to the code. A module's header comment records its
+responsibility and invariants; for most changes that is the only documentation
+edit needed. Shipping a feature is not a reason to describe it here.
+
+This file and the READMEs were rewritten once already because each feature
+appended its own section until both had drifted out of date. Do not restart
+that:
+
+- **No per-feature or per-subsystem sections in this file.** Before adding a
+  line, apply the test: would an agent do the wrong thing without it, *even
+  after reading the relevant code*? Only three kinds of thing pass — facts not
+  in the repo, invariants invisible from the call site, and taste. Anything
+  describing what the system *is* belongs in a module header.
+- **READMEs cover how to run a thing, where its data lives, and which task to
+  reach for.** Never enumerate routes, files, or CLI commands; point at
+  `openapi.json`, module headers, and `--help`, which cannot go stale.
+- Prefer editing an existing line over adding one. If this file grows past
+  ~250 lines, something crept in that belongs next to the code.
 
 ## Surfaces
 
