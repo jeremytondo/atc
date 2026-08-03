@@ -38,8 +38,10 @@ CMUX (https://github.com/manaflow-ai/cmux): Agentic coding focused terminal base
 ## Reference Source Checkouts
 
 `mise run refs` shallow-clones read-only reference source into `repos/` (gitignored):
-the Effect monorepo pinned to the app-server's Effect version, plus T3Code and
-OpenCode (https://github.com/sst/opencode) as Effect architecture references.
+the Effect monorepo pinned to the app-server's Effect version, T3Code and
+OpenCode (https://github.com/sst/opencode) as Effect architecture references, and
+zmx (https://github.com/neurosnap/zmx) pinned to the installed zmx version as the
+terminal-multiplexer behavior reference.
 
 - Treat everything under `repos/` as read-only reference material. Never import
   from it, edit it, or copy files out of it wholesale.
@@ -209,7 +211,9 @@ then.
 - All child processes go through the `Subprocess` service
   (`src/subprocess.ts`): scoped acquisition (scope close terminates the child,
   SIGTERM escalating to SIGKILL), bounded stderr diagnostics, explicit
-  environment. No ad-hoc `Bun.spawn` in server code.
+  environment. No ad-hoc `Bun.spawn` in server code. The PTY variant
+  (`spawnPty`, Bun native `terminal:`) carries the same scope guarantees and
+  is the only sanctioned pseudo-terminal path.
 - atc ships no provider binaries: the user installs and authenticates the
   Codex CLI and Claude Code themselves. Provider executables resolve
   explicitly, never implicitly: env override first (`ATC_CODEX_EXECUTABLE` /
@@ -222,6 +226,33 @@ then.
 - After upgrading Bun, Effect, or the Claude Agent SDK, rerun
   `mise run -C app-server test:compiled` and the opt-in live
   `mise run -C app-server test:smoke` suite.
+
+## Terminals and zmx (App Server)
+
+Terminals are backed by the user-installed zmx multiplexer (never bundled),
+reached exclusively through the narrow `TerminalAdapter` seam
+(`src/terminalAdapter.ts`; zmx implementation `src/zmxAdapter.ts`; in-memory
+fake `test/fakeTerminalAdapter.ts`). The seam speaks derived session names
+(`atc-` + the terminal id's 32 hex chars — never persisted) and terminal
+bytes; policy and transports live above it.
+
+- The executable resolves explicitly: `ATC_ZMX_EXECUTABLE` / config
+  `zmxExecutable`, else `zmx` on PATH; a missing install is one actionable
+  diagnostic (`ZmxUnavailable`), never a crash.
+- Every zmx child runs with ATC's private socket directory
+  (`<stateDir>/terminals` as `ZMX_DIR`) and a scrubbed environment:
+  `ZMX_SESSION` and `ZMX_SESSION_PREFIX` are always cleared (nested-client
+  trap; silent name rewriting). Socket-path length (103-byte unix cap) is
+  validated at adapter boot. Debug the same inventory with
+  `ZMX_DIR=~/.local/state/atc/terminals zmx list`.
+- The zmx behavioral guards the adapter encodes (attach auto-creates, exit
+  codes prove nothing, kill returns before death, only a reachable inventory
+  entry proves a live session) are documented where they are enforced — the
+  header of `src/zmxAdapter.ts`, derived from the pinned source in
+  `repos/zmx`.
+- Coverage: deterministic tests drive the adapter against the
+  `test/fixtures/fake-zmx.ts` stand-in; `mise run -C app-server test:zmx`
+  opts into smoke tests against the real installed zmx.
 
 ## Code Style
 

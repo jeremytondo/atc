@@ -14,7 +14,8 @@ import { DEFAULT_PORT } from "./api.ts"
 //
 //   config  $XDG_CONFIG_HOME/atc/config.toml  (~/.config/atc/config.toml)
 //   data    $XDG_DATA_HOME/atc                (~/.local/share/atc)  -> atc.db
-//   state   $XDG_STATE_HOME/atc               (~/.local/state/atc)  -> atc.log
+//   state   $XDG_STATE_HOME/atc               (~/.local/state/atc)  -> atc.log,
+//                                             terminals/ (zmx sockets)
 //
 // ATC_CONFIG overrides the config file path; ATC_DATA_DIR the data directory.
 // The TOML format never leaks past this module.
@@ -50,6 +51,14 @@ export class AppConfig extends Context.Service<
     readonly dbFile: string
     /** Structured JSON log file path. */
     readonly logFile: string
+    /** zmx executable: an absolute path, or a name resolved on PATH. */
+    readonly zmxExecutable: string
+    /**
+     * ATC-private zmx socket directory (ZMX_DIR for every zmx child). Only
+     * ATC-owned sessions live here, so the inventory is authoritative and
+     * orphan sockets are provably ours. Debug with `ZMX_DIR=<dir> zmx list`.
+     */
+    readonly terminalSocketDir: string
   }
 >()("app-server/AppConfig") {}
 
@@ -73,7 +82,7 @@ const configFilePath = (env: Env) =>
 // The settings a config.toml may define. Keys are camelCase, matching the
 // system-wide JSON convention; unknown keys fail fast (a typo silently
 // falling back to a default would be a partial boot).
-const FILE_KEYS = ["port", "logLevel", "dataDir"] as const
+const FILE_KEYS = ["port", "logLevel", "dataDir", "zmxExecutable"] as const
 
 const parseToml = (source: string, text: string) =>
   Effect.try({
@@ -182,6 +191,7 @@ export const load = (
       dataDir: Config.string("dataDir").pipe(
         Config.withDefault(xdgDir(env, "XDG_DATA_HOME", [".local", "share"])),
       ),
+      zmxExecutable: Config.string("zmxExecutable").pipe(Config.withDefault("zmx")),
     }).pipe(
       Effect.provideService(ConfigProvider.ConfigProvider, provider),
       Effect.catchTag("ConfigError", (error) =>
@@ -193,6 +203,17 @@ export const load = (
         ),
       ),
     )
+
+    // A relative executable path would resolve against the working
+    // directory — compiled behavior never may. Bare names resolve on PATH.
+    if (settings.zmxExecutable.includes("/") && !settings.zmxExecutable.startsWith("/")) {
+      return yield* Effect.fail(
+        new ConfigLoadError({
+          source: `${configFile} / ATC_ZMX_EXECUTABLE`,
+          message: `zmxExecutable must be a bare name or an absolute path, got "${settings.zmxExecutable}"`,
+        }),
+      )
+    }
 
     const dataDir = yield* requireAbsolute(
       settings.dataDir,
@@ -212,6 +233,8 @@ export const load = (
       stateDir,
       dbFile: path.join(dataDir, "atc.db"),
       logFile: path.join(stateDir, "atc.log"),
+      zmxExecutable: settings.zmxExecutable,
+      terminalSocketDir: path.join(stateDir, "terminals"),
     }
   })
 

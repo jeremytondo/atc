@@ -72,3 +72,8 @@ run = "ATC_COMPILED_TEST=1 bun --bun vitest run test/compiled.blackbox.test.ts"
 description = "Opt-in live provider smoke tests (requires Codex CLI and Claude Code credentials)"
 depends = ["build"]
 run = "ATC_SMOKE=1 bun --bun vitest run test/provider.smoke.test.ts"
+
+[tasks."test:zmx"]
+description = "Opt-in smoke tests against the real installed zmx binary"
+depends = ["install"]
+run = "ATC_ZMX_SMOKE=1 bun --bun vitest run test/zmxSmoke.test.ts"
