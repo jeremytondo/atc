@@ -99,8 +99,18 @@ switch (command) {
       fs.writeFileSync(sessionFile(name), JSON.stringify(record))
     }
     if (mode === "exit") process.exit(0)
-    // Attached client: echo terminal input back until detached (killed).
+    // Attached client: echo terminal input back until detached (killed) or
+    // the session dies — like zmx, a client sees EOF when its daemon goes.
     process.stdout.write("attached\n")
+    const watcher = setInterval(() => {
+      try {
+        const record = JSON.parse(fs.readFileSync(sessionFile(name), "utf8")) as SessionRecord
+        if (record.diesAt !== undefined && record.diesAt <= Date.now()) process.exit(0)
+      } catch {
+        process.exit(0)
+      }
+    }, 50)
+    watcher.unref?.()
     const decoder = new TextDecoder()
     for await (const chunk of Bun.stdin.stream()) {
       process.stdout.write(`echo:${decoder.decode(chunk)}`)

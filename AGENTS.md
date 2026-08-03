@@ -127,12 +127,15 @@ Both public clients derive from the same contract:
   unchanged and coexists until the app migrates.
 
 CLI commands backed by API operations use the contract-derived TypeScript
-client (`atc health`, `atc version`, `atc project …`, `atc fs check`): JSON
-payload on stdout and exit 0 on success; diagnostics on stderr with exit 1 on
-invalid usage, configuration, or request failure. API-backed commands take
-zero connection flags: the base URL derives from the settled configuration
-(`http://127.0.0.1:<port>`), resolved in the single seam in `cli.ts` — remote
-endpoint addressing (endpoint + token) lands there with the auth work. The
+client (`atc health`, `atc version`, `atc project …`, `atc terminal …`,
+`atc fs check`): JSON payload on stdout and exit 0 on success; diagnostics on
+stderr with exit 1 on invalid usage, configuration, or request failure.
+`atc terminal attach` is the one non-JSON command: it bridges the local
+TTY onto the WebSocket attach endpoint in raw mode (detach with Ctrl-]).
+API-backed commands take zero connection flags: the base URL derives from
+the settled configuration (`http://127.0.0.1:<port>`), resolved in the
+single seam in `cli.ts` — remote endpoint addressing (endpoint + token)
+lands there with the auth work. The
 CLI may resolve relative directory arguments client-side before calling the
 API (which takes server-host absolute paths only).
 
@@ -157,12 +160,13 @@ naming the offending source; never a partial boot.
 
 - Paths: one XDG rule on every platform (macOS included), honoring `XDG_*`
   overrides. Config `~/.config/atc/config.toml`; data (SQLite `atc.db`)
-  `~/.local/share/atc/`; state (log file `atc.log`) `~/.local/state/atc/`.
+  `~/.local/share/atc/`; state (log file `atc.log`, zmx sockets
+  `terminals/`) `~/.local/state/atc/`.
 - Environment variables are flat `ATC_<KEY>` (`ATC_PORT`, `ATC_LOG_LEVEL`,
-  `ATC_DATA_DIR`, `ATC_CONFIG`). No sectioned naming.
+  `ATC_DATA_DIR`, `ATC_CONFIG`, `ATC_ZMX_EXECUTABLE`). No sectioned naming.
 - The config file is TOML with camelCase keys (`port`, `logLevel`,
-  `dataDir`); unknown keys are rejected. The TOML format never leaks past
-  `config.ts`.
+  `dataDir`, `zmxExecutable`); unknown keys are rejected. The TOML format
+  never leaks past `config.ts`.
 - Compiled behavior never depends on the working directory; tests isolate
   themselves by pointing `XDG_*`/`ATC_*` at temp dirs (`test/blackbox.ts`
   `isolatedEnv`).
@@ -250,9 +254,33 @@ bytes; policy and transports live above it.
   entry proves a live session) are documented where they are enforced — the
   header of `src/zmxAdapter.ts`, derived from the pinned source in
   `repos/zmx`.
-- Coverage: deterministic tests drive the adapter against the
-  `test/fixtures/fake-zmx.ts` stand-in; `mise run -C app-server test:zmx`
-  opts into smoke tests against the real installed zmx.
+- Terminals are durable, project-scoped records (`src/terminals.ts`,
+  `src/terminalRepository.ts`): UUIDv7 id, immutable command argv and
+  canonicalized initial working directory, mutable label, public states
+  `live`/`ended` (tombstones persist until explicit delete; `starting` is an
+  internal crash-mid-create marker). Create starts the zmx session; a failed
+  launch leaves no record; project deletion is restricted while terminals
+  exist. Reconciliation is demand-driven (startup during layer build, and on
+  list/read/attach): only a complete inventory marks anything ended, an
+  unavailable inventory leaves stored state untouched (`ZmxUnavailable`,
+  503, retryable), and startup also cleans orphan sessions in the private
+  dir.
+- The WebSocket attach endpoint is contract-declared (`attachTerminal`)
+  and marked `OpenApi.Exclude`, so it never enters the serialized OpenAPI
+  document (REST clients and the Swift generator cannot represent it). Wire protocol
+  and close vocabulary have one code home, `src/attachProtocol.ts` (Schema-typed
+  control frames, close reasons, the attach URL builder), consumed by both the
+  server bridge (`src/terminalAttach.ts`) and the CLI client and documented in
+  prose on the contract endpoint: binary frames are bytes, text frames are JSON
+  control (`resize`, `ping`/`pong`), close 1000 `terminal_ended` is
+  authoritative, 1011 reasons are retryable. Attach bridges are forked into
+  the handler layer's scope — Bun aborts the upgraded request's fiber — and
+  server shutdown reaps them.
+- Coverage: deterministic tests drive the adapter and the whole transport
+  against the `test/fixtures/fake-zmx.ts` stand-in (a spawned serve with
+  `ATC_ZMX_EXECUTABLE` pointed at the fixture wrapper);
+  `mise run -C app-server test:zmx` opts into real-zmx smoke plus compiled
+  restart-recovery tests.
 
 ## Code Style
 

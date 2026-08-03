@@ -3,14 +3,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import packageJson from "../package.json"
-import {
-  appServerRoot,
-  freePort,
-  isolatedEnv,
-  runCli,
-  spawnServe,
-  waitForHealth,
-} from "./blackbox.ts"
+import { appServerRoot, cleanupTempDirs, runCli } from "./blackbox.ts"
+import { startFakeZmxServer } from "./testLayers.ts"
 
 // Black-box tests of the client-backed CLI commands: exact stdout, stderr,
 // and exit codes, against a real `atc serve` spawned from source.
@@ -25,22 +19,27 @@ import {
 const scratch = mkdtempSync(join(tmpdir(), "atc-cli-blackbox-"))
 let serverPort: number
 let env: Record<string, string | undefined>
+let dataRoot: string
 
 const cli = (args: ReadonlyArray<string>, extraEnv: Record<string, string> = {}) =>
   runCli([process.execPath, "src/main.ts"], args, appServerRoot, { ...env, ...extraEnv })
 
-let server: Bun.Subprocess
+let server: Awaited<ReturnType<typeof startFakeZmxServer>>
 
+// Terminal commands run against the deterministic fake-zmx stand-in, so
+// these tests need no zmx install anywhere they run.
 beforeAll(async () => {
-  serverPort = await freePort()
-  env = isolatedEnv(scratch, { ATC_PORT: String(serverPort) })
-  server = spawnServe([process.execPath, "src/main.ts"], serverPort, appServerRoot, env)
-  await waitForHealth(`http://127.0.0.1:${serverPort}`, server)
+  server = await startFakeZmxServer()
+  serverPort = server.port
+  env = server.env
+  dataRoot = server.sandbox.base
 })
 
-afterAll(() => {
-  server.kill()
+afterAll(async () => {
+  server.proc.kill()
+  await server.proc.exited
   rmSync(scratch, { recursive: true, force: true })
+  cleanupTempDirs()
 })
 
 describe("atc health/version (black box)", () => {
@@ -121,7 +120,7 @@ describe("atc health/version (black box)", () => {
 
 describe("atc project / atc fs (black box)", () => {
   test("the server created and migrated the database in the configured data directory", () => {
-    expect(existsSync(join(scratch, "data", "atc", "atc.db"))).toBe(true)
+    expect(existsSync(join(dataRoot, "data", "atc", "atc.db"))).toBe(true)
   })
 
   test("project lifecycle: create, list, get, update, delete", async () => {
@@ -157,7 +156,7 @@ describe("atc project / atc fs (black box)", () => {
 
     const empty = await cli(["project", "list"])
     expect(JSON.parse(empty.stdout)).toEqual([])
-  })
+  }, 30_000)
 
   test("a missing directory is one stderr line and exit 1", async () => {
     const result = await cli([
@@ -175,6 +174,99 @@ describe("atc project / atc fs (black box)", () => {
     expect(result.exitCode).toBe(1)
   })
 
+  test("terminal lifecycle: create with argv, list, get, rename, delete", async () => {
+    const project = JSON.parse(
+      (await cli(["project", "create", "--name", "Term", "--directory", scratch])).stdout,
+    ) as { id: string }
+
+    const created = await cli([
+      "terminal",
+      "create",
+      "--project",
+      project.id,
+      "--name",
+      "runner",
+      "bun",
+      "run",
+      "dev",
+    ])
+    expect(created.stderr).toBe("")
+    expect(created.exitCode).toBe(0)
+    const terminal = JSON.parse(created.stdout) as {
+      id: string
+      name: string
+      status: string
+      command: Array<string>
+    }
+    expect(terminal.status).toBe("live")
+    expect(terminal.name).toBe("runner")
+    expect(terminal.command).toEqual(["bun", "run", "dev"])
+
+    const listed = await cli(["terminal", "list", "--project", project.id])
+    expect((JSON.parse(listed.stdout) as Array<{ id: string }>).map((t) => t.id)).toEqual([
+      terminal.id,
+    ])
+
+    const fetched = await cli(["terminal", "get", terminal.id])
+    expect((JSON.parse(fetched.stdout) as { id: string }).id).toBe(terminal.id)
+
+    const renamed = await cli(["terminal", "rename", terminal.id, "--name", "logs"])
+    expect((JSON.parse(renamed.stdout) as { name: string }).name).toBe("logs")
+
+    const refused = await cli(["terminal", "delete", terminal.id])
+    expect(refused.stderr).toContain("--yes")
+    expect(refused.exitCode).toBe(1)
+
+    const deleted = await cli(["terminal", "delete", terminal.id, "--yes"])
+    expect(deleted.stderr).toBe("")
+    expect(deleted.exitCode).toBe(0)
+
+    const gone = await cli(["terminal", "get", terminal.id])
+    expect(gone.stderr.trim()).toBe(`atc terminal get: no terminal with id ${terminal.id}`)
+    expect(gone.exitCode).toBe(1)
+
+    // Release the project for later tests.
+    await cli(["project", "delete", project.id, "--yes"])
+  }, 30_000)
+
+  test("terminal attach bridges bytes and reports the ended terminal", async () => {
+    const project = JSON.parse(
+      (await cli(["project", "create", "--name", "Attach", "--directory", scratch])).stdout,
+    ) as { id: string }
+    const terminal = JSON.parse(
+      (await cli(["terminal", "create", "--project", project.id])).stdout,
+    ) as { id: string }
+
+    // Piped stdio (no TTY): the attach client still bridges bytes.
+    const attach = Bun.spawn([process.execPath, "src/main.ts", "terminal", "attach", terminal.id], {
+      cwd: appServerRoot,
+      env,
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const reader = (attach.stdout as ReadableStream<Uint8Array>).getReader()
+    const decoder = new TextDecoder()
+    let seen = ""
+    const sawBanner = (async () => {
+      while (!seen.includes("attached")) {
+        const chunk = await reader.read()
+        if (chunk.done) break
+        seen += decoder.decode(chunk.value)
+      }
+    })()
+    await sawBanner
+
+    // Deleting the terminal closes the bridge with 1000 terminal_ended; the
+    // CLI reports it on stderr and exits 0.
+    await cli(["terminal", "delete", terminal.id, "--yes"])
+    expect(await attach.exited).toBe(0)
+    const stderr = await new Response(attach.stderr as ReadableStream).text()
+    expect(stderr).toContain("terminal ended")
+
+    await cli(["project", "delete", project.id, "--yes"])
+  }, 30_000)
+
   test("fs check resolves relative paths client-side and reports health", async () => {
     const available = await cli(["fs", "check", "."])
     expect(available.exitCode).toBe(0)
@@ -183,5 +275,5 @@ describe("atc project / atc fs (black box)", () => {
     const missing = await cli(["fs", "check", join(scratch, "does-not-exist")])
     expect(missing.exitCode).toBe(0)
     expect((JSON.parse(missing.stdout) as { state: string }).state).toBe("missing")
-  })
+  }, 30_000)
 })

@@ -25,40 +25,45 @@ class SmokeReported extends Schema.TaggedErrorClass<SmokeReported>()("SmokeRepor
 
 // --- Executable resolution ---------------------------------------------------
 
-/** Codex: explicit env override, then PATH. */
-export const resolveCodexExecutable = Effect.suspend(() => {
-  const override = process.env["ATC_CODEX_EXECUTABLE"]
-  if (override !== undefined && override !== "") return Effect.succeed(override)
-  const found = Bun.which("codex")
-  if (found !== null) return Effect.succeed(found)
-  return Effect.fail(
-    new SmokeError({
-      provider: "codex",
-      message: "codex not found on PATH; install the Codex CLI or set ATC_CODEX_EXECUTABLE",
-    }),
-  )
-})
+/** Env override first, then PATH — the shared resolveExecutable rule. */
+const resolveProvider = (
+  provider: SmokeError["provider"],
+  name: string,
+  envVar: string,
+  installHint: string,
+) =>
+  Effect.suspend(() => {
+    const override = process.env[envVar]
+    const found = Subprocess.resolveExecutable(
+      override !== undefined && override !== "" ? override : name,
+    )
+    if (found !== null) return Effect.succeed(found)
+    return Effect.fail(
+      new SmokeError({
+        provider,
+        message: `${name} not found on PATH; ${installHint} or set ${envVar}`,
+      }),
+    )
+  })
+
+export const resolveCodexExecutable = resolveProvider(
+  "codex",
+  "codex",
+  "ATC_CODEX_EXECUTABLE",
+  "install the Codex CLI",
+)
 
 /**
- * Claude Code: explicit env override, then the user's installed `claude` on
- * PATH — the same bring-your-own-CLI rule as codex. atc does not ship a
- * Claude Code binary; the user's install also carries the credentials the
+ * Claude Code: the same bring-your-own-CLI rule as codex. atc does not ship
+ * a Claude Code binary; the user's install also carries the credentials the
  * SDK needs.
  */
-export const resolveClaudeCodeExecutable = Effect.suspend(() => {
-  const override = process.env["ATC_CLAUDE_CODE_EXECUTABLE"]
-  if (override !== undefined && override !== "") return Effect.succeed(override)
-  const found = Bun.which("claude")
-  if (found !== null) return Effect.succeed(found)
-  return Effect.fail(
-    new SmokeError({
-      provider: "claude",
-      message:
-        "claude not found on PATH; install and authenticate Claude Code " +
-        "or set ATC_CLAUDE_CODE_EXECUTABLE",
-    }),
-  )
-})
+export const resolveClaudeCodeExecutable = resolveProvider(
+  "claude",
+  "claude",
+  "ATC_CLAUDE_CODE_EXECUTABLE",
+  "install and authenticate Claude Code",
+)
 
 // --- Shared termination checks ----------------------------------------------
 

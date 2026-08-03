@@ -1,11 +1,8 @@
 import { Cause, Effect, Layer, Queue, Stream } from "effect"
+import { ZmxUnavailable } from "../src/api.ts"
+import { SubprocessError } from "../src/subprocess.ts"
 import type { SessionConnection, SessionInfo, SessionSize } from "../src/terminalAdapter.ts"
-import {
-  SessionNotFound,
-  SessionOperationFailed,
-  TerminalAdapter,
-  ZmxUnavailable,
-} from "../src/terminalAdapter.ts"
+import { SessionNotFound, SessionOperationFailed, TerminalAdapter } from "../src/terminalAdapter.ts"
 
 // The fake-adapter test seam (ATC-122): an in-memory TerminalAdapter with
 // the same observable semantics as the zmx adapter — inventory-authoritative
@@ -22,6 +19,8 @@ export interface FakeSession {
   lastResize: SessionSize | undefined
   /** Flip to false to model an existing-but-unresponsive daemon. */
   reachable: boolean
+  /** Flip to true to model a dead attach-client PTY: writes fail. */
+  writeFails: boolean
 }
 
 export interface FakeTerminalAdapter {
@@ -29,14 +28,19 @@ export interface FakeTerminalAdapter {
   readonly sessions: Map<string, FakeSession>
   /** While true, every inventory-consulting operation is ZmxUnavailable. */
   readonly setUnavailable: (unavailable: boolean) => void
+  /** While true, createSession fails conclusively (a failed launch). */
+  readonly setCreateFails: (fails: boolean) => void
   /** Emit output bytes to every open connection of `name`. */
   readonly emitOutput: (name: string, data: Uint8Array) => void
+  /** Insert a session directly (no createSession), e.g. recovery seeding. */
+  readonly seed: (name: string, overrides?: Partial<Omit<FakeSession, "name">>) => FakeSession
 }
 
 export const makeFakeAdapter = (): FakeTerminalAdapter => {
   const sessions = new Map<string, FakeSession>()
   const connections = new Map<string, Set<Queue.Queue<Uint8Array, Cause.Done>>>()
   let unavailable = false
+  let createFails = false
 
   const requireAvailable = Effect.suspend(() =>
     unavailable
@@ -48,6 +52,15 @@ export const makeFakeAdapter = (): FakeTerminalAdapter => {
     createSession: (options) =>
       Effect.gen(function* () {
         yield* requireAvailable
+        if (createFails) {
+          return yield* Effect.fail(
+            new SessionOperationFailed({
+              operation: "create",
+              sessionName: options.name,
+              reason: "fake adapter set to fail creation",
+            }),
+          )
+        }
         if (sessions.has(options.name)) {
           return yield* Effect.fail(
             new SessionOperationFailed({
@@ -64,6 +77,7 @@ export const makeFakeAdapter = (): FakeTerminalAdapter => {
           written: [],
           lastResize: undefined,
           reachable: true,
+          writeFails: false,
         })
       }),
     listSessions: () =>
@@ -112,7 +126,20 @@ export const makeFakeAdapter = (): FakeTerminalAdapter => {
         )
         const connection: SessionConnection = {
           output: Stream.fromQueue(output),
-          write: (data) => Effect.sync(() => session.written.push(data)),
+          write: (data) =>
+            Effect.suspend(() =>
+              session.writeFails
+                ? Effect.fail(
+                    new SubprocessError({
+                      executable: "fake-zmx",
+                      operation: "stdin",
+                      message: "terminal is closed (fake writeFails)",
+                    }),
+                  )
+                : Effect.sync(() => {
+                    session.written.push(data)
+                  }),
+            ),
           resize: (next) =>
             Effect.sync(() => {
               session.lastResize = next
@@ -129,8 +156,25 @@ export const makeFakeAdapter = (): FakeTerminalAdapter => {
     setUnavailable: (value) => {
       unavailable = value
     },
+    setCreateFails: (value) => {
+      createFails = value
+    },
     emitOutput: (name, data) => {
       for (const queue of connections.get(name) ?? []) Queue.offerUnsafe(queue, data)
+    },
+    seed: (name, overrides) => {
+      const session: FakeSession = {
+        name,
+        cwd: "/",
+        command: undefined,
+        written: [],
+        lastResize: undefined,
+        reachable: true,
+        writeFails: false,
+        ...overrides,
+      }
+      sessions.set(name, session)
+      return session
     },
   }
 }

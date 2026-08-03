@@ -1,69 +1,34 @@
 import { assert, describe, it } from "@effect/vitest"
-import { BunServices } from "@effect/platform-bun"
 import { Effect, Layer, Stream } from "effect"
 import * as fs from "node:fs"
-import * as os from "node:os"
 import * as path from "node:path"
-import { fileURLToPath } from "node:url"
 import { afterAll } from "vitest"
-import * as Subprocess from "../src/subprocess.ts"
-import {
-  sessionNameForTerminalId,
-  TerminalAdapter,
-  terminalIdForSessionName,
-} from "../src/terminalAdapter.ts"
+import { sessionNameForTerminalId, TerminalAdapter } from "../src/terminalAdapter.ts"
 import * as Zmx from "../src/zmxAdapter.ts"
 import { makeFakeAdapter } from "./fakeTerminalAdapter.ts"
-import {
-  cleanupTempDirs,
-  collectText,
-  makeShortSocketDir,
-  testAppConfig,
-  trackTempDir,
-  waitForText,
-} from "./testLayers.ts"
+import { cleanupTempDirs, makeShortSocketDir } from "./blackbox.ts"
+import { collectText, makeFakeZmxSandbox, waitForText, zmxAdapterLayer } from "./testLayers.ts"
 
 // TerminalAdapter coverage: pure helpers, the zmx adapter against the
 // fake-zmx fixture (deterministic, no zmx install), and the fake in-memory
 // adapter's honesty tests. The real zmx binary is exercised by the opt-in
 // zmxSmoke tests.
 
-const fixturePath = fileURLToPath(new URL("fixtures/fake-zmx.ts", import.meta.url))
-
 afterAll(cleanupTempDirs)
 
-/**
- * Per-test sandbox. The wrapper script is the configured "zmx executable":
- * the adapter owns argv and environment, so per-test fixture configuration
- * is baked into the wrapper itself — no process.env mutation anywhere.
- */
-const makeSandbox = (vars: Record<string, string> = {}) => {
-  const base = trackTempDir(fs.mkdtempSync(path.join(os.tmpdir(), "atc-zmx-")))
-  const stateDir = path.join(base, "state")
-  const wrapper = path.join(base, "fake-zmx")
-  const assignments = Object.entries({ FAKE_ZMX_STATE: stateDir, ...vars })
-    .map(([key, value]) => `${key}='${value}'`)
-    .join(" ")
-  fs.writeFileSync(
-    wrapper,
-    `#!/bin/sh\n${assignments} exec "${process.execPath}" "${fixturePath}" "$@"\n`,
-  )
-  fs.chmodSync(wrapper, 0o755)
-  return { base, stateDir, wrapper, socketDir: makeShortSocketDir() }
-}
-
 const TIGHT: Zmx.ZmxOptions = { pollInterval: "25 millis", verifyPasses: 8 }
+
+/** A fake-zmx sandbox plus the socket dir these in-process tests inspect. */
+const makeSandbox = (vars: Record<string, string> = {}) => ({
+  ...makeFakeZmxSandbox(vars),
+  socketDir: makeShortSocketDir(),
+})
 
 const adapterLayer = (
   sandbox: ReturnType<typeof makeSandbox>,
   options: Zmx.ZmxOptions = TIGHT,
   zmxExecutable: string = sandbox.wrapper,
-) =>
-  Zmx.layerWith(options).pipe(
-    Layer.provide(testAppConfig({ zmxExecutable, terminalSocketDir: sandbox.socketDir })),
-    Layer.provide(Subprocess.layer),
-    Layer.provideMerge(BunServices.layer),
-  )
+) => zmxAdapterLayer({ zmxExecutable, terminalSocketDir: sandbox.socketDir, zmx: options })
 
 const readSessionRecord = (sandbox: ReturnType<typeof makeSandbox>, name: string) =>
   JSON.parse(fs.readFileSync(path.join(sandbox.stateDir, name), "utf8")) as {
@@ -73,19 +38,12 @@ const readSessionRecord = (sandbox: ReturnType<typeof makeSandbox>, name: string
   }
 
 describe("session name derivation", () => {
-  it("derives and reverses the private session name", () => {
+  it("derives the private session name", () => {
     const id = "01890a5d-ac96-774b-bcce-b302099a8057"
     const name = sessionNameForTerminalId(id)
     assert.strictEqual(name, "atc-01890a5dac96774bbcceb302099a8057")
-    assert.strictEqual(terminalIdForSessionName(name), id)
     // Uppercase ids normalize instead of producing an irreversible name.
     assert.strictEqual(sessionNameForTerminalId(id.toUpperCase()), name)
-  })
-
-  it("rejects foreign names", () => {
-    assert.isUndefined(terminalIdForSessionName("my-shell"))
-    assert.isUndefined(terminalIdForSessionName("atc-nothex"))
-    assert.isUndefined(terminalIdForSessionName("atc-01890a5dac96774bbcceb302099a80"))
   })
 })
 
@@ -100,8 +58,8 @@ describe("parseSessionList", () => {
       "",
     ])
     assert.deepStrictEqual(sessions, [
-      { name: "atc-0123", reachable: true, pid: 85174, createdAt: 1785707091 },
-      { name: "other", reachable: true, pid: 12, createdAt: 5 },
+      { name: "atc-0123", reachable: true, pid: 85174 },
+      { name: "other", reachable: true, pid: 12 },
       { name: "broken", reachable: false },
     ])
   })
@@ -178,14 +136,11 @@ describe("zmx adapter against fake-zmx", () => {
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
       yield* adapter.createSession({ name: "atc-dupe", cwd: sandbox.base })
-      const result = yield* Effect.result(
+      const failure = yield* Effect.flip(
         adapter.createSession({ name: "atc-dupe", cwd: sandbox.base, command: ["other"] }),
       )
-      assert.strictEqual(result._tag, "Failure")
-      if (result._tag === "Failure") {
-        assert.strictEqual(result.failure._tag, "SessionOperationFailed")
-        assert.match(result.failure.message, /already exists/)
-      }
+      assert.strictEqual(failure._tag, "SessionOperationFailed")
+      assert.match(failure.message, /already exists/)
     }).pipe(Effect.provide(adapterLayer(sandbox)))
   })
 
@@ -195,14 +150,11 @@ describe("zmx adapter against fake-zmx", () => {
     const sandbox = makeSandbox({ FAKE_ZMX_UNREACHABLE: "atc-wedged" })
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
-      const result = yield* Effect.result(
+      const failure = yield* Effect.flip(
         adapter.createSession({ name: "atc-wedged", cwd: sandbox.base }),
       )
-      assert.strictEqual(result._tag, "Failure")
-      if (result._tag === "Failure") {
-        assert.strictEqual(result.failure._tag, "SessionOperationFailed")
-        assert.match(result.failure.message, /already exists/)
-      }
+      assert.strictEqual(failure._tag, "SessionOperationFailed")
+      assert.match(failure.message, /already exists/)
     }).pipe(Effect.provide(adapterLayer(sandbox)))
   })
 
@@ -210,14 +162,11 @@ describe("zmx adapter against fake-zmx", () => {
     const sandbox = makeSandbox({ FAKE_ZMX_ATTACH_MODE: "fail-fast" })
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
-      const result = yield* Effect.result(
+      const failure = yield* Effect.flip(
         adapter.createSession({ name: "atc-cccc", cwd: sandbox.base }),
       )
-      assert.strictEqual(result._tag, "Failure")
-      if (result._tag === "Failure") {
-        assert.strictEqual(result.failure._tag, "SessionOperationFailed")
-        assert.match(result.failure.message, /cannot create session/)
-      }
+      assert.strictEqual(failure._tag, "SessionOperationFailed")
+      assert.match(failure.message, /cannot create session/)
     }).pipe(Effect.provide(adapterLayer(sandbox)))
   })
 
@@ -225,14 +174,11 @@ describe("zmx adapter against fake-zmx", () => {
     const sandbox = makeSandbox({ FAKE_ZMX_SETTLE_MS: "60000" })
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
-      const result = yield* Effect.result(
+      const failure = yield* Effect.flip(
         adapter.createSession({ name: "atc-eeee", cwd: sandbox.base }),
       )
-      assert.strictEqual(result._tag, "Failure")
-      if (result._tag === "Failure") {
-        assert.strictEqual(result.failure._tag, "SessionOperationFailed")
-        assert.match(result.failure.message, /never settled/)
-      }
+      assert.strictEqual(failure._tag, "SessionOperationFailed")
+      assert.match(failure.message, /never settled/)
     }).pipe(Effect.provide(adapterLayer(sandbox)))
   })
 
@@ -240,14 +186,11 @@ describe("zmx adapter against fake-zmx", () => {
     const sandbox = makeSandbox()
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
-      const result = yield* Effect.result(
+      const failure = yield* Effect.flip(
         adapter.createSession({ name: "atc-ffff", cwd: path.join(sandbox.base, "nope") }),
       )
-      assert.strictEqual(result._tag, "Failure")
-      if (result._tag === "Failure") {
-        assert.strictEqual(result.failure._tag, "SessionOperationFailed")
-        assert.match(result.failure.message, /working directory/)
-      }
+      assert.strictEqual(failure._tag, "SessionOperationFailed")
+      assert.match(failure.message, /working directory/)
     }).pipe(Effect.provide(adapterLayer(sandbox)))
   })
 
@@ -255,12 +198,9 @@ describe("zmx adapter against fake-zmx", () => {
     const sandbox = makeSandbox({ FAKE_ZMX_LIST_MODE: "fail" })
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
-      const result = yield* Effect.result(adapter.listSessions())
-      assert.strictEqual(result._tag, "Failure")
-      if (result._tag === "Failure") {
-        assert.strictEqual(result.failure._tag, "ZmxUnavailable")
-        assert.match(result.failure.message, /inventory unavailable/)
-      }
+      const failure = yield* Effect.flip(adapter.listSessions())
+      assert.strictEqual(failure._tag, "ZmxUnavailable")
+      assert.match(failure.message, /inventory unavailable/)
     }).pipe(Effect.provide(adapterLayer(sandbox)))
   })
 
@@ -283,16 +223,16 @@ describe("zmx adapter against fake-zmx", () => {
   })
 
   it.live("fails kill when the session refuses to die", () => {
-    const sandbox = makeSandbox({ FAKE_ZMX_ATTACH_MODE: "exit", FAKE_ZMX_KILL_MODE: "ignore" })
+    const sandbox = makeSandbox({
+      FAKE_ZMX_ATTACH_MODE: "exit",
+      FAKE_ZMX_KILL_MODE: "ignore",
+    })
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
       yield* adapter.createSession({ name: "atc-hhhh", cwd: sandbox.base })
-      const result = yield* Effect.result(adapter.killSession("atc-hhhh"))
-      assert.strictEqual(result._tag, "Failure")
-      if (result._tag === "Failure") {
-        assert.strictEqual(result.failure._tag, "SessionOperationFailed")
-        assert.match(result.failure.message, /still present/)
-      }
+      const failure = yield* Effect.flip(adapter.killSession("atc-hhhh"))
+      assert.strictEqual(failure._tag, "SessionOperationFailed")
+      assert.match(failure.message, /still present/)
     }).pipe(Effect.provide(adapterLayer(sandbox)))
   })
 
@@ -300,13 +240,10 @@ describe("zmx adapter against fake-zmx", () => {
     const sandbox = makeSandbox()
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
-      const result = yield* Effect.result(
+      const failure = yield* Effect.flip(
         adapter.attachSession("atc-nope", { cols: 80, rows: 24 }).pipe(Effect.scoped),
       )
-      assert.strictEqual(result._tag, "Failure")
-      if (result._tag === "Failure") {
-        assert.strictEqual(result.failure._tag, "SessionNotFound")
-      }
+      assert.strictEqual(failure._tag, "SessionNotFound")
     }).pipe(Effect.provide(adapterLayer(sandbox)))
   })
 
@@ -314,14 +251,11 @@ describe("zmx adapter against fake-zmx", () => {
     const sandbox = makeSandbox({ FAKE_ZMX_UNREACHABLE: "atc-wedged" })
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
-      const result = yield* Effect.result(
+      const failure = yield* Effect.flip(
         adapter.attachSession("atc-wedged", { cols: 80, rows: 24 }).pipe(Effect.scoped),
       )
-      assert.strictEqual(result._tag, "Failure")
-      if (result._tag === "Failure") {
-        assert.strictEqual(result.failure._tag, "SessionOperationFailed")
-        assert.match(result.failure.message, /unreachable/)
-      }
+      assert.strictEqual(failure._tag, "SessionOperationFailed")
+      assert.match(failure.message, /unreachable/)
     }).pipe(Effect.provide(adapterLayer(sandbox)))
   })
 
@@ -343,12 +277,9 @@ describe("zmx adapter against fake-zmx", () => {
     const sandbox = makeSandbox()
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
-      const result = yield* Effect.result(adapter.listSessions())
-      assert.strictEqual(result._tag, "Failure")
-      if (result._tag === "Failure") {
-        assert.strictEqual(result.failure._tag, "ZmxUnavailable")
-        assert.match(result.failure.message, /install zmx on PATH|ATC_ZMX_EXECUTABLE/)
-      }
+      const failure = yield* Effect.flip(adapter.listSessions())
+      assert.strictEqual(failure._tag, "ZmxUnavailable")
+      assert.match(failure.message, /install zmx on PATH|ATC_ZMX_EXECUTABLE/)
     }).pipe(Effect.provide(adapterLayer(sandbox, TIGHT, "definitely-not-a-real-zmx-executable")))
   })
 
@@ -356,21 +287,16 @@ describe("zmx adapter against fake-zmx", () => {
     const sandbox = makeSandbox()
     const deepDir = path.join(sandbox.base, "x".repeat(120))
     return Effect.gen(function* () {
-      const result = yield* Effect.result(
+      const failure = yield* Effect.flip(
         Layer.build(
-          Zmx.layerWith(TIGHT).pipe(
-            Layer.provide(
-              testAppConfig({ zmxExecutable: sandbox.wrapper, terminalSocketDir: deepDir }),
-            ),
-            Layer.provide(Subprocess.layer),
-            Layer.provideMerge(BunServices.layer),
-          ),
+          zmxAdapterLayer({
+            zmxExecutable: sandbox.wrapper,
+            terminalSocketDir: deepDir,
+            zmx: TIGHT,
+          }),
         ),
       )
-      assert.strictEqual(result._tag, "Failure")
-      if (result._tag === "Failure") {
-        assert.match(String(result.failure), /too deep|exceed/)
-      }
+      assert.match(String(failure), /too deep|exceed/)
     }).pipe(Effect.scoped)
   })
 })
@@ -386,10 +312,10 @@ describe("fake adapter honesty", () => {
         ["atc-1111"],
       )
       // Creating is never silently attaching, like the real adapter.
-      const duplicate = yield* Effect.result(
+      const duplicate = yield* Effect.flip(
         adapter.createSession({ name: "atc-1111", cwd: "/other" }),
       )
-      assert.strictEqual(duplicate._tag, "Failure")
+      assert.strictEqual(duplicate._tag, "SessionOperationFailed")
       yield* Effect.gen(function* () {
         const connection = yield* adapter.attachSession("atc-1111", { cols: 100, rows: 30 })
         yield* connection.write("keys")
@@ -412,25 +338,19 @@ describe("fake adapter honesty", () => {
     const fake = makeFakeAdapter()
     return Effect.gen(function* () {
       const adapter = yield* TerminalAdapter
-      const missing = yield* Effect.result(
+      const missing = yield* Effect.flip(
         adapter.attachSession("atc-none", { cols: 80, rows: 24 }).pipe(Effect.scoped),
       )
-      assert.strictEqual(missing._tag, "Failure")
-      if (missing._tag === "Failure") {
-        assert.strictEqual(missing.failure._tag, "SessionNotFound")
-      }
+      assert.strictEqual(missing._tag, "SessionNotFound")
       yield* adapter.createSession({ name: "atc-2222", cwd: "/w" })
       fake.sessions.get("atc-2222")!.reachable = false
       assert.deepStrictEqual(yield* adapter.listSessions(), [
         { name: "atc-2222", reachable: false },
       ])
-      const unreachable = yield* Effect.result(
+      const unreachable = yield* Effect.flip(
         adapter.attachSession("atc-2222", { cols: 80, rows: 24 }).pipe(Effect.scoped),
       )
-      assert.strictEqual(unreachable._tag, "Failure")
-      if (unreachable._tag === "Failure") {
-        assert.strictEqual(unreachable.failure._tag, "SessionOperationFailed")
-      }
+      assert.strictEqual(unreachable._tag, "SessionOperationFailed")
     }).pipe(Effect.provide(fake.layer))
   })
 
@@ -445,11 +365,8 @@ describe("fake adapter honesty", () => {
         adapter.killSession("atc-3333"),
         Effect.asVoid(Effect.scoped(adapter.attachSession("atc-3333", { cols: 1, rows: 1 }))),
       ]) {
-        const result = yield* Effect.result(operation)
-        assert.strictEqual(result._tag, "Failure")
-        if (result._tag === "Failure") {
-          assert.strictEqual((result.failure as { _tag: string })._tag, "ZmxUnavailable")
-        }
+        const failure = yield* Effect.flip(operation)
+        assert.strictEqual((failure as { _tag: string })._tag, "ZmxUnavailable")
       }
     }).pipe(Effect.provide(fake.layer))
   })

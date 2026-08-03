@@ -83,7 +83,7 @@ describe("persistence", () => {
     const file = freshDbFile()
     const broken = {
       ...migrations,
-      "0002_explode": Effect.gen(function* () {
+      "0099_explode": Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient
         yield* sql`CREATE TABLE half_done (id TEXT PRIMARY KEY)`
         yield* sql`THIS IS NOT SQL`
@@ -101,7 +101,7 @@ describe("persistence", () => {
       assert.strictEqual(exit._tag, "Failure")
       // The diagnostic names the migration (the loader parses the numeric id,
       // so zero padding drops out of the rendered name).
-      assert.include(String(exit), 'Migration "2_explode" failed')
+      assert.include(String(exit), 'Migration "99_explode" failed')
 
       // The failed migration's DDL and bookkeeping rolled back together:
       // booting again with the fixed record succeeds and sees no leftovers.

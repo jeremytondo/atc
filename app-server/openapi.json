@@ -259,9 +259,258 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "The project still owns terminals (live or ended); delete them first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectHasTerminalsJsonEncoding"
+                }
+              }
+            }
           }
         },
-        "description": "Delete the project record. Never touches the filesystem or any directory."
+        "description": "Delete the project record. Restricted while the project still owns terminals; never touches the filesystem or any directory."
+      }
+    },
+    "/api/v1/terminals": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "listTerminals",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "description": "Restrict the listing to one project."
+            },
+            "required": false
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Terminals, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TerminalList"
+                }
+              }
+            }
+          }
+        },
+        "description": "List terminals, reconciled against the zmx inventory on a best-effort basis (an unavailable inventory returns the stored state untouched)."
+      },
+      "post": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "createTerminal",
+        "parameters": [],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "A durable, project-scoped terminal backed by a zmx session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Terminal"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No project exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectNotFoundJsonEncoding"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The directory does not exist, is not a directory, or cannot be read/traversed. | The directory check did not complete within its bounded timeout. Retryable — a timeout is not proof the path is missing. | The terminal's zmx session failed to launch (bad command, immediate exit, or settle failure). The failed launch leaves no terminal record.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/DirectoryUnavailableJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DirectoryCheckTimedOutJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TerminalLaunchFailedJsonEncoding"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The zmx multiplexer cannot be consulted right now. Retryable; stored terminal state is untouched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ZmxUnavailableJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "Create a terminal and start its zmx session immediately (an interactive login shell, or the exec-style command argv). A failed launch leaves no record.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTerminalRequest"
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/api/v1/terminals/{terminalId}": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "getTerminal",
+        "parameters": [
+          {
+            "name": "terminalId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "A durable, project-scoped terminal backed by a zmx session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Terminal"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No terminal exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TerminalNotFoundJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "Fetch one terminal by id, reconciled on read."
+      },
+      "patch": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "updateTerminal",
+        "parameters": [
+          {
+            "name": "terminalId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "A durable, project-scoped terminal backed by a zmx session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Terminal"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No terminal exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TerminalNotFoundJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "Update a terminal's display label (the only mutable field).",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateTerminalRequest"
+              }
+            }
+          },
+          "required": true
+        }
+      },
+      "delete": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "deleteTerminal",
+        "parameters": [
+          {
+            "name": "terminalId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "204": {
+            "description": "<No Content>"
+          },
+          "404": {
+            "description": "No terminal exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TerminalNotFoundJsonEncoding"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The zmx multiplexer cannot be consulted right now. Retryable; stored terminal state is untouched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ZmxUnavailableJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "Delete a terminal: kill its zmx session if present, verify absence, then remove the record (tombstones included)."
       }
     },
     "/api/v1/fs/check": {
@@ -493,6 +742,197 @@
         },
         "additionalProperties": false,
         "description": "Partial update; affects future Threads and Terminals only."
+      },
+      "ProjectHasTerminalsJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "ProjectHasTerminals"
+            ]
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "terminalCount": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "_tag",
+          "projectId",
+          "terminalCount"
+        ],
+        "additionalProperties": false
+      },
+      "TerminalStatus": {
+        "type": "string",
+        "enum": [
+          "live",
+          "ended"
+        ],
+        "description": "Public terminal lifecycle state: live (zmx session running) or ended (tombstone until deleted)."
+      },
+      "Terminal": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "UUIDv7 terminal id."
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Owning project id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Mutable display label."
+          },
+          "command": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "description": "Immutable exec-style argv the terminal was launched with; absent for an interactive login shell."
+          },
+          "initialWorkingDirectory": {
+            "type": "string",
+            "description": "Canonical directory the terminal was launched in (immutable)."
+          },
+          "status": {
+            "$ref": "#/components/schemas/TerminalStatus"
+          },
+          "createdAt": {
+            "type": "string",
+            "description": "Creation time (ISO 8601 UTC)."
+          },
+          "updatedAt": {
+            "type": "string",
+            "description": "Last update time (ISO 8601 UTC)."
+          },
+          "endedAt": {
+            "type": "string",
+            "description": "When the terminal was observed ended (ISO 8601 UTC); absent while live."
+          }
+        },
+        "required": [
+          "id",
+          "projectId",
+          "initialWorkingDirectory",
+          "status",
+          "createdAt",
+          "updatedAt"
+        ],
+        "additionalProperties": false,
+        "description": "A durable, project-scoped terminal backed by a zmx session."
+      },
+      "TerminalList": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Terminal"
+        },
+        "description": "Terminals, newest first."
+      },
+      "CreateTerminalRequest": {
+        "type": "object",
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "description": "Owning project id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display label."
+          },
+          "command": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "description": "Exec-style argv to run instead of an interactive login shell."
+          },
+          "workingDirectory": {
+            "type": "string",
+            "pattern": "^\\/",
+            "description": "Directory to launch in; defaults to the project's default working directory. Stored canonicalized."
+          }
+        },
+        "required": [
+          "projectId"
+        ],
+        "additionalProperties": false,
+        "description": "Payload for creating a terminal. Creation starts the zmx session immediately."
+      },
+      "TerminalLaunchFailedJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "TerminalLaunchFailed"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "_tag",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "ZmxUnavailableJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "ZmxUnavailable"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "_tag",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "TerminalNotFoundJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "TerminalNotFound"
+            ]
+          },
+          "terminalId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "_tag",
+          "terminalId"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateTerminalRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "New display label."
+          }
+        },
+        "additionalProperties": false,
+        "description": "Partial update; only the display label is mutable."
       },
       "DirectoryState": {
         "type": "string",

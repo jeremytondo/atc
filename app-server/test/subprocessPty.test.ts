@@ -1,15 +1,13 @@
 import { assert, describe, it } from "@effect/vitest"
 import { BunServices } from "@effect/platform-bun"
 import { Effect, Exit, Layer, Scope, Stream } from "effect"
-import { fileURLToPath } from "node:url"
 import * as Subprocess from "../src/subprocess.ts"
+import { appServerRoot } from "./blackbox.ts"
 import { collectText, waitForText } from "./testLayers.ts"
 
 // The PTY variant of the Subprocess seam against the pty-report fixture.
 // All tests are it.live: real processes, real pseudo-terminals, real clock.
 // Note the PTY runs in canonical mode, so input reaches the child on "\n".
-
-const appServerRoot = fileURLToPath(new URL("..", import.meta.url))
 
 const TestLayer = Subprocess.layer.pipe(Layer.provideMerge(BunServices.layer))
 
@@ -24,12 +22,12 @@ describe("Subprocess.spawnPty", () => {
   it.live("gives the child a real terminal and round-trips bytes", () =>
     Effect.gen(function* () {
       const subprocess = yield* Subprocess.Subprocess
-      const child = yield* subprocess.spawnPty(fixture)
+      const child = yield* subprocess.spawnPty({ ...fixture, captureOutputTail: true })
       const sink = yield* collectText(child.output)
       yield* waitForText(sink, "tty:true")
       yield* child.write("ping\n")
       yield* waitForText(sink, "in:ping")
-      // The diagnostic tail sees the same bytes as the stream.
+      // The opt-in diagnostic tail sees the same bytes as the stream.
       assert.include(yield* child.outputTail, "in:ping")
     }).pipe(Effect.scoped, Effect.provide(TestLayer)),
   )
@@ -82,14 +80,11 @@ describe("Subprocess.spawnPty", () => {
   it.live("fails to spawn a missing executable with a tagged error", () =>
     Effect.gen(function* () {
       const subprocess = yield* Subprocess.Subprocess
-      const result = yield* Effect.result(
+      const failure = yield* Effect.flip(
         subprocess.spawnPty({ executable: "/nonexistent/definitely-not-here", env: {} }),
       )
-      assert.strictEqual(result._tag, "Failure")
-      if (result._tag === "Failure") {
-        assert.strictEqual(result.failure._tag, "SubprocessError")
-        assert.strictEqual(result.failure.operation, "spawn")
-      }
+      assert.strictEqual(failure._tag, "SubprocessError")
+      assert.strictEqual(failure.operation, "spawn")
     }).pipe(Effect.scoped, Effect.provide(TestLayer)),
   )
 

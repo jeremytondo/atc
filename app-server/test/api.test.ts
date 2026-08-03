@@ -101,14 +101,15 @@ describe("/api/v1/projects", () => {
   it.effect("unknown ids are ProjectNotFound on get, update, and delete", () =>
     Effect.gen(function* () {
       const client = yield* HttpApiTest.groups(Api, ["v1"])
-      for (const attempt of [
+      const attempts: ReadonlyArray<Effect.Effect<unknown, unknown>> = [
         client.v1.getProject({ params: { projectId: "missing" } }),
         client.v1.updateProject({ params: { projectId: "missing" }, payload: { name: "x" } }),
         client.v1.deleteProject({ params: { projectId: "missing" } }),
-      ]) {
-        const error = yield* Effect.flip(attempt)
+      ]
+      for (const attempt of attempts) {
+        const error = (yield* Effect.flip(attempt)) as { _tag: string; projectId?: string }
         assert.strictEqual(error._tag, "ProjectNotFound")
-        if (error._tag === "ProjectNotFound") assert.strictEqual(error.projectId, "missing")
+        assert.strictEqual(error.projectId, "missing")
       }
     }).pipe(Effect.provide(TestLayer)),
   )
@@ -150,6 +151,28 @@ describe("/api/v1/projects", () => {
         yield* client.v1.getProject({ params: { projectId: created.id } }),
         created,
       )
+    }).pipe(Effect.provide(TestLayer)),
+  )
+
+  it.effect("restricts project deletion while terminals exist, tombstones included", () =>
+    Effect.gen(function* () {
+      const client = yield* HttpApiTest.groups(Api, ["v1"])
+      const project = yield* client.v1.createProject({
+        payload: { name: "Guarded", defaultWorkingDirectory: realDir },
+      })
+      const terminal = yield* client.v1.createTerminal({
+        payload: { projectId: project.id },
+      })
+      const restricted = yield* Effect.flip(
+        client.v1.deleteProject({ params: { projectId: project.id } }),
+      )
+      assert.strictEqual(restricted._tag, "ProjectHasTerminals")
+      if (restricted._tag === "ProjectHasTerminals") {
+        assert.strictEqual(restricted.terminalCount, 1)
+      }
+      // Deleting the terminal (record and session) releases the project.
+      yield* client.v1.deleteTerminal({ params: { terminalId: terminal.id } })
+      yield* client.v1.deleteProject({ params: { projectId: project.id } })
     }).pipe(Effect.provide(TestLayer)),
   )
 

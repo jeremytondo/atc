@@ -9,7 +9,7 @@ import * as LocalTrust from "./localTrust.ts"
 /**
  * All HTTP routes with the local-trust guard applied, independent of any
  * listener. Requires the handler services (BuildInfo, ProjectRepository,
- * Directories).
+ * Directories, Terminals).
  */
 export const routes = Layer.mergeAll(
   HttpApiBuilder.layer(Api).pipe(Layer.provide(V1Handlers)),
@@ -24,5 +24,15 @@ export const routes = Layer.mergeAll(
  */
 export const layer = (options: { readonly port: number }) =>
   HttpRouter.serve(routes, { middleware: HttpMiddleware.tracer }).pipe(
-    Layer.provideMerge(BunHttpServer.layer({ port: options.port, hostname: "127.0.0.1" })),
+    Layer.provideMerge(
+      BunHttpServer.layer({
+        port: options.port,
+        hostname: "127.0.0.1",
+        // Bun never finishes a graceful stop once the server has initiated
+        // a WebSocket close (the connection stays in its bookkeeping), so a
+        // long grace period turns every shutdown after a terminal attach
+        // into a hang. Requests are local and short; two seconds is plenty.
+        gracefulShutdownTimeout: "2 seconds",
+      }),
+    ),
   )
