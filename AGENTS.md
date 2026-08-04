@@ -60,10 +60,13 @@ that:
 The server stands on its own and is meant as a flexible resource that other
 apps can connect to and be built on top of. The Web UI is more admin interface
 than API client. It's meant as a place to manage all aspects of the server and
-document the CLI and API. The CLI is a thin client of the API; its purpose is
-to give agents and scripts access to the app's functionality. Design its
-command surface for that job — it does not need to mirror the API
-operation-for-operation, and no tooling should enforce such a mapping.
+document the CLI and API. The HTTP API is the complete canonical App Server
+interface; the CLI is an agent gateway over it — `atc api` gives complete
+access to every API operation, and a named command earns its place only by composing
+a workflow, needing local process/filesystem/TTY/streaming behavior, or
+materially improving on supplying raw JSON, never by merely renaming an
+endpoint. CLI commands never duplicate server domain logic, and no tooling
+should enforce an API-to-CLI mapping.
 
 ## The ways to hurt yourself
 

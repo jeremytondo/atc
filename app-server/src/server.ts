@@ -1,10 +1,22 @@
 import { BunHttpServer } from "@effect/platform-bun"
 import { Layer } from "effect"
-import { HttpMiddleware, HttpRouter } from "effect/unstable/http"
+import { HttpMiddleware, HttpRouter, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { Api } from "./api.ts"
 import { V1Handlers } from "./handlers.ts"
 import * as LocalTrust from "./localTrust.ts"
+import { openApiJson } from "./openapi.ts"
+
+// OpenAPI discovery (ATC-131): the contract-derived document at a stable
+// path. Served from the canonical serialization (openapi.ts) so the response
+// is byte-identical to the checked-in openapi.json — deliberately not
+// HttpApiBuilder's openapiPath option, which would emit the pre-transform
+// document and drift from the artifact.
+const openApiRoute = HttpRouter.add(
+  "GET",
+  "/openapi.json",
+  HttpServerResponse.text(openApiJson, { contentType: "application/json" }),
+)
 
 /**
  * All HTTP routes with the local-trust guard applied, independent of any
@@ -13,6 +25,7 @@ import * as LocalTrust from "./localTrust.ts"
  */
 export const routes = Layer.mergeAll(
   HttpApiBuilder.layer(Api).pipe(Layer.provide(V1Handlers)),
+  openApiRoute,
   LocalTrust.middleware,
 )
 

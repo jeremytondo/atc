@@ -65,6 +65,8 @@ export const TestRepositoryLayers = makeTestServiceLayers().layer
 export const testAppConfig = (overrides: Partial<AppConfig["Service"]>): Layer.Layer<AppConfig> =>
   Layer.succeed(AppConfig)({
     port: 0,
+    endpoint: undefined,
+    context: {},
     logLevel: "Info",
     configFile: "/dev/null",
     dataDir: "/tmp",

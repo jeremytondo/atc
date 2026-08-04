@@ -1,10 +1,10 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import packageJson from "../package.json"
-import { appServerRoot, cleanupTempDirs, runCli } from "./blackbox.ts"
-import { startFakeZmxServer } from "./testLayers.ts"
+import { appServerRoot, cleanupTempDirs, makeTerminal, runCli } from "./blackbox.ts"
+import { startFakeZmxServer, withFakeZmxServer } from "./testLayers.ts"
 
 // Black-box tests of the client-backed CLI commands: exact stdout, stderr,
 // and exit codes, against a real `atc serve` spawned from source.
@@ -21,8 +21,8 @@ let serverPort: number
 let env: Record<string, string | undefined>
 let dataRoot: string
 
-const cli = (args: ReadonlyArray<string>, extraEnv: Record<string, string> = {}) =>
-  runCli([process.execPath, "src/main.ts"], args, appServerRoot, { ...env, ...extraEnv })
+const cli = (args: ReadonlyArray<string>, extraEnv: Record<string, string> = {}, stdin?: string) =>
+  runCli([process.execPath, "src/main.ts"], args, appServerRoot, { ...env, ...extraEnv }, stdin)
 
 let server: Awaited<ReturnType<typeof startFakeZmxServer>>
 
@@ -275,5 +275,262 @@ describe("atc project / atc fs (black box)", () => {
     const missing = await cli(["fs", "check", join(scratch, "does-not-exist")])
     expect(missing.exitCode).toBe(0)
     expect((JSON.parse(missing.stdout) as { state: string }).state).toBe("missing")
+  }, 30_000)
+})
+
+// The five stable context variables, all explicitly unset (empty means
+// unset), so gateway tests never depend on the developer's environment.
+const noContext = {
+  ATC_ENDPOINT: "",
+  ATC_PROJECT_ID: "",
+  ATC_WORKSPACE_ID: "",
+  ATC_THREAD_ID: "",
+  ATC_TERMINAL_ID: "",
+}
+
+describe("atc api / context / capabilities (black box)", () => {
+  test("api GET passes the response body through unchanged", async () => {
+    const result = await cli(["api", "GET", "/api/v1/health"])
+    // The server's compact JSON, undecorated (plus the trailing newline).
+    expect(result.stdout).toBe('{"status":"ok"}\n')
+    expect(result.stderr).toBe("")
+    expect(result.exitCode).toBe(0)
+
+    // Methods are case-insensitive.
+    const lower = await cli(["api", "get", "/api/v1/health"])
+    expect(lower.stdout).toBe('{"status":"ok"}\n')
+    expect(lower.exitCode).toBe(0)
+  })
+
+  test("api sends JSON bodies from a file and from stdin; empty responses print nothing", async () => {
+    const bodyFile = join(scratch, "create-project.json")
+    await Bun.write(
+      bodyFile,
+      JSON.stringify({ name: "FromFile", defaultWorkingDirectory: scratch }),
+    )
+    const fromFile = await cli(["api", "POST", "/api/v1/projects", "--input", bodyFile])
+    expect(fromFile.stderr).toBe("")
+    expect(fromFile.exitCode).toBe(0)
+    const fileProject = JSON.parse(fromFile.stdout) as { id: string; name: string }
+    expect(fileProject.name).toBe("FromFile")
+
+    const fromStdin = await cli(
+      ["api", "POST", "/api/v1/projects", "--input", "-"],
+      {},
+      JSON.stringify({ name: "FromStdin", defaultWorkingDirectory: scratch }),
+    )
+    expect(fromStdin.exitCode).toBe(0)
+    const stdinProject = JSON.parse(fromStdin.stdout) as { id: string; name: string }
+    expect(stdinProject.name).toBe("FromStdin")
+
+    // DELETE answers 204: empty stdout, empty stderr, exit 0.
+    for (const id of [fileProject.id, stdinProject.id]) {
+      const deleted = await cli(["api", "DELETE", `/api/v1/projects/${id}`])
+      expect(deleted.stdout).toBe("")
+      expect(deleted.stderr).toBe("")
+      expect(deleted.exitCode).toBe(0)
+    }
+  }, 30_000)
+
+  test("api reports HTTP failures with the error body on stderr and exits 1", async () => {
+    const result = await cli(["api", "GET", "/api/v1/projects/nope"])
+    expect(result.stdout).toBe("")
+    expect(result.stderr).toContain('"_tag":"ProjectNotFound"')
+    expect(result.stderr).toContain("atc api: server returned HTTP 404")
+    expect(result.exitCode).toBe(1)
+  })
+
+  test("api transport failures are one stderr line and exit 1", async () => {
+    const result = await cli(["api", "GET", "/api/v1/health"], { ATC_PORT: "1" })
+    expect(result.stdout).toBe("")
+    expect(result.stderr).toMatch(/^atc api: \S/)
+    expect(result.stderr.trim().split("\n")).toHaveLength(1)
+    expect(result.exitCode).toBe(1)
+  })
+
+  test("api rejects paths that are not server-relative or would re-target the origin", async () => {
+    // Absolute URLs, network-path references (//host), and the backslash
+    // variant the URL parser treats as // must all fail before any request.
+    for (const bad of [
+      "http://evil.example/api/v1/health",
+      "//evil.example/api/v1/health",
+      "/\\evil.example/api/v1/health",
+      "//",
+    ]) {
+      const result = await cli(["api", "GET", bad])
+      expect(result.stdout).toBe("")
+      expect(result.stderr).toMatch(/^atc api: path must be server-relative/)
+      expect(result.exitCode).toBe(1)
+    }
+  })
+
+  test("api rejects unsupported methods as invalid usage", async () => {
+    const result = await cli(["api", "FROB", "/api/v1/health"])
+    expect(result.stderr).toContain("method must be one of GET, POST, PUT, PATCH, DELETE")
+    expect(result.exitCode).toBe(1)
+  })
+
+  test("an ATC_ENDPOINT path prefix is preserved when joining", async () => {
+    // A stand-in server that echoes the request path proves the join keeps
+    // the prefix instead of discarding it the way `new URL("/x", base)` would.
+    const echo = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => Response.json({ path: new URL(request.url).pathname }),
+    })
+    try {
+      const result = await cli(["api", "GET", "/api/v1/health"], {
+        ATC_ENDPOINT: `http://127.0.0.1:${echo.port}/prefix`,
+      })
+      expect(JSON.parse(result.stdout)).toEqual({ path: "/prefix/api/v1/health" })
+      expect(result.exitCode).toBe(0)
+    } finally {
+      await echo.stop(true)
+    }
+  })
+
+  test("ATC_ENDPOINT beats the configured port at the resolution seam", async () => {
+    // ATC_PORT points nowhere; the endpoint carries the real server.
+    const viaEndpoint = await cli(["health"], {
+      ATC_PORT: "1",
+      ATC_ENDPOINT: `http://127.0.0.1:${serverPort}`,
+    })
+    expect(viaEndpoint.stdout).toBe('{\n  "status": "ok"\n}\n')
+    expect(viaEndpoint.exitCode).toBe(0)
+
+    const malformed = await cli(["health"], { ATC_ENDPOINT: "not a url" })
+    expect(malformed.stderr).toMatch(/^atc health: ATC_ENDPOINT: /)
+    expect(malformed.exitCode).toBe(1)
+  })
+
+  test("context reports present variables only, in vocabulary order", async () => {
+    const absent = await cli(["context"], noContext)
+    expect(absent.stdout).toBe("")
+    expect(absent.stderr).toBe("")
+    expect(absent.exitCode).toBe(0)
+
+    const absentJson = await cli(["context", "--json"], noContext)
+    expect(absentJson.stdout).toBe("{}\n")
+    expect(absentJson.exitCode).toBe(0)
+
+    const partial = await cli(["context"], {
+      ...noContext,
+      ATC_TERMINAL_ID: "t-1",
+      ATC_PROJECT_ID: "p-1",
+    })
+    expect(partial.stdout).toBe("ATC_PROJECT_ID=p-1\nATC_TERMINAL_ID=t-1\n")
+    expect(partial.exitCode).toBe(0)
+
+    const full = await cli(["context", "--json"], {
+      ...noContext,
+      ATC_ENDPOINT: `http://127.0.0.1:${serverPort}`,
+      ATC_PROJECT_ID: "p-1",
+      ATC_WORKSPACE_ID: "w-1",
+      ATC_THREAD_ID: "th-1",
+      ATC_TERMINAL_ID: "t-1",
+    })
+    expect(JSON.parse(full.stdout)).toEqual({
+      ATC_ENDPOINT: `http://127.0.0.1:${serverPort}`,
+      ATC_PROJECT_ID: "p-1",
+      ATC_WORKSPACE_ID: "w-1",
+      ATC_THREAD_ID: "th-1",
+      ATC_TERMINAL_ID: "t-1",
+    })
+    expect(full.exitCode).toBe(0)
+  })
+
+  test("capabilities --json is stable, versioned, machine-readable output", async () => {
+    const result = await cli(["capabilities", "--json"])
+    expect(result.stderr).toBe("")
+    expect(result.exitCode).toBe(0)
+    // The complete v1 shape, pinned: any change here is a compatibility
+    // decision and must either be additive or bump capabilitiesVersion.
+    expect(JSON.parse(result.stdout)).toEqual({
+      capabilitiesVersion: 1,
+      api: {
+        command: "atc api <method> <path> [--input <file|->]",
+        description:
+          "Complete access to the canonical App Server HTTP API: every operation via GET, POST, PUT, PATCH, or DELETE, JSON body from a file or stdin, the raw JSON response on stdout.",
+        example: "atc api GET /api/v1/projects",
+      },
+      openapi: {
+        path: "/openapi.json",
+        description:
+          "The full OpenAPI document (every operation and schema), served by the App Server.",
+        example: "atc api GET /openapi.json",
+      },
+      context: {
+        command: "atc context --json",
+        description: "The ATC_* context variables present in this process.",
+        variables: [
+          "ATC_ENDPOINT",
+          "ATC_PROJECT_ID",
+          "ATC_WORKSPACE_ID",
+          "ATC_THREAD_ID",
+          "ATC_TERMINAL_ID",
+        ],
+      },
+      workflows: [
+        { command: "atc serve", description: "Run the App Server in the foreground." },
+        {
+          command: "atc project create --name <name> --directory <dir>",
+          description: "Create a project (relative directories resolve against the caller's cwd).",
+        },
+        {
+          command: "atc terminal create --project <id> [command...]",
+          description: "Create a durable terminal and start its session immediately.",
+        },
+        {
+          command: "atc terminal attach <terminal-id>",
+          description: "Attach the local TTY to a live terminal session (detach with Ctrl-]).",
+        },
+      ],
+    })
+
+    // The human rendering carries the same content, one line per capability.
+    const text = await cli(["capabilities"])
+    expect(text.exitCode).toBe(0)
+    expect(text.stdout).toContain("atc api")
+  })
+
+  test("launched terminal sessions receive this server's ATC_ENDPOINT", async () => {
+    const project = JSON.parse(
+      (await cli(["project", "create", "--name", "Ctx", "--directory", scratch])).stdout,
+    ) as { id: string }
+    const terminal = JSON.parse(
+      (await cli(["terminal", "create", "--project", project.id])).stdout,
+    ) as { id: string }
+
+    // The fake-zmx session record captures the environment the adapter
+    // launched with; the session name is atc-<uuid without dashes>.
+    const sessionFile = join(server.sandbox.stateDir, `atc-${terminal.id.replaceAll("-", "")}`)
+    const record = JSON.parse(readFileSync(sessionFile, "utf8")) as {
+      env: Record<string, string | undefined>
+    }
+    expect(record.env["ATC_ENDPOINT"]).toBe(`http://127.0.0.1:${serverPort}`)
+
+    await cli(["terminal", "delete", terminal.id, "--yes"])
+    await cli(["project", "delete", project.id, "--yes"])
+  }, 30_000)
+
+  test("serve --port folds the effective port into the injected ATC_ENDPOINT", async () => {
+    // ATC_PORT deliberately disagrees with the --port flag the server is
+    // launched with: the injected endpoint must reflect the flag (the port
+    // actually being served), proving the flag is folded back into the
+    // settled AppConfig rather than read from the environment level.
+    await withFakeZmxServer(
+      async (flagged) => {
+        const terminal = await makeTerminal(flagged.base)
+        const sessionFile = join(
+          flagged.sandbox.stateDir,
+          `atc-${(terminal["id"] as string).replaceAll("-", "")}`,
+        )
+        const record = JSON.parse(readFileSync(sessionFile, "utf8")) as {
+          env: Record<string, string | undefined>
+        }
+        expect(record.env["ATC_ENDPOINT"]).toBe(flagged.base)
+      },
+      { ATC_PORT: "1" },
+    )
   }, 30_000)
 })

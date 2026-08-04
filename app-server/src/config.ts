@@ -23,6 +23,23 @@ import { DEFAULT_PORT } from "./api.ts"
 /** Environment shape consumed by the pipeline; tests inject their own. */
 export type Env = Record<string, string | undefined>
 
+/**
+ * The stable agent-context variable vocabulary (ATC-131). ATC sets these in
+ * the environment of processes it launches (terminal sessions above all);
+ * `atc context` reports whichever are present. ATC_WORKSPACE_ID and
+ * ATC_THREAD_ID are reserved for resources that do not exist yet — the names
+ * are fixed now so consumers never have to migrate.
+ */
+export const CONTEXT_VARIABLES = [
+  "ATC_ENDPOINT",
+  "ATC_PROJECT_ID",
+  "ATC_WORKSPACE_ID",
+  "ATC_THREAD_ID",
+  "ATC_TERMINAL_ID",
+] as const
+
+export type ContextVariable = (typeof CONTEXT_VARIABLES)[number]
+
 /** Invalid or malformed configuration. `source` names the offending origin. */
 export class ConfigLoadError extends Schema.TaggedErrorClass<ConfigLoadError>()("ConfigLoadError", {
   source: Schema.String,
@@ -39,6 +56,15 @@ export class AppConfig extends Context.Service<
   {
     /** TCP port the server listens on / the CLI connects to. */
     readonly port: number
+    /**
+     * App Server base URL from ATC_ENDPOINT (set for processes ATC
+     * launches); undefined means "derive from the local port". Environment
+     * only — never a config-file key, because it describes the launching
+     * process's context, not the user's configuration.
+     */
+    readonly endpoint: string | undefined
+    /** The ATC_* agent-context variables present in this process. */
+    readonly context: Readonly<Partial<Record<ContextVariable, string>>>
     /** Minimum log level. */
     readonly logLevel: LogLevel.LogLevel
     /** Config file path that was consulted (it may not exist). */
@@ -215,6 +241,27 @@ export const load = (
       )
     }
 
+    // Agent context is captured verbatim (present means non-empty). Only
+    // ATC_ENDPOINT is interpreted, so only it is validated: a malformed
+    // value would otherwise surface as a confusing request failure.
+    const context: Partial<Record<ContextVariable, string>> = {}
+    for (const name of CONTEXT_VARIABLES) {
+      const value = nonEmpty(env[name])
+      if (value !== undefined) context[name] = value
+    }
+    const endpoint = context.ATC_ENDPOINT
+    if (endpoint !== undefined) {
+      const parsed = URL.canParse(endpoint) ? new URL(endpoint) : undefined
+      if (parsed === undefined || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
+        return yield* Effect.fail(
+          new ConfigLoadError({
+            source: "ATC_ENDPOINT",
+            message: `endpoint must be an http(s) URL, got "${endpoint}"`,
+          }),
+        )
+      }
+    }
+
     const dataDir = yield* requireAbsolute(
       settings.dataDir,
       "dataDir",
@@ -227,6 +274,8 @@ export const load = (
     )
     return {
       port: settings.port,
+      endpoint,
+      context,
       logLevel: settings.logLevel,
       configFile,
       dataDir,

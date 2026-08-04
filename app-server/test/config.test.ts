@@ -166,6 +166,41 @@ describe("configuration", () => {
     }),
   )
 
+  it.effect("ATC_ENDPOINT and the context variables are captured verbatim", () =>
+    Effect.gen(function* () {
+      const config = yield* load({
+        ATC_ENDPOINT: "http://127.0.0.1:9400",
+        ATC_PROJECT_ID: "p-1",
+        // Empty means unset, like every other environment value.
+        ATC_WORKSPACE_ID: "",
+      })
+      assert.strictEqual(config.endpoint, "http://127.0.0.1:9400")
+      assert.deepStrictEqual(config.context, {
+        ATC_ENDPOINT: "http://127.0.0.1:9400",
+        ATC_PROJECT_ID: "p-1",
+      })
+    }),
+  )
+
+  it.effect("absent context means no endpoint and an empty context", () =>
+    Effect.gen(function* () {
+      const config = yield* load({})
+      assert.strictEqual(config.endpoint, undefined)
+      assert.deepStrictEqual(config.context, {})
+    }),
+  )
+
+  it.effect("a malformed ATC_ENDPOINT fails naming the variable", () =>
+    Effect.gen(function* () {
+      const malformed = yield* loadError({ ATC_ENDPOINT: "not a url" })
+      assert.strictEqual(malformed.source, "ATC_ENDPOINT")
+      assert.include(malformed.message, "http(s)")
+      // Non-HTTP schemes are equally unusable as a base URL.
+      const scheme = yield* loadError({ ATC_ENDPOINT: "file:///tmp/api" })
+      assert.strictEqual(scheme.source, "ATC_ENDPOINT")
+    }),
+  )
+
   it.effect("a relative data directory is rejected (never cwd-dependent)", () =>
     Effect.gen(function* () {
       const error = yield* loadError({ ATC_DATA_DIR: "relative/data" })
