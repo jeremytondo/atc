@@ -74,6 +74,8 @@ export const testAppConfig = (overrides: Partial<AppConfig["Service"]>): Layer.L
     dbFile: "/tmp/atc.db",
     logFile: "/tmp/atc.log",
     zmxExecutable: "zmx",
+    codexExecutable: "codex",
+    claudeExecutable: "claude",
     terminalSocketDir: "/tmp/atc-sockets",
     ...overrides,
   })

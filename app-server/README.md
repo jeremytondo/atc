@@ -39,14 +39,17 @@ overrides:
 | State dir   | `~/.local/state/atc/`       | JSON log (`atc.log`), zmx sockets (`terminals/`) |
 
 Environment variables are flat `ATC_<KEY>`: `ATC_PORT`, `ATC_LOG_LEVEL`,
-`ATC_DATA_DIR`, `ATC_ZMX_EXECUTABLE`, and `ATC_CONFIG` (path to an alternate
-config file). The config file may set `port`, `logLevel` (case-insensitive),
-`dataDir`, and `zmxExecutable`; unknown keys are rejected. `atc serve --port`
-overrides the configured port for that server only.
+`ATC_DATA_DIR`, `ATC_ZMX_EXECUTABLE`, `ATC_CODEX_EXECUTABLE`,
+`ATC_CLAUDE_EXECUTABLE`, and `ATC_CONFIG` (path to an alternate config file).
+The config file may set `port`, `logLevel` (case-insensitive), `dataDir`,
+`zmxExecutable`, `codexExecutable`, and `claudeExecutable`; unknown keys are
+rejected. `atc serve --port` overrides the configured port for that server
+only.
 
-Terminals require [zmx](https://github.com/neurosnap/zmx), which atc does not
-bundle — install it yourself. It resolves from `ATC_ZMX_EXECUTABLE` or
-`zmxExecutable`, else `zmx` on PATH.
+atc bundles no third-party binaries — install them yourself. Terminals
+require [zmx](https://github.com/neurosnap/zmx); the agent integrations use
+the Codex CLI and Claude Code. Each resolves from its `ATC_*_EXECUTABLE`
+variable or config key, else its bare name on PATH.
 
 ## CLI
 

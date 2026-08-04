@@ -43,10 +43,36 @@ describe("configuration", () => {
       assert.strictEqual(config.dbFile, join(home, ".local", "share", "atc", "atc.db"))
       assert.strictEqual(config.logFile, join(home, ".local", "state", "atc", "atc.log"))
       assert.strictEqual(config.zmxExecutable, "zmx")
+      assert.strictEqual(config.codexExecutable, "codex")
+      assert.strictEqual(config.claudeExecutable, "claude")
       assert.strictEqual(
         config.terminalSocketDir,
         join(home, ".local", "state", "atc", "terminals"),
       )
+    }),
+  )
+
+  it.effect("provider executables follow the precedence rule and reject relative paths", () =>
+    Effect.gen(function* () {
+      const file = writeConfig(
+        `codexExecutable = "/opt/from-file/codex"\nclaudeExecutable = "/opt/from-file/claude"\n`,
+      )
+      const fromFile = yield* load({ ATC_CONFIG: file })
+      assert.strictEqual(fromFile.codexExecutable, "/opt/from-file/codex")
+      assert.strictEqual(fromFile.claudeExecutable, "/opt/from-file/claude")
+      const fromEnv = yield* load({
+        ATC_CONFIG: file,
+        ATC_CODEX_EXECUTABLE: "/opt/from-env/codex",
+        ATC_CLAUDE_EXECUTABLE: "/opt/from-env/claude",
+      })
+      assert.strictEqual(fromEnv.codexExecutable, "/opt/from-env/codex")
+      assert.strictEqual(fromEnv.claudeExecutable, "/opt/from-env/claude")
+
+      const codexError = yield* loadError({ ATC_CODEX_EXECUTABLE: "bin/codex" })
+      assert.include(codexError.message, "bare name or an absolute path")
+      assert.include(codexError.source, "ATC_CODEX_EXECUTABLE")
+      const claudeError = yield* loadError({ ATC_CLAUDE_EXECUTABLE: "bin/claude" })
+      assert.include(claudeError.source, "ATC_CLAUDE_EXECUTABLE")
     }),
   )
 
