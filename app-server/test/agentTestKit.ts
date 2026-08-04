@@ -6,6 +6,8 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
 import type { AgentEvent } from "../src/agentAdapter.ts"
+import * as ClaudeAdapter from "../src/claudeAdapter.ts"
+import * as ClaudeHooks from "../src/claudeHooks.ts"
 import * as CodexAdapter from "../src/codexAdapter.ts"
 import * as CodexServer from "../src/codexServer.ts"
 import * as Subprocess from "../src/subprocess.ts"
@@ -77,6 +79,22 @@ export const codexAdapterLayer = (sandbox: {
   const adapter = CodexAdapter.layer.pipe(Layer.provide(server), Layer.provide(platform))
   return Layer.mergeAll(adapter, server)
 }
+
+/**
+ * The Claude adapter stack (with ClaudeHooks exposed for webhook tests).
+ * claudeExecutable defaults to /bin/echo so resolution succeeds without a
+ * Claude install — fixture tests inject a scripted queryFn and never spawn.
+ */
+export const claudeAdapterLayer = (
+  options: ClaudeAdapter.ClaudeAdapterOptions = {},
+  executable = "/bin/echo",
+): Layer.Layer<ClaudeAdapter.ClaudeAdapter | ClaudeHooks.ClaudeHooks, unknown> =>
+  ClaudeAdapter.layerWith(options).pipe(
+    Layer.provideMerge(ClaudeHooks.layer),
+    Layer.provide(testAppConfig({ claudeExecutable: executable })),
+    Layer.provide(Subprocess.layer),
+    Layer.provideMerge(BunServices.layer),
+  )
 
 /** Collect an agent event feed into a sink in the background (scoped). */
 export const collectAgentEvents = (events: Stream.Stream<AgentEvent, unknown>) =>

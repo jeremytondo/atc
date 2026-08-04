@@ -3,6 +3,7 @@ import { Layer } from "effect"
 import { HttpMiddleware, HttpRouter, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { Api } from "./api.ts"
+import * as ClaudeHooks from "./claudeHooks.ts"
 import { V1Handlers } from "./handlers.ts"
 import * as LocalTrust from "./localTrust.ts"
 import { openApiJson } from "./openapi.ts"
@@ -21,11 +22,13 @@ const openApiRoute = HttpRouter.add(
 /**
  * All HTTP routes with the local-trust guard applied, independent of any
  * listener. Requires the handler services (BuildInfo, ProjectRepository,
- * Directories, Terminals).
+ * Directories, Terminals, ClaudeHooks). The Claude hook webhook is an
+ * internal route (claudeHooks.ts), deliberately outside the contract.
  */
 export const routes = Layer.mergeAll(
   HttpApiBuilder.layer(Api).pipe(Layer.provide(V1Handlers)),
   openApiRoute,
+  ClaudeHooks.route,
   LocalTrust.middleware,
 )
 

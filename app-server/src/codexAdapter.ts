@@ -1,5 +1,4 @@
 import { Cause, Context, Effect, Layer, Queue, Schema, Semaphore, Stream } from "effect"
-import { realpathSync } from "node:fs"
 import type { AgentActivity, AgentAdapter, AgentConnection, AgentEvent } from "./agentAdapter.ts"
 import {
   AgentConflict,
@@ -7,8 +6,9 @@ import {
   AgentProtocolError,
   AgentResumeFailed,
   AgentUnavailable,
+  makeVersionGate,
   resolveProviderExecutable,
-  warnIfBelowTestedVersion,
+  samePath,
 } from "./agentAdapter.ts"
 import * as BuildInfo from "./buildInfo.ts"
 import * as CodexServer from "./codexServer.ts"
@@ -59,18 +59,6 @@ const ThreadReply = Schema.Struct({
 })
 
 const TurnReply = Schema.Struct({ turn: Schema.Struct({ id: Schema.String }) })
-
-/** Symlink-tolerant path equality (macOS tmpdir lives behind /private). */
-const samePath = (left: string, right: string): boolean => {
-  const canonical = (value: string): string => {
-    try {
-      return realpathSync(value)
-    } catch {
-      return value
-    }
-  }
-  return canonical(left) === canonical(right)
-}
 
 const statusToActivity = (status: unknown): AgentActivity => {
   if (typeof status !== "object" || status === null) return "unknown"
@@ -130,7 +118,6 @@ export const layer = Layer.effect(CodexAdapter)(
     const connectLock = yield* Semaphore.make(1)
     const resumeLock = yield* Semaphore.make(1)
     let current: ClientState | null = null
-    let versionChecked = false
 
     const emit = (session: LiveSession, event: AgentEvent): void => {
       Queue.offerUnsafe(session.queue, event)
@@ -319,12 +306,12 @@ export const layer = Layer.effect(CodexAdapter)(
       )
 
     // Record + warn version drift, once, on first use (never blocks).
-    const versionCheck = Effect.gen(function* () {
-      if (versionChecked) return
-      versionChecked = true
-      const executable = yield* resolveProviderExecutable("codex", config.codexExecutable)
-      yield* warnIfBelowTestedVersion(subprocess, "codex", executable, CODEX_TESTED_VERSION)
-    })
+    const versionCheck = makeVersionGate(
+      subprocess,
+      "codex",
+      config.codexExecutable,
+      CODEX_TESTED_VERSION,
+    )
 
     const openSocket = (url: string): Effect.Effect<ClientState, AgentUnavailable> =>
       Effect.callback<ClientState, AgentUnavailable>((resume) => {
