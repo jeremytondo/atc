@@ -57,3 +57,29 @@ Bonus SDK behavior finding: the SDK's async iterator **throws** on an error
 result ("Claude Code returned an error result: Reached maximum number of
 turns (1)") — the adapter must treat that throw as a normal turn-failed
 outcome carrying the result, not as a transport defect.
+
+## 4. Detach → survive → adopt → resume → turn → stop: verified end-to-end
+
+The detached-server lifecycle decided in finding 1 was exercised as a full
+cycle across two separate processes (simulating an ATC restart):
+
+Phase A spawned `codex app-server --listen ws://127.0.0.1:17993` detached
+(`nohup`, backgrounded through an intermediate `sh` that exits immediately,
+so the server is reparented with no controlling terminal), seeded a thread
+with one completed turn, persisted `{pid, port, threadId, cwd}`, and exited
+without killing anything. Phase B, a fresh process started 5s later:
+
+- server pid still alive after the spawner's exit;
+- `/readyz` on the persisted port answered;
+- `thread/resume` returned the exact thread ID and cwd with 1 existing turn;
+- a turn driven over the adopted connection completed, with 21 correlated
+  events (`thread/status/changed`, `turn/started`, `item/started`,
+  `item/agentMessage/delta`, `item/completed`, `turn/completed`,
+  `thread/tokenUsage/updated`) — the full status feed works on an adopted
+  connection;
+- explicit `SIGTERM` stopped the server cleanly (the intentional-stop path).
+
+Verdict: PASS on first run. Every load-bearing behavior of the accepted
+Codex topology now has direct evidence: shared-server fan-out and real-TUI
+observation (ATC-83), identity/resume/fail-closed (ATC-68), TUI
+non-survival of server death (finding 1), and detached adoption (this).
