@@ -1,14 +1,11 @@
 import { assert, describe, it } from "@effect/vitest"
-import { BunServices } from "@effect/platform-bun"
-import { Effect, Layer } from "effect"
+import { Effect } from "effect"
 import * as fs from "node:fs"
-import * as os from "node:os"
-import * as path from "node:path"
 import { fileURLToPath } from "node:url"
 import * as CodexServer from "../src/codexServer.ts"
 import * as Subprocess from "../src/subprocess.ts"
-import { freePort, trackTempDir } from "./blackbox.ts"
-import { testAppConfig } from "./testLayers.ts"
+import { freePort } from "./blackbox.ts"
+import { codexServerLayer, makeCodexSandbox } from "./agentTestKit.ts"
 
 // Supervision tests against the fake-codex-listener fixture (a Bun script
 // that binds the requested --listen port and answers /readyz). All tests are
@@ -18,42 +15,9 @@ import { testAppConfig } from "./testLayers.ts"
 
 const fixturePath = fileURLToPath(new URL("fixtures/fake-codex-listener.ts", import.meta.url))
 
-/** A sandbox whose wrapper script is the configured codex executable. */
-const makeSandbox = (vars: Record<string, string> = {}) => {
-  const base = trackTempDir(fs.mkdtempSync(path.join(os.tmpdir(), "atc-codex-")))
-  const stateDir = path.join(base, "state")
-  const wrapper = path.join(base, "fake-codex")
-  const pidFile = path.join(base, "fixture.pid")
-  const assignments = Object.entries({ FAKE_CODEX_PID_FILE: pidFile, ...vars })
-    .map(([key, value]) => `${key}='${value}'`)
-    .join(" ")
-  fs.writeFileSync(
-    wrapper,
-    `#!/bin/sh\n${assignments} exec "${process.execPath}" "${fixturePath}" "$@"\n`,
-  )
-  fs.chmodSync(wrapper, 0o755)
-  return {
-    base,
-    stateDir,
-    wrapper,
-    pidFile,
-    identityFile: path.join(stateDir, "codex-app-server.json"),
-  }
-}
-
 /** The pid the most recently launched fixture recorded. */
 const fixturePid = (sandbox: { readonly pidFile: string }): number =>
   Number.parseInt(fs.readFileSync(sandbox.pidFile, "utf8"), 10)
-
-const serverLayer = (
-  sandbox: { readonly stateDir: string; readonly wrapper: string },
-  options: CodexServer.CodexServerOptions = {},
-) =>
-  CodexServer.layerWith(options).pipe(
-    Layer.provide(testAppConfig({ codexExecutable: sandbox.wrapper, stateDir: sandbox.stateDir })),
-    Layer.provide(Subprocess.layer),
-    Layer.provideMerge(BunServices.layer),
-  )
 
 const readIdentity = (identityFile: string): { pid: number; port: number } =>
   JSON.parse(fs.readFileSync(identityFile, "utf8")) as { pid: number; port: number }
@@ -72,13 +36,13 @@ describe("CodexServer", () => {
     "spawns detached, persists identity, adopts from a fresh service, and stops",
     () =>
       Effect.gen(function* () {
-        const sandbox = makeSandbox()
+        const sandbox = makeCodexSandbox()
 
         // First service instance spawns the server.
         const first = yield* Effect.gen(function* () {
           const codex = yield* CodexServer.CodexServer
           return yield* codex.ensure()
-        }).pipe(Effect.provide(serverLayer(sandbox)))
+        }).pipe(Effect.provide(codexServerLayer(sandbox)))
         assert.isTrue(Subprocess.isProcessAlive(first.pid))
         assert.strictEqual(first.url, `ws://127.0.0.1:${first.port}`)
         const persisted = readIdentity(sandbox.identityFile)
@@ -97,7 +61,7 @@ describe("CodexServer", () => {
           assert.strictEqual(adopted.pid, first.pid)
           assert.strictEqual(adopted.port, first.port)
           yield* codex.stop()
-        }).pipe(Effect.provide(serverLayer(sandbox)))
+        }).pipe(Effect.provide(codexServerLayer(sandbox)))
         assert.isTrue(yield* Subprocess.waitForProcessExit(first.pid))
         assert.isFalse(fs.existsSync(sandbox.identityFile))
       }),
@@ -108,7 +72,7 @@ describe("CodexServer", () => {
     "replaces a dead persisted pid instead of failing",
     () =>
       Effect.gen(function* () {
-        const sandbox = makeSandbox()
+        const sandbox = makeCodexSandbox()
         // A pid that is certainly dead: spawn a no-op and wait for it.
         const gone = Bun.spawnSync(["true"])
         fs.mkdirSync(sandbox.stateDir, { recursive: true })
@@ -122,7 +86,7 @@ describe("CodexServer", () => {
           assert.isTrue(Subprocess.isProcessAlive(info.pid))
           assert.notStrictEqual(info.port, 1)
           yield* codex.stop()
-        }).pipe(Effect.provide(serverLayer(sandbox)))
+        }).pipe(Effect.provide(codexServerLayer(sandbox)))
       }),
     30_000,
   )
@@ -131,7 +95,7 @@ describe("CodexServer", () => {
     "replaces an alive-but-unready server (adopt-or-replace, never accumulate)",
     () =>
       Effect.gen(function* () {
-        const sandbox = makeSandbox()
+        const sandbox = makeCodexSandbox()
         // A live process that IS an app-server by command line but never
         // becomes ready: the never-ready fixture launched by hand.
         const stalePort = yield* Effect.promise(() => freePort())
@@ -152,7 +116,7 @@ describe("CodexServer", () => {
             assert.isTrue(yield* Subprocess.waitForProcessExit(stale.pid))
             assert.isTrue(Subprocess.isProcessAlive(info.pid))
             yield* codex.stop()
-          }).pipe(Effect.provide(serverLayer(sandbox, { adoptTimeout: "500 millis" })))
+          }).pipe(Effect.provide(codexServerLayer(sandbox, { adoptTimeout: "500 millis" })))
         } finally {
           stale.kill()
         }
@@ -164,7 +128,7 @@ describe("CodexServer", () => {
     "a recycled pid that is not an app-server is abandoned, never signaled",
     () =>
       Effect.gen(function* () {
-        const sandbox = makeSandbox()
+        const sandbox = makeCodexSandbox()
         // A live process whose command line is NOT an app-server — models a
         // pid recycled to an innocent process after a reboot.
         const bystander = Bun.spawn([
@@ -184,7 +148,7 @@ describe("CodexServer", () => {
             assert.isTrue(Subprocess.isProcessAlive(info.pid))
             assert.isTrue(Subprocess.isProcessAlive(bystander.pid))
             yield* codex.stop()
-          }).pipe(Effect.provide(serverLayer(sandbox)))
+          }).pipe(Effect.provide(codexServerLayer(sandbox)))
           assert.isTrue(Subprocess.isProcessAlive(bystander.pid))
         } finally {
           bystander.kill()
@@ -197,11 +161,11 @@ describe("CodexServer", () => {
     "a server that never becomes ready is reaped and reported actionably",
     () =>
       Effect.gen(function* () {
-        const sandbox = makeSandbox({ FAKE_CODEX_MODE: "never-ready" })
+        const sandbox = makeCodexSandbox({ FAKE_CODEX_MODE: "never-ready" })
         const failure = yield* Effect.gen(function* () {
           const codex = yield* CodexServer.CodexServer
           return yield* Effect.flip(codex.ensure())
-        }).pipe(Effect.provide(serverLayer(sandbox, { readyTimeout: "700 millis" })))
+        }).pipe(Effect.provide(codexServerLayer(sandbox, { readyTimeout: "700 millis" })))
         assert.include(failure.message, "not ready")
         // The failed spawn was cleaned up: no identity, no stray process.
         assert.isFalse(fs.existsSync(sandbox.identityFile))
@@ -214,13 +178,16 @@ describe("CodexServer", () => {
     "a missing executable is one actionable diagnostic",
     () =>
       Effect.gen(function* () {
-        const sandbox = makeSandbox()
+        const sandbox = makeCodexSandbox()
         const failure = yield* Effect.gen(function* () {
           const codex = yield* CodexServer.CodexServer
           return yield* Effect.flip(codex.ensure())
         }).pipe(
           Effect.provide(
-            serverLayer({ stateDir: sandbox.stateDir, wrapper: "atc-test-definitely-not-codex" }),
+            codexServerLayer({
+              stateDir: sandbox.stateDir,
+              wrapper: "atc-test-definitely-not-codex",
+            }),
           ),
         )
         assert.include(failure.message, "install the Codex CLI")
@@ -233,7 +200,7 @@ describe("CodexServer", () => {
     "the exit watcher restarts a server that died underneath us",
     () =>
       Effect.gen(function* () {
-        const sandbox = makeSandbox()
+        const sandbox = makeCodexSandbox()
         yield* Effect.gen(function* () {
           const codex = yield* CodexServer.CodexServer
           const info = yield* codex.ensure()
@@ -246,7 +213,7 @@ describe("CodexServer", () => {
           const replacement = yield* codex.ensure()
           assert.notStrictEqual(replacement.pid, info.pid)
           yield* codex.stop()
-        }).pipe(Effect.provide(serverLayer(sandbox, { watchInterval: "50 millis" })))
+        }).pipe(Effect.provide(codexServerLayer(sandbox, { watchInterval: "50 millis" })))
       }),
     30_000,
   )
