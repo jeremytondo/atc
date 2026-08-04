@@ -48,10 +48,10 @@ describe.skipIf(!enabled)("live provider smoke (opt-in: mise run test:smoke)", (
 
   test("Claude Agent SDK round trip", async () => {
     const resolvable =
-      process.env["ATC_CLAUDE_CODE_EXECUTABLE"] !== undefined || Bun.which("claude") !== null
+      process.env["ATC_CLAUDE_EXECUTABLE"] !== undefined || Bun.which("claude") !== null
     expect(
       resolvable,
-      "claude not found; install and authenticate Claude Code or set ATC_CLAUDE_CODE_EXECUTABLE",
+      "claude not found; install and authenticate Claude Code or set ATC_CLAUDE_EXECUTABLE",
     ).toBe(true)
     await runSmoke("claude")
   }, 300_000)

@@ -4,7 +4,9 @@ import { Command } from "effect/unstable/cli"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { AgentUnavailable, resolveProviderExecutable } from "./agentAdapter.ts"
 import * as BuildInfo from "./buildInfo.ts"
+import { AppConfig, ConfigLoadError, layer as appConfigLayer } from "./config.ts"
 import * as Subprocess from "./subprocess.ts"
 
 // Unstable provider smoke checks (ATC-88). `atc smoke ...` proves that the
@@ -22,48 +24,6 @@ export class SmokeError extends Schema.TaggedErrorClass<SmokeError>()("SmokeErro
 class SmokeReported extends Schema.TaggedErrorClass<SmokeReported>()("SmokeReported", {}) {
   override readonly [Runtime.errorReported] = false
 }
-
-// --- Executable resolution ---------------------------------------------------
-
-/** Env override first, then PATH — the shared resolveExecutable rule. */
-const resolveProvider = (
-  provider: SmokeError["provider"],
-  name: string,
-  envVar: string,
-  installHint: string,
-) =>
-  Effect.suspend(() => {
-    const override = process.env[envVar]
-    const found = Subprocess.resolveExecutable(
-      override !== undefined && override !== "" ? override : name,
-    )
-    if (found !== null) return Effect.succeed(found)
-    return Effect.fail(
-      new SmokeError({
-        provider,
-        message: `${name} not found on PATH; ${installHint} or set ${envVar}`,
-      }),
-    )
-  })
-
-export const resolveCodexExecutable = resolveProvider(
-  "codex",
-  "codex",
-  "ATC_CODEX_EXECUTABLE",
-  "install the Codex CLI",
-)
-
-/**
- * Claude Code: the same bring-your-own-CLI rule as codex. atc does not ship
- * a Claude Code binary; the user's install also carries the credentials the
- * SDK needs.
- */
-export const resolveClaudeCodeExecutable = resolveProvider(
-  "claude",
-  "claude",
-  "ATC_CLAUDE_CODE_EXECUTABLE",
-  "install and authenticate Claude Code",
-)
 
 // --- Shared termination checks ----------------------------------------------
 
@@ -402,22 +362,34 @@ export const claudeSmoke = (claudeExecutable: string) =>
 
 /** Print the failure as actionable diagnostics, then fail quietly. */
 const reportFailures = <A, R>(
-  effect: Effect.Effect<A, SmokeError | Subprocess.SubprocessError, R>,
+  effect: Effect.Effect<
+    A,
+    SmokeError | Subprocess.SubprocessError | AgentUnavailable | ConfigLoadError,
+    R
+  >,
 ) =>
   effect.pipe(
-    Effect.catchTag(["SmokeError", "SubprocessError"], (error) =>
-      Console.error(
-        error._tag === "SmokeError"
-          ? `atc smoke ${error.provider}: ${error.message}`
-          : `atc smoke: ${error.executable} ${error.operation} failed: ${error.message}`,
-      ).pipe(Effect.andThen(Effect.fail(new SmokeReported()))),
+    Effect.catchTag(
+      ["SmokeError", "SubprocessError", "AgentUnavailable", "ConfigLoadError"],
+      (error) =>
+        Console.error(
+          error._tag === "SubprocessError"
+            ? `atc smoke: ${error.executable} ${error.operation} failed: ${error.message}`
+            : error._tag === "ConfigLoadError"
+              ? `atc smoke: ${error.source}: ${error.message}`
+              : `atc smoke ${error.provider}: ${error.message}`,
+        ).pipe(Effect.andThen(Effect.fail(new SmokeReported()))),
     ),
   )
 
+// Provider executables come from the settled configuration (AppConfig
+// codexExecutable / claudeExecutable) — the same values the production
+// adapters read, so a smoke pass proves the configured provider works.
 const codexCommand = Command.make("codex", {}, () =>
   reportFailures(
     Effect.gen(function* () {
-      const executable = yield* resolveCodexExecutable
+      const config = yield* AppConfig
+      const executable = yield* resolveProviderExecutable("codex", config.codexExecutable)
       yield* codexSmoke({
         executable,
         args: ["app-server", "--stdio"],
@@ -425,16 +397,17 @@ const codexCommand = Command.make("codex", {}, () =>
         extendEnv: true,
         forceKillAfter: "2 seconds",
       })
-    }),
+    }).pipe(Effect.provide(appConfigLayer)),
   ),
 ).pipe(Command.withDescription("[unstable] Codex app-server launch and initialize round trip"))
 
 const claudeCommand = Command.make("claude", {}, () =>
   reportFailures(
     Effect.gen(function* () {
-      const executable = yield* resolveClaudeCodeExecutable
+      const config = yield* AppConfig
+      const executable = yield* resolveProviderExecutable("claude", config.claudeExecutable)
       yield* claudeSmoke(executable)
-    }),
+    }).pipe(Effect.provide(appConfigLayer)),
   ),
 ).pipe(
   Command.withDescription("[unstable] Claude Agent SDK round trip via the packaged executable"),

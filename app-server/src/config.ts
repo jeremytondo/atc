@@ -79,6 +79,10 @@ export class AppConfig extends Context.Service<
     readonly logFile: string
     /** zmx executable: an absolute path, or a name resolved on PATH. */
     readonly zmxExecutable: string
+    /** Codex CLI executable: an absolute path, or a name resolved on PATH. */
+    readonly codexExecutable: string
+    /** Claude Code executable: an absolute path, or a name resolved on PATH. */
+    readonly claudeExecutable: string
     /**
      * ATC-private zmx socket directory (ZMX_DIR for every zmx child). Only
      * ATC-owned sessions live here, so the inventory is authoritative and
@@ -108,7 +112,14 @@ const configFilePath = (env: Env) =>
 // The settings a config.toml may define. Keys are camelCase, matching the
 // system-wide JSON convention; unknown keys fail fast (a typo silently
 // falling back to a default would be a partial boot).
-const FILE_KEYS = ["port", "logLevel", "dataDir", "zmxExecutable"] as const
+const FILE_KEYS = [
+  "port",
+  "logLevel",
+  "dataDir",
+  "zmxExecutable",
+  "codexExecutable",
+  "claudeExecutable",
+] as const
 
 const parseToml = (source: string, text: string) =>
   Effect.try({
@@ -218,6 +229,8 @@ export const load = (
         Config.withDefault(xdgDir(env, "XDG_DATA_HOME", [".local", "share"])),
       ),
       zmxExecutable: Config.string("zmxExecutable").pipe(Config.withDefault("zmx")),
+      codexExecutable: Config.string("codexExecutable").pipe(Config.withDefault("codex")),
+      claudeExecutable: Config.string("claudeExecutable").pipe(Config.withDefault("claude")),
     }).pipe(
       Effect.provideService(ConfigProvider.ConfigProvider, provider),
       Effect.catchTag("ConfigError", (error) =>
@@ -232,13 +245,20 @@ export const load = (
 
     // A relative executable path would resolve against the working
     // directory — compiled behavior never may. Bare names resolve on PATH.
-    if (settings.zmxExecutable.includes("/") && !settings.zmxExecutable.startsWith("/")) {
-      return yield* Effect.fail(
-        new ConfigLoadError({
-          source: `${configFile} / ATC_ZMX_EXECUTABLE`,
-          message: `zmxExecutable must be a bare name or an absolute path, got "${settings.zmxExecutable}"`,
-        }),
-      )
+    const executables = [
+      ["zmxExecutable", "ATC_ZMX_EXECUTABLE", settings.zmxExecutable],
+      ["codexExecutable", "ATC_CODEX_EXECUTABLE", settings.codexExecutable],
+      ["claudeExecutable", "ATC_CLAUDE_EXECUTABLE", settings.claudeExecutable],
+    ] as const
+    for (const [key, envVar, value] of executables) {
+      if (value.includes("/") && !value.startsWith("/")) {
+        return yield* Effect.fail(
+          new ConfigLoadError({
+            source: `${configFile} / ${envVar}`,
+            message: `${key} must be a bare name or an absolute path, got "${value}"`,
+          }),
+        )
+      }
     }
 
     // Agent context is captured verbatim (present means non-empty). Only
@@ -283,6 +303,8 @@ export const load = (
       dbFile: path.join(dataDir, "atc.db"),
       logFile: path.join(stateDir, "atc.log"),
       zmxExecutable: settings.zmxExecutable,
+      codexExecutable: settings.codexExecutable,
+      claudeExecutable: settings.claudeExecutable,
       terminalSocketDir: path.join(stateDir, "terminals"),
     }
   })
