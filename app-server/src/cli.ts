@@ -5,6 +5,7 @@ import { HttpClient, HttpClientRequest } from "effect/unstable/http"
 import * as path from "node:path"
 import * as AttachClient from "./attachClient.ts"
 import { attachUrl, CLOSE_DETACH } from "./attachProtocol.ts"
+import * as ClaudeHooks from "./claudeHooks.ts"
 import * as Client from "./client.ts"
 import { AppConfig, ConfigLoadError, CONTEXT_VARIABLES, layer as appConfigLayer } from "./config.ts"
 import * as Directories from "./directories.ts"
@@ -81,6 +82,7 @@ const serve = Command.make("serve", { port }, ({ port }) =>
           TerminalRepository.layer,
           Directories.layer,
           Zmx.layer,
+          ClaudeHooks.layer,
         ]),
         Layer.provide(Persistence.layer),
         Layer.provide(Logging.layer),

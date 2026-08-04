@@ -1,6 +1,6 @@
 import { Effect, Schema, Stream } from "effect"
 import type { Scope } from "effect"
-import { existsSync } from "node:fs"
+import { existsSync, realpathSync } from "node:fs"
 import type { Subprocess } from "./subprocess.ts"
 import { resolveExecutable } from "./subprocess.ts"
 
@@ -304,19 +304,36 @@ export const resolveProviderExecutable = (
     )
   })
 
+/** Symlink-tolerant path equality (macOS tmpdir lives behind /private). */
+export const samePath = (left: string, right: string): boolean => {
+  const canonical = (value: string): string => {
+    try {
+      return realpathSync(value)
+    } catch {
+      return value
+    }
+  }
+  return canonical(left) === canonical(right)
+}
+
 /**
- * The shared version-drift rule (record + warn, never block): read the
- * installed provider version via `--version`, log one actionable warning
- * when it is below the floor the adapter was validated against. Any failure
- * to determine the version is itself just a warning.
+ * The shared version-drift rule (record + warn, never block), memoized to
+ * one check per adapter: resolve the configured executable, read the
+ * installed version via `--version`, and log one actionable warning when
+ * it is below the floor the adapter was validated against. Any failure to
+ * determine the version is itself just a warning.
  */
-export const warnIfBelowTestedVersion = (
+export const makeVersionGate = (
   subprocess: Subprocess["Service"],
   provider: AgentProvider,
-  executable: string,
+  configured: string,
   testedVersion: string,
-): Effect.Effect<void> =>
-  Effect.gen(function* () {
+): Effect.Effect<void, AgentUnavailable> => {
+  let checked = false
+  return Effect.gen(function* () {
+    if (checked) return
+    checked = true
+    const executable = yield* resolveProviderExecutable(provider, configured)
     const output = yield* Effect.scoped(
       Effect.gen(function* () {
         const child = yield* subprocess.spawn({
@@ -346,3 +363,4 @@ export const warnIfBelowTestedVersion = (
       )
     }
   })
+}

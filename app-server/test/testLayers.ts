@@ -5,6 +5,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
+import * as ClaudeHooks from "../src/claudeHooks.ts"
 import { AppConfig } from "../src/config.ts"
 import * as Directories from "../src/directories.ts"
 import * as Persistence from "../src/persistence.ts"
@@ -29,7 +30,8 @@ type ServiceLayer = Layer.Layer<
   | ProjectRepository.ProjectRepository
   | TerminalRepository.TerminalRepository
   | Directories.Directories
-  | TerminalAdapter,
+  | TerminalAdapter
+  | ClaudeHooks.ClaudeHooks,
   unknown
 >
 
@@ -51,7 +53,7 @@ export const makeTestServiceLayers = (
   const base = Layer.mergeAll(ProjectRepository.layer, TerminalRepository.layer).pipe(
     Layer.provide(Persistence.layerFile(dbFile)),
   )
-  const services = Layer.mergeAll(base, Directories.layer, fake.layer)
+  const services = Layer.mergeAll(base, Directories.layer, fake.layer, ClaudeHooks.layer)
   return {
     fake,
     services,

@@ -11,6 +11,7 @@ import {
 } from "effect/unstable/http"
 import { HttpApi, OpenApi } from "effect/unstable/httpapi"
 import { Api, DEFAULT_PORT } from "../src/api.ts"
+import * as ClaudeHooks from "../src/claudeHooks.ts"
 import { openApiDocument, openApiJson } from "../src/openapi.ts"
 import * as Server from "../src/server.ts"
 import { appServerRoot } from "./blackbox.ts"
@@ -123,6 +124,8 @@ const rawClient = Effect.gen(function* () {
       )
       const response = yield* handler.pipe(
         Effect.provideService(HttpServerRequest.HttpServerRequest, serverRequest),
+        // The internal Claude hook route resolves its service per request.
+        Effect.provide(ClaudeHooks.layer),
         Effect.orDie,
       )
       return HttpServerResponse.toClientResponse(response)
