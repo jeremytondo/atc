@@ -2,7 +2,7 @@ import { assert, describe, it } from "@effect/vitest"
 import { BunServices } from "@effect/platform-bun"
 import { Effect, Option } from "effect"
 import { CliError, Command } from "effect/unstable/cli"
-import { port } from "../src/cli.ts"
+import { port } from "../src/cli/serve.ts"
 
 // Parse the real --port flag against a probe command so validation is tested
 // without starting a server.
