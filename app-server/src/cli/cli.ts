@@ -3,8 +3,8 @@ import { Console, Effect, FileSystem, Runtime, Schema } from "effect"
 import { Argument, Command, Flag } from "effect/unstable/cli"
 import { HttpClient } from "effect/unstable/http"
 import * as path from "node:path"
-import * as Client from "../client.ts"
-import { AppConfig, ConfigLoadError, layer as appConfigLayer } from "../config.ts"
+import * as Client from "../api/client.ts"
+import { AppConfig, ConfigLoadError, layer as appConfigLayer } from "../platform/config.ts"
 
 // Shared CLI plumbing: the one-line stderr diagnostic contract, the base-URL
 // resolution seam, and the clientCommand shape every API-backed command uses.

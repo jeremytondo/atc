@@ -1,7 +1,7 @@
 import { Console, Effect, FileSystem, Option } from "effect"
 import { Argument, Command, Flag } from "effect/unstable/cli"
 import { HttpClient, HttpClientRequest } from "effect/unstable/http"
-import { AppConfig, CONTEXT_VARIABLES } from "../config.ts"
+import { AppConfig, CONTEXT_VARIABLES } from "../platform/config.ts"
 import * as Cli from "./cli.ts"
 
 // The agent gateway (ATC-131): `atc api`, `atc context`, `atc capabilities`.

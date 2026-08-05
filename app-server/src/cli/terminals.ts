@@ -1,8 +1,8 @@
 import { Console, Effect, Option } from "effect"
 import { Argument, Command, Flag } from "effect/unstable/cli"
 import * as path from "node:path"
-import * as AttachClient from "../attachClient.ts"
-import { attachUrl, CLOSE_DETACH } from "../attachProtocol.ts"
+import * as AttachClient from "../terminals/attachClient.ts"
+import { attachUrl, CLOSE_DETACH } from "../terminals/attachProtocol.ts"
 import * as Cli from "./cli.ts"
 
 // The `atc terminal` command group: thin client commands over the contract,

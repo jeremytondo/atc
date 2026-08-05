@@ -1,6 +1,6 @@
 import { Effect, Layer, Option, Schema } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
-import { AppConfig, layer as appConfigLayer } from "../config.ts"
+import { AppConfig, layer as appConfigLayer } from "../platform/config.ts"
 import * as Server from "../server.ts"
 import * as Cli from "./cli.ts"
 

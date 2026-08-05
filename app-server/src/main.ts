@@ -1,14 +1,14 @@
 import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
 import { Command } from "effect/unstable/cli"
-import * as BuildInfo from "./buildInfo.ts"
+import * as BuildInfo from "./platform/buildInfo.ts"
 import { fs, health, version } from "./cli/cli.ts"
 import { api, capabilities, context } from "./cli/gateway.ts"
 import { project } from "./cli/projects.ts"
 import { serve } from "./cli/serve.ts"
 import { terminal } from "./cli/terminals.ts"
-import { smoke } from "./smoke.ts"
-import * as Subprocess from "./subprocess.ts"
+import { smoke } from "./agents/smoke.ts"
+import * as Subprocess from "./platform/subprocess.ts"
 
 // The entrypoint: root command assembly plus the only runMain in the
 // application. Everything else is Layers and Effects, so even the CLI

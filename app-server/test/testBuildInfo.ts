@@ -1,5 +1,5 @@
 import { Layer } from "effect"
-import { BuildInfo } from "../src/buildInfo.ts"
+import { BuildInfo } from "../src/platform/buildInfo.ts"
 
 export const testBuildInfo = {
   version: "1.2.3-test",
