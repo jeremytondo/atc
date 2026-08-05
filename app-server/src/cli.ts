@@ -12,6 +12,7 @@ import * as Directories from "./directories.ts"
 import * as Logging from "./logging.ts"
 import * as Persistence from "./persistence.ts"
 import * as ProjectRepository from "./projectRepository.ts"
+import * as Projects from "./projects.ts"
 import * as Server from "./server.ts"
 import { smoke } from "./smoke.ts"
 import * as TerminalRepository from "./terminalRepository.ts"
@@ -76,6 +77,7 @@ const serve = Command.make("serve", { port }, ({ port }) =>
     const effective = { ...config, port: Option.getOrElse(port, () => config.port) }
     yield* Layer.launch(
       Server.layer({ port: effective.port }).pipe(
+        Layer.provide(Projects.layer),
         Layer.provide(Terminals.layer),
         Layer.provide([
           ProjectRepository.layer,

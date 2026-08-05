@@ -21,9 +21,9 @@ const openApiRoute = HttpRouter.add(
 
 /**
  * All HTTP routes with the local-trust guard applied, independent of any
- * listener. Requires the handler services (BuildInfo, ProjectRepository,
- * Directories, Terminals, ClaudeHooks). The Claude hook webhook is an
- * internal route (claudeHooks.ts), deliberately outside the contract.
+ * listener. Requires the handler services (BuildInfo, Projects, Directories,
+ * Terminals, ClaudeHooks). The Claude hook webhook is an internal route
+ * (claudeHooks.ts), deliberately outside the contract.
  */
 export const routes = Layer.mergeAll(
   HttpApiBuilder.layer(Api).pipe(Layer.provide(V1Handlers)),

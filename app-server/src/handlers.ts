@@ -1,19 +1,22 @@
-import { Effect, Option } from "effect"
+import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
-import { Api, ProjectHasTerminals, ProjectNotFound } from "./api.ts"
+import { Api } from "./api.ts"
 import { BuildInfo } from "./buildInfo.ts"
 import { Directories } from "./directories.ts"
-import { ProjectRepository } from "./projectRepository.ts"
+import { Projects } from "./projects.ts"
 import { attachTerminal } from "./terminalAttach.ts"
 import { Terminals } from "./terminals.ts"
 
-/** Implements the /api/v1 contract. App construction only — no listener. */
+/**
+ * Implements the /api/v1 contract. App construction only — no listener, and
+ * pure delegation: every rule lives in the domain services.
+ */
 export const V1Handlers = HttpApiBuilder.group(
   Api,
   "v1",
   Effect.fnUntraced(function* (handlers) {
     const build = yield* BuildInfo
-    const projects = yield* ProjectRepository
+    const projects = yield* Projects
     const directories = yield* Directories
     const terminals = yield* Terminals
     // Attach bridges outlive their originating requests (Bun aborts the
@@ -32,50 +35,10 @@ export const V1Handlers = HttpApiBuilder.group(
         } as const),
       )
       .handle("listProjects", () => projects.list())
-      .handle("createProject", ({ payload }) =>
-        Effect.gen(function* () {
-          const canonical = yield* directories.canonicalize(payload.defaultWorkingDirectory)
-          return yield* projects.create({
-            name: payload.name,
-            defaultWorkingDirectory: canonical,
-          })
-        }),
-      )
-      .handle("getProject", ({ params }) => projects.require(params.projectId))
-      .handle("updateProject", ({ params, payload }) =>
-        Effect.gen(function* () {
-          const canonical =
-            payload.defaultWorkingDirectory !== undefined
-              ? yield* directories.canonicalize(payload.defaultWorkingDirectory)
-              : undefined
-          const updated = yield* projects.update(params.projectId, {
-            name: payload.name,
-            defaultWorkingDirectory: canonical,
-          })
-          return yield* Option.match(updated, {
-            onNone: () => Effect.fail(new ProjectNotFound({ projectId: params.projectId })),
-            onSome: Effect.succeed,
-          })
-        }),
-      )
-      .handle("deleteProject", ({ params }) =>
-        Effect.gen(function* () {
-          // RESTRICT while terminals exist (tombstones included): the
-          // simplest correct rule for a single-user app. Not transactional
-          // with the delete below — a concurrently created terminal falls
-          // back to the migration's FK RESTRICT (a defect, not a 409).
-          const terminalCount = yield* terminals.countForProject(params.projectId)
-          if (terminalCount > 0) {
-            return yield* Effect.fail(
-              new ProjectHasTerminals({ projectId: params.projectId, terminalCount }),
-            )
-          }
-          const deleted = yield* projects.delete(params.projectId)
-          if (!deleted) {
-            return yield* Effect.fail(new ProjectNotFound({ projectId: params.projectId }))
-          }
-        }),
-      )
+      .handle("createProject", ({ payload }) => projects.create(payload))
+      .handle("getProject", ({ params }) => projects.get(params.projectId))
+      .handle("updateProject", ({ params, payload }) => projects.update(params.projectId, payload))
+      .handle("deleteProject", ({ params }) => projects.delete(params.projectId))
       .handle("checkDirectory", ({ query }) => directories.check(query.path))
       .handle("listTerminals", ({ query }) => terminals.list(query.projectId))
       .handle("createTerminal", ({ payload }) => terminals.create(payload))

@@ -10,6 +10,7 @@ import { AppConfig } from "../src/config.ts"
 import * as Directories from "../src/directories.ts"
 import * as Persistence from "../src/persistence.ts"
 import * as ProjectRepository from "../src/projectRepository.ts"
+import * as Projects from "../src/projects.ts"
 import * as Subprocess from "../src/subprocess.ts"
 import type { TerminalAdapter } from "../src/terminalAdapter.ts"
 import * as TerminalRepository from "../src/terminalRepository.ts"
@@ -47,17 +48,25 @@ export const makeTestServiceLayers = (
 ): {
   readonly fake: FakeTerminalAdapter
   readonly services: ServiceLayer
-  readonly layer: Layer.Layer<Layer.Success<ServiceLayer> | Terminals.Terminals, unknown>
+  readonly layer: Layer.Layer<
+    Layer.Success<ServiceLayer> | Terminals.Terminals | Projects.Projects,
+    unknown
+  >
 } => {
   const fake = makeFakeAdapter()
   const base = Layer.mergeAll(ProjectRepository.layer, TerminalRepository.layer).pipe(
     Layer.provide(Persistence.layerFile(dbFile)),
   )
   const services = Layer.mergeAll(base, Directories.layer, fake.layer, ClaudeHooks.layer)
+  const terminals = Terminals.layer.pipe(Layer.provide(services))
   return {
     fake,
     services,
-    layer: Layer.mergeAll(services, Terminals.layer.pipe(Layer.provide(services))),
+    layer: Layer.mergeAll(
+      services,
+      terminals,
+      Projects.layer.pipe(Layer.provide([services, terminals])),
+    ),
   }
 }
 
