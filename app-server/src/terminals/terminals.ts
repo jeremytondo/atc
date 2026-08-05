@@ -98,8 +98,6 @@ export class Terminals extends Context.Service<
      * tombstone is written. Unavailable inventories fail retryably.
      */
     readonly confirmEnded: (id: string) => Effect.Effect<boolean, ZmxUnavailable>
-    /** Every record (tombstones included) — the project-deletion guard. */
-    readonly countForProject: (projectId: string) => Effect.Effect<number>
   }
 >()("app-server/Terminals") {}
 
@@ -323,7 +321,6 @@ export const layer = Layer.effect(Terminals)(
           yield* repository.markEnded([id])
           return true
         }),
-      countForProject: (projectId) => repository.countForProject(projectId),
     }
   }),
 )

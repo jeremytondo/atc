@@ -9,7 +9,7 @@ import type {
 import { Directories } from "../platform/directories.ts"
 import { ProjectRepository } from "./projectRepository.ts"
 import type { Project } from "./projectRepository.ts"
-import { Terminals } from "../terminals/terminals.ts"
+import { TerminalRepository } from "../terminals/terminalRepository.ts"
 
 // The Projects domain service: the rules above the repository —
 // canonicalize-on-create/update (identity is the symlink-resolved canonical
@@ -40,7 +40,7 @@ export const layer = Layer.effect(Projects)(
   Effect.gen(function* () {
     const repository = yield* ProjectRepository
     const directories = yield* Directories
-    const terminals = yield* Terminals
+    const terminalRepository = yield* TerminalRepository
 
     return {
       list: () => repository.list(),
@@ -74,7 +74,7 @@ export const layer = Layer.effect(Projects)(
           // simplest correct rule for a single-user app. Not transactional
           // with the delete below — a concurrently created terminal falls
           // back to the migration's FK RESTRICT (a defect, not a 409).
-          const terminalCount = yield* terminals.countForProject(id)
+          const terminalCount = yield* terminalRepository.countForProject(id)
           if (terminalCount > 0) {
             return yield* Effect.fail(new ProjectHasTerminals({ projectId: id, terminalCount }))
           }

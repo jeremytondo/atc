@@ -58,14 +58,13 @@ export const makeTestServiceLayers = (
     Layer.provide(Persistence.layerFile(dbFile)),
   )
   const services = Layer.mergeAll(base, Directories.layer, fake.layer, ClaudeHooks.layer)
-  const terminals = Terminals.layer.pipe(Layer.provide(services))
   return {
     fake,
     services,
     layer: Layer.mergeAll(
       services,
-      terminals,
-      Projects.layer.pipe(Layer.provide([services, terminals])),
+      Terminals.layer.pipe(Layer.provide(services)),
+      Projects.layer.pipe(Layer.provide(services)),
     ),
   }
 }

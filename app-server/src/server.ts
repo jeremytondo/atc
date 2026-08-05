@@ -68,8 +68,7 @@ export const layer = (options: { readonly port: number }) =>
  */
 export const production = (options: { readonly port: number }) =>
   layer(options).pipe(
-    Layer.provide(Projects.layer),
-    Layer.provide(Terminals.layer),
+    Layer.provide([Projects.layer, Terminals.layer]),
     Layer.provide([
       ProjectRepository.layer,
       TerminalRepository.layer,

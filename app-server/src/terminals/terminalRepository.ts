@@ -74,6 +74,7 @@ export class TerminalRepository extends Context.Service<
     /** Update the display label; callers hold the record (see markLive). */
     readonly rename: (id: string, name: string) => Effect.Effect<TerminalRecord>
     readonly delete: (id: string) => Effect.Effect<void>
+    /** Every record (tombstones included) — the project-deletion guard. */
     readonly countForProject: (projectId: string) => Effect.Effect<number>
   }
 >()("app-server/TerminalRepository") {}
