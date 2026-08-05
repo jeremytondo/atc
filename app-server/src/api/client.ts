@@ -3,7 +3,7 @@ import { HttpApiClient } from "effect/unstable/httpapi"
 import { Api } from "./contract.ts"
 
 // The typed App Server client, derived from the same contract module the
-// server routes with (api.ts) — no generated artifact, so it can never go
+// server routes with (contract.ts) — no generated artifact, so it can never go
 // stale. This module depends only on the contract, never on server internals,
 // so the CLI and future packages can consume it directly.
 

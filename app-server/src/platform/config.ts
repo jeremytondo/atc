@@ -7,7 +7,7 @@ import { DEFAULT_PORT } from "../api/contract.ts"
 
 // The settled configuration pipeline (ATC-121). One precedence rule:
 // command flags > environment (flat ATC_<KEY>) > config file (TOML) > defaults.
-// Flags apply at the command seam in cli.ts; everything below the flag level
+// Flags apply at the command seam in cli/; everything below the flag level
 // resolves here, so the server and API-backed CLI commands read identical
 // settings. Paths follow one XDG rule on every platform (macOS included),
 // honoring XDG_* overrides:

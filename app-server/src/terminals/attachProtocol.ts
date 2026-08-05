@@ -4,7 +4,7 @@ import type { SessionSize } from "./terminalAdapter.ts"
 // The attach wire protocol (ATC-130), stated once for every side of the
 // socket: the server bridge (terminalAttach.ts), the CLI client
 // (attachClient.ts), and any future client. The contract endpoint
-// description (api.ts `attachTerminal`) documents it in prose; this module
+// description (contract.ts `attachTerminal`) documents it in prose; this module
 // is the code authority both sides import.
 //
 // Binary frames are terminal bytes in both directions. Text frames are the

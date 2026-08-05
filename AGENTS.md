@@ -178,7 +178,7 @@ will give you v3 idioms that do not compile here.**
 
 Rules you cannot infer from the file you are editing.
 
-- **The contract is the source of truth.** `app-server/src/api.ts` defines the
+- **The contract is the source of truth.** `app-server/src/api/contract.ts` defines the
   API; the OpenAPI document, the TypeScript client, and the Swift client all
   derive from it. Changing it ripples through every surface — regenerate with
   `mise run app-server:openapi`, commit the artifact, then run
@@ -186,9 +186,10 @@ Rules you cannot infer from the file you are editing.
   API: renaming one is a breaking change.
 - **The CLI never re-implements server logic.** API-backed commands go through
   the contract-derived TypeScript client and take zero connection flags; the
-  base URL derives from settled configuration in the single seam in `cli.ts`.
+  base URL derives from settled configuration in the single seam in
+  `cli/cli.ts`.
 - **Migrations are append-only.** Never edit or remove a shipped entry in
-  `src/migrations.ts` — append a new one.
+  `src/platform/migrations.ts` — append a new one.
 - **Repositories are the only modules that speak SQL.** Row types never leak
   into contract schemas, handlers, or clients.
 - **Everything reads `AppConfig`.** Never `process.env` and never re-derive a

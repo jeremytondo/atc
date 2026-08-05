@@ -19,7 +19,7 @@ import type { Terminals } from "./terminals.ts"
 // The WebSocket attach bridge (ATC-130): one upgraded socket bridged onto
 // one scoped `zmx attach` PTY client. The wire protocol and close
 // vocabulary live in attachProtocol.ts (documented in prose on the contract
-// endpoint, api.ts `attachTerminal`); this module implements the server
+// endpoint, contract.ts `attachTerminal`); this module implements the server
 // side.
 //
 // Flow control: Bun's WS writer exposes no send-backpressure signal, so a

@@ -28,7 +28,7 @@ export const failReported = (message: string) => {
   return Console.error(line).pipe(Effect.andThen(Effect.fail(new ReportedError({ message: line }))))
 }
 
-// Contract error classes carry human messages (api.ts); the String fallback
+// Contract error classes carry human messages (contract.ts); the String fallback
 // covers any Error subclass whose message is empty.
 export const describeError = (error: unknown): string =>
   error instanceof ConfigLoadError

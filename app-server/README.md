@@ -82,12 +82,12 @@ raw mode (detach with `Ctrl-]`).
 ## API
 
 Public HTTP routes are versioned under `/api/v1`. The contract module
-(`src/api.ts`) is the single source of truth; the generated
+(`src/api/contract.ts`) is the single source of truth; the generated
 [`openapi.json`](openapi.json) is the readable inventory of every endpoint and
 schema, and a running server serves the identical document at
 `GET /openapi.json`. Regenerate it with `mise run openapi` after any contract
 change — never edit it by hand. It is symlinked into `packages/ATCKit` to generate the Swift
-client, so the server, the TypeScript client (`src/client.ts`), and the Swift
+client, so the server, the TypeScript client (`src/api/client.ts`), and the Swift
 client all derive from the same definition.
 
 The loopback listener validates `Host`/`Origin` on every request (403
