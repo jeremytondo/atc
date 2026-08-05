@@ -1,13 +1,14 @@
 # ATC-124 pre-implementation probe findings
 
-Date: 2026-08-05. Versions: codex-cli 0.146.0, macOS arm64, Bun 1.3.14.
+Date: 2026-08-05. Versions: codex-cli 0.146.0, Claude Code 2.1.221,
+macOS arm64, Bun 1.3.14.
 
-Two probes run during the ATC-124 grilling session to settle where a
-Thread's provider session is created in the terminal-first flow. Probe
-scripts were session-scratch; the protocol recipe they used is the one
-already recorded in this directory (`codex/ws-client.ts`: WebSocket
-JSON-RPC against `codex app-server --listen`, `initialize`/`initialized`
-handshake).
+Four probes run during the ATC-124 grilling session (probes 3 and 4 in a
+second hardening pass) to settle where a Thread's provider session is
+created in the terminal-first flow. Probe scripts were session-scratch;
+the protocol recipe they used is the one already recorded in this
+directory (`codex/ws-client.ts`: WebSocket JSON-RPC against
+`codex app-server --listen`, `initialize`/`initialized` handshake).
 
 ## 1. A zero-turn Codex thread cannot be joined by a TUI — even on the live server
 
@@ -65,3 +66,36 @@ runs). Reopen resumes by exact id once the session is confirmed by a
 completed first turn; unconfirmed zero-turn sessions may re-materialize on
 the next open (generalized ATC-68 provisional rule — decision record on
 ATC-124).
+
+## 3. Claude identity can be PRE-ASSIGNED, not just captured — verified
+
+`claude --session-id <uuid>` ("Use a specific session ID for the
+conversation") exists on Claude Code 2.1.221. Verified headlessly with
+`-p` (identical engine and session semantics to the TUI — the accepted
+basis for rejecting the CLI-vs-SDK distinction in ATC-83):
+
+- `claude -p --session-id <minted-uuid> …` created the session with
+  **exactly** the minted id (echoed in the result envelope).
+- `claude -p --resume <that-id> …` resumed it with full conversation
+  continuity.
+- A second `--session-id <same-id>` launch failed closed:
+  `Error: Session ID <id> is already in use.` No silent replacement.
+
+**Consequence (decision record updated):** the Claude side of the
+terminal-first flow upgrades from capture to pre-assignment. ATC mints a
+UUID, persists it on the Thread row, then launches
+`claude --session-id <uuid> --settings <hooks>`. The hook secret keys off
+the known session id exactly as the ATC-123 receiver already works — no
+launch-token seam change needed — and the first hook payload becomes
+confirmation rather than discovery. A restart between spawn and first
+prompt loses nothing. Remaining implementation-time check: smoke-verify
+`--session-id` on an interactive TUI launch (engine-shared evidence makes
+this low-risk). Codex has no equivalent flag (checked `codex --help` /
+`codex resume --help`); capture via `thread/started` stands there.
+
+## 4. `thread/started` carries `cwd` — capture verification is grounded
+
+Re-ran the fresh-TUI launch dumping the full `thread/started` params: the
+thread object includes `id`, `sessionId`, `cwd` (exact canonical launch
+directory), the rollout `path`, `turns: []`, and timestamps. Fail-closed
+cwd verification at capture needs nothing beyond the notification itself.
