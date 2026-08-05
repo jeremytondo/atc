@@ -126,9 +126,13 @@ will give you v3 idioms that do not compile here.**
   class plus a `layer` (`Layer.succeed` / `Layer.effect`). The one exception is
   `HttpApiBuilder.group` handler layers, named `<Group>Handlers`.
 - Import own modules as namespaces — `import * as Terminals from
-  "./terminals.ts"` — and reference `Terminals.layer`. Always use the module's
-  canonical name (`terminals.ts` is `Terminals` everywhere, `zmxAdapter.ts` is
-  `Zmx` everywhere), so one grep finds every call site. Never alias an import.
+  "../terminals/terminals.ts"` — and reference `Terminals.layer`. Always use
+  the module's canonical name (`terminals/terminals.ts` is `Terminals`
+  everywhere, `zmxAdapter.ts` is `Zmx` everywhere), so one grep finds every
+  call site. Never alias an import. The exception is `cli/` command modules:
+  they export commands (`project`, `terminal`, ...) consumed by named import
+  in `main.ts`, so their basenames may mirror the domain folders without
+  colliding.
 - Any module carrying non-obvious invariants opens with a header comment
   stating them and why they exist — not what each line does. This is where
   subsystem documentation lives; keep it current rather than restating it in

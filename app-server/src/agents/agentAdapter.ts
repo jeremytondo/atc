@@ -22,7 +22,7 @@ import { resolveExecutable } from "../platform/subprocess.ts"
 //     ATC-124: adapters surface `requestOpened` and answer the provider
 //     conservatively (reject) so a turn can never hang on ATC.
 //
-// The fake adapter for tests lives in test/fakeAgentAdapter.ts; per-provider
+// The fake adapter for tests lives in test/agents/fakeAgentAdapter.ts; per-provider
 // service tags live with their adapters (codexAdapter.ts, claudeAdapter.ts).
 
 export const AGENT_PROVIDERS = ["codex", "claude"] as const

@@ -7,7 +7,7 @@ import type { SubprocessError } from "../platform/subprocess.ts"
 // (ATC-122). The adapter deals only in derived session names and terminal
 // bytes; Terminal records, reconciliation policy, and transports live above
 // it. Confining multiplexer invocation here keeps it swappable and gives
-// tests a fake-adapter seam (test/fakeTerminalAdapter.ts).
+// tests a fake-adapter seam (test/terminals/fakeTerminalAdapter.ts).
 
 /** Prefix marking a zmx session as ATC-owned inside ATC's private ZMX_DIR. */
 export const SESSION_NAME_PREFIX = "atc-"
@@ -52,7 +52,7 @@ export interface SessionConnection {
 }
 
 // `ZmxUnavailable` (retryable: the multiplexer cannot be consulted, stored
-// state must stay untouched) lives in the contract (api.ts) — the API
+// state must stay untouched) lives in the contract (contract.ts) — the API
 // surfaces it directly.
 
 /** A session operation failed conclusively (with diagnostics). */
