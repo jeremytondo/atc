@@ -5,19 +5,10 @@ import { HttpClient, HttpClientRequest } from "effect/unstable/http"
 import * as path from "node:path"
 import * as AttachClient from "./attachClient.ts"
 import { attachUrl, CLOSE_DETACH } from "./attachProtocol.ts"
-import * as ClaudeHooks from "./claudeHooks.ts"
 import * as Client from "./client.ts"
 import { AppConfig, ConfigLoadError, CONTEXT_VARIABLES, layer as appConfigLayer } from "./config.ts"
-import * as Directories from "./directories.ts"
-import * as Logging from "./logging.ts"
-import * as Persistence from "./persistence.ts"
-import * as ProjectRepository from "./projectRepository.ts"
-import * as Projects from "./projects.ts"
 import * as Server from "./server.ts"
 import { smoke } from "./smoke.ts"
-import * as TerminalRepository from "./terminalRepository.ts"
-import * as Terminals from "./terminals.ts"
-import * as Zmx from "./zmxAdapter.ts"
 
 /** The one reusable port contract for CLI (and config/API) inputs. */
 export const Port = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }))
@@ -75,21 +66,9 @@ const serve = Command.make("serve", { port }, ({ port }) =>
     // so consumers of the settled port (e.g. the zmx adapter's ATC_ENDPOINT
     // injection) always read the port actually being served.
     const effective = { ...config, port: Option.getOrElse(port, () => config.port) }
-    yield* Layer.launch(
-      Server.layer({ port: effective.port }).pipe(
-        Layer.provide(Projects.layer),
-        Layer.provide(Terminals.layer),
-        Layer.provide([
-          ProjectRepository.layer,
-          TerminalRepository.layer,
-          Directories.layer,
-          Zmx.layer,
-          ClaudeHooks.layer,
-        ]),
-        Layer.provide(Persistence.layer),
-        Layer.provide(Logging.layer),
-      ),
-    ).pipe(Effect.provideService(AppConfig, effective))
+    yield* Layer.launch(Server.production({ port: effective.port })).pipe(
+      Effect.provideService(AppConfig, effective),
+    )
   }).pipe(
     Effect.provide(appConfigLayer),
     Effect.catch((error) => failReported(`atc serve: ${describeError(error)}`)),

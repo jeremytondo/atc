@@ -4,9 +4,17 @@ import { HttpMiddleware, HttpRouter, HttpServerResponse } from "effect/unstable/
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { Api } from "./api.ts"
 import * as ClaudeHooks from "./claudeHooks.ts"
+import * as Directories from "./directories.ts"
 import { V1Handlers } from "./handlers.ts"
 import * as LocalTrust from "./localTrust.ts"
+import * as Logging from "./logging.ts"
 import { openApiJson } from "./openapi.ts"
+import * as Persistence from "./persistence.ts"
+import * as ProjectRepository from "./projectRepository.ts"
+import * as Projects from "./projects.ts"
+import * as TerminalRepository from "./terminalRepository.ts"
+import * as Terminals from "./terminals.ts"
+import * as Zmx from "./zmxAdapter.ts"
 
 // OpenAPI discovery (ATC-131): the contract-derived document at a stable
 // path. Served from the canonical serialization (openapi.ts) so the response
@@ -51,4 +59,24 @@ export const layer = (options: { readonly port: number }) =>
         gracefulShutdownTimeout: "2 seconds",
       }),
     ),
+  )
+
+/**
+ * The closed production assembly: the full server over the real domain
+ * layers. What remains open are the process-level services — AppConfig,
+ * Subprocess, and the Bun runtime — supplied by the entrypoint.
+ */
+export const production = (options: { readonly port: number }) =>
+  layer(options).pipe(
+    Layer.provide(Projects.layer),
+    Layer.provide(Terminals.layer),
+    Layer.provide([
+      ProjectRepository.layer,
+      TerminalRepository.layer,
+      Directories.layer,
+      Zmx.layer,
+      ClaudeHooks.layer,
+    ]),
+    Layer.provide(Persistence.layer),
+    Layer.provide(Logging.layer),
   )
