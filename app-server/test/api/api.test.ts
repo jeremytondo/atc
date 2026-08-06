@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest"
 import { BunHttpServer } from "@effect/platform-bun"
-import { Effect, Layer } from "effect"
+import { Effect, Fiber, Layer, Queue, Stream } from "effect"
 import { HttpApiTest } from "effect/unstable/httpapi"
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -9,13 +9,17 @@ import { realpathSync } from "node:fs"
 import { afterAll } from "vitest"
 import { Api } from "../../src/api/contract.ts"
 import { V1Handlers } from "../../src/api/handlers.ts"
+import * as Events from "../../src/events/events.ts"
 import { TestBuildInfoLayer, testBuildInfo } from "../testBuildInfo.ts"
 import { TestRepositoryLayers } from "../testLayers.ts"
 
 // In-process contract tests: the same encode/route/decode pipeline as the real
-// server, but no listener.
+// server, but no listener. TestRepositoryLayers is merged in as well (one
+// memoized instance) so tests can reach the same domain services the handlers
+// use — the events test drives the Events service directly.
 const TestLayer = Layer.mergeAll(
   V1Handlers.pipe(Layer.provide([TestBuildInfoLayer, TestRepositoryLayers])),
+  TestRepositoryLayers,
   BunHttpServer.layerHttpServices,
 )
 
@@ -187,6 +191,42 @@ describe("/api/v1/projects", () => {
       // Encoding fails client-side before any request: the contract's
       // AbsolutePath check applies to the typed client too.
       assert.strictEqual(error._tag, "SchemaError")
+    }).pipe(Effect.provide(TestLayer)),
+  )
+})
+
+describe("/api/v1/events", () => {
+  // it.live: SSE delivery crosses the in-process HTTP pipeline's promise
+  // boundaries, so the queue take below needs the real clock, not
+  // it.effect's TestClock.
+  it.live("streams typed mutation events and completes when the service closes", () =>
+    Effect.gen(function* () {
+      const client = yield* HttpApiTest.groups(Api, ["v1"])
+      const events = yield* Events.Events
+      // The handler registers the subscriber before producing the response,
+      // so once subscribeEvents resolves the feed is live — no mutation
+      // published after this point can be missed.
+      const feed = yield* client.v1.subscribeEvents()
+      assert.strictEqual(yield* events.subscriberCount(), 1)
+      const received = yield* Queue.make<Events.ResourceChangedEvent>()
+      const subscriber = yield* Effect.forkChild(
+        Stream.runForEach(feed, (event) => Queue.offer(received, event)),
+      )
+
+      const project = yield* client.v1.createProject({
+        payload: { name: "Evented", defaultWorkingDirectory: realDir },
+      })
+      // Condition-driven: take blocks until delivery, bounded only by the
+      // test timeout.
+      const event = yield* Queue.take(received)
+      assert.deepStrictEqual(event, { resource: "project", id: project.id, change: "created" })
+
+      // Service shutdown ends the stream cleanly: the subscriber returns
+      // instead of hanging or failing — the guarantee graceful server
+      // shutdown relies on.
+      yield* events.close()
+      yield* Fiber.join(subscriber)
+      yield* client.v1.deleteProject({ params: { projectId: project.id } })
     }).pipe(Effect.provide(TestLayer)),
   )
 })

@@ -1,5 +1,11 @@
 import { Schema } from "effect"
-import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
+import {
+  HttpApi,
+  HttpApiEndpoint,
+  HttpApiGroup,
+  HttpApiSchema,
+  OpenApi,
+} from "effect/unstable/httpapi"
 
 // The public HTTP contract. The server implementation (handlers.ts), the
 // checked-in OpenAPI document (openapi.ts), and typed clients all derive from
@@ -292,6 +298,21 @@ export const UpdateThreadRequest = Schema.Struct({
 }).annotate({
   identifier: "UpdateThreadRequest",
   description: "Partial update; only the display label is mutable.",
+})
+
+export const ResourceChangedEvent = Schema.Struct({
+  resource: Schema.Literals(["project", "thread", "terminal"]).annotate({
+    description: "Which resource collection changed.",
+  }),
+  id: Schema.String.annotate({ description: "Id of the changed resource." }),
+  change: Schema.Literals(["created", "updated", "deleted"]).annotate({
+    description:
+      'What happened. Every field-level transition (status, archive state, activity) is "updated".',
+  }),
+}).annotate({
+  identifier: "ResourceChangedEvent",
+  description:
+    "Thin invalidation event: names what changed, never carries resource state. Clients coalesce events and refetch through the corresponding GETs, which stay the single source of truth.",
 })
 
 // The error classes carry human `message`s so every consumer (the CLI above
@@ -764,6 +785,14 @@ export class V1 extends HttpApiGroup.make("v1")
     })
       .annotate(OpenApi.Identifier, "getAgent")
       .annotate(OpenApi.Description, "Fetch one built-in agent by its registry slug."),
+    HttpApiEndpoint.get("subscribeEvents", "/events", {
+      success: HttpApiSchema.StreamSse({ data: ResourceChangedEvent }),
+    })
+      .annotate(OpenApi.Identifier, "subscribeEvents")
+      .annotate(
+        OpenApi.Description,
+        "Subscribe to live resource-change events (SSE). The stream is ephemeral — no replay: on every (re)connect, refetch lists first, then trust the stream. The server ends the stream of a subscriber that falls too far behind; reconnect and resync.",
+      ),
     HttpApiEndpoint.get("checkDirectory", "/fs/check", {
       query: { path: AbsolutePath },
       success: FsCheckResponse,

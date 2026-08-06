@@ -1014,6 +1014,129 @@
         "description": "Fetch one built-in agent by its registry slug."
       }
     },
+    "/api/v1/events": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "subscribeEvents",
+        "parameters": [],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "event": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/ResourceChangedEventJsonEncoding"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "event",
+                    "data"
+                  ],
+                  "additionalProperties": false
+                },
+                "x-effect-stream": {
+                  "encoding": "sse",
+                  "causeSchema": {
+                    "type": "array",
+                    "items": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "_tag": {
+                              "type": "string",
+                              "enum": [
+                                "Fail"
+                              ]
+                            },
+                            "error": {
+                              "not": {}
+                            }
+                          },
+                          "required": [
+                            "_tag",
+                            "error"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "_tag": {
+                              "type": "string",
+                              "enum": [
+                                "Die"
+                              ]
+                            },
+                            "defect": {}
+                          },
+                          "required": [
+                            "_tag",
+                            "defect"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "_tag": {
+                              "type": "string",
+                              "enum": [
+                                "Interrupt"
+                              ]
+                            },
+                            "fiberId": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "_tag",
+                            "fiberId"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  },
+                  "errorSchema": {
+                    "not": {}
+                  },
+                  "failureEvent": "effect/httpapi/stream/failure"
+                }
+              }
+            }
+          }
+        },
+        "description": "Subscribe to live resource-change events (SSE). The stream is ephemeral — no replay: on every (re)connect, refetch lists first, then trust the stream. The server ends the stream of a subscriber that falls too far behind; reconnect and resync."
+      }
+    },
     "/api/v1/fs/check": {
       "get": {
         "tags": [
@@ -1748,6 +1871,10 @@
         ],
         "additionalProperties": false
       },
+      "ResourceChangedEventJsonEncoding": {
+        "type": "string",
+        "contentMediaType": "application/json"
+      },
       "DirectoryState": {
         "type": "string",
         "enum": [
@@ -1785,6 +1912,40 @@
         ],
         "additionalProperties": false,
         "description": "Result of a directory health check. Never persisted."
+      },
+      "ResourceChangedEvent": {
+        "type": "object",
+        "properties": {
+          "resource": {
+            "type": "string",
+            "enum": [
+              "project",
+              "thread",
+              "terminal"
+            ],
+            "description": "Which resource collection changed."
+          },
+          "id": {
+            "type": "string",
+            "description": "Id of the changed resource."
+          },
+          "change": {
+            "type": "string",
+            "enum": [
+              "created",
+              "updated",
+              "deleted"
+            ],
+            "description": "What happened. Every field-level transition (status, archive state, activity) is \"updated\"."
+          }
+        },
+        "required": [
+          "resource",
+          "id",
+          "change"
+        ],
+        "additionalProperties": false,
+        "description": "Thin invalidation event: names what changed, never carries resource state. Clients coalesce events and refetch through the corresponding GETs, which stay the single source of truth."
       }
     },
     "securitySchemes": {}

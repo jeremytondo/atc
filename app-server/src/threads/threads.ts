@@ -29,6 +29,7 @@ import type {
   TerminalLaunchFailed,
   ZmxUnavailable,
 } from "../api/contract.ts"
+import { Events } from "../events/events.ts"
 import { Directories } from "../platform/directories.ts"
 import { ProjectRepository } from "../projects/projectRepository.ts"
 import { Terminals } from "../terminals/terminals.ts"
@@ -138,6 +139,7 @@ export const layerWith = (options: ThreadsOptions) =>
       const directories = yield* Directories
       const terminals = yield* Terminals
       const registry = yield* AgentRegistry
+      const events = yield* Events
       // Observation fibers outlive their originating requests; they live in
       // the service's own scope so shutdown reaps every subscription.
       const serviceScope = yield* Effect.scope
@@ -200,10 +202,16 @@ export const layerWith = (options: ThreadsOptions) =>
           yield* stream.pipe(
             Stream.runForEach((activity) =>
               Effect.gen(function* () {
+                const previous = liveActivity.get(record.id)
                 liveActivity.set(record.id, activity)
                 if (!confirmed && isBusy(activity)) {
                   confirmed = true
                   yield* repository.confirm(record.id)
+                }
+                // One publish covers both the activity transition and the
+                // confirm write above (which only happens on a transition).
+                if (previous !== activity) {
+                  yield* events.publish({ resource: "thread", id: record.id, change: "updated" })
                 }
               }),
             ),
@@ -252,6 +260,13 @@ export const layerWith = (options: ThreadsOptions) =>
                   .checkSession({ providerSessionId })
                   .pipe(Effect.orElseSucceed(() => "unknown" as const))
           liveActivity.set(record.id, checked)
+          // Other subscribers must hear about the re-derived state too, not
+          // just the client whose read triggered it. Loop-safe: the busy
+          // snapshot is gone, so the next event-triggered read returns at
+          // the short-circuit above without publishing.
+          if (checked !== live) {
+            yield* events.publish({ resource: "thread", id: record.id, change: "updated" })
+          }
           return checked
         })
 
@@ -495,7 +510,12 @@ export const layerWith = (options: ThreadsOptions) =>
                       ),
                   }),
                 )
-          ).pipe(Effect.ensuring(Effect.sync(() => opening.delete(id))))
+          ).pipe(
+            // The open changed the thread (linked terminal, and possibly
+            // provider identity); the idempotent return above changed nothing.
+            Effect.tap(() => events.publish({ resource: "thread", id, change: "updated" })),
+            Effect.ensuring(Effect.sync(() => opening.delete(id))),
+          )
         })
 
       const del: Threads["Service"]["delete"] = (id) =>
@@ -517,7 +537,17 @@ export const layerWith = (options: ThreadsOptions) =>
             })
           }
           yield* unobserve(id)
+          // Ended linked terminals survive as unlinked tombstones (FK SET
+          // NULL) — their client-visible threadId changes with the delete,
+          // so each publishes alongside the thread's own event.
+          const orphaned = (yield* terminals.list(record.projectId)).filter(
+            (terminal) => terminal.threadId === id,
+          )
           yield* repository.delete(id)
+          yield* events.publish({ resource: "thread", id, change: "deleted" })
+          yield* Effect.forEach(orphaned, (terminal) =>
+            events.publish({ resource: "terminal", id: terminal.id, change: "updated" }),
+          )
         })
 
       return {
@@ -559,6 +589,7 @@ export const layerWith = (options: ThreadsOptions) =>
               name: input.name,
               workingDirectory: canonical,
             })
+            yield* events.publish({ resource: "thread", id: record.id, change: "created" })
             return toThread(record, undefined, "idle")
           }),
         update: (id, patch) =>
@@ -566,12 +597,11 @@ export const layerWith = (options: ThreadsOptions) =>
           // rule the other repositories apply).
           patch.name === undefined
             ? repository.require(id).pipe(Effect.flatMap(assembleAlone))
-            : repository
-                .require(id)
-                .pipe(
-                  Effect.andThen(repository.rename(id, patch.name)),
-                  Effect.flatMap(assembleAlone),
-                ),
+            : repository.require(id).pipe(
+                Effect.andThen(repository.rename(id, patch.name)),
+                Effect.tap(() => events.publish({ resource: "thread", id, change: "updated" })),
+                Effect.flatMap(assembleAlone),
+              ),
         archive: (id) =>
           Effect.gen(function* () {
             const record = yield* repository.require(id)
@@ -583,6 +613,7 @@ export const layerWith = (options: ThreadsOptions) =>
             }
             if (record.archivedAt !== undefined) return yield* assemble(record, linked)
             const updated = yield* repository.setArchived(id, true)
+            yield* events.publish({ resource: "thread", id, change: "updated" })
             return yield* assemble(updated, linked)
           }),
         unarchive: (id) =>
@@ -590,6 +621,7 @@ export const layerWith = (options: ThreadsOptions) =>
             const record = yield* repository.require(id)
             if (record.archivedAt === undefined) return yield* assembleAlone(record)
             const updated = yield* repository.setArchived(id, false)
+            yield* events.publish({ resource: "thread", id, change: "updated" })
             return yield* assembleAlone(updated)
           }),
         delete: del,

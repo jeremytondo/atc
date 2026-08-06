@@ -153,6 +153,7 @@ describe("openapi document vs runtime", () => {
       "/api/v1/threads/{threadId}/terminal",
       "/api/v1/agents",
       "/api/v1/agents/{agentId}",
+      "/api/v1/events",
       "/api/v1/fs/check",
     ])
     // The WebSocket attach endpoint is contract-declared but excluded from
@@ -440,6 +441,35 @@ describe("openapi document vs runtime", () => {
       const missing = yield* client.get("http://127.0.0.1/api/v1/agents/nope")
       assert.strictEqual(missing.status, 404)
       assert.deepStrictEqual(yield* missing.json, { _tag: "AgentNotFound", agentId: "nope" })
+    }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
+  )
+
+  it.effect("GET /api/v1/events serves the documented SSE stream", () =>
+    Effect.gen(function* () {
+      const response = yield* (yield* rawClient).get("http://127.0.0.1/api/v1/events")
+      assert.strictEqual(response.status, 200)
+      assert.match(response.headers["content-type"] ?? "", /^text\/event-stream/)
+
+      // The documented payload is the SSE envelope whose data line carries a
+      // JSON-encoded ResourceChangedEvent...
+      const content = operation("/api/v1/events").responses["200"]!.content["text/event-stream"]!
+      const envelope = content.schema as unknown as {
+        properties: { data: { $ref?: string } }
+      }
+      assert.deepStrictEqual(envelope.properties.data, {
+        $ref: "#/components/schemas/ResourceChangedEventJsonEncoding",
+      })
+      assert.deepStrictEqual(componentSchema("ResourceChangedEventJsonEncoding") as unknown, {
+        type: "string",
+        contentMediaType: "application/json",
+      })
+
+      // ...and the plain payload schema is emitted as an ordinary component
+      // (openapi.ts), so generated clients get a real model type to decode
+      // that JSON into. Delivery itself is covered in api.test.ts.
+      const payload = componentSchema("ResourceChangedEvent")
+      assert.sameMembers(Object.keys(payload.properties), ["resource", "id", "change"])
+      assert.sameMembers([...payload.required], ["resource", "id", "change"])
     }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
   )
 

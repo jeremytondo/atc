@@ -1,4 +1,4 @@
-import { Context, Effect, Layer } from "effect"
+import { Context, Effect, Layer, Option } from "effect"
 import type { Scope } from "effect"
 import {
   ProjectNotFound,
@@ -12,6 +12,7 @@ import type {
   DirectoryCheckTimedOut,
   DirectoryUnavailable,
 } from "../api/contract.ts"
+import { Events } from "../events/events.ts"
 import { Directories } from "../platform/directories.ts"
 import { ProjectRepository } from "../projects/projectRepository.ts"
 import { sessionNameForTerminalId, TerminalAdapter } from "./terminalAdapter.ts"
@@ -114,6 +115,7 @@ export const layer = Layer.effect(Terminals)(
     const adapter = yield* TerminalAdapter
     const projects = yield* ProjectRepository
     const directories = yield* Directories
+    const events = yield* Events
 
     const presentSessionNames = adapter
       .listSessions()
@@ -129,13 +131,21 @@ export const layer = Layer.effect(Terminals)(
       present: ReadonlySet<string>,
     ): Effect.Effect<ReadonlyArray<TerminalRecord>> =>
       Effect.gen(function* () {
-        const dead = new Set(
-          records
-            .filter((r) => r.status === "live" && !present.has(sessionNameForTerminalId(r.id)))
-            .map((r) => r.id),
+        const deadRecords = records.filter(
+          (r) => r.status === "live" && !present.has(sessionNameForTerminalId(r.id)),
         )
-        if (dead.size === 0) return records
+        if (deadRecords.length === 0) return records
+        const dead = new Set(deadRecords.map((r) => r.id))
         const endedAt = yield* repository.markEnded([...dead])
+        yield* Effect.forEach(deadRecords, (record) =>
+          events.publish({ resource: "terminal", id: record.id, change: "updated" }),
+        )
+        // A dead TUI terminal also changes its thread's derived fields
+        // (linkedTerminalId, activity re-derivation), so the thread
+        // publishes alongside — the event names no thread otherwise.
+        yield* Effect.forEach(new Set(deadRecords.flatMap((r) => r.threadId ?? [])), (id) =>
+          events.publish({ resource: "thread", id, change: "updated" }),
+        )
         return records.map((record) =>
           dead.has(record.id)
             ? { ...record, status: "ended" as const, endedAt, updatedAt: endedAt }
@@ -186,6 +196,7 @@ export const layer = Layer.effect(Terminals)(
             // failed launch leaves no record.
             if (reachable.has(sessionName)) {
               yield* repository.markLive(record.id)
+              yield* events.publish({ resource: "terminal", id: record.id, change: "created" })
               claimed.add(sessionName)
             } else if (present.has(sessionName)) {
               claimed.add(sessionName)
@@ -274,6 +285,13 @@ export const layer = Layer.effect(Terminals)(
             Effect.andThen(repository.markLive(record.id)),
             Effect.onExit((exit) => (exit._tag === "Failure" ? cleanup : Effect.void)),
           )
+        yield* events.publish({ resource: "terminal", id: live.id, change: "created" })
+        // A live terminal created into a thread immediately changes that
+        // thread's derived linkedTerminalId; openTerminal's own event lands
+        // only after the identity wait, far too late for this transition.
+        if (input.threadId !== undefined) {
+          yield* events.publish({ resource: "thread", id: input.threadId, change: "updated" })
+        }
         return toTerminal(live)
       })
 
@@ -291,6 +309,12 @@ export const layer = Layer.effect(Terminals)(
             ),
           )
         yield* repository.delete(id)
+        yield* events.publish({ resource: "terminal", id, change: "deleted" })
+        // Deleting a thread's TUI terminal changes that thread's derived
+        // linkedTerminalId (see tombstoneAbsent).
+        if (record.threadId !== undefined) {
+          yield* events.publish({ resource: "thread", id: record.threadId, change: "updated" })
+        }
       })
 
     return {
@@ -323,6 +347,7 @@ export const layer = Layer.effect(Terminals)(
           ? requireRecord(id).pipe(Effect.map(toTerminal))
           : requireRecord(id).pipe(
               Effect.andThen(repository.rename(id, patch.name)),
+              Effect.tap(() => events.publish({ resource: "terminal", id, change: "updated" })),
               Effect.map(toTerminal),
             ),
       delete: del,
@@ -331,7 +356,20 @@ export const layer = Layer.effect(Terminals)(
         Effect.gen(function* () {
           const present = yield* presentSessionNames
           if (present.has(sessionNameForTerminalId(id))) return false
+          // Publish only the actual live→ended transition: a repeat confirm
+          // of an already-ended (or since-deleted) terminal changes nothing.
+          const record = yield* repository.get(id)
           yield* repository.markEnded([id])
+          if (Option.isSome(record) && record.value.status === "live") {
+            yield* events.publish({ resource: "terminal", id, change: "updated" })
+            if (record.value.threadId !== undefined) {
+              yield* events.publish({
+                resource: "thread",
+                id: record.value.threadId,
+                change: "updated",
+              })
+            }
+          }
           return true
         }),
     }
