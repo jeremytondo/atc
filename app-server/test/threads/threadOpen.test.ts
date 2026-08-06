@@ -250,6 +250,49 @@ describe("threads.openTerminal", () => {
     }).pipe(Effect.provide(HoldLayer)),
   )
 
+  it.live("a TUI that dies during the identity wait fails fast with a real diagnostic", () =>
+    Effect.gen(function* () {
+      // Generous identity bound + tight death-watch: the failure below must
+      // come from the watch noticing the dead terminal, not the timeout.
+      const kit = makeTestServiceLayers(":memory:", { launchWatchInterval: "25 millis" })
+      yield* Effect.gen(function* () {
+        const { client, thread, project } = yield* setup
+        kit.fakeAgents.codex.setIdentityHangs(true)
+        const fiber = yield* client.v1
+          .openThreadTerminal({ params: { threadId: thread.id } })
+          .pipe(Effect.forkChild)
+        yield* eventually(
+          Effect.sync(() => kit.fake.sessions.size),
+          (size) => size === 1,
+        )
+
+        // The TUI exits immediately (the first-run auth failure): the open
+        // fails with the specific diagnostic well before the 30s bound, and
+        // nothing survives.
+        kit.fake.sessions.clear()
+        const failure = yield* Effect.flip(Fiber.join(fiber))
+        assert.strictEqual(failure._tag, "ProviderUnavailable")
+        if (failure._tag === "ProviderUnavailable") {
+          assert.include(failure.reason, "TUI exited")
+        }
+        assert.deepStrictEqual(
+          yield* client.v1.listTerminals({ query: { projectId: project.id } }),
+          [],
+        )
+        kit.fakeAgents.codex.setIdentityHangs(false)
+        yield* client.v1.deleteThread({ params: { threadId: thread.id } })
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            V1Handlers.pipe(Layer.provide([TestBuildInfoLayer, kit.layer])),
+            kit.layer,
+            BunHttpServer.layerHttpServices,
+          ),
+        ),
+      )
+    }),
+  )
+
   it.live("identity establishment failing in time cleans up the launched terminal", () =>
     Effect.gen(function* () {
       const { client, thread, project } = yield* setup

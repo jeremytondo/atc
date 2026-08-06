@@ -84,6 +84,9 @@ export type Thread = typeof ThreadSchema.Type
 export interface ThreadsOptions {
   /** How long openTerminal waits for a fresh session's identity. */
   readonly identityTimeout?: Duration.Input
+  /** How often the identity wait re-checks that the launched TUI terminal
+   * is still alive. */
+  readonly launchWatchInterval?: Duration.Input
 }
 
 export class Threads extends Context.Service<
@@ -144,6 +147,7 @@ export const layerWith = (options: ThreadsOptions) =>
       // the service's own scope so shutdown reaps every subscription.
       const serviceScope = yield* Effect.scope
       const identityTimeout = options.identityTimeout ?? "30 seconds"
+      const launchWatchInterval = options.launchWatchInterval ?? "1 second"
 
       // Live activity evidence by thread id, fed by the per-session
       // subscriptions below. In-memory only — restart resets to no
@@ -387,6 +391,30 @@ export const layerWith = (options: ThreadsOptions) =>
             const cleanupTerminal = terminals
               .delete(terminal.id)
               .pipe(Effect.catch(() => Effect.void))
+            // A TUI that dies right after launch (the classic first-run
+            // failure: a missing provider login) would otherwise park the
+            // caller for the full identity bound; the reconciled read
+            // notices the death and fails fast with a diagnostic that names
+            // the real problem. Claude never reaches the race — its
+            // identity resolves immediately.
+            const deathWatch = Effect.gen(function* () {
+              for (;;) {
+                yield* Effect.sleep(launchWatchInterval)
+                const current = yield* terminals
+                  .get(terminal.id)
+                  .pipe(Effect.catchTag("TerminalNotFound", () => Effect.succeed(undefined)))
+                if (current === undefined || current.status === "ended") {
+                  return yield* Effect.fail(
+                    new ProviderUnavailable({
+                      agentId: record.agentId,
+                      reason:
+                        `the ${record.agentId} TUI exited before its session was established; ` +
+                        `run it manually in the thread's directory to see why (a missing provider login is the usual cause)`,
+                    }),
+                  )
+                }
+              }
+            })
             yield* Effect.uninterruptibleMask((restore) =>
               Effect.gen(function* () {
                 // The identity await stays interruptible (openTerminal's
@@ -394,7 +422,10 @@ export const layerWith = (options: ThreadsOptions) =>
                 // window where interruption can land between resolution and
                 // the release bracket below.
                 const identity = yield* restore(
-                  prepared.identity.pipe(Effect.mapError(mapAgentError(record))),
+                  Effect.raceFirst(
+                    prepared.identity.pipe(Effect.mapError(mapAgentError(record))),
+                    deathWatch,
+                  ),
                 )
                 // From resolution until a thread row owns the identity, the
                 // fresh session is OURS: every non-success — the row deleted
