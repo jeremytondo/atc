@@ -266,23 +266,21 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
       }),
     tuiLaunch: (options) =>
       requireAvailable.pipe(
-        Effect.andThen(
-          Effect.suspend(() =>
-            prunedSessions.has(options.providerSessionId)
-              ? Effect.fail(
-                  new AgentResumeFailed({
-                    provider: "codex",
-                    providerSessionId: options.providerSessionId,
-                    reason: "the provider no longer has this session",
-                  }),
-                )
-              : Effect.succeed({
-                  launchSpec: {
-                    command: ["fake-agent", "resume", options.providerSessionId],
-                    env: {},
-                  },
+        Effect.andThen(() =>
+          prunedSessions.has(options.providerSessionId)
+            ? Effect.fail(
+                new AgentResumeFailed({
+                  provider: "codex",
+                  providerSessionId: options.providerSessionId,
+                  reason: "the provider no longer has this session",
                 }),
-          ),
+              )
+            : Effect.succeed({
+                launchSpec: {
+                  command: ["fake-agent", "resume", options.providerSessionId],
+                  env: {},
+                },
+              }),
         ),
       ),
     prepareTuiSession: (options) =>

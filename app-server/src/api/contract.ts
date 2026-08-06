@@ -28,6 +28,8 @@ export const VersionResponse = Schema.Struct({
   commit: Schema.String.annotate({
     description: 'Commit the executable was built from ("dev" when running from source).',
   }),
+  // Deliberately NOT a timestamp(): the literal "dev" would break a Date
+  // decode in generated clients.
   builtAt: Schema.String.annotate({
     description: 'Build timestamp of the executable ("dev" when running from source).',
   }),
@@ -55,8 +57,8 @@ export const Project = Schema.Struct({
   defaultWorkingDirectory: Schema.String.annotate({
     description: "Canonical (symlink-resolved) absolute path new Threads and Terminals default to.",
   }),
-  createdAt: timestamp("Creation time (ISO 8601 UTC)."),
-  updatedAt: timestamp("Last update time (ISO 8601 UTC)."),
+  createdAt: timestamp("Creation time."),
+  updatedAt: timestamp("Last update time."),
 }).annotate({
   identifier: "Project",
   description: "A Project: the user-facing container organizing a body of work.",
@@ -108,7 +110,7 @@ export const FsCheckResponse = Schema.Struct({
     description: "The checked path (canonicalized when the directory is available).",
   }),
   state: DirectoryState,
-  checkedAt: timestamp("Check time (ISO 8601 UTC)."),
+  checkedAt: timestamp("Check time."),
   // Absent when the state is conclusive (not null — see UpdateProjectRequest).
   reason: Schema.optionalKey(
     Schema.String.annotate({
@@ -152,10 +154,10 @@ export const Terminal = Schema.Struct({
     description: "Canonical directory the terminal was launched in (immutable).",
   }),
   status: TerminalStatus,
-  createdAt: timestamp("Creation time (ISO 8601 UTC)."),
-  updatedAt: timestamp("Last update time (ISO 8601 UTC)."),
+  createdAt: timestamp("Creation time."),
+  updatedAt: timestamp("Last update time."),
   endedAt: Schema.optionalKey(
-    timestamp("When the terminal was observed ended (ISO 8601 UTC); absent while live."),
+    timestamp("When the terminal was observed ended; absent while live."),
   ),
 }).annotate({
   identifier: "Terminal",
@@ -261,11 +263,9 @@ export const Thread = Schema.Struct({
       description: "The thread's live TUI terminal, when one is open (derived; never required).",
     }),
   ),
-  archivedAt: Schema.optionalKey(
-    timestamp("When the thread was archived (ISO 8601 UTC); absent while active."),
-  ),
-  createdAt: timestamp("Creation time (ISO 8601 UTC)."),
-  updatedAt: timestamp("Last update time (ISO 8601 UTC)."),
+  archivedAt: Schema.optionalKey(timestamp("When the thread was archived; absent while active.")),
+  createdAt: timestamp("Creation time."),
+  updatedAt: timestamp("Last update time."),
 }).annotate({
   identifier: "Thread",
   description:
@@ -341,9 +341,12 @@ export class ProjectNotFound extends Schema.TaggedErrorClass<ProjectNotFound>()(
   }
 }
 
+const UnavailableState = Schema.Literals(["missing", "inaccessible", "not_directory"])
+type UnavailableState = typeof UnavailableState.Type
+
 const directoryUnavailableMessage = (props: {
   readonly path: string
-  readonly state: "missing" | "inaccessible" | "not_directory"
+  readonly state: UnavailableState
 }): string => {
   switch (props.state) {
     case "missing":
@@ -360,7 +363,7 @@ export class DirectoryUnavailable extends Schema.TaggedErrorClass<DirectoryUnava
   "DirectoryUnavailable",
   {
     path: Schema.String,
-    state: Schema.Literals(["missing", "inaccessible", "not_directory"]),
+    state: UnavailableState,
     message: errorMessage,
   },
   {
@@ -369,10 +372,7 @@ export class DirectoryUnavailable extends Schema.TaggedErrorClass<DirectoryUnava
     httpApiStatus: 422,
   },
 ) {
-  constructor(props: {
-    readonly path: string
-    readonly state: "missing" | "inaccessible" | "not_directory"
-  }) {
+  constructor(props: { readonly path: string; readonly state: UnavailableState }) {
     super({ ...props, message: directoryUnavailableMessage(props) })
   }
 }
@@ -686,16 +686,10 @@ export class V1 extends HttpApiGroup.make("v1")
     // WebSocket upgrade endpoint: declared in the contract for the typed
     // route tree and params, excluded from the OpenAPI document (REST
     // clients and the Swift generator cannot represent an upgrade). The
-    // client-facing protocol spec is packages/attach-protocol/README.md
-    // (shared test vectors in packages/attach-protocol/fixtures/); the code
-    // authority both sides import is terminals/attachProtocol.ts. Summary:
-    // binary frames are terminal bytes both ways; text frames are JSON
-    // control messages ({"type":"resize","cols","rows"} from the client;
-    // {"type":"ping"}/{"type":"pong"} keepalives). Close vocabulary: 1000
-    // terminal_ended is authoritative (confirmed absent, tombstone
-    // written); 1011 attach_failed / zmx_unavailable / ping_timeout are
-    // retryable and say nothing about the terminal's existence. Clients
-    // detach by closing 1000 "detach" (the session keeps running).
+    // client-facing protocol spec — framing, control frames, close
+    // vocabulary, sizing — is packages/attach-protocol/README.md with
+    // shared test vectors in its fixtures/; the code authority TypeScript
+    // sides import is terminals/attachProtocol.ts.
     HttpApiEndpoint.get("attachTerminal", "/terminals/:terminalId/attach", {
       params: terminalIdParam,
       query: {

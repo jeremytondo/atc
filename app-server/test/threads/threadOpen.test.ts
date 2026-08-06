@@ -1,17 +1,14 @@
 import { assert, describe, it } from "@effect/vitest"
-import { BunHttpServer } from "@effect/platform-bun"
-import { Effect, Fiber, Layer, Option } from "effect"
+import { Effect, Fiber, Option } from "effect"
 import { HttpApiTest } from "effect/unstable/httpapi"
 import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll } from "vitest"
 import { Api } from "../../src/api/contract.ts"
-import { V1Handlers } from "../../src/api/handlers.ts"
 import { sessionNameForTerminalId } from "../../src/terminals/terminalAdapter.ts"
 import { ThreadRepository } from "../../src/threads/threadRepository.ts"
-import { TestBuildInfoLayer } from "../testBuildInfo.ts"
-import { makeTestServiceLayers } from "../testLayers.ts"
+import { apiTestLayer, makeTestServiceLayers } from "../testLayers.ts"
 
 // The terminal-first workflow (ATC-124 / ATC-141) against the uniform seam
 // contract only — these tests are the proof that threads/ needs no provider
@@ -21,29 +18,23 @@ import { makeTestServiceLayers } from "../testLayers.ts"
 // the fake adapters.
 
 const kit = makeTestServiceLayers()
-const TestLayer = Layer.mergeAll(
-  V1Handlers.pipe(Layer.provide([TestBuildInfoLayer, kit.layer])),
-  kit.layer,
-  BunHttpServer.layerHttpServices,
-)
+const TestLayer = apiTestLayer(kit)
 
 // A dedicated kit whose identity await is tight, for the timeout path.
 const hangKit = makeTestServiceLayers(":memory:", { identityTimeout: "250 millis" })
-const HangLayer = Layer.mergeAll(
-  V1Handlers.pipe(Layer.provide([TestBuildInfoLayer, hangKit.layer])),
-  hangKit.layer,
-  BunHttpServer.layerHttpServices,
-)
+const HangLayer = apiTestLayer(hangKit)
 
 // A kit with the default (generous) bound whose identity simply never
 // resolves — for externally-interrupted and concurrent-open paths, where
 // the open must still be in flight when the test acts.
 const holdKit = makeTestServiceLayers()
-const HoldLayer = Layer.mergeAll(
-  V1Handlers.pipe(Layer.provide([TestBuildInfoLayer, holdKit.layer])),
-  holdKit.layer,
-  BunHttpServer.layerHttpServices,
-)
+const HoldLayer = apiTestLayer(holdKit)
+
+// A kit whose TUI-liveness watch is tight, for the fail-fast death path —
+// the identity bound stays generous so the failure provably comes from the
+// watch, not the timeout.
+const watchKit = makeTestServiceLayers(":memory:", { launchWatchInterval: "25 millis" })
+const WatchLayer = apiTestLayer(watchKit)
 
 const scratch = mkdtempSync(join(tmpdir(), "atc-thread-open-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
@@ -70,6 +61,31 @@ const setup = Effect.gen(function* () {
   })
   return { client, project, thread }
 })
+
+/**
+ * The "before the restart" seed shared by the persistence tests: one opened
+ * thread with its identity persisted, returning what the post-restart side
+ * needs. Runs inside the caller's provided layer stack, so callers can keep
+ * acting (emitting activity, awaiting confirmation) in the same build.
+ */
+const openedThreadState = (name: string) =>
+  Effect.gen(function* () {
+    const client = yield* HttpApiTest.groups(Api, ["v1"])
+    const repository = yield* ThreadRepository
+    const project = yield* client.v1.createProject({
+      payload: { name, defaultWorkingDirectory: realDir },
+    })
+    const thread = yield* client.v1.createThread({
+      payload: { projectId: project.id, agentId: "codex" },
+    })
+    const terminal = yield* client.v1.openThreadTerminal({ params: { threadId: thread.id } })
+    const record = Option.getOrThrow(yield* repository.get(thread.id))
+    return {
+      threadId: thread.id,
+      terminalId: terminal.id,
+      sessionId: record.providerSessionId ?? "",
+    }
+  })
 
 describe("threads.openTerminal", () => {
   it.live("materializes a fresh session: launch, identity, persistence, idempotency", () =>
@@ -289,45 +305,32 @@ describe("threads.openTerminal", () => {
 
   it.live("a TUI that dies during the identity wait fails fast with a real diagnostic", () =>
     Effect.gen(function* () {
-      // Generous identity bound + tight death-watch: the failure below must
-      // come from the watch noticing the dead terminal, not the timeout.
-      const kit = makeTestServiceLayers(":memory:", { launchWatchInterval: "25 millis" })
-      yield* Effect.gen(function* () {
-        const { client, thread, project } = yield* setup
-        kit.fakeAgents.codex.setIdentityHangs(true)
-        const fiber = yield* client.v1
-          .openThreadTerminal({ params: { threadId: thread.id } })
-          .pipe(Effect.forkChild)
-        yield* eventually(
-          Effect.sync(() => kit.fake.sessions.size),
-          (size) => size === 1,
-        )
-
-        // The TUI exits immediately (the first-run auth failure): the open
-        // fails with the specific diagnostic well before the 30s bound, and
-        // nothing survives.
-        kit.fake.sessions.clear()
-        const failure = yield* Effect.flip(Fiber.join(fiber))
-        assert.strictEqual(failure._tag, "ProviderUnavailable")
-        if (failure._tag === "ProviderUnavailable") {
-          assert.include(failure.reason, "TUI exited")
-        }
-        assert.deepStrictEqual(
-          yield* client.v1.listTerminals({ query: { projectId: project.id } }),
-          [],
-        )
-        kit.fakeAgents.codex.setIdentityHangs(false)
-        yield* client.v1.deleteThread({ params: { threadId: thread.id } })
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            V1Handlers.pipe(Layer.provide([TestBuildInfoLayer, kit.layer])),
-            kit.layer,
-            BunHttpServer.layerHttpServices,
-          ),
-        ),
+      const { client, thread, project } = yield* setup
+      watchKit.fakeAgents.codex.setIdentityHangs(true)
+      const fiber = yield* client.v1
+        .openThreadTerminal({ params: { threadId: thread.id } })
+        .pipe(Effect.forkChild)
+      yield* eventually(
+        Effect.sync(() => watchKit.fake.sessions.size),
+        (size) => size === 1,
       )
-    }),
+
+      // The TUI exits immediately (the first-run auth failure): the open
+      // fails with the specific diagnostic well before the 30s bound, and
+      // nothing survives.
+      watchKit.fake.sessions.clear()
+      const failure = yield* Effect.flip(Fiber.join(fiber))
+      assert.strictEqual(failure._tag, "ProviderUnavailable")
+      if (failure._tag === "ProviderUnavailable") {
+        assert.include(failure.reason, "TUI exited")
+      }
+      assert.deepStrictEqual(
+        yield* client.v1.listTerminals({ query: { projectId: project.id } }),
+        [],
+      )
+      watchKit.fakeAgents.codex.setIdentityHangs(false)
+      yield* client.v1.deleteThread({ params: { threadId: thread.id } })
+    }).pipe(Effect.provide(WatchLayer)),
   )
 
   it.live("identity establishment failing in time cleans up the launched terminal", () =>
@@ -379,31 +382,8 @@ describe("threads.openTerminal", () => {
     Effect.gen(function* () {
       const dbFile = join(scratch, "restart.db")
       // "Before the restart": open a thread's terminal and persist identity.
-      const before = makeTestServiceLayers(dbFile)
-      const state = yield* Effect.gen(function* () {
-        const client = yield* HttpApiTest.groups(Api, ["v1"])
-        const repository = yield* ThreadRepository
-        const project = yield* client.v1.createProject({
-          payload: { name: "Restart", defaultWorkingDirectory: realDir },
-        })
-        const thread = yield* client.v1.createThread({
-          payload: { projectId: project.id, agentId: "codex" },
-        })
-        const terminal = yield* client.v1.openThreadTerminal({ params: { threadId: thread.id } })
-        const record = Option.getOrThrow(yield* repository.get(thread.id))
-        return {
-          threadId: thread.id,
-          terminalId: terminal.id,
-          sessionId: record.providerSessionId ?? "",
-        }
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            V1Handlers.pipe(Layer.provide([TestBuildInfoLayer, before.layer])),
-            before.layer,
-            BunHttpServer.layerHttpServices,
-          ),
-        ),
+      const state = yield* openedThreadState("Restart").pipe(
+        Effect.provide(apiTestLayer(makeTestServiceLayers(dbFile))),
       )
 
       // "After the restart": a fresh process (fresh in-memory adapters) over
@@ -423,15 +403,7 @@ describe("threads.openTerminal", () => {
           (t) => t.activityState === "working",
         )
         yield* client.v1.deleteThread({ params: { threadId: state.threadId } })
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            V1Handlers.pipe(Layer.provide([TestBuildInfoLayer, after.layer])),
-            after.layer,
-            BunHttpServer.layerHttpServices,
-          ),
-        ),
-      )
+      }).pipe(Effect.provide(apiTestLayer(after)))
     }),
   )
 
@@ -442,32 +414,15 @@ describe("threads.openTerminal", () => {
       // its idle ever arrives on the feed.
       const before = makeTestServiceLayers(dbFile)
       const state = yield* Effect.gen(function* () {
-        const client = yield* HttpApiTest.groups(Api, ["v1"])
         const repository = yield* ThreadRepository
-        const project = yield* client.v1.createProject({
-          payload: { name: "RestartMidTurn", defaultWorkingDirectory: realDir },
-        })
-        const thread = yield* client.v1.createThread({
-          payload: { projectId: project.id, agentId: "codex" },
-        })
-        yield* client.v1.openThreadTerminal({ params: { threadId: thread.id } })
-        const record = Option.getOrThrow(yield* repository.get(thread.id))
-        const sessionId = record.providerSessionId ?? ""
-        before.fakeAgents.codex.emitActivity(sessionId, "working")
+        const opened = yield* openedThreadState("RestartMidTurn")
+        before.fakeAgents.codex.emitActivity(opened.sessionId, "working")
         yield* eventually(
-          repository.get(thread.id),
+          repository.get(opened.threadId),
           (r) => Option.isSome(r) && r.value.confirmedAt !== undefined,
         )
-        return { threadId: thread.id, sessionId }
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            V1Handlers.pipe(Layer.provide([TestBuildInfoLayer, before.layer])),
-            before.layer,
-            BunHttpServer.layerHttpServices,
-          ),
-        ),
-      )
+        return opened
+      }).pipe(Effect.provide(apiTestLayer(before)))
 
       // "After the restart": the TUI ended during the downtime, and the
       // completed turn's idle was never observed by any process. The session
@@ -483,46 +438,15 @@ describe("threads.openTerminal", () => {
         assert.deepStrictEqual(relaunch?.command, ["fake-agent", "resume", state.sessionId])
         assert.strictEqual(after.fakeAgents.codex.prepared.length, 0)
         yield* client.v1.deleteThread({ params: { threadId: state.threadId } })
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            V1Handlers.pipe(Layer.provide([TestBuildInfoLayer, after.layer])),
-            after.layer,
-            BunHttpServer.layerHttpServices,
-          ),
-        ),
-      )
+      }).pipe(Effect.provide(apiTestLayer(after)))
     }),
   )
 
   it.live("concurrent first reads establish exactly one observation (no leaked subscription)", () =>
     Effect.gen(function* () {
       const dbFile = join(scratch, "concurrent-reads.db")
-      const before = makeTestServiceLayers(dbFile)
-      const state = yield* Effect.gen(function* () {
-        const client = yield* HttpApiTest.groups(Api, ["v1"])
-        const repository = yield* ThreadRepository
-        const project = yield* client.v1.createProject({
-          payload: { name: "Concurrent", defaultWorkingDirectory: realDir },
-        })
-        const thread = yield* client.v1.createThread({
-          payload: { projectId: project.id, agentId: "codex" },
-        })
-        const terminal = yield* client.v1.openThreadTerminal({ params: { threadId: thread.id } })
-        const record = Option.getOrThrow(yield* repository.get(thread.id))
-        return {
-          threadId: thread.id,
-          terminalId: terminal.id,
-          sessionId: record.providerSessionId ?? "",
-        }
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            V1Handlers.pipe(Layer.provide([TestBuildInfoLayer, before.layer])),
-            before.layer,
-            BunHttpServer.layerHttpServices,
-          ),
-        ),
+      const state = yield* openedThreadState("Concurrent").pipe(
+        Effect.provide(apiTestLayer(makeTestServiceLayers(dbFile))),
       )
 
       // Relaunch: nothing is observed yet, and the sidebar list + detail
@@ -544,15 +468,7 @@ describe("threads.openTerminal", () => {
         )
         assert.strictEqual(after.fakeAgents.codex.observerCount(state.sessionId), 1)
         yield* client.v1.deleteThread({ params: { threadId: state.threadId } })
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            V1Handlers.pipe(Layer.provide([TestBuildInfoLayer, after.layer])),
-            after.layer,
-            BunHttpServer.layerHttpServices,
-          ),
-        ),
-      )
+      }).pipe(Effect.provide(apiTestLayer(after)))
     }),
   )
 

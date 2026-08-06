@@ -36,7 +36,17 @@ public struct ATCDateTranscoder: DateTranscoder {
     public init() {}
 
     public func encode(_ date: Date) throws -> String {
-        fractional.format(date)
+        // The format style TRUNCATES the fractional field, and millisecond
+        // values are rarely exact in binary — formatting through it would
+        // re-encode roughly half of all decoded server timestamps one
+        // millisecond low. Split the rounded epoch milliseconds instead:
+        // the whole seconds are exact, and the millisecond field is printed
+        // as an integer.
+        let epochMillis = (date.timeIntervalSince1970 * 1000).rounded()
+        var millis = epochMillis.truncatingRemainder(dividingBy: 1000)
+        if millis < 0 { millis += 1000 }
+        let seconds = Date(timeIntervalSince1970: (epochMillis - millis) / 1000)
+        return wholeSecond.format(seconds).dropLast() + String(format: ".%03dZ", Int(millis))
     }
 
     public func decode(_ dateString: String) throws -> Date {

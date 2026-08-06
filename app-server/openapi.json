@@ -1239,12 +1239,12 @@
           },
           "createdAt": {
             "type": "string",
-            "description": "Creation time (ISO 8601 UTC).",
+            "description": "Creation time.",
             "format": "date-time"
           },
           "updatedAt": {
             "type": "string",
-            "description": "Last update time (ISO 8601 UTC).",
+            "description": "Last update time.",
             "format": "date-time"
           }
         },
@@ -1484,17 +1484,17 @@
           },
           "createdAt": {
             "type": "string",
-            "description": "Creation time (ISO 8601 UTC).",
+            "description": "Creation time.",
             "format": "date-time"
           },
           "updatedAt": {
             "type": "string",
-            "description": "Last update time (ISO 8601 UTC).",
+            "description": "Last update time.",
             "format": "date-time"
           },
           "endedAt": {
             "type": "string",
-            "description": "When the terminal was observed ended (ISO 8601 UTC); absent while live.",
+            "description": "When the terminal was observed ended; absent while live.",
             "format": "date-time"
           }
         },
@@ -1679,17 +1679,17 @@
           },
           "archivedAt": {
             "type": "string",
-            "description": "When the thread was archived (ISO 8601 UTC); absent while active.",
+            "description": "When the thread was archived; absent while active.",
             "format": "date-time"
           },
           "createdAt": {
             "type": "string",
-            "description": "Creation time (ISO 8601 UTC).",
+            "description": "Creation time.",
             "format": "date-time"
           },
           "updatedAt": {
             "type": "string",
-            "description": "Last update time (ISO 8601 UTC).",
+            "description": "Last update time.",
             "format": "date-time"
           }
         },
@@ -1976,7 +1976,7 @@
           },
           "checkedAt": {
             "type": "string",
-            "description": "Check time (ISO 8601 UTC).",
+            "description": "Check time.",
             "format": "date-time"
           },
           "reason": {

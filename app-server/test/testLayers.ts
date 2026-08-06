@@ -1,5 +1,5 @@
 import { assert } from "@effect/vitest"
-import { BunServices } from "@effect/platform-bun"
+import { BunHttpServer, BunServices } from "@effect/platform-bun"
 import { Effect, Layer, Stream } from "effect"
 import * as fs from "node:fs"
 import * as os from "node:os"
@@ -22,6 +22,7 @@ import * as Terminals from "../src/terminals/terminals.ts"
 import * as ThreadRepository from "../src/threads/threadRepository.ts"
 import * as Threads from "../src/threads/threads.ts"
 import * as Zmx from "../src/terminals/zmxAdapter.ts"
+import { V1Handlers } from "../src/api/handlers.ts"
 import {
   appServerRoot,
   freePort,
@@ -30,6 +31,7 @@ import {
   trackTempDir,
   waitForHealth,
 } from "./blackbox.ts"
+import { TestBuildInfoLayer } from "./testBuildInfo.ts"
 import { makeFakeAdapter } from "./terminals/fakeTerminalAdapter.ts"
 import type { FakeTerminalAdapter } from "./terminals/fakeTerminalAdapter.ts"
 import { makeFakeAgentAdapter } from "./agents/fakeAgentAdapter.ts"
@@ -134,6 +136,20 @@ export const makeTestServiceLayers = (
 }
 
 export const TestRepositoryLayers = makeTestServiceLayers().layer
+
+type TestKitLayer = ReturnType<typeof makeTestServiceLayers>["layer"]
+
+/**
+ * The one HttpApiTest layer stack for in-process API tests over a kit:
+ * handlers wired to the kit's services, the services themselves (so tests
+ * reach the same instances the handlers use), and the HTTP test services.
+ */
+export const apiTestLayer = (kit: { readonly layer: TestKitLayer }) =>
+  Layer.mergeAll(
+    V1Handlers.pipe(Layer.provide([TestBuildInfoLayer, kit.layer])),
+    kit.layer,
+    BunHttpServer.layerHttpServices,
+  )
 
 /** The full zmx-adapter layer stack shared by every in-process adapter test. */
 export const zmxAdapterLayer = (options: {

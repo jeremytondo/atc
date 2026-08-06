@@ -95,13 +95,9 @@ the push signal that a terminal you care about changed state.
 
 ## Test vectors
 
-`fixtures/` holds shared JSON vectors; the TypeScript suite
-(`app-server/test/terminals/attachProtocolFixtures.test.ts`) consumes them
-today, and ATCKit's attach implementation must consume the same files.
-
-- `control-frames.json` — wire ↔ frame pairs every implementation must
-  round-trip, plus malformed frames every implementation must ignore.
-- `close-codes.json` — the close vocabulary above, with retryability.
-- `dimension-clamp.json` — the [1, 1000] floor/clamp/fallback rule as
-  input → expected cases (shared by query params and resize frames).
-- `attach-urls.json` — base URL + terminal id + size → expected attach URL.
+`fixtures/` holds shared JSON vectors — control frames, close codes,
+dimension clamping, and URL construction; each file's `description` field
+says what it pins. The TypeScript suite consumes them in
+`app-server/test/terminals/attachProtocolFixtures.test.ts`, and ATCKit's
+attach implementation must consume the same files so drift between clients
+fails a test instead of a terminal window.

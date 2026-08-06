@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest"
 import { Deferred, Effect, Fiber, Stream } from "effect"
+import type { Duration } from "effect"
 import * as Events from "../../src/events/events.ts"
 import type { ResourceChangedEvent } from "../../src/events/events.ts"
 
@@ -16,12 +17,13 @@ const event = (id: string): ResourceChangedEvent => ({
   change: "updated",
 })
 
-/** Poll (assertion-bounded) until `condition` holds; no timers involved. */
-const waitFor = (condition: Effect.Effect<boolean>, label: string) =>
+/** Poll (assertion-bounded) until `condition` holds. The default spins on
+ * yieldNow; pass a delay when the condition needs real time to change. */
+const waitFor = (condition: Effect.Effect<boolean>, label: string, delay?: Duration.Input) =>
   Effect.gen(function* () {
     for (let attempt = 0; !(yield* condition); attempt++) {
       assert.isBelow(attempt, 1000, `never observed: ${label}`)
-      yield* Effect.yieldNow
+      yield* delay === undefined ? Effect.yieldNow : Effect.sleep(delay)
     }
   })
 
@@ -29,11 +31,10 @@ const waitFor = (condition: Effect.Effect<boolean>, label: string) =>
 // event-delivery tests filter them out so slow CI runs cannot interleave one.
 const collectInto = (events: Events.Events["Service"], sink: Array<ResourceChangedEvent>) =>
   events.subscribe().pipe(
-    Effect.flatMap(
-      Stream.runForEach((received) =>
-        Effect.sync(() => {
-          if (received !== Events.HEARTBEAT) sink.push(received)
-        }),
+    Effect.flatMap((feed) =>
+      feed.pipe(
+        Stream.filter((item): item is ResourceChangedEvent => item !== Events.HEARTBEAT),
+        Stream.runForEach((event) => Effect.sync(() => sink.push(event))),
       ),
     ),
   )
@@ -174,10 +175,11 @@ describe("Events", () => {
         Effect.map(events.subscriberCount(), (count) => count === 2),
         "both subscribers registered",
       )
-      for (let attempt = 0; !counts.every((count) => count >= 2); attempt++) {
-        assert.isBelow(attempt, 1000, `heartbeats never arrived; saw ${JSON.stringify(counts)}`)
-        yield* Effect.sleep("10 millis")
-      }
+      yield* waitFor(
+        Effect.sync(() => counts.every((count) => count >= 2)),
+        "each subscriber saw two heartbeats",
+        "10 millis",
+      )
       yield* events.close()
       yield* Effect.forEach(fibers, Fiber.join)
     }).pipe(Effect.provide(Events.layerWith({ heartbeatInterval: "20 millis" }))),

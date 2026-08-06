@@ -4,14 +4,6 @@ import type { ResourceChangedEvent as ResourceChangedEventSchema } from "../api/
 
 export type ResourceChangedEvent = typeof ResourceChangedEventSchema.Type
 
-/**
- * The transport-keepalive tick, delivered through the same per-subscriber
- * queues as real events (the SSE handler encodes it as a comment). One value,
- * so consumers narrow with a strict equality check.
- */
-export const HEARTBEAT = "heartbeat" as const
-export type Heartbeat = typeof HEARTBEAT
-
 // The Events service (ATC-128): the in-process fan-out for resource-change
 // events. Domain services publish next to each successful mutation; the
 // subscribe endpoint streams to clients. Invariants:
@@ -41,6 +33,14 @@ export type Heartbeat = typeof HEARTBEAT
 //     bounded graceful stop — an open SSE response would otherwise hold the
 //     stop for the full timeout and die on the noisy forced-interrupt path.
 
+/**
+ * The transport-keepalive tick, delivered through the same per-subscriber
+ * queues as real events (the SSE handler encodes it as a comment). One value,
+ * so consumers narrow with a strict equality check.
+ */
+export const HEARTBEAT = "heartbeat" as const
+export type Heartbeat = typeof HEARTBEAT
+
 export class Events extends Context.Service<
   Events,
   {
@@ -62,7 +62,7 @@ export class Events extends Context.Service<
 export interface EventsOptions {
   /** Per-subscriber queue capacity; overflow ends that subscriber's stream. */
   readonly subscriberCapacity?: number
-  /** Shared heartbeat period. ~25s in production: safely inside URLSession's
+  /** Shared heartbeat period; the default sits safely inside URLSession's
    * 60-second idle teardown. */
   readonly heartbeatInterval?: Duration.Input
 }

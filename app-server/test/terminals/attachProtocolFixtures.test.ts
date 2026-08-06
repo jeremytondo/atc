@@ -13,6 +13,7 @@ import {
   encodeControlFrame,
 } from "../../src/terminals/attachProtocol.ts"
 import type { ControlFrame } from "../../src/terminals/attachProtocol.ts"
+import { DEFAULT_PTY_COLS } from "../../src/platform/subprocess.ts"
 
 // The shared attach-protocol vectors (packages/attach-protocol/fixtures/),
 // run against the TypeScript implementation. ATCKit's attach client must
@@ -44,7 +45,7 @@ describe("attach protocol fixtures", () => {
 
   it("the close vocabulary matches the exported constants exactly", () => {
     const { closes } = fixture<{
-      closes: Array<{ code: number; reason: string | null; retryable: boolean }>
+      closes: Array<{ code: number; reason: string | null; retryable: boolean | null }>
     }>("close-codes.json")
     const reasons = closes.flatMap((close) => close.reason ?? [])
     assert.sameMembers(reasons, [
@@ -54,10 +55,13 @@ describe("attach protocol fixtures", () => {
       CLOSE_ZMX_UNAVAILABLE,
       CLOSE_PING_TIMEOUT,
     ])
-    // The semantic pins clients build retry logic on.
+    // The semantic pins clients build retry logic on. detach is the one
+    // row where retryable must be null: it is client-initiated and proves
+    // nothing about the terminal — a false here would make clients show
+    // "ended" after every deliberate detach.
     const byReason = new Map(closes.map((close) => [close.reason, close]))
     assert.deepInclude(byReason.get(CLOSE_TERMINAL_ENDED), { code: 1000, retryable: false })
-    assert.deepInclude(byReason.get(CLOSE_DETACH), { code: 1000 })
+    assert.deepInclude(byReason.get(CLOSE_DETACH), { code: 1000, retryable: null })
     for (const reason of [CLOSE_ATTACH_FAILED, CLOSE_ZMX_UNAVAILABLE, CLOSE_PING_TIMEOUT]) {
       assert.deepInclude(byReason.get(reason), { code: 1011, retryable: true })
     }
@@ -69,6 +73,8 @@ describe("attach protocol fixtures", () => {
       fallback: number
       cases: Array<{ name: string; raw: string | number | null; expect: number }>
     }>("dimension-clamp.json")
+    // The fixture documents the server default; pin it to the real one.
+    assert.strictEqual(clamp.fallback, DEFAULT_PTY_COLS)
     for (const { name, raw, expect } of clamp.cases) {
       assert.strictEqual(clampDimension(raw ?? undefined, clamp.fallback), expect, name)
     }

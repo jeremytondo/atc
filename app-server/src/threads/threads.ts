@@ -84,8 +84,8 @@ export type Thread = typeof ThreadSchema.Type
 export interface ThreadsOptions {
   /** How long openTerminal waits for a fresh session's identity. */
   readonly identityTimeout?: Duration.Input
-  /** How often the identity wait re-checks that the launched TUI terminal
-   * is still alive. */
+  /** Initial delay before the identity wait's first TUI-liveness check;
+   * subsequent checks back off from it (see watchForEarlyDeath). */
   readonly launchWatchInterval?: Duration.Input
 }
 
@@ -147,7 +147,7 @@ export const layerWith = (options: ThreadsOptions) =>
       // the service's own scope so shutdown reaps every subscription.
       const serviceScope = yield* Effect.scope
       const identityTimeout = options.identityTimeout ?? "30 seconds"
-      const launchWatchInterval = options.launchWatchInterval ?? "1 second"
+      const launchWatchInterval = options.launchWatchInterval ?? "500 millis"
 
       // Live activity evidence by thread id, fed by the per-session
       // subscriptions below. In-memory only — restart resets to no
@@ -194,49 +194,55 @@ export const layerWith = (options: ThreadsOptions) =>
           const child = Scope.forkUnsafe(serviceScope)
           const observation: Observation = { providerSessionId, scope: child }
           observed.set(record.id, observation)
-          // The subscription is established HERE, before the caller
-          // proceeds — only the drain loop is forked. An unavailable
-          // evidence source yields an empty feed: `unknown` on reads,
-          // never a guess or a crash.
-          const stream = yield* adapter
-            .observeSession({
-              providerSessionId,
-              providerMetadata: record.providerMetadata,
-            })
-            .pipe(
-              Effect.catchTag("AgentUnavailable", () =>
-                Effect.succeed(Stream.empty as Stream.Stream<AgentActivity>),
+          const releaseClaim = Effect.gen(function* () {
+            if (observed.get(record.id) !== observation) return
+            observed.delete(record.id)
+            yield* Scope.close(child, Exit.void)
+          })
+          yield* Effect.gen(function* () {
+            // The subscription is established HERE, before the caller
+            // proceeds — only the drain loop is forked. An unavailable
+            // evidence source yields an empty feed: `unknown` on reads,
+            // never a guess or a crash.
+            const stream = yield* adapter
+              .observeSession({
+                providerSessionId,
+                providerMetadata: record.providerMetadata,
+              })
+              .pipe(
+                Effect.catchTag("AgentUnavailable", () =>
+                  Effect.succeed(Stream.empty as Stream.Stream<AgentActivity>),
+                ),
+                Scope.provide(child),
+              )
+            let confirmed = record.confirmedAt !== undefined
+            yield* stream.pipe(
+              Stream.runForEach((activity) =>
+                Effect.gen(function* () {
+                  const previous = liveActivity.get(record.id)
+                  liveActivity.set(record.id, activity)
+                  if (!confirmed && isBusy(activity)) {
+                    confirmed = true
+                    yield* repository.confirm(record.id)
+                  }
+                  // One publish covers both the activity transition and the
+                  // confirm write above (which only happens on a transition).
+                  if (previous !== activity) {
+                    yield* events.publish({ resource: "thread", id: record.id, change: "updated" })
+                  }
+                }),
               ),
-              Scope.provide(child),
+              // A feed that ends on its own must not pin the entry (the
+              // next read re-subscribes instead of trusting a dead stream)
+              // nor leak its child scope into the service scope.
+              Effect.ensuring(releaseClaim),
+              Effect.forkIn(child),
             )
-          let confirmed = record.confirmedAt !== undefined
-          yield* stream.pipe(
-            Stream.runForEach((activity) =>
-              Effect.gen(function* () {
-                const previous = liveActivity.get(record.id)
-                liveActivity.set(record.id, activity)
-                if (!confirmed && isBusy(activity)) {
-                  confirmed = true
-                  yield* repository.confirm(record.id)
-                }
-                // One publish covers both the activity transition and the
-                // confirm write above (which only happens on a transition).
-                if (previous !== activity) {
-                  yield* events.publish({ resource: "thread", id: record.id, change: "updated" })
-                }
-              }),
-            ),
-            // A feed that ends on its own must not pin the entry (the
-            // next read re-subscribes instead of trusting a dead stream)
-            // nor leak its child scope into the service scope.
-            Effect.ensuring(
-              Effect.gen(function* () {
-                if (observed.get(record.id) !== observation) return
-                observed.delete(record.id)
-                yield* Scope.close(child, Exit.void)
-              }),
-            ),
-            Effect.forkIn(child),
+          }).pipe(
+            // A caller interrupted (a dropped read) or failing before the
+            // drain fiber arms must not leave a claim with no consumer —
+            // that would freeze the thread's activity until shutdown.
+            Effect.onExit((exit) => (exit._tag === "Failure" ? releaseClaim : Effect.void)),
           )
         })
 
@@ -323,8 +329,12 @@ export const layerWith = (options: ThreadsOptions) =>
       ): Effect.Effect<Thread> =>
         Effect.gen(function* () {
           // Demand-driven recovery: a restart under a live TUI re-observes
-          // on the first read, so status flows again with no poller.
-          if (linked !== undefined) yield* ensureObserved(record)
+          // on the first read, so status flows again with no poller. NOT
+          // while an open is in flight: a mid-materialize row still names
+          // the superseded session, and a read subscribing to it could
+          // confirm a session the thread no longer references — the open's
+          // own ensureObserved covers the fresh identity.
+          if (linked !== undefined && !opening.has(record.id)) yield* ensureObserved(record)
           const activity = yield* resolveActivity(record, linked?.id)
           return toThread(record, linked?.id, activity)
         })
@@ -346,6 +356,39 @@ export const layerWith = (options: ThreadsOptions) =>
           error._tag === "AgentUnavailable" || error._tag === "AgentProtocolError"
             ? new ProviderUnavailable({ agentId: record.agentId, reason: error.message })
             : new ProviderSessionConflict({ threadId: record.id, reason: error.message })
+
+      /**
+       * Fail once the reconciled inventory says the launched TUI terminal
+       * died — the classic first-run failure (a missing provider login)
+       * would otherwise park the open for the full identity bound with a
+       * generic timeout. Each check is a multiplexer inventory, so the
+       * poll backs off from `launchWatchInterval` to a 5-second ceiling.
+       * Claude never reaches the race — its identity resolves immediately.
+       */
+      const watchForEarlyDeath = (
+        record: ThreadRecord,
+        terminalId: string,
+      ): Effect.Effect<never, ProviderUnavailable> =>
+        Effect.gen(function* () {
+          let delay = Duration.toMillis(Duration.fromInputUnsafe(launchWatchInterval))
+          for (;;) {
+            yield* Effect.sleep(Duration.millis(delay))
+            delay = Math.min(delay * 2, 5_000)
+            const current = yield* terminals
+              .get(terminalId)
+              .pipe(Effect.catchTag("TerminalNotFound", () => Effect.succeed(undefined)))
+            if (current === undefined || current.status === "ended") {
+              return yield* Effect.fail(
+                new ProviderUnavailable({
+                  agentId: record.agentId,
+                  reason:
+                    `the ${record.agentId} TUI exited before its session was established; ` +
+                    `run it manually in the thread's directory to see why (a missing provider login is the usual cause)`,
+                }),
+              )
+            }
+          }
+        })
 
       /** Launch a TUI terminal for the thread from an adapter launch spec,
        * with the nested-session markers scrubbed uniformly. */
@@ -391,30 +434,6 @@ export const layerWith = (options: ThreadsOptions) =>
             const cleanupTerminal = terminals
               .delete(terminal.id)
               .pipe(Effect.catch(() => Effect.void))
-            // A TUI that dies right after launch (the classic first-run
-            // failure: a missing provider login) would otherwise park the
-            // caller for the full identity bound; the reconciled read
-            // notices the death and fails fast with a diagnostic that names
-            // the real problem. Claude never reaches the race — its
-            // identity resolves immediately.
-            const deathWatch = Effect.gen(function* () {
-              for (;;) {
-                yield* Effect.sleep(launchWatchInterval)
-                const current = yield* terminals
-                  .get(terminal.id)
-                  .pipe(Effect.catchTag("TerminalNotFound", () => Effect.succeed(undefined)))
-                if (current === undefined || current.status === "ended") {
-                  return yield* Effect.fail(
-                    new ProviderUnavailable({
-                      agentId: record.agentId,
-                      reason:
-                        `the ${record.agentId} TUI exited before its session was established; ` +
-                        `run it manually in the thread's directory to see why (a missing provider login is the usual cause)`,
-                    }),
-                  )
-                }
-              }
-            })
             yield* Effect.uninterruptibleMask((restore) =>
               Effect.gen(function* () {
                 // The identity await stays interruptible (openTerminal's
@@ -424,7 +443,7 @@ export const layerWith = (options: ThreadsOptions) =>
                 const identity = yield* restore(
                   Effect.raceFirst(
                     prepared.identity.pipe(Effect.mapError(mapAgentError(record))),
-                    deathWatch,
+                    watchForEarlyDeath(record, terminal.id),
                   ),
                 )
                 // From resolution until a thread row owns the identity, the

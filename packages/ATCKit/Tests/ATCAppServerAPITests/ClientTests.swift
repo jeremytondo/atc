@@ -143,6 +143,19 @@ struct ClientTests {
         #expect(try ATCDateTranscoder().encode(project.createdAt) == "2026-08-06T12:34:56.789Z")
     }
 
+    // Every millisecond value must survive decode → encode byte-identically.
+    // Most milliseconds are not exact in binary, and the ISO8601 format style
+    // truncates — a single sample would pass or fail by luck.
+    @Test("all thousand millisecond values round-trip byte-identically")
+    func exhaustiveMillisecondRoundTrip() throws {
+        let transcoder = ATCDateTranscoder()
+        for millis in 0..<1000 {
+            let wire = String(format: "2026-08-06T12:34:56.%03dZ", millis)
+            let roundTripped = try transcoder.encode(try transcoder.decode(wire))
+            #expect(roundTripped == wire)
+        }
+    }
+
     @Test("the transcoder decodes both fractional and whole-second timestamps")
     func lenientDecoding() throws {
         let transcoder = ATCDateTranscoder()

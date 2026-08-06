@@ -31,7 +31,7 @@ afterAll(() => {
 // (a missing install would add a startup warning line to stderr).
 const sandbox = makeFakeZmxSandbox()
 const serveEnv = () => isolatedEnv(scratch, { ATC_ZMX_EXECUTABLE: sandbox.wrapper })
-const spawnFromSource = (port: number, env = serveEnv()) =>
+const spawnFromSource = (port: number, env: ReturnType<typeof serveEnv>) =>
   spawnServe([process.execPath, "src/main.ts"], port, appServerRoot, env)
 
 describe("atc serve (black box)", () => {
@@ -85,7 +85,7 @@ describe("atc serve (black box)", () => {
 
   test("fails with one friendly stderr line when the port is taken", async () => {
     const occupant = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") })
-    const proc = spawnFromSource(occupant.port!)
+    const proc = spawnFromSource(occupant.port!, serveEnv())
     try {
       expect(await proc.exited).toBe(1)
       const stderr = await new Response(proc.stderr as ReadableStream).text()

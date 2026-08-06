@@ -1,19 +1,16 @@
 import { assert, describe, it } from "@effect/vitest"
-import { BunHttpServer } from "@effect/platform-bun"
-import { Effect, Layer, Option, Stream } from "effect"
+import { Effect, Option, Stream } from "effect"
 import { HttpApiTest } from "effect/unstable/httpapi"
 import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll } from "vitest"
 import { Api } from "../../src/api/contract.ts"
-import { V1Handlers } from "../../src/api/handlers.ts"
 import * as Events from "../../src/events/events.ts"
 import type { ResourceChangedEvent } from "../../src/events/events.ts"
 import { sessionNameForTerminalId } from "../../src/terminals/terminalAdapter.ts"
 import { ThreadRepository } from "../../src/threads/threadRepository.ts"
-import { TestBuildInfoLayer } from "../testBuildInfo.ts"
-import { makeTestServiceLayers } from "../testLayers.ts"
+import { apiTestLayer, makeTestServiceLayers } from "../testLayers.ts"
 
 // Cascade-publish regression tests (ATC-142): the mutations whose events are
 // EASY to lose silently, because the changed resource is not the one the
@@ -22,11 +19,7 @@ import { makeTestServiceLayers } from "../testLayers.ts"
 // covered by the api.test.ts events test.
 
 const kit = makeTestServiceLayers()
-const TestLayer = Layer.mergeAll(
-  V1Handlers.pipe(Layer.provide([TestBuildInfoLayer, kit.layer])),
-  kit.layer,
-  BunHttpServer.layerHttpServices,
-)
+const TestLayer = apiTestLayer(kit)
 
 const scratch = mkdtempSync(join(tmpdir(), "atc-event-cascade-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
@@ -38,17 +31,14 @@ const collect = Effect.gen(function* () {
   const feed = yield* events.subscribe()
   const sink: Array<ResourceChangedEvent> = []
   yield* feed.pipe(
-    Stream.runForEach((item) =>
-      Effect.sync(() => {
-        if (item !== Events.HEARTBEAT) sink.push(item)
-      }),
-    ),
+    Stream.filter((item): item is ResourceChangedEvent => item !== Events.HEARTBEAT),
+    Stream.runForEach((event) => Effect.sync(() => sink.push(event))),
     Effect.forkScoped,
   )
   return sink
 })
 
-/** Poll (real clock) until `predicate` holds on the sink; bounded. */
+/** Poll (real clock, bounded) until `predicate` holds on the sink. */
 const eventually = (sink: Array<ResourceChangedEvent>, predicate: () => boolean) =>
   Effect.gen(function* () {
     for (let attempt = 0; !predicate(); attempt++) {
@@ -57,16 +47,16 @@ const eventually = (sink: Array<ResourceChangedEvent>, predicate: () => boolean)
     }
   })
 
-const has = (
-  sink: Array<ResourceChangedEvent>,
-  expected: ResourceChangedEvent,
-): (() => boolean) => {
-  const matches = (event: ResourceChangedEvent) =>
-    event.resource === expected.resource &&
-    event.id === expected.id &&
-    event.change === expected.change
-  return () => sink.some(matches)
-}
+/** `eventually` for the common case: one expected event in the sink. */
+const waitForEvent = (sink: Array<ResourceChangedEvent>, expected: ResourceChangedEvent) =>
+  eventually(sink, () =>
+    sink.some(
+      (event) =>
+        event.resource === expected.resource &&
+        event.id === expected.id &&
+        event.change === expected.change,
+    ),
+  )
 
 const setup = Effect.gen(function* () {
   const client = yield* HttpApiTest.groups(Api, ["v1"])
@@ -91,12 +81,9 @@ describe("cascade event publishes", () => {
 
       const sink = yield* collect
       yield* client.v1.deleteThread({ params: { threadId: thread.id } })
-      yield* eventually(sink, has(sink, { resource: "thread", id: thread.id, change: "deleted" }))
+      yield* waitForEvent(sink, { resource: "thread", id: thread.id, change: "deleted" })
       // The tombstone's client-visible threadId changed with the delete.
-      yield* eventually(
-        sink,
-        has(sink, { resource: "terminal", id: terminal.id, change: "updated" }),
-      )
+      yield* waitForEvent(sink, { resource: "terminal", id: terminal.id, change: "updated" })
       yield* client.v1.deleteTerminal({ params: { terminalId: terminal.id } })
     }).pipe(Effect.scoped, Effect.provide(TestLayer)),
   )
@@ -112,11 +99,8 @@ describe("cascade event publishes", () => {
       // about both the terminal and its thread's derived fields.
       kit.fake.sessions.delete(sessionNameForTerminalId(terminal.id))
       yield* client.v1.listTerminals({ query: { projectId: thread.projectId } })
-      yield* eventually(
-        sink,
-        has(sink, { resource: "terminal", id: terminal.id, change: "updated" }),
-      )
-      yield* eventually(sink, has(sink, { resource: "thread", id: thread.id, change: "updated" }))
+      yield* waitForEvent(sink, { resource: "terminal", id: terminal.id, change: "updated" })
+      yield* waitForEvent(sink, { resource: "thread", id: thread.id, change: "updated" })
       yield* client.v1.deleteThread({ params: { threadId: thread.id } })
     }).pipe(Effect.scoped, Effect.provide(TestLayer)),
   )
@@ -130,7 +114,7 @@ describe("cascade event publishes", () => {
 
       const sink = yield* collect
       kit.fakeAgents.codex.emitActivity(sessionId, "working")
-      yield* eventually(sink, has(sink, { resource: "thread", id: thread.id, change: "updated" }))
+      yield* waitForEvent(sink, { resource: "thread", id: thread.id, change: "updated" })
 
       // Each transition publishes once; a repeated identical activity does
       // not re-publish (the coalescing clients rely on staying quiet).
