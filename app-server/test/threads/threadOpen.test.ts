@@ -415,6 +415,67 @@ describe("threads.openTerminal", () => {
     }),
   )
 
+  it.live("concurrent first reads establish exactly one observation (no leaked subscription)", () =>
+    Effect.gen(function* () {
+      const dbFile = join(scratch, "concurrent-reads.db")
+      const before = makeTestServiceLayers(dbFile)
+      const state = yield* Effect.gen(function* () {
+        const client = yield* HttpApiTest.groups(Api, ["v1"])
+        const repository = yield* ThreadRepository
+        const project = yield* client.v1.createProject({
+          payload: { name: "Concurrent", defaultWorkingDirectory: realDir },
+        })
+        const thread = yield* client.v1.createThread({
+          payload: { projectId: project.id, agentId: "codex" },
+        })
+        const terminal = yield* client.v1.openThreadTerminal({ params: { threadId: thread.id } })
+        const record = Option.getOrThrow(yield* repository.get(thread.id))
+        return {
+          threadId: thread.id,
+          terminalId: terminal.id,
+          sessionId: record.providerSessionId ?? "",
+        }
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            V1Handlers.pipe(Layer.provide([TestBuildInfoLayer, before.layer])),
+            before.layer,
+            BunHttpServer.layerHttpServices,
+          ),
+        ),
+      )
+
+      // Relaunch: nothing is observed yet, and the sidebar list + detail
+      // get race their first reads — exactly one adapter subscription may
+      // survive; a second would leak until shutdown and double-drive the
+      // thread's activity.
+      const after = makeTestServiceLayers(dbFile)
+      after.fake.seed(sessionNameForTerminalId(state.terminalId))
+      yield* Effect.gen(function* () {
+        const client = yield* HttpApiTest.groups(Api, ["v1"])
+        yield* Effect.all(
+          [
+            client.v1.listThreads({ query: {} }),
+            client.v1.getThread({ params: { threadId: state.threadId } }),
+            client.v1.getThread({ params: { threadId: state.threadId } }),
+            client.v1.listThreads({ query: {} }),
+          ],
+          { concurrency: "unbounded" },
+        )
+        assert.strictEqual(after.fakeAgents.codex.observerCount(state.sessionId), 1)
+        yield* client.v1.deleteThread({ params: { threadId: state.threadId } })
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            V1Handlers.pipe(Layer.provide([TestBuildInfoLayer, after.layer])),
+            after.layer,
+            BunHttpServer.layerHttpServices,
+          ),
+        ),
+      )
+    }),
+  )
+
   it.live("a busy state with no live driver re-derives from the adapter on read", () =>
     Effect.gen(function* () {
       const { client, thread } = yield* setup

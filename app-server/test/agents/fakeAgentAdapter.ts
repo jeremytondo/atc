@@ -53,6 +53,8 @@ export interface FakeAgentAdapter {
   readonly setIdentityHangs: (hangs: boolean) => void
   /** Push one activity value to every observer of `providerSessionId`. */
   readonly emitActivity: (providerSessionId: string, activity: AgentActivity) => void
+  /** Live observeSession subscriptions for `providerSessionId`. */
+  readonly observerCount: (providerSessionId: string) => number
   /** Script what checkSession reports for `providerSessionId`. */
   readonly setCheckActivity: (providerSessionId: string, activity: AgentActivity | null) => void
   /** prepareTuiSession identities handed out, in order. */
@@ -364,6 +366,7 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
         Queue.offerUnsafe(queue, activity)
       }
     },
+    observerCount: (providerSessionId) => observers.get(providerSessionId)?.size ?? 0,
     setCheckActivity: (providerSessionId, activity) => {
       if (activity === null) checkActivity.delete(providerSessionId)
       else checkActivity.set(providerSessionId, activity)

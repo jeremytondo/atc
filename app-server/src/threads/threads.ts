@@ -180,7 +180,14 @@ export const layerWith = (options: ThreadsOptions) =>
           // A superseded session's subscription must never keep driving
           // the thread (its feed would confirm a session it never saw).
           if (existing !== undefined) yield* unobserve(record.id)
-          const child = yield* Scope.fork(serviceScope)
+          // The re-check, unsafe fork, and claim are ONE synchronous step:
+          // concurrent first reads of the same live thread (sidebar list +
+          // detail get at relaunch) race exactly here, and a loser that
+          // proceeded would leak its adapter subscription until shutdown.
+          // Whoever claimed during the unobserve above wins, whatever
+          // session it observes — the next read re-checks and heals.
+          if (observed.get(record.id) !== undefined) return
+          const child = Scope.forkUnsafe(serviceScope)
           const observation: Observation = { providerSessionId, scope: child }
           observed.set(record.id, observation)
           // The subscription is established HERE, before the caller
