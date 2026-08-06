@@ -28,17 +28,15 @@ const waitFor = (condition: Effect.Effect<boolean>, label: string) =>
 // Heartbeat ticks share the subscriber queues (see the module header); the
 // event-delivery tests filter them out so slow CI runs cannot interleave one.
 const collectInto = (events: Events.Events["Service"], sink: Array<ResourceChangedEvent>) =>
-  events
-    .subscribe()
-    .pipe(
-      Effect.flatMap(
-        Stream.runForEach((received) =>
-          Effect.sync(() => {
-            if (received !== Events.HEARTBEAT) sink.push(received)
-          }),
-        ),
+  events.subscribe().pipe(
+    Effect.flatMap(
+      Stream.runForEach((received) =>
+        Effect.sync(() => {
+          if (received !== Events.HEARTBEAT) sink.push(received)
+        }),
       ),
-    )
+    ),
+  )
 
 describe("Events", () => {
   it.effect("delivers published events to every subscriber, in order", () =>
@@ -161,17 +159,15 @@ describe("Events", () => {
       const counts = [0, 0]
       const fibers = yield* Effect.forEach(counts.keys(), (index) =>
         Effect.forkChild(
-          events
-            .subscribe()
-            .pipe(
-              Effect.flatMap(
-                Stream.runForEach((received) =>
-                  Effect.sync(() => {
-                    if (received === Events.HEARTBEAT) counts[index]!++
-                  }),
-                ),
+          events.subscribe().pipe(
+            Effect.flatMap(
+              Stream.runForEach((received) =>
+                Effect.sync(() => {
+                  if (received === Events.HEARTBEAT) counts[index]!++
+                }),
               ),
             ),
+          ),
         ),
       )
       yield* waitFor(

@@ -126,8 +126,7 @@ describe("cascade event publishes", () => {
       const { client, thread } = yield* setup
       const repository = yield* ThreadRepository
       yield* client.v1.openThreadTerminal({ params: { threadId: thread.id } })
-      const sessionId =
-        Option.getOrThrow(yield* repository.get(thread.id)).providerSessionId ?? ""
+      const sessionId = Option.getOrThrow(yield* repository.get(thread.id)).providerSessionId ?? ""
 
       const sink = yield* collect
       kit.fakeAgents.codex.emitActivity(sessionId, "working")

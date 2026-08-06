@@ -564,7 +564,9 @@ export const layer = Layer.effect(CodexAdapter)(
             ),
           )
           const decoded = yield* Schema.decodeUnknownEffect(ThreadListReply)(reply).pipe(
-            Effect.mapError((error) => unavailable(`unexpected thread/list reply: ${error.message}`)),
+            Effect.mapError((error) =>
+              unavailable(`unexpected thread/list reply: ${error.message}`),
+            ),
           )
           const thread = decoded.data.find((t) => t.id === threadId)
           if (thread !== undefined) return thread

@@ -53,10 +53,15 @@ export const routes = Layer.mergeAll(
 // the Events layer's own finalizer (a dependency, released after the stop),
 // an open SSE response would hold the stop for the full timeout and die on
 // the noisy forced-interrupt path instead.
+//
+// The "shutting down" line is registered LAST so it runs FIRST (finalizers
+// are LIFO): the file log otherwise just stops on SIGINT/SIGTERM, leaving a
+// supervising app unable to tell a clean exit from a kill.
 const drainEventsBeforeStop = Layer.effectDiscard(
   Effect.gen(function* () {
     const events = yield* Events.Events
     yield* Effect.addFinalizer(events.close)
+    yield* Effect.addFinalizer(() => Effect.logInfo("shutting down"))
   }),
 )
 
