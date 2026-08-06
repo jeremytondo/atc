@@ -3,14 +3,17 @@ import type { SessionSize } from "./terminalAdapter.ts"
 
 // The attach wire protocol (ATC-130), stated once for every side of the
 // socket: the server bridge (terminalAttach.ts), the CLI client
-// (attachClient.ts), and any future client. The contract endpoint
-// description (contract.ts `attachTerminal`) documents it in prose; this module
-// is the code authority both sides import.
+// (attachClient.ts), and any future client. This module is the code
+// authority TypeScript sides import; the client-facing spec (and the shared
+// test vectors that pin it for non-TS clients) is
+// packages/attach-protocol/README.md + fixtures/.
 //
 // Binary frames are terminal bytes in both directions. Text frames are the
 // JSON control frames below. Close vocabulary: 1000 `terminal_ended` is
 // authoritative (a complete inventory proved the terminal ended) and 1000
-// `detach` is a deliberate client detach; 1011 reasons are retryable.
+// `detach` is a deliberate client detach; 1011 reasons are retryable —
+// as is a bare 1006/transport loss, which proves nothing about the
+// terminal.
 
 const ControlFrame = Schema.Union([
   Schema.Struct({ type: Schema.Literal("resize"), cols: Schema.Number, rows: Schema.Number }),
