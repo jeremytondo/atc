@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url"
-import { openApiJson } from "../src/openapi.ts"
+import { openApiJson } from "../src/api/openapi.ts"
 
 // Maintains the checked-in OpenAPI artifact (app-server/openapi.json).
 //

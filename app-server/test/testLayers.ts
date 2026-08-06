@@ -5,16 +5,17 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
-import * as ClaudeHooks from "../src/claudeHooks.ts"
-import { AppConfig } from "../src/config.ts"
-import * as Directories from "../src/directories.ts"
-import * as Persistence from "../src/persistence.ts"
-import * as ProjectRepository from "../src/projectRepository.ts"
-import * as Subprocess from "../src/subprocess.ts"
-import type { TerminalAdapter } from "../src/terminalAdapter.ts"
-import * as TerminalRepository from "../src/terminalRepository.ts"
-import * as Terminals from "../src/terminals.ts"
-import * as Zmx from "../src/zmxAdapter.ts"
+import * as ClaudeHooks from "../src/agents/claudeHooks.ts"
+import { AppConfig } from "../src/platform/config.ts"
+import * as Directories from "../src/platform/directories.ts"
+import * as Persistence from "../src/platform/persistence.ts"
+import * as ProjectRepository from "../src/projects/projectRepository.ts"
+import * as Projects from "../src/projects/projects.ts"
+import * as Subprocess from "../src/platform/subprocess.ts"
+import type { TerminalAdapter } from "../src/terminals/terminalAdapter.ts"
+import * as TerminalRepository from "../src/terminals/terminalRepository.ts"
+import * as Terminals from "../src/terminals/terminals.ts"
+import * as Zmx from "../src/terminals/zmxAdapter.ts"
 import {
   appServerRoot,
   freePort,
@@ -23,8 +24,8 @@ import {
   trackTempDir,
   waitForHealth,
 } from "./blackbox.ts"
-import { makeFakeAdapter } from "./fakeTerminalAdapter.ts"
-import type { FakeTerminalAdapter } from "./fakeTerminalAdapter.ts"
+import { makeFakeAdapter } from "./terminals/fakeTerminalAdapter.ts"
+import type { FakeTerminalAdapter } from "./terminals/fakeTerminalAdapter.ts"
 
 type ServiceLayer = Layer.Layer<
   | ProjectRepository.ProjectRepository
@@ -47,7 +48,10 @@ export const makeTestServiceLayers = (
 ): {
   readonly fake: FakeTerminalAdapter
   readonly services: ServiceLayer
-  readonly layer: Layer.Layer<Layer.Success<ServiceLayer> | Terminals.Terminals, unknown>
+  readonly layer: Layer.Layer<
+    Layer.Success<ServiceLayer> | Terminals.Terminals | Projects.Projects,
+    unknown
+  >
 } => {
   const fake = makeFakeAdapter()
   const base = Layer.mergeAll(ProjectRepository.layer, TerminalRepository.layer).pipe(
@@ -57,7 +61,11 @@ export const makeTestServiceLayers = (
   return {
     fake,
     services,
-    layer: Layer.mergeAll(services, Terminals.layer.pipe(Layer.provide(services))),
+    layer: Layer.mergeAll(
+      services,
+      Terminals.layer.pipe(Layer.provide(services)),
+      Projects.layer.pipe(Layer.provide(services)),
+    ),
   }
 }
 

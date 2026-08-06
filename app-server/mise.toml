@@ -71,9 +71,9 @@ run = "ATC_COMPILED_TEST=1 bun --bun vitest run test/compiled.blackbox.test.ts"
 [tasks."test:smoke"]
 description = "Opt-in live provider smoke tests (requires Codex CLI and Claude Code credentials)"
 depends = ["build"]
-run = "ATC_SMOKE=1 bun --bun vitest run test/provider.smoke.test.ts test/codexAdapter.smoke.test.ts test/claudeAdapter.smoke.test.ts"
+run = "ATC_SMOKE=1 bun --bun vitest run test/agents/provider.smoke.test.ts test/agents/codexAdapter.smoke.test.ts test/agents/claudeAdapter.smoke.test.ts"
 
 [tasks."test:zmx"]
 description = "Opt-in tests against the real installed zmx: adapter smoke and compiled restart recovery"
 depends = ["build"]
-run = "ATC_ZMX_SMOKE=1 bun --bun vitest run test/zmxSmoke.test.ts test/zmxRecovery.blackbox.test.ts"
+run = "ATC_ZMX_SMOKE=1 bun --bun vitest run test/terminals/zmxSmoke.test.ts test/terminals/zmxRecovery.blackbox.test.ts"

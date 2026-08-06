@@ -1,7 +1,7 @@
 # API Contract Fixtures
 
 **Scope: the legacy Go server (`server/`) only.** The active App Server
-(`app-server/`) derives its contract from `app-server/src/api.ts` and the
+(`app-server/`) derives its contract from `app-server/src/api/contract.ts` and the
 generated `app-server/openapi.json` instead — these fixtures do not govern it.
 
 `fixtures/` pins the legacy API's wire shapes. Each file holds one
