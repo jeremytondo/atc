@@ -4,7 +4,7 @@ import { HttpServer } from "effect/unstable/http"
 import * as Events from "../src/events/events.ts"
 import * as Server from "../src/server.ts"
 import { TestBuildInfoLayer } from "./testBuildInfo.ts"
-import { TestRepositoryLayers } from "./testLayers.ts"
+import { makeTestServiceLayers, TestRepositoryLayers } from "./testLayers.ts"
 
 describe("server layer", () => {
   // it.live: this test does real socket I/O, and the platform's shutdown
@@ -110,6 +110,39 @@ describe("server layer", () => {
       )
       assert.isFalse(end.errored, "the subscriber stream errored instead of ending")
       assert.isTrue(end.done)
+    }),
+  )
+
+  // The shared heartbeat crosses the real wire as an SSE comment — the
+  // keepalive quiet streams need to survive URLSession's idle timeout.
+  it.live("a quiet event stream carries heartbeat comments", () =>
+    Effect.gen(function* () {
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const kit = makeTestServiceLayers(":memory:", {}, { heartbeatInterval: "30 millis" })
+      const context = yield* Layer.build(
+        Server.layer({ port: 0 }).pipe(Layer.provide([TestBuildInfoLayer, kit.layer])),
+      ).pipe(Effect.provideService(Scope.Scope, scope))
+      const address = Context.get(context, HttpServer.HttpServer).address
+      if (address._tag !== "TcpAddress") return assert.fail("expected a TCP address")
+
+      const response = yield* Effect.promise(() =>
+        fetch(`http://127.0.0.1:${address.port}/api/v1/events`, {
+          headers: { accept: "text/event-stream" },
+        }),
+      )
+      const reader = response.body!.getReader()
+      const decoder = new TextDecoder()
+      let payload = ""
+      // No mutation ever happens: everything on the wire is the opening
+      // comment and heartbeats.
+      for (let attempt = 0; !payload.includes(": heartbeat\n\n"); attempt++) {
+        assert.isBelow(attempt, 10, `no heartbeat arrived; saw ${JSON.stringify(payload)}`)
+        const chunk = yield* Effect.promise(() => reader.read())
+        assert.isFalse(chunk.done, "the stream ended before a heartbeat arrived")
+        payload += decoder.decode(chunk.value, { stream: true })
+      }
+      assert.isTrue(payload.startsWith(": connected\n\n"))
     }),
   )
 

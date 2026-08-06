@@ -3,7 +3,7 @@ import { HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { Api, ResourceChangedEvent } from "./contract.ts"
 import { AgentRegistry } from "../agents/agentRegistry.ts"
-import { Events } from "../events/events.ts"
+import { Events, HEARTBEAT } from "../events/events.ts"
 import { BuildInfo } from "../platform/buildInfo.ts"
 import { Directories } from "../platform/directories.ts"
 import { Projects } from "../projects/projects.ts"
@@ -91,9 +91,14 @@ export const V1Handlers = HttpApiBuilder.group(
             // the comment observes the reconciled state and misses nothing.
             yield* terminals.list()
             const feed = yield* events.subscribe()
+            // Heartbeat ticks become SSE comments: ignored by conforming
+            // parsers, but they keep idle-timeout-prone transports alive and
+            // surface dead sockets to the server via the failing write.
             const encoded = feed.pipe(
-              Stream.mapEffect((event) =>
-                Effect.map(encodeEventJson(event), (json) => `data: ${json}\n\n`),
+              Stream.mapEffect((item) =>
+                item === HEARTBEAT
+                  ? Effect.succeed(": heartbeat\n\n")
+                  : Effect.map(encodeEventJson(item), (json) => `data: ${json}\n\n`),
               ),
             )
             return HttpServerResponse.stream(
