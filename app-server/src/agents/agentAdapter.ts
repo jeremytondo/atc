@@ -269,12 +269,19 @@ export interface AgentAdapter {
    * `providerMetadata` is deliberately required (pass undefined when the
    * thread has none): forgetting to thread it through would silently
    * rotate adapter state out from under a running TUI.
+   *
+   * A provider that can probe session existence (Codex, via thread/list)
+   * does so here and fails `AgentResumeFailed` when the session is gone —
+   * launching blind would die inside the pty with no typed error. A
+   * provider that cannot probe (Claude: checkSession is hardwired
+   * `unknown`) launches blind, so "the open succeeded but the terminal
+   * died within seconds" remains a state clients must expect.
    */
   readonly tuiLaunch: (options: {
     readonly providerSessionId: string
     readonly cwd: string
     readonly providerMetadata: string | undefined
-  }) => Effect.Effect<TuiLaunch, AgentUnavailable>
+  }) => Effect.Effect<TuiLaunch, AgentUnavailable | AgentResumeFailed>
   /**
    * Prepare a FRESH provider TUI session in `cwd`: the uniform contract
    * behind "provider sessions materialize on first interaction". The Scope

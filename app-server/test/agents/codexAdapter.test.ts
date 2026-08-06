@@ -312,21 +312,40 @@ describe("CodexAdapter", () => {
   )
 
   it.live(
-    "tuiLaunch hands back the exact remote-resume argv",
+    "tuiLaunch probes session existence, then hands back the exact remote-resume argv",
     () =>
       Effect.gen(function* () {
         const sandbox = makeCodexSandbox()
         yield* withAdapter(sandbox, (adapter) =>
           Effect.gen(function* () {
+            // A session the provider actually has: the probe passes.
+            const sessionId = yield* Effect.scoped(
+              Effect.map(
+                adapter.createSession({ cwd: sandbox.cwd, input: "seed" }),
+                ({ connection }) => connection.providerSessionId,
+              ),
+            )
             const { launchSpec } = yield* adapter.tuiLaunch({
-              providerSessionId: "some-thread",
+              providerSessionId: sessionId,
               cwd: sandbox.cwd,
               providerMetadata: undefined,
             })
             assert.strictEqual(launchSpec.command[0], sandbox.wrapper)
             assert.deepStrictEqual(launchSpec.command.slice(1, 3), ["resume", "--remote"])
             assert.match(launchSpec.command[3] ?? "", /^ws:\/\/127\.0\.0\.1:\d+$/)
-            assert.strictEqual(launchSpec.command[4], "some-thread")
+            assert.strictEqual(launchSpec.command[4], sessionId)
+
+            // A session codex no longer has (pruned/deleted history) fails
+            // the probe closed instead of launching a TUI that dies in the
+            // pty with no typed error.
+            const missing = yield* Effect.flip(
+              adapter.tuiLaunch({
+                providerSessionId: "some-pruned-thread",
+                cwd: sandbox.cwd,
+                providerMetadata: undefined,
+              }),
+            )
+            assert.strictEqual(missing._tag, "AgentResumeFailed")
           }),
         )
       }),

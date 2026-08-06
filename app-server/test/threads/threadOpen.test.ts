@@ -148,6 +148,43 @@ describe("threads.openTerminal", () => {
     }).pipe(Effect.provide(TestLayer)),
   )
 
+  it.live("reopening a confirmed session the provider pruned fails typed, launching nothing", () =>
+    Effect.gen(function* () {
+      const { client, thread, project } = yield* setup
+      const repository = yield* ThreadRepository
+      const terminal = yield* client.v1.openThreadTerminal({ params: { threadId: thread.id } })
+      const sessionId = Option.getOrThrow(yield* repository.get(thread.id)).providerSessionId ?? ""
+      kit.fakeAgents.codex.emitActivity(sessionId, "working")
+      yield* eventually(
+        repository.get(thread.id),
+        (r) => Option.isSome(r) && r.value.confirmedAt !== undefined,
+      )
+      kit.fakeAgents.codex.emitActivity(sessionId, "idle")
+
+      // The TUI ends; meanwhile the provider's history for the session is
+      // pruned. The reopen probe fails closed with a presentable error —
+      // no blind `resume` launch that dies in the pty — and repeats
+      // consistently on every retry.
+      kit.fake.sessions.delete(sessionNameForTerminalId(terminal.id))
+      kit.fakeAgents.codex.setSessionPruned(sessionId, true)
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const failure = yield* Effect.flip(
+          client.v1.openThreadTerminal({ params: { threadId: thread.id } }),
+        )
+        assert.strictEqual(failure._tag, "ProviderSessionConflict")
+      }
+      // Only the first TUI's tombstone remains — no new terminal launched.
+      const terminals = yield* client.v1.listTerminals({ query: { projectId: project.id } })
+      assert.deepStrictEqual(
+        terminals.map((t) => ({ id: t.id, status: t.status })),
+        [{ id: terminal.id, status: "ended" }],
+      )
+      kit.fakeAgents.codex.setSessionPruned(sessionId, false)
+      yield* client.v1.deleteThread({ params: { threadId: thread.id } })
+      yield* client.v1.deleteTerminal({ params: { terminalId: terminal.id } })
+    }).pipe(Effect.provide(TestLayer)),
+  )
+
   it.live("an unconfirmed session re-materializes with fresh identity on the next open", () =>
     Effect.gen(function* () {
       const { client, thread } = yield* setup

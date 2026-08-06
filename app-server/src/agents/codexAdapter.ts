@@ -543,6 +543,37 @@ export const layer = Layer.effect(CodexAdapter)(
         return { connection, unregister }
       })
 
+    /**
+     * Walk the paginated thread/list for one thread. `undefined` after a
+     * complete walk means the provider does not have it (used as conclusive
+     * absence by the tuiLaunch probe and as honest `unknown` by
+     * checkSession). A repeated cursor cannot make progress and is treated
+     * as the end of the walk.
+     */
+    const findThread = (state: ClientState, threadId: string) =>
+      Effect.gen(function* () {
+        let cursor: string | undefined
+        while (true) {
+          const reply = yield* request(
+            state,
+            "thread/list",
+            cursor === undefined ? {} : { cursor },
+          ).pipe(
+            Effect.mapError((error) =>
+              unavailable(error._tag === "RpcError" ? error.text : error.reason),
+            ),
+          )
+          const decoded = yield* Schema.decodeUnknownEffect(ThreadListReply)(reply).pipe(
+            Effect.mapError((error) => unavailable(`unexpected thread/list reply: ${error.message}`)),
+          )
+          const thread = decoded.data.find((t) => t.id === threadId)
+          if (thread !== undefined) return thread
+          const next = decoded.nextCursor
+          if (typeof next !== "string" || next === cursor) return undefined
+          cursor = next
+        }
+      })
+
     const adapter: AgentAdapter = {
       provider: "codex",
       capabilities: { testedVersion: CODEX_TESTED_VERSION, tuiObservation: "shared-server" },
@@ -647,6 +678,21 @@ export const layer = Layer.effect(CodexAdapter)(
       tuiLaunch: (options) =>
         Effect.gen(function* () {
           const executable = yield* resolveProviderExecutable("codex", config.codexExecutable)
+          // Probe before launching (ATC-142): `codex resume` of a deleted or
+          // pruned thread dies inside the pty with no typed error, and every
+          // reopen repeats it. A full thread/list walk that omits the id is
+          // treated as absence and fails closed with a presentable error.
+          const state = yield* getClientRetryable
+          const thread = yield* findThread(state, options.providerSessionId)
+          if (thread === undefined) {
+            return yield* Effect.fail(
+              new AgentResumeFailed({
+                provider: "codex",
+                providerSessionId: options.providerSessionId,
+                reason: "codex no longer has this session (its history was deleted or pruned)",
+              }),
+            )
+          }
           const info = yield* codexServer.ensure()
           return {
             launchSpec: {
@@ -712,32 +758,9 @@ export const layer = Layer.effect(CodexAdapter)(
         Effect.gen(function* () {
           const state = yield* getClientRetryable
           // thread/list (probed) is the reconciliation aid: absent thread or
-          // undeterminable status is honestly `unknown`, never a guess. The
-          // reply is paginated; walk pages until the target thread appears
-          // or the cursor runs out.
-          let cursor: string | undefined
-          while (true) {
-            const reply = yield* request(
-              state,
-              "thread/list",
-              cursor === undefined ? {} : { cursor },
-            ).pipe(
-              Effect.mapError((error) =>
-                unavailable(error._tag === "RpcError" ? error.text : error.reason),
-              ),
-            )
-            const decoded = yield* Schema.decodeUnknownEffect(ThreadListReply)(reply).pipe(
-              Effect.mapError((error) =>
-                unavailable(`unexpected thread/list reply: ${error.message}`),
-              ),
-            )
-            const thread = decoded.data.find((t) => t.id === options.providerSessionId)
-            if (thread !== undefined) return statusToActivity(thread.status)
-            const next = decoded.nextCursor
-            // A repeated cursor cannot make progress; treat it as the end.
-            if (typeof next !== "string" || next === cursor) return "unknown"
-            cursor = next
-          }
+          // undeterminable status is honestly `unknown`, never a guess.
+          const thread = yield* findThread(state, options.providerSessionId)
+          return thread === undefined ? "unknown" : statusToActivity(thread.status)
         }),
       // Codex holds no per-session launch files or secrets; provider-owned
       // rollouts are never ATC's to touch.
