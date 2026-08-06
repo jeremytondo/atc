@@ -5,7 +5,10 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
+import * as AgentRegistry from "../src/agents/agentRegistry.ts"
+import * as ClaudeAdapter from "../src/agents/claudeAdapter.ts"
 import * as ClaudeHooks from "../src/agents/claudeHooks.ts"
+import * as CodexAdapter from "../src/agents/codexAdapter.ts"
 import { AppConfig } from "../src/platform/config.ts"
 import * as Directories from "../src/platform/directories.ts"
 import * as Persistence from "../src/platform/persistence.ts"
@@ -28,6 +31,8 @@ import {
 } from "./blackbox.ts"
 import { makeFakeAdapter } from "./terminals/fakeTerminalAdapter.ts"
 import type { FakeTerminalAdapter } from "./terminals/fakeTerminalAdapter.ts"
+import { makeFakeAgentAdapter } from "./agents/fakeAgentAdapter.ts"
+import type { FakeAgentAdapter } from "./agents/fakeAgentAdapter.ts"
 
 type ServiceLayer = Layer.Layer<
   | ProjectRepository.ProjectRepository
@@ -38,45 +43,6 @@ type ServiceLayer = Layer.Layer<
   | ClaudeHooks.ClaudeHooks,
   unknown
 >
-
-/**
- * Handler dependencies for in-process and ephemeral-listener tests: real
- * repositories over one fresh database (in-memory unless a file is given),
- * real directory checks, and the fake in-memory terminal adapter (returned
- * for failure injection and assertions). `services` omits Terminals so
- * startup-reconciliation tests can seed rows before its layer builds.
- */
-export const makeTestServiceLayers = (
-  dbFile = ":memory:",
-): {
-  readonly fake: FakeTerminalAdapter
-  readonly services: ServiceLayer
-  readonly layer: Layer.Layer<
-    Layer.Success<ServiceLayer> | Terminals.Terminals | Threads.Threads | Projects.Projects,
-    unknown
-  >
-} => {
-  const fake = makeFakeAdapter()
-  const base = Layer.mergeAll(
-    ProjectRepository.layer,
-    TerminalRepository.layer,
-    ThreadRepository.layer,
-  ).pipe(Layer.provide(Persistence.layerFile(dbFile)))
-  const services = Layer.mergeAll(base, Directories.layer, fake.layer, ClaudeHooks.layer)
-  const terminals = Terminals.layer.pipe(Layer.provide(services))
-  return {
-    fake,
-    services,
-    layer: Layer.mergeAll(
-      services,
-      terminals,
-      Threads.layer.pipe(Layer.provide([services, terminals])),
-      Projects.layer.pipe(Layer.provide(services)),
-    ),
-  }
-}
-
-export const TestRepositoryLayers = makeTestServiceLayers().layer
 
 /** A settled AppConfig for tests that only need a few fields overridden. */
 export const testAppConfig = (overrides: Partial<AppConfig["Service"]>): Layer.Layer<AppConfig> =>
@@ -96,6 +62,70 @@ export const testAppConfig = (overrides: Partial<AppConfig["Service"]>): Layer.L
     terminalSocketDir: "/tmp/atc-sockets",
     ...overrides,
   })
+
+/**
+ * Handler dependencies for in-process and ephemeral-listener tests: real
+ * repositories over one fresh database (in-memory unless a file is given),
+ * real directory checks, and the fake in-memory adapters (returned for
+ * failure injection and assertions). Both agent slugs resolve to fake
+ * adapters; the registry detects availability against /bin/echo so no
+ * provider install is ever consulted. `services` omits Terminals so
+ * startup-reconciliation tests can seed rows before its layer builds.
+ */
+export const makeTestServiceLayers = (
+  dbFile = ":memory:",
+): {
+  readonly fake: FakeTerminalAdapter
+  readonly fakeAgents: { readonly codex: FakeAgentAdapter; readonly claude: FakeAgentAdapter }
+  readonly services: ServiceLayer
+  readonly layer: Layer.Layer<
+    | Layer.Success<ServiceLayer>
+    | Terminals.Terminals
+    | Threads.Threads
+    | Projects.Projects
+    | AgentRegistry.AgentRegistry,
+    unknown
+  >
+} => {
+  const fake = makeFakeAdapter()
+  // Distinct capability reports so a swapped slug→adapter mapping cannot
+  // pass the registry tests.
+  const fakeAgents = {
+    codex: makeFakeAgentAdapter(),
+    claude: makeFakeAgentAdapter({
+      capabilities: { testedVersion: "0.0.0-fake-claude", tuiObservation: "hooks" },
+    }),
+  }
+  const base = Layer.mergeAll(
+    ProjectRepository.layer,
+    TerminalRepository.layer,
+    ThreadRepository.layer,
+  ).pipe(Layer.provide(Persistence.layerFile(dbFile)))
+  const services = Layer.mergeAll(base, Directories.layer, fake.layer, ClaudeHooks.layer)
+  const terminals = Terminals.layer.pipe(Layer.provide(services))
+  const registry = AgentRegistry.layer.pipe(
+    Layer.provide([
+      Layer.succeed(CodexAdapter.CodexAdapter)(fakeAgents.codex.adapter),
+      Layer.succeed(ClaudeAdapter.ClaudeAdapter)(fakeAgents.claude.adapter),
+      testAppConfig({ codexExecutable: "/bin/echo", claudeExecutable: "/bin/echo" }),
+      Subprocess.layer.pipe(Layer.provide(BunServices.layer)),
+    ]),
+  )
+  return {
+    fake,
+    fakeAgents,
+    services,
+    layer: Layer.mergeAll(
+      services,
+      terminals,
+      registry,
+      Threads.layer.pipe(Layer.provide([services, terminals])),
+      Projects.layer.pipe(Layer.provide(services)),
+    ),
+  }
+}
+
+export const TestRepositoryLayers = makeTestServiceLayers().layer
 
 /** The full zmx-adapter layer stack shared by every in-process adapter test. */
 export const zmxAdapterLayer = (options: {
