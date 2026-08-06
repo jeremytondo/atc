@@ -532,10 +532,11 @@ export const layerWith = (options: ThreadsOptions) =>
           }
           // Idempotent: one live linked TUI terminal per thread, returned
           // as-is (two TUIs into one conversation is the documented
-          // concurrency hazard).
+          // concurrency hazard). Mid-open the row may still name the
+          // superseded session — same rule as `assemble`.
           const linked = yield* linkedFor(record)
           if (linked !== undefined) {
-            yield* ensureObserved(record)
+            if (!opening.has(id)) yield* ensureObserved(record)
             return linked
           }
           if (opening.has(id)) {
