@@ -1,5 +1,6 @@
+import { Schema } from "effect"
 import { OpenApi } from "effect/unstable/httpapi"
-import { Api } from "./contract.ts"
+import { Api, ResourceChangedEvent } from "./contract.ts"
 
 // The OpenAPI document derived from the contract. This module is pure — no
 // server, no side effects — so generation works anywhere the contract compiles.
@@ -36,9 +37,45 @@ const hoistSingleAllOf = (node: unknown): unknown => {
   return schema
 }
 
-export const openApiDocument = hoistSingleAllOf(OpenApi.fromApi(Api)) as ReturnType<
-  typeof OpenApi.fromApi
->
+/**
+ * Emit the SSE payload schema as an ordinary component. Data-mode `StreamSse`
+ * documents its payload as the JSON-encoded string that crosses the wire
+ * inside each `data:` line (`ResourceChangedEventJsonEncoding`), which the
+ * pinned Swift generator can only render as a `String` typealias — leaving
+ * Swift clients no generated type to decode that JSON into. The added plain
+ * component fills that gap. Both guards below fail generation loudly rather
+ * than emit a silently broken document: a nested named schema would carry a
+ * dangling `#/$defs/` ref, and a same-named component from the contract
+ * would be clobbered.
+ */
+const withSsePayloadComponents = (document: ReturnType<typeof OpenApi.fromApi>) => {
+  const { definitions } = Schema.toJsonSchemaDocument(ResourceChangedEvent)
+  const names = Object.keys(definitions)
+  if (names.length !== 1) {
+    throw new Error(
+      `the SSE payload schema must stay flat (no nested named schemas); got components ${names.join(", ")}`,
+    )
+  }
+  if ("ResourceChangedEvent" in document.components.schemas) {
+    throw new Error(
+      "the document already has a ResourceChangedEvent component; refusing to overwrite it",
+    )
+  }
+  return {
+    ...document,
+    components: {
+      ...document.components,
+      schemas: {
+        ...document.components.schemas,
+        ResourceChangedEvent: definitions["ResourceChangedEvent"],
+      },
+    },
+  } as ReturnType<typeof OpenApi.fromApi>
+}
+
+export const openApiDocument = hoistSingleAllOf(
+  withSsePayloadComponents(OpenApi.fromApi(Api)),
+) as ReturnType<typeof OpenApi.fromApi>
 
 /**
  * The canonical serialized form of the document: 2-space indentation and a

@@ -11,6 +11,7 @@ import * as ClaudeHooks from "../src/agents/claudeHooks.ts"
 import * as CodexAdapter from "../src/agents/codexAdapter.ts"
 import { AppConfig } from "../src/platform/config.ts"
 import * as Directories from "../src/platform/directories.ts"
+import * as Events from "../src/events/events.ts"
 import * as Persistence from "../src/platform/persistence.ts"
 import * as ProjectRepository from "../src/projects/projectRepository.ts"
 import * as Projects from "../src/projects/projects.ts"
@@ -84,7 +85,8 @@ export const makeTestServiceLayers = (
     | Terminals.Terminals
     | Threads.Threads
     | Projects.Projects
-    | AgentRegistry.AgentRegistry,
+    | AgentRegistry.AgentRegistry
+    | Events.Events,
     unknown
   >
 } => {
@@ -103,7 +105,7 @@ export const makeTestServiceLayers = (
     ThreadRepository.layer,
   ).pipe(Layer.provide(Persistence.layerFile(dbFile)))
   const services = Layer.mergeAll(base, Directories.layer, fake.layer, ClaudeHooks.layer)
-  const terminals = Terminals.layer.pipe(Layer.provide(services))
+  const terminals = Terminals.layer.pipe(Layer.provide([services, Events.layer]))
   const registry = AgentRegistry.layer.pipe(
     Layer.provide([
       Layer.succeed(CodexAdapter.CodexAdapter)(fakeAgents.codex.adapter),
@@ -120,8 +122,11 @@ export const makeTestServiceLayers = (
       services,
       terminals,
       registry,
-      Threads.layerWith(threadsOptions).pipe(Layer.provide([services, terminals, registry])),
-      Projects.layer.pipe(Layer.provide(services)),
+      Events.layer,
+      Threads.layerWith(threadsOptions).pipe(
+        Layer.provide([services, terminals, registry, Events.layer]),
+      ),
+      Projects.layer.pipe(Layer.provide([services, Events.layer])),
     ),
   }
 }

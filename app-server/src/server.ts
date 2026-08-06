@@ -1,5 +1,5 @@
 import { BunHttpServer } from "@effect/platform-bun"
-import { Layer } from "effect"
+import { Effect, Layer } from "effect"
 import { HttpMiddleware, HttpRouter, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { Api } from "./api/contract.ts"
@@ -9,6 +9,7 @@ import * as ClaudeHooks from "./agents/claudeHooks.ts"
 import * as CodexAdapter from "./agents/codexAdapter.ts"
 import * as CodexServer from "./agents/codexServer.ts"
 import * as Directories from "./platform/directories.ts"
+import * as Events from "./events/events.ts"
 import { V1Handlers } from "./api/handlers.ts"
 import * as LocalTrust from "./api/localTrust.ts"
 import * as Logging from "./platform/logging.ts"
@@ -46,6 +47,19 @@ export const routes = Layer.mergeAll(
   LocalTrust.middleware,
 )
 
+// Layer finalizers run dependents-first, so this must sit ABOVE the serve
+// layer: on shutdown it ends every event subscriber stream before the
+// listener's bounded graceful stop starts waiting on open responses. Left to
+// the Events layer's own finalizer (a dependency, released after the stop),
+// an open SSE response would hold the stop for the full timeout and die on
+// the noisy forced-interrupt path instead.
+const drainEventsBeforeStop = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const events = yield* Events.Events
+    yield* Effect.addFinalizer(events.close)
+  }),
+)
+
 /**
  * The full server: guarded routes on a loopback TCP listener, each request
  * wrapped in a tracer span (the correlation id source for logs). The layer's
@@ -53,7 +67,8 @@ export const routes = Layer.mergeAll(
  * interruption) stops the server and releases the port.
  */
 export const layer = (options: { readonly port: number }) =>
-  HttpRouter.serve(routes, { middleware: HttpMiddleware.tracer }).pipe(
+  drainEventsBeforeStop.pipe(
+    Layer.provideMerge(HttpRouter.serve(routes, { middleware: HttpMiddleware.tracer })),
     Layer.provideMerge(
       BunHttpServer.layer({
         port: options.port,
@@ -76,6 +91,9 @@ export const production = (options: { readonly port: number }) =>
   layer(options).pipe(
     Layer.provide([Projects.layer, Threads.layer]),
     Layer.provide([Terminals.layer, AgentRegistry.layer]),
+    // Below Terminals (the deepest publisher) so one memoized Events instance
+    // serves every domain service, the handlers, and the shutdown drain.
+    Layer.provide(Events.layer),
     Layer.provide([CodexAdapter.layer, ClaudeAdapter.layer]),
     Layer.provide(CodexServer.layer),
     Layer.provide([

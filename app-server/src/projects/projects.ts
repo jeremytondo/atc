@@ -6,6 +6,7 @@ import type {
   DirectoryUnavailable,
   UpdateProjectRequest,
 } from "../api/contract.ts"
+import { Events } from "../events/events.ts"
 import { Directories } from "../platform/directories.ts"
 import { ProjectRepository } from "./projectRepository.ts"
 import type { Project } from "./projectRepository.ts"
@@ -45,16 +46,19 @@ export const layer = Layer.effect(Projects)(
     const directories = yield* Directories
     const terminalRepository = yield* TerminalRepository
     const threadRepository = yield* ThreadRepository
+    const events = yield* Events
 
     return {
       list: () => repository.list(),
       create: (input) =>
         Effect.gen(function* () {
           const canonical = yield* directories.canonicalize(input.defaultWorkingDirectory)
-          return yield* repository.create({
+          const created = yield* repository.create({
             name: input.name,
             defaultWorkingDirectory: canonical,
           })
+          yield* events.publish({ resource: "project", id: created.id, change: "created" })
+          return created
         }),
       get: (id) => repository.require(id),
       update: (id, patch) =>
@@ -69,7 +73,14 @@ export const layer = Layer.effect(Projects)(
           })
           return yield* Option.match(updated, {
             onNone: () => Effect.fail(new ProjectNotFound({ projectId: id })),
-            onSome: Effect.succeed,
+            onSome: (project) =>
+              // An empty patch changed nothing (the repository short-circuits
+              // it), so it publishes nothing.
+              patch.name === undefined && canonical === undefined
+                ? Effect.succeed(project)
+                : events
+                    .publish({ resource: "project", id, change: "updated" })
+                    .pipe(Effect.as(project)),
           })
         }),
       delete: (id) =>
@@ -90,6 +101,7 @@ export const layer = Layer.effect(Projects)(
           if (!deleted) {
             return yield* Effect.fail(new ProjectNotFound({ projectId: id }))
           }
+          yield* events.publish({ resource: "project", id, change: "deleted" })
         }),
     }
   }),
