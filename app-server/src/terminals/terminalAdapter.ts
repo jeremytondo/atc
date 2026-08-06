@@ -88,11 +88,15 @@ export class TerminalAdapter extends Context.Service<
      * reachable session is confirmed in the inventory; fails when `name`
      * already exists (creating is never silently attaching), and a command
      * that finishes before the session settles is a failed launch.
+     * `env` overlays the adapter's base child environment per key; an
+     * `undefined` value removes the inherited key (how TUI terminals scrub
+     * nested-session markers).
      */
     readonly createSession: (options: {
       readonly name: string
       readonly cwd: string
       readonly command?: ReadonlyArray<string> | undefined
+      readonly env?: Record<string, string | undefined> | undefined
     }) => Effect.Effect<void, ZmxUnavailable | SessionOperationFailed>
     /**
      * A complete inventory of ATC's private session directory. Any failure

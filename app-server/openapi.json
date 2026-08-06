@@ -853,6 +853,102 @@
         "description": "Restore an archived thread (idempotent)."
       }
     },
+    "/api/v1/threads/{threadId}/terminal": {
+      "post": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "openThreadTerminal",
+        "parameters": [
+          {
+            "name": "threadId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "A durable, project-scoped terminal backed by a zmx session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Terminal"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No thread exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadNotFoundJsonEncoding"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The thread is archived; unarchive it first. | The thread's provider session cannot be driven as requested (resume failed, identity mismatch, or a concurrent writer). Fail-closed: no changed identity was adopted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ThreadArchivedJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProviderSessionConflictJsonEncoding"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The directory does not exist, is not a directory, or cannot be read/traversed. | The directory check did not complete within its bounded timeout. Retryable — a timeout is not proof the path is missing. | The terminal's zmx session failed to launch (bad command, immediate exit, or settle failure). The failed launch leaves no terminal record.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/DirectoryUnavailableJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DirectoryCheckTimedOutJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TerminalLaunchFailedJsonEncoding"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The thread's agent provider cannot be used right now (not installed, not ready, or unreachable). Retryable once the cause is fixed. | The zmx multiplexer cannot be consulted right now. Retryable; stored terminal state is untouched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderUnavailableJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ZmxUnavailableJsonEncoding"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "Open the thread's TUI terminal. Idempotent: a live linked terminal is returned as-is. Otherwise the provider TUI is launched in a new terminal — a confirmed session is relaunched against its exact persisted identity (ATC never adopts a different one), an unconfirmed one materializes a fresh provider session whose identity is established and persisted before this call returns."
+      }
+    },
     "/api/v1/agents": {
       "get": {
         "tags": [
@@ -1518,6 +1614,71 @@
         "required": [
           "_tag",
           "threadId"
+        ],
+        "additionalProperties": false
+      },
+      "ThreadArchivedJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "ThreadArchived"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "_tag",
+          "threadId"
+        ],
+        "additionalProperties": false
+      },
+      "ProviderSessionConflictJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "ProviderSessionConflict"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "_tag",
+          "threadId",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "ProviderUnavailableJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "ProviderUnavailable"
+            ]
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "_tag",
+          "agentId",
+          "reason"
         ],
         "additionalProperties": false
       },

@@ -75,6 +75,27 @@ export class ThreadRepository extends Context.Service<
     readonly require: (id: string) => Effect.Effect<ThreadRecord, ThreadNotFound>
     /** Update the display label; callers hold the record — a vanished row is a bug. */
     readonly rename: (id: string, name: string) => Effect.Effect<ThreadRecord>
+    /**
+     * Adopt a freshly established provider identity: session id and opaque
+     * metadata together, clearing the confirmed marker (a fresh session has
+     * no completed turn yet). Callers hold the record (see rename).
+     */
+    readonly setProviderSession: (
+      id: string,
+      providerSessionId: string,
+      providerMetadata: string | null,
+    ) => Effect.Effect<ThreadRecord>
+    /** Update only the opaque adapter metadata; callers hold the record. */
+    readonly setProviderMetadata: (
+      id: string,
+      providerMetadata: string,
+    ) => Effect.Effect<ThreadRecord>
+    /**
+     * Set the confirmed marker (first completed turn observed). Idempotent
+     * and tolerant: fed by the live status feed, which can race a delete —
+     * a vanished row is a no-op, and an existing marker is never rewritten.
+     */
+    readonly confirm: (id: string) => Effect.Effect<void>
     /** Set or clear the archive marker; callers hold the record (see rename). */
     readonly setArchived: (id: string, archived: boolean) => Effect.Effect<ThreadRecord>
     readonly delete: (id: string) => Effect.Effect<void>
@@ -116,6 +137,53 @@ export const layer = Layer.effect(ThreadRepository)(
         UPDATE threads SET name = ${patch.name}, updated_at = ${patch.updated_at}
         WHERE id = ${patch.id}
         RETURNING *
+      `,
+    })
+
+    const setProviderSessionRows = SqlSchema.findAll({
+      Request: Schema.Struct({
+        id: Schema.String,
+        provider_session_id: Schema.String,
+        provider_metadata: Schema.NullOr(Schema.String),
+        updated_at: Schema.String,
+      }),
+      Result: ThreadRow,
+      execute: (patch) => sql`
+        UPDATE threads SET
+          provider_session_id = ${patch.provider_session_id},
+          provider_metadata = ${patch.provider_metadata},
+          confirmed_at = NULL,
+          updated_at = ${patch.updated_at}
+        WHERE id = ${patch.id}
+        RETURNING *
+      `,
+    })
+
+    const setProviderMetadataRows = SqlSchema.findAll({
+      Request: Schema.Struct({
+        id: Schema.String,
+        provider_metadata: Schema.String,
+        updated_at: Schema.String,
+      }),
+      Result: ThreadRow,
+      execute: (patch) => sql`
+        UPDATE threads SET
+          provider_metadata = ${patch.provider_metadata},
+          updated_at = ${patch.updated_at}
+        WHERE id = ${patch.id}
+        RETURNING *
+      `,
+    })
+
+    // Idempotent confirmation: the first observation wins, and a row that
+    // vanished (deleted mid-feed) is a no-op.
+    const confirmRows = SqlSchema.void({
+      Request: Schema.Struct({ id: Schema.String, confirmed_at: Schema.String }),
+      execute: (patch) => sql`
+        UPDATE threads SET
+          confirmed_at = COALESCE(confirmed_at, ${patch.confirmed_at}),
+          updated_at = CASE WHEN confirmed_at IS NULL THEN ${patch.confirmed_at} ELSE updated_at END
+        WHERE id = ${patch.id}
       `,
     })
 
@@ -197,6 +265,27 @@ export const layer = Layer.effect(ThreadRepository)(
         Effect.suspend(() => renameRows({ id, name, updated_at: new Date().toISOString() })).pipe(
           Effect.orDie,
           Effect.flatMap(requireFirst("rename")),
+        ),
+      setProviderSession: (id, providerSessionId, providerMetadata) =>
+        Effect.suspend(() =>
+          setProviderSessionRows({
+            id,
+            provider_session_id: providerSessionId,
+            provider_metadata: providerMetadata,
+            updated_at: new Date().toISOString(),
+          }),
+        ).pipe(Effect.orDie, Effect.flatMap(requireFirst("setProviderSession"))),
+      setProviderMetadata: (id, providerMetadata) =>
+        Effect.suspend(() =>
+          setProviderMetadataRows({
+            id,
+            provider_metadata: providerMetadata,
+            updated_at: new Date().toISOString(),
+          }),
+        ).pipe(Effect.orDie, Effect.flatMap(requireFirst("setProviderMetadata"))),
+      confirm: (id) =>
+        Effect.suspend(() => confirmRows({ id, confirmed_at: new Date().toISOString() })).pipe(
+          Effect.orDie,
         ),
       setArchived: (id, archived) =>
         Effect.suspend(() => {

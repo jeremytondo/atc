@@ -1,4 +1,4 @@
-import { Cause, Effect, Queue, Stream } from "effect"
+import { Cause, Deferred, Effect, Queue, Stream } from "effect"
 import type {
   AgentActivity,
   AgentAdapter,
@@ -48,6 +48,17 @@ export interface FakeAgentAdapter {
   readonly openRequest: (providerSessionId: string, kind: AgentRequestKind) => string
   /** Close a previously opened request; activity → working. */
   readonly closeRequest: (providerSessionId: string, requestId: string) => void
+  /** While set, prepared identities wait on a gate; unsetting releases any
+   * waiter (so a hung identity can resolve late, after the test acted). */
+  readonly setIdentityHangs: (hangs: boolean) => void
+  /** Push one activity value to every observer of `providerSessionId`. */
+  readonly emitActivity: (providerSessionId: string, activity: AgentActivity) => void
+  /** Script what checkSession reports for `providerSessionId`. */
+  readonly setCheckActivity: (providerSessionId: string, activity: AgentActivity | null) => void
+  /** prepareTuiSession identities handed out, in order. */
+  readonly prepared: Array<{ providerSessionId: string; cwd: string }>
+  /** releaseSession calls, in order. */
+  readonly released: Array<{ providerSessionId: string; providerMetadata: string | undefined }>
 }
 
 export interface FakeAgentAdapterOptions {
@@ -68,6 +79,10 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
   // One live connection per session — the single-writer rule.
   const connections = new Map<string, LiveConnection>()
   const observers = new Map<string, Set<Queue.Queue<AgentActivity, Cause.Done>>>()
+  const checkActivity = new Map<string, AgentActivity>()
+  const prepared: FakeAgentAdapter["prepared"] = []
+  const released: FakeAgentAdapter["released"] = []
+  let identityGate: Deferred.Deferred<void> | null = null
   let unavailableReason: string | null = null
   let nextSessionId = 1
   let nextTurnId = 1
@@ -256,15 +271,20 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
       Effect.gen(function* () {
         yield* requireAvailable
         const providerSessionId = `fake-session-${nextSessionId++}`
+        prepared.push({ providerSessionId, cwd: options.cwd })
         // The prepared session becomes resumable once identity resolves —
         // mirroring "a completed first interaction materializes it".
-        const identity = Effect.suspend(() => {
+        const resolve = Effect.sync(() => {
           sessions.set(providerSessionId, { providerSessionId, cwd: options.cwd, inputs: [] })
-          return Effect.succeed({
+          return {
             providerSessionId,
             cwd: options.cwd,
             providerMetadata: JSON.stringify({ fake: providerSessionId }),
-          })
+          }
+        })
+        const identity = Effect.suspend(() => {
+          const gate = identityGate
+          return gate === null ? resolve : Deferred.await(gate).pipe(Effect.andThen(resolve))
         })
         return {
           launchSpec: {
@@ -290,8 +310,17 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
         )
         return Stream.fromQueue(queue)
       }),
-    checkSession: () => requireAvailable.pipe(Effect.as("unknown" as const)),
-    releaseSession: () => Effect.void,
+    checkSession: (options) =>
+      requireAvailable.pipe(
+        Effect.map(() => checkActivity.get(options.providerSessionId) ?? "unknown"),
+      ),
+    releaseSession: (options) =>
+      Effect.sync(() => {
+        released.push({
+          providerSessionId: options.providerSessionId,
+          providerMetadata: options.providerMetadata,
+        })
+      }),
   }
 
   return {
@@ -322,5 +351,24 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
       emit(live, { type: "requestClosed", requestId })
       setActivity(live, "working")
     },
+    setIdentityHangs: (hangs) => {
+      if (hangs) {
+        identityGate = Deferred.makeUnsafe<void>()
+        return
+      }
+      if (identityGate !== null) Deferred.doneUnsafe(identityGate, Effect.void)
+      identityGate = null
+    },
+    emitActivity: (providerSessionId, activity) => {
+      for (const queue of observers.get(providerSessionId) ?? []) {
+        Queue.offerUnsafe(queue, activity)
+      }
+    },
+    setCheckActivity: (providerSessionId, activity) => {
+      if (activity === null) checkActivity.delete(providerSessionId)
+      else checkActivity.set(providerSessionId, activity)
+    },
+    prepared,
+    released,
   }
 }

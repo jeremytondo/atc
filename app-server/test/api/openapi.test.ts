@@ -150,6 +150,7 @@ describe("openapi document vs runtime", () => {
       "/api/v1/threads/{threadId}",
       "/api/v1/threads/{threadId}/archive",
       "/api/v1/threads/{threadId}/unarchive",
+      "/api/v1/threads/{threadId}/terminal",
       "/api/v1/agents",
       "/api/v1/agents/{agentId}",
       "/api/v1/fs/check",
@@ -373,6 +374,35 @@ describe("openapi document vs runtime", () => {
           "application/json"
         ]!.schema,
         { $ref: "#/components/schemas/Thread" },
+      )
+    }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
+  )
+
+  it.effect("POST /api/v1/threads/{threadId}/terminal opens a linked Terminal", () =>
+    Effect.gen(function* () {
+      const client = yield* rawClient
+      const project = yield* client.post("http://127.0.0.1/api/v1/projects", {
+        body: HttpBody.jsonUnsafe({ name: "Open Docs", defaultWorkingDirectory: "/tmp" }),
+      })
+      const projectBody = (yield* project.json) as { id: string }
+      const thread = yield* client.post("http://127.0.0.1/api/v1/threads", {
+        body: HttpBody.jsonUnsafe({ projectId: projectBody.id, agentId: "codex" }),
+      })
+      const threadBody = (yield* thread.json) as { id: string }
+
+      const opened = yield* client.post(
+        `http://127.0.0.1/api/v1/threads/${threadBody.id}/terminal`,
+        { body: HttpBody.empty },
+      )
+      assert.strictEqual(opened.status, 200)
+      const terminal = (yield* opened.json) as { threadId?: string; status?: string }
+      assert.strictEqual(terminal.threadId, threadBody.id)
+      assert.strictEqual(terminal.status, "live")
+      assert.deepStrictEqual(
+        operation("/api/v1/threads/{threadId}/terminal", "post").responses["200"]!.content[
+          "application/json"
+        ]!.schema,
+        { $ref: "#/components/schemas/Terminal" },
       )
     }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
   )

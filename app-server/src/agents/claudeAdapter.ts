@@ -26,6 +26,7 @@ import {
   AgentResumeFailed,
   AgentUnavailable,
   makeVersionGate,
+  NESTED_SESSION_ENV_VARIABLES,
   resolveProviderExecutable,
   samePath,
 } from "./agentAdapter.ts"
@@ -87,27 +88,16 @@ const conflict = (reason: string) => new AgentConflict({ provider: "claude", rea
 
 /**
  * Environment for the SDK child: the user's environment (credentials) plus
- * the state-events opt-in, minus the nested-session markers a dev-mode ATC
- * would otherwise pass down (they silently disable transcript persistence,
- * which breaks resume).
+ * the state-events opt-in, minus the shared nested-session markers
+ * (agentAdapter.ts) a dev-mode ATC would otherwise pass down.
  */
-const NESTED_SESSION_VARIABLES = [
-  "CLAUDE_CODE_CHILD_SESSION",
-  "CLAUDECODE",
-  "CLAUDE_CODE_ENTRYPOINT",
-  "CLAUDE_CODE_SSE_PORT",
-  "CLAUDE_CODE_SESSION_ID",
-  "CLAUDE_CODE_BRIDGE_SESSION_ID",
-  "CLAUDE_PID",
-]
-
 const claudeEnvironment = (): Record<string, string> => {
   const env: Record<string, string> = {}
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined) env[key] = value
   }
   env["CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS"] = "1"
-  for (const name of NESTED_SESSION_VARIABLES) delete env[name]
+  for (const name of NESTED_SESSION_ENV_VARIABLES) delete env[name]
   return env
 }
 
@@ -378,7 +368,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
           }
           return Promise.resolve({
             behavior: "deny",
-            message: "atc does not answer provider requests yet (ATC-124)",
+            message: "atc does not answer provider requests yet (native-mode work)",
           })
         }
 

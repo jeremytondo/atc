@@ -19,8 +19,8 @@ import { resolveExecutable } from "../platform/subprocess.ts"
 //     writers; observation never opens a second writer.
 //   - Status is derived from structured provider events only — never from
 //     transcript or terminal-output parsing.
-//   - Responding to provider requests (approvals, questions) is deferred to
-//     ATC-124: adapters surface `requestOpened` and answer the provider
+//   - Responding to provider requests (approvals, questions) is native-mode
+//     work: adapters surface `requestOpened` and answer the provider
 //     conservatively (reject) so a turn can never hang on ATC.
 //
 // The fake adapter for tests lives in test/agents/fakeAgentAdapter.ts; per-provider
@@ -39,6 +39,23 @@ export const PROVIDER_FOR_AGENT: Record<typeof AgentId.Type, AgentProvider> = {
   codex: "codex",
   "claude-code": "claude",
 }
+
+/**
+ * Nested-session environment markers, scrubbed wherever ATC launches an
+ * agent process or TUI (uniformly — not per provider): inherited from a
+ * dev-mode ATC running inside a session, they silently change provider
+ * behavior (e.g. disable Claude transcript persistence, which breaks
+ * resume).
+ */
+export const NESTED_SESSION_ENV_VARIABLES = [
+  "CLAUDE_CODE_CHILD_SESSION",
+  "CLAUDECODE",
+  "CLAUDE_CODE_ENTRYPOINT",
+  "CLAUDE_CODE_SSE_PORT",
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_CODE_BRIDGE_SESSION_ID",
+  "CLAUDE_PID",
+] as const
 
 /**
  * Normalized activity for one provider session. `unknown` means no evidence
@@ -301,8 +318,8 @@ export interface AgentAdapter {
 }
 
 // Internal-only failures (ATC-123): not part of the HTTP contract, so no
-// httpApiStatus annotations. ATC-124 maps them to public errors when agent
-// sessions become an API surface.
+// httpApiStatus annotations. The Threads domain maps them to the public
+// tagged errors (threads.ts mapAgentError).
 
 /** Provider missing, not ready, or gone — retryable once the cause is fixed. */
 export class AgentUnavailable extends Schema.TaggedErrorClass<AgentUnavailable>()(

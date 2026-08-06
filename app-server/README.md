@@ -75,9 +75,9 @@ responses print nothing; `atc context` and `atc capabilities` print text by
 default and JSON with `--json`). Failures exit `1`: config/request failures
 print one `atc <command>: …` diagnostic line on stderr (`atc api` also
 relays the server's JSON error body there); invalid usage prints an `ERROR`
-block on stderr (help goes to stdout). `atc terminal attach` is the one
-exception — it bridges the local TTY onto the WebSocket attach endpoint in
-raw mode (detach with `Ctrl-]`).
+block on stderr (help goes to stdout). `atc terminal attach` and
+`atc thread open` are the exceptions — they bridge the local TTY onto the
+WebSocket attach endpoint in raw mode (detach with `Ctrl-]`).
 
 ## API
 
