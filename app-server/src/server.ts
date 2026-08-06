@@ -14,6 +14,8 @@ import * as ProjectRepository from "./projects/projectRepository.ts"
 import * as Projects from "./projects/projects.ts"
 import * as TerminalRepository from "./terminals/terminalRepository.ts"
 import * as Terminals from "./terminals/terminals.ts"
+import * as ThreadRepository from "./threads/threadRepository.ts"
+import * as Threads from "./threads/threads.ts"
 import * as Zmx from "./terminals/zmxAdapter.ts"
 
 // OpenAPI discovery (ATC-131): the contract-derived document at a stable
@@ -30,8 +32,8 @@ const openApiRoute = HttpRouter.add(
 /**
  * All HTTP routes with the local-trust guard applied, independent of any
  * listener. Requires the handler services (BuildInfo, Projects, Directories,
- * Terminals, ClaudeHooks). The Claude hook webhook is an internal route
- * (claudeHooks.ts), deliberately outside the contract.
+ * Terminals, Threads, ClaudeHooks). The Claude hook webhook is an internal
+ * route (claudeHooks.ts), deliberately outside the contract.
  */
 export const routes = Layer.mergeAll(
   HttpApiBuilder.layer(Api).pipe(Layer.provide(V1Handlers)),
@@ -68,10 +70,12 @@ export const layer = (options: { readonly port: number }) =>
  */
 export const production = (options: { readonly port: number }) =>
   layer(options).pipe(
-    Layer.provide([Projects.layer, Terminals.layer]),
+    Layer.provide([Projects.layer, Threads.layer]),
+    Layer.provide(Terminals.layer),
     Layer.provide([
       ProjectRepository.layer,
       TerminalRepository.layer,
+      ThreadRepository.layer,
       Directories.layer,
       Zmx.layer,
       ClaudeHooks.layer,

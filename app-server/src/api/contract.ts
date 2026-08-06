@@ -125,6 +125,12 @@ export const Terminal = Schema.Struct({
   id: Schema.String.annotate({ description: "UUIDv7 terminal id." }),
   projectId: Schema.String.annotate({ description: "Owning project id." }),
   // Absent keys (not null) for optional fields — see UpdateProjectRequest.
+  threadId: Schema.optionalKey(
+    Schema.String.annotate({
+      description:
+        "Owning thread id when this terminal is a Thread's TUI terminal; absent otherwise.",
+    }),
+  ),
   name: Schema.optionalKey(Schema.String.annotate({ description: "Mutable display label." })),
   command: Schema.optionalKey(
     TerminalCommand.annotate({
@@ -176,6 +182,81 @@ export const UpdateTerminalRequest = Schema.Struct({
   name: Schema.optionalKey(Schema.String.annotate({ description: "New display label." })),
 }).annotate({
   identifier: "UpdateTerminalRequest",
+  description: "Partial update; only the display label is mutable.",
+})
+
+/** The built-in agent registry slugs (adding an agent extends this tuple). */
+export const AGENT_IDS = ["codex", "claude-code"] as const
+
+export const AgentId = Schema.Literals(AGENT_IDS).annotate({
+  identifier: "AgentId",
+  description: "Built-in agent registry slug.",
+})
+
+export const ThreadActivityState = Schema.Literals([
+  "idle",
+  "working",
+  "needs_input",
+  "unknown",
+]).annotate({
+  identifier: "ThreadActivityState",
+  description:
+    "Normalized activity of the thread's agent session, derived from live provider evidence only; `unknown` means no evidence — never a guess.",
+})
+
+export const Thread = Schema.Struct({
+  id: Schema.String.annotate({ description: "UUIDv7 thread id." }),
+  projectId: Schema.String.annotate({ description: "Owning project id." }),
+  agentId: AgentId,
+  // Absent keys (not null) for optional fields — see UpdateProjectRequest.
+  name: Schema.optionalKey(Schema.String.annotate({ description: "Mutable display label." })),
+  workingDirectory: Schema.String.annotate({
+    description: "Canonical directory the thread's agent session works in (immutable).",
+  }),
+  activityState: ThreadActivityState,
+  linkedTerminalId: Schema.optionalKey(
+    Schema.String.annotate({
+      description: "The thread's live TUI terminal, when one is open (derived; never required).",
+    }),
+  ),
+  archivedAt: Schema.optionalKey(
+    Schema.String.annotate({
+      description: "When the thread was archived (ISO 8601 UTC); absent while active.",
+    }),
+  ),
+  createdAt: Schema.String.annotate({ description: "Creation time (ISO 8601 UTC)." }),
+  updatedAt: Schema.String.annotate({ description: "Last update time (ISO 8601 UTC)." }),
+}).annotate({
+  identifier: "Thread",
+  description:
+    "A durable Thread: the primary unit of agent work. Its ATC identity is separate from provider identity, and it never requires a Terminal.",
+})
+
+export const ThreadList = Schema.Array(Thread).annotate({
+  identifier: "ThreadList",
+  description: "Threads, newest first.",
+})
+
+export const CreateThreadRequest = Schema.Struct({
+  projectId: Schema.String.annotate({ description: "Owning project id." }),
+  agentId: AgentId,
+  name: Schema.optionalKey(Schema.String.annotate({ description: "Display label." })),
+  workingDirectory: Schema.optionalKey(
+    AbsolutePath.annotate({
+      description:
+        "Directory the agent session will work in; defaults to the project's default working directory. Stored canonicalized; immutable afterwards.",
+    }),
+  ),
+}).annotate({
+  identifier: "CreateThreadRequest",
+  description:
+    "Payload for creating a thread. Creation is local-only: the durable record is written and no provider session is created until the first interaction.",
+})
+
+export const UpdateThreadRequest = Schema.Struct({
+  name: Schema.optionalKey(Schema.String.annotate({ description: "New display label." })),
+}).annotate({
+  identifier: "UpdateThreadRequest",
   description: "Partial update; only the display label is mutable.",
 })
 
@@ -305,8 +386,54 @@ export class ProjectHasTerminals extends Schema.TaggedErrorClass<ProjectHasTermi
   }
 }
 
+/** Project deletion is restricted while it still owns threads. */
+export class ProjectHasThreads extends Schema.TaggedErrorClass<ProjectHasThreads>()(
+  "ProjectHasThreads",
+  { projectId: Schema.String, threadCount: Schema.Int },
+  {
+    identifier: "ProjectHasThreads",
+    description: "The project still owns threads (active or archived); delete them first.",
+    httpApiStatus: 409,
+  },
+) {
+  override get message(): string {
+    return `project ${this.projectId} still owns ${this.threadCount} thread(s); delete them first`
+  }
+}
+
+/** Unknown thread id. */
+export class ThreadNotFound extends Schema.TaggedErrorClass<ThreadNotFound>()(
+  "ThreadNotFound",
+  { threadId: Schema.String },
+  {
+    identifier: "ThreadNotFound",
+    description: "No thread exists with the given id.",
+    httpApiStatus: 404,
+  },
+) {
+  override get message(): string {
+    return `no thread with id ${this.threadId}`
+  }
+}
+
+/** The thread's agent session is actively working; retry once the turn ends. */
+export class ThreadBusy extends Schema.TaggedErrorClass<ThreadBusy>()(
+  "ThreadBusy",
+  { threadId: Schema.String },
+  {
+    identifier: "ThreadBusy",
+    description: "The thread's agent session is actively working; retry once the turn completes.",
+    httpApiStatus: 409,
+  },
+) {
+  override get message(): string {
+    return `thread ${this.threadId} is working; retry once the turn completes`
+  }
+}
+
 const projectIdParam = { projectId: Schema.String }
 const terminalIdParam = { terminalId: Schema.String }
+const threadIdParam = { threadId: Schema.String }
 
 export class V1 extends HttpApiGroup.make("v1")
   .add(
@@ -352,12 +479,12 @@ export class V1 extends HttpApiGroup.make("v1")
       ),
     HttpApiEndpoint.delete("deleteProject", "/projects/:projectId", {
       params: projectIdParam,
-      error: [ProjectNotFound, ProjectHasTerminals],
+      error: [ProjectNotFound, ProjectHasTerminals, ProjectHasThreads],
     })
       .annotate(OpenApi.Identifier, "deleteProject")
       .annotate(
         OpenApi.Description,
-        "Delete the project record. Restricted while the project still owns terminals; never touches the filesystem or any directory.",
+        "Delete the project record. Restricted while the project still owns terminals or threads; never touches the filesystem or any directory.",
       ),
     HttpApiEndpoint.get("listTerminals", "/terminals", {
       query: {
@@ -439,6 +566,75 @@ export class V1 extends HttpApiGroup.make("v1")
       .annotate(
         OpenApi.Description,
         "WebSocket attach: upgrade to a live bidirectional bridge onto the terminal's zmx session.",
+      ),
+    HttpApiEndpoint.get("listThreads", "/threads", {
+      query: {
+        projectId: Schema.optionalKey(
+          Schema.String.annotate({ description: "Restrict the listing to one project." }),
+        ),
+        archived: Schema.optionalKey(
+          Schema.Literals(["true", "false"]).annotate({
+            description: '"true" lists archived threads only; the default lists active threads.',
+          }),
+        ),
+      },
+      success: ThreadList,
+    })
+      .annotate(OpenApi.Identifier, "listThreads")
+      .annotate(
+        OpenApi.Description,
+        "List threads, newest first. Archived threads are excluded unless requested.",
+      ),
+    HttpApiEndpoint.post("createThread", "/threads", {
+      payload: CreateThreadRequest,
+      success: Thread,
+      error: [ProjectNotFound, DirectoryUnavailable, DirectoryCheckTimedOut],
+    })
+      .annotate(OpenApi.Identifier, "createThread")
+      .annotate(
+        OpenApi.Description,
+        "Create a thread: a durable local record only. The provider session materializes on the thread's first interaction, from whichever surface initiates it.",
+      ),
+    HttpApiEndpoint.get("getThread", "/threads/:threadId", {
+      params: threadIdParam,
+      success: Thread,
+      error: ThreadNotFound,
+    })
+      .annotate(OpenApi.Identifier, "getThread")
+      .annotate(OpenApi.Description, "Fetch one thread by id."),
+    HttpApiEndpoint.patch("updateThread", "/threads/:threadId", {
+      params: threadIdParam,
+      payload: UpdateThreadRequest,
+      success: Thread,
+      error: ThreadNotFound,
+    })
+      .annotate(OpenApi.Identifier, "updateThread")
+      .annotate(OpenApi.Description, "Update a thread's display label (the only mutable field)."),
+    HttpApiEndpoint.post("archiveThread", "/threads/:threadId/archive", {
+      params: threadIdParam,
+      success: Thread,
+      error: [ThreadNotFound, ThreadBusy],
+    })
+      .annotate(OpenApi.Identifier, "archiveThread")
+      .annotate(
+        OpenApi.Description,
+        "Archive the thread (idempotent). Refused while the agent session is actively working.",
+      ),
+    HttpApiEndpoint.post("unarchiveThread", "/threads/:threadId/unarchive", {
+      params: threadIdParam,
+      success: Thread,
+      error: ThreadNotFound,
+    })
+      .annotate(OpenApi.Identifier, "unarchiveThread")
+      .annotate(OpenApi.Description, "Restore an archived thread (idempotent)."),
+    HttpApiEndpoint.delete("deleteThread", "/threads/:threadId", {
+      params: threadIdParam,
+      error: [ThreadNotFound, ZmxUnavailable],
+    })
+      .annotate(OpenApi.Identifier, "deleteThread")
+      .annotate(
+        OpenApi.Description,
+        "Delete the thread: kill its live linked terminal if one is open, then remove the record. Provider-owned conversation history is never touched.",
       ),
     HttpApiEndpoint.get("checkDirectory", "/fs/check", {
       query: { path: AbsolutePath },

@@ -146,6 +146,10 @@ describe("openapi document vs runtime", () => {
       "/api/v1/projects/{projectId}",
       "/api/v1/terminals",
       "/api/v1/terminals/{terminalId}",
+      "/api/v1/threads",
+      "/api/v1/threads/{threadId}",
+      "/api/v1/threads/{threadId}/archive",
+      "/api/v1/threads/{threadId}/unarchive",
       "/api/v1/fs/check",
     ])
     // The WebSocket attach endpoint is contract-declared but excluded from
@@ -277,6 +281,96 @@ describe("openapi document vs runtime", () => {
         operation("/api/v1/terminals/{terminalId}").responses["404"]!.content["application/json"]!
           .schema,
         { $ref: "#/components/schemas/TerminalNotFoundJsonEncoding" },
+      )
+    }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
+  )
+
+  it.effect("/api/v1/threads: created and listed payloads match the documented schemas", () =>
+    Effect.gen(function* () {
+      const client = yield* rawClient
+      const project = yield* client.post("http://127.0.0.1/api/v1/projects", {
+        body: HttpBody.jsonUnsafe({ name: "Thread Docs", defaultWorkingDirectory: "/tmp" }),
+      })
+      const projectBody = (yield* project.json) as { id: string }
+
+      const created = yield* client.post("http://127.0.0.1/api/v1/threads", {
+        body: HttpBody.jsonUnsafe({ projectId: projectBody.id, agentId: "codex" }),
+      })
+      assert.strictEqual(created.status, 200)
+      const createdBody = (yield* created.json) as Record<string, unknown>
+      const schema = componentSchema("Thread")
+      // A fresh unnamed thread carries exactly the required keys;
+      // name/linkedTerminalId/archivedAt are absent optional keys, never null.
+      assert.sameMembers([...schema.required], Object.keys(createdBody))
+      assert.includeMembers(Object.keys(schema.properties), Object.keys(createdBody))
+      assert.deepStrictEqual(
+        operation("/api/v1/threads", "post").responses["200"]!.content["application/json"]!.schema,
+        { $ref: "#/components/schemas/Thread" },
+      )
+
+      const listed = yield* client.get(
+        `http://127.0.0.1/api/v1/threads?projectId=${projectBody.id}`,
+      )
+      assert.strictEqual(listed.status, 200)
+      assert.deepStrictEqual(yield* listed.json, [createdBody] as unknown)
+      assert.deepStrictEqual(
+        operation("/api/v1/threads").responses["200"]!.content["application/json"]!.schema,
+        { $ref: "#/components/schemas/ThreadList" },
+      )
+    }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
+  )
+
+  it.effect("GET /api/v1/threads/{threadId} documents and returns the 404 error payload", () =>
+    Effect.gen(function* () {
+      const response = yield* (yield* rawClient).get("http://127.0.0.1/api/v1/threads/nope")
+      assert.strictEqual(response.status, 404)
+      assert.deepStrictEqual(yield* response.json, { _tag: "ThreadNotFound", threadId: "nope" })
+      assert.deepStrictEqual(
+        operation("/api/v1/threads/{threadId}").responses["404"]!.content["application/json"]!
+          .schema,
+        { $ref: "#/components/schemas/ThreadNotFoundJsonEncoding" },
+      )
+    }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
+  )
+
+  it.effect("/api/v1/threads/{threadId}/archive and /unarchive round-trip the Thread schema", () =>
+    Effect.gen(function* () {
+      const client = yield* rawClient
+      const project = yield* client.post("http://127.0.0.1/api/v1/projects", {
+        body: HttpBody.jsonUnsafe({ name: "Archive Docs", defaultWorkingDirectory: "/tmp" }),
+      })
+      const projectBody = (yield* project.json) as { id: string }
+      const created = yield* client.post("http://127.0.0.1/api/v1/threads", {
+        body: HttpBody.jsonUnsafe({ projectId: projectBody.id, agentId: "claude-code" }),
+      })
+      const createdBody = (yield* created.json) as { id: string }
+
+      const archived = yield* client.post(
+        `http://127.0.0.1/api/v1/threads/${createdBody.id}/archive`,
+        { body: HttpBody.empty },
+      )
+      assert.strictEqual(archived.status, 200)
+      const archivedBody = (yield* archived.json) as Record<string, unknown>
+      assert.isString(archivedBody["archivedAt"])
+      assert.deepStrictEqual(
+        operation(`/api/v1/threads/{threadId}/archive`, "post").responses["200"]!.content[
+          "application/json"
+        ]!.schema,
+        { $ref: "#/components/schemas/Thread" },
+      )
+
+      const restored = yield* client.post(
+        `http://127.0.0.1/api/v1/threads/${createdBody.id}/unarchive`,
+        { body: HttpBody.empty },
+      )
+      assert.strictEqual(restored.status, 200)
+      const restoredBody = (yield* restored.json) as Record<string, unknown>
+      assert.notProperty(restoredBody, "archivedAt")
+      assert.deepStrictEqual(
+        operation(`/api/v1/threads/{threadId}/unarchive`, "post").responses["200"]!.content[
+          "application/json"
+        ]!.schema,
+        { $ref: "#/components/schemas/Thread" },
       )
     }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
   )

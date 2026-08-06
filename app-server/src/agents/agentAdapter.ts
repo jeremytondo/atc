@@ -1,6 +1,7 @@
 import { Effect, Schema, Stream } from "effect"
 import type { Scope } from "effect"
 import { existsSync, realpathSync } from "node:fs"
+import type { AgentId } from "../api/contract.ts"
 import type { Subprocess } from "../platform/subprocess.ts"
 import { resolveExecutable } from "../platform/subprocess.ts"
 
@@ -28,6 +29,16 @@ import { resolveExecutable } from "../platform/subprocess.ts"
 export const AGENT_PROVIDERS = ["codex", "claude"] as const
 
 export type AgentProvider = (typeof AGENT_PROVIDERS)[number]
+
+/**
+ * Public registry slug (contract `AgentId`) → seam provider. The Record
+ * type makes an unmapped slug a compile error, so the public vocabulary
+ * and the seam's can never drift apart silently.
+ */
+export const PROVIDER_FOR_AGENT: Record<typeof AgentId.Type, AgentProvider> = {
+  codex: "codex",
+  "claude-code": "claude",
+}
 
 /**
  * Normalized activity for one provider session. `unknown` means no evidence

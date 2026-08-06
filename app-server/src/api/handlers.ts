@@ -6,6 +6,7 @@ import { Directories } from "../platform/directories.ts"
 import { Projects } from "../projects/projects.ts"
 import { attachTerminal } from "../terminals/terminalAttach.ts"
 import { Terminals } from "../terminals/terminals.ts"
+import { Threads } from "../threads/threads.ts"
 
 /**
  * Implements the /api/v1 contract. App construction only — no listener, and
@@ -19,6 +20,7 @@ export const V1Handlers = HttpApiBuilder.group(
     const projects = yield* Projects
     const directories = yield* Directories
     const terminals = yield* Terminals
+    const threads = yield* Threads
     // Attach bridges outlive their originating requests (Bun aborts the
     // request on protocol switch); they live in the handler layer's scope,
     // so server shutdown still reaps every bridge and its PTY client.
@@ -47,6 +49,15 @@ export const V1Handlers = HttpApiBuilder.group(
         terminals.update(params.terminalId, payload),
       )
       .handle("deleteTerminal", ({ params }) => terminals.delete(params.terminalId))
+      .handle("listThreads", ({ query }) =>
+        threads.list({ projectId: query.projectId, archived: query.archived === "true" }),
+      )
+      .handle("createThread", ({ payload }) => threads.create(payload))
+      .handle("getThread", ({ params }) => threads.get(params.threadId))
+      .handle("updateThread", ({ params, payload }) => threads.update(params.threadId, payload))
+      .handle("archiveThread", ({ params }) => threads.archive(params.threadId))
+      .handle("unarchiveThread", ({ params }) => threads.unarchive(params.threadId))
+      .handle("deleteThread", ({ params }) => threads.delete(params.threadId))
       .handleRaw("attachTerminal", attachTerminal({ terminals, bridgeScope }))
   }),
 )

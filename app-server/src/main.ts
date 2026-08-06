@@ -7,6 +7,7 @@ import { api, capabilities, context } from "./cli/gateway.ts"
 import { project } from "./cli/projects.ts"
 import { serve } from "./cli/serve.ts"
 import { terminal } from "./cli/terminals.ts"
+import { thread } from "./cli/threads.ts"
 import { smoke } from "./agents/smoke.ts"
 import * as Subprocess from "./platform/subprocess.ts"
 
@@ -23,6 +24,7 @@ const atc = Command.make("atc").pipe(
     health,
     version,
     project,
+    thread,
     terminal,
     fs,
     smoke,

@@ -1,5 +1,5 @@
 import { Context, Effect, Layer, Option } from "effect"
-import { ProjectHasTerminals, ProjectNotFound } from "../api/contract.ts"
+import { ProjectHasTerminals, ProjectHasThreads, ProjectNotFound } from "../api/contract.ts"
 import type {
   CreateProjectRequest,
   DirectoryCheckTimedOut,
@@ -10,6 +10,7 @@ import { Directories } from "../platform/directories.ts"
 import { ProjectRepository } from "./projectRepository.ts"
 import type { Project } from "./projectRepository.ts"
 import { TerminalRepository } from "../terminals/terminalRepository.ts"
+import { ThreadRepository } from "../threads/threadRepository.ts"
 
 // The Projects domain service: the rules above the repository —
 // canonicalize-on-create/update (identity is the symlink-resolved canonical
@@ -31,8 +32,10 @@ export class Projects extends Context.Service<
       id: string,
       patch: typeof UpdateProjectRequest.Type,
     ) => Effect.Effect<Project, ProjectNotFound | DirectoryUnavailable | DirectoryCheckTimedOut>
-    /** Delete the record; restricted while the project owns terminals. */
-    readonly delete: (id: string) => Effect.Effect<void, ProjectNotFound | ProjectHasTerminals>
+    /** Delete the record; restricted while the project owns terminals or threads. */
+    readonly delete: (
+      id: string,
+    ) => Effect.Effect<void, ProjectNotFound | ProjectHasTerminals | ProjectHasThreads>
   }
 >()("app-server/Projects") {}
 
@@ -41,6 +44,7 @@ export const layer = Layer.effect(Projects)(
     const repository = yield* ProjectRepository
     const directories = yield* Directories
     const terminalRepository = yield* TerminalRepository
+    const threadRepository = yield* ThreadRepository
 
     return {
       list: () => repository.list(),
@@ -77,6 +81,10 @@ export const layer = Layer.effect(Projects)(
           const terminalCount = yield* terminalRepository.countForProject(id)
           if (terminalCount > 0) {
             return yield* Effect.fail(new ProjectHasTerminals({ projectId: id, terminalCount }))
+          }
+          const threadCount = yield* threadRepository.countForProject(id)
+          if (threadCount > 0) {
+            return yield* Effect.fail(new ProjectHasThreads({ projectId: id, threadCount }))
           }
           const deleted = yield* repository.delete(id)
           if (!deleted) {
