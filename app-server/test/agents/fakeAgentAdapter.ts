@@ -50,6 +50,11 @@ export interface FakeAgentAdapter {
   readonly closeRequest: (providerSessionId: string, requestId: string) => void
 }
 
+export interface FakeAgentAdapterOptions {
+  /** Capability report overrides, so registry tests can tell fakes apart. */
+  readonly capabilities?: Partial<AgentAdapter["capabilities"]>
+}
+
 interface LiveConnection {
   readonly events: Queue.Queue<AgentEvent, Cause.Done>
   activity: AgentActivity
@@ -58,10 +63,11 @@ interface LiveConnection {
   readonly openRequests: Set<string>
 }
 
-export const makeFakeAgentAdapter = (): FakeAgentAdapter => {
+export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): FakeAgentAdapter => {
   const sessions = new Map<string, FakeAgentSession>()
   // One live connection per session — the single-writer rule.
   const connections = new Map<string, LiveConnection>()
+  const observers = new Map<string, Set<Queue.Queue<AgentActivity, Cause.Done>>>()
   let unavailableReason: string | null = null
   let nextSessionId = 1
   let nextTurnId = 1
@@ -190,7 +196,11 @@ export const makeFakeAgentAdapter = (): FakeAgentAdapter => {
 
   const adapter: AgentAdapter = {
     provider: "codex",
-    capabilities: { testedVersion: "0.0.0-fake", tuiObservation: "shared-server" },
+    capabilities: {
+      testedVersion: "0.0.0-fake",
+      tuiObservation: "shared-server",
+      ...options.capabilities,
+    },
     createSession: (options) =>
       Effect.gen(function* () {
         yield* requireAvailable
@@ -236,10 +246,52 @@ export const makeFakeAgentAdapter = (): FakeAgentAdapter => {
     tuiLaunch: (options) =>
       requireAvailable.pipe(
         Effect.as({
-          command: ["fake-agent", "resume", options.providerSessionId],
-          env: {},
+          launchSpec: {
+            command: ["fake-agent", "resume", options.providerSessionId],
+            env: {},
+          },
         }),
       ),
+    prepareTuiSession: (options) =>
+      Effect.gen(function* () {
+        yield* requireAvailable
+        const providerSessionId = `fake-session-${nextSessionId++}`
+        // The prepared session becomes resumable once identity resolves —
+        // mirroring "a completed first interaction materializes it".
+        const identity = Effect.suspend(() => {
+          sessions.set(providerSessionId, { providerSessionId, cwd: options.cwd, inputs: [] })
+          return Effect.succeed({
+            providerSessionId,
+            cwd: options.cwd,
+            providerMetadata: JSON.stringify({ fake: providerSessionId }),
+          })
+        })
+        return {
+          launchSpec: {
+            command: ["fake-agent", "--fresh", providerSessionId],
+            env: { FAKE_AGENT: "1" },
+          },
+          identity,
+        }
+      }),
+    observeSession: (options) =>
+      Effect.gen(function* () {
+        yield* requireAvailable
+        const queue = yield* Queue.make<AgentActivity, Cause.Done>()
+        const set = observers.get(options.providerSessionId) ?? new Set()
+        set.add(queue)
+        observers.set(options.providerSessionId, set)
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            set.delete(queue)
+            if (set.size === 0) observers.delete(options.providerSessionId)
+            Queue.endUnsafe(queue)
+          }),
+        )
+        return Stream.fromQueue(queue)
+      }),
+    checkSession: () => requireAvailable.pipe(Effect.as("unknown" as const)),
+    releaseSession: () => Effect.void,
   }
 
   return {

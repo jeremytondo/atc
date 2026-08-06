@@ -101,6 +101,14 @@ export interface TuiLaunchSpec {
   readonly env: Readonly<Record<string, string>>
 }
 
+/** A resume launch, plus any adapter metadata the launch minted or rotated
+ * — the caller must persist it, or state minted here (e.g. a hook secret)
+ * dies with the process while the TUI keeps using it. */
+export interface TuiLaunch {
+  readonly launchSpec: TuiLaunchSpec
+  readonly providerMetadata?: string
+}
+
 /**
  * A live writer connection to one provider session. Lives in a Scope:
  * closing the scope stops the driver (releasing the writer role) and never
@@ -168,6 +176,35 @@ export interface AgentSessionStart {
 }
 
 /**
+ * Verified identity of a freshly launched TUI session (ATC-124). The
+ * optional metadata is an opaque adapter-owned blob the caller persists on
+ * the thread and hands back on later seam calls (e.g. the Claude hook
+ * secret); the domain never reads inside it.
+ */
+export interface EstablishedIdentity {
+  readonly providerSessionId: string
+  /** The verified canonical working directory the caller asked for. */
+  readonly cwd: string
+  readonly providerMetadata?: string
+}
+
+/**
+ * What `prepareTuiSession` hands back: how to launch the fresh provider
+ * TUI, and one awaitable resolving to the session's verified identity.
+ * How identity is established is adapter-internal: Claude pre-assigns an
+ * id and resolves immediately; Codex resolves when the launched TUI's
+ * `thread/started` is captured (cwd-checked fail closed). Awaiting is the
+ * caller's job and must be bounded by the caller.
+ */
+export interface PreparedTuiSession {
+  readonly launchSpec: TuiLaunchSpec
+  readonly identity: Effect.Effect<
+    EstablishedIdentity,
+    AgentUnavailable | AgentIdentityMismatch | AgentProtocolError
+  >
+}
+
+/**
  * The shared adapter interface. Create requires initial input because both
  * providers establish durable identity while starting a turn (and a Codex
  * thread with zero completed turns is not restart-resumable), so a created
@@ -210,11 +247,57 @@ export interface AgentAdapter {
     | AgentProtocolError,
     Scope.Scope
   >
-  /** How to launch the provider TUI attached to an existing session. */
+  /**
+   * How to launch the provider TUI attached to an existing session.
+   * `providerMetadata` is deliberately required (pass undefined when the
+   * thread has none): forgetting to thread it through would silently
+   * rotate adapter state out from under a running TUI.
+   */
   readonly tuiLaunch: (options: {
     readonly providerSessionId: string
     readonly cwd: string
-  }) => Effect.Effect<TuiLaunchSpec, AgentUnavailable>
+    readonly providerMetadata: string | undefined
+  }) => Effect.Effect<TuiLaunch, AgentUnavailable>
+  /**
+   * Prepare a FRESH provider TUI session in `cwd`: the uniform contract
+   * behind "provider sessions materialize on first interaction". The Scope
+   * owns the adapter's capture/serialization resources (Codex holds the
+   * per-provider launch lock until the scope closes, so concurrent
+   * launches cannot mis-adopt each other's identity); close it once
+   * `identity` has resolved, or to abandon the launch.
+   */
+  readonly prepareTuiSession: (options: {
+    readonly cwd: string
+  }) => Effect.Effect<PreparedTuiSession, AgentUnavailable, Scope.Scope>
+  /**
+   * The one normalized per-session activity subscription for TUI-driven
+   * sessions. Whether it is fed by hook webhooks (Claude) or the shared
+   * server's status fan-out (Codex) is adapter-internal. Metadata is
+   * handed back so adapters can restore per-session state (hook secrets)
+   * across ATC restarts. Scoped: closing unsubscribes. The stream goes
+   * silent — never lies — when the adapter loses its evidence source.
+   */
+  readonly observeSession: (options: {
+    readonly providerSessionId: string
+    readonly providerMetadata: string | undefined
+  }) => Effect.Effect<Stream.Stream<AgentActivity>, AgentUnavailable, Scope.Scope>
+  /**
+   * Demand-driven reconciliation: the provider's current word on the
+   * session's activity, `unknown` when it offers no evidence. Never
+   * guesses; failures are the retryable AgentUnavailable.
+   */
+  readonly checkSession: (options: {
+    readonly providerSessionId: string
+  }) => Effect.Effect<AgentActivity, AgentUnavailable>
+  /**
+   * Release adapter-owned per-session resources (launch files, secret
+   * registrations) when the owning thread is deleted. Best-effort and
+   * idempotent — cleanup problems are logged, never surfaced.
+   */
+  readonly releaseSession: (options: {
+    readonly providerSessionId: string
+    readonly providerMetadata: string | undefined
+  }) => Effect.Effect<void>
 }
 
 // Internal-only failures (ATC-123): not part of the HTTP contract, so no
@@ -328,6 +411,39 @@ export const samePath = (left: string, right: string): boolean => {
 }
 
 /**
+ * Read `<executable> --version` and extract an x.y.z version string;
+ * null when the version cannot be determined (any spawn or parse failure).
+ */
+export const readInstalledVersion = (
+  subprocess: Subprocess["Service"],
+  executable: string,
+): Effect.Effect<string | null> =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const child = yield* subprocess.spawn({
+        executable,
+        args: ["--version"],
+        env: {},
+        extendEnv: true,
+      })
+      const lines = yield* Stream.runCollect(child.stdoutLines)
+      yield* child.exitCode
+      return lines.join(" ")
+    }),
+  ).pipe(
+    // Bounded: a wedged binary must not hang a demand-driven registry read.
+    Effect.timeoutOrElse({ duration: "5 seconds", orElse: () => Effect.succeed("") }),
+    Effect.orElseSucceed(() => ""),
+    Effect.map(
+      (output) =>
+        output
+          .match(/(\d+)\.(\d+)\.(\d+)/)
+          ?.slice(1, 4)
+          .join(".") ?? null,
+    ),
+  )
+
+/**
  * The shared version-drift rule (record + warn, never block), memoized to
  * one check per adapter: resolve the configured executable, read the
  * installed version via `--version`, and log one actionable warning when
@@ -345,32 +461,21 @@ export const makeVersionGate = (
     if (checked) return
     checked = true
     const executable = yield* resolveProviderExecutable(provider, configured)
-    const output = yield* Effect.scoped(
-      Effect.gen(function* () {
-        const child = yield* subprocess.spawn({
-          executable,
-          args: ["--version"],
-          env: {},
-          extendEnv: true,
-        })
-        const lines = yield* Stream.runCollect(child.stdoutLines)
-        yield* child.exitCode
-        return lines.join(" ")
-      }),
-    ).pipe(Effect.orElseSucceed(() => ""))
-    const match = output.match(/(\d+)\.(\d+)\.(\d+)/)
-    if (match === null) {
+    const installed = yield* readInstalledVersion(subprocess, executable)
+    if (installed === null) {
       return yield* Effect.logWarning(
         `could not determine the installed ${provider} version (tested against ${testedVersion})`,
       )
     }
     // Components are small; packing keeps the comparison one expression.
-    const pack = (parts: ReadonlyArray<number>) =>
-      (parts[0] ?? 0) * 1_000_000 + (parts[1] ?? 0) * 1_000 + (parts[2] ?? 0)
-    const installed = [Number(match[1]), Number(match[2]), Number(match[3])]
-    if (pack(installed) < pack(testedVersion.split(".").map(Number))) {
+    const pack = (version: string) =>
+      version
+        .split(".")
+        .map(Number)
+        .reduce((total, part) => total * 1_000 + part, 0)
+    if (pack(installed) < pack(testedVersion)) {
       yield* Effect.logWarning(
-        `installed ${provider} ${installed.join(".")} is older than the tested ${testedVersion}; proceeding, but upgrade it if provider behavior misbehaves`,
+        `installed ${provider} ${installed} is older than the tested ${testedVersion}; proceeding, but upgrade it if provider behavior misbehaves`,
       )
     }
   })

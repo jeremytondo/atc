@@ -90,10 +90,12 @@ export const codexAdapterLayer = (sandbox: {
 export const claudeAdapterLayer = (
   options: ClaudeAdapter.ClaudeAdapterOptions = {},
   executable = "/bin/echo",
+  configOverrides: Partial<Parameters<typeof testAppConfig>[0]> = {},
+  hooksLayer: Layer.Layer<ClaudeHooks.ClaudeHooks> = ClaudeHooks.layer,
 ): Layer.Layer<ClaudeAdapter.ClaudeAdapter | ClaudeHooks.ClaudeHooks, unknown> =>
   ClaudeAdapter.layerWith(options).pipe(
-    Layer.provideMerge(ClaudeHooks.layer),
-    Layer.provide(testAppConfig({ claudeExecutable: executable })),
+    Layer.provideMerge(hooksLayer),
+    Layer.provide(testAppConfig({ claudeExecutable: executable, ...configOverrides })),
     Layer.provide(Subprocess.layer),
     Layer.provideMerge(BunServices.layer),
   )

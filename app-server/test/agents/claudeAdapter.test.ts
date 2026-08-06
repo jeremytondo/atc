@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest"
-import { Effect } from "effect"
+import { Effect, Layer, Stream } from "effect"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -320,7 +320,15 @@ describe("ClaudeAdapter", () => {
       yield* Effect.gen(function* () {
         const adapter = yield* ClaudeAdapter.ClaudeAdapter
         const hooks = yield* ClaudeHooks.ClaudeHooks
-        const spec = yield* adapter.tuiLaunch({ providerSessionId: "session-t", cwd: "/w" })
+        const launch = yield* adapter.tuiLaunch({
+          providerSessionId: "session-t",
+          cwd: "/w",
+          providerMetadata: undefined,
+        })
+        const spec = launch.launchSpec
+        // A launch that minted the secret hands the metadata back so the
+        // caller can persist it.
+        assert.isString(launch.providerMetadata)
         assert.strictEqual(spec.command[0], "/bin/echo")
         assert.deepStrictEqual(spec.command.slice(1, 3), ["--resume", "session-t"])
         assert.strictEqual(spec.command[3], "--settings")
@@ -342,13 +350,242 @@ describe("ClaudeAdapter", () => {
           new RegExp(`${ClaudeHooks.SECRET_HEADER}: ([a-f0-9]+)`).exec(header)?.[1] ?? ""
         assert.isAbove(secret.length, 30)
         assert.notInclude(command, secret)
+        // The returned metadata carries exactly the registered secret.
+        assert.strictEqual(
+          (JSON.parse(launch.providerMetadata ?? "{}") as { hookSecret?: string }).hookSecret,
+          secret,
+        )
         // The secret is live: a delivery for the registered session lands.
         const status = yield* hooks.deliver(secret, {
           session_id: "session-t",
           hook_event_name: "Stop",
         })
         assert.strictEqual(status, 204)
+        // A relaunch that hands the metadata back keeps the same secret —
+        // the running TUI's hooks stay valid.
+        const relaunch = yield* adapter.tuiLaunch({
+          providerSessionId: "session-t",
+          cwd: "/w",
+          providerMetadata: launch.providerMetadata,
+        })
+        assert.strictEqual(relaunch.providerMetadata, launch.providerMetadata)
       }).pipe(Effect.provide(layer))
+    }),
+  )
+})
+
+// ATC-140: the TUI-session plumbing — pre-assigned identity, hook-secret
+// metadata, webhook-fed observation, and release cleanup. No query() seam
+// involved: nothing here spawns or scripts the SDK.
+describe("ClaudeAdapter TUI session plumbing", () => {
+  const stateDir = () => trackTempDir(fs.mkdtempSync(path.join(os.tmpdir(), "atc-claude-state-")))
+
+  /** The real hooks service, with minted secrets recorded for assertions. */
+  const spyHooksLayer = (minted: Array<string>) =>
+    Layer.effect(ClaudeHooks.ClaudeHooks)(
+      Effect.gen(function* () {
+        const real = yield* ClaudeHooks.ClaudeHooks
+        return {
+          ...real,
+          registerSecret: (providerSessionId: string) =>
+            real
+              .registerSecret(providerSessionId)
+              .pipe(Effect.tap((secret) => Effect.sync(() => minted.push(secret)))),
+        }
+      }),
+    ).pipe(Layer.provide(ClaudeHooks.layer))
+
+  /** Collect an activity stream into a sink in the background (scoped). */
+  const collectActivity = (stream: Stream.Stream<string>) =>
+    Effect.gen(function* () {
+      const sink: Array<string> = []
+      yield* stream.pipe(
+        Stream.runForEach((activity) => Effect.sync(() => sink.push(activity))),
+        Effect.ignore,
+        Effect.forkScoped,
+      )
+      return sink
+    })
+
+  const waitForActivity = (sink: Array<string>, wanted: string) =>
+    Effect.gen(function* () {
+      for (let attempt = 0; !sink.includes(wanted); attempt++) {
+        assert.isBelow(attempt, 200, `never saw ${wanted} in ${JSON.stringify(sink)}`)
+        yield* Effect.sleep("10 millis")
+      }
+    })
+
+  it.live("prepareTuiSession pre-assigns identity and writes the hook plumbing", () =>
+    Effect.gen(function* () {
+      const cwd = workDir()
+      const dir = stateDir()
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter.ClaudeAdapter
+        const hooks = yield* ClaudeHooks.ClaudeHooks
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const prepared = yield* adapter.prepareTuiSession({ cwd })
+            // Identity resolves immediately: pre-assignment, not capture.
+            const identity = yield* prepared.identity
+            assert.match(
+              identity.providerSessionId,
+              /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+            )
+            assert.strictEqual(identity.cwd, cwd)
+            assert.deepStrictEqual(prepared.launchSpec.command.slice(1, 3), [
+              "--session-id",
+              identity.providerSessionId,
+            ])
+            const settingsFile = prepared.launchSpec.command[4]!
+            assert.isTrue(fs.existsSync(settingsFile))
+            // The metadata carries the secret; the registration accepts it.
+            const metadata = JSON.parse(identity.providerMetadata ?? "{}") as {
+              hookSecret?: string
+            }
+            assert.isString(metadata.hookSecret)
+            const status = yield* hooks.deliver(metadata.hookSecret ?? "", {
+              session_id: identity.providerSessionId,
+              hook_event_name: "Stop",
+            })
+            assert.strictEqual(status, 204)
+          }),
+        )
+      }).pipe(Effect.provide(claudeAdapterLayer({}, "/bin/echo", { stateDir: dir })))
+    }),
+  )
+
+  it.live("observeSession restores the persisted secret and streams webhook activity", () =>
+    Effect.gen(function* () {
+      const dir = stateDir()
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter.ClaudeAdapter
+        const hooks = yield* ClaudeHooks.ClaudeHooks
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            // The secret arrives only via persisted metadata — the register
+            // path never ran in this "restarted" process.
+            const secret = "a".repeat(64)
+            const metadata = JSON.stringify({ hookSecret: secret })
+            const stream = yield* adapter.observeSession({
+              providerSessionId: "restored-session",
+              providerMetadata: metadata,
+            })
+            const sink = yield* collectActivity(stream)
+            const status = yield* hooks.deliver(secret, {
+              session_id: "restored-session",
+              hook_event_name: "UserPromptSubmit",
+            })
+            assert.strictEqual(status, 204)
+            yield* waitForActivity(sink, "working")
+            // Another session's activity never leaks into this stream.
+            const otherSecret = "b".repeat(64)
+            yield* hooks.adoptSecret("other-session", otherSecret)
+            yield* hooks.deliver(otherSecret, {
+              session_id: "other-session",
+              hook_event_name: "Stop",
+            })
+            yield* hooks.deliver(secret, {
+              session_id: "restored-session",
+              hook_event_name: "Stop",
+            })
+            yield* waitForActivity(sink, "idle")
+            assert.deepStrictEqual(sink, ["working", "idle"])
+          }),
+        )
+      }).pipe(Effect.provide(claudeAdapterLayer({}, "/bin/echo", { stateDir: dir })))
+    }),
+  )
+
+  it.live("releaseSession removes the hook files and revokes the secret", () =>
+    Effect.gen(function* () {
+      const cwd = workDir()
+      const dir = stateDir()
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter.ClaudeAdapter
+        const hooks = yield* ClaudeHooks.ClaudeHooks
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const prepared = yield* adapter.prepareTuiSession({ cwd })
+            const identity = yield* prepared.identity
+            const settingsFile = prepared.launchSpec.command[4]!
+            const metadata = JSON.parse(identity.providerMetadata ?? "{}") as {
+              hookSecret?: string
+            }
+            yield* adapter.releaseSession({
+              providerSessionId: identity.providerSessionId,
+              providerMetadata: identity.providerMetadata,
+            })
+            assert.isFalse(fs.existsSync(settingsFile))
+            assert.isFalse(fs.existsSync(settingsFile.replace(/\.json$/, ".header")))
+            const status = yield* hooks.deliver(metadata.hookSecret ?? "", {
+              session_id: identity.providerSessionId,
+              hook_event_name: "Stop",
+            })
+            assert.strictEqual(status, 404)
+          }),
+        )
+      }).pipe(Effect.provide(claudeAdapterLayer({}, "/bin/echo", { stateDir: dir })))
+    }),
+  )
+
+  it.live("a failed prepare revokes the freshly minted secret", () =>
+    Effect.gen(function* () {
+      const cwd = workDir()
+      // stateDir is occupied by a regular file, so the hook plumbing fails
+      // after the secret was minted and registered.
+      const base = trackTempDir(fs.mkdtempSync(path.join(os.tmpdir(), "atc-claude-state-")))
+      const blocked = path.join(base, "not-a-dir")
+      fs.writeFileSync(blocked, "")
+      const minted: Array<string> = []
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter.ClaudeAdapter
+        const hooks = yield* ClaudeHooks.ClaudeHooks
+        const failure = yield* Effect.scoped(Effect.flip(adapter.prepareTuiSession({ cwd })))
+        assert.strictEqual(failure._tag, "AgentUnavailable")
+        assert.lengthOf(minted, 1)
+        const status = yield* hooks.deliver(minted[0] ?? "", {
+          session_id: "any",
+          hook_event_name: "Stop",
+        })
+        assert.strictEqual(status, 404)
+      }).pipe(
+        Effect.provide(
+          claudeAdapterLayer({}, "/bin/echo", { stateDir: blocked }, spyHooksLayer(minted)),
+        ),
+      )
+    }),
+  )
+
+  it.live("a failed settings write cleans the partial header file and secret", () =>
+    Effect.gen(function* () {
+      const dir = stateDir()
+      // The settings path is occupied by a directory, so the SECOND write
+      // fails after the header file was written and the secret registered.
+      fs.mkdirSync(path.join(dir, "claude-hooks-session-w.json"))
+      const minted: Array<string> = []
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter.ClaudeAdapter
+        const hooks = yield* ClaudeHooks.ClaudeHooks
+        const failure = yield* Effect.flip(
+          adapter.tuiLaunch({
+            providerSessionId: "session-w",
+            cwd: "/w",
+            providerMetadata: undefined,
+          }),
+        )
+        assert.strictEqual(failure._tag, "AgentUnavailable")
+        assert.isFalse(fs.existsSync(path.join(dir, "claude-hooks-session-w.header")))
+        assert.lengthOf(minted, 1)
+        const status = yield* hooks.deliver(minted[0] ?? "", {
+          session_id: "session-w",
+          hook_event_name: "Stop",
+        })
+        assert.strictEqual(status, 404)
+      }).pipe(
+        Effect.provide(
+          claudeAdapterLayer({}, "/bin/echo", { stateDir: dir }, spyHooksLayer(minted)),
+        ),
+      )
     }),
   )
 })

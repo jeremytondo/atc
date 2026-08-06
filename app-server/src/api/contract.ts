@@ -193,6 +193,40 @@ export const AgentId = Schema.Literals(AGENT_IDS).annotate({
   description: "Built-in agent registry slug.",
 })
 
+export const Agent = Schema.Struct({
+  id: AgentId,
+  available: Schema.Boolean.annotate({
+    description: "Whether the agent's CLI is installed and resolvable right now.",
+  }),
+  // Absent keys (not null) for optional fields — see UpdateProjectRequest.
+  reason: Schema.optionalKey(
+    Schema.String.annotate({
+      description: "Actionable install-or-configure hint; absent when available.",
+    }),
+  ),
+  detectedVersion: Schema.optionalKey(
+    Schema.String.annotate({
+      description: "Installed CLI version, when it could be determined.",
+    }),
+  ),
+  testedVersion: Schema.String.annotate({
+    description: "Version the adapter was validated against (drift warns, never blocks).",
+  }),
+  tuiObservation: Schema.Literals(["shared-server", "hooks"]).annotate({
+    description:
+      "How live activity is observed while a TUI drives a session: full event fan-out from the shared provider server, or coarser provider hook callbacks.",
+  }),
+}).annotate({
+  identifier: "Agent",
+  description:
+    "A built-in agent provider: availability and capability report, detected on demand and never persisted.",
+})
+
+export const AgentList = Schema.Array(Agent).annotate({
+  identifier: "AgentList",
+  description: "The built-in agent registry.",
+})
+
 export const ThreadActivityState = Schema.Literals([
   "idle",
   "working",
@@ -398,6 +432,21 @@ export class ProjectHasThreads extends Schema.TaggedErrorClass<ProjectHasThreads
 ) {
   override get message(): string {
     return `project ${this.projectId} still owns ${this.threadCount} thread(s); delete them first`
+  }
+}
+
+/** Unknown agent registry slug. */
+export class AgentNotFound extends Schema.TaggedErrorClass<AgentNotFound>()(
+  "AgentNotFound",
+  { agentId: Schema.String },
+  {
+    identifier: "AgentNotFound",
+    description: "No built-in agent exists with the given id.",
+    httpApiStatus: 404,
+  },
+) {
+  override get message(): string {
+    return `no agent with id ${this.agentId}`
   }
 }
 
@@ -636,6 +685,19 @@ export class V1 extends HttpApiGroup.make("v1")
         OpenApi.Description,
         "Delete the thread: kill its live linked terminal if one is open, then remove the record. Provider-owned conversation history is never touched.",
       ),
+    HttpApiEndpoint.get("listAgents", "/agents", { success: AgentList })
+      .annotate(OpenApi.Identifier, "listAgents")
+      .annotate(
+        OpenApi.Description,
+        "List the built-in agents with availability and capabilities, detected on demand.",
+      ),
+    HttpApiEndpoint.get("getAgent", "/agents/:agentId", {
+      params: { agentId: Schema.String },
+      success: Agent,
+      error: AgentNotFound,
+    })
+      .annotate(OpenApi.Identifier, "getAgent")
+      .annotate(OpenApi.Description, "Fetch one built-in agent by its registry slug."),
     HttpApiEndpoint.get("checkDirectory", "/fs/check", {
       query: { path: AbsolutePath },
       success: FsCheckResponse,

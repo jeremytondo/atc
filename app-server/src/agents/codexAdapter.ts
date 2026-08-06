@@ -1,5 +1,11 @@
-import { Cause, Context, Effect, Layer, Queue, Schema, Semaphore, Stream } from "effect"
-import type { AgentActivity, AgentAdapter, AgentConnection, AgentEvent } from "./agentAdapter.ts"
+import { Cause, Context, Deferred, Effect, Layer, Queue, Schema, Semaphore, Stream } from "effect"
+import type {
+  AgentActivity,
+  AgentAdapter,
+  AgentConnection,
+  AgentEvent,
+  EstablishedIdentity,
+} from "./agentAdapter.ts"
 import {
   AgentConflict,
   AgentIdentityMismatch,
@@ -60,6 +66,14 @@ const ThreadReply = Schema.Struct({
 
 const TurnReply = Schema.Struct({ turn: Schema.Struct({ id: Schema.String }) })
 
+// The real thread/list reply is paginated: { data, nextCursor } (probe
+// evidence in experiments/provider-identity-resume, pinned generated schema
+// V2ThreadListResponse). nextCursor is absent or null on the last page.
+const ThreadListReply = Schema.Struct({
+  data: Schema.Array(Schema.Struct({ id: Schema.String, status: Schema.optional(Schema.Unknown) })),
+  nextCursor: Schema.optional(Schema.NullOr(Schema.String)),
+})
+
 const statusToActivity = (status: unknown): AgentActivity => {
   if (typeof status !== "object" || status === null) return "unknown"
   const record = status as { type?: unknown; activeFlags?: unknown }
@@ -115,9 +129,43 @@ export const layer = Layer.effect(CodexAdapter)(
     // All live writer sessions, keyed by thread id. They always belong to
     // `current`; a connection teardown fails and clears every one of them.
     const sessions = new Map<string, LiveSession>()
+    // Passive per-thread activity observers (TUI-driven sessions). Unlike
+    // sessions they survive reconnects: the map is adapter-level, and a new
+    // connection's broadcasts route to the same queues.
+    const observers = new Map<string, Set<Queue.Queue<AgentActivity, Cause.Done>>>()
     const connectLock = yield* Semaphore.make(1)
     const resumeLock = yield* Semaphore.make(1)
+    // Serializes TUI launch → thread/started capture (prepareTuiSession).
+    const launchLock = yield* Semaphore.make(1)
+    interface PendingCapture {
+      readonly cwd: string
+      readonly gate: Deferred.Deferred<
+        EstablishedIdentity,
+        AgentUnavailable | AgentIdentityMismatch | AgentProtocolError
+      >
+    }
+    let pendingCapture: PendingCapture | null = null
     let current: ClientState | null = null
+
+    /**
+     * A broadcast `thread/started` while a capture is armed: adopt the new
+     * thread iff its cwd matches the launch we serialized. A different cwd
+     * is another client's thread — leave the capture armed. (A manual
+     * `codex --remote` in the same cwd inside this window is the accepted,
+     * recorded residual risk.)
+     */
+    const captureStarted = (params: Record<string, unknown>): void => {
+      if (pendingCapture === null) return
+      const thread = params["thread"] as { id?: unknown; cwd?: unknown } | undefined
+      if (typeof thread?.id !== "string" || typeof thread.cwd !== "string") return
+      if (!samePath(thread.cwd, pendingCapture.cwd)) return
+      const capture = pendingCapture
+      pendingCapture = null
+      Deferred.doneUnsafe(
+        capture.gate,
+        Effect.succeed({ providerSessionId: thread.id, cwd: capture.cwd }),
+      )
+    }
 
     const emit = (session: LiveSession, event: AgentEvent): void => {
       Queue.offerUnsafe(session.queue, event)
@@ -138,6 +186,13 @@ export const layer = Layer.effect(CodexAdapter)(
           Queue.failCauseUnsafe(session.queue, Cause.fail(error))
         }
         sessions.clear()
+        // An armed capture fails closed with the connection: the caller
+        // abandons the launch and retries rather than adopting anything
+        // observed through a fresh, unserialized window.
+        if (pendingCapture !== null) {
+          Deferred.doneUnsafe(pendingCapture.gate, Effect.fail(error))
+          pendingCapture = null
+        }
       }
       state.socket.close()
     }
@@ -178,8 +233,17 @@ export const layer = Layer.effect(CodexAdapter)(
       params: Record<string, unknown> | undefined
     }): void => {
       const params = message.params ?? {}
+      if (message.method === "thread/started") return captureStarted(params)
       const threadId = params["threadId"]
       if (typeof threadId !== "string") return
+      // Coarse status fans out to every thread on the shared server without
+      // subscription (probed) — observers get it even with no writer session.
+      if (message.method === "thread/status/changed") {
+        const activity = statusToActivity(params["status"])
+        for (const queue of observers.get(threadId) ?? []) {
+          Queue.offerUnsafe(queue, activity)
+        }
+      }
       const session = sessions.get(threadId)
       if (session === undefined) return
       switch (message.method) {
@@ -361,6 +425,12 @@ export const layer = Layer.effect(CodexAdapter)(
       }),
     )
 
+    // The passive seam methods promise only AgentUnavailable: a broken
+    // handshake is "cannot consult the provider right now" to them.
+    const getClientRetryable = getClient.pipe(
+      Effect.catchTag("AgentProtocolError", (error) => Effect.fail(unavailable(error.reason))),
+    )
+
     // Close the socket with the layer; the detached server itself lives on.
     yield* Effect.addFinalizer(() =>
       Effect.sync(() => {
@@ -475,28 +545,36 @@ export const layer = Layer.effect(CodexAdapter)(
       capabilities: { testedVersion: CODEX_TESTED_VERSION, tuiObservation: "shared-server" },
       createSession: (options) =>
         Effect.gen(function* () {
-          const state = yield* getClient
-          const reply = yield* request(state, "thread/start", {
-            cwd: options.cwd,
-            approvalPolicy: "never",
-            sandbox: "workspace-write",
-          }).pipe(Effect.mapError(rpcToProtocol))
-          const decoded = yield* decodeReply(ThreadReply, reply)
-          if (!samePath(decoded.thread.cwd, options.cwd)) {
-            return yield* Effect.fail(
-              new AgentIdentityMismatch({
-                provider: "codex",
-                field: "cwd",
-                expected: options.cwd,
-                actual: decoded.thread.cwd,
-              }),
-            )
-          }
-          const { connection, unregister } = yield* registerSession(
-            state,
-            decoded.thread.id,
-            options.cwd,
-            decoded.thread.status,
+          // thread/start broadcasts thread/started to every socket — ours
+          // included — so it must never run while a TUI capture is armed:
+          // an ATC-driven create in the same cwd would be mis-adopted as
+          // the TUI's identity. The launch lock serializes both paths.
+          const { connection, unregister } = yield* launchLock.withPermits(1)(
+            Effect.gen(function* () {
+              const state = yield* getClient
+              const reply = yield* request(state, "thread/start", {
+                cwd: options.cwd,
+                approvalPolicy: "never",
+                sandbox: "workspace-write",
+              }).pipe(Effect.mapError(rpcToProtocol))
+              const decoded = yield* decodeReply(ThreadReply, reply)
+              if (!samePath(decoded.thread.cwd, options.cwd)) {
+                return yield* Effect.fail(
+                  new AgentIdentityMismatch({
+                    provider: "codex",
+                    field: "cwd",
+                    expected: options.cwd,
+                    actual: decoded.thread.cwd,
+                  }),
+                )
+              }
+              return yield* registerSession(
+                state,
+                decoded.thread.id,
+                options.cwd,
+                decoded.thread.status,
+              )
+            }),
           )
           // The seam widens startTurn's errors for deferred-verification
           // providers; codex verified above, so those tags are impossible.
@@ -568,10 +646,99 @@ export const layer = Layer.effect(CodexAdapter)(
           const executable = yield* resolveProviderExecutable("codex", config.codexExecutable)
           const info = yield* codexServer.ensure()
           return {
-            command: [executable, "resume", "--remote", info.url, options.providerSessionId],
-            env: {},
+            launchSpec: {
+              command: [executable, "resume", "--remote", info.url, options.providerSessionId],
+              env: {},
+            },
           }
         }),
+      prepareTuiSession: (options) =>
+        Effect.gen(function* () {
+          const executable = yield* resolveProviderExecutable("codex", config.codexExecutable)
+          // The held observer connection is the capture channel: it must
+          // exist before the TUI can be launched.
+          yield* getClientRetryable
+          const info = yield* codexServer.ensure()
+          // Codex has no pre-assignment flag, so identity is captured from
+          // the fresh TUI's thread/started broadcast. The launch lock is
+          // held for the caller's whole scope: launch → capture is
+          // serialized (against other prepares AND createSession's own
+          // thread/start), making the correlation deterministic. Interruptible:
+          // a queued caller must stay cancellable while a slow capture holds
+          // the permit.
+          yield* Effect.acquireRelease(launchLock.take(1), () => launchLock.release(1), {
+            interruptible: true,
+          })
+          const gate = yield* Deferred.make<
+            EstablishedIdentity,
+            AgentUnavailable | AgentIdentityMismatch | AgentProtocolError
+          >()
+          pendingCapture = { cwd: options.cwd, gate }
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              if (pendingCapture?.gate !== gate) return
+              pendingCapture = null
+              // Anyone still awaiting identity outside the scope must not
+              // hang forever on an abandoned launch.
+              Deferred.doneUnsafe(gate, Effect.fail(unavailable("the launch was abandoned")))
+            }),
+          )
+          return {
+            launchSpec: { command: [executable, "--remote", info.url], env: {} },
+            identity: Deferred.await(gate),
+          }
+        }),
+      observeSession: (options) =>
+        Effect.gen(function* () {
+          // Ensure the shared connection exists — it is the evidence source.
+          yield* getClientRetryable
+          const queue = yield* Queue.make<AgentActivity, Cause.Done>()
+          const set = observers.get(options.providerSessionId) ?? new Set()
+          set.add(queue)
+          observers.set(options.providerSessionId, set)
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              set.delete(queue)
+              if (set.size === 0) observers.delete(options.providerSessionId)
+              Queue.endUnsafe(queue)
+            }),
+          )
+          return Stream.fromQueue(queue)
+        }),
+      checkSession: (options) =>
+        Effect.gen(function* () {
+          const state = yield* getClientRetryable
+          // thread/list (probed) is the reconciliation aid: absent thread or
+          // undeterminable status is honestly `unknown`, never a guess. The
+          // reply is paginated; walk pages until the target thread appears
+          // or the cursor runs out.
+          let cursor: string | undefined
+          while (true) {
+            const reply = yield* request(
+              state,
+              "thread/list",
+              cursor === undefined ? {} : { cursor },
+            ).pipe(
+              Effect.mapError((error) =>
+                unavailable(error._tag === "RpcError" ? error.text : error.reason),
+              ),
+            )
+            const decoded = yield* Schema.decodeUnknownEffect(ThreadListReply)(reply).pipe(
+              Effect.mapError((error) =>
+                unavailable(`unexpected thread/list reply: ${error.message}`),
+              ),
+            )
+            const thread = decoded.data.find((t) => t.id === options.providerSessionId)
+            if (thread !== undefined) return statusToActivity(thread.status)
+            const next = decoded.nextCursor
+            // A repeated cursor cannot make progress; treat it as the end.
+            if (typeof next !== "string" || next === cursor) return "unknown"
+            cursor = next
+          }
+        }),
+      // Codex holds no per-session launch files or secrets; provider-owned
+      // rollouts are never ATC's to touch.
+      releaseSession: () => Effect.void,
     }
     return adapter
   }),

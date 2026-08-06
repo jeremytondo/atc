@@ -59,8 +59,9 @@ import * as Subprocess from "../platform/subprocess.ts"
 //     NOT bridged into these feeds: a TUI-driven session has no adapter
 //     connection by definition, and while ATC drives, the same vocabulary
 //     already arrives as in-process SDK callbacks — a webhook delivery for
-//     a live connection could only be stale or spoofed. TUI-side consumers
-//     subscribe to claudeHooks directly (ATC-124).
+//     a live connection could only be stale or spoofed. TUI-driven activity
+//     flows through observeSession below, which is the claudeHooks
+//     subscriber; consumers stay above the seam.
 
 /** The Claude Code version this adapter was validated against. */
 export const CLAUDE_TESTED_VERSION = "2.1.221"
@@ -411,6 +412,77 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
         CLAUDE_TESTED_VERSION,
       )
 
+      const hookFilePaths = (providerSessionId: string) => ({
+        headerFile: path.join(config.stateDir, `claude-hooks-${providerSessionId}.header`),
+        settingsFile: path.join(config.stateDir, `claude-hooks-${providerSessionId}.json`),
+      })
+
+      const removeHookFiles = (providerSessionId: string) =>
+        Effect.gen(function* () {
+          const { headerFile, settingsFile } = hookFilePaths(providerSessionId)
+          yield* fs.remove(headerFile).pipe(Effect.ignore)
+          yield* fs.remove(settingsFile).pipe(Effect.ignore)
+        })
+
+      /** The persisted hook secret, if the thread's opaque metadata has one. */
+      const metadataSecret = (metadata: string | undefined): string | null => {
+        if (metadata === undefined) return null
+        try {
+          const parsed = JSON.parse(metadata) as { hookSecret?: unknown }
+          return typeof parsed.hookSecret === "string" ? parsed.hookSecret : null
+        } catch {
+          return null
+        }
+      }
+
+      /**
+       * Register the session's webhook secret (reusing the persisted one so
+       * it stays stable for the thread's life, minting on first use) and
+       * write the per-session hook plumbing. The secret only ever lives in
+       * 0600 files: the settings file and a curl header file (`-H @file`) —
+       * never in any argv (ps would show it, including curl's) and never in
+       * the URL (request paths land in tracer span names). Files are
+       * overwritten per launch and removed by releaseSession.
+       */
+      const ensureHookPlumbing = (providerSessionId: string, metadata: string | undefined) =>
+        Effect.gen(function* () {
+          const known = metadataSecret(metadata)
+          const secret = known ?? (yield* hooks.registerSecret(providerSessionId))
+          if (known !== null) yield* hooks.adoptSecret(providerSessionId, known)
+          const url = `http://127.0.0.1:${config.port}/internal/claude/hooks`
+          const { headerFile, settingsFile } = hookFilePaths(providerSessionId)
+          const command =
+            `curl -fsS -m 5 -X POST -H 'Content-Type: application/json' ` +
+            `-H @'${headerFile}' --data-binary @- '${url}'`
+          const hookConfig = Object.fromEntries(
+            HOOK_EVENTS.map((event) => [event, [{ hooks: [{ type: "command", command }] }]]),
+          )
+          const write = (file: string, content: string) =>
+            fs.writeFileString(file, content).pipe(Effect.andThen(fs.chmod(file, 0o600)))
+          yield* fs.makeDirectory(config.stateDir, { recursive: true }).pipe(
+            Effect.andThen(write(headerFile, `${ClaudeHooks.SECRET_HEADER}: ${secret}`)),
+            Effect.andThen(write(settingsFile, JSON.stringify({ hooks: hookConfig }))),
+            Effect.mapError(
+              (error) =>
+                new AgentUnavailable({
+                  provider: "claude",
+                  reason: `could not write the hook settings files: ${error.message}`,
+                }),
+            ),
+            // A failed (or interrupted) write sequence must not strand the
+            // allocation it sits inside: drop any partial file, and revoke
+            // the secret iff this call minted it — a metadata-carried secret
+            // may still be validating a running TUI's hooks.
+            Effect.onError(() =>
+              Effect.gen(function* () {
+                if (known === null) yield* hooks.revokeSecret(providerSessionId)
+                yield* removeHookFiles(providerSessionId)
+              }),
+            ),
+          )
+          return { secret, settingsFile }
+        })
+
       const openSession = (options: { readonly cwd: string; readonly resume?: string }) =>
         Effect.gen(function* () {
           const executable = yield* resolveProviderExecutable("claude", config.claudeExecutable)
@@ -583,51 +655,98 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
         tuiLaunch: (options) =>
           Effect.gen(function* () {
             const executable = yield* resolveProviderExecutable("claude", config.claudeExecutable)
-            const secret = yield* hooks.registerSecret(options.providerSessionId)
-            // The secret only ever lives in 0600 files: the settings file
-            // and a curl header file (`-H @file`) — never in any argv (ps
-            // would show it, including curl's) and never in the URL
-            // (request paths land in tracer span names). Both files are
-            // overwritten per launch; tying their lifetime to the TUI
-            // terminal session is ATC-124 work.
-            const url = `http://127.0.0.1:${config.port}/internal/claude/hooks`
-            const headerFile = path.join(
-              config.stateDir,
-              `claude-hooks-${options.providerSessionId}.header`,
-            )
-            const command =
-              `curl -fsS -m 5 -X POST -H 'Content-Type: application/json' ` +
-              `-H @'${headerFile}' --data-binary @- '${url}'`
-            const hookConfig = Object.fromEntries(
-              HOOK_EVENTS.map((event) => [event, [{ hooks: [{ type: "command", command }] }]]),
-            )
-            const settingsFile = path.join(
-              config.stateDir,
-              `claude-hooks-${options.providerSessionId}.json`,
-            )
-            const write = (file: string, content: string) =>
-              fs.writeFileString(file, content).pipe(Effect.andThen(fs.chmod(file, 0o600)))
-            yield* fs.makeDirectory(config.stateDir, { recursive: true }).pipe(
-              Effect.andThen(write(headerFile, `${ClaudeHooks.SECRET_HEADER}: ${secret}`)),
-              Effect.andThen(write(settingsFile, JSON.stringify({ hooks: hookConfig }))),
-              Effect.mapError(
-                (error) =>
-                  new AgentUnavailable({
-                    provider: "claude",
-                    reason: `could not write the hook settings files: ${error.message}`,
-                  }),
-              ),
+            const { secret, settingsFile } = yield* ensureHookPlumbing(
+              options.providerSessionId,
+              options.providerMetadata,
             )
             return {
-              command: [
-                executable,
-                "--resume",
-                options.providerSessionId,
-                "--settings",
-                settingsFile,
-              ],
-              env: {},
+              launchSpec: {
+                command: [
+                  executable,
+                  "--resume",
+                  options.providerSessionId,
+                  "--settings",
+                  settingsFile,
+                ],
+                env: {},
+              },
+              // Always handed back: when the caller had no metadata this
+              // launch minted the secret, and only persistence keeps the
+              // running TUI's hooks valid across an ATC restart.
+              providerMetadata: JSON.stringify({ hookSecret: secret }),
             }
+          }),
+        prepareTuiSession: (options) =>
+          Effect.gen(function* () {
+            const executable = yield* resolveProviderExecutable("claude", config.claudeExecutable)
+            yield* versionCheck
+            // Pre-assignment (probed 2026-08-05): `--session-id` creates
+            // exactly the minted id, and a duplicate launch fails closed —
+            // so identity resolves immediately and the first hook payload
+            // is confirmation, not discovery. The secret is minted once
+            // here and rides the thread's metadata from then on.
+            const providerSessionId = crypto.randomUUID()
+            // An abandoned prepare (the caller never awaited identity —
+            // e.g. its terminal launch failed) must not leak the secret
+            // registration or the 0600 files. acquireRelease pairs the
+            // plumbing with its cleanup atomically, so interruption cannot
+            // land between the allocation and its finalizer.
+            let claimed = false
+            const { secret, settingsFile } = yield* Effect.acquireRelease(
+              ensureHookPlumbing(providerSessionId, undefined),
+              () =>
+                claimed
+                  ? Effect.void
+                  : Effect.gen(function* () {
+                      yield* hooks.revokeSecret(providerSessionId)
+                      yield* removeHookFiles(providerSessionId)
+                    }),
+            )
+            return {
+              launchSpec: {
+                command: [
+                  executable,
+                  "--session-id",
+                  providerSessionId,
+                  "--settings",
+                  settingsFile,
+                ],
+                env: {},
+              },
+              identity: Effect.sync(() => {
+                claimed = true
+                return {
+                  providerSessionId,
+                  cwd: options.cwd,
+                  providerMetadata: JSON.stringify({ hookSecret: secret }),
+                }
+              }),
+            }
+          }),
+        observeSession: (options) =>
+          Effect.gen(function* () {
+            // Restore the persisted secret first: the registry is
+            // in-memory, so a TUI launched before an ATC restart keeps
+            // validating only because the thread's metadata carries it.
+            const known = metadataSecret(options.providerMetadata)
+            if (known !== null) yield* hooks.adoptSecret(options.providerSessionId, known)
+            const queue = yield* Queue.make<AgentActivity, Cause.Done>()
+            // Registered before the subscription so it runs after it on
+            // scope close: unsubscribe first, then end the queue.
+            yield* Effect.addFinalizer(() => Effect.sync(() => Queue.endUnsafe(queue)))
+            yield* hooks.subscribe((sessionId, activity) => {
+              if (sessionId === options.providerSessionId) Queue.offerUnsafe(queue, activity)
+            })
+            return Stream.fromQueue(queue)
+          }),
+        // Claude offers no cheap truthful liveness query for a session it
+        // is not driving; the domain's linked-terminal liveness carries
+        // staleness re-derivation for TUI-driven Claude sessions.
+        checkSession: () => Effect.succeed("unknown" as const),
+        releaseSession: (options) =>
+          Effect.gen(function* () {
+            yield* hooks.revokeSecret(options.providerSessionId)
+            yield* removeHookFiles(options.providerSessionId)
           }),
       }
       return adapter

@@ -150,6 +150,8 @@ describe("openapi document vs runtime", () => {
       "/api/v1/threads/{threadId}",
       "/api/v1/threads/{threadId}/archive",
       "/api/v1/threads/{threadId}/unarchive",
+      "/api/v1/agents",
+      "/api/v1/agents/{agentId}",
       "/api/v1/fs/check",
     ])
     // The WebSocket attach endpoint is contract-declared but excluded from
@@ -372,6 +374,42 @@ describe("openapi document vs runtime", () => {
         ]!.schema,
         { $ref: "#/components/schemas/Thread" },
       )
+    }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
+  )
+
+  it.effect("/api/v1/agents: listed and fetched payloads match the documented schemas", () =>
+    Effect.gen(function* () {
+      const client = yield* rawClient
+      const listed = yield* client.get("http://127.0.0.1/api/v1/agents")
+      assert.strictEqual(listed.status, 200)
+      const agents = (yield* listed.json) as Array<Record<string, unknown>>
+      assert.deepStrictEqual(
+        agents.map((agent) => agent["id"]),
+        ["codex", "claude-code"],
+      )
+      const schema = componentSchema("Agent")
+      for (const agent of agents) {
+        assert.includeMembers(Object.keys(schema.properties), Object.keys(agent))
+        assert.sameMembers(
+          [...schema.required].filter((key) => !(key in agent)),
+          [],
+        )
+      }
+      assert.deepStrictEqual(
+        operation("/api/v1/agents").responses["200"]!.content["application/json"]!.schema,
+        { $ref: "#/components/schemas/AgentList" },
+      )
+
+      const fetched = yield* client.get("http://127.0.0.1/api/v1/agents/codex")
+      assert.strictEqual(fetched.status, 200)
+      assert.deepStrictEqual(
+        operation("/api/v1/agents/{agentId}").responses["200"]!.content["application/json"]!.schema,
+        { $ref: "#/components/schemas/Agent" },
+      )
+
+      const missing = yield* client.get("http://127.0.0.1/api/v1/agents/nope")
+      assert.strictEqual(missing.status, 404)
+      assert.deepStrictEqual(yield* missing.json, { _tag: "AgentNotFound", agentId: "nope" })
     }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
   )
 

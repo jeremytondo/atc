@@ -3,7 +3,11 @@ import { Layer } from "effect"
 import { HttpMiddleware, HttpRouter, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { Api } from "./api/contract.ts"
+import * as AgentRegistry from "./agents/agentRegistry.ts"
+import * as ClaudeAdapter from "./agents/claudeAdapter.ts"
 import * as ClaudeHooks from "./agents/claudeHooks.ts"
+import * as CodexAdapter from "./agents/codexAdapter.ts"
+import * as CodexServer from "./agents/codexServer.ts"
 import * as Directories from "./platform/directories.ts"
 import { V1Handlers } from "./api/handlers.ts"
 import * as LocalTrust from "./api/localTrust.ts"
@@ -71,7 +75,9 @@ export const layer = (options: { readonly port: number }) =>
 export const production = (options: { readonly port: number }) =>
   layer(options).pipe(
     Layer.provide([Projects.layer, Threads.layer]),
-    Layer.provide(Terminals.layer),
+    Layer.provide([Terminals.layer, AgentRegistry.layer]),
+    Layer.provide([CodexAdapter.layer, ClaudeAdapter.layer]),
+    Layer.provide(CodexServer.layer),
     Layer.provide([
       ProjectRepository.layer,
       TerminalRepository.layer,

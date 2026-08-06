@@ -6,16 +6,18 @@ import type { AgentActivity } from "./agentAdapter.ts"
 // vocabulary into activity signals, fed from two transports — in-process
 // SDK callbacks while ATC drives a session (claudeAdapter.ts), and the
 // internal webhook below while a TUI drives one. TUI-driven sessions have
-// no adapter connection (one-writer rule), so webhook activity is consumed
-// via `subscribe` by whatever owns TUI session state — ATC-124's job; in
-// ATC-123 deliveries are validated and then dropped. The webhook is
-// machine-to-machine plumbing whose payload shape Claude Code owns, so it
-// is deliberately NOT in the public contract or openapi.json. Spoofing is
-// guarded by a per-session secret carried in the x-atc-hook-secret header
-// (minted at TUI launch; a re-mint invalidates the session's prior secret);
-// a payload whose session_id disagrees with the secret's registration is
-// dropped. Hooks carry no turn or request correlation ids, so they
-// normalize to activity only — never to turn or request events.
+// no adapter connection (one-writer rule), so webhook activity reaches
+// consumers via `subscribe` — the Claude adapter's observeSession is the
+// subscriber, filtering per session for the seam's activity stream. The
+// webhook is machine-to-machine plumbing whose payload shape Claude Code
+// owns, so it is deliberately NOT in the public contract or openapi.json.
+// Spoofing is guarded by a per-session secret carried in the
+// x-atc-hook-secret header (stable per thread: persisted in the thread's
+// opaque provider metadata and adopted back after restarts; registering a
+// different secret invalidates the prior one); a payload whose session_id
+// disagrees with the secret's registration is dropped. Hooks carry no turn
+// or request correlation ids, so they normalize to activity only — never
+// to turn or request events.
 
 /** What one hook event says about the session's activity, if anything. */
 export const hookActivity = (
@@ -64,11 +66,18 @@ export class ClaudeHooks extends Context.Service<
   {
     /**
      * Mint and register the webhook secret for one provider session,
-     * replacing (and invalidating) any prior secret for that session. The
-     * registration lives until replaced; scoping secrets to the TUI
-     * terminal session's lifetime is ATC-124 work.
+     * replacing (and invalidating) any prior secret for that session.
+     * The registration lives until replaced, adopted over, or revoked.
      */
     readonly registerSecret: (providerSessionId: string) => Effect.Effect<string>
+    /**
+     * Register a known secret for one provider session (the persisted
+     * per-thread secret being restored after a restart or reused across
+     * launches), replacing any prior registration. Idempotent.
+     */
+    readonly adoptSecret: (providerSessionId: string, secret: string) => Effect.Effect<void>
+    /** Drop the session's registration (thread deletion). Idempotent. */
+    readonly revokeSecret: (providerSessionId: string) => Effect.Effect<void>
     /**
      * Subscribe to normalized webhook activity for TUI-driven sessions
      * (nothing subscribes in ATC-123). Scoped: closing unsubscribes.
@@ -90,16 +99,27 @@ export const layer = Layer.effect(ClaudeHooks)(
     const secrets = new Map<string, string>()
     const secretForSession = new Map<string, string>()
     const listeners = new Set<HookListener>()
+    const adopt = (providerSessionId: string, secret: string): void => {
+      const previous = secretForSession.get(providerSessionId)
+      if (previous !== undefined) secrets.delete(previous)
+      secrets.set(secret, providerSessionId)
+      secretForSession.set(providerSessionId, secret)
+    }
     return {
       registerSecret: (providerSessionId: string) =>
         Effect.sync(() => {
-          const previous = secretForSession.get(providerSessionId)
-          if (previous !== undefined) secrets.delete(previous)
           const secret =
             crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "")
-          secrets.set(secret, providerSessionId)
-          secretForSession.set(providerSessionId, secret)
+          adopt(providerSessionId, secret)
           return secret
+        }),
+      adoptSecret: (providerSessionId: string, secret: string) =>
+        Effect.sync(() => adopt(providerSessionId, secret)),
+      revokeSecret: (providerSessionId: string) =>
+        Effect.sync(() => {
+          const previous = secretForSession.get(providerSessionId)
+          if (previous !== undefined) secrets.delete(previous)
+          secretForSession.delete(providerSessionId)
         }),
       subscribe: (listener: HookListener) =>
         Effect.gen(function* () {

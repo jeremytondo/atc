@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest"
-import { Effect } from "effect"
+import { Effect, Stream } from "effect"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import * as CodexAdapter from "../../src/agents/codexAdapter.ts"
@@ -318,14 +318,15 @@ describe("CodexAdapter", () => {
         const sandbox = makeCodexSandbox()
         yield* withAdapter(sandbox, (adapter) =>
           Effect.gen(function* () {
-            const spec = yield* adapter.tuiLaunch({
+            const { launchSpec } = yield* adapter.tuiLaunch({
               providerSessionId: "some-thread",
               cwd: sandbox.cwd,
+              providerMetadata: undefined,
             })
-            assert.strictEqual(spec.command[0], sandbox.wrapper)
-            assert.deepStrictEqual(spec.command.slice(1, 3), ["resume", "--remote"])
-            assert.match(spec.command[3] ?? "", /^ws:\/\/127\.0\.0\.1:\d+$/)
-            assert.strictEqual(spec.command[4], "some-thread")
+            assert.strictEqual(launchSpec.command[0], sandbox.wrapper)
+            assert.deepStrictEqual(launchSpec.command.slice(1, 3), ["resume", "--remote"])
+            assert.match(launchSpec.command[3] ?? "", /^ws:\/\/127\.0\.0\.1:\d+$/)
+            assert.strictEqual(launchSpec.command[4], "some-thread")
           }),
         )
       }),
@@ -351,6 +352,178 @@ describe("CodexAdapter", () => {
               )
             }),
           ),
+        )
+      }),
+    30_000,
+  )
+})
+
+// ATC-140: fresh-launch identity capture, passive observation, and the
+// thread/list reconciliation check — the TUI stand-in is a second WebSocket
+// client of the same shared fake app-server.
+describe("CodexAdapter TUI session plumbing", () => {
+  const openExternal = (url: string) =>
+    Effect.acquireRelease(
+      Effect.callback<WebSocket>((resume) => {
+        const socket = new WebSocket(url)
+        socket.onopen = () => resume(Effect.succeed(socket))
+      }),
+      (socket) => Effect.sync(() => socket.close()),
+    )
+
+  const externalRequest = (socket: WebSocket, id: number, method: string, params: unknown) =>
+    Effect.callback<Record<string, unknown>>((resume) => {
+      const listener = (event: MessageEvent) => {
+        const message = JSON.parse(String(event.data)) as { id?: number; result?: unknown }
+        if (message.id === id) {
+          socket.removeEventListener("message", listener)
+          resume(Effect.succeed((message.result ?? {}) as Record<string, unknown>))
+        }
+      }
+      socket.addEventListener("message", listener)
+      socket.send(JSON.stringify({ id, method, params }))
+    })
+
+  const startExternalThread = (socket: WebSocket, id: number, cwd: string) =>
+    externalRequest(socket, id, "thread/start", { cwd }).pipe(
+      Effect.map((result) => (result["thread"] as { id: string }).id),
+    )
+
+  const waitForActivity = (sink: Array<string>, wanted: string) =>
+    Effect.gen(function* () {
+      for (let attempt = 0; !sink.includes(wanted); attempt++) {
+        assert.isBelow(attempt, 200, `never saw ${wanted} in ${JSON.stringify(sink)}`)
+        yield* Effect.sleep("25 millis")
+      }
+    })
+
+  it.live(
+    "prepareTuiSession captures the fresh TUI's thread/started identity",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox()
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const prepared = yield* adapter.prepareTuiSession({ cwd: sandbox.cwd })
+              assert.strictEqual(prepared.launchSpec.command[0], sandbox.wrapper)
+              assert.strictEqual(prepared.launchSpec.command[1], "--remote")
+              const url = prepared.launchSpec.command[2] ?? ""
+              assert.match(url, /^ws:\/\/127\.0\.0\.1:\d+$/)
+
+              // The launched TUI stand-in bootstraps a thread in the cwd.
+              const external = yield* openExternal(url)
+              const threadId = yield* startExternalThread(external, 1, sandbox.cwd)
+              const identity = yield* prepared.identity
+              assert.strictEqual(identity.providerSessionId, threadId)
+              assert.strictEqual(identity.cwd, sandbox.cwd)
+            }),
+          ),
+        )
+      }),
+    30_000,
+  )
+
+  it.live(
+    "capture ignores foreign-cwd threads and adopts the matching one",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox()
+        const otherCwd = path.join(sandbox.base, "other")
+        fs.mkdirSync(otherCwd, { recursive: true })
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const prepared = yield* adapter.prepareTuiSession({ cwd: sandbox.cwd })
+              const url = prepared.launchSpec.command[2] ?? ""
+              const external = yield* openExternal(url)
+              // Another client's thread in a different cwd is not ours.
+              const foreignId = yield* startExternalThread(external, 1, otherCwd)
+              const matchingId = yield* startExternalThread(external, 2, sandbox.cwd)
+              const identity = yield* prepared.identity
+              assert.notStrictEqual(identity.providerSessionId, foreignId)
+              assert.strictEqual(identity.providerSessionId, matchingId)
+            }),
+          ),
+        )
+      }),
+    30_000,
+  )
+
+  it.live(
+    "observeSession streams coarse status for a thread it never joined",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox()
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              // Arm the shared connection, then drive a thread externally.
+              const activity = yield* adapter.checkSession({ providerSessionId: "none" })
+              assert.strictEqual(activity, "unknown")
+              const identity = JSON.parse(
+                fs.readFileSync(path.join(sandbox.stateDir, "codex-app-server.json"), "utf8"),
+              ) as { port: number }
+              const external = yield* openExternal(`ws://127.0.0.1:${identity.port}`)
+              const threadId = yield* startExternalThread(external, 1, sandbox.cwd)
+
+              const stream = yield* adapter.observeSession({
+                providerSessionId: threadId,
+                providerMetadata: undefined,
+              })
+              const sink: Array<string> = []
+              yield* stream.pipe(
+                Stream.runForEach((value) => Effect.sync(() => sink.push(value))),
+                Effect.ignore,
+                Effect.forkScoped,
+              )
+              yield* externalRequest(external, 2, "turn/start", {
+                threadId,
+                input: [{ type: "text", text: "external turn" }],
+              })
+              yield* waitForActivity(sink, "working")
+              yield* waitForActivity(sink, "idle")
+            }),
+          ),
+        )
+      }),
+    30_000,
+  )
+
+  it.live(
+    "checkSession walks the provider's paginated thread list",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox()
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.gen(function* () {
+            // Force the connection + server up before the external client.
+            assert.strictEqual(
+              yield* adapter.checkSession({ providerSessionId: "missing" }),
+              "unknown",
+            )
+            const identity = JSON.parse(
+              fs.readFileSync(path.join(sandbox.stateDir, "codex-app-server.json"), "utf8"),
+            ) as { port: number }
+            // The fake serves one thread per page, so the second thread only
+            // appears after following nextCursor.
+            const laterPage = yield* Effect.scoped(
+              Effect.gen(function* () {
+                const socket = yield* openExternal(`ws://127.0.0.1:${identity.port}`)
+                yield* startExternalThread(socket, 1, sandbox.cwd)
+                return yield* startExternalThread(socket, 2, sandbox.cwd)
+              }),
+            )
+            assert.strictEqual(
+              yield* adapter.checkSession({ providerSessionId: laterPage }),
+              "idle",
+            )
+            // A miss walks every page before answering `unknown`.
+            assert.strictEqual(
+              yield* adapter.checkSession({ providerSessionId: "missing" }),
+              "unknown",
+            )
+          }),
         )
       }),
     30_000,

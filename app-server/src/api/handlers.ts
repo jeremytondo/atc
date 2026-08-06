@@ -1,6 +1,7 @@
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { Api } from "./contract.ts"
+import { AgentRegistry } from "../agents/agentRegistry.ts"
 import { BuildInfo } from "../platform/buildInfo.ts"
 import { Directories } from "../platform/directories.ts"
 import { Projects } from "../projects/projects.ts"
@@ -21,6 +22,7 @@ export const V1Handlers = HttpApiBuilder.group(
     const directories = yield* Directories
     const terminals = yield* Terminals
     const threads = yield* Threads
+    const agents = yield* AgentRegistry
     // Attach bridges outlive their originating requests (Bun aborts the
     // request on protocol switch); they live in the handler layer's scope,
     // so server shutdown still reaps every bridge and its PTY client.
@@ -58,6 +60,8 @@ export const V1Handlers = HttpApiBuilder.group(
       .handle("archiveThread", ({ params }) => threads.archive(params.threadId))
       .handle("unarchiveThread", ({ params }) => threads.unarchive(params.threadId))
       .handle("deleteThread", ({ params }) => threads.delete(params.threadId))
+      .handle("listAgents", () => agents.list())
+      .handle("getAgent", ({ params }) => agents.get(params.agentId))
       .handleRaw("attachTerminal", attachTerminal({ terminals, bridgeScope }))
   }),
 )

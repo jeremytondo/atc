@@ -853,6 +853,71 @@
         "description": "Restore an archived thread (idempotent)."
       }
     },
+    "/api/v1/agents": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "listAgents",
+        "parameters": [],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The built-in agent registry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentList"
+                }
+              }
+            }
+          }
+        },
+        "description": "List the built-in agents with availability and capabilities, detected on demand."
+      }
+    },
+    "/api/v1/agents/{agentId}": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "getAgent",
+        "parameters": [
+          {
+            "name": "agentId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "A built-in agent provider: availability and capability report, detected on demand and never persisted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agent"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No built-in agent exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentNotFoundJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "Fetch one built-in agent by its registry slug."
+      }
+    },
     "/api/v1/fs/check": {
       "get": {
         "tags": [
@@ -1453,6 +1518,72 @@
         "required": [
           "_tag",
           "threadId"
+        ],
+        "additionalProperties": false
+      },
+      "Agent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/AgentId"
+          },
+          "available": {
+            "type": "boolean",
+            "description": "Whether the agent's CLI is installed and resolvable right now."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Actionable install-or-configure hint; absent when available."
+          },
+          "detectedVersion": {
+            "type": "string",
+            "description": "Installed CLI version, when it could be determined."
+          },
+          "testedVersion": {
+            "type": "string",
+            "description": "Version the adapter was validated against (drift warns, never blocks)."
+          },
+          "tuiObservation": {
+            "type": "string",
+            "enum": [
+              "shared-server",
+              "hooks"
+            ],
+            "description": "How live activity is observed while a TUI drives a session: full event fan-out from the shared provider server, or coarser provider hook callbacks."
+          }
+        },
+        "required": [
+          "id",
+          "available",
+          "testedVersion",
+          "tuiObservation"
+        ],
+        "additionalProperties": false,
+        "description": "A built-in agent provider: availability and capability report, detected on demand and never persisted."
+      },
+      "AgentList": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Agent"
+        },
+        "description": "The built-in agent registry."
+      },
+      "AgentNotFoundJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "AgentNotFound"
+            ]
+          },
+          "agentId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "_tag",
+          "agentId"
         ],
         "additionalProperties": false
       },

@@ -120,6 +120,23 @@ const handle = (
     }
     case "thread/unsubscribe":
       return respond({ status: "unsubscribed" })
+    case "thread/list": {
+      // Real reply shape is paginated: { data, nextCursor } with nextCursor
+      // null on the last page. One thread per page forces clients to walk.
+      const all = [...threads.values()]
+      const offset = Number.parseInt(String(params["cursor"] ?? "0"), 10) || 0
+      return respond({
+        data: all.slice(offset, offset + 1).map((thread) => ({
+          id: thread.id,
+          cwd: thread.cwd,
+          status: hangingTurns.has(thread.id)
+            ? { type: "active", activeFlags: [] }
+            : { type: "idle" },
+          turns: thread.turns,
+        })),
+        nextCursor: offset + 1 < all.length ? String(offset + 1) : null,
+      })
+    }
     case "turn/start": {
       const threadId = String(params["threadId"] ?? "")
       const thread = threads.get(threadId)
