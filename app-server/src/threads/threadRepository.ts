@@ -1,0 +1,214 @@
+import { Context, Effect, Layer, Option, Schema } from "effect"
+import { SqlClient, SqlSchema } from "effect/unstable/sql"
+import { ThreadNotFound } from "../api/contract.ts"
+import type { AgentId } from "../api/contract.ts"
+
+// The Threads repository (ATC-124): the only module that speaks SQL for
+// threads. Row types stay here — the service and handlers see camelCase
+// records. Provider identity (providerSessionId, confirmedAt) and the
+// opaque adapter-owned providerMetadata live on the record but never reach
+// public contract schemas.
+//
+// agent_id is validated at the write boundary (the contract's AgentId) but
+// decoded permissively as a plain string: a row holding a slug this build
+// does not know (written by a newer build) must never brick reads — above
+// all delete, the recovery path.
+
+export interface ThreadRecord {
+  readonly id: string
+  readonly projectId: string
+  readonly agentId: string
+  readonly name?: string
+  readonly workingDirectory: string
+  readonly providerSessionId?: string
+  /** Set when the session's first turn completed (the confirmed marker). */
+  readonly confirmedAt?: string
+  /** Opaque adapter-owned blob; the domain never reads inside it. */
+  readonly providerMetadata?: string
+  readonly archivedAt?: string
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
+/** Internal row shape (snake_case columns, as stored). */
+const ThreadRow = Schema.Struct({
+  id: Schema.String,
+  project_id: Schema.String,
+  agent_id: Schema.String,
+  name: Schema.NullOr(Schema.String),
+  working_directory: Schema.String,
+  provider_session_id: Schema.NullOr(Schema.String),
+  confirmed_at: Schema.NullOr(Schema.String),
+  provider_metadata: Schema.NullOr(Schema.String),
+  archived_at: Schema.NullOr(Schema.String),
+  created_at: Schema.String,
+  updated_at: Schema.String,
+})
+
+const toRecord = (row: typeof ThreadRow.Type): ThreadRecord => ({
+  id: row.id,
+  projectId: row.project_id,
+  agentId: row.agent_id,
+  ...(row.name !== null ? { name: row.name } : {}),
+  workingDirectory: row.working_directory,
+  ...(row.provider_session_id !== null ? { providerSessionId: row.provider_session_id } : {}),
+  ...(row.confirmed_at !== null ? { confirmedAt: row.confirmed_at } : {}),
+  ...(row.provider_metadata !== null ? { providerMetadata: row.provider_metadata } : {}),
+  ...(row.archived_at !== null ? { archivedAt: row.archived_at } : {}),
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+})
+
+export class ThreadRepository extends Context.Service<
+  ThreadRepository,
+  {
+    /** Insert a new record and return it (id is generated). */
+    readonly create: (input: {
+      readonly projectId: string
+      readonly agentId: typeof AgentId.Type
+      readonly name?: string | undefined
+      readonly workingDirectory: string
+    }) => Effect.Effect<ThreadRecord>
+    /** All records (archived included), newest first; optionally one project's. */
+    readonly list: (projectId?: string) => Effect.Effect<ReadonlyArray<ThreadRecord>>
+    readonly get: (id: string) => Effect.Effect<Option.Option<ThreadRecord>>
+    readonly require: (id: string) => Effect.Effect<ThreadRecord, ThreadNotFound>
+    /** Update the display label; callers hold the record — a vanished row is a bug. */
+    readonly rename: (id: string, name: string) => Effect.Effect<ThreadRecord>
+    /** Set or clear the archive marker; callers hold the record (see rename). */
+    readonly setArchived: (id: string, archived: boolean) => Effect.Effect<ThreadRecord>
+    readonly delete: (id: string) => Effect.Effect<void>
+    /** Every record (archived included) — the project-deletion guard. */
+    readonly countForProject: (projectId: string) => Effect.Effect<number>
+  }
+>()("app-server/ThreadRepository") {}
+
+// Database failures are defects, not domain errors: the API surfaces them as
+// 500s and the one-line CLI contract reports them; nothing can handle them.
+export const layer = Layer.effect(ThreadRepository)(
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+
+    const insertRow = SqlSchema.void({
+      Request: ThreadRow,
+      execute: (row) => sql`INSERT INTO threads ${sql.insert(row)}`,
+    })
+
+    const listRows = SqlSchema.findAll({
+      Request: Schema.NullOr(Schema.String),
+      Result: ThreadRow,
+      execute: (projectId) =>
+        projectId === null
+          ? sql`SELECT * FROM threads ORDER BY id DESC`
+          : sql`SELECT * FROM threads WHERE project_id = ${projectId} ORDER BY id DESC`,
+    })
+
+    const getRows = SqlSchema.findAll({
+      Request: Schema.String,
+      Result: ThreadRow,
+      execute: (id) => sql`SELECT * FROM threads WHERE id = ${id}`,
+    })
+
+    const renameRows = SqlSchema.findAll({
+      Request: Schema.Struct({ id: Schema.String, name: Schema.String, updated_at: Schema.String }),
+      Result: ThreadRow,
+      execute: (patch) => sql`
+        UPDATE threads SET name = ${patch.name}, updated_at = ${patch.updated_at}
+        WHERE id = ${patch.id}
+        RETURNING *
+      `,
+    })
+
+    const setArchivedRows = SqlSchema.findAll({
+      Request: Schema.Struct({
+        id: Schema.String,
+        archived_at: Schema.NullOr(Schema.String),
+        updated_at: Schema.String,
+      }),
+      Result: ThreadRow,
+      execute: (patch) => sql`
+        UPDATE threads SET archived_at = ${patch.archived_at}, updated_at = ${patch.updated_at}
+        WHERE id = ${patch.id}
+        RETURNING *
+      `,
+    })
+
+    const deleteRows = SqlSchema.void({
+      Request: Schema.String,
+      execute: (id) => sql`DELETE FROM threads WHERE id = ${id}`,
+    })
+
+    const countRows = SqlSchema.findAll({
+      Request: Schema.String,
+      Result: Schema.Struct({ n: Schema.Int }),
+      execute: (projectId) =>
+        sql`SELECT COUNT(*) AS n FROM threads WHERE project_id = ${projectId}`,
+    })
+
+    const firstRecord = (rows: ReadonlyArray<typeof ThreadRow.Type>) =>
+      Option.fromNullishOr(rows[0]).pipe(Option.map(toRecord))
+
+    /** For updates whose caller holds the record: a vanished row is a bug. */
+    const requireFirst = (what: string) => (rows: ReadonlyArray<typeof ThreadRow.Type>) =>
+      rows[0] !== undefined
+        ? Effect.succeed(toRecord(rows[0]))
+        : Effect.die(new Error(`${what}: thread row vanished mid-update`))
+
+    const get = (id: string) => getRows(id).pipe(Effect.map(firstRecord), Effect.orDie)
+
+    // Timestamps (and the generated id) are captured inside Effect.suspend so
+    // an effect built early and run later stamps the run time, not the build
+    // time.
+    return {
+      create: (input) =>
+        Effect.suspend(() => {
+          const now = new Date().toISOString()
+          const row: typeof ThreadRow.Type = {
+            id: Bun.randomUUIDv7(),
+            project_id: input.projectId,
+            agent_id: input.agentId,
+            name: input.name ?? null,
+            working_directory: input.workingDirectory,
+            provider_session_id: null,
+            confirmed_at: null,
+            provider_metadata: null,
+            archived_at: null,
+            created_at: now,
+            updated_at: now,
+          }
+          return insertRow(row).pipe(Effect.as(toRecord(row)))
+        }).pipe(Effect.orDie),
+      list: (projectId) =>
+        listRows(projectId ?? null).pipe(
+          Effect.map((rows) => rows.map(toRecord)),
+          Effect.orDie,
+        ),
+      get,
+      require: (id) =>
+        get(id).pipe(
+          Effect.flatMap(
+            Option.match({
+              onNone: () => Effect.fail(new ThreadNotFound({ threadId: id })),
+              onSome: Effect.succeed,
+            }),
+          ),
+        ),
+      rename: (id, name) =>
+        Effect.suspend(() => renameRows({ id, name, updated_at: new Date().toISOString() })).pipe(
+          Effect.orDie,
+          Effect.flatMap(requireFirst("rename")),
+        ),
+      setArchived: (id, archived) =>
+        Effect.suspend(() => {
+          const now = new Date().toISOString()
+          return setArchivedRows({ id, archived_at: archived ? now : null, updated_at: now })
+        }).pipe(Effect.orDie, Effect.flatMap(requireFirst("setArchived"))),
+      delete: (id) => deleteRows(id).pipe(Effect.orDie),
+      countForProject: (projectId) =>
+        countRows(projectId).pipe(
+          Effect.map((rows) => rows[0]?.n ?? 0),
+          Effect.orDie,
+        ),
+    }
+  }),
+)

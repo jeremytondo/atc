@@ -278,6 +278,90 @@ describe("atc project / atc fs (black box)", () => {
   }, 30_000)
 })
 
+describe("atc thread (black box)", () => {
+  test("thread lifecycle: create, list, get, update, archive, unarchive, delete", async () => {
+    const projectResult = await cli([
+      "project",
+      "create",
+      "--name",
+      "ThreadBox",
+      "--directory",
+      scratch,
+    ])
+    const project = JSON.parse(projectResult.stdout) as { id: string }
+
+    const created = await cli([
+      "thread",
+      "create",
+      "--project",
+      project.id,
+      "--agent",
+      "codex",
+      "--name",
+      "First",
+    ])
+    expect(created.stderr).toBe("")
+    expect(created.exitCode).toBe(0)
+    const thread = JSON.parse(created.stdout) as {
+      id: string
+      agentId: string
+      name: string
+      activityState: string
+    }
+    expect(thread.agentId).toBe("codex")
+    expect(thread.name).toBe("First")
+    expect(thread.activityState).toBe("idle")
+
+    // An unknown agent slug is invalid usage, rejected client-side.
+    const badAgent = await cli([
+      "thread",
+      "create",
+      "--project",
+      project.id,
+      "--agent",
+      "gpt-marketing",
+    ])
+    expect(badAgent.exitCode).toBe(1)
+
+    const listed = await cli(["thread", "list"])
+    expect(JSON.parse(listed.stdout)).toEqual([thread])
+
+    const fetched = await cli(["thread", "get", thread.id])
+    expect(JSON.parse(fetched.stdout)).toEqual(thread)
+
+    const updated = await cli(["thread", "update", thread.id, "--name", "Renamed"])
+    expect((JSON.parse(updated.stdout) as { name: string }).name).toBe("Renamed")
+
+    // Archive hides the thread from the default list and shows it under
+    // --archived; unarchive restores it.
+    const archived = await cli(["thread", "archive", thread.id])
+    expect((JSON.parse(archived.stdout) as { archivedAt?: string }).archivedAt).toBeTruthy()
+    expect(JSON.parse((await cli(["thread", "list"])).stdout)).toEqual([])
+    const archivedList = await cli(["thread", "list", "--archived"])
+    expect((JSON.parse(archivedList.stdout) as Array<{ id: string }>).map((t) => t.id)).toEqual([
+      thread.id,
+    ])
+    const restored = await cli(["thread", "unarchive", thread.id])
+    expect((JSON.parse(restored.stdout) as { archivedAt?: string }).archivedAt).toBeUndefined()
+
+    // Deletion requires explicit confirmation; the CLI never prompts.
+    const refused = await cli(["thread", "delete", thread.id])
+    expect(refused.stderr).toContain("--yes")
+    expect(refused.exitCode).toBe(1)
+
+    const deleted = await cli(["thread", "delete", thread.id, "--yes"])
+    expect(deleted.stdout).toBe("")
+    expect(deleted.stderr).toBe("")
+    expect(deleted.exitCode).toBe(0)
+
+    const gone = await cli(["thread", "get", thread.id])
+    expect(gone.stderr.trim()).toBe(`atc thread get: no thread with id ${thread.id}`)
+    expect(gone.exitCode).toBe(1)
+
+    await cli(["project", "delete", project.id, "--yes"])
+  }, 30_000)
+})
+
 // The five stable context variables, all explicitly unset (empty means
 // unset), so gateway tests never depend on the developer's environment.
 const noContext = {

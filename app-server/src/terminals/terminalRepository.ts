@@ -12,6 +12,7 @@ export type TerminalStatus = "starting" | "live" | "ended"
 export interface TerminalRecord {
   readonly id: string
   readonly projectId: string
+  readonly threadId?: string
   readonly name?: string
   readonly command?: ReadonlyArray<string>
   readonly initialWorkingDirectory: string
@@ -25,6 +26,7 @@ export interface TerminalRecord {
 const TerminalRow = Schema.Struct({
   id: Schema.String,
   project_id: Schema.String,
+  thread_id: Schema.NullOr(Schema.String),
   name: Schema.NullOr(Schema.String),
   command: Schema.NullOr(Schema.String),
   initial_working_directory: Schema.String,
@@ -37,6 +39,7 @@ const TerminalRow = Schema.Struct({
 const toRecord = (row: typeof TerminalRow.Type): TerminalRecord => ({
   id: row.id,
   projectId: row.project_id,
+  ...(row.thread_id !== null ? { threadId: row.thread_id } : {}),
   ...(row.name !== null ? { name: row.name } : {}),
   ...(row.command !== null ? { command: JSON.parse(row.command) as Array<string> } : {}),
   initialWorkingDirectory: row.initial_working_directory,
@@ -52,6 +55,7 @@ export class TerminalRepository extends Context.Service<
     /** Insert a new `starting` record and return it (id is generated). */
     readonly create: (input: {
       readonly projectId: string
+      readonly threadId?: string | undefined
       readonly name?: string | undefined
       readonly command?: ReadonlyArray<string> | undefined
       readonly initialWorkingDirectory: string
@@ -171,6 +175,7 @@ export const layer = Layer.effect(TerminalRepository)(
           const row: typeof TerminalRow.Type = {
             id: Bun.randomUUIDv7(),
             project_id: input.projectId,
+            thread_id: input.threadId ?? null,
             name: input.name ?? null,
             command: input.command !== undefined ? JSON.stringify(input.command) : null,
             initial_working_directory: input.initialWorkingDirectory,

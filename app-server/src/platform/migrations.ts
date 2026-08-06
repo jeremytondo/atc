@@ -45,4 +45,36 @@ export const migrations: Record<string, Effect.Effect<void, unknown, SqlClient.S
     `
     yield* sql`CREATE INDEX terminals_project_id ON terminals(project_id)`
   }),
+  // Threads (ATC-124): durable ATC identity separate from provider identity.
+  // `provider_session_id` stays NULL until the provider session materializes
+  // on first interaction; `confirmed_at` marks a completed first turn;
+  // `provider_metadata` is an opaque adapter-owned blob the domain never
+  // reads. `agent_id` is validated against the registry in code, not here —
+  // adding an agent must never need a migration. `terminals.thread_id` is
+  // the authoritative side of the Thread↔Terminal link; SET NULL keeps ended
+  // linked terminals as unlinked tombstones when their thread is deleted
+  // (the domain kills the live one first).
+  "0003_threads": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`
+      CREATE TABLE threads (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+        agent_id TEXT NOT NULL,
+        name TEXT,
+        working_directory TEXT NOT NULL,
+        provider_session_id TEXT,
+        confirmed_at TEXT,
+        provider_metadata TEXT,
+        archived_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT
+    `
+    yield* sql`CREATE INDEX threads_project_id ON threads(project_id)`
+    yield* sql`
+      ALTER TABLE terminals
+      ADD COLUMN thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL
+    `
+  }),
 }

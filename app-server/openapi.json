@@ -261,17 +261,24 @@
             }
           },
           "409": {
-            "description": "The project still owns terminals (live or ended); delete them first.",
+            "description": "The project still owns terminals (live or ended); delete them first. | The project still owns threads (active or archived); delete them first.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProjectHasTerminalsJsonEncoding"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ProjectHasTerminalsJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProjectHasThreadsJsonEncoding"
+                    }
+                  ]
                 }
               }
             }
           }
         },
-        "description": "Delete the project record. Restricted while the project still owns terminals; never touches the filesystem or any directory."
+        "description": "Delete the project record. Restricted while the project still owns terminals or threads; never touches the filesystem or any directory."
       }
     },
     "/api/v1/terminals": {
@@ -511,6 +518,339 @@
           }
         },
         "description": "Delete a terminal: kill its zmx session if present, verify absence, then remove the record (tombstones included)."
+      }
+    },
+    "/api/v1/threads": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "listThreads",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "description": "Restrict the listing to one project."
+            },
+            "required": false
+          },
+          {
+            "name": "archived",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ],
+              "description": "\"true\" lists archived threads only; the default lists active threads."
+            },
+            "required": false
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Threads, newest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadList"
+                }
+              }
+            }
+          }
+        },
+        "description": "List threads, newest first. Archived threads are excluded unless requested."
+      },
+      "post": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "createThread",
+        "parameters": [],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "A durable Thread: the primary unit of agent work. Its ATC identity is separate from provider identity, and it never requires a Terminal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Thread"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No project exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectNotFoundJsonEncoding"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The directory does not exist, is not a directory, or cannot be read/traversed. | The directory check did not complete within its bounded timeout. Retryable — a timeout is not proof the path is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/DirectoryUnavailableJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DirectoryCheckTimedOutJsonEncoding"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "Create a thread: a durable local record only. The provider session materializes on the thread's first interaction, from whichever surface initiates it.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateThreadRequest"
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/api/v1/threads/{threadId}": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "getThread",
+        "parameters": [
+          {
+            "name": "threadId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "A durable Thread: the primary unit of agent work. Its ATC identity is separate from provider identity, and it never requires a Terminal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Thread"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No thread exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadNotFoundJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "Fetch one thread by id."
+      },
+      "patch": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "updateThread",
+        "parameters": [
+          {
+            "name": "threadId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "A durable Thread: the primary unit of agent work. Its ATC identity is separate from provider identity, and it never requires a Terminal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Thread"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No thread exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadNotFoundJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "Update a thread's display label (the only mutable field).",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateThreadRequest"
+              }
+            }
+          },
+          "required": true
+        }
+      },
+      "delete": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "deleteThread",
+        "parameters": [
+          {
+            "name": "threadId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "204": {
+            "description": "<No Content>"
+          },
+          "404": {
+            "description": "No thread exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadNotFoundJsonEncoding"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The zmx multiplexer cannot be consulted right now. Retryable; stored terminal state is untouched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ZmxUnavailableJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "Delete the thread: kill its live linked terminal if one is open, then remove the record. Provider-owned conversation history is never touched."
+      }
+    },
+    "/api/v1/threads/{threadId}/archive": {
+      "post": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "archiveThread",
+        "parameters": [
+          {
+            "name": "threadId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "A durable Thread: the primary unit of agent work. Its ATC identity is separate from provider identity, and it never requires a Terminal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Thread"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No thread exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadNotFoundJsonEncoding"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The thread's agent session is actively working; retry once the turn completes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadBusyJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "Archive the thread (idempotent). Refused while the agent session is actively working."
+      }
+    },
+    "/api/v1/threads/{threadId}/unarchive": {
+      "post": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "unarchiveThread",
+        "parameters": [
+          {
+            "name": "threadId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "A durable Thread: the primary unit of agent work. Its ATC identity is separate from provider identity, and it never requires a Terminal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Thread"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No thread exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadNotFoundJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "Restore an archived thread (idempotent)."
       }
     },
     "/api/v1/fs/check": {
@@ -766,6 +1106,29 @@
         ],
         "additionalProperties": false
       },
+      "ProjectHasThreadsJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "ProjectHasThreads"
+            ]
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "threadCount": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "_tag",
+          "projectId",
+          "threadCount"
+        ],
+        "additionalProperties": false
+      },
       "TerminalStatus": {
         "type": "string",
         "enum": [
@@ -784,6 +1147,10 @@
           "projectId": {
             "type": "string",
             "description": "Owning project id."
+          },
+          "threadId": {
+            "type": "string",
+            "description": "Owning thread id when this terminal is a Thread's TUI terminal; absent otherwise."
           },
           "name": {
             "type": "string",
@@ -933,6 +1300,161 @@
         },
         "additionalProperties": false,
         "description": "Partial update; only the display label is mutable."
+      },
+      "AgentId": {
+        "type": "string",
+        "enum": [
+          "codex",
+          "claude-code"
+        ],
+        "description": "Built-in agent registry slug."
+      },
+      "ThreadActivityState": {
+        "type": "string",
+        "enum": [
+          "idle",
+          "working",
+          "needs_input",
+          "unknown"
+        ],
+        "description": "Normalized activity of the thread's agent session, derived from live provider evidence only; `unknown` means no evidence — never a guess."
+      },
+      "Thread": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "UUIDv7 thread id."
+          },
+          "projectId": {
+            "type": "string",
+            "description": "Owning project id."
+          },
+          "agentId": {
+            "$ref": "#/components/schemas/AgentId"
+          },
+          "name": {
+            "type": "string",
+            "description": "Mutable display label."
+          },
+          "workingDirectory": {
+            "type": "string",
+            "description": "Canonical directory the thread's agent session works in (immutable)."
+          },
+          "activityState": {
+            "$ref": "#/components/schemas/ThreadActivityState"
+          },
+          "linkedTerminalId": {
+            "type": "string",
+            "description": "The thread's live TUI terminal, when one is open (derived; never required)."
+          },
+          "archivedAt": {
+            "type": "string",
+            "description": "When the thread was archived (ISO 8601 UTC); absent while active."
+          },
+          "createdAt": {
+            "type": "string",
+            "description": "Creation time (ISO 8601 UTC)."
+          },
+          "updatedAt": {
+            "type": "string",
+            "description": "Last update time (ISO 8601 UTC)."
+          }
+        },
+        "required": [
+          "id",
+          "projectId",
+          "agentId",
+          "workingDirectory",
+          "activityState",
+          "createdAt",
+          "updatedAt"
+        ],
+        "additionalProperties": false,
+        "description": "A durable Thread: the primary unit of agent work. Its ATC identity is separate from provider identity, and it never requires a Terminal."
+      },
+      "ThreadList": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Thread"
+        },
+        "description": "Threads, newest first."
+      },
+      "CreateThreadRequest": {
+        "type": "object",
+        "properties": {
+          "projectId": {
+            "type": "string",
+            "description": "Owning project id."
+          },
+          "agentId": {
+            "$ref": "#/components/schemas/AgentId"
+          },
+          "name": {
+            "type": "string",
+            "description": "Display label."
+          },
+          "workingDirectory": {
+            "type": "string",
+            "pattern": "^\\/",
+            "description": "Directory the agent session will work in; defaults to the project's default working directory. Stored canonicalized; immutable afterwards."
+          }
+        },
+        "required": [
+          "projectId",
+          "agentId"
+        ],
+        "additionalProperties": false,
+        "description": "Payload for creating a thread. Creation is local-only: the durable record is written and no provider session is created until the first interaction."
+      },
+      "ThreadNotFoundJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "ThreadNotFound"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "_tag",
+          "threadId"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateThreadRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "New display label."
+          }
+        },
+        "additionalProperties": false,
+        "description": "Partial update; only the display label is mutable."
+      },
+      "ThreadBusyJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "ThreadBusy"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "_tag",
+          "threadId"
+        ],
+        "additionalProperties": false
       },
       "DirectoryState": {
         "type": "string",

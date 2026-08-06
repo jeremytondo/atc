@@ -15,6 +15,8 @@ import * as Subprocess from "../src/platform/subprocess.ts"
 import type { TerminalAdapter } from "../src/terminals/terminalAdapter.ts"
 import * as TerminalRepository from "../src/terminals/terminalRepository.ts"
 import * as Terminals from "../src/terminals/terminals.ts"
+import * as ThreadRepository from "../src/threads/threadRepository.ts"
+import * as Threads from "../src/threads/threads.ts"
 import * as Zmx from "../src/terminals/zmxAdapter.ts"
 import {
   appServerRoot,
@@ -30,6 +32,7 @@ import type { FakeTerminalAdapter } from "./terminals/fakeTerminalAdapter.ts"
 type ServiceLayer = Layer.Layer<
   | ProjectRepository.ProjectRepository
   | TerminalRepository.TerminalRepository
+  | ThreadRepository.ThreadRepository
   | Directories.Directories
   | TerminalAdapter
   | ClaudeHooks.ClaudeHooks,
@@ -49,21 +52,25 @@ export const makeTestServiceLayers = (
   readonly fake: FakeTerminalAdapter
   readonly services: ServiceLayer
   readonly layer: Layer.Layer<
-    Layer.Success<ServiceLayer> | Terminals.Terminals | Projects.Projects,
+    Layer.Success<ServiceLayer> | Terminals.Terminals | Threads.Threads | Projects.Projects,
     unknown
   >
 } => {
   const fake = makeFakeAdapter()
-  const base = Layer.mergeAll(ProjectRepository.layer, TerminalRepository.layer).pipe(
-    Layer.provide(Persistence.layerFile(dbFile)),
-  )
+  const base = Layer.mergeAll(
+    ProjectRepository.layer,
+    TerminalRepository.layer,
+    ThreadRepository.layer,
+  ).pipe(Layer.provide(Persistence.layerFile(dbFile)))
   const services = Layer.mergeAll(base, Directories.layer, fake.layer, ClaudeHooks.layer)
+  const terminals = Terminals.layer.pipe(Layer.provide(services))
   return {
     fake,
     services,
     layer: Layer.mergeAll(
       services,
-      Terminals.layer.pipe(Layer.provide(services)),
+      terminals,
+      Threads.layer.pipe(Layer.provide([services, terminals])),
       Projects.layer.pipe(Layer.provide(services)),
     ),
   }
