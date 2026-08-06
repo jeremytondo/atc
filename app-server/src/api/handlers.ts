@@ -82,12 +82,15 @@ export const V1Handlers = HttpApiBuilder.group(
         // is exactly what the typed StreamSse pipeline produces.
         .handleRaw("subscribeEvents", () =>
           Effect.gen(function* () {
-            // Registration first: a client may resync the moment it sees
-            // the comment, so the subscription must already be live. The
-            // reconcile pass then lands its tombstone transitions IN this
-            // subscriber's stream — the "a client showed up" refresh.
-            const feed = yield* events.subscribe()
+            // Reconcile (the "a client showed up" refresh) BEFORE
+            // registering: a queue registered first would sit in the
+            // subscriber set until overflow if the fallible reconcile
+            // failed — or the request died during it — before the stream's
+            // cleanup was armed. Registration still precedes the first
+            // response byte, so a client that resyncs the moment it sees
+            // the comment observes the reconciled state and misses nothing.
             yield* terminals.list()
+            const feed = yield* events.subscribe()
             const encoded = feed.pipe(
               Stream.mapEffect((event) =>
                 Effect.map(encodeEventJson(event), (json) => `data: ${json}\n\n`),

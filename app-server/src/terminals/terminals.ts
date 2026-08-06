@@ -286,6 +286,12 @@ export const layer = Layer.effect(Terminals)(
             Effect.onExit((exit) => (exit._tag === "Failure" ? cleanup : Effect.void)),
           )
         yield* events.publish({ resource: "terminal", id: live.id, change: "created" })
+        // A live terminal created into a thread immediately changes that
+        // thread's derived linkedTerminalId; openTerminal's own event lands
+        // only after the identity wait, far too late for this transition.
+        if (input.threadId !== undefined) {
+          yield* events.publish({ resource: "thread", id: input.threadId, change: "updated" })
+        }
         return toTerminal(live)
       })
 

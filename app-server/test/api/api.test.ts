@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest"
 import { BunHttpServer } from "@effect/platform-bun"
-import { Effect, Fiber, Layer, Stream } from "effect"
+import { Effect, Fiber, Layer, Queue, Stream } from "effect"
 import { HttpApiTest } from "effect/unstable/httpapi"
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -196,36 +196,30 @@ describe("/api/v1/projects", () => {
 })
 
 describe("/api/v1/events", () => {
-  // it.live: subscription registration and SSE delivery cross the in-process
-  // HTTP pipeline's promise boundaries, so the polls below need the real
-  // clock, not it.effect's TestClock.
+  // it.live: SSE delivery crosses the in-process HTTP pipeline's promise
+  // boundaries, so the queue take below needs the real clock, not
+  // it.effect's TestClock.
   it.live("streams typed mutation events and completes when the service closes", () =>
     Effect.gen(function* () {
       const client = yield* HttpApiTest.groups(Api, ["v1"])
       const events = yield* Events.Events
-      const received: Array<Events.ResourceChangedEvent> = []
+      // The handler registers the subscriber before producing the response,
+      // so once subscribeEvents resolves the feed is live — no mutation
+      // published after this point can be missed.
+      const feed = yield* client.v1.subscribeEvents()
+      assert.strictEqual(yield* events.subscriberCount(), 1)
+      const received = yield* Queue.make<Events.ResourceChangedEvent>()
       const subscriber = yield* Effect.forkChild(
-        client.v1
-          .subscribeEvents()
-          .pipe(
-            Effect.flatMap(Stream.runForEach((event) => Effect.sync(() => received.push(event)))),
-          ),
+        Stream.runForEach(feed, (event) => Queue.offer(received, event)),
       )
-      // The subscriber registers when its stream starts running; events
-      // published before that are (by design) missed, so wait for it.
-      for (let attempt = 0; (yield* events.subscriberCount()) === 0; attempt++) {
-        assert.isBelow(attempt, 100, "the subscriber never registered")
-        yield* Effect.sleep("10 millis")
-      }
 
       const project = yield* client.v1.createProject({
         payload: { name: "Evented", defaultWorkingDirectory: realDir },
       })
-      for (let attempt = 0; received.length === 0; attempt++) {
-        assert.isBelow(attempt, 100, "the mutation event never arrived")
-        yield* Effect.sleep("10 millis")
-      }
-      assert.deepStrictEqual(received, [{ resource: "project", id: project.id, change: "created" }])
+      // Condition-driven: take blocks until delivery, bounded only by the
+      // test timeout.
+      const event = yield* Queue.take(received)
+      assert.deepStrictEqual(event, { resource: "project", id: project.id, change: "created" })
 
       // Service shutdown ends the stream cleanly: the subscriber returns
       // instead of hanging or failing — the guarantee graceful server

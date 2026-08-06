@@ -137,8 +137,10 @@ describe("server layer", () => {
       assert.strictEqual(yield* events.subscriberCount(), 1)
 
       abort.abort()
-      for (let attempt = 0; (yield* events.subscriberCount()) > 0; attempt++) {
-        assert.isBelow(attempt, 100, "the dropped subscriber was never unregistered")
+      // Unregistration has no awaitable signal — it rides Bun's cancel →
+      // fiber interrupt → ensuring — so poll the condition bounded only by
+      // the test timeout, never a fixed wall-clock budget of our own.
+      while ((yield* events.subscriberCount()) > 0) {
         yield* Effect.sleep("10 millis")
       }
     }),
