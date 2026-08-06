@@ -3,11 +3,12 @@ import { Argument, Command, Flag } from "effect/unstable/cli"
 import * as path from "node:path"
 import { AGENT_IDS } from "../api/contract.ts"
 import * as Cli from "./cli.ts"
+import { attachAndReport } from "./terminals.ts"
 
-// The `atc thread` command group: thin client commands over the contract.
-// Threads are the primary unit of work, so they get the full named set
-// (ATC-124); `thread open` (open-terminal + attach) arrives with the
-// openTerminal workflow.
+// The `atc thread` command group: thin client commands over the contract,
+// plus `thread open` — open-terminal + raw attach, the one command here
+// with local TTY behavior. Threads are the primary unit of work, so they
+// get the full named set (ATC-124).
 
 const threadIdArgument = Argument.string("thread-id")
 
@@ -84,6 +85,21 @@ const threadUnarchive = Cli.clientCommand(
   (client, { threadId }) => client.v1.unarchiveThread({ params: { threadId } }),
 )
 
+const threadOpen = Command.make("open", { threadId: threadIdArgument }, ({ threadId }) =>
+  Cli.withClient("thread open", (client, baseUrl) =>
+    Effect.gen(function* () {
+      // Open-terminal + raw-TTY attach in one command: the terminal-first
+      // thread workflow's front door.
+      const terminal = yield* client.v1.openThreadTerminal({ params: { threadId } })
+      yield* attachAndReport(client, baseUrl, terminal.id)
+    }),
+  ),
+).pipe(
+  Command.withDescription(
+    "Open the thread's TUI terminal (launching the agent if needed) and attach in raw mode",
+  ),
+)
+
 const threadDelete = Cli.clientCommand(
   "thread delete",
   "Delete a thread: kill its live linked terminal, remove the record (provider history is untouched)",
@@ -101,6 +117,7 @@ export const thread = Command.make("thread").pipe(
     threadGet,
     threadCreate,
     threadUpdate,
+    threadOpen,
     threadArchive,
     threadUnarchive,
     threadDelete,

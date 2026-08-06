@@ -465,6 +465,53 @@ export class ThreadNotFound extends Schema.TaggedErrorClass<ThreadNotFound>()(
   }
 }
 
+/** The thread is archived; unarchive it before opening or driving it. */
+export class ThreadArchived extends Schema.TaggedErrorClass<ThreadArchived>()(
+  "ThreadArchived",
+  { threadId: Schema.String },
+  {
+    identifier: "ThreadArchived",
+    description: "The thread is archived; unarchive it first.",
+    httpApiStatus: 409,
+  },
+) {
+  override get message(): string {
+    return `thread ${this.threadId} is archived; unarchive it first`
+  }
+}
+
+/** The thread's agent provider cannot be used right now. Retryable. */
+export class ProviderUnavailable extends Schema.TaggedErrorClass<ProviderUnavailable>()(
+  "ProviderUnavailable",
+  { agentId: Schema.String, reason: Schema.String },
+  {
+    identifier: "ProviderUnavailable",
+    description:
+      "The thread's agent provider cannot be used right now (not installed, not ready, or unreachable). Retryable once the cause is fixed.",
+    httpApiStatus: 503,
+  },
+) {
+  override get message(): string {
+    return this.reason
+  }
+}
+
+/** The provider session cannot be driven as asked; nothing was adopted. */
+export class ProviderSessionConflict extends Schema.TaggedErrorClass<ProviderSessionConflict>()(
+  "ProviderSessionConflict",
+  { threadId: Schema.String, reason: Schema.String },
+  {
+    identifier: "ProviderSessionConflict",
+    description:
+      "The thread's provider session cannot be driven as requested (resume failed, identity mismatch, or a concurrent writer). Fail-closed: no changed identity was adopted.",
+    httpApiStatus: 409,
+  },
+) {
+  override get message(): string {
+    return this.reason
+  }
+}
+
 /** The thread's agent session is actively working; retry once the turn ends. */
 export class ThreadBusy extends Schema.TaggedErrorClass<ThreadBusy>()(
   "ThreadBusy",
@@ -684,6 +731,25 @@ export class V1 extends HttpApiGroup.make("v1")
       .annotate(
         OpenApi.Description,
         "Delete the thread: kill its live linked terminal if one is open, then remove the record. Provider-owned conversation history is never touched.",
+      ),
+    HttpApiEndpoint.post("openThreadTerminal", "/threads/:threadId/terminal", {
+      params: threadIdParam,
+      success: Terminal,
+      error: [
+        ThreadNotFound,
+        ThreadArchived,
+        ProviderUnavailable,
+        ProviderSessionConflict,
+        DirectoryUnavailable,
+        DirectoryCheckTimedOut,
+        ZmxUnavailable,
+        TerminalLaunchFailed,
+      ],
+    })
+      .annotate(OpenApi.Identifier, "openThreadTerminal")
+      .annotate(
+        OpenApi.Description,
+        "Open the thread's TUI terminal. Idempotent: a live linked terminal is returned as-is. Otherwise the provider TUI is launched in a new terminal — a confirmed session is relaunched against its exact persisted identity (ATC never adopts a different one), an unconfirmed one materializes a fresh provider session whose identity is established and persisted before this call returns.",
       ),
     HttpApiEndpoint.get("listAgents", "/agents", { success: AgentList })
       .annotate(OpenApi.Identifier, "listAgents")

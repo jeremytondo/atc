@@ -65,9 +65,16 @@ export class Terminals extends Context.Service<
     readonly list: (projectId?: string) => Effect.Effect<ReadonlyArray<Terminal>>
     /** Reconciled read. */
     readonly get: (id: string) => Effect.Effect<Terminal, TerminalNotFound>
-    /** Create the record and start the zmx session (two-phase). */
+    /**
+     * Create the record and start the zmx session (two-phase). `threadId`
+     * and `env` are internal extensions used by the Threads domain's
+     * openTerminal — never accepted from the public contract.
+     */
     readonly create: (
-      input: typeof CreateTerminalRequest.Type,
+      input: typeof CreateTerminalRequest.Type & {
+        readonly threadId?: string | undefined
+        readonly env?: Record<string, string | undefined> | undefined
+      },
     ) => Effect.Effect<
       Terminal,
       | ProjectNotFound
@@ -241,6 +248,7 @@ export const layer = Layer.effect(Terminals)(
         // mid-create is resolvable either way at the next startup.
         const record = yield* repository.create({
           projectId: input.projectId,
+          threadId: input.threadId,
           name: input.name,
           command: input.command,
           initialWorkingDirectory: canonical,
@@ -253,7 +261,12 @@ export const layer = Layer.effect(Terminals)(
           .killSession(sessionName)
           .pipe(Effect.ignore, Effect.andThen(repository.delete(record.id)))
         const live = yield* adapter
-          .createSession({ name: sessionName, cwd: canonical, command: input.command })
+          .createSession({
+            name: sessionName,
+            cwd: canonical,
+            command: input.command,
+            env: input.env,
+          })
           .pipe(
             Effect.catchTag("SessionOperationFailed", (error) =>
               Effect.fail(new TerminalLaunchFailed({ reason: error.reason })),

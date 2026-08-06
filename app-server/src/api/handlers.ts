@@ -60,6 +60,7 @@ export const V1Handlers = HttpApiBuilder.group(
       .handle("archiveThread", ({ params }) => threads.archive(params.threadId))
       .handle("unarchiveThread", ({ params }) => threads.unarchive(params.threadId))
       .handle("deleteThread", ({ params }) => threads.delete(params.threadId))
+      .handle("openThreadTerminal", ({ params }) => threads.openTerminal(params.threadId))
       .handle("listAgents", () => agents.list())
       .handle("getAgent", ({ params }) => agents.get(params.agentId))
       .handleRaw("attachTerminal", attachTerminal({ terminals, bridgeScope }))

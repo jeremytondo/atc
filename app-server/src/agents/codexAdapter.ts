@@ -223,7 +223,10 @@ export const layer = Layer.effect(CodexAdapter)(
       state.socket.send(
         JSON.stringify({
           id: message.id,
-          error: { code: -32601, message: "atc does not answer provider requests yet (ATC-124)" },
+          error: {
+            code: -32601,
+            message: "atc does not answer provider requests yet (native-mode work)",
+          },
         }),
       )
     }

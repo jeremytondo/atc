@@ -360,6 +360,29 @@ describe("atc thread (black box)", () => {
 
     await cli(["project", "delete", project.id, "--yes"])
   }, 30_000)
+
+  test("thread open reports one actionable line when the provider is missing", async () => {
+    // A dedicated server whose codex executable cannot resolve: the open
+    // must fail as the contract's 503 diagnostic, not a hang or a crash.
+    await withFakeZmxServer(
+      async (srv) => {
+        const run = (args: ReadonlyArray<string>) =>
+          runCli([process.execPath, "src/main.ts"], args, appServerRoot, srv.env)
+        const project = JSON.parse(
+          (await run(["project", "create", "--name", "NoAgent", "--directory", scratch])).stdout,
+        ) as { id: string }
+        const thread = JSON.parse(
+          (await run(["thread", "create", "--project", project.id, "--agent", "codex"])).stdout,
+        ) as { id: string }
+        const opened = await run(["thread", "open", thread.id])
+        expect(opened.stdout).toBe("")
+        expect(opened.stderr).toMatch(/^atc thread open: .*codexExecutable/)
+        expect(opened.stderr.trim().split("\n")).toHaveLength(1)
+        expect(opened.exitCode).toBe(1)
+      },
+      { ATC_CODEX_EXECUTABLE: "/definitely/not/codex" },
+    )
+  }, 30_000)
 })
 
 // The five stable context variables, all explicitly unset (empty means

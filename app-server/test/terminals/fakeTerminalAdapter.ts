@@ -22,6 +22,8 @@ export interface FakeSession {
   readonly name: string
   readonly cwd: string
   readonly command: ReadonlyArray<string> | undefined
+  /** The per-session env overlay the session was created with. */
+  readonly env: Record<string, string | undefined> | undefined
   /** Everything written to an attached connection, for assertions. */
   readonly written: Array<Uint8Array | string>
   lastResize: SessionSize | undefined
@@ -82,6 +84,7 @@ export const makeFakeAdapter = (): FakeTerminalAdapter => {
           name: options.name,
           cwd: options.cwd,
           command: options.command,
+          env: options.env,
           written: [],
           lastResize: undefined,
           reachable: true,
@@ -175,6 +178,7 @@ export const makeFakeAdapter = (): FakeTerminalAdapter => {
         name,
         cwd: "/",
         command: undefined,
+        env: undefined,
         written: [],
         lastResize: undefined,
         reachable: true,

@@ -74,6 +74,7 @@ export const testAppConfig = (overrides: Partial<AppConfig["Service"]>): Layer.L
  */
 export const makeTestServiceLayers = (
   dbFile = ":memory:",
+  threadsOptions: Threads.ThreadsOptions = {},
 ): {
   readonly fake: FakeTerminalAdapter
   readonly fakeAgents: { readonly codex: FakeAgentAdapter; readonly claude: FakeAgentAdapter }
@@ -119,7 +120,7 @@ export const makeTestServiceLayers = (
       services,
       terminals,
       registry,
-      Threads.layer.pipe(Layer.provide([services, terminals])),
+      Threads.layerWith(threadsOptions).pipe(Layer.provide([services, terminals, registry])),
       Projects.layer.pipe(Layer.provide(services)),
     ),
   }

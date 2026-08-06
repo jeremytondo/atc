@@ -1,6 +1,7 @@
 import { Console, Effect, Option } from "effect"
 import { Argument, Command, Flag } from "effect/unstable/cli"
 import * as path from "node:path"
+import type * as Client from "../api/client.ts"
 import * as AttachClient from "../terminals/attachClient.ts"
 import { attachUrl, CLOSE_DETACH } from "../terminals/attachProtocol.ts"
 import * as Cli from "./cli.ts"
@@ -72,35 +73,40 @@ const terminalDelete = Cli.clientCommand(
       : Effect.fail(new Error("refusing to delete without --yes (kills the running session)")),
 )
 
+/**
+ * The raw-mode attach loop shared by `terminal attach` and `thread open`:
+ * pre-flight over the typed API (the WebSocket handshake cannot carry the
+ * contract's diagnostics — a browser-style client only sees "connection
+ * failed"), then bridge the TTY until detach or terminal end.
+ */
+export const attachAndReport = (client: Client.AppServerClient, baseUrl: URL, terminalId: string) =>
+  Effect.gen(function* () {
+    const terminal = yield* client.v1.getTerminal({ params: { terminalId } })
+    if (terminal.status === "ended") {
+      return yield* Effect.fail(new Error(`terminal ${terminalId} has ended`))
+    }
+    const size =
+      process.stdout.isTTY === true
+        ? { cols: process.stdout.columns, rows: process.stdout.rows }
+        : undefined
+    const result = yield* AttachClient.runAttach(attachUrl(baseUrl, terminalId, size))
+    if (result.code === 1000 && result.reason === CLOSE_DETACH) {
+      yield* Console.error("detached (session keeps running)")
+    } else if (result.code === 1000) {
+      yield* Console.error("terminal ended")
+    } else {
+      return yield* Effect.fail(
+        new Error(`connection closed (${result.code} ${result.reason || "no reason"})`),
+      )
+    }
+  })
+
 const terminalAttach = Command.make(
   "attach",
   { terminalId: terminalIdArgument },
   ({ terminalId }) =>
     Cli.withClient("terminal attach", (client, baseUrl) =>
-      Effect.gen(function* () {
-        // Pre-flight over the typed API: the WebSocket handshake cannot carry
-        // the contract's diagnostics (a browser-style client only sees
-        // "connection failed"), so unknown or ended terminals are reported
-        // here, with the real error, before any socket opens.
-        const terminal = yield* client.v1.getTerminal({ params: { terminalId } })
-        if (terminal.status === "ended") {
-          return yield* Effect.fail(new Error(`terminal ${terminalId} has ended`))
-        }
-        const size =
-          process.stdout.isTTY === true
-            ? { cols: process.stdout.columns, rows: process.stdout.rows }
-            : undefined
-        const result = yield* AttachClient.runAttach(attachUrl(baseUrl, terminalId, size))
-        if (result.code === 1000 && result.reason === CLOSE_DETACH) {
-          yield* Console.error("detached (session keeps running)")
-        } else if (result.code === 1000) {
-          yield* Console.error("terminal ended")
-        } else {
-          return yield* Effect.fail(
-            new Error(`connection closed (${result.code} ${result.reason || "no reason"})`),
-          )
-        }
-      }),
+      attachAndReport(client, baseUrl, terminalId),
     ),
 ).pipe(
   Command.withDescription(

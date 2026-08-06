@@ -262,13 +262,20 @@ export const layerWith = (options: ZmxOptions) =>
           // session is in the inventory the scope closes, detaching the
           // client; the session daemon persists. Exec-style commands come
           // from a Schema-typed argv — never a shell string.
+          // Per-session overlay on the base child env; undefined removes a
+          // key (TUI terminals scrub nested-session markers this way).
+          const sessionEnv = { ...childEnv }
+          for (const [key, value] of Object.entries(options.env ?? {})) {
+            if (value === undefined) delete sessionEnv[key]
+            else sessionEnv[key] = value
+          }
           const client = yield* Effect.gen(function* () {
             const child = yield* subprocess
               .spawnPty({
                 executable,
                 args: ["attach", options.name, ...(options.command ?? [])],
                 cwd: options.cwd,
-                env: childEnv,
+                env: sessionEnv,
                 // The tail is the launch-failure diagnostic below.
                 captureOutputTail: true,
               })
