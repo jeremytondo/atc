@@ -229,7 +229,12 @@ describe("openapi document vs runtime", () => {
     Effect.gen(function* () {
       const response = yield* (yield* rawClient).get("http://127.0.0.1/api/v1/projects/nope")
       assert.strictEqual(response.status, 404)
-      assert.deepStrictEqual(yield* response.json, { _tag: "ProjectNotFound", projectId: "nope" })
+      // The wire error carries the required, precomputed message field.
+      assert.deepStrictEqual(yield* response.json, {
+        _tag: "ProjectNotFound",
+        projectId: "nope",
+        message: "no project with id nope",
+      })
       assert.deepStrictEqual(
         operation("/api/v1/projects/{projectId}").responses["404"]!.content["application/json"]!
           .schema,
@@ -280,6 +285,7 @@ describe("openapi document vs runtime", () => {
       assert.deepStrictEqual(yield* response.json, {
         _tag: "TerminalNotFound",
         terminalId: "nope",
+        message: "no terminal with id nope",
       })
       assert.deepStrictEqual(
         operation("/api/v1/terminals/{terminalId}").responses["404"]!.content["application/json"]!
@@ -328,7 +334,11 @@ describe("openapi document vs runtime", () => {
     Effect.gen(function* () {
       const response = yield* (yield* rawClient).get("http://127.0.0.1/api/v1/threads/nope")
       assert.strictEqual(response.status, 404)
-      assert.deepStrictEqual(yield* response.json, { _tag: "ThreadNotFound", threadId: "nope" })
+      assert.deepStrictEqual(yield* response.json, {
+        _tag: "ThreadNotFound",
+        threadId: "nope",
+        message: "no thread with id nope",
+      })
       assert.deepStrictEqual(
         operation("/api/v1/threads/{threadId}").responses["404"]!.content["application/json"]!
           .schema,
@@ -440,7 +450,11 @@ describe("openapi document vs runtime", () => {
 
       const missing = yield* client.get("http://127.0.0.1/api/v1/agents/nope")
       assert.strictEqual(missing.status, 404)
-      assert.deepStrictEqual(yield* missing.json, { _tag: "AgentNotFound", agentId: "nope" })
+      assert.deepStrictEqual(yield* missing.json, {
+        _tag: "AgentNotFound",
+        agentId: "nope",
+        message: "no agent with id nope",
+      })
     }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
   )
 

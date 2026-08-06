@@ -41,6 +41,10 @@ export const AbsolutePath = Schema.String.check(
   Schema.isStartsWith("/", { description: "a server-host absolute path (starting with /)" }),
 )
 
+/** A wire timestamp: RFC 3339 UTC with millisecond precision (`Date.toISOString()`). */
+const timestamp = (description: string) =>
+  Schema.String.annotate({ format: "date-time", description })
+
 export const ProjectName = Schema.NonEmptyString.annotate({
   description: "Human-readable project name.",
 })
@@ -51,8 +55,8 @@ export const Project = Schema.Struct({
   defaultWorkingDirectory: Schema.String.annotate({
     description: "Canonical (symlink-resolved) absolute path new Threads and Terminals default to.",
   }),
-  createdAt: Schema.String.annotate({ description: "Creation time (ISO 8601 UTC)." }),
-  updatedAt: Schema.String.annotate({ description: "Last update time (ISO 8601 UTC)." }),
+  createdAt: timestamp("Creation time (ISO 8601 UTC)."),
+  updatedAt: timestamp("Last update time (ISO 8601 UTC)."),
 }).annotate({
   identifier: "Project",
   description: "A Project: the user-facing container organizing a body of work.",
@@ -104,7 +108,7 @@ export const FsCheckResponse = Schema.Struct({
     description: "The checked path (canonicalized when the directory is available).",
   }),
   state: DirectoryState,
-  checkedAt: Schema.String.annotate({ description: "Check time (ISO 8601 UTC)." }),
+  checkedAt: timestamp("Check time (ISO 8601 UTC)."),
   // Absent when the state is conclusive (not null — see UpdateProjectRequest).
   reason: Schema.optionalKey(
     Schema.String.annotate({
@@ -148,12 +152,10 @@ export const Terminal = Schema.Struct({
     description: "Canonical directory the terminal was launched in (immutable).",
   }),
   status: TerminalStatus,
-  createdAt: Schema.String.annotate({ description: "Creation time (ISO 8601 UTC)." }),
-  updatedAt: Schema.String.annotate({ description: "Last update time (ISO 8601 UTC)." }),
+  createdAt: timestamp("Creation time (ISO 8601 UTC)."),
+  updatedAt: timestamp("Last update time (ISO 8601 UTC)."),
   endedAt: Schema.optionalKey(
-    Schema.String.annotate({
-      description: "When the terminal was observed ended (ISO 8601 UTC); absent while live.",
-    }),
+    timestamp("When the terminal was observed ended (ISO 8601 UTC); absent while live."),
   ),
 }).annotate({
   identifier: "Terminal",
@@ -260,12 +262,10 @@ export const Thread = Schema.Struct({
     }),
   ),
   archivedAt: Schema.optionalKey(
-    Schema.String.annotate({
-      description: "When the thread was archived (ISO 8601 UTC); absent while active.",
-    }),
+    timestamp("When the thread was archived (ISO 8601 UTC); absent while active."),
   ),
-  createdAt: Schema.String.annotate({ description: "Creation time (ISO 8601 UTC)." }),
-  updatedAt: Schema.String.annotate({ description: "Last update time (ISO 8601 UTC)." }),
+  createdAt: timestamp("Creation time (ISO 8601 UTC)."),
+  updatedAt: timestamp("Last update time (ISO 8601 UTC)."),
 }).annotate({
   identifier: "Thread",
   description:
@@ -315,22 +315,43 @@ export const ResourceChangedEvent = Schema.Struct({
     "Thin invalidation event: names what changed, never carries resource state. Clients coalesce events and refetch through the corresponding GETs, which stay the single source of truth.",
 })
 
-// The error classes carry human `message`s so every consumer (the CLI above
-// all) can print a real diagnostic — a TaggedErrorClass message is otherwise
-// empty.
+// Every error carries a required `message` field ON THE WIRE, computed from
+// the structured fields by the class's own constructor — the one place each
+// message rule lives. Construction sites never pass it, every consumer (the
+// CLI, the Swift client) gets a printable diagnostic without re-deriving it,
+// and decode recomputes it so it can never disagree with the fields.
+
+/** The wire `message` field every tagged error carries. */
+const errorMessage = Schema.String.annotate({
+  description: "Human-readable diagnostic derived from the structured fields.",
+})
 
 /** Unknown project id. */
 export class ProjectNotFound extends Schema.TaggedErrorClass<ProjectNotFound>()(
   "ProjectNotFound",
-  { projectId: Schema.String },
+  { projectId: Schema.String, message: errorMessage },
   {
     identifier: "ProjectNotFound",
     description: "No project exists with the given id.",
     httpApiStatus: 404,
   },
 ) {
-  override get message(): string {
-    return `no project with id ${this.projectId}`
+  constructor(props: { readonly projectId: string }) {
+    super({ ...props, message: `no project with id ${props.projectId}` })
+  }
+}
+
+const directoryUnavailableMessage = (props: {
+  readonly path: string
+  readonly state: "missing" | "inaccessible" | "not_directory"
+}): string => {
+  switch (props.state) {
+    case "missing":
+      return `directory ${props.path} does not exist`
+    case "inaccessible":
+      return `directory ${props.path} cannot be read or traversed`
+    case "not_directory":
+      return `${props.path} is not a directory`
   }
 }
 
@@ -340,6 +361,7 @@ export class DirectoryUnavailable extends Schema.TaggedErrorClass<DirectoryUnava
   {
     path: Schema.String,
     state: Schema.Literals(["missing", "inaccessible", "not_directory"]),
+    message: errorMessage,
   },
   {
     identifier: "DirectoryUnavailable",
@@ -347,22 +369,18 @@ export class DirectoryUnavailable extends Schema.TaggedErrorClass<DirectoryUnava
     httpApiStatus: 422,
   },
 ) {
-  override get message(): string {
-    switch (this.state) {
-      case "missing":
-        return `directory ${this.path} does not exist`
-      case "inaccessible":
-        return `directory ${this.path} cannot be read or traversed`
-      case "not_directory":
-        return `${this.path} is not a directory`
-    }
+  constructor(props: {
+    readonly path: string
+    readonly state: "missing" | "inaccessible" | "not_directory"
+  }) {
+    super({ ...props, message: directoryUnavailableMessage(props) })
   }
 }
 
 /** The bounded directory check did not complete; retryable, fail-closed. */
 export class DirectoryCheckTimedOut extends Schema.TaggedErrorClass<DirectoryCheckTimedOut>()(
   "DirectoryCheckTimedOut",
-  { path: Schema.String },
+  { path: Schema.String, message: errorMessage },
   {
     identifier: "DirectoryCheckTimedOut",
     description:
@@ -370,23 +388,23 @@ export class DirectoryCheckTimedOut extends Schema.TaggedErrorClass<DirectoryChe
     httpApiStatus: 422,
   },
 ) {
-  override get message(): string {
-    return `the check of directory ${this.path} timed out; retry`
+  constructor(props: { readonly path: string }) {
+    super({ ...props, message: `the check of directory ${props.path} timed out; retry` })
   }
 }
 
 /** Unknown terminal id. */
 export class TerminalNotFound extends Schema.TaggedErrorClass<TerminalNotFound>()(
   "TerminalNotFound",
-  { terminalId: Schema.String },
+  { terminalId: Schema.String, message: errorMessage },
   {
     identifier: "TerminalNotFound",
     description: "No terminal exists with the given id.",
     httpApiStatus: 404,
   },
 ) {
-  override get message(): string {
-    return `no terminal with id ${this.terminalId}`
+  constructor(props: { readonly terminalId: string }) {
+    super({ ...props, message: `no terminal with id ${props.terminalId}` })
   }
 }
 
@@ -397,7 +415,7 @@ export class TerminalNotFound extends Schema.TaggedErrorClass<TerminalNotFound>(
  */
 export class ZmxUnavailable extends Schema.TaggedErrorClass<ZmxUnavailable>()(
   "ZmxUnavailable",
-  { reason: Schema.String },
+  { reason: Schema.String, message: errorMessage },
   {
     identifier: "ZmxUnavailable",
     description:
@@ -405,15 +423,15 @@ export class ZmxUnavailable extends Schema.TaggedErrorClass<ZmxUnavailable>()(
     httpApiStatus: 503,
   },
 ) {
-  override get message(): string {
-    return this.reason
+  constructor(props: { readonly reason: string }) {
+    super({ ...props, message: props.reason })
   }
 }
 
 /** The zmx session for a new terminal failed to launch; conclusive. */
 export class TerminalLaunchFailed extends Schema.TaggedErrorClass<TerminalLaunchFailed>()(
   "TerminalLaunchFailed",
-  { reason: Schema.String },
+  { reason: Schema.String, message: errorMessage },
   {
     identifier: "TerminalLaunchFailed",
     description:
@@ -421,90 +439,96 @@ export class TerminalLaunchFailed extends Schema.TaggedErrorClass<TerminalLaunch
     httpApiStatus: 422,
   },
 ) {
-  override get message(): string {
-    return this.reason
+  constructor(props: { readonly reason: string }) {
+    super({ ...props, message: props.reason })
   }
 }
 
 /** Project deletion is restricted while it still owns terminals. */
 export class ProjectHasTerminals extends Schema.TaggedErrorClass<ProjectHasTerminals>()(
   "ProjectHasTerminals",
-  { projectId: Schema.String, terminalCount: Schema.Int },
+  { projectId: Schema.String, terminalCount: Schema.Int, message: errorMessage },
   {
     identifier: "ProjectHasTerminals",
     description: "The project still owns terminals (live or ended); delete them first.",
     httpApiStatus: 409,
   },
 ) {
-  override get message(): string {
-    return `project ${this.projectId} still owns ${this.terminalCount} terminal(s); delete them first`
+  constructor(props: { readonly projectId: string; readonly terminalCount: number }) {
+    super({
+      ...props,
+      message: `project ${props.projectId} still owns ${props.terminalCount} terminal(s); delete them first`,
+    })
   }
 }
 
 /** Project deletion is restricted while it still owns threads. */
 export class ProjectHasThreads extends Schema.TaggedErrorClass<ProjectHasThreads>()(
   "ProjectHasThreads",
-  { projectId: Schema.String, threadCount: Schema.Int },
+  { projectId: Schema.String, threadCount: Schema.Int, message: errorMessage },
   {
     identifier: "ProjectHasThreads",
     description: "The project still owns threads (active or archived); delete them first.",
     httpApiStatus: 409,
   },
 ) {
-  override get message(): string {
-    return `project ${this.projectId} still owns ${this.threadCount} thread(s); delete them first`
+  constructor(props: { readonly projectId: string; readonly threadCount: number }) {
+    super({
+      ...props,
+      message: `project ${props.projectId} still owns ${props.threadCount} thread(s); delete them first`,
+    })
   }
 }
 
 /** Unknown agent registry slug. */
 export class AgentNotFound extends Schema.TaggedErrorClass<AgentNotFound>()(
   "AgentNotFound",
-  { agentId: Schema.String },
+  { agentId: Schema.String, message: errorMessage },
   {
     identifier: "AgentNotFound",
     description: "No built-in agent exists with the given id.",
     httpApiStatus: 404,
   },
 ) {
-  override get message(): string {
-    return `no agent with id ${this.agentId}`
+  constructor(props: { readonly agentId: string }) {
+    super({ ...props, message: `no agent with id ${props.agentId}` })
   }
 }
 
 /** Unknown thread id. */
 export class ThreadNotFound extends Schema.TaggedErrorClass<ThreadNotFound>()(
   "ThreadNotFound",
-  { threadId: Schema.String },
+  { threadId: Schema.String, message: errorMessage },
   {
     identifier: "ThreadNotFound",
     description: "No thread exists with the given id.",
     httpApiStatus: 404,
   },
 ) {
-  override get message(): string {
-    return `no thread with id ${this.threadId}`
+  constructor(props: { readonly threadId: string }) {
+    super({ ...props, message: `no thread with id ${props.threadId}` })
   }
 }
 
 /** The thread is archived; unarchive it before opening or driving it. */
 export class ThreadArchived extends Schema.TaggedErrorClass<ThreadArchived>()(
   "ThreadArchived",
-  { threadId: Schema.String },
+  { threadId: Schema.String, message: errorMessage },
   {
     identifier: "ThreadArchived",
     description: "The thread is archived; unarchive it first.",
     httpApiStatus: 409,
   },
 ) {
-  override get message(): string {
-    return `thread ${this.threadId} is archived; unarchive it first`
+  constructor(props: { readonly threadId: string }) {
+    super({ ...props, message: `thread ${props.threadId} is archived; unarchive it first` })
   }
 }
 
 /** The thread's agent provider cannot be used right now. Retryable. */
 export class ProviderUnavailable extends Schema.TaggedErrorClass<ProviderUnavailable>()(
   "ProviderUnavailable",
-  { agentId: Schema.String, reason: Schema.String },
+  { agentId: Schema.String, reason: Schema.String, message: errorMessage },
   {
     identifier: "ProviderUnavailable",
     description:
@@ -512,15 +536,15 @@ export class ProviderUnavailable extends Schema.TaggedErrorClass<ProviderUnavail
     httpApiStatus: 503,
   },
 ) {
-  override get message(): string {
-    return this.reason
+  constructor(props: { readonly agentId: string; readonly reason: string }) {
+    super({ ...props, message: props.reason })
   }
 }
 
 /** The provider session cannot be driven as asked; nothing was adopted. */
 export class ProviderSessionConflict extends Schema.TaggedErrorClass<ProviderSessionConflict>()(
   "ProviderSessionConflict",
-  { threadId: Schema.String, reason: Schema.String },
+  { threadId: Schema.String, reason: Schema.String, message: errorMessage },
   {
     identifier: "ProviderSessionConflict",
     description:
@@ -528,23 +552,26 @@ export class ProviderSessionConflict extends Schema.TaggedErrorClass<ProviderSes
     httpApiStatus: 409,
   },
 ) {
-  override get message(): string {
-    return this.reason
+  constructor(props: { readonly threadId: string; readonly reason: string }) {
+    super({ ...props, message: props.reason })
   }
 }
 
 /** The thread's agent session is actively working; retry once the turn ends. */
 export class ThreadBusy extends Schema.TaggedErrorClass<ThreadBusy>()(
   "ThreadBusy",
-  { threadId: Schema.String },
+  { threadId: Schema.String, message: errorMessage },
   {
     identifier: "ThreadBusy",
     description: "The thread's agent session is actively working; retry once the turn completes.",
     httpApiStatus: 409,
   },
 ) {
-  override get message(): string {
-    return `thread ${this.threadId} is working; retry once the turn completes`
+  constructor(props: { readonly threadId: string }) {
+    super({
+      ...props,
+      message: `thread ${props.threadId} is working; retry once the turn completes`,
+    })
   }
 }
 
@@ -658,11 +685,13 @@ export class V1 extends HttpApiGroup.make("v1")
       ),
     // WebSocket upgrade endpoint: declared in the contract for the typed
     // route tree and params, excluded from the OpenAPI document (REST
-    // clients and the Swift generator cannot represent an upgrade). Wire
-    // protocol: binary frames are terminal bytes both ways; text frames are
-    // JSON control messages ({"type":"resize","cols","rows"} from the
-    // client; {"type":"ping"}/{"type":"pong"} keepalives). Close
-    // vocabulary — the single statement of it, mirrored by the bridge: 1000
+    // clients and the Swift generator cannot represent an upgrade). The
+    // client-facing protocol spec is packages/attach-protocol/README.md
+    // (shared test vectors in packages/attach-protocol/fixtures/); the code
+    // authority both sides import is terminals/attachProtocol.ts. Summary:
+    // binary frames are terminal bytes both ways; text frames are JSON
+    // control messages ({"type":"resize","cols","rows"} from the client;
+    // {"type":"ping"}/{"type":"pong"} keepalives). Close vocabulary: 1000
     // terminal_ended is authoritative (confirmed absent, tombstone
     // written); 1011 attach_failed / zmx_unavailable / ping_timeout are
     // retryable and say nothing about the terminal's existence. Clients
@@ -770,7 +799,8 @@ export class V1 extends HttpApiGroup.make("v1")
       .annotate(OpenApi.Identifier, "openThreadTerminal")
       .annotate(
         OpenApi.Description,
-        "Open the thread's TUI terminal. Idempotent: a live linked terminal is returned as-is. Otherwise the provider TUI is launched in a new terminal — a confirmed session is relaunched against its exact persisted identity (ATC never adopts a different one), an unconfirmed one materializes a fresh provider session whose identity is established and persisted before this call returns.",
+        "Open the thread's TUI terminal. Idempotent: a live linked terminal is returned as-is. Otherwise the provider TUI is launched in a new terminal — a confirmed session is relaunched against its exact persisted identity (ATC never adopts a different one), an unconfirmed one materializes a fresh provider session whose identity is established and persisted before this call returns. " +
+          "A provider that can be probed (Codex) fails fast when the persisted session no longer exists; one that cannot (Claude) launches blind — a successful open whose terminal dies within seconds is a state clients must expect and surface.",
       ),
     HttpApiEndpoint.get("listAgents", "/agents", { success: AgentList })
       .annotate(OpenApi.Identifier, "listAgents")
@@ -791,7 +821,13 @@ export class V1 extends HttpApiGroup.make("v1")
       .annotate(OpenApi.Identifier, "subscribeEvents")
       .annotate(
         OpenApi.Description,
-        "Subscribe to live resource-change events (SSE). The stream is ephemeral — no replay: on every (re)connect, refetch lists first, then trust the stream. The server ends the stream of a subscriber that falls too far behind; reconnect and resync.",
+        "Subscribe to live resource-change events (SSE). The stream is ephemeral — no replay. " +
+          "Resync race-free on every (re)connect: open the stream, wait for the opening `: connected` comment, THEN refetch lists — " +
+          "fetching before the stream is open leaves a missed-event window. " +
+          "Events are thin invalidations and arrive in bursts: coalesce (~100ms) and refetch once per named collection, not per event " +
+          "(terminal-bearing refetches consult the multiplexer and are priced accordingly). " +
+          "The server emits a comment heartbeat roughly every 25 seconds; treat a stream silent for much longer as dead — reconnect and resync. " +
+          "The server ends the stream of a subscriber that falls too far behind; reconnect and resync.",
       ),
     HttpApiEndpoint.get("checkDirectory", "/fs/check", {
       query: { path: AbsolutePath },
