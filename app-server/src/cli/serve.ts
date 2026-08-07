@@ -1,5 +1,6 @@
 import { Effect, Layer, Option, Schema } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
+import { BuildInfo } from "../platform/buildInfo.ts"
 import { AppConfig, layer as appConfigLayer } from "../platform/config.ts"
 import * as Server from "../server.ts"
 import * as Cli from "./cli.ts"
@@ -37,6 +38,19 @@ export const serve = Command.make("serve", { port }, ({ port }) =>
     // so consumers of the settled port (e.g. the zmx adapter's ATC_ENDPOINT
     // injection) always read the port actually being served.
     const effective = { ...config, port: Option.getOrElse(port, () => config.port) }
+    // Compiled builds keep structured logs file-only (see logging.ts), which
+    // would make a successful foreground start indistinguishable from a
+    // hang. One human-facing stderr line announces the server; dev runs
+    // already announce through the pretty logger. A port conflict still
+    // fails with its own diagnostic right after.
+    const build = yield* BuildInfo
+    if (build.commit !== "dev") {
+      yield* Effect.sync(() => {
+        process.stderr.write(
+          `atc app server starting on http://127.0.0.1:${effective.port} (logs: ${effective.logFile})\n`,
+        )
+      })
+    }
     yield* Layer.launch(Server.production({ port: effective.port })).pipe(
       Effect.provideService(AppConfig, effective),
     )
