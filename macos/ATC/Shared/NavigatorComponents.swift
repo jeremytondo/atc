@@ -9,8 +9,6 @@ enum NavigatorMetrics {
     static let horizontalPadding = Spacing.sm
     static let contentHorizontalPadding = Spacing.sm
     static let rowVerticalInset: CGFloat = 1
-    static let selectorToContentSpacing = Spacing.lg
-    static let nestedIndent: CGFloat = iconWidth + Spacing.sm
 }
 
 /// A Navigator-owned scrolling container. A native sidebar `List` applies
@@ -120,37 +118,6 @@ struct NavigatorActionButton: View {
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
         .disabled(!isEnabled)
-        .help(help)
-    }
-}
-
-struct NavigatorActionMenu<Content: View>: View {
-    let systemImage: String
-    let help: String
-    let content: Content
-
-    init(
-        systemImage: String,
-        help: String,
-        @ViewBuilder content: () -> Content
-    ) {
-        self.systemImage = systemImage
-        self.help = help
-        self.content = content()
-    }
-
-    var body: some View {
-        Menu {
-            content
-        } label: {
-            Image(systemName: systemImage)
-                .frame(width: NavigatorMetrics.actionSize, height: NavigatorMetrics.actionSize)
-                .contentShape(Rectangle())
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .foregroundStyle(.secondary)
         .help(help)
     }
 }

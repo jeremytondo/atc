@@ -1,11 +1,12 @@
 import SwiftUI
+import ATCAppServerTransport
 
-/// All live terminal surfaces, stacked; only the selected one is visible.
-/// Hidden surfaces stay in the hierarchy so switching sessions never tears
-/// down a surface or drops its WebSocket.
+/// All retained terminal surfaces, stacked; only the selected one is visible.
+/// Hidden surfaces stay in the hierarchy so switching threads never tears
+/// down a surface or drops its attach WebSocket.
 struct TerminalPane: View {
     @Environment(AppModel.self) private var appModel
-    let visibleRef: SessionRef?
+    let visibleRef: TerminalRef?
     let focusRequest: UInt
 
     var body: some View {
@@ -20,18 +21,18 @@ struct TerminalPane: View {
         }
     }
 
-    private var refs: [SessionRef] {
+    private var refs: [TerminalRef] {
         appModel.terminals.keys.sorted {
-            ($0.sessionID, $0.connectionID.uuidString) < ($1.sessionID, $1.connectionID.uuidString)
+            ($0.terminalID, $0.connectionID.uuidString) < ($1.terminalID, $1.connectionID.uuidString)
         }
     }
 }
 
-/// Phase-driven banner shown over the terminal.
+/// Phase-driven banner floating over the terminal. An authoritative end is
+/// deliberately quiet here — the thread content area owns that state, because
+/// only it can offer the relaunch.
 struct TerminalStatusBanner: View {
     let controller: TerminalSessionController
-    /// Removes the controller (used once a session is gone for good).
-    var onDismiss: () -> Void
 
     var body: some View {
         switch controller.phase {
@@ -47,26 +48,29 @@ struct TerminalStatusBanner: View {
                 ProgressView().controlSize(.small)
                 Text("Reconnecting…")
             }
-        case .ended(.sessionEnded):
+        case .ended(.terminalEnded):
             banner {
                 Image(systemName: "checkmark.circle")
-                Text("Session ended")
-                Button("Dismiss") { onDismiss() }
+                Text("Terminal ended")
             }
-        case .ended(.serverError):
+        case .ended(.rejected(let statusCode)):
             banner {
                 Image(systemName: "exclamationmark.triangle")
-                Text("Server error")
+                Text("Attach refused (\(statusCode))")
                 Button("Reconnect") { controller.reconnect() }
             }
-        case .ended(.transportFailure):
+        case .ended(.retryable):
             banner {
                 Image(systemName: "wifi.exclamationmark")
-                Text("Disconnected")
+                Text("Connection lost")
                 Button("Reconnect") { controller.reconnect() }
             }
         case .ended(.closedByClient):
-            EmptyView()
+            banner {
+                Image(systemName: "cable.connector.slash")
+                Text("Disconnected")
+                Button("Reconnect") { controller.reconnect() }
+            }
         }
     }
 
@@ -74,8 +78,7 @@ struct TerminalStatusBanner: View {
         HStack(spacing: Spacing.sm, content: content)
             .padding(.horizontal, Spacing.md)
             .padding(.vertical, Spacing.sm)
-            // Floating overlay on Liquid Glass, like the toolbar's
-            // workspace pill.
+            // Floating overlay on Liquid Glass, like the toolbar controls.
             .glassEffect()
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .padding(.top, Spacing.lg)

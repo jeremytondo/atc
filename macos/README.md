@@ -1,9 +1,9 @@
 # atc for macOS
 
-The native SwiftUI client. It connects to one or more atc servers, browses
-their Projects, and attaches to Terminal Sessions in a native terminal. Open
-`macos/atc.xcodeproj` in Xcode to build and run it, or use `mise run
-macos:test` from the repo root.
+The native SwiftUI client for the atc App Server. It connects to one or more
+servers, navigates their Threads and Projects, and attaches to Terminals in a
+native (libghostty) terminal. Open `macos/atc.xcodeproj` in Xcode to build and
+run it, or use `mise run macos:test` from the repo root.
 
 See [`CONTEXT.md`](CONTEXT.md) for the app's domain language.
 
@@ -41,13 +41,9 @@ When a command has several direct triggers, the menu bar shows one of them,
 chosen deterministically (user bindings beat defaults; ties resolve
 alphabetically).
 
-The scoped Command Palette commands search within a specific navigation type:
-
-| Command ID | Default bindings |
-| --- | --- |
-| `view.search-sessions` | `cmd+shift+s`, `leader>s` |
-| `view.search-terminals` | `cmd+shift+t`, `leader>t` |
-| `view.search-workspaces` | `cmd+shift+o`, `leader>w` |
+The complete command-id vocabulary and the compiled default bindings live in
+`ATC/Commands/CommandID.swift` and `ATC/Commands/Keymap.swift`, which cannot
+go stale.
 
 ### Terminal presentation
 

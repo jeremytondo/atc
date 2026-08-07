@@ -1,183 +1,114 @@
 import Foundation
 import Testing
-import ATCAPI
+import ATCAppServerAPI
 @testable import ATC
 
 /// The LRU attachment budget: attaching past the budget evicts the
-/// least-recently-used terminal through the standard disconnect path,
-/// while the selected Session and the Active Workspace's Sessions are
-/// pinned.
+/// least-recently-used terminal through the standard disconnect path, while
+/// the terminal the window is currently showing is never evicted.
 @MainActor
 @Suite("Attachment budget")
 struct AttachmentBudgetTests {
-    /// AppModel over an ephemeral store whose terminal controllers never
-    /// open a real socket (their attach stream never yields).
-    private func makeModel(budget: Int) -> AppModel {
-        let suite = "AttachmentBudgetTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
-        let store = ConnectionsStore(defaults: defaults, credentials: InMemoryCredentialStore())
-        return AppModel(
-            connections: store,
-            clientFactory: { _ in MockATCClient() },
-            terminalControllerFactory: { sessionID, client in
-                TerminalSessionController(
-                    sessionID: sessionID,
-                    client: client,
-                    connectionFactory: { _, _ in
-                        TerminalAttachHandle(
-                            start: { AsyncStream { _ in } },
-                            enqueue: { _ in },
-                            enqueueResize: { _, _ in },
-                            close: {}
-                        )
-                    }
-                )
-            },
-            terminalRecoveryMonitor: .disabled(),
-            attachmentBudget: budget
-        )
-    }
-
-    private func session(_ id: String, workspace: String? = nil) -> Session {
-        Session(
-            id: id, isAgent: false, workingDir: "/home/dev",
-            status: .live,
-            createdAt: .now, updatedAt: .now,
-            workspace: workspace.map { SessionWorkspace(id: $0, name: $0) }
-        )
+    private func liveTerminal(_ id: String) -> Terminal {
+        Fixtures.terminal(id: id, createdAt: Fixtures.date(0))
     }
 
     @Test("attaching past the budget evicts the least-recently-used terminal")
     func evictsLRU() throws {
-        let model = makeModel(budget: 2)
-        let record = try model.addConnection(name: "A", urlString: "http://a:1", token: "")
-        model.runtime(id: record.id)!.stopPolling()
-
-        let refs = (1...3).map { SessionRef(connectionID: record.id, sessionID: "s\($0)") }
+        let test = try makeModel(attachmentBudget: 2)
         for index in 1...3 {
-            model.attachIfNeeded(to: session("s\(index)"), connectionID: record.id)
+            test.model.attachIfNeeded(to: liveTerminal("t\(index)"), connectionID: test.connectionID)
         }
-        #expect(model.terminals.count == 2)
-        #expect(model.terminals[refs[0]] == nil)
-        #expect(model.terminals[refs[1]] != nil)
-        #expect(model.terminals[refs[2]] != nil)
+        #expect(test.model.terminals.count == 2)
+        #expect(test.model.terminals[test.terminalRef("t1")] == nil)
+        #expect(test.model.terminals[test.terminalRef("t2")] != nil)
+        #expect(test.model.terminals[test.terminalRef("t3")] != nil)
     }
 
-    @Test("selecting a terminal refreshes its LRU position")
-    func selectionTouchesLRU() throws {
-        let model = makeModel(budget: 2)
-        let record = try model.addConnection(name: "A", urlString: "http://a:1", token: "")
-        model.runtime(id: record.id)!.stopPolling()
+    @Test("touching a terminal refreshes its LRU position")
+    func touchRefreshesLRU() throws {
+        let test = try makeModel(attachmentBudget: 2)
+        test.model.attachIfNeeded(to: liveTerminal("t1"), connectionID: test.connectionID)
+        test.model.attachIfNeeded(to: liveTerminal("t2"), connectionID: test.connectionID)
 
-        model.attachIfNeeded(to: session("s1"), connectionID: record.id)
-        model.attachIfNeeded(to: session("s2"), connectionID: record.id)
-        // Touching s1 makes s2 the LRU candidate.
-        model.touchTerminal(SessionRef(connectionID: record.id, sessionID: "s1"))
-        model.attachIfNeeded(to: session("s3"), connectionID: record.id)
-        #expect(model.terminals[SessionRef(connectionID: record.id, sessionID: "s1")] != nil)
-        #expect(model.terminals[SessionRef(connectionID: record.id, sessionID: "s2")] == nil)
+        test.model.touchTerminal(test.terminalRef("t1"))
+        test.model.attachIfNeeded(to: liveTerminal("t3"), connectionID: test.connectionID)
+        #expect(test.model.terminals[test.terminalRef("t1")] != nil)
+        #expect(test.model.terminals[test.terminalRef("t2")] == nil)
     }
 
-    @Test("the selected session is never evicted")
-    func selectionIsPinned() throws {
-        let model = makeModel(budget: 2)
-        let record = try model.addConnection(name: "A", urlString: "http://a:1", token: "")
-        model.runtime(id: record.id)!.stopPolling()
-
-        let pinned = SessionRef(connectionID: record.id, sessionID: "s1")
-        model.attachIfNeeded(to: session("s1"), connectionID: record.id)
-        model.attachIfNeeded(to: session("s2"), connectionID: record.id)
-        model.attachIfNeeded(
-            to: session("s3"),
-            connectionID: record.id,
-            retentionContext: .init(activeWorkspace: nil, selectedSession: pinned)
+    @Test("the visible terminal is never evicted")
+    func visibleTerminalIsPinned() throws {
+        let test = try makeModel(attachmentBudget: 2)
+        let visible = test.terminalRef("t1")
+        test.model.attachIfNeeded(to: liveTerminal("t1"), connectionID: test.connectionID)
+        test.model.attachIfNeeded(to: liveTerminal("t2"), connectionID: test.connectionID)
+        test.model.attachIfNeeded(
+            to: liveTerminal("t3"),
+            connectionID: test.connectionID,
+            retentionContext: TerminalRetentionContext(visibleTerminal: visible)
         )
-        #expect(model.terminals.count == 2)
-        #expect(model.terminals[pinned] != nil)
-        // s2 (the oldest unpinned attach) was the eviction victim.
-        #expect(model.terminals[SessionRef(connectionID: record.id, sessionID: "s2")] == nil)
+        #expect(test.model.terminals.count == 2)
+        #expect(test.model.terminals[visible] != nil)
+        // t2 — the oldest unpinned attach — was the eviction victim.
+        #expect(test.model.terminals[test.terminalRef("t2")] == nil)
     }
 
-    @Test("the Active Workspace's Sessions are never evicted")
-    func activeWorkspaceIsPinned() async throws {
-        let model = makeModel(budget: 1)
-        let record = try model.addConnection(name: "A", urlString: "http://a:1", token: "")
-        let runtime = model.runtime(id: record.id)!
-        runtime.stopPolling()
-        await runtime.refresh()
-
-        // ses_running belongs to wsp_parser in the fixtures.
-        let context = TerminalRetentionContext(
-            activeWorkspace: WorkspaceRef(connectionID: record.id, workspaceID: "wsp_parser"),
-            selectedSession: nil
+    @Test("the visible terminal and the newest attach may together exceed the budget")
+    func pinnedRefsExceedBudget() throws {
+        let test = try makeModel(attachmentBudget: 1)
+        let visible = test.terminalRef("t1")
+        test.model.attachIfNeeded(to: liveTerminal("t1"), connectionID: test.connectionID)
+        test.model.attachIfNeeded(
+            to: liveTerminal("t2"),
+            connectionID: test.connectionID,
+            retentionContext: TerminalRetentionContext(visibleTerminal: visible)
         )
-        let pinned = SessionRef(connectionID: record.id, sessionID: "ses_running")
-        let fixture = try #require(runtime.sessions.session(id: "ses_running"))
-        model.attachIfNeeded(to: fixture, connectionID: record.id, retentionContext: context)
+        #expect(test.model.terminals.count == 2)
 
-        model.attachIfNeeded(
-            to: session("s_other"), connectionID: record.id, retentionContext: context
-        )
-        #expect(model.terminals[pinned] != nil)
-        #expect(model.terminals[SessionRef(connectionID: record.id, sessionID: "s_other")] != nil)
-    }
-
-    @Test("pinned refs alone may exceed the budget until the workspace closes")
-    func pinnedRefsExceedBudget() async throws {
-        let model = makeModel(budget: 1)
-        let record = try model.addConnection(name: "A", urlString: "http://a:1", token: "")
-        let runtime = model.runtime(id: record.id)!
-        runtime.stopPolling()
-        await runtime.refresh()
-
-        let context = TerminalRetentionContext(
-            activeWorkspace: WorkspaceRef(connectionID: record.id, workspaceID: "wsp_parser"),
-            selectedSession: nil
-        )
-        // Both fixtures are wsp_parser members: both pinned, budget 1.
-        let running = try #require(runtime.sessions.session(id: "ses_running"))
-        let shell = try #require(runtime.sessions.session(id: "ses_shell"))
-        model.attachIfNeeded(to: running, connectionID: record.id, retentionContext: context)
-        model.attachIfNeeded(to: shell, connectionID: record.id, retentionContext: context)
-        #expect(model.terminals.count == 2)
-
-        // Closing the workspace unpins; the next attach evicts down.
-        model.attachIfNeeded(to: session("s_new"), connectionID: record.id)
-        #expect(model.terminals.count == 1)
+        // Moving on unpins t1; the next attach evicts back down to budget.
+        test.model.attachIfNeeded(to: liveTerminal("t3"), connectionID: test.connectionID)
+        #expect(test.model.terminals.count == 1)
+        #expect(test.model.terminals[test.terminalRef("t3")] != nil)
     }
 
     @Test("eviction goes through the standard disconnect path")
     func evictionDisconnects() throws {
-        let model = makeModel(budget: 1)
-        let record = try model.addConnection(name: "A", urlString: "http://a:1", token: "")
-        model.runtime(id: record.id)!.stopPolling()
-
-        model.attachIfNeeded(to: session("s1"), connectionID: record.id)
-        let ref = SessionRef(connectionID: record.id, sessionID: "s1")
-        let controller = try #require(model.terminals[ref])
+        let test = try makeModel(attachmentBudget: 1)
+        test.model.attachIfNeeded(to: liveTerminal("t1"), connectionID: test.connectionID)
+        let ref = test.terminalRef("t1")
+        let controller = try #require(test.model.terminals[ref])
         #expect(controller.isActivelyAttached)
 
-        model.attachIfNeeded(to: session("s2"), connectionID: record.id)
-        #expect(model.terminals[ref] == nil)
+        test.model.attachIfNeeded(to: liveTerminal("t2"), connectionID: test.connectionID)
+        #expect(test.model.terminals[ref] == nil)
         // The evicted controller was disconnected, not leaked live.
         #expect(!controller.isActivelyAttached)
     }
 
-    @Test("reselecting an evicted session reattaches through attachIfNeeded")
-    func evictedSessionReattaches() throws {
-        let model = makeModel(budget: 1)
-        let record = try model.addConnection(name: "A", urlString: "http://a:1", token: "")
-        model.runtime(id: record.id)!.stopPolling()
+    @Test("reselecting an evicted terminal reattaches through attachIfNeeded")
+    func evictedTerminalReattaches() throws {
+        let test = try makeModel(attachmentBudget: 1)
+        test.model.attachIfNeeded(to: liveTerminal("t1"), connectionID: test.connectionID)
+        test.model.attachIfNeeded(to: liveTerminal("t2"), connectionID: test.connectionID)
+        let ref = test.terminalRef("t1")
+        #expect(test.model.terminals[ref] == nil)
 
-        model.attachIfNeeded(to: session("s1"), connectionID: record.id)
-        model.attachIfNeeded(to: session("s2"), connectionID: record.id)
-        let ref = SessionRef(connectionID: record.id, sessionID: "s1")
-        #expect(model.terminals[ref] == nil)
+        test.model.attachIfNeeded(to: liveTerminal("t1"), connectionID: test.connectionID)
+        #expect(test.model.terminals[ref] != nil)
+        #expect(test.model.terminals.count == 1)
+    }
 
-        // The same attach path used by window selection reconnects it.
-        model.attachIfNeeded(to: session("s1"), connectionID: record.id)
-        #expect(model.terminals[ref] != nil)
-        #expect(model.terminals.count == 1)
+    @Test("a disconnect releases the controller, and a later attach recreates it")
+    func disconnectReleasesController() throws {
+        let test = try makeModel()
+        test.model.attachIfNeeded(to: liveTerminal("t1"), connectionID: test.connectionID)
+        let ref = test.terminalRef("t1")
+
+        test.model.disconnectTerminal(ref: ref)
+        #expect(test.model.terminals[ref] == nil)
+
+        test.model.attachIfNeeded(to: liveTerminal("t1"), connectionID: test.connectionID)
+        #expect(test.model.terminals[ref] != nil)
     }
 }

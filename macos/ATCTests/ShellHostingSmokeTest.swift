@@ -1,213 +1,65 @@
 import AppKit
 import SwiftUI
 import Testing
-import ATCAPI
 @testable import ATC
 
-/// Hosts the full stable split-view window in a real window and pumps the
-/// run loop. This is the hierarchy the app boots into, so launch-time AppKit
-/// warnings surface under a controlled model instead of live user state.
+/// Hosts the window the app actually boots into, in a real NSWindow, and
+/// pumps the run loop. Launch-time AppKit and SwiftUI warnings surface here
+/// against a controlled model instead of live user state.
+@MainActor
 @Suite("Shell hosting smoke")
 struct ShellHostingSmokeTest {
     private func host(_ view: some View) {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            contentRect: NSRect(x: 0, y: 0, width: 1_100, height: 700),
             styleMask: [.titled], backing: .buffered, defer: false
         )
         window.contentView = NSHostingView(rootView: view)
         window.orderFront(nil)
-        pump(seconds: 0.8)
+        pump(seconds: 0.5)
         window.orderOut(nil)
     }
 
-    private func waitForData(_ runtime: ConnectionRuntime) async {
-        for _ in 0..<100 {
-            if !runtime.workspaces.workspaces.isEmpty && !runtime.sessions.sessions.isEmpty {
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(20))
-        }
+    private func rootView(_ appModel: AppModel, _ windowState: WindowState) -> some View {
+        RootView(configStore: ConfigurationStore(
+            configURL: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        ))
+        .environment(appModel)
+        .environment(windowState)
     }
 
-    @Test("root view hosts the Dashboard with seeded data without crashing")
+    @Test("the root view hosts the Dashboard with seeded data without crashing")
     func hostRootOnDashboard() async throws {
         let appModel = AppModel.preview()
         let runtime = try #require(appModel.runtimes.first)
-        await waitForData(runtime)
-        host(RootView(configStore: ConfigurationStore()).environment(appModel).environment(WindowState.ephemeral()))
+        await settle(until: { !runtime.threads.threads.isEmpty })
+
+        let windowState = WindowState()
+        // Launch behavior: Dashboard, no restored selection, filter on All.
+        #expect(windowState.selectedContent == .dashboard)
+        #expect(windowState.threadFilter == .all)
+        host(rootView(appModel, windowState))
     }
 
-    @Test("root view hosts with data arriving after first render")
-    func hostRootDataArrivesLate() async throws {
+    @Test("the root view hosts before any data has arrived")
+    func hostRootBeforeData() {
         // The app's real launch order: the window is up before the first
-        // poll returns, then rows insert into the live List.
-        let appModel = AppModel.preview()
-        host(RootView(configStore: ConfigurationStore()).environment(appModel).environment(WindowState.ephemeral()))
+        // resync returns, then rows insert into the live sidebar.
+        host(rootView(AppModel.preview(), WindowState()))
     }
 
-    @Test("root view hosts Workspace content inside the stable split view")
-    func hostRootWithActiveWorkspace() async throws {
+    @Test("the root view hosts a selected thread without crashing")
+    func hostRootWithSelectedThread() async throws {
         let appModel = AppModel.preview()
         let runtime = try #require(appModel.runtimes.first)
-        await waitForData(runtime)
-        let windowState = WindowState.ephemeral()
-        #expect(windowState.activateWorkspace(
-            WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser"),
+        await settle(until: { !runtime.threads.threads.isEmpty })
+        let thread = try #require(runtime.threads.threads.first)
+
+        let windowState = WindowState()
+        await windowState.openThread(
+            ThreadRef(connectionID: runtime.id, threadID: thread.id),
             in: appModel
-        ))
-        host(RootView(configStore: ConfigurationStore()).environment(appModel).environment(windowState))
-        #expect(windowState.activeWorkspace?.workspaceID == "wsp_parser")
-        #expect(windowState.selectedContent != .dashboard)
-    }
-
-    @Test("Dashboard remains a main-content destination with an Active Workspace")
-    func hostDashboardWithActiveWorkspace() async throws {
-        let appModel = AppModel.preview()
-        let runtime = try #require(appModel.runtimes.first)
-        await waitForData(runtime)
-        let windowState = WindowState.ephemeral()
-        #expect(windowState.activateWorkspace(
-            WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser"),
-            in: appModel
-        ))
-        windowState.showDashboard()
-        host(RootView(configStore: ConfigurationStore()).environment(appModel).environment(windowState))
-        #expect(windowState.selectedContent == .dashboard)
-        #expect(windowState.activeWorkspace != nil)
-    }
-
-    @Test("removing the Active Workspace's Connection returns to Dashboard")
-    func removedConnectionReturnsToDashboard() async throws {
-        let appModel = AppModel.preview()
-        let runtime = try #require(appModel.runtimes.first)
-        await waitForData(runtime)
-        let windowState = WindowState.ephemeral()
-        #expect(windowState.activateWorkspace(
-            WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser"),
-            in: appModel
-        ))
-
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
-            styleMask: [.titled], backing: .buffered, defer: false
         )
-        window.contentView = NSHostingView(
-            rootView: RootView(configStore: ConfigurationStore()).environment(appModel).environment(windowState)
-        )
-        window.orderFront(nil)
-        pump(seconds: 0.5)
-        #expect(windowState.activeWorkspace != nil)
-
-        // Window reconciliation observes the AppModel's store projection.
-        appModel.removeConnection(id: runtime.id)
-        pump(seconds: 0.5)
-        window.orderOut(nil)
-        #expect(windowState.selectedContent == .dashboard)
-        #expect(windowState.activeWorkspace == nil)
-    }
-
-    @Test("main content hosts an empty Workspace with creation actions")
-    func hostEmptyWorkspace() async throws {
-        // prj_notes has zero workspaces; wsp_refactor has sessions — use a
-        // workspace whose sessions are filtered to nothing instead: open
-        // the experiment workspace, which owns no sessions in the fixtures.
-        let appModel = AppModel.preview()
-        let runtime = try #require(appModel.runtimes.first)
-        await waitForData(runtime)
-        let windowState = WindowState.ephemeral()
-        #expect(windowState.activateWorkspace(
-            WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_experiment"),
-            in: appModel
-        ))
-        host(RootView(configStore: ConfigurationStore()).environment(appModel).environment(windowState))
-    }
-
-    @Test("Navigator and Dashboard transitions retain the hosted terminal surface")
-    func navigatorTransitionsRetainTerminal() async throws {
-        let appModel = AppModel.preview()
-        let runtime = try #require(appModel.runtimes.first)
-        await waitForData(runtime)
-        let windowState = WindowState.ephemeral()
-        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
-        let session = SessionRef(connectionID: runtime.id, sessionID: "ses_running")
-        #expect(windowState.activateWorkspace(workspace, in: appModel))
-        #expect(windowState.selectSession(session, in: appModel))
-        let terminal = try #require(appModel.terminals[session])
-        #expect(windowState.hasInspectorTarget(in: appModel))
-
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
-            styleMask: [.titled], backing: .buffered, defer: false
-        )
-        window.contentView = NSHostingView(
-            rootView: RootView(configStore: ConfigurationStore()).environment(appModel).environment(windowState)
-        )
-        window.orderFront(nil)
-
-        for navigator in NavigatorID.allCases {
-            windowState.selectedNavigator = navigator
-            pump(seconds: 0.15)
-            #expect(windowState.selectedContent == .session(session))
-            #expect(appModel.terminals[session] === terminal)
-            #expect(windowState.hasInspectorTarget(in: appModel))
-        }
-
-        windowState.showDashboard()
-        pump(seconds: 0.15)
-        #expect(windowState.activeWorkspace == workspace)
-        #expect(appModel.terminals[session] === terminal)
-        #expect(!windowState.hasInspectorTarget(in: appModel))
-        window.orderOut(nil)
-    }
-
-    @Test("Session selection moves first-responder focus between terminal surfaces")
-    func sessionSelectionMovesTerminalFocus() async throws {
-        let appModel = AppModel.preview()
-        let runtime = try #require(appModel.runtimes.first)
-        await waitForData(runtime)
-        let windowState = WindowState.ephemeral()
-        let workspace = WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser")
-        let firstRef = SessionRef(connectionID: runtime.id, sessionID: "ses_running")
-        let secondRef = SessionRef(connectionID: runtime.id, sessionID: "ses_shell")
-        #expect(windowState.activateWorkspace(workspace, in: appModel))
-        #expect(windowState.selectSession(firstRef, in: appModel))
-
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
-            styleMask: [.titled], backing: .buffered, defer: false
-        )
-        window.contentView = NSHostingView(
-            rootView: RootView(configStore: ConfigurationStore())
-                .environment(appModel)
-                .environment(windowState)
-        )
-        window.makeKeyAndOrderFront(nil)
-
-        // Condition-based waits: the focus transfer retries for up to a
-        // second while SwiftUI materializes the surface, so fixed pumps
-        // shorter than that budget would flake on a slow machine.
-        let first = try #require(appModel.terminals[firstRef])
-        pump(until: { first.viewState.isFocused })
-        #expect(first.viewState.isFocused)
-
-        #expect(windowState.selectSession(secondRef, in: appModel))
-        let second = try #require(appModel.terminals[secondRef])
-        pump(until: { second.viewState.isFocused && !first.viewState.isFocused })
-        #expect(!first.viewState.isFocused)
-        #expect(second.viewState.isFocused)
-
-        #expect(windowState.selectSession(firstRef, in: appModel))
-        pump(until: { first.viewState.isFocused && !second.viewState.isFocused })
-        #expect(first.viewState.isFocused)
-        #expect(!second.viewState.isFocused)
-
-        window.makeFirstResponder(nil)
-        pump(until: { !first.viewState.isFocused })
-        #expect(!first.viewState.isFocused)
-        #expect(windowState.selectSession(firstRef, in: appModel))
-        pump(until: { first.viewState.isFocused })
-        #expect(first.viewState.isFocused)
-        #expect(!second.viewState.isFocused)
-        window.orderOut(nil)
+        host(rootView(appModel, windowState))
     }
 }

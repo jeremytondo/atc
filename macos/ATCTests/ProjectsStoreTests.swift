@@ -1,244 +1,83 @@
 import Foundation
 import Testing
-import ATCAPI
+import ATCAppServerAPI
 @testable import ATC
 
-/// ProjectsStore behavior: refresh and merge-after-mutation semantics.
-///
-/// Mutation tests use `StatefulProjectsClient` instead of the value-type
-/// `MockATCClient`: the store fires an unawaited refresh after every
-/// mutation, and only a client whose state actually changed keeps those
-/// refreshes from resurrecting pre-mutation fixtures mid-test.
+/// ProjectsStore: refresh, and the merge placement every server-confirmed
+/// mutation lands through.
+@MainActor
 @Suite("ProjectsStore")
 struct ProjectsStoreTests {
-    @Test("refresh loads projects")
-    func refreshLoadsProjects() async throws {
-        let store = ProjectsStore(client: MockATCClient())
+    private func loadedStore() async -> (ProjectsStore, ScriptableAppServerClient) {
+        let client = ScriptableAppServerClient()
+        client.projects = [
+            Fixtures.project(id: "prj_a", name: "Alpha", createdAt: Fixtures.date(10)),
+            Fixtures.project(id: "prj_b", name: "Beta", createdAt: Fixtures.date(20)),
+        ]
+        let store = ProjectsStore(client: client)
         await store.refresh()
+        return (store, client)
+    }
+
+    @Test("refresh loads projects newest-first")
+    func refreshLoadsProjects() async {
+        let (store, _) = await loadedStore()
         #expect(store.hasLoadedOnce)
         #expect(store.lastError == nil)
-        #expect(store.projects.count == 4)
+        #expect(store.projects.map(\.id) == ["prj_b", "prj_a"])
+        #expect(store.project(id: "prj_a")?.name == "Alpha")
+        #expect(store.project(id: "nope") == nil)
     }
 
-    @Test("create merges the new project at the front with a unique id")
+    @Test("create merges the new project at the head with a distinct id")
     func createMerges() async throws {
-        let store = ProjectsStore(client: StatefulProjectsClient())
-        await store.refresh()
-        let first = try await store.create(name: "Fresh", workingDir: "/home/dev/fresh")
-        let second = try await store.create(name: "Fresher", workingDir: "/home/dev/fresher")
+        let (store, _) = await loadedStore()
+        let first = try await store.create(name: "Fresh", defaultWorkingDirectory: "/home/dev/fresh")
+        let second = try await store.create(name: "Fresher", defaultWorkingDirectory: "/home/dev/fresher")
         #expect(first.id != second.id)
         #expect(store.projects.first?.id == second.id)
-        #expect(store.projects.contains { $0.id == first.id })
-    }
-
-    @Test("delete removes the project row locally")
-    func deleteRemoves() async throws {
-        let store = ProjectsStore(client: StatefulProjectsClient())
-        await store.refresh()
-        let target = try #require(store.projects.first)
-        try await store.delete(id: target.id)
-        #expect(!store.projects.contains { $0.id == target.id })
+        #expect(store.project(id: first.id)?.defaultWorkingDirectory == "/home/dev/fresh")
     }
 
     @Test("rename updates the project in place")
     func renameUpdates() async throws {
-        let store = ProjectsStore(client: StatefulProjectsClient())
-        await store.refresh()
-        let target = try #require(store.projects.first)
-        try await store.rename(id: target.id, name: "Renamed")
-        #expect(store.project(id: target.id)?.name == "Renamed")
+        let (store, _) = await loadedStore()
+        try await store.rename(id: "prj_a", name: "Renamed")
+        #expect(store.project(id: "prj_a")?.name == "Renamed")
+        #expect(store.projects.map(\.id) == ["prj_b", "prj_a"])
     }
 
-    @Test("failed refresh keeps the error and empty list")
-    func refreshError() async throws {
-        let store = ProjectsStore(client: StatefulProjectsClient(failAll: true))
+    @Test("delete removes the project row locally")
+    func deleteRemoves() async throws {
+        let (store, _) = await loadedStore()
+        try await store.delete(id: "prj_b")
+        #expect(store.projects.map(\.id) == ["prj_a"])
+    }
+
+    @Test("a failed refresh keeps the last-loaded list and records the error")
+    func failedRefreshPreservesData() async {
+        let (store, client) = await loadedStore()
+        client.shouldFail = true
         await store.refresh()
         #expect(store.lastError != nil)
-        #expect(store.projects.isEmpty)
+        #expect(store.projects.map(\.id) == ["prj_b", "prj_a"])
     }
 
-    @Test("an older refresh finishing late does not settle the newer one's loading state")
-    func staleRefreshKeepsLoading() async throws {
-        let client = GatedProjectsClient()
-        let store = ProjectsStore(client: client)
+    @Test("a slow refresh finishing after a newer one never clobbers it")
+    func staleRefreshDoesNotClobber() async {
+        let (store, client) = await loadedStore()
+        let baseline = client.listProjectsCount
+        client.delay = .milliseconds(200)
+        let slow = Task { await store.refresh() }
+        await settle(until: { client.listProjectsCount > baseline })
 
-        // Start refresh #1 and wait until it is parked inside the client,
-        // so refresh #2 is guaranteed the newer generation.
-        let first = Task { await store.refresh() }
-        try await client.waitForWaiters(1)
-        let second = Task { await store.refresh() }
-        try await client.waitForWaiters(2)
+        client.delay = nil
+        client.projects = [Fixtures.project(id: "prj_only", createdAt: Fixtures.date(90))]
+        await store.refresh()
+        #expect(store.projects.map(\.id) == ["prj_only"])
 
-        // The older request completes while the newer is still in flight:
-        // the spinner must stay on and hasLoadedOnce must stay false.
-        client.releaseNext()
-        await first.value
-        #expect(store.isLoading)
-        #expect(!store.hasLoadedOnce)
-
-        client.releaseNext()
-        await second.value
-        #expect(!store.isLoading)
+        await slow.value
+        #expect(store.projects.map(\.id) == ["prj_only"])
         #expect(store.hasLoadedOnce)
     }
-}
-
-/// Client whose `projects()` parks until the test releases it, for
-/// deterministic overlapping-refresh sequencing. Waiters release in call
-/// order.
-final class GatedProjectsClient: ATCClient, @unchecked Sendable {
-    private let lock = NSLock()
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-
-    func waitForWaiters(_ count: Int) async throws {
-        for _ in 0..<500 {
-            if lock.withLock({ waiters.count }) >= count { return }
-            try await Task.sleep(for: .milliseconds(5))
-        }
-        throw ATCError.badStatus(500)
-    }
-
-    func releaseNext() {
-        let waiter = lock.withLock { waiters.isEmpty ? nil : waiters.removeFirst() }
-        waiter?.resume()
-    }
-
-    func projects() async throws -> [Project] {
-        await withCheckedContinuation { continuation in
-            lock.withLock { waiters.append(continuation) }
-        }
-        return []
-    }
-
-    // MARK: - Unused surface
-
-    func health() async throws -> Health { throw ATCError.badStatus(500) }
-    func version() async throws -> Version { throw ATCError.badStatus(500) }
-    func sessions(status: SessionStatus?) async throws -> [Session] { [] }
-    func session(id: String) async throws -> Session { throw ATCError.badStatus(500) }
-    func startSession(_ request: StartSessionRequest) async throws -> Session { throw ATCError.badStatus(500) }
-    func renameSession(id: String, name: String?) async throws -> Session { throw ATCError.badStatus(500) }
-    func deleteSession(id: String) async throws { throw ATCError.badStatus(500) }
-    func sendText(sessionID: String, text: String) async throws {}
-    func sendKey(sessionID: String, key: String) async throws {}
-    func actions() async throws -> [ATCAction] { [] }
-    func action(id: String) async throws -> ATCAction { throw ATCError.badStatus(500) }
-    func createAction(_ request: ActionCreate) async throws -> ATCAction { throw ATCError.badStatus(500) }
-    func updateAction(id: String, _ request: ActionPatch) async throws -> ATCAction { throw ATCError.badStatus(500) }
-    func deleteAction(id: String) async throws { throw ATCError.badStatus(500) }
-    func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing { throw ATCError.badStatus(500) }
-    func project(id: String) async throws -> Project { throw ATCError.badStatus(500) }
-    func createProject(name: String, workingDir: String) async throws -> Project { throw ATCError.badStatus(500) }
-    func renameProject(id: String, name: String) async throws -> Project { throw ATCError.badStatus(500) }
-    func projectSessions(projectID: String, status: SessionStatus?) async throws -> [Session] { [] }
-    func deleteProject(id: String) async throws { throw ATCError.badStatus(500) }
-    func workspaces(projectID: String?) async throws -> [Workspace] { [] }
-    func workspace(id: String) async throws -> Workspace { throw ATCError.badStatus(500) }
-    func createWorkspace(projectID: String, name: String) async throws -> Workspace { throw ATCError.badStatus(500) }
-    func renameWorkspace(id: String, name: String) async throws -> Workspace { throw ATCError.badStatus(500) }
-    func deleteWorkspace(id: String) async throws { throw ATCError.badStatus(500) }
-    func workspaceSessions(workspaceID: String, status: SessionStatus?) async throws -> [Session] { [] }
-    func attachURL(sessionID: String) -> URL { URL(string: "ws://127.0.0.1:1/attach")! }
-    func attachHeaders() -> [String: String] { [:] }
-}
-
-/// Minimal stateful in-memory server for store tests: project mutations
-/// persist, so the store's follow-up refreshes converge instead of racing
-/// the assertions. Only the project methods are implemented.
-final class StatefulProjectsClient: ATCClient, @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored: [Project]
-    private var counter = 0
-    private let failAll: Bool
-
-    init(failAll: Bool = false) {
-        self.failAll = failAll
-        self.stored = [
-            Project(id: "prj_one", name: "One", workingDir: "/home/dev/one", createdAt: .now, updatedAt: .now),
-            Project(id: "prj_two", name: "Two", workingDir: "/home/dev/two", createdAt: .now, updatedAt: .now),
-        ]
-    }
-
-    private func withState<T>(_ body: (inout [Project]) throws -> T) throws -> T {
-        if failAll { throw ATCError.badStatus(500) }
-        lock.lock()
-        defer { lock.unlock() }
-        return try body(&stored)
-    }
-
-    func projects() async throws -> [Project] {
-        try withState { $0 }
-    }
-
-    func project(id: String) async throws -> Project {
-        try withState { state in
-            guard let found = state.first(where: { $0.id == id }) else {
-                throw ATCError.api(code: "project_not_found", message: id, sessionID: nil)
-            }
-            return found
-        }
-    }
-
-    func createProject(name: String, workingDir: String) async throws -> Project {
-        try withState { state in
-            counter += 1
-            let project = Project(
-                id: "prj_stateful_\(counter)", name: name, workingDir: workingDir,
-                createdAt: .now, updatedAt: .now
-            )
-            state.insert(project, at: 0)
-            return project
-        }
-    }
-
-    func renameProject(id: String, name: String) async throws -> Project {
-        try mutate(id) { $0.name = name }
-    }
-
-    func deleteProject(id: String) async throws {
-        try withState { state in
-            guard state.contains(where: { $0.id == id }) else {
-                throw ATCError.api(code: "project_not_found", message: id, sessionID: nil)
-            }
-            state.removeAll { $0.id == id }
-        }
-    }
-
-    private func mutate(_ id: String, _ change: (inout Project) -> Void) throws -> Project {
-        try withState { state in
-            guard let index = state.firstIndex(where: { $0.id == id }) else {
-                throw ATCError.api(code: "project_not_found", message: id, sessionID: nil)
-            }
-            change(&state[index])
-            state[index].updatedAt = .now
-            return state[index]
-        }
-    }
-
-    // MARK: - Unused surface
-
-    func health() async throws -> Health { throw ATCError.badStatus(500) }
-    func version() async throws -> Version { throw ATCError.badStatus(500) }
-    func sessions(status: SessionStatus?) async throws -> [Session] { [] }
-    func session(id: String) async throws -> Session { throw ATCError.badStatus(500) }
-    func startSession(_ request: StartSessionRequest) async throws -> Session { throw ATCError.badStatus(500) }
-    func renameSession(id: String, name: String?) async throws -> Session { throw ATCError.badStatus(500) }
-    func deleteSession(id: String) async throws { throw ATCError.badStatus(500) }
-    func sendText(sessionID: String, text: String) async throws {}
-    func sendKey(sessionID: String, key: String) async throws {}
-    func actions() async throws -> [ATCAction] { [] }
-    func action(id: String) async throws -> ATCAction { throw ATCError.badStatus(500) }
-    func createAction(_ request: ActionCreate) async throws -> ATCAction { throw ATCError.badStatus(500) }
-    func updateAction(id: String, _ request: ActionPatch) async throws -> ATCAction { throw ATCError.badStatus(500) }
-    func deleteAction(id: String) async throws { throw ATCError.badStatus(500) }
-    func listDirectory(path: String, showHidden: Bool) async throws -> DirectoryListing { throw ATCError.badStatus(500) }
-    func projectSessions(projectID: String, status: SessionStatus?) async throws -> [Session] { [] }
-    func workspaces(projectID: String?) async throws -> [Workspace] { [] }
-    func workspace(id: String) async throws -> Workspace { throw ATCError.badStatus(500) }
-    func createWorkspace(projectID: String, name: String) async throws -> Workspace { throw ATCError.badStatus(500) }
-    func renameWorkspace(id: String, name: String) async throws -> Workspace { throw ATCError.badStatus(500) }
-    func deleteWorkspace(id: String) async throws { throw ATCError.badStatus(500) }
-    func workspaceSessions(workspaceID: String, status: SessionStatus?) async throws -> [Session] { [] }
-    func attachURL(sessionID: String) -> URL { URL(string: "ws://127.0.0.1:1/attach")! }
-    func attachHeaders() -> [String: String] { [:] }
 }

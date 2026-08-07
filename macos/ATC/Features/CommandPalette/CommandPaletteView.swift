@@ -156,7 +156,7 @@ struct CommandPaletteView: View {
         }
     }
 
-    /// Shrink-to-fit estimates only: workspace rows carry a context caption
+    /// Shrink-to-fit estimates only: navigation rows carry a context caption
     /// and unavailable rows an inline reason line, so a short list is not
     /// initially clipped. The 200 pt cap and the scroll view absorb any
     /// estimate error on longer lists.
@@ -164,10 +164,10 @@ struct CommandPaletteView: View {
         switch result {
         case .command(let row):
             row.availability.isAvailable ? 42 : 56
-        case .workspace(let row):
+        case .thread(let row):
             row.availability.isAvailable ? 56 : 70
-        case .session:
-            42
+        case .terminal:
+            56
         }
     }
 
@@ -215,37 +215,31 @@ struct CommandPaletteView: View {
             if let shortcut = row.shortcut {
                 trailingLabel(shortcut.displayDescription)
             }
-        case .workspace(let row):
+        case .thread(let row):
             VStack(alignment: .leading, spacing: 2) {
-                typedTitle(
-                    "Workspace",
-                    title: row.title,
-                    ranges: row.matchedRanges
-                )
+                typedTitle("Thread", title: row.title, ranges: row.matchedRanges)
                     .font(.callout)
-                Text("\(row.projectName) · \(row.connectionName)")
+                Text(row.subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 unavailableReason(row.availability)
             }
             Spacer(minLength: 12)
-        case .session(let row):
-            if let index = row.identity.index {
-                SessionIndexBadge(index)
+        case .terminal(let row):
+            VStack(alignment: .leading, spacing: 2) {
+                typedTitle("Terminal", title: row.title, ranges: row.matchedRanges)
+                    .font(.callout)
+                Text(row.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            typedTitle(
-                row.kind.paletteTypeLabel,
-                title: row.title,
-                ranges: row.matchedRanges
-            )
-            .font(.callout)
             Spacer(minLength: 12)
         }
     }
 
-    /// One flowing Text so a long identity wraps as a unit with its category
-    /// prefix. "Terminal" remains a category; an Interactive Shell's identity
-    /// is "Shell".
+    /// One flowing Text so a long title wraps as a unit with its category
+    /// prefix, and the prefix is dropped when the title already is it (an
+    /// unnamed terminal reads "Shell", not "Terminal: Shell").
     private func typedTitle(
         _ type: String,
         title: String,
@@ -296,16 +290,13 @@ struct CommandPaletteView: View {
             if let shortcut = row.shortcut {
                 parts.append(shortcut.spokenDescription)
             }
-        case .workspace(let row):
-            parts = [row.title, "Workspace", row.projectName, row.connectionName]
+        case .thread(let row):
+            parts = [row.title, "Thread", row.subtitle]
             if case .unavailable(let reason) = row.availability {
                 parts.append("Unavailable — \(reason)")
             }
-        case .session(let row):
-            parts = [row.identity.accessibilityLabel]
-            if row.title != row.kind.paletteTypeLabel {
-                parts.append(row.kind.paletteTypeLabel)
-            }
+        case .terminal(let row):
+            parts = [row.title, "Terminal", row.subtitle]
         }
         return parts.joined(separator: ", ")
     }
@@ -313,8 +304,8 @@ struct CommandPaletteView: View {
     private func availability(for result: PaletteResult) -> CommandAvailability {
         switch result {
         case .command(let row): row.availability
-        case .workspace(let row): row.availability
-        case .session: .available
+        case .thread(let row): row.availability
+        case .terminal: .available
         }
     }
 
@@ -342,23 +333,22 @@ struct CommandPaletteView: View {
             }
             dismissPalette()
             CommandRegistry.execute(row.id, context: context)
-        case .workspace(let row):
+        case .thread(let row):
             guard row.availability.isAvailable else {
                 if case .unavailable(let reason) = row.availability {
                     router.showUnavailable(reason: reason)
                 }
                 return
             }
-            // Dismiss only on success: a target that vanished between
-            // projection and activation fails closed in WindowState, and the
-            // recomputed rows drop it in the same turn.
-            if windowState.activateWorkspace(row.ref, in: appModel) {
-                dismissForNavigation()
-            }
-        case .session(let row):
-            if windowState.selectSession(row.ref, in: appModel) {
-                dismissForNavigation()
-            }
+            // Opening is asynchronous; the palette hands off immediately and
+            // the content area shows the connecting state. A target that
+            // vanished between projection and activation fails closed in
+            // WindowState.
+            dismissForNavigation()
+            Task { await windowState.openThread(row.ref, in: appModel) }
+        case .terminal(let row):
+            dismissForNavigation()
+            windowState.selectTerminal(row.ref, in: appModel)
         }
     }
 
@@ -385,9 +375,8 @@ struct CommandPaletteView: View {
     private func placeholder(for presentation: CommandPalettePresentation) -> String {
         switch presentation {
         case .all: "Search commands and navigation…"
-        case .sessions: "Search Sessions…"
+        case .threads: "Search Threads…"
         case .terminals: "Search Terminals…"
-        case .workspaces: "Search Workspaces…"
         }
     }
 
@@ -397,9 +386,8 @@ struct CommandPaletteView: View {
         }
         return switch presentation {
         case .all: "No matching results"
-        case .sessions: "No Sessions"
+        case .threads: "No Threads"
         case .terminals: "No Terminals"
-        case .workspaces: "No Workspaces"
         }
     }
 
@@ -416,16 +404,6 @@ struct CommandPaletteView: View {
         }
         self.selectedID = rows[(index + offset + rows.count) % rows.count].id
         return .handled
-    }
-}
-
-private extension SessionKind {
-    /// The one palette type label, shared by the row prefix and VoiceOver.
-    var paletteTypeLabel: String {
-        switch self {
-        case .agent: "Session"
-        case .terminal: "Terminal"
-        }
     }
 }
 

@@ -1,70 +1,79 @@
 # atc
 
-atc is a native client for working with atc Sessions on a remote workstation.
+atc is a native client for driving durable agent Threads and Terminals on an
+atc App Server.
 
 ## Language
 
 **Connection**:
-A named relationship from atc to one atc server, whether that server is running locally or remotely. A Connection has its own identity apart from its display name and URL; its name is chosen in atc rather than discovered from the server. Projects, Workspaces, and Sessions belong to the Connection they come from, and matching project names on different Connections do not imply the same project.
+A named relationship from atc to one App Server, local or remote. A Connection
+has its own identity apart from its display name and URL; its name is chosen
+in atc rather than discovered from the server. Projects, Threads, and
+Terminals belong to the Connection they come from, and matching project names
+on different Connections do not imply the same project.
 _Avoid_: Account
 
-**Dashboard**:
-The launch and Project-level surface for finding, creating, and opening Workspaces. The initial version has no separate Project detail screen, Recent Workspaces section, or activity feed.
-_Avoid_: Project detail, home sidebar
-
 **Project**:
-A Server-owned record for one codebase on an atc server. A Project provides the default repository folder for its Workspaces; atc displays Projects through their Connection, but does not own the Project record itself.
-A Project can be deleted only after its Workspaces are deleted. Deletion does not change filesystem state.
-_Avoid_: Local project, app project
+A server-owned record for one codebase, carrying the default working directory
+for new Threads and Terminals. atc displays Projects through their Connection
+but does not own the record. A Project can be deleted only once it owns no
+Threads or Terminals; deletion never changes filesystem state.
+_Avoid_: Local project, app project, Workspace
 
-**Workspace**:
-A Server-owned task context within one Project. In the initial version, every Workspace uses its Project's default folder, owns its Sessions, and persists after they end. Its name is user-owned, renameable, and need not be unique. Deleting a Workspace never changes its working directory or other filesystem state, but stops and deletes all of its associated Sessions only after every stop succeeds.
-_Avoid_: Checkout, worktree
-
-**Workspace Startup Configuration**:
-The local macOS preference that lists Action and Interactive Shell entries launched when a Workspace is created. Each Connection has defaults; a Project either uses those defaults with live inheritance or has a Custom configuration copied once and then independent. An explicitly empty Custom configuration suppresses the Connection defaults.
-_Avoid_: Workspace template, server startup configuration
-
-**Default Session**:
-The one entry designated as the Default in every nonempty Workspace Startup Configuration. It launches first during Workspace creation, and the new Workspace opens with that Session selected after it starts. The first entry added becomes Default, the designation can be transferred, and removing it promotes the earliest remaining entry.
-_Avoid_: Primary Session, first Session
-
-**Session**:
-A Server-owned terminal process created on a particular atc server. A Session belongs to its Workspace, except for legacy Project-scoped Sessions. Its lifecycle is Live or Ended; Ended is a retained read-only tombstone shown only after the server confirms the backing zmx session is absent. Transport and attach failures remain retryable and do not end it.
-_Avoid_: Terminal Session, shell
-
-**Session Identity**:
-The launch identity copied onto a Session: its Agent or Action name, or `Shell` for the Interactive Shell. macOS keeps that identity visible for Agent Sessions, presenting `[index] Identity · Custom Name` when named. A named Terminal instead presents `[index] Custom Name`; an unnamed Terminal falls back to `[index] Identity`. The launch identity remains available in Session details and command-palette search even when a Terminal's custom name is its visible label.
-_Avoid_: Session name, Terminal
-
-**Session Index**:
-An immutable positive Workspace-local address allocated by the server in one namespace shared by Sessions and Terminals. The Workspace Navigator and Session picker sort each group by ascending Session Index; gaps are expected, and legacy index-less Sessions sort last.
-_Avoid_: Session ID, row number
+**Thread**:
+A durable agent conversation (Codex or Claude Code) — the primary object users
+create and navigate. A Thread belongs to a Project, has an Agent and an
+immutable working directory, and is always reopenable: opening it launches or
+reuses its provider TUI in a linked Terminal. Threads have no Ended state; a
+Thread whose TUI terminal exited simply relaunches on open.
+_Avoid_: Session, conversation, chat
 
 **Terminal**:
-The macOS category for a Workspace Session that opens the server's default Interactive Shell or runs a non-Agent Action from the Terminal creation flow. It appears in the Terminals group, but its Session Identity is `Shell` or the Action name, never `Terminal`.
-_Avoid_: Terminal Session, Shell Session
+A server-owned zmx-backed process. A Thread's TUI runs in a linked Terminal
+reached only through its Thread; standalone Terminals are Project-level tools
+(shells, editors, watchers) listed in the sidebar's Terminals section. Its
+lifecycle is Live or Ended; Ended is a retained read-only tombstone shown only
+after the server confirms the backing zmx session is absent. Transport and
+attach failures are retryable and never end it.
+_Avoid_: Terminal Session, shell
 
-**Agent Session**:
-A Workspace Session started from an Agent Action, such as Codex or Claude Code. The macOS sidebar labels this group Sessions; it remains a generic server Session and may later report Agent Activity.
-_Avoid_: Agent
+**Agent**:
+A built-in provider (Codex, Claude Code) with live-detected availability and
+an actionable reason when unavailable.
+_Avoid_: Model, assistant
 
-**Focused Sidebar Row**:
-The Workspace, Agent Session, or Terminal row currently targeted by keyboard navigation in the sidebar. A Focused Sidebar Row is distinct from the selected Session because Workspaces can be focused without becoming the active detail content.
-_Avoid_: Highlighted Entry, selected row
+**Activity State**:
+The server's normalized view of what a Thread's agent is doing: idle, working,
+needs input, or unknown. Needs input is the one state the UI must surface;
+idle and unknown are unmarked.
+_Avoid_: Status, health
 
-**Remote Workspace Root**:
-A named folder on the server workstation that atc uses as a starting namespace for browsing and selecting session working directories. Directory symlinks reachable from a Remote Workspace Root remain inside the app's remote browsing domain, including their children, even when the symlink target resolves outside the root.
-_Avoid_: Configured root, favorite, full-host browse, sandbox
+**Pinned Thread**:
+A server-backed shortcut (`pinnedAt`) shared by every client. Pins order by
+pin time, oldest first, sit above the filter, and are excluded from the recent
+list. Archiving clears a pin.
+_Avoid_: Favorite, bookmark
 
-**Highlighted Entry**:
-The file or folder row currently targeted by pointer or keyboard navigation in a remote file browser.
-_Avoid_: Selected row
+**Archived Thread**:
+An organizational state that removes a Thread from normal navigation without
+deleting it. Archived Threads are managed (restored or deleted) from the
+sidebar's Archived filter; restoring reopens the Thread.
+_Avoid_: Deleted, closed
 
-**Chosen Folder**:
-The current viewed remote directory that atc will use as a session working directory when the user confirms a folder picker.
-_Avoid_: Selected file, selected row
+**Dashboard**:
+The launch surface: one card per Project, grouped by Connection. Navigating to
+Dashboard never clears the launch-local Project context.
+_Avoid_: Home, project detail
+
+**Project context**:
+The launch-local active Project, established by opening or creating a Thread.
+It scopes the sidebar's Terminals section and New Thread defaults, and resets
+on every app launch.
+_Avoid_: Selection, current project
 
 **Command Sequence**:
-A two-step atc interaction that starts with the configured leader (`Cmd-K` by default), waits for one continuation key (modified or unmodified), and targets atc itself, including when a Session has focus. A Command Sequence is not a Keyboard Shortcut.
+A two-step atc interaction that starts with the configured leader (`Cmd-K` by
+default), waits for one continuation key (modified or unmodified), and targets
+atc itself, including when a Terminal has focus. A Command Sequence is not a
+Keyboard Shortcut.
 _Avoid_: Keyboard Shortcut, terminal prefix, command chord

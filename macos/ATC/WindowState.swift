@@ -1,149 +1,160 @@
+import ATCAppServerAPI
 import SwiftUI
 import Observation
-import ATCAPI
-
-enum NavigatorID: String, CaseIterable, Sendable {
-    case projects
-    case workspace
-    case file
-}
 
 enum MainContentSelection: Equatable, Sendable {
     case dashboard
-    case workspace(WorkspaceRef)
-    case session(SessionRef)
+    case thread(ThreadRef)
+    case terminal(TerminalRef)
+}
+
+/// The sidebar's thread filter. Resets to `.all` on every app launch; it
+/// only affects the thread list beneath it, never pins, Dashboard, the
+/// Terminals section, or New Thread defaults.
+enum ThreadFilter: Equatable, Sendable {
+    case all
+    case project(ProjectRef)
+    case archived
 }
 
 enum CommandPalettePresentation: Equatable, Sendable {
     case all
-    case sessions
+    case threads
     case terminals
-    case workspaces
 }
 
 struct TerminalRetentionContext: Equatable, Sendable {
-    let activeWorkspace: WorkspaceRef?
-    let selectedSession: SessionRef?
+    let visibleTerminal: TerminalRef?
 
-    static let empty = TerminalRetentionContext(activeWorkspace: nil, selectedSession: nil)
+    static let empty = TerminalRetentionContext(visibleTerminal: nil)
 }
 
-/// Per-window navigation, inspector, disclosure, and command state. The
+/// Everything a New Thread sheet needs to open with the right defaults.
+struct NewThreadContext: Identifiable, Hashable {
+    /// Pre-selected project; nil lets the sheet offer a picker.
+    let projectRef: ProjectRef?
+    var id: Self { self }
+}
+
+/// Per-window navigation, disclosure, sheet, and command state. The
 /// AppModel continues to own shared data and terminal controllers; it does
 /// not duplicate these identities.
+///
+/// Launch behavior per the design: open on Dashboard, filter reset to All
+/// Projects, no restored selection, no Project context until a thread is
+/// opened or created. Nothing here persists.
 @Observable
 final class WindowState {
-    var selectedNavigator: NavigatorID = .projects
-    private(set) var activeWorkspace: WorkspaceRef?
     private(set) var selectedContent: MainContentSelection = .dashboard
+    /// Launch-local Project context, established by opening or creating a
+    /// Thread. Navigating to Dashboard does not clear it.
+    private(set) var activeProject: ProjectRef?
+    var threadFilter: ThreadFilter = .all
     var columnVisibility: NavigationSplitViewVisibility = .all
     var isInspectorPresented = false
     var commandPalettePresentation: CommandPalettePresentation?
 
-    var isProjectsSectionExpanded = true
-    var isSessionsSectionExpanded = true
+    /// More/Hide expansion, preserved only for the current app launch.
+    var isPinnedExpanded = false
+    var isRecentExpanded = false
+    var isArchivedExpanded = false
     var isTerminalsSectionExpanded = true
-    var expandedProjects: Set<ProjectRef> = []
 
     var isCreateProjectPresented = false
-    var createWorkspaceContext: CreateWorkspaceContext?
-    var startSessionKind: StartSessionKind?
-    var workspaceStartupProject: ProjectRef?
-    var startupNotice: StartupNotice?
+    var newThreadContext: NewThreadContext?
+    var newTerminalProject: ProjectRef?
 
-    /// Defers the startup editor until the creation sheet has fully
-    /// dismissed; AppKit cannot present the two sibling sheets together.
-    private(set) var pendingWorkspaceStartupProject: ProjectRef?
+    /// The TUI terminal each opened thread is currently displayed through.
+    /// `openThread` records the server's answer here; store refreshes
+    /// reconcile it (the thread's `linkedTerminalId` is the durable truth).
+    private(set) var threadTerminals: [ThreadRef: TerminalRef] = [:]
+
+    /// Threads with an open+attach in flight; re-selection is idempotent
+    /// but a second concurrent open would hit the server's one-open guard.
+    private(set) var openingThreads: Set<ThreadRef> = []
+
+    /// Most recent failed open per thread, cleared on the next attempt.
+    private(set) var threadOpenErrors: [ThreadRef: String] = [:]
 
     var isSheetPresented: Bool {
-        isCreateProjectPresented
-            || createWorkspaceContext != nil
-            || startSessionKind != nil
-            || workspaceStartupProject != nil
-            || pendingWorkspaceStartupProject != nil
+        isCreateProjectPresented || newThreadContext != nil || newTerminalProject != nil
     }
 
-    /// Advances for every explicit request to type in the selected Terminal
-    /// Session. Unlike `selectedSession`, this also changes when the user
-    /// re-selects the same sidebar row.
+    /// Advances for every explicit request to type in the visible terminal.
+    /// Unlike selection, this also changes when the user re-selects the
+    /// same sidebar row.
     private(set) var terminalFocusRequest: UInt = 0
 
-    @ObservationIgnored private let selectionMemory: WorkspaceSelectionMemory
-    @ObservationIgnored private var pendingRestore: WorkspaceRef?
-
-    init(selectionMemory: WorkspaceSelectionMemory = WorkspaceSelectionMemory()) {
-        self.selectionMemory = selectionMemory
-    }
-
-    var selectedSession: SessionRef? {
-        guard case .session(let ref) = selectedContent else { return nil }
+    var selectedThread: ThreadRef? {
+        guard case .thread(let ref) = selectedContent else { return nil }
         return ref
     }
 
-    var retentionContext: TerminalRetentionContext {
-        TerminalRetentionContext(
-            activeWorkspace: activeWorkspace,
-            selectedSession: selectedSession
-        )
-    }
+    /// The last opened thread: the sidebar's return-navigation anchor. While
+    /// a standalone Terminal is displayed this thread keeps the stronger
+    /// selection treatment (there is deliberately no toolbar back control);
+    /// Dashboard clears the visible treatment but not the context.
+    private(set) var returnThread: ThreadRef?
 
-    func hasInspectorTarget(in appModel: AppModel) -> Bool {
-        guard case .session(let ref) = selectedContent else { return false }
-        return appModel.session(for: ref) != nil && appModel.runtime(id: ref.connectionID) != nil
-    }
-
-    /// The single Workspace activation transition used by every entry point.
-    /// A missing target is rejected without changing the current window.
-    @discardableResult
-    func activateWorkspace(_ ref: WorkspaceRef, in appModel: AppModel) -> Bool {
-        guard let runtime = appModel.runtime(id: ref.connectionID),
-              let workspace = runtime.workspaces.workspace(id: ref.workspaceID)
-        else { return false }
-
-        expandedProjects.insert(ProjectRef(
-            connectionID: ref.connectionID,
-            projectID: workspace.projectId
-        ))
-
-        // Re-selecting the current Workspace is normally idempotent, but from
-        // Dashboard it is also the expected way back into that Workspace.
-        if activeWorkspace == ref, selectedContent != .dashboard { return true }
-
-        let sessionsCurrent = runtime.sessions.hasLoadedOnce && runtime.sessions.lastError == nil
-        let restored = sessionsCurrent
-            ? validRememberedSelection(for: ref, in: runtime.sessions.sessions)
-            : nil
-
-        activeWorkspace = ref
-        selectedContent = restored.map(MainContentSelection.session) ?? .workspace(ref)
-        isInspectorPresented = false
-        pendingRestore = sessionsCurrent ? nil : ref
-
-        if let restored, let session = appModel.session(for: restored), session.status == .live {
-            appModel.attachIfNeeded(
-                to: session,
-                connectionID: restored.connectionID,
-                retentionContext: retentionContext
-            )
+    /// Whether this thread's card should carry the strong selection
+    /// treatment right now.
+    func isThreadHighlighted(_ ref: ThreadRef) -> Bool {
+        switch selectedContent {
+        case .thread(let selected): selected == ref
+        case .terminal: returnThread == ref
+        case .dashboard: false
         }
-        return true
     }
 
-    /// Selects content only when it belongs to the Active Workspace on the
-    /// same Connection. Invalid cross-Workspace references fail closed.
-    @discardableResult
-    func selectSession(_ ref: SessionRef, in appModel: AppModel) -> Bool {
-        guard let activeWorkspace,
-              activeWorkspace.connectionID == ref.connectionID,
-              let session = appModel.session(for: ref),
-              session.belongs(to: activeWorkspace)
-        else { return false }
+    /// The terminal the detail column should render right now.
+    var visibleTerminal: TerminalRef? {
+        switch selectedContent {
+        case .dashboard: nil
+        case .thread(let ref): threadTerminals[ref]
+        case .terminal(let ref): ref
+        }
+    }
 
-        selectedContent = .session(ref)
-        selectionMemory.remember(sessionID: ref.sessionID, for: activeWorkspace)
-        if session.status == .live {
+    var retentionContext: TerminalRetentionContext {
+        TerminalRetentionContext(visibleTerminal: visibleTerminal)
+    }
+
+    // MARK: - Navigation transitions
+
+    /// The single thread-open transition used by every entry point: select
+    /// immediately (the content area shows the connecting state), then
+    /// idempotently open the TUI terminal and attach. Establishes the
+    /// thread's Project as the launch-local context.
+    func openThread(_ ref: ThreadRef, in appModel: AppModel) async {
+        guard let thread = appModel.thread(for: ref) else { return }
+        guard !thread.isArchived else { return }
+
+        selectedContent = .thread(ref)
+        returnThread = ref
+        activeProject = ProjectRef(connectionID: ref.connectionID, projectID: thread.projectId)
+        threadOpenErrors[ref] = nil
+        requestTerminalFocus()
+
+        guard !openingThreads.contains(ref) else { return }
+        openingThreads.insert(ref)
+        defer { openingThreads.remove(ref) }
+        do {
+            let terminalRef = try await appModel.openThread(ref, retentionContext: retentionContext)
+            threadTerminals[ref] = terminalRef
+            requestTerminalFocus()
+        } catch {
+            threadOpenErrors[ref] = error.localizedDescription
+        }
+    }
+
+    /// Selects a standalone Terminal. Live terminals attach; an ended one
+    /// renders as a tombstone.
+    func selectTerminal(_ ref: TerminalRef, in appModel: AppModel) {
+        guard let terminal = appModel.terminal(for: ref) else { return }
+        selectedContent = .terminal(ref)
+        if terminal.isLive {
             appModel.attachIfNeeded(
-                to: session,
+                to: terminal,
                 connectionID: ref.connectionID,
                 retentionContext: retentionContext
             )
@@ -151,14 +162,6 @@ final class WindowState {
             appModel.touchTerminal(ref)
         }
         requestTerminalFocus()
-        return true
-    }
-
-    /// Reasserts terminal focus after transient UI (notably a creation
-    /// sheet) has finished handing first-responder ownership back.
-    func requestTerminalFocus() {
-        guard selectedSession != nil else { return }
-        terminalFocusRequest &+= 1
     }
 
     func showDashboard() {
@@ -166,172 +169,148 @@ final class WindowState {
         isInspectorPresented = false
     }
 
-    func showWorkspaceEmpty(workspaceExists: Bool = true) {
-        if let activeWorkspace {
-            selectionMemory.forget(activeWorkspace)
-        }
-        guard workspaceExists, let activeWorkspace else {
-            showDashboard()
-            return
-        }
-        selectedContent = .workspace(activeWorkspace)
-        isInspectorPresented = false
-    }
-
-    /// Reconciles store-driven removal and delayed restoration. An unloaded
-    /// store is unresolved and never clears the current Workspace.
-    func reconcile(in appModel: AppModel) {
-        // The startup editor is keyed to its own target Connection, not the
-        // Active Workspace: dismiss it only when that Connection is removed.
-        if let projectRef = workspaceStartupProject,
-           appModel.runtime(id: projectRef.connectionID) == nil {
-            workspaceStartupProject = nil
-        }
-        if let pending = pendingWorkspaceStartupProject,
-           appModel.runtime(id: pending.connectionID) == nil {
-            pendingWorkspaceStartupProject = nil
-        }
-        guard let activeWorkspace else { return }
-        guard let runtime = appModel.runtime(id: activeWorkspace.connectionID) else {
-            selectionMemory.forget(connectionID: activeWorkspace.connectionID)
-            handleActiveWorkspaceGone(activeWorkspace)
-            return
-        }
-        guard runtime.workspaces.hasLoadedOnce, runtime.workspaces.lastError == nil else { return }
-        guard runtime.workspaces.workspace(id: activeWorkspace.workspaceID) != nil else {
-            handleActiveWorkspaceGone(activeWorkspace)
-            return
-        }
-
-        if pendingRestore == activeWorkspace,
-           runtime.sessions.hasLoadedOnce,
-           runtime.sessions.lastError == nil {
-            pendingRestore = nil
-            if selectedContent == .workspace(activeWorkspace),
-               let restored = validRememberedSelection(
-                    for: activeWorkspace,
-                    in: runtime.sessions.sessions
-               ) {
-                selectedContent = .session(restored)
-                if let session = appModel.session(for: restored), session.status == .live {
-                    appModel.attachIfNeeded(
-                        to: session,
-                        connectionID: restored.connectionID,
-                        retentionContext: retentionContext
-                    )
-                }
-            }
-        }
-
-        guard case .session(let selected) = selectedContent,
-              runtime.sessions.hasLoadedOnce,
-              runtime.sessions.lastError == nil
-        else { return }
-        let session = appModel.session(for: selected)
-        if selected.connectionID != activeWorkspace.connectionID
-            || session?.belongs(to: activeWorkspace) != true {
-            selectionMemory.forget(activeWorkspace)
-            selectedContent = .workspace(activeWorkspace)
-            isInspectorPresented = false
-        } else if let session {
-            // Never undo an explicit Disconnect: reconcile runs on every
-            // store change, not just selection changes.
-            if session.status == .live, appModel.terminals[selected] == nil,
-               !appModel.isDetached(selected) {
-                appModel.attachIfNeeded(
-                    to: session,
-                    connectionID: selected.connectionID,
-                    retentionContext: retentionContext
-                )
-            } else if session.status == .ended, appModel.terminals[selected] != nil {
-                appModel.disconnectTerminal(ref: selected)
-            }
-        }
-    }
-
-    func forgetSelection(for ref: WorkspaceRef) {
-        selectionMemory.forget(ref)
+    /// Reasserts terminal focus after transient UI (notably a creation
+    /// sheet) has finished handing first-responder ownership back.
+    func requestTerminalFocus() {
+        guard visibleTerminal != nil else { return }
+        terminalFocusRequest &+= 1
     }
 
     func toggleSidebar() {
         columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
     }
 
-    func canStartSession(in appModel: AppModel) -> Bool {
-        activeWorkspace.map { appModel.canStartSession(in: $0) } ?? false
+    // MARK: - Sheet presentation
+
+    /// New Thread pre-selects the launch-local context Project when the
+    /// filter isn't pinning a different one.
+    func presentNewThread(in appModel: AppModel) {
+        if case .project(let ref) = threadFilter {
+            newThreadContext = NewThreadContext(projectRef: ref)
+            return
+        }
+        newThreadContext = NewThreadContext(projectRef: activeProject)
     }
 
-    func presentCreateWorkspace(in appModel: AppModel) {
-        if let activeWorkspace,
-           let runtime = appModel.runtime(id: activeWorkspace.connectionID),
-           let workspace = runtime.workspaces.workspace(id: activeWorkspace.workspaceID),
-           let project = runtime.projects.project(id: workspace.projectId) {
-            let projectRef = ProjectRef(
-                connectionID: activeWorkspace.connectionID,
-                projectID: project.id
-            )
-            guard appModel.canCreateWorkspace(in: projectRef) else {
-                createWorkspaceContext = CreateWorkspaceContext(mode: .free)
+    /// Called by the New Thread sheet after the server confirms creation:
+    /// establishes context and opens the thread immediately.
+    func threadCreated(_ ref: ThreadRef, in appModel: AppModel) {
+        newThreadContext = nil
+        Task { await openThread(ref, in: appModel) }
+    }
+
+    // MARK: - Reconciliation
+
+    /// Reconciles store-driven removal: archived/deleted threads leave the
+    /// content area, dead references reset to Dashboard, and the filter
+    /// falls back to All Projects when its project disappears. An unloaded
+    /// or failed store is unresolved and never clears state — connection
+    /// loss must not look like deletion.
+    func reconcile(in appModel: AppModel) {
+        if case .project(let ref) = threadFilter {
+            if let runtime = appModel.runtime(id: ref.connectionID) {
+                if runtime.projects.isResolved,
+                   runtime.projects.project(id: ref.projectID) == nil {
+                    threadFilter = .all
+                }
+            } else {
+                threadFilter = .all
+            }
+        }
+
+        if let activeProject {
+            if let runtime = appModel.runtime(id: activeProject.connectionID) {
+                if runtime.projects.isResolved,
+                   runtime.projects.project(id: activeProject.projectID) == nil {
+                    self.activeProject = nil
+                }
+            } else {
+                self.activeProject = nil
+            }
+        }
+
+        // Prune mappings for threads that are gone (their Connection removed,
+        // or the thread deleted per a resolved store); unresolved stores
+        // leave entries alone.
+        threadTerminals = threadTerminals.filter { ref, _ in
+            guard let runtime = appModel.runtime(id: ref.connectionID) else { return false }
+            guard runtime.threads.isResolved else { return true }
+            return runtime.threads.thread(id: ref.threadID) != nil
+        }
+
+        if let ref = returnThread {
+            if let runtime = appModel.runtime(id: ref.connectionID) {
+                if runtime.threads.isResolved,
+                   appModel.thread(for: ref)?.isArchived != false {
+                    returnThread = nil
+                }
+            } else {
+                returnThread = nil
+            }
+        }
+
+        switch selectedContent {
+        case .dashboard:
+            break
+        case .thread(let ref):
+            guard let runtime = appModel.runtime(id: ref.connectionID) else {
+                showDashboard()
                 return
             }
-            createWorkspaceContext = CreateWorkspaceContext(mode: .preselected(
-                projectRef
-            ))
-        } else {
-            createWorkspaceContext = CreateWorkspaceContext(mode: .free)
+            guard runtime.threads.isResolved else { return }
+            guard let thread = runtime.threads.thread(id: ref.threadID), !thread.isArchived else {
+                // Archiving or deleting the displayed thread returns to
+                // Dashboard; its Project stays as launch-local context.
+                threadTerminals[ref] = nil
+                showDashboard()
+                return
+            }
+            reconcileThreadTerminal(ref, thread: thread, in: appModel)
+        case .terminal(let ref):
+            guard let runtime = appModel.runtime(id: ref.connectionID) else {
+                showDashboard()
+                return
+            }
+            guard runtime.terminals.isResolved else { return }
+            guard let terminal = appModel.terminal(for: ref) else {
+                showDashboard()
+                return
+            }
+            // A live displayed terminal that lost its controller (most
+            // commonly a Connection rebuild) reattaches automatically, the
+            // same rule the thread path applies.
+            if terminal.isLive, appModel.terminals[ref] == nil {
+                appModel.attachIfNeeded(
+                    to: terminal,
+                    connectionID: ref.connectionID,
+                    retentionContext: retentionContext
+                )
+            }
         }
     }
 
-    func editWorkspaceStartupAfterCreateSheetDismisses(_ ref: ProjectRef) {
-        pendingWorkspaceStartupProject = ref
-        createWorkspaceContext = nil
-    }
-
-    func presentPendingWorkspaceStartupEditor() {
-        guard let ref = pendingWorkspaceStartupProject else { return }
-        pendingWorkspaceStartupProject = nil
-        workspaceStartupProject = ref
-    }
-
-    private func validRememberedSelection(
-        for ref: WorkspaceRef,
-        in sessions: [Session]
-    ) -> SessionRef? {
-        let remembered = selectionMemory.sessionID(for: ref)
-        let restored = selectionMemory.restoredSelection(for: ref, in: sessions)
-        if remembered != nil, restored == nil {
-            selectionMemory.forget(ref)
+    /// Keeps the displayed thread's terminal mapping and attach current:
+    /// adopt the server's linked terminal when it differs (a relaunch made
+    /// a new one), and reattach a live terminal that lost its controller.
+    private func reconcileThreadTerminal(_ ref: ThreadRef, thread: ATCThread, in appModel: AppModel) {
+        if let linkedID = thread.linkedTerminalId {
+            let linkedRef = TerminalRef(connectionID: ref.connectionID, terminalID: linkedID)
+            threadTerminals[ref] = linkedRef
+            if let terminal = appModel.terminal(for: linkedRef), terminal.isLive,
+               appModel.terminals[linkedRef] == nil {
+                appModel.attachIfNeeded(
+                    to: terminal,
+                    connectionID: ref.connectionID,
+                    retentionContext: retentionContext
+                )
+            }
+            return
         }
-        return restored
+        // No live linked terminal server-side. Keep an ended controller's
+        // final frame (the relaunch affordance renders over it); drop the
+        // mapping only when nothing is retained for it anymore.
+        if let terminalRef = threadTerminals[ref], appModel.terminals[terminalRef] == nil {
+            threadTerminals[ref] = nil
+        }
     }
-
-    private func handleActiveWorkspaceGone(_ ref: WorkspaceRef) {
-        selectionMemory.forget(ref)
-        activeWorkspace = nil
-        pendingRestore = nil
-        selectedNavigator = .projects
-        selectedContent = .dashboard
-        isInspectorPresented = false
-        // The start-session sheet renders from the Active Workspace; left
-        // presented it would show an empty sheet with no way to cancel.
-        startSessionKind = nil
-    }
-}
-
-enum StartSessionKind: String, Identifiable {
-    case agentSession
-    case terminal
-
-    var id: String { rawValue }
-}
-
-struct CreateWorkspaceContext: Identifiable, Hashable {
-    enum Mode: Hashable {
-        case fixed(ProjectRef)
-        case preselected(ProjectRef)
-        case free
-    }
-
-    let mode: Mode
-    var id: CreateWorkspaceContext { self }
 }

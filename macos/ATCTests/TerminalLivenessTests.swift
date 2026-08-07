@@ -1,19 +1,21 @@
 import Foundation
 import Testing
-import ATCAPI
+import ATCAppServerTransport
 @testable import ATC
 
 /// Registry membership in `AppModel.terminals` means ownership (scrollback
 /// survives sidebar navigation); liveness is the controller's phase. These
-/// tests pin the distinction so ended terminals stop reading as "Connected".
+/// tests pin the distinction so an ended terminal never reads as "Connected",
+/// and a retained one is never mistaken for a live attach.
+@MainActor
 @Suite("Terminal liveness")
 struct TerminalLivenessTests {
-    @Test("every ended phase reads as not actively attached")
-    func endedPhases() {
+    @Test("only the ended phase reads as not actively attached")
+    func phaseTruthTable() {
         let ended: [AttachEndReason] = [
-            .sessionEnded,
-            .serverError,
-            .transportFailure("socket closed"),
+            .terminalEnded,
+            .rejected(statusCode: 404),
+            .retryable("socket closed"),
             .closedByClient,
         ]
         for reason in ended {
@@ -21,105 +23,78 @@ struct TerminalLivenessTests {
         }
         #expect(TerminalSessionController.Phase.connecting.isActivelyAttached)
         #expect(TerminalSessionController.Phase.connected.isActivelyAttached)
+        // Reconnecting counts as attached so the banner never flickers back
+        // through "Connecting" on every retry cycle.
+        #expect(TerminalSessionController.Phase.reconnecting.isActivelyAttached)
     }
 
-    @MainActor
-    @Test("an ended controller is retained for history but not live")
+    @Test("a terminal's server status drives whether it can be attached at all")
+    func serverStatusDrivesAttach() {
+        #expect(Fixtures.terminal(id: "t", status: .live).isLive)
+        #expect(!Fixtures.terminal(id: "t", status: .ended).isLive)
+    }
+
+    @Test("an ended controller stays in the registry for history but not for liveness")
     func endedControllerRetainedNotLive() async throws {
-        let appModel = AppModel.preview()
-        let runtime = try #require(appModel.runtimes.first)
-        for _ in 0..<100 where runtime.sessions.sessions.isEmpty {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        let session = try #require(runtime.sessions.sessions.first { $0.status == .live })
-        let ref = SessionRef(connectionID: runtime.id, sessionID: session.id)
+        let client = ScriptableAppServerClient()
+        Fixtures.seed(client)
+        let test = try makeModel(client: client)
+        await test.runtime.refresh()
 
-        appModel.attachIfNeeded(to: session, connectionID: runtime.id)
-        let controller = try #require(appModel.terminals[ref])
-        // Freshly attached: connecting counts as live for indicators.
-        #expect(appModel.hasLiveTerminals(connectionID: runtime.id))
-        #expect(appModel.activelyAttachedRefs.contains(ref))
+        let terminal = try #require(test.runtime.terminals.terminal(id: "trm_live"))
+        test.model.attachIfNeeded(to: terminal, connectionID: test.connectionID)
+        let ref = test.terminalRef("trm_live")
+        let controller = try #require(test.model.terminals[ref])
+        #expect(test.model.hasLiveTerminals(connectionID: test.connectionID))
 
-        // Ending the attach must not remove the controller (scrollback is
-        // retained) but must remove it from every liveness affordance.
-        controller.disconnect()
-        #expect(appModel.terminals[ref] != nil)
-        #expect(controller.phase == .ended(.closedByClient))
-        #expect(!appModel.hasLiveTerminals(connectionID: runtime.id))
-        #expect(!appModel.activelyAttachedRefs.contains(ref))
+        test.attach.send(.ended(.terminalEnded), attempt: 0, finish: true)
+        await settle(until: { controller.phase == .ended(.terminalEnded) })
+
+        // The surface is kept for its final frame; every liveness affordance
+        // drops it.
+        #expect(test.model.terminals[ref] != nil)
+        #expect(!controller.isActivelyAttached)
+        #expect(!test.model.hasLiveTerminals(connectionID: test.connectionID))
+        #expect(!test.model.activelyAttachedRefs.contains(ref))
     }
 
-    @MainActor
-    @Test("only a session_ended close reconciles the store and removes the terminal")
-    func socketEndRequiresAuthoritativeReason() async throws {
-        let appModel = AppModel.preview()
-        let runtime = try #require(appModel.runtimes.first)
-        for _ in 0..<100 where runtime.sessions.sessions.isEmpty {
-            try await Task.sleep(for: .milliseconds(20))
+    @Test("a terminal ending mid-attach refetches so the tombstone lands")
+    func endedTerminalRefetchesStores() async throws {
+        let client = ScriptableAppServerClient()
+        Fixtures.seed(client)
+        let test = try makeModel(client: client)
+        await test.runtime.refresh()
+
+        let terminal = try #require(test.runtime.terminals.terminal(id: "trm_live"))
+        test.model.attachIfNeeded(to: terminal, connectionID: test.connectionID)
+
+        client.terminals = client.terminals.map { existing in
+            guard existing.id == "trm_live" else { return existing }
+            var ended = existing
+            ended.status = .ended
+            return ended
         }
-        let session = try #require(runtime.sessions.sessions.first { $0.status == .live })
-        let ref = SessionRef(connectionID: runtime.id, sessionID: session.id)
+        test.attach.send(.ended(.terminalEnded), attempt: 0, finish: true)
 
-        appModel.attachIfNeeded(to: session, connectionID: runtime.id)
-        let controller = try #require(appModel.terminals[ref])
-
-        let plainClose = AttachConnection.endReason(
-            closeCode: .normalClosure,
-            closeReason: nil,
-            errorDescription: "closed"
-        )
-        #expect(plainClose == .transportFailure("closed"))
-        #expect(runtime.sessions.sessions.first { $0.id == session.id }?.status == .live)
-        #expect(appModel.terminals[ref] != nil)
-
-        let confirmedClose = AttachConnection.endReason(
-            closeCode: .normalClosure,
-            closeReason: Data("session_ended".utf8),
-            errorDescription: "closed"
-        )
-        #expect(confirmedClose == .sessionEnded)
-        controller.onSessionEnded?()
-        let reconciled = try #require(runtime.sessions.sessions.first { $0.id == session.id })
-        #expect(reconciled.status == .ended)
-        #expect(appModel.terminals[ref] == nil)
+        await settle(until: {
+            test.runtime.terminals.terminal(id: "trm_live")?.isLive == false
+        })
+        #expect(test.runtime.terminals.terminal(id: "trm_live")?.isLive == false)
     }
 
-    @Test("retryable close reasons never classify as a session end")
-    func retryableCloseReasonsStayLive() {
-        for reason in ["attach_failed", "zmx_unavailable"] {
-            #expect(AttachConnection.endReason(
-                closeCode: .internalServerError,
-                closeReason: Data(reason.utf8),
-                errorDescription: reason
-            ) == .serverError)
-        }
-        #expect(AttachConnection.endReason(
-            closeCode: .normalClosure,
-            closeReason: Data("other".utf8),
-            errorDescription: "other"
-        ) == .transportFailure("other"))
-        #expect(AttachConnection.endReason(
-            statusCode: 409,
-            closeCode: .normalClosure,
-            closeReason: nil,
-            errorDescription: "handshake"
-        ) == .sessionEnded)
-    }
-
-    @MainActor
-    @Test("explicit disconnect removes the controller from the registry")
+    @Test("an explicit disconnect removes the controller from the registry")
     func explicitDisconnectRemoves() async throws {
-        let appModel = AppModel.preview()
-        let runtime = try #require(appModel.runtimes.first)
-        for _ in 0..<100 where runtime.sessions.sessions.isEmpty {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        let session = try #require(runtime.sessions.sessions.first { $0.status == .live })
-        let ref = SessionRef(connectionID: runtime.id, sessionID: session.id)
+        let client = ScriptableAppServerClient()
+        Fixtures.seed(client)
+        let test = try makeModel(client: client)
+        await test.runtime.refresh()
 
-        appModel.attachIfNeeded(to: session, connectionID: runtime.id)
-        appModel.disconnectTerminal(ref: ref)
-        #expect(appModel.terminals[ref] == nil)
-        #expect(!appModel.hasLiveTerminals(connectionID: runtime.id))
+        let terminal = try #require(test.runtime.terminals.terminal(id: "trm_live"))
+        test.model.attachIfNeeded(to: terminal, connectionID: test.connectionID)
+        let ref = test.terminalRef("trm_live")
+
+        test.model.disconnectTerminal(ref: ref)
+        #expect(test.model.terminals[ref] == nil)
+        #expect(!test.model.hasLiveTerminals(connectionID: test.connectionID))
     }
 }

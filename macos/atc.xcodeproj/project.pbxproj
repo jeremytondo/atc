@@ -7,13 +7,16 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		AC00000000000000000000B1 /* ATCAPI in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A1 /* ATCAPI */; };
+		AC00000000000000000000B1 /* (null) in Frameworks */ = {isa = PBXBuildFile; };
 		AC00000000000000000000B2 /* GhosttyKit in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A2 /* GhosttyKit */; };
 		AC00000000000000000000B3 /* GhosttyTerminal in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A3 /* GhosttyTerminal */; };
 		AC00000000000000000000B4 /* GhosttyTheme in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A4 /* GhosttyTheme */; };
-		AC00000000000000000000B5 /* ATCAPI in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A5 /* ATCAPI */; };
+		AC00000000000000000000B5 /* (null) in Frameworks */ = {isa = PBXBuildFile; };
 		AC00000000000000000000B6 /* TOMLDecoder in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A6 /* TOMLDecoder */; };
 		AC00000000000000000000B7 /* ATCAppServerAPI in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A7 /* ATCAppServerAPI */; };
+		DEC8867630264F5C006D3531 /* ATCAppServerTransport in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A8 /* ATCAppServerTransport */; };
+		DEC8867730264F5C006D3531 /* ATCAppServerAPI in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A9 /* ATCAppServerAPI */; };
+		DEC8867830264F5C006D3531 /* ATCAppServerTransport in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000AA /* ATCAppServerTransport */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -49,7 +52,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				AC00000000000000000000B5 /* ATCAPI in Frameworks */,
+				DEC8867830264F5C006D3531 /* ATCAppServerTransport in Frameworks */,
+				DEC8867730264F5C006D3531 /* ATCAppServerAPI in Frameworks */,
+				AC00000000000000000000B5 /* (null) in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -57,7 +62,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				AC00000000000000000000B1 /* ATCAPI in Frameworks */,
+				DEC8867630264F5C006D3531 /* ATCAppServerTransport in Frameworks */,
+				AC00000000000000000000B1 /* (null) in Frameworks */,
 				AC00000000000000000000B7 /* ATCAppServerAPI in Frameworks */,
 				AC00000000000000000000B2 /* GhosttyKit in Frameworks */,
 				AC00000000000000000000B3 /* GhosttyTerminal in Frameworks */,
@@ -107,7 +113,8 @@
 			);
 			name = ATCTests;
 			packageProductDependencies = (
-				AC00000000000000000000A5 /* ATCAPI */,
+				AC00000000000000000000A9 /* ATCAppServerAPI */,
+				AC00000000000000000000AA /* ATCAppServerTransport */,
 			);
 			productName = ATCTests;
 			productReference = AC00000000000000000000D3 /* ATCTests.xctest */;
@@ -130,8 +137,8 @@
 			);
 			name = atc;
 			packageProductDependencies = (
-				AC00000000000000000000A1 /* ATCAPI */,
 				AC00000000000000000000A7 /* ATCAppServerAPI */,
+				AC00000000000000000000A8 /* ATCAppServerTransport */,
 				AC00000000000000000000A2 /* GhosttyKit */,
 				AC00000000000000000000A3 /* GhosttyTerminal */,
 				AC00000000000000000000A4 /* GhosttyTheme */,
@@ -510,10 +517,6 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		AC00000000000000000000A1 /* ATCAPI */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = ATCAPI;
-		};
 		AC00000000000000000000A2 /* GhosttyKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = AC00000000000000000000C2 /* XCRemoteSwiftPackageReference "libghostty-spm" */;
@@ -529,10 +532,6 @@
 			package = AC00000000000000000000C2 /* XCRemoteSwiftPackageReference "libghostty-spm" */;
 			productName = GhosttyTheme;
 		};
-		AC00000000000000000000A5 /* ATCAPI */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = ATCAPI;
-		};
 		AC00000000000000000000A6 /* TOMLDecoder */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = AC00000000000000000000C3 /* XCRemoteSwiftPackageReference "TOMLDecoder" */;
@@ -541,6 +540,18 @@
 		AC00000000000000000000A7 /* ATCAppServerAPI */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = ATCAppServerAPI;
+		};
+		AC00000000000000000000A8 /* ATCAppServerTransport */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ATCAppServerTransport;
+		};
+		AC00000000000000000000A9 /* ATCAppServerAPI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ATCAppServerAPI;
+		};
+		AC00000000000000000000AA /* ATCAppServerTransport */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ATCAppServerTransport;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

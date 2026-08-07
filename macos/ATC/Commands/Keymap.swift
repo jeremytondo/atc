@@ -18,13 +18,12 @@ enum Keymap {
         ("cmd+b", .toggleSidebar), ("leader>b", .toggleSidebar),
         ("cmd+shift+p", .toggleCommandPalette),
         ("cmd+d", .showDashboard), ("leader>d", .showDashboard),
-        ("cmd+n", .newSession), ("leader>n", .newSession),
+        ("cmd+n", .newThread), ("leader>n", .newThread),
         ("cmd+r", .refresh), ("leader>r", .refresh),
         ("cmd+t", .newTerminal),
-        ("cmd+shift+n", .newWorkspace),
-        ("cmd+shift+s", .searchSessions), ("leader>s", .searchSessions),
+        ("cmd+shift+n", .newProject),
+        ("cmd+shift+s", .searchThreads), ("leader>s", .searchThreads),
         ("cmd+shift+t", .searchTerminals), ("leader>t", .searchTerminals),
-        ("cmd+shift+o", .searchWorkspaces), ("leader>w", .searchWorkspaces),
     ]
 
     static func resolve(

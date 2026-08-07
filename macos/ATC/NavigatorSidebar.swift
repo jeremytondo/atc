@@ -1,369 +1,594 @@
+// The single sidebar: Dashboard, New Thread, pinned threads, the thread
+// filter, the filtered thread list, and the contextual Terminals section —
+// one scroll view, in that order.
+//
+// Two invariants the layout does not reveal: the filter governs the thread
+// list ONLY (pins, Dashboard, New Thread and Terminals are global), and the
+// filtered thread list collapses back to `initialRowLimit` when the filter
+// changes, so a deep-scrolled list never carries over into an unrelated one
+// (pins are filter-independent and keep their expansion).
+//
+// Mutations are never optimistic. A row whose mutation is in flight keeps its
+// place with its controls disabled (`inFlightThreads`); the SSE-driven
+// refresh is what reorders it.
+
+import ATCAppServerAPI
 import SwiftUI
-import ATCAPI
 
 struct NavigatorSidebar: View {
-    @Environment(WindowState.self) private var windowState
+    /// Rows shown before the inline More control takes over.
+    private static let initialRowLimit = 5
 
-    var body: some View {
-        @Bindable var windowState = windowState
-        VStack(spacing: 0) {
-            NavigatorSelector(selection: $windowState.selectedNavigator)
-            switch windowState.selectedNavigator {
-            case .projects:
-                ProjectsNavigatorView()
-            case .workspace:
-                WorkspaceNavigatorView()
-            case .file:
-                FileNavigatorView()
-            }
-        }
-        .navigationSplitViewColumnWidth(min: 220, ideal: 280)
-    }
-}
-
-extension NavigatorID {
-    var selectorLabel: String {
-        switch self {
-        case .projects: "Projects"
-        case .workspace: "Workspace"
-        case .file: "Files"
-        }
-    }
-
-    var label: String {
-        switch self {
-        case .projects: "Projects Navigator"
-        case .workspace: "Workspace Navigator"
-        case .file: "File Navigator"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .projects: "folder"
-        case .workspace: "rectangle.stack"
-        case .file: "doc.text"
-        }
-    }
-}
-
-/// Native segmented navigation in an inset system surface, matching the
-/// hierarchy and interaction model of Xcode's Navigator selector.
-struct NavigatorSelector: View {
-    @Environment(WindowState.self) private var windowState
-    @Binding var selection: NavigatorID
-
-    var body: some View {
-        let options = NavigatorSelectorOption.all(
-            hasActiveWorkspace: windowState.activeWorkspace != nil
-        )
-        Picker("Navigator", selection: $selection) {
-            ForEach(options) { option in
-                Label(option.id.selectorLabel, systemImage: option.id.systemImage)
-                    .labelStyle(.titleAndIcon)
-                    .accessibilityLabel(option.id.label)
-                    .help(option.help)
-                    .tag(option.id)
-                    // .disabled is inert on segmented picker options;
-                    // only .selectionDisabled actually blocks selection.
-                    .selectionDisabled(!option.isEnabled)
-            }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .controlSize(.large)
-        .tint(.accentColor)
-        .padding(.horizontal, NavigatorMetrics.horizontalPadding)
-        .padding(.bottom, NavigatorMetrics.selectorToContentSpacing)
-    }
-}
-
-struct NavigatorSelectorOption: Identifiable, Equatable {
-    let id: NavigatorID
-    let isEnabled: Bool
-    let help: String
-
-    static func all(hasActiveWorkspace: Bool) -> [NavigatorSelectorOption] {
-        NavigatorID.allCases.map { navigator in
-            let enabled = navigator == .projects || hasActiveWorkspace
-            return NavigatorSelectorOption(
-                id: navigator,
-                isEnabled: enabled,
-                help: enabled ? navigator.label : "Requires an Active Workspace"
-            )
-        }
-    }
-}
-
-struct ProjectsNavigatorView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(WindowState.self) private var windowState
 
-    @State private var renamingProject: ProjectsNavigatorGroups.ProjectGroup?
-    @State private var renamingWorkspace: ProjectsNavigatorGroups.WorkspaceRow?
+    @State private var renamingThread: ThreadListItem?
+    @State private var renamingTerminal: TerminalRef?
     @State private var renameDraft = ""
-    @State private var deletingProject: ProjectsNavigatorGroups.ProjectGroup?
-    @State private var deletingWorkspace: ProjectsNavigatorGroups.WorkspaceRow?
+    @State private var deletingThread: ThreadListItem?
+    @State private var deletingTerminal: TerminalRef?
+    @State private var inFlightThreads: Set<ThreadRef> = []
     @State private var actionError: String?
+    @FocusState private var focusedThread: ThreadRef?
 
     var body: some View {
         @Bindable var windowState = windowState
-        let groups = ProjectsNavigatorGroups(runtimes: appModel.runtimes)
+        let model = ThreadListModel(
+            inputs: appModel.runtimes.map(ThreadListModel.ConnectionInput.init(runtime:)),
+            filter: windowState.threadFilter
+        )
         NavigatorList {
-            NavigatorRow(
-                isSelected: windowState.selectedContent == .dashboard,
-                action: { windowState.showDashboard() }
-            ) { _ in
-                NavigatorIconLabel(title: "Dashboard", systemImage: "rectangle.3.group")
-            } actions: {
-                EmptyView()
+            dashboardRow
+            newThreadRow
+
+            if !model.pinned.isEmpty {
+                sectionLabel("Pinned")
+                threadCards(model.pinned, isExpanded: $windowState.isPinnedExpanded)
             }
 
-            NavigatorDisclosureHeader(
-                title: "Projects",
-                isExpanded: $windowState.isProjectsSectionExpanded,
-                addHelp: "New project",
-                isAddEnabled: true,
-                onAdd: { windowState.isCreateProjectPresented = true }
-            )
+            filterRow(model)
+            threadListSection(model)
 
-            if windowState.isProjectsSectionExpanded {
-                ForEach(groups.projects) { group in
-                    projectRow(group)
-                    if windowState.expandedProjects.contains(group.ref) {
-                        ForEach(group.workspaces) { row in
-                            workspaceRow(row, in: group)
-                        }
-                        if group.workspaces.isEmpty {
-                            Text("No workspaces")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                                .padding(.leading, NavigatorMetrics.nestedIndent)
-                                .navigatorListRow()
-                        }
-                    }
-                }
+            if let project = windowState.activeProject {
+                terminalsSection(project)
             }
         }
-        .alert("Rename Project", isPresented: Binding(
-            get: { renamingProject != nil },
-            set: { if !$0 { renamingProject = nil } }
-        )) {
-            TextField("Name", text: $renameDraft)
-            Button("Rename") {
-                if let group = renamingProject,
-                   let store = appModel.runtime(id: group.ref.connectionID)?.projects {
-                    let name = renameDraft.trimmingCharacters(in: .whitespaces)
-                    appModel.run(on: group.ref.connectionID, reporting: $actionError) {
-                        try await store.rename(id: group.project.id, name: name)
-                    }
-                }
-            }
-            .disabled(
-                renameDraft.trimmingCharacters(in: .whitespaces).isEmpty
-                    || !(renamingProject.map { canMutate($0.ref.connectionID) } ?? false)
-            )
-            Button("Cancel", role: .cancel) {}
+        .navigationSplitViewColumnWidth(min: 240, ideal: 300)
+        .renameAlert("Rename Thread", item: $renamingThread, draft: $renameDraft) { item, name in
+            mutateThread(item.ref) { try await $0.rename(id: item.ref.threadID, name: name) }
         }
-        .alert("Rename Workspace", isPresented: Binding(
-            get: { renamingWorkspace != nil },
-            set: { if !$0 { renamingWorkspace = nil } }
-        )) {
-            TextField("Name", text: $renameDraft)
-            Button("Rename") {
-                if let row = renamingWorkspace,
-                   let store = appModel.runtime(id: row.ref.connectionID)?.workspaces {
-                    let name = renameDraft.trimmingCharacters(in: .whitespaces)
-                    appModel.run(on: row.ref.connectionID, reporting: $actionError) {
-                        try await store.rename(id: row.workspace.id, name: name)
-                    }
+        .renameAlert("Rename Terminal", item: $renamingTerminal, draft: $renameDraft) { ref, name in
+            if let store = appModel.runtime(id: ref.connectionID)?.terminals {
+                appModel.run(on: ref.connectionID, reporting: $actionError) {
+                    try await store.rename(id: ref.terminalID, name: name)
                 }
             }
-            .disabled(
-                renameDraft.trimmingCharacters(in: .whitespaces).isEmpty
-                    || !(renamingWorkspace.map { canMutate($0.ref.connectionID) } ?? false)
-            )
-            Button("Cancel", role: .cancel) {}
         }
         .confirmationDialog(
-            "Delete Project “\(deletingProject?.project.name ?? "")”?",
-            isPresented: Binding(
-                get: { deletingProject != nil },
-                set: { if !$0 { deletingProject = nil } }
-            )
+            "Delete Thread “\(deletingThread?.thread.displayName ?? "")”?",
+            isPresented: Binding(presented: $deletingThread)
         ) {
-            Button("Delete Project", role: .destructive) {
-                if let group = deletingProject {
-                    appModel.run(on: group.ref.connectionID, reporting: $actionError) {
-                        try await appModel.deleteProject(group.ref)
-                    }
+            Button("Delete Thread", role: .destructive) {
+                if let item = deletingThread {
+                    mutateThread(item.ref) { try await $0.delete(id: item.ref.threadID) }
                 }
             }
-            .disabled(!(deletingProject.map { canMutate($0.ref.connectionID) } ?? false))
-        }
-        .confirmationDialog(
-            "Delete Workspace “\(deletingWorkspace?.workspace.name ?? "")”?",
-            isPresented: Binding(
-                get: { deletingWorkspace != nil },
-                set: { if !$0 { deletingWorkspace = nil } }
-            )
-        ) {
-            Button("Delete Workspace", role: .destructive) {
-                if let row = deletingWorkspace,
-                   let store = appModel.runtime(id: row.ref.connectionID)?.workspaces {
-                    appModel.run(on: row.ref.connectionID, reporting: $actionError) {
-                        try await store.delete(id: row.workspace.id)
-                        windowState.forgetSelection(for: row.ref)
-                    }
-                }
-            }
-            .disabled(!(deletingWorkspace.map { canMutate($0.ref.connectionID) } ?? false))
         } message: {
-            if let row = deletingWorkspace {
-                Text(DeleteConfirmation.workspaceMessage(
-                    name: row.workspace.name,
-                    sessionCount: row.sessionCount,
-                    activeCount: row.activeSessionCount
-                ))
+            Text("""
+            This removes the thread from atc and ends its TUI terminal if one is \
+            still running. The agent's own conversation history is not touched.
+            """)
+        }
+        .confirmationDialog(
+            "Delete Terminal “\(deletingTerminalName)”?",
+            isPresented: Binding(presented: $deletingTerminal)
+        ) {
+            Button("Delete Terminal", role: .destructive) {
+                if let ref = deletingTerminal,
+                   let store = appModel.runtime(id: ref.connectionID)?.terminals {
+                    appModel.run(on: ref.connectionID, reporting: $actionError) {
+                        try await store.delete(id: ref.terminalID)
+                    }
+                }
             }
+        } message: {
+            Text("A live terminal is ended, and its scrollback is discarded.")
         }
         .actionErrorAlert($actionError)
     }
 
-    private func projectRow(_ group: ProjectsNavigatorGroups.ProjectGroup) -> some View {
+    // MARK: - Fixed rows
+
+    private var dashboardRow: some View {
         NavigatorRow(
-            action: {
-                if windowState.expandedProjects.contains(group.ref) {
-                    windowState.expandedProjects.remove(group.ref)
-                } else {
-                    windowState.expandedProjects.insert(group.ref)
+            isSelected: windowState.selectedContent == .dashboard,
+            action: { windowState.showDashboard() }
+        ) { _ in
+            NavigatorIconLabel(title: "Dashboard", systemImage: "rectangle.3.group")
+        } actions: {
+            EmptyView()
+        }
+    }
+
+    private var newThreadRow: some View {
+        NavigatorRow(
+            isEnabled: canCreateAnywhere,
+            action: { windowState.presentNewThread(in: appModel) }
+        ) { _ in
+            NavigatorIconLabel(title: "New Thread", systemImage: "plus.bubble")
+        } actions: {
+            EmptyView()
+        }
+    }
+
+    private func filterRow(_ model: ThreadListModel) -> some View {
+        HStack(spacing: Spacing.xs) {
+            Menu {
+                Button("All Projects") { select(.all) }
+                if !model.projects.isEmpty {
+                    Divider()
+                    ForEach(model.projects) { option in
+                        Button(option.label) { select(.project(option.ref)) }
+                    }
+                }
+                Divider()
+                Button("Archived") { select(.archived) }
+            } label: {
+                HStack(spacing: Spacing.xs) {
+                    Text(filterTitle(model))
+                        .font(.headline)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .foregroundStyle(.secondary)
+            .help("Filter threads")
+
+            NavigatorActionButton(
+                systemImage: "folder.badge.plus",
+                help: "New project",
+                isEnabled: canCreateAnywhere
+            ) {
+                windowState.isCreateProjectPresented = true
+            }
+        }
+        .padding(.horizontal, NavigatorMetrics.contentHorizontalPadding)
+        .frame(minHeight: NavigatorMetrics.rowHeight)
+        .navigatorListRow(top: Spacing.md)
+    }
+
+    // MARK: - Thread list
+
+    @ViewBuilder
+    private func threadListSection(_ model: ThreadListModel) -> some View {
+        @Bindable var windowState = windowState
+        if case .archived = windowState.threadFilter {
+            if model.archived.isEmpty {
+                emptyLabel("No Archived Threads")
+            } else {
+                ForEach(limited(model.archived, expanded: windowState.isArchivedExpanded)) { item in
+                    archivedRow(item)
+                }
+                moreControl(total: model.archived.count, isExpanded: $windowState.isArchivedExpanded)
+            }
+        } else if model.recent.isEmpty {
+            emptyLabel("No Threads")
+        } else {
+            threadCards(model.recent, isExpanded: $windowState.isRecentExpanded)
+        }
+    }
+
+    @ViewBuilder
+    private func threadCards(_ items: [ThreadListItem], isExpanded: Binding<Bool>) -> some View {
+        ForEach(limited(items, expanded: isExpanded.wrappedValue)) { item in
+            ThreadCard(
+                item: item,
+                isSelected: windowState.isThreadHighlighted(item.ref),
+                isBusy: inFlightThreads.contains(item.ref),
+                canMutate: appModel.canMutate(connectionID: item.ref.connectionID),
+                focusedThread: $focusedThread,
+                onOpen: { Task { await windowState.openThread(item.ref, in: appModel) } },
+                onRename: {
+                    renameDraft = item.thread.name ?? ""
+                    renamingThread = item
+                },
+                onTogglePin: {
+                    mutateThread(item.ref) { store in
+                        if item.thread.isPinned {
+                            try await store.unpin(id: item.ref.threadID)
+                        } else {
+                            try await store.pin(id: item.ref.threadID)
+                        }
+                    }
+                },
+                onArchive: {
+                    mutateThread(item.ref) { try await $0.archive(id: item.ref.threadID) }
+                }
+            )
+        }
+        moreControl(total: items.count, isExpanded: isExpanded)
+    }
+
+    /// Archived threads are management rows, not navigation: Restore returns
+    /// the thread to the list and opens it, Delete is the only other action.
+    private func archivedRow(_ item: ThreadListItem) -> some View {
+        let enabled = appModel.canMutate(connectionID: item.ref.connectionID)
+            && !inFlightThreads.contains(item.ref)
+        return HStack(spacing: Spacing.sm) {
+            Text("\(item.projectLabel) › \(item.thread.displayName)")
+                .font(.callout)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: Spacing.sm)
+            Button {
+                restore(item)
+            } label: {
+                Image(systemName: "arrow.uturn.backward")
+                    .frame(width: NavigatorMetrics.actionSize, height: NavigatorMetrics.actionSize)
+            }
+            .buttonStyle(.plain)
+            .disabled(!enabled)
+            .help("Restore and open")
+            .accessibilityLabel("Restore \(item.thread.displayName)")
+
+            Button {
+                deletingThread = item
+            } label: {
+                Image(systemName: "trash")
+                    .frame(width: NavigatorMetrics.actionSize, height: NavigatorMetrics.actionSize)
+            }
+            .buttonStyle(.plain)
+            .disabled(!enabled)
+            .help("Delete thread")
+            .accessibilityLabel("Delete \(item.thread.displayName)")
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, NavigatorMetrics.contentHorizontalPadding)
+        .frame(minHeight: NavigatorMetrics.rowHeight)
+        .navigatorListRow()
+    }
+
+    // MARK: - Terminals
+
+    @ViewBuilder
+    private func terminalsSection(_ project: ProjectRef) -> some View {
+        @Bindable var windowState = windowState
+        let terminals = appModel.runtime(id: project.connectionID)?
+            .terminals.standaloneTerminals(projectID: project.projectID) ?? []
+        NavigatorDisclosureHeader(
+            title: "Terminals",
+            isExpanded: $windowState.isTerminalsSectionExpanded,
+            addHelp: "New terminal",
+            isAddEnabled: appModel.canMutate(connectionID: project.connectionID),
+            onAdd: { windowState.newTerminalProject = project }
+        )
+        if windowState.isTerminalsSectionExpanded {
+            if terminals.isEmpty {
+                emptyLabel("No Terminals")
+            } else {
+                ForEach(terminals, id: \.id) { terminal in
+                    terminalRow(terminal, connectionID: project.connectionID)
                 }
             }
-        ) { isHovering in
+        }
+    }
+
+    private func terminalRow(_ terminal: Terminal, connectionID: UUID) -> some View {
+        let ref = TerminalRef(connectionID: connectionID, terminalID: terminal.id)
+        return NavigatorRow(
+            isSelected: windowState.selectedContent == .terminal(ref),
+            action: { windowState.selectTerminal(ref, in: appModel) }
+        ) { _ in
             HStack(spacing: Spacing.sm) {
-                Image(systemName: windowState.expandedProjects.contains(group.ref) ? "folder.fill" : "folder")
+                Image(systemName: "terminal")
                     .frame(width: NavigatorMetrics.iconWidth, alignment: .leading)
                     .foregroundStyle(.secondary)
-                Text(group.project.name)
+                Text(terminal.displayName)
                     .lineLimit(1)
-                Spacer(minLength: Spacing.sm)
-                if !isHovering {
-                    HStack(spacing: Spacing.xs) {
-                        Text(group.connectionName)
-                            .lineLimit(1)
-                        StatusDot(color: group.reachability.color, size: .inline)
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if !terminal.isLive {
+                    Text("Ended")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
             }
         } actions: {
-            NavigatorActionMenu(systemImage: "ellipsis", help: "Project actions") {
-                projectMenu(group)
-            }
-            NavigatorActionButton(
-                systemImage: "plus",
-                help: "New workspace",
-                isEnabled: group.reachability == .connected
-            ) {
-                windowState.createWorkspaceContext = .init(mode: .fixed(group.ref))
-            }
+            EmptyView()
         }
-        .contextMenu { projectMenu(group) }
+        .contextMenu {
+            Button("Rename…", systemImage: "pencil") {
+                renameDraft = terminal.name ?? ""
+                renamingTerminal = ref
+            }
+            .disabled(!appModel.canMutate(connectionID: connectionID))
+            Divider()
+            Button("Delete Terminal…", systemImage: "trash", role: .destructive) {
+                deletingTerminal = ref
+            }
+            .disabled(!appModel.canMutate(connectionID: connectionID))
+        }
+    }
+
+    // MARK: - Shared row chrome
+
+    private func sectionLabel(_ title: String) -> some View {
+        Text(title)
+            .font(.headline)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, NavigatorMetrics.contentHorizontalPadding)
+            .frame(minHeight: NavigatorMetrics.rowHeight, alignment: .leading)
+            .navigatorListRow(top: Spacing.md)
+    }
+
+    private func emptyLabel(_ title: String) -> some View {
+        Text(title)
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+            .padding(.horizontal, NavigatorMetrics.contentHorizontalPadding)
+            .frame(minHeight: NavigatorMetrics.rowHeight, alignment: .leading)
+            .navigatorListRow()
     }
 
     @ViewBuilder
-    private func projectMenu(_ group: ProjectsNavigatorGroups.ProjectGroup) -> some View {
-        Button("New Workspace…", systemImage: "plus") {
-            windowState.createWorkspaceContext = .init(mode: .fixed(group.ref))
-        }
-        .disabled(group.reachability != .connected)
-        Button("Rename…", systemImage: "pencil") {
-            renameDraft = group.project.name
-            renamingProject = group
-        }
-        .disabled(group.reachability != .connected)
-        Button("Workspace Startup…", systemImage: "rectangle.stack.badge.plus") {
-            windowState.workspaceStartupProject = group.ref
-        }
-        Divider()
-        Button("Delete Project…", systemImage: "trash", role: .destructive) {
-            deletingProject = group
-        }
-        .disabled(group.reachability != .connected || group.totalWorkspaceCount > 0)
-    }
-
-    private func workspaceRow(
-        _ row: ProjectsNavigatorGroups.WorkspaceRow,
-        in group: ProjectsNavigatorGroups.ProjectGroup
-    ) -> some View {
-        let enabled = group.reachability == .connected
-        let selected = windowState.selectedContent != .dashboard
-            && windowState.activeWorkspace == row.ref
-        return NavigatorRow(
-            isSelected: selected,
-            isEnabled: enabled,
-            leadingIndent: NavigatorMetrics.nestedIndent,
-            action: {
-                _ = windowState.activateWorkspace(row.ref, in: appModel)
+    private func moreControl(total: Int, isExpanded: Binding<Bool>) -> some View {
+        if total > Self.initialRowLimit {
+            Button {
+                isExpanded.wrappedValue.toggle()
+            } label: {
+                Text(isExpanded.wrappedValue
+                    ? "Hide"
+                    : "More (\(total - Self.initialRowLimit))")
+                    .font(.caption.weight(.medium))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
             }
-        ) { _ in
-            Text(row.workspace.name)
-                .lineLimit(1)
-        } actions: {}
-        .opacity(enabled ? 1 : Dimming.unavailable)
-        .contextMenu { workspaceMenu(row, enabled: enabled) }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, NavigatorMetrics.contentHorizontalPadding)
+            .frame(minHeight: NavigatorMetrics.rowHeight, alignment: .leading)
+            .navigatorListRow()
+        }
     }
 
-    @ViewBuilder
-    private func workspaceMenu(
-        _ row: ProjectsNavigatorGroups.WorkspaceRow,
-        enabled: Bool
-    ) -> some View {
-        Button("Open", systemImage: "arrow.up.forward.square") {
-            _ = windowState.activateWorkspace(row.ref, in: appModel)
+    // MARK: - Actions
+
+    /// Every filter change resets both list limits: a "More" state belongs to
+    /// the list it was opened on, never to whatever replaces it.
+    private func select(_ filter: ThreadFilter) {
+        windowState.threadFilter = filter
+        windowState.isRecentExpanded = false
+        windowState.isArchivedExpanded = false
+        guard case .archived = filter else { return }
+        for runtime in appModel.runtimes {
+            Task { await runtime.threads.loadArchivedIfNeeded() }
         }
-        .disabled(!enabled)
-        Button("New Session", systemImage: "plus.bubble") {
-            presentStart(.agentSession, in: row.ref)
-        }
-        .disabled(!enabled)
-        Button("New Terminal", systemImage: "terminal") {
-            presentStart(.terminal, in: row.ref)
-        }
-        .disabled(!enabled)
-        Divider()
-        Button("Rename…", systemImage: "pencil") {
-            renameDraft = row.workspace.name
-            renamingWorkspace = row
-        }
-        .disabled(!enabled)
-        Button("Delete…", systemImage: "trash", role: .destructive) {
-            deletingWorkspace = row
-        }
-        .disabled(!enabled)
     }
 
-    private func presentStart(_ kind: StartSessionKind, in ref: WorkspaceRef) {
-        guard windowState.activateWorkspace(ref, in: appModel),
-              appModel.canStartSession(in: ref)
-        else { return }
-        windowState.startSessionKind = kind
+    private func restore(_ item: ThreadListItem) {
+        mutateThread(item.ref) { store in
+            try await store.unarchive(id: item.ref.threadID)
+            await windowState.openThread(item.ref, in: appModel)
+        }
     }
 
-    private func canMutate(_ connectionID: UUID) -> Bool {
-        appModel.canMutate(connectionID: connectionID)
+    /// Owns the in-flight mark outside the operation: a refused mutation
+    /// (unreachable Connection) must release the row, not freeze it.
+    private func mutateThread(
+        _ ref: ThreadRef,
+        _ operation: @escaping (ThreadsStore) async throws -> Void
+    ) {
+        guard let store = appModel.runtime(id: ref.connectionID)?.threads else { return }
+        guard appModel.canMutate(connectionID: ref.connectionID) else {
+            actionError = "The connection is unavailable."
+            return
+        }
+        inFlightThreads.insert(ref)
+        Task {
+            defer { inFlightThreads.remove(ref) }
+            do {
+                try await operation(store)
+            } catch {
+                actionError = error.localizedDescription
+            }
+        }
+    }
+
+    // MARK: - Derived state
+
+    private var canCreateAnywhere: Bool {
+        appModel.runtimes.contains { appModel.canMutate(connectionID: $0.id) }
+    }
+
+    private var deletingTerminalName: String {
+        deletingTerminal.flatMap { appModel.terminal(for: $0)?.displayName } ?? ""
+    }
+
+    private func filterTitle(_ model: ThreadListModel) -> String {
+        switch windowState.threadFilter {
+        case .all: "All Projects"
+        case .archived: "Archived"
+        case .project(let ref):
+            model.projects.first { $0.ref == ref }?.label ?? "Project"
+        }
+    }
+
+    private func limited<T>(_ items: [T], expanded: Bool) -> [T] {
+        expanded ? items : Array(items.prefix(Self.initialRowLimit))
     }
 }
 
-struct FileNavigatorView: View {
-    static let unavailableMessage = "File navigation is not available yet"
+/// One thread in the sidebar. The whole card opens the thread; Pin and
+/// Archive stay out of sight until hover or keyboard focus, and remain
+/// independently clickable and tabbable when shown.
+private struct ThreadCard: View {
+    let item: ThreadListItem
+    let isSelected: Bool
+    let isBusy: Bool
+    let canMutate: Bool
+    @FocusState.Binding var focusedThread: ThreadRef?
+    let onOpen: () -> Void
+    let onRename: () -> Void
+    let onTogglePin: () -> Void
+    let onArchive: () -> Void
+
+    @State private var isHovering = false
+
+    private var isFocused: Bool { focusedThread == item.ref }
 
     var body: some View {
-        ContentUnavailableView(
-            Self.unavailableMessage,
-            systemImage: "doc"
-        )
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        let thread = item.thread
+        HStack(alignment: .top, spacing: Spacing.sm) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: Spacing.xs) {
+                    Text(thread.displayName)
+                        .font(.callout.weight(.medium))
+                        .lineLimit(1)
+                    if thread.activityState == .working {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .controlSize(.mini)
+                            .accessibilityLabel("Working")
+                    }
+                }
+                HStack(spacing: Spacing.xs) {
+                    Text(item.projectLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    if thread.activityState == .needsInput {
+                        needsInputBadge
+                    }
+                }
+                if let directory = item.distinctWorkingDirectory {
+                    Text(directory)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            trailingColumn
+        }
+        .padding(.horizontal, NavigatorMetrics.contentHorizontalPadding)
+        .padding(.vertical, Spacing.sm)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                .fill(backgroundStyle)
+        }
+        .overlay {
+            if isFocused {
+                RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                    .stroke(Color.accentColor, lineWidth: 1)
+            }
+        }
+        .opacity(isBusy ? Dimming.unavailable : 1)
+        .contentShape(Rectangle())
+        .onHover { isHovering = $0 }
+        .focusable()
+        .focusEffectDisabled()
+        .focused($focusedThread, equals: item.ref)
+        .onTapGesture {
+            focusedThread = item.ref
+            onOpen()
+        }
+        .onKeyPress(.return) {
+            onOpen()
+            return .handled
+        }
+        .contextMenu {
+            Button("Rename…", systemImage: "pencil", action: onRename)
+                .disabled(!canMutate || isBusy)
+            Button(
+                thread.isPinned ? "Unpin" : "Pin",
+                systemImage: thread.isPinned ? "pin.slash" : "pin",
+                action: onTogglePin
+            )
+            .disabled(!canMutate || isBusy)
+            Button("Archive", systemImage: "archivebox", action: onArchive)
+                .disabled(!canMutate || isBusy || thread.activityState == .working)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAction(named: "Open", onOpen)
+        .navigatorListRow()
+    }
+
+    private var trailingColumn: some View {
+        VStack(alignment: .trailing, spacing: Spacing.xs) {
+            if isHovering || isFocused {
+                HStack(spacing: 0) {
+                    cardAction(
+                        systemImage: item.thread.isPinned ? "pin.slash" : "pin",
+                        help: item.thread.isPinned ? "Unpin" : "Pin",
+                        isEnabled: canMutate && !isBusy,
+                        action: onTogglePin
+                    )
+                    cardAction(
+                        systemImage: "archivebox",
+                        help: "Archive",
+                        // The server refuses archiving a working thread; the
+                        // control is disabled rather than surfacing that as an
+                        // error the user did not ask for.
+                        isEnabled: canMutate && !isBusy
+                            && item.thread.activityState != .working,
+                        action: onArchive
+                    )
+                }
+            } else {
+                // Reserve the action row's height so the card does not
+                // resize under the pointer.
+                Color.clear.frame(height: NavigatorMetrics.actionSize)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: item.thread.agentId.systemImage)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .accessibilityLabel(item.thread.agentId.displayName)
+        }
+        .frame(width: NavigatorMetrics.actionSize * 2)
+    }
+
+    private func cardAction(
+        systemImage: String,
+        help: String,
+        isEnabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.caption)
+                .frame(width: NavigatorMetrics.actionSize, height: NavigatorMetrics.actionSize)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .disabled(!isEnabled)
+        .help(help)
+        .accessibilityLabel(help)
+    }
+
+    /// Symbol plus text, never color alone — the badge has to read for
+    /// color-blind users and in monochrome accessibility modes.
+    private var needsInputBadge: some View {
+        Label("Needs input", systemImage: "exclamationmark.bubble.fill")
+            .font(.caption2.weight(.semibold))
+            .labelStyle(.titleAndIcon)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Color.accentColor.opacity(0.22), in: Capsule())
+            .foregroundStyle(Color.accentColor)
+    }
+
+    private var backgroundStyle: AnyShapeStyle {
+        if isSelected { return AnyShapeStyle(Color.accentColor.opacity(0.28)) }
+        if isHovering { return AnyShapeStyle(.quaternary) }
+        return AnyShapeStyle(Color.clear)
     }
 }

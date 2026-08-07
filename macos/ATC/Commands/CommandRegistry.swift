@@ -19,15 +19,15 @@ enum CommandAvailability: Equatable {
 
 enum CommandCategory: CaseIterable, Sendable {
     case general
-    case projectsAndWorkspaces
-    case sessionsAndTerminals
+    case projects
+    case threadsAndTerminals
     case view
 
     var title: String {
         switch self {
         case .general: "General"
-        case .projectsAndWorkspaces: "Projects & Workspaces"
-        case .sessionsAndTerminals: "Sessions & Terminals"
+        case .projects: "Projects"
+        case .threadsAndTerminals: "Threads & Terminals"
         case .view: "View"
         }
     }
@@ -45,9 +45,8 @@ struct CommandDescriptor {
 
 @MainActor
 enum CommandRegistry {
-    private static let sessionUnavailable =
-        "Requires an open Workspace on a reachable Connection"
-    private static let connectionUnavailable = "Requires a configured Connection"
+    private static let connectionUnavailable = "Requires a reachable Connection"
+    private static let projectContextUnavailable = "Requires an open Project"
     private static let dialogUnavailable = "Not available while a dialog is open"
 
     static var allDescriptors: [CommandDescriptor] {
@@ -80,14 +79,14 @@ enum CommandRegistry {
                         $0.windowState.commandPalettePresentation == nil ? .all : nil
                 }
             )
-        case .searchSessions:
+        case .searchThreads:
             CommandDescriptor(
                 id: id,
-                title: "Search Sessions…",
+                title: "Search Threads…",
                 category: .view,
                 isPaletteEligible: false,
-                availability: { scopedPaletteAvailability($0, requiresWorkspace: true) },
-                perform: { $0.windowState.commandPalettePresentation = .sessions }
+                availability: scopedPaletteAvailability,
+                perform: { $0.windowState.commandPalettePresentation = .threads }
             )
         case .searchTerminals:
             CommandDescriptor(
@@ -95,17 +94,8 @@ enum CommandRegistry {
                 title: "Search Terminals…",
                 category: .view,
                 isPaletteEligible: false,
-                availability: { scopedPaletteAvailability($0, requiresWorkspace: true) },
+                availability: scopedPaletteAvailability,
                 perform: { $0.windowState.commandPalettePresentation = .terminals }
-            )
-        case .searchWorkspaces:
-            CommandDescriptor(
-                id: id,
-                title: "Search Workspaces…",
-                category: .view,
-                isPaletteEligible: false,
-                availability: { scopedPaletteAvailability($0, requiresWorkspace: false) },
-                perform: { $0.windowState.commandPalettePresentation = .workspaces }
             )
         case .showDashboard:
             CommandDescriptor(
@@ -115,37 +105,39 @@ enum CommandRegistry {
                 availability: { _ in .available },
                 perform: { $0.windowState.showDashboard() }
             )
-        case .newSession:
+        case .newThread:
             CommandDescriptor(
                 id: id,
-                title: "New Session",
-                category: .sessionsAndTerminals,
-                availability: sessionAvailability,
-                perform: { $0.windowState.startSessionKind = .agentSession }
+                title: "New Thread",
+                category: .threadsAndTerminals,
+                availability: anyConnectionAvailability,
+                perform: { $0.windowState.presentNewThread(in: $0.appModel) }
             )
         case .newTerminal:
             CommandDescriptor(
                 id: id,
                 title: "New Terminal",
-                category: .sessionsAndTerminals,
-                availability: sessionAvailability,
-                perform: { $0.windowState.startSessionKind = .terminal }
+                category: .threadsAndTerminals,
+                availability: { context in
+                    // A standalone terminal always belongs to a Project, and
+                    // the only Project the window knows is its launch-local
+                    // context.
+                    guard let project = context.windowState.activeProject else {
+                        return .unavailable(reason: projectContextUnavailable)
+                    }
+                    return context.appModel.canMutate(connectionID: project.connectionID)
+                        ? .available
+                        : .unavailable(reason: connectionUnavailable)
+                },
+                perform: { $0.windowState.newTerminalProject = $0.windowState.activeProject }
             )
         case .newProject:
             CommandDescriptor(
                 id: id,
                 title: "New Project…",
-                category: .projectsAndWorkspaces,
-                availability: connectionAvailability,
+                category: .projects,
+                availability: anyConnectionAvailability,
                 perform: { $0.windowState.isCreateProjectPresented = true }
-            )
-        case .newWorkspace:
-            CommandDescriptor(
-                id: id,
-                title: "New Workspace…",
-                category: .projectsAndWorkspaces,
-                availability: connectionAvailability,
-                perform: { $0.windowState.presentCreateWorkspace(in: $0.appModel) }
             )
         case .refresh:
             CommandDescriptor(
@@ -193,15 +185,16 @@ enum CommandRegistry {
         return .available
     }
 
-    private static func sessionAvailability(_ context: CommandContext) -> CommandAvailability {
-        context.windowState.canStartSession(in: context.appModel)
+    private static func anyConnectionAvailability(
+        _ context: CommandContext
+    ) -> CommandAvailability {
+        context.appModel.runtimes.contains { context.appModel.canMutate(connectionID: $0.id) }
             ? .available
-            : .unavailable(reason: sessionUnavailable)
+            : .unavailable(reason: connectionUnavailable)
     }
 
     private static func scopedPaletteAvailability(
-        _ context: CommandContext,
-        requiresWorkspace: Bool
+        _ context: CommandContext
     ) -> CommandAvailability {
         if context.windowState.isSheetPresented {
             return .unavailable(reason: dialogUnavailable)
@@ -209,17 +202,6 @@ enum CommandRegistry {
         if context.windowState.commandPalettePresentation != nil {
             return .unavailable(reason: "Not available while the Command Palette is open")
         }
-        if requiresWorkspace, context.windowState.activeWorkspace == nil {
-            return .unavailable(reason: "Requires an Active Workspace")
-        }
         return .available
-    }
-
-    private static func connectionAvailability(
-        _ context: CommandContext
-    ) -> CommandAvailability {
-        context.appModel.runtimes.isEmpty
-            ? .unavailable(reason: connectionUnavailable)
-            : .available
     }
 }
