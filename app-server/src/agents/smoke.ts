@@ -9,11 +9,18 @@ import * as BuildInfo from "../platform/buildInfo.ts"
 import { AppConfig, ConfigLoadError, layer as appConfigLayer } from "../platform/config.ts"
 import * as Subprocess from "../platform/subprocess.ts"
 
-// Unstable provider smoke checks (ATC-88). `atc smoke ...` proves that the
-// compiled executable can launch each provider technology and complete one
-// bounded structured round trip. The command is hidden, is not a stable
-// interface, and will be replaced by the production provider integration.
-// Provider SDK and protocol types stay private to this module.
+// Compiled-artifact provider smoke checks (ATC-88). `atc smoke ...` proves
+// the COMPILED executable can launch each provider technology, complete one
+// bounded structured round trip, and leave no orphaned children. This is
+// deliberately not redundant with the adapters' own live smoke tests, which
+// run from source in-process: the risks here are compiled-binary ones (the
+// bundled Claude Agent SDK spawning its child, executable resolution outside
+// the repo), and `mise run test:smoke` drives this command after Bun, Effect,
+// or Agent SDK upgrades. The command stays hidden and unstable. Caveat: the
+// codex check speaks the stdio transport, not the production detached-server
+// path (codexServer.ts) — it asserts only that the configured executable
+// launches and answers JSON-RPC from the compiled binary. Provider SDK and
+// protocol types stay private to this module.
 
 export class SmokeError extends Schema.TaggedErrorClass<SmokeError>()("SmokeError", {
   provider: Schema.Literals(["codex", "claude"]),
@@ -413,7 +420,8 @@ const claudeCommand = Command.make("claude", {}, () =>
   Command.withDescription("[unstable] Claude Agent SDK round trip via the packaged executable"),
 )
 
-/** Hidden and unstable: a de-risking entrypoint, not part of the CLI surface. */
+/** Hidden and unstable: the compiled-artifact check behind `mise run
+ * test:smoke`, not part of the CLI surface. */
 export const smoke = Command.make("smoke").pipe(
   Command.withDescription("[unstable] Provider smoke checks for the compiled executable (ATC-88)"),
   Command.withSubcommands([codexCommand, claudeCommand]),
