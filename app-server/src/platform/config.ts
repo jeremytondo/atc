@@ -77,6 +77,8 @@ export class AppConfig extends Context.Service<
     readonly dbFile: string
     /** Structured JSON log file path. */
     readonly logFile: string
+    /** Background-service pidfile path (written by `atc start`). */
+    readonly pidFile: string
     /** zmx executable: an absolute path, or a name resolved on PATH. */
     readonly zmxExecutable: string
     /** Codex CLI executable: an absolute path, or a name resolved on PATH. */
@@ -302,6 +304,7 @@ export const load = (
       stateDir,
       dbFile: path.join(dataDir, "atc.db"),
       logFile: path.join(stateDir, "atc.log"),
+      pidFile: path.join(stateDir, "atc.pid"),
       zmxExecutable: settings.zmxExecutable,
       codexExecutable: settings.codexExecutable,
       claudeExecutable: settings.claudeExecutable,

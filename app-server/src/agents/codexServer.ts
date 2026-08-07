@@ -166,28 +166,10 @@ export const layerWith = (options: CodexServerOptions) =>
 
       /**
        * Whether `pid` still looks like the app-server we recorded. Guards
-       * every adoption and every signal against pid recycling. The check is
-       * for an exact `app-server` argv token (a substring would match any
-       * command whose path merely contains "app-server"). `ps` exits
-       * non-zero for a missing pid, which lands in the not-ours branch.
+       * every adoption and every signal against pid recycling.
        */
       const isOurServer = (pid: number) =>
-        Effect.scoped(
-          Effect.gen(function* () {
-            const ps = yield* subprocess.spawn({
-              executable: "ps",
-              args: ["-p", String(pid), "-o", "command="],
-              env: {},
-              extendEnv: true,
-            })
-            const lines = yield* Stream.runCollect(ps.stdoutLines)
-            yield* ps.exitCode
-            return lines
-              .join(" ")
-              .split(/\s+/)
-              .some((token) => token === "app-server")
-          }),
-        ).pipe(Effect.orElseSucceed(() => false))
+        Subprocess.processHasArgvToken(subprocess, pid, "app-server")
 
       /** Terminate `pid` only if it is provably still our server. */
       const terminateOurs = (pid: number) =>

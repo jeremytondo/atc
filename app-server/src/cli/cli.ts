@@ -28,6 +28,15 @@ export const failReported = (message: string) => {
   return Console.error(line).pipe(Effect.andThen(Effect.fail(new ReportedError({ message: line }))))
 }
 
+/** The catch tail for wrappers: an already-reported failure passes through
+ * unchanged; anything else becomes the one-line diagnostic. */
+export const reportOnce =
+  (prefix: string) =>
+  (error: unknown): Effect.Effect<never, ReportedError> =>
+    error instanceof ReportedError
+      ? Effect.fail(error)
+      : failReported(`${prefix}: ${describeError(error)}`)
+
 // Contract error classes carry human messages (contract.ts); the String fallback
 // covers any Error subclass whose message is empty.
 export const describeError = (error: unknown): string =>
@@ -61,7 +70,7 @@ export const withCliContext = <E>(
 ): Effect.Effect<void, ReportedError, FileSystem.FileSystem> =>
   effect.pipe(
     Effect.provide([BunHttpClient.layer, appConfigLayer]),
-    Effect.catch((error) => failReported(`atc ${diagnosticName}: ${describeError(error)}`)),
+    Effect.catch(reportOnce(`atc ${diagnosticName}`)),
   )
 
 /**

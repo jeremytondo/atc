@@ -5,7 +5,7 @@ import * as BuildInfo from "./platform/buildInfo.ts"
 import { fs, health, version } from "./cli/cli.ts"
 import { api, capabilities, context } from "./cli/gateway.ts"
 import { project } from "./cli/projects.ts"
-import { serve } from "./cli/serve.ts"
+import { serve, start, status, stop } from "./cli/serve.ts"
 import { terminal } from "./cli/terminals.ts"
 import { thread } from "./cli/threads.ts"
 import { smoke } from "./agents/smoke.ts"
@@ -18,6 +18,9 @@ const atc = Command.make("atc").pipe(
   Command.withDescription("ATC App Server"),
   Command.withSubcommands([
     serve,
+    start,
+    stop,
+    status,
     api,
     context,
     capabilities,

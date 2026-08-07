@@ -59,6 +59,7 @@ export const testAppConfig = (overrides: Partial<AppConfig["Service"]>): Layer.L
     stateDir: "/tmp",
     dbFile: "/tmp/atc.db",
     logFile: "/tmp/atc.log",
+    pidFile: "/tmp/atc.pid",
     zmxExecutable: "zmx",
     codexExecutable: "codex",
     claudeExecutable: "claude",
