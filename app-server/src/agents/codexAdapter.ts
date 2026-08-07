@@ -544,21 +544,22 @@ export const layer = Layer.effect(CodexAdapter)(
       })
 
     /**
-     * Walk the paginated thread/list for one thread: the found entry,
-     * `"absent"` when a complete walk (nextCursor exhausted) omits the id,
-     * or `"unknown"` when the walk could not be completed — a repeated
-     * cursor or the page cap, either a provider that cannot make
-     * pagination progress or a pathologically long list. Callers must not
-     * treat `"unknown"` as absence.
+     * Walk one paginated thread/list population (thread/list returns only
+     * non-archived threads unless `archived: true` — the populations are
+     * disjoint): the found entry, `"absent"` when a complete walk
+     * (nextCursor exhausted) omits the id, or `"unknown"` when the walk
+     * could not be completed — a repeated cursor or the page cap, either a
+     * provider that cannot make pagination progress or a pathologically
+     * long list.
      */
-    const findThread = (state: ClientState, threadId: string) =>
+    const walkThreadList = (state: ClientState, threadId: string, archived: boolean) =>
       Effect.gen(function* () {
         let cursor: string | undefined
         for (let page = 0; page < 100; page++) {
           const reply = yield* request(
             state,
             "thread/list",
-            cursor === undefined ? {} : { cursor },
+            cursor === undefined ? { archived } : { archived, cursor },
           ).pipe(
             Effect.mapError((error) =>
               unavailable(error._tag === "RpcError" ? error.text : error.reason),
@@ -577,6 +578,24 @@ export const layer = Layer.effect(CodexAdapter)(
           cursor = next
         }
         return "unknown" as const
+      })
+
+    /**
+     * Find one thread across BOTH thread/list populations — a session
+     * archived through another Codex surface still exists and must not be
+     * reported as deleted. `"absent"` only when complete walks of both the
+     * non-archived and archived lists omit the id; `"unknown"` when either
+     * walk was inconclusive. Callers must not treat `"unknown"` as absence.
+     */
+    const findThread = (state: ClientState, threadId: string) =>
+      Effect.gen(function* () {
+        const live = yield* walkThreadList(state, threadId, false)
+        if (typeof live !== "string") return live
+        const archived = yield* walkThreadList(state, threadId, true)
+        if (typeof archived !== "string") return archived
+        return live === "absent" && archived === "absent"
+          ? ("absent" as const)
+          : ("unknown" as const)
       })
 
     const adapter: AgentAdapter = {

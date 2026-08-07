@@ -20,9 +20,10 @@ ws://<host>/api/v1/terminals/{terminalId}/attach?cols=<n>&rows=<n>
 
 - Scheme: `ws:` for `http:` base URLs, `wss:` for `https:`.
 - `cols`/`rows` set the initial PTY size. Both are optional; a missing or
-  malformed value falls back to the server default (80×24). Values are
-  floored and clamped into **[1, 1000]** — the same rule applied to `resize`
-  frames.
+  malformed value falls back to the server default (80×24). A value is
+  malformed unless the entire string is numeric — `cols=80junk` falls back,
+  it does not parse as 80. Valid values are floored and clamped into
+  **[1, 1000]** — the same rule applied to `resize` frames.
 
 ## Pre-upgrade HTTP statuses
 

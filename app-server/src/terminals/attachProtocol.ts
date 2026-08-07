@@ -39,11 +39,17 @@ export const encodeControlFrame = (frame: ControlFrame): string => JSON.stringif
 /**
  * The one dimension rule for resize frames and `cols`/`rows` query params:
  * missing or malformed values take the fallback, everything else is floored
- * and clamped into [1, 1000].
+ * and clamped into [1, 1000]. A string is malformed unless it is numeric in
+ * its entirety — `"80junk"` falls back, it does not parse as 80.
  */
 export const clampDimension = (raw: string | number | undefined, fallback: number): number => {
-  const parsed = typeof raw === "number" ? raw : Number.parseInt(raw ?? "", 10)
-  return Number.isNaN(parsed) ? fallback : Math.max(1, Math.min(1_000, Math.floor(parsed)))
+  const parsed =
+    typeof raw === "number"
+      ? raw
+      : raw === undefined || raw.trim() === ""
+        ? Number.NaN
+        : Number(raw)
+  return Number.isFinite(parsed) ? Math.max(1, Math.min(1_000, Math.floor(parsed))) : fallback
 }
 
 /** Close (1000) reason proving the terminal ended — not retryable. */

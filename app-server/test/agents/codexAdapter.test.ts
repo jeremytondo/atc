@@ -542,6 +542,25 @@ describe("CodexAdapter TUI session plumbing", () => {
               yield* adapter.checkSession({ providerSessionId: "missing" }),
               "unknown",
             )
+            // A session archived through another Codex surface still exists:
+            // the archived population is walked too, so it is found — and
+            // tuiLaunch must not fail it closed as deleted.
+            yield* Effect.scoped(
+              Effect.gen(function* () {
+                const socket = yield* openExternal(`ws://127.0.0.1:${identity.port}`)
+                yield* externalRequest(socket, 3, "thread/archive", { threadId: laterPage })
+              }),
+            )
+            assert.strictEqual(
+              yield* adapter.checkSession({ providerSessionId: laterPage }),
+              "idle",
+            )
+            const { launchSpec } = yield* adapter.tuiLaunch({
+              providerSessionId: laterPage,
+              cwd: sandbox.cwd,
+              providerMetadata: undefined,
+            })
+            assert.strictEqual(launchSpec.command[4], laterPage)
           }),
         )
       }),

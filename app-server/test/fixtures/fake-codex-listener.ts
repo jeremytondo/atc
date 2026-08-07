@@ -39,6 +39,7 @@ interface Thread {
   readonly id: string
   readonly cwd: string
   readonly turns: Array<{ id: string; status: string }>
+  archived: boolean
 }
 
 const threads = new Map<string, Thread>()
@@ -103,7 +104,7 @@ const handle = (
       return
     case "thread/start": {
       const cwd = String(params["cwd"] ?? "/")
-      const thread: Thread = { id: crypto.randomUUID(), cwd, turns: [] }
+      const thread: Thread = { id: crypto.randomUUID(), cwd, turns: [], archived: false }
       threads.set(thread.id, thread)
       const reported = wrongCwd === "start" ? `${cwd}-wrong` : cwd
       respond({ thread: threadShape(thread, reported) })
@@ -120,10 +121,20 @@ const handle = (
     }
     case "thread/unsubscribe":
       return respond({ status: "unsubscribed" })
+    case "thread/archive": {
+      const thread = threads.get(String(params["threadId"] ?? ""))
+      if (thread === undefined) return respondError(-32600, "unknown thread")
+      thread.archived = true
+      return respond({})
+    }
     case "thread/list": {
       // Real reply shape is paginated: { data, nextCursor } with nextCursor
-      // null on the last page. One thread per page forces clients to walk.
-      const all = [...threads.values()]
+      // null on the last page, and the populations are disjoint: archived
+      // threads appear only when `archived: true`. One thread per page
+      // forces clients to walk.
+      const all = [...threads.values()].filter(
+        (thread) => thread.archived === (params["archived"] === true),
+      )
       const offset = Number.parseInt(String(params["cursor"] ?? "0"), 10) || 0
       return respond({
         data: all.slice(offset, offset + 1).map((thread) => ({
