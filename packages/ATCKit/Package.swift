@@ -13,6 +13,9 @@ let package = Package(
         // (app-server/openapi.json). Coexists with ATCAPI until the app
         // migrates to the App Server.
         .library(name: "ATCAppServerAPI", targets: ["ATCAppServerAPI"]),
+        // Hand-written App Server transports the OpenAPI document cannot
+        // express: the terminal-attach WebSocket and the SSE event stream.
+        .library(name: "ATCAppServerTransport", targets: ["ATCAppServerTransport"]),
     ],
     dependencies: [
         // Exact pins: generated code and the contract artifact are coupled,
@@ -34,6 +37,14 @@ let package = Package(
             plugins: [
                 .plugin(name: "OpenAPIGenerator", package: "swift-openapi-generator"),
             ]
+        ),
+        .target(
+            name: "ATCAppServerTransport",
+            dependencies: ["ATCAppServerAPI"]
+        ),
+        .testTarget(
+            name: "ATCAppServerTransportTests",
+            dependencies: ["ATCAppServerTransport"]
         ),
         // The test's stub transport works with OpenAPIRuntime/HTTPTypes
         // values directly, so those imports are declared, not left to
