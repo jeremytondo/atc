@@ -217,7 +217,9 @@ export const layer = Layer.effect(ThreadRepository)(
       }),
       Result: ThreadRow,
       execute: (patch) => sql`
-        UPDATE threads SET pinned_at = ${patch.pinned_at}, updated_at = ${patch.updated_at}
+        UPDATE threads SET
+          pinned_at = CASE WHEN archived_at IS NOT NULL THEN NULL ELSE ${patch.pinned_at} END,
+          updated_at = ${patch.updated_at}
         WHERE id = ${patch.id}
         RETURNING *
       `,

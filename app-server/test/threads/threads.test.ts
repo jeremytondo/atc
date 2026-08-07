@@ -10,6 +10,7 @@ import { Api } from "../../src/api/contract.ts"
 import { V1Handlers } from "../../src/api/handlers.ts"
 import { sessionNameForTerminalId } from "../../src/terminals/terminalAdapter.ts"
 import { TerminalRepository } from "../../src/terminals/terminalRepository.ts"
+import { ThreadRepository } from "../../src/threads/threadRepository.ts"
 import { TestBuildInfoLayer } from "../testBuildInfo.ts"
 import { makeTestServiceLayers } from "../testLayers.ts"
 
@@ -210,6 +211,27 @@ describe("/api/v1/threads", () => {
       if (restricted._tag === "ProjectHasThreads") {
         assert.strictEqual(restricted.threadCount, 1)
       }
+      yield* client.v1.deleteThread({ params: { threadId: thread.id } })
+      yield* client.v1.deleteProject({ params: { projectId: project.id } })
+    }).pipe(Effect.provide(TestLayer)),
+  )
+
+  it.effect("an archived row rejects a stale pin write", () =>
+    Effect.gen(function* () {
+      const { client, makeProject } = yield* testClient
+      const repository = yield* ThreadRepository
+      const project = yield* makeProject
+      const thread = yield* client.v1.createThread({
+        payload: { projectId: project.id, agentId: "codex" },
+      })
+      yield* client.v1.archiveThread({ params: { threadId: thread.id } })
+
+      // Models pin() racing after its active-record read but losing the SQL
+      // write race to archive(): storage keeps the archived row unpinned.
+      const guarded = yield* repository.setPinned(thread.id, true)
+      assert.isUndefined(guarded.pinnedAt)
+      assert.isUndefined((yield* client.v1.getThread({ params: { threadId: thread.id } })).pinnedAt)
+
       yield* client.v1.deleteThread({ params: { threadId: thread.id } })
       yield* client.v1.deleteProject({ params: { projectId: project.id } })
     }).pipe(Effect.provide(TestLayer)),
