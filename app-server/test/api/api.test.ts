@@ -221,11 +221,33 @@ describe("/api/v1/events", () => {
       const event = yield* Queue.take(received)
       assert.deepStrictEqual(event, { resource: "project", id: project.id, change: "created" })
 
+      const thread = yield* client.v1.createThread({
+        payload: { projectId: project.id, agentId: "codex" },
+      })
+      assert.deepStrictEqual(yield* Queue.take(received), {
+        resource: "thread",
+        id: thread.id,
+        change: "created",
+      })
+      yield* client.v1.pinThread({ params: { threadId: thread.id } })
+      assert.deepStrictEqual(yield* Queue.take(received), {
+        resource: "thread",
+        id: thread.id,
+        change: "updated",
+      })
+      yield* client.v1.unpinThread({ params: { threadId: thread.id } })
+      assert.deepStrictEqual(yield* Queue.take(received), {
+        resource: "thread",
+        id: thread.id,
+        change: "updated",
+      })
+
       // Service shutdown ends the stream cleanly: the subscriber returns
       // instead of hanging or failing — the guarantee graceful server
       // shutdown relies on.
       yield* events.close()
       yield* Fiber.join(subscriber)
+      yield* client.v1.deleteThread({ params: { threadId: thread.id } })
       yield* client.v1.deleteProject({ params: { projectId: project.id } })
     }).pipe(Effect.provide(TestLayer)),
   )
