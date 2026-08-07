@@ -23,10 +23,9 @@ run = [
   "go build -o dist/atc ./cmd/atc",
 ]
 
-[tasks.install]
-description = "Build and install atc locally (default: ~/.local/bin/atc)"
-depends = ["build"]
-run = 'mkdir -p "${ATC_INSTALL_DIR:-$HOME/.local/bin}" && install -m 0755 dist/atc "${ATC_INSTALL_DIR:-$HOME/.local/bin}/atc"'
+# No install task here: `atc` on a developer's PATH is the App Server
+# (root `mise run install`). This legacy tree still builds into dist/ for
+# its own tests but must never be installed over the real binary.
 
 [tasks.test]
 description = "Run Go tests"
