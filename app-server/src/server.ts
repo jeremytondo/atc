@@ -83,6 +83,12 @@ export const layer = (options: { readonly port: number }) =>
         // long grace period turns every shutdown after a terminal attach
         // into a hang. Requests are local and short; two seconds is plenty.
         gracefulShutdownTimeout: "2 seconds",
+        // Bun's default idleTimeout (10 s) counts a request that has not yet
+        // written response bytes as idle, which severs openThreadTerminal
+        // mid-materialization — a cold provider launch legitimately runs up
+        // to the 30 s identity timeout. Sixty seconds clears that with
+        // margin; SSE heartbeats and attach pings keep long streams under it.
+        idleTimeout: 60,
       }),
     ),
   )

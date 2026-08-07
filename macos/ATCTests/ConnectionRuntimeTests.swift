@@ -120,10 +120,11 @@ struct ConnectionRuntimeTests {
         let runtime = makeRuntime(client: client, events: events)
         defer { runtime.stop() }
 
-        // Green requires the event stream: without it no invalidations flow,
-        // so successful HTTP alone must never claim .connected.
+        // Green requires the event stream: a clean refresh before the stream
+        // opens stays gray — successful HTTP alone must never claim
+        // .connected, and a healthy launch must not flash a warning.
         await runtime.refresh()
-        #expect(runtime.reachability == .unreachable)
+        #expect(runtime.reachability == .unknown)
 
         runtime.start()
         events.connect()

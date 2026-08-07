@@ -73,6 +73,24 @@ struct ClientTests {
         #expect(try Servers.Server1.url() == URL(string: "http://127.0.0.1:7332"))
     }
 
+    // The bearer-auth seam remote servers will rely on: the middleware must
+    // actually stamp the header (deleting it would otherwise pass silently).
+    @Test("BearerAuthMiddleware stamps the Authorization header")
+    func bearerMiddleware() async throws {
+        let middleware = BearerAuthMiddleware(token: "token-1")
+        var forwarded: HTTPRequest?
+        _ = try await middleware.intercept(
+            HTTPRequest(method: .get, scheme: nil, authority: nil, path: "/api/v1/health"),
+            body: nil,
+            baseURL: URL(string: "http://127.0.0.1:7332")!,
+            operationID: "getHealth"
+        ) { request, body, _ in
+            forwarded = request
+            return (HTTPResponse(status: .ok), body)
+        }
+        #expect(forwarded?.headerFields[.authorization] == "Bearer token-1")
+    }
+
     // Regression: optional contract fields must survive generation as plain
     // strings. Earlier schema shapes made the pinned generator either drop
     // the fields entirely (nullable unions) or wrap them in single-value

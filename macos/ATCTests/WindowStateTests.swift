@@ -14,7 +14,7 @@ struct WindowStateTests {
         _ client: ScriptableAppServerClient = ScriptableAppServerClient()
     ) async throws -> TestModel {
         Fixtures.seed(client)
-        let test = try makeModel(client: client)
+        let test = try await makeModel(client: client)
         await test.runtime.refresh()
         await test.runtime.threads.loadArchivedIfNeeded()
         return test

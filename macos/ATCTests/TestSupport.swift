@@ -212,7 +212,7 @@ func makeModel(
     attachmentBudget: Int = 12,
     name: String = "A",
     urlString: String = "http://a:1"
-) throws -> TestModel {
+) async throws -> TestModel {
     let store = makeConnectionsStore()
     let record = try store.add(name: name, urlString: urlString, token: "")
     let model = makeAppModel(
@@ -222,6 +222,15 @@ func makeModel(
         attach: attach,
         attachmentBudget: attachmentBudget
     )
+    // A started runtime probes immediately (first-contact reachability).
+    // Settle that probe here so tests never race it: whatever the client
+    // held at construction is loaded, and every later mutation is the
+    // test's own doing.
+    let runtime = model.runtime(id: record.id)!
+    await settle(until: {
+        runtime.projects.hasLoadedOnce && runtime.threads.hasLoadedOnce
+            && runtime.terminals.hasLoadedOnce && runtime.agents.hasLoadedOnce
+    })
     return TestModel(
         model: model,
         client: client,

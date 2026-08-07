@@ -79,6 +79,7 @@ final class TerminalsStore {
 
     func delete(id: String) async throws {
         _ = try await client.deleteTerminal(path: .init(terminalId: id)).noContent
+        refreshState.invalidateInFlight()
         terminals.removeAll { $0.id == id }
     }
 

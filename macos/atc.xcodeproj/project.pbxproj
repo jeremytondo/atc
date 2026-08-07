@@ -7,11 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		AC00000000000000000000B1 /* (null) in Frameworks */ = {isa = PBXBuildFile; };
 		AC00000000000000000000B2 /* GhosttyKit in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A2 /* GhosttyKit */; };
 		AC00000000000000000000B3 /* GhosttyTerminal in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A3 /* GhosttyTerminal */; };
 		AC00000000000000000000B4 /* GhosttyTheme in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A4 /* GhosttyTheme */; };
-		AC00000000000000000000B5 /* (null) in Frameworks */ = {isa = PBXBuildFile; };
 		AC00000000000000000000B6 /* TOMLDecoder in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A6 /* TOMLDecoder */; };
 		AC00000000000000000000B7 /* ATCAppServerAPI in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A7 /* ATCAppServerAPI */; };
 		DEC8867630264F5C006D3531 /* ATCAppServerTransport in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A8 /* ATCAppServerTransport */; };
@@ -54,7 +52,6 @@
 			files = (
 				DEC8867830264F5C006D3531 /* ATCAppServerTransport in Frameworks */,
 				DEC8867730264F5C006D3531 /* ATCAppServerAPI in Frameworks */,
-				AC00000000000000000000B5 /* (null) in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -63,7 +60,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				DEC8867630264F5C006D3531 /* ATCAppServerTransport in Frameworks */,
-				AC00000000000000000000B1 /* (null) in Frameworks */,
 				AC00000000000000000000B7 /* ATCAppServerAPI in Frameworks */,
 				AC00000000000000000000B2 /* GhosttyKit in Frameworks */,
 				AC00000000000000000000B3 /* GhosttyTerminal in Frameworks */,

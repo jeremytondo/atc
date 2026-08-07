@@ -69,7 +69,7 @@ struct DashboardView: View {
         let reachability = appModel.reachability(of: section.connectionID)
         return VStack(alignment: .leading, spacing: Spacing.md) {
             HStack(spacing: Spacing.sm) {
-                StatusDot(color: reachability.color)
+                StatusDot(reachability: reachability)
                 Text(section.connectionName)
                     .font(.title3.weight(.semibold))
                 Text(section.contextLabel)
@@ -212,8 +212,10 @@ struct DashboardView: View {
 
     // MARK: - Helpers
 
+    /// "No projects yet" is an affirmative statement; an unreachable server
+    /// must never make it (its section shows red + the toolbar warns).
     private var allProjectsLoaded: Bool {
-        appModel.runtimes.allSatisfy(\.projects.hasLoadedOnce)
+        appModel.runtimes.allSatisfy(\.projects.isResolved)
     }
 
     private var cardShape: RoundedRectangle {

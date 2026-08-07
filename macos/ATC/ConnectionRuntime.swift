@@ -102,6 +102,10 @@ final class ConnectionRuntime: Identifiable {
 
     func start() {
         guard eventTask == nil else { return }
+        // First-contact probe: a server that is down at launch must go red,
+        // not sit gray forever — the stream alone stays silent for attempts
+        // that never open, so it can't report that failure.
+        Task { [weak self] in await self?.refresh() }
         let stream = eventStreamFactory(baseURL, transportHeaders)
         eventTask = Task { [weak self] in
             for await event in stream {
@@ -175,8 +179,16 @@ final class ConnectionRuntime: Identifiable {
         }
     }
 
+    /// Failed refreshes are red regardless of the stream; clean refreshes
+    /// are green only once the stream is open (no invalidations flowing =
+    /// not current) and stay gray before that, so launch never flashes a
+    /// warning for a healthy server that simply hasn't connected yet.
     private func settleReachability() {
-        reachability = streamOpen && allRefreshesClean() ? .connected : .unreachable
+        guard allRefreshesClean() else {
+            reachability = .unreachable
+            return
+        }
+        reachability = streamOpen ? .connected : .unknown
     }
 
     /// Agent availability has no invalidation event (it is detected, not

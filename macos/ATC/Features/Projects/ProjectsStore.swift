@@ -57,6 +57,7 @@ final class ProjectsStore {
     /// Server-refused while the project still owns threads or terminals.
     func delete(id: String) async throws {
         _ = try await client.deleteProject(path: .init(projectId: id)).noContent
+        refreshState.invalidateInFlight()
         projects.removeAll { $0.id == id }
     }
 
