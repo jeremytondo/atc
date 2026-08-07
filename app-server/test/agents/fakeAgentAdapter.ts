@@ -53,8 +53,13 @@ export interface FakeAgentAdapter {
   readonly setIdentityHangs: (hangs: boolean) => void
   /** Push one activity value to every observer of `providerSessionId`. */
   readonly emitActivity: (providerSessionId: string, activity: AgentActivity) => void
+  /** Live observeSession subscriptions for `providerSessionId`. */
+  readonly observerCount: (providerSessionId: string) => number
   /** Script what checkSession reports for `providerSessionId`. */
   readonly setCheckActivity: (providerSessionId: string, activity: AgentActivity | null) => void
+  /** Mark a session as pruned provider-side: tuiLaunch's existence probe
+   * fails AgentResumeFailed (the Codex reopen-probe behavior). */
+  readonly setSessionPruned: (providerSessionId: string, pruned: boolean) => void
   /** prepareTuiSession identities handed out, in order. */
   readonly prepared: Array<{ providerSessionId: string; cwd: string }>
   /** releaseSession calls, in order. */
@@ -80,6 +85,7 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
   const connections = new Map<string, LiveConnection>()
   const observers = new Map<string, Set<Queue.Queue<AgentActivity, Cause.Done>>>()
   const checkActivity = new Map<string, AgentActivity>()
+  const prunedSessions = new Set<string>()
   const prepared: FakeAgentAdapter["prepared"] = []
   const released: FakeAgentAdapter["released"] = []
   let identityGate: Deferred.Deferred<void> | null = null
@@ -260,12 +266,22 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
       }),
     tuiLaunch: (options) =>
       requireAvailable.pipe(
-        Effect.as({
-          launchSpec: {
-            command: ["fake-agent", "resume", options.providerSessionId],
-            env: {},
-          },
-        }),
+        Effect.andThen(() =>
+          prunedSessions.has(options.providerSessionId)
+            ? Effect.fail(
+                new AgentResumeFailed({
+                  provider: "codex",
+                  providerSessionId: options.providerSessionId,
+                  reason: "the provider no longer has this session",
+                }),
+              )
+            : Effect.succeed({
+                launchSpec: {
+                  command: ["fake-agent", "resume", options.providerSessionId],
+                  env: {},
+                },
+              }),
+        ),
       ),
     prepareTuiSession: (options) =>
       Effect.gen(function* () {
@@ -364,9 +380,14 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
         Queue.offerUnsafe(queue, activity)
       }
     },
+    observerCount: (providerSessionId) => observers.get(providerSessionId)?.size ?? 0,
     setCheckActivity: (providerSessionId, activity) => {
       if (activity === null) checkActivity.delete(providerSessionId)
       else checkActivity.set(providerSessionId, activity)
+    },
+    setSessionPruned: (providerSessionId, pruned) => {
+      if (pruned) prunedSessions.add(providerSessionId)
+      else prunedSessions.delete(providerSessionId)
     },
     prepared,
     released,

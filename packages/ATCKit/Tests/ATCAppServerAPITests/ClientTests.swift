@@ -28,10 +28,12 @@ private struct StubTransport: ClientTransport {
 
 private func client(returning json: String) throws -> (Client, StubTransport.Recorder) {
     let recorder = StubTransport.Recorder()
-    // Servers.Server1 is the documented construction path, so building the
-    // client through it keeps the servers entry in the contract under test.
+    // Servers.Server1 and ATCDateTranscoder are the documented construction
+    // path (ATCAppServerAPI.swift), so building the client through them keeps
+    // both the servers entry and the date coding under test.
     let client = Client(
         serverURL: try Servers.Server1.url(),
+        configuration: Configuration(dateTranscoder: ATCDateTranscoder()),
         transport: StubTransport(json: json, recorded: recorder)
     )
     return (client, recorder)
@@ -88,7 +90,14 @@ struct ClientTests {
 
     @Test("fs check decodes payloads with and without a reason")
     func fsCheckReason() throws {
+        // checkedAt is format: date-time, so it decodes as a Date; the
+        // transcoder's lenient side accepts the whole-second fixture strings.
         let decoder = JSONDecoder()
+        let transcoder = ATCDateTranscoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            return try transcoder.decode(try container.decode(String.self))
+        }
         let conclusive = try decoder.decode(
             Components.Schemas.FsCheckResponse.self,
             from: Data(
@@ -98,6 +107,7 @@ struct ClientTests {
         )
         #expect(conclusive.state == .available)
         #expect(conclusive.reason == nil)
+        #expect(conclusive.checkedAt == Date(timeIntervalSince1970: 1_785_672_000))
 
         let timedOut = try decoder.decode(
             Components.Schemas.FsCheckResponse.self,
@@ -108,5 +118,57 @@ struct ClientTests {
         )
         #expect(timedOut.state == .unknown)
         #expect(timedOut.reason == "timeout")
+    }
+
+    // Regression: contract timestamps are `format: date-time`, so generated
+    // models carry `Date` — and the server's actual encoding (JavaScript
+    // `Date.toISOString()`, always three fractional digits) must survive the
+    // configured transcoder both ways. The runtime's default `.iso8601`
+    // rejects fractional seconds, which is exactly why ATCDateTranscoder
+    // exists.
+    @Test("server timestamps round-trip the configured date transcoder")
+    func timestampRoundTrip() async throws {
+        let (client, _) = try client(
+            returning: #"""
+                {"id":"0198a001-0000-7000-8000-000000000000","name":"Atelier",
+                 "defaultWorkingDirectory":"/code/atc",
+                 "createdAt":"2026-08-06T12:34:56.789Z",
+                 "updatedAt":"2026-08-06T12:34:56.789Z"}
+                """#
+        )
+        let project = try await client.getProject(path: .init(projectId: "p1")).ok.body.json
+        #expect(project.createdAt == Date(timeIntervalSince1970: 1_786_019_696.789))
+        // Byte-identical re-encode: what the transcoder writes is what the
+        // server wrote.
+        #expect(try ATCDateTranscoder().encode(project.createdAt) == "2026-08-06T12:34:56.789Z")
+    }
+
+    // Every millisecond value must survive decode → encode byte-identically.
+    // Most milliseconds are not exact in binary, and the ISO8601 format style
+    // truncates — a single sample would pass or fail by luck.
+    @Test("all thousand millisecond values round-trip byte-identically")
+    func exhaustiveMillisecondRoundTrip() throws {
+        let transcoder = ATCDateTranscoder()
+        for millis in 0..<1000 {
+            let wire = String(format: "2026-08-06T12:34:56.%03dZ", millis)
+            let roundTripped = try transcoder.encode(try transcoder.decode(wire))
+            #expect(roundTripped == wire)
+        }
+    }
+
+    @Test("the transcoder decodes both fractional and whole-second timestamps")
+    func lenientDecoding() throws {
+        let transcoder = ATCDateTranscoder()
+        #expect(
+            try transcoder.decode("2026-08-06T12:34:56.789Z")
+                == Date(timeIntervalSince1970: 1_786_019_696.789)
+        )
+        #expect(
+            try transcoder.decode("2026-08-06T12:34:56Z")
+                == Date(timeIntervalSince1970: 1_786_019_696)
+        )
+        #expect(throws: DecodingError.self) {
+            _ = try transcoder.decode("yesterday")
+        }
     }
 }

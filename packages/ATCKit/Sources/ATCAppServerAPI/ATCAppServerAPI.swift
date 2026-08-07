@@ -7,12 +7,57 @@
 // (`mise run app-server:openapi`). Nothing in this target is written by hand
 // except this file.
 //
-// Construct a client with the URLSession transport:
+// Construct a client with the URLSession transport and the ATC date
+// transcoder (the runtime's default `.iso8601` cannot parse the server's
+// fractional-second timestamps):
 //
 //     import OpenAPIURLSession
 //
 //     let client = Client(
 //         serverURL: try Servers.Server1.url(),
+//         configuration: Configuration(dateTranscoder: ATCDateTranscoder()),
 //         transport: URLSessionTransport()
 //     )
 //     let health = try await client.getHealth().ok.body.json
+
+import Foundation
+import OpenAPIRuntime
+
+/// Transcodes the App Server's `format: date-time` fields. The server emits
+/// `Date.toISOString()` output — RFC 3339 UTC with exactly three fractional
+/// digits — which the runtime's strict `.iso8601` transcoder rejects. Decoding
+/// is lenient (fractional seconds optional) so hand-written fixtures and any
+/// future whole-second producer parse too; encoding always writes fractional
+/// seconds, matching the server byte-for-byte.
+public struct ATCDateTranscoder: DateTranscoder {
+    private let fractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+    private let wholeSecond = Date.ISO8601FormatStyle()
+
+    public init() {}
+
+    public func encode(_ date: Date) throws -> String {
+        // The format style TRUNCATES the fractional field, and millisecond
+        // values are rarely exact in binary — formatting through it would
+        // re-encode roughly half of all decoded server timestamps one
+        // millisecond low. Split the rounded epoch milliseconds instead:
+        // the whole seconds are exact, and the millisecond field is printed
+        // as an integer.
+        let epochMillis = (date.timeIntervalSince1970 * 1000).rounded()
+        var millis = epochMillis.truncatingRemainder(dividingBy: 1000)
+        if millis < 0 { millis += 1000 }
+        let seconds = Date(timeIntervalSince1970: (epochMillis - millis) / 1000)
+        return wholeSecond.format(seconds).dropLast() + String(format: ".%03dZ", Int(millis))
+    }
+
+    public func decode(_ dateString: String) throws -> Date {
+        if let date = try? fractional.parse(dateString) {
+            return date
+        }
+        if let date = try? wholeSecond.parse(dateString) {
+            return date
+        }
+        throw DecodingError.dataCorrupted(
+            .init(codingPath: [], debugDescription: "Expected an RFC 3339 date-time, got: \(dateString)")
+        )
+    }
+}

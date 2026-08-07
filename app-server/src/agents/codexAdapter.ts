@@ -543,6 +543,61 @@ export const layer = Layer.effect(CodexAdapter)(
         return { connection, unregister }
       })
 
+    /**
+     * Walk one paginated thread/list population (thread/list returns only
+     * non-archived threads unless `archived: true` — the populations are
+     * disjoint): the found entry, `"absent"` when a complete walk
+     * (nextCursor exhausted) omits the id, or `"unknown"` when the walk
+     * could not be completed — a repeated cursor or the page cap, either a
+     * provider that cannot make pagination progress or a pathologically
+     * long list.
+     */
+    const walkThreadList = (state: ClientState, threadId: string, archived: boolean) =>
+      Effect.gen(function* () {
+        let cursor: string | undefined
+        for (let page = 0; page < 100; page++) {
+          const reply = yield* request(
+            state,
+            "thread/list",
+            cursor === undefined ? { archived } : { archived, cursor },
+          ).pipe(
+            Effect.mapError((error) =>
+              unavailable(error._tag === "RpcError" ? error.text : error.reason),
+            ),
+          )
+          const decoded = yield* Schema.decodeUnknownEffect(ThreadListReply)(reply).pipe(
+            Effect.mapError((error) =>
+              unavailable(`unexpected thread/list reply: ${error.message}`),
+            ),
+          )
+          const thread = decoded.data.find((t) => t.id === threadId)
+          if (thread !== undefined) return thread
+          const next = decoded.nextCursor
+          if (typeof next !== "string") return "absent" as const
+          if (next === cursor) return "unknown" as const
+          cursor = next
+        }
+        return "unknown" as const
+      })
+
+    /**
+     * Find one thread across BOTH thread/list populations — a session
+     * archived through another Codex surface still exists and must not be
+     * reported as deleted. `"absent"` only when complete walks of both the
+     * non-archived and archived lists omit the id; `"unknown"` when either
+     * walk was inconclusive. Callers must not treat `"unknown"` as absence.
+     */
+    const findThread = (state: ClientState, threadId: string) =>
+      Effect.gen(function* () {
+        const live = yield* walkThreadList(state, threadId, false)
+        if (typeof live !== "string") return live
+        const archived = yield* walkThreadList(state, threadId, true)
+        if (typeof archived !== "string") return archived
+        return live === "absent" && archived === "absent"
+          ? ("absent" as const)
+          : ("unknown" as const)
+      })
+
     const adapter: AgentAdapter = {
       provider: "codex",
       capabilities: { testedVersion: CODEX_TESTED_VERSION, tuiObservation: "shared-server" },
@@ -647,6 +702,22 @@ export const layer = Layer.effect(CodexAdapter)(
       tuiLaunch: (options) =>
         Effect.gen(function* () {
           const executable = yield* resolveProviderExecutable("codex", config.codexExecutable)
+          // Probe before launching (ATC-142): `codex resume` of a deleted or
+          // pruned thread dies inside the pty with no typed error, and every
+          // reopen repeats it. Only a COMPLETE walk that omits the id fails
+          // closed; an incomplete walk ("unknown") launches blind like
+          // before — an inconclusive probe must never fabricate absence.
+          const state = yield* getClientRetryable
+          const thread = yield* findThread(state, options.providerSessionId)
+          if (thread === "absent") {
+            return yield* Effect.fail(
+              new AgentResumeFailed({
+                provider: "codex",
+                providerSessionId: options.providerSessionId,
+                reason: "codex no longer has this session (its history was deleted or pruned)",
+              }),
+            )
+          }
           const info = yield* codexServer.ensure()
           return {
             launchSpec: {
@@ -712,32 +783,9 @@ export const layer = Layer.effect(CodexAdapter)(
         Effect.gen(function* () {
           const state = yield* getClientRetryable
           // thread/list (probed) is the reconciliation aid: absent thread or
-          // undeterminable status is honestly `unknown`, never a guess. The
-          // reply is paginated; walk pages until the target thread appears
-          // or the cursor runs out.
-          let cursor: string | undefined
-          while (true) {
-            const reply = yield* request(
-              state,
-              "thread/list",
-              cursor === undefined ? {} : { cursor },
-            ).pipe(
-              Effect.mapError((error) =>
-                unavailable(error._tag === "RpcError" ? error.text : error.reason),
-              ),
-            )
-            const decoded = yield* Schema.decodeUnknownEffect(ThreadListReply)(reply).pipe(
-              Effect.mapError((error) =>
-                unavailable(`unexpected thread/list reply: ${error.message}`),
-              ),
-            )
-            const thread = decoded.data.find((t) => t.id === options.providerSessionId)
-            if (thread !== undefined) return statusToActivity(thread.status)
-            const next = decoded.nextCursor
-            // A repeated cursor cannot make progress; treat it as the end.
-            if (typeof next !== "string" || next === cursor) return "unknown"
-            cursor = next
-          }
+          // undeterminable status is honestly `unknown`, never a guess.
+          const thread = yield* findThread(state, options.providerSessionId)
+          return typeof thread === "string" ? "unknown" : statusToActivity(thread.status)
         }),
       // Codex holds no per-session launch files or secrets; provider-owned
       // rollouts are never ATC's to touch.

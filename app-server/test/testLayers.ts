@@ -1,5 +1,5 @@
 import { assert } from "@effect/vitest"
-import { BunServices } from "@effect/platform-bun"
+import { BunHttpServer, BunServices } from "@effect/platform-bun"
 import { Effect, Layer, Stream } from "effect"
 import * as fs from "node:fs"
 import * as os from "node:os"
@@ -22,6 +22,7 @@ import * as Terminals from "../src/terminals/terminals.ts"
 import * as ThreadRepository from "../src/threads/threadRepository.ts"
 import * as Threads from "../src/threads/threads.ts"
 import * as Zmx from "../src/terminals/zmxAdapter.ts"
+import { V1Handlers } from "../src/api/handlers.ts"
 import {
   appServerRoot,
   freePort,
@@ -30,6 +31,7 @@ import {
   trackTempDir,
   waitForHealth,
 } from "./blackbox.ts"
+import { TestBuildInfoLayer } from "./testBuildInfo.ts"
 import { makeFakeAdapter } from "./terminals/fakeTerminalAdapter.ts"
 import type { FakeTerminalAdapter } from "./terminals/fakeTerminalAdapter.ts"
 import { makeFakeAgentAdapter } from "./agents/fakeAgentAdapter.ts"
@@ -76,6 +78,7 @@ export const testAppConfig = (overrides: Partial<AppConfig["Service"]>): Layer.L
 export const makeTestServiceLayers = (
   dbFile = ":memory:",
   threadsOptions: Threads.ThreadsOptions = {},
+  eventsOptions: Events.EventsOptions = {},
 ): {
   readonly fake: FakeTerminalAdapter
   readonly fakeAgents: { readonly codex: FakeAgentAdapter; readonly claude: FakeAgentAdapter }
@@ -105,7 +108,8 @@ export const makeTestServiceLayers = (
     ThreadRepository.layer,
   ).pipe(Layer.provide(Persistence.layerFile(dbFile)))
   const services = Layer.mergeAll(base, Directories.layer, fake.layer, ClaudeHooks.layer)
-  const terminals = Terminals.layer.pipe(Layer.provide([services, Events.layer]))
+  const eventsLayer = Events.layerWith(eventsOptions)
+  const terminals = Terminals.layer.pipe(Layer.provide([services, eventsLayer]))
   const registry = AgentRegistry.layer.pipe(
     Layer.provide([
       Layer.succeed(CodexAdapter.CodexAdapter)(fakeAgents.codex.adapter),
@@ -122,16 +126,30 @@ export const makeTestServiceLayers = (
       services,
       terminals,
       registry,
-      Events.layer,
+      eventsLayer,
       Threads.layerWith(threadsOptions).pipe(
-        Layer.provide([services, terminals, registry, Events.layer]),
+        Layer.provide([services, terminals, registry, eventsLayer]),
       ),
-      Projects.layer.pipe(Layer.provide([services, Events.layer])),
+      Projects.layer.pipe(Layer.provide([services, eventsLayer])),
     ),
   }
 }
 
 export const TestRepositoryLayers = makeTestServiceLayers().layer
+
+type TestKitLayer = ReturnType<typeof makeTestServiceLayers>["layer"]
+
+/**
+ * The one HttpApiTest layer stack for in-process API tests over a kit:
+ * handlers wired to the kit's services, the services themselves (so tests
+ * reach the same instances the handlers use), and the HTTP test services.
+ */
+export const apiTestLayer = (kit: { readonly layer: TestKitLayer }) =>
+  Layer.mergeAll(
+    V1Handlers.pipe(Layer.provide([TestBuildInfoLayer, kit.layer])),
+    kit.layer,
+    BunHttpServer.layerHttpServices,
+  )
 
 /** The full zmx-adapter layer stack shared by every in-process adapter test. */
 export const zmxAdapterLayer = (options: {

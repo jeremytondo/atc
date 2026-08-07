@@ -30,13 +30,9 @@ afterAll(() => {
 // deterministic fake so these tests need no zmx install anywhere they run
 // (a missing install would add a startup warning line to stderr).
 const sandbox = makeFakeZmxSandbox()
-const spawnFromSource = (port: number) =>
-  spawnServe(
-    [process.execPath, "src/main.ts"],
-    port,
-    appServerRoot,
-    isolatedEnv(scratch, { ATC_ZMX_EXECUTABLE: sandbox.wrapper }),
-  )
+const serveEnv = () => isolatedEnv(scratch, { ATC_ZMX_EXECUTABLE: sandbox.wrapper })
+const spawnFromSource = (port: number, env: ReturnType<typeof serveEnv>) =>
+  spawnServe([process.execPath, "src/main.ts"], port, appServerRoot, env)
 
 describe("atc serve (black box)", () => {
   test.each(["SIGTERM", "SIGINT"] as const)(
@@ -44,7 +40,8 @@ describe("atc serve (black box)", () => {
     async (signal) => {
       const port = await freePort()
       const base = `http://127.0.0.1:${port}`
-      const proc = spawnFromSource(port)
+      const env = serveEnv()
+      const proc = spawnFromSource(port, env)
       try {
         const health = await waitForHealth(base, proc)
         expect(health.status).toBe(200)
@@ -74,6 +71,11 @@ describe("atc serve (black box)", () => {
 
         // The port is released once the process is gone.
         await expect(fetch(`${base}/api/v1/health`)).rejects.toThrow()
+
+        // The file log records the clean exit — a supervising app can tell
+        // it from a kill, whose log simply stops.
+        const log = await Bun.file(`${env.XDG_STATE_HOME}/atc/atc.log`).text()
+        expect(log).toContain("shutting down")
       } finally {
         proc.kill()
       }
@@ -83,7 +85,7 @@ describe("atc serve (black box)", () => {
 
   test("fails with one friendly stderr line when the port is taken", async () => {
     const occupant = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") })
-    const proc = spawnFromSource(occupant.port!)
+    const proc = spawnFromSource(occupant.port!, serveEnv())
     try {
       expect(await proc.exited).toBe(1)
       const stderr = await new Response(proc.stderr as ReadableStream).text()

@@ -946,7 +946,7 @@
             }
           }
         },
-        "description": "Open the thread's TUI terminal. Idempotent: a live linked terminal is returned as-is. Otherwise the provider TUI is launched in a new terminal — a confirmed session is relaunched against its exact persisted identity (ATC never adopts a different one), an unconfirmed one materializes a fresh provider session whose identity is established and persisted before this call returns."
+        "description": "Open the thread's TUI terminal. Idempotent: a live linked terminal is returned as-is. Otherwise the provider TUI is launched in a new terminal — a confirmed session is relaunched against its exact persisted identity (ATC never adopts a different one), an unconfirmed one materializes a fresh provider session whose identity is established and persisted before this call returns. A provider that can be probed (Codex) fails fast when the persisted session no longer exists; one that cannot (Claude) launches blind — a successful open whose terminal dies within seconds is a state clients must expect and surface."
       }
     },
     "/api/v1/agents": {
@@ -1134,7 +1134,7 @@
             }
           }
         },
-        "description": "Subscribe to live resource-change events (SSE). The stream is ephemeral — no replay: on every (re)connect, refetch lists first, then trust the stream. The server ends the stream of a subscriber that falls too far behind; reconnect and resync."
+        "description": "Subscribe to live resource-change events (SSE). The stream is ephemeral — no replay. Resync race-free on every (re)connect: open the stream, wait for the opening `: connected` comment, THEN refetch lists — fetching before the stream is open leaves a missed-event window. Events are thin invalidations and arrive in bursts: coalesce (~100ms) and refetch once per named collection, not per event (terminal-bearing refetches consult the multiplexer and are priced accordingly). The server emits a comment heartbeat roughly every 25 seconds; treat a stream silent for much longer as dead — reconnect and resync. The server ends the stream of a subscriber that falls too far behind; reconnect and resync."
       }
     },
     "/api/v1/fs/check": {
@@ -1239,11 +1239,13 @@
           },
           "createdAt": {
             "type": "string",
-            "description": "Creation time (ISO 8601 UTC)."
+            "description": "Creation time.",
+            "format": "date-time"
           },
           "updatedAt": {
             "type": "string",
-            "description": "Last update time (ISO 8601 UTC)."
+            "description": "Last update time.",
+            "format": "date-time"
           }
         },
         "required": [
@@ -1303,12 +1305,17 @@
               "inaccessible",
               "not_directory"
             ]
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
           }
         },
         "required": [
           "_tag",
           "path",
-          "state"
+          "state",
+          "message"
         ],
         "additionalProperties": false
       },
@@ -1323,11 +1330,16 @@
           },
           "path": {
             "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
           }
         },
         "required": [
           "_tag",
-          "path"
+          "path",
+          "message"
         ],
         "additionalProperties": false
       },
@@ -1342,11 +1354,16 @@
           },
           "projectId": {
             "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
           }
         },
         "required": [
           "_tag",
-          "projectId"
+          "projectId",
+          "message"
         ],
         "additionalProperties": false
       },
@@ -1381,12 +1398,17 @@
           },
           "terminalCount": {
             "type": "integer"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
           }
         },
         "required": [
           "_tag",
           "projectId",
-          "terminalCount"
+          "terminalCount",
+          "message"
         ],
         "additionalProperties": false
       },
@@ -1404,12 +1426,17 @@
           },
           "threadCount": {
             "type": "integer"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
           }
         },
         "required": [
           "_tag",
           "projectId",
-          "threadCount"
+          "threadCount",
+          "message"
         ],
         "additionalProperties": false
       },
@@ -1457,15 +1484,18 @@
           },
           "createdAt": {
             "type": "string",
-            "description": "Creation time (ISO 8601 UTC)."
+            "description": "Creation time.",
+            "format": "date-time"
           },
           "updatedAt": {
             "type": "string",
-            "description": "Last update time (ISO 8601 UTC)."
+            "description": "Last update time.",
+            "format": "date-time"
           },
           "endedAt": {
             "type": "string",
-            "description": "When the terminal was observed ended (ISO 8601 UTC); absent while live."
+            "description": "When the terminal was observed ended; absent while live.",
+            "format": "date-time"
           }
         },
         "required": [
@@ -1528,11 +1558,16 @@
           },
           "reason": {
             "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
           }
         },
         "required": [
           "_tag",
-          "reason"
+          "reason",
+          "message"
         ],
         "additionalProperties": false
       },
@@ -1547,11 +1582,16 @@
           },
           "reason": {
             "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
           }
         },
         "required": [
           "_tag",
-          "reason"
+          "reason",
+          "message"
         ],
         "additionalProperties": false
       },
@@ -1566,11 +1606,16 @@
           },
           "terminalId": {
             "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
           }
         },
         "required": [
           "_tag",
-          "terminalId"
+          "terminalId",
+          "message"
         ],
         "additionalProperties": false
       },
@@ -1634,15 +1679,18 @@
           },
           "archivedAt": {
             "type": "string",
-            "description": "When the thread was archived (ISO 8601 UTC); absent while active."
+            "description": "When the thread was archived; absent while active.",
+            "format": "date-time"
           },
           "createdAt": {
             "type": "string",
-            "description": "Creation time (ISO 8601 UTC)."
+            "description": "Creation time.",
+            "format": "date-time"
           },
           "updatedAt": {
             "type": "string",
-            "description": "Last update time (ISO 8601 UTC)."
+            "description": "Last update time.",
+            "format": "date-time"
           }
         },
         "required": [
@@ -1702,11 +1750,16 @@
           },
           "threadId": {
             "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
           }
         },
         "required": [
           "_tag",
-          "threadId"
+          "threadId",
+          "message"
         ],
         "additionalProperties": false
       },
@@ -1732,11 +1785,16 @@
           },
           "threadId": {
             "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
           }
         },
         "required": [
           "_tag",
-          "threadId"
+          "threadId",
+          "message"
         ],
         "additionalProperties": false
       },
@@ -1751,11 +1809,16 @@
           },
           "threadId": {
             "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
           }
         },
         "required": [
           "_tag",
-          "threadId"
+          "threadId",
+          "message"
         ],
         "additionalProperties": false
       },
@@ -1773,12 +1836,17 @@
           },
           "reason": {
             "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
           }
         },
         "required": [
           "_tag",
           "threadId",
-          "reason"
+          "reason",
+          "message"
         ],
         "additionalProperties": false
       },
@@ -1796,12 +1864,17 @@
           },
           "reason": {
             "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
           }
         },
         "required": [
           "_tag",
           "agentId",
-          "reason"
+          "reason",
+          "message"
         ],
         "additionalProperties": false
       },
@@ -1863,11 +1936,16 @@
           },
           "agentId": {
             "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
           }
         },
         "required": [
           "_tag",
-          "agentId"
+          "agentId",
+          "message"
         ],
         "additionalProperties": false
       },
@@ -1898,7 +1976,8 @@
           },
           "checkedAt": {
             "type": "string",
-            "description": "Check time (ISO 8601 UTC)."
+            "description": "Check time.",
+            "format": "date-time"
           },
           "reason": {
             "type": "string",

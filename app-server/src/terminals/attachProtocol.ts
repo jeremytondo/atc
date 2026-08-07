@@ -3,14 +3,17 @@ import type { SessionSize } from "./terminalAdapter.ts"
 
 // The attach wire protocol (ATC-130), stated once for every side of the
 // socket: the server bridge (terminalAttach.ts), the CLI client
-// (attachClient.ts), and any future client. The contract endpoint
-// description (contract.ts `attachTerminal`) documents it in prose; this module
-// is the code authority both sides import.
+// (attachClient.ts), and any future client. This module is the code
+// authority TypeScript sides import; the client-facing spec (and the shared
+// test vectors that pin it for non-TS clients) is
+// packages/attach-protocol/README.md + fixtures/.
 //
 // Binary frames are terminal bytes in both directions. Text frames are the
 // JSON control frames below. Close vocabulary: 1000 `terminal_ended` is
 // authoritative (a complete inventory proved the terminal ended) and 1000
-// `detach` is a deliberate client detach; 1011 reasons are retryable.
+// `detach` is a deliberate client detach; 1011 reasons are retryable —
+// as is a bare 1006/transport loss, which proves nothing about the
+// terminal.
 
 const ControlFrame = Schema.Union([
   Schema.Struct({ type: Schema.Literal("resize"), cols: Schema.Number, rows: Schema.Number }),
@@ -36,11 +39,17 @@ export const encodeControlFrame = (frame: ControlFrame): string => JSON.stringif
 /**
  * The one dimension rule for resize frames and `cols`/`rows` query params:
  * missing or malformed values take the fallback, everything else is floored
- * and clamped into [1, 1000].
+ * and clamped into [1, 1000]. A string is malformed unless it is numeric in
+ * its entirety — `"80junk"` falls back, it does not parse as 80.
  */
 export const clampDimension = (raw: string | number | undefined, fallback: number): number => {
-  const parsed = typeof raw === "number" ? raw : Number.parseInt(raw ?? "", 10)
-  return Number.isNaN(parsed) ? fallback : Math.max(1, Math.min(1_000, Math.floor(parsed)))
+  const parsed =
+    typeof raw === "number"
+      ? raw
+      : raw === undefined || raw.trim() === ""
+        ? Number.NaN
+        : Number(raw)
+  return Number.isFinite(parsed) ? Math.max(1, Math.min(1_000, Math.floor(parsed))) : fallback
 }
 
 /** Close (1000) reason proving the terminal ended — not retryable. */

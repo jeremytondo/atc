@@ -4,29 +4,37 @@ import { HttpServer } from "effect/unstable/http"
 import * as Events from "../src/events/events.ts"
 import * as Server from "../src/server.ts"
 import { TestBuildInfoLayer } from "./testBuildInfo.ts"
-import { TestRepositoryLayers } from "./testLayers.ts"
+import { makeTestServiceLayers, TestRepositoryLayers } from "./testLayers.ts"
+
+/**
+ * Build a server layer in its own closable scope — closable mid-test, and
+ * the finalizer guarantees the listener dies even when an assertion fails
+ * first. Returns the built context and the resolved loopback base URL.
+ */
+const startServer = <R, E>(layer: Layer.Layer<R | HttpServer.HttpServer, E>) =>
+  Effect.gen(function* () {
+    const scope = yield* Scope.make()
+    yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+    const context = yield* Layer.build(layer).pipe(Effect.provideService(Scope.Scope, scope))
+    const address = Context.get(context, HttpServer.HttpServer).address
+    if (address._tag !== "TcpAddress") {
+      return yield* Effect.die(`expected a TCP address, got ${address._tag}`)
+    }
+    assert.strictEqual(address.hostname, "127.0.0.1")
+    return { scope, context, base: `http://127.0.0.1:${address.port}` }
+  })
 
 describe("server layer", () => {
   // it.live: this test does real socket I/O, and the platform's shutdown
   // timeout must run on the real clock, not it.effect's TestClock.
   it.live("binds loopback, serves the API, and releases the port when closed", () =>
     Effect.gen(function* () {
-      // A manual scope so the server can be closed mid-test; the finalizer
-      // guarantees the listener dies even when an assertion fails first.
-      const scope = yield* Scope.make()
-      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
-      const context = yield* Layer.build(
+      const { scope, base } = yield* startServer(
         Server.layer({ port: 0 }).pipe(Layer.provide([TestBuildInfoLayer, TestRepositoryLayers])),
-      ).pipe(Effect.provideService(Scope.Scope, scope))
-
-      const address = Context.get(context, HttpServer.HttpServer).address
-      assert.strictEqual(address._tag, "TcpAddress")
-      if (address._tag !== "TcpAddress") return
-      assert.strictEqual(address.hostname, "127.0.0.1")
+      )
 
       // Connection: close keeps fetch from pooling an idle socket, so the
       // release check below is forced onto a fresh connection.
-      const base = `http://127.0.0.1:${address.port}`
       const health = yield* Effect.promise(() =>
         fetch(`${base}/api/v1/health`, { headers: { connection: "close" } }),
       )
@@ -50,21 +58,15 @@ describe("server layer", () => {
   // path — the drain layer in server.ts ends subscriber streams first.
   it.live("graceful shutdown with an open event subscriber is quick and clean", () =>
     Effect.gen(function* () {
-      const scope = yield* Scope.make()
-      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
       // TestRepositoryLayers is merged alongside the server (one memoized
       // instance) so the test can watch the same Events service the
       // handlers publish through.
-      const context = yield* Layer.build(
+      const { scope, context, base } = yield* startServer(
         Layer.mergeAll(Server.layer({ port: 0 }), TestRepositoryLayers).pipe(
           Layer.provide([TestBuildInfoLayer, TestRepositoryLayers]),
         ),
-      ).pipe(Effect.provideService(Scope.Scope, scope))
+      )
       const events = Context.get(context, Events.Events)
-      const address = Context.get(context, HttpServer.HttpServer).address
-      assert.strictEqual(address._tag, "TcpAddress")
-      if (address._tag !== "TcpAddress") return
-      const base = `http://127.0.0.1:${address.port}`
 
       const response = yield* Effect.promise(() =>
         fetch(`${base}/api/v1/events`, { headers: { accept: "text/event-stream" } }),
@@ -113,25 +115,48 @@ describe("server layer", () => {
     }),
   )
 
+  // The shared heartbeat crosses the real wire as an SSE comment — the
+  // keepalive quiet streams need to survive URLSession's idle timeout.
+  it.live("a quiet event stream carries heartbeat comments", () =>
+    Effect.gen(function* () {
+      const kit = makeTestServiceLayers(":memory:", {}, { heartbeatInterval: "30 millis" })
+      const { base } = yield* startServer(
+        Server.layer({ port: 0 }).pipe(Layer.provide([TestBuildInfoLayer, kit.layer])),
+      )
+
+      const response = yield* Effect.promise(() =>
+        fetch(`${base}/api/v1/events`, { headers: { accept: "text/event-stream" } }),
+      )
+      const reader = response.body!.getReader()
+      const decoder = new TextDecoder()
+      let payload = ""
+      // No mutation ever happens: everything on the wire is the opening
+      // comment and heartbeats.
+      for (let attempt = 0; !payload.includes(": heartbeat\n\n"); attempt++) {
+        assert.isBelow(attempt, 10, `no heartbeat arrived; saw ${JSON.stringify(payload)}`)
+        const chunk = yield* Effect.promise(() => reader.read())
+        assert.isFalse(chunk.done, "the stream ended before a heartbeat arrived")
+        payload += decoder.decode(chunk.value, { stream: true })
+      }
+      assert.isTrue(payload.startsWith(": connected\n\n"))
+    }),
+  )
+
   // Subscriber cleanup on client disconnect rides Bun's ReadableStream
   // cancel → fiber interrupt → Stream.ensuring — third-party behavior an
   // Effect or Bun upgrade could silently change, hence a real-wire test.
   it.live("a dropped subscriber is unregistered", () =>
     Effect.gen(function* () {
-      const scope = yield* Scope.make()
-      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
-      const context = yield* Layer.build(
+      const { context, base } = yield* startServer(
         Layer.mergeAll(Server.layer({ port: 0 }), TestRepositoryLayers).pipe(
           Layer.provide([TestBuildInfoLayer, TestRepositoryLayers]),
         ),
-      ).pipe(Effect.provideService(Scope.Scope, scope))
+      )
       const events = Context.get(context, Events.Events)
-      const address = Context.get(context, HttpServer.HttpServer).address
-      if (address._tag !== "TcpAddress") return assert.fail("expected a TCP address")
 
       const abort = new AbortController()
       const response = yield* Effect.promise(() =>
-        fetch(`http://127.0.0.1:${address.port}/api/v1/events`, { signal: abort.signal }),
+        fetch(`${base}/api/v1/events`, { signal: abort.signal }),
       )
       assert.strictEqual(response.status, 200)
       assert.strictEqual(yield* events.subscriberCount(), 1)

@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest"
 import { Deferred, Effect, Fiber, Stream } from "effect"
+import type { Duration } from "effect"
 import * as Events from "../../src/events/events.ts"
 import type { ResourceChangedEvent } from "../../src/events/events.ts"
 
@@ -16,19 +17,27 @@ const event = (id: string): ResourceChangedEvent => ({
   change: "updated",
 })
 
-/** Poll (assertion-bounded) until `condition` holds; no timers involved. */
-const waitFor = (condition: Effect.Effect<boolean>, label: string) =>
+/** Poll (assertion-bounded) until `condition` holds. The default spins on
+ * yieldNow; pass a delay when the condition needs real time to change. */
+const waitFor = (condition: Effect.Effect<boolean>, label: string, delay?: Duration.Input) =>
   Effect.gen(function* () {
     for (let attempt = 0; !(yield* condition); attempt++) {
       assert.isBelow(attempt, 1000, `never observed: ${label}`)
-      yield* Effect.yieldNow
+      yield* delay === undefined ? Effect.yieldNow : Effect.sleep(delay)
     }
   })
 
+// Heartbeat ticks share the subscriber queues (see the module header); the
+// event-delivery tests filter them out so slow CI runs cannot interleave one.
 const collectInto = (events: Events.Events["Service"], sink: Array<ResourceChangedEvent>) =>
-  events
-    .subscribe()
-    .pipe(Effect.flatMap(Stream.runForEach((received) => Effect.sync(() => sink.push(received)))))
+  events.subscribe().pipe(
+    Effect.flatMap((feed) =>
+      feed.pipe(
+        Stream.filter((item): item is ResourceChangedEvent => item !== Events.HEARTBEAT),
+        Stream.runForEach((event) => Effect.sync(() => sink.push(event))),
+      ),
+    ),
+  )
 
 describe("Events", () => {
   it.effect("delivers published events to every subscriber, in order", () =>
@@ -73,9 +82,11 @@ describe("Events", () => {
           .pipe(
             Effect.flatMap(
               Stream.runForEach((received) =>
-                Effect.sync(() => lagging.push(received)).pipe(
-                  Effect.andThen(Deferred.await(gate)),
-                ),
+                received === Events.HEARTBEAT
+                  ? Effect.void
+                  : Effect.sync(() => lagging.push(received)).pipe(
+                      Effect.andThen(Deferred.await(gate)),
+                    ),
               ),
             ),
           ),
@@ -140,5 +151,37 @@ describe("Events", () => {
       const received = yield* Effect.flatMap(events.subscribe(), Stream.runCollect)
       assert.deepStrictEqual(received, [])
     }).pipe(Effect.provide(layer)),
+  )
+
+  // it.live: the heartbeat timer runs on the real clock.
+  it.live("one shared timer ticks a heartbeat to every subscriber", () =>
+    Effect.gen(function* () {
+      const events = yield* Events.Events
+      const counts = [0, 0]
+      const fibers = yield* Effect.forEach(counts.keys(), (index) =>
+        Effect.forkChild(
+          events.subscribe().pipe(
+            Effect.flatMap(
+              Stream.runForEach((received) =>
+                Effect.sync(() => {
+                  if (received === Events.HEARTBEAT) counts[index]!++
+                }),
+              ),
+            ),
+          ),
+        ),
+      )
+      yield* waitFor(
+        Effect.map(events.subscriberCount(), (count) => count === 2),
+        "both subscribers registered",
+      )
+      yield* waitFor(
+        Effect.sync(() => counts.every((count) => count >= 2)),
+        "each subscriber saw two heartbeats",
+        "10 millis",
+      )
+      yield* events.close()
+      yield* Effect.forEach(fibers, Fiber.join)
+    }).pipe(Effect.provide(Events.layerWith({ heartbeatInterval: "20 millis" }))),
   )
 })

@@ -1,0 +1,20 @@
+{
+  "description": "The one dimension rule for cols/rows query params and resize frames: missing or malformed values take the fallback, everything else is floored and clamped into [1, 1000]. A string is malformed unless it is numeric in its entirety — a numeric prefix does not count. `raw` is a string (query param), number (resize frame), or null (absent).",
+  "fallback": 80,
+  "cases": [
+    { "name": "in range", "raw": 120, "expect": 120 },
+    { "name": "in-range string", "raw": "120", "expect": 120 },
+    { "name": "floored", "raw": 79.9, "expect": 79 },
+    { "name": "clamped low", "raw": 0, "expect": 1 },
+    { "name": "clamped negative", "raw": -5, "expect": 1 },
+    { "name": "clamped high", "raw": 5000, "expect": 1000 },
+    { "name": "upper bound", "raw": 1000, "expect": 1000 },
+    { "name": "lower bound", "raw": 1, "expect": 1 },
+    { "name": "absent takes fallback", "raw": null, "expect": 80 },
+    { "name": "malformed string takes fallback", "raw": "wide", "expect": 80 },
+    { "name": "numeric-prefix string takes fallback", "raw": "12junk", "expect": 80 },
+    { "name": "whole-string numeric forms parse", "raw": "1e2", "expect": 100 },
+    { "name": "empty string takes fallback", "raw": "", "expect": 80 },
+    { "name": "whitespace-only string takes fallback", "raw": "   ", "expect": 80 }
+  ]
+}
