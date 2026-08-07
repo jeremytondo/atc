@@ -75,6 +75,9 @@ export type Thread = typeof ThreadSchema.Type
 //     worth protecting, and writing at onset (not busy→idle) keeps the
 //     marker across a restart or observer gap mid-first-turn — the same
 //     signal for every provider.
+//   - archived threads are never pinned: pin refuses archived records, and
+//     archive clears the pin in the same repository write so no client can
+//     observe or restore an archived pin.
 //   - delete kills the live linked TUI terminal first (the terminals
 //     confirmed-kill rules), releases adapter-owned session resources,
 //     then removes the row; ended linked terminals stay as unlinked
@@ -111,6 +114,10 @@ export class Threads extends Context.Service<
     readonly archive: (id: string) => Effect.Effect<Thread, ThreadNotFound | ThreadBusy>
     /** Idempotent. */
     readonly unarchive: (id: string) => Effect.Effect<Thread, ThreadNotFound>
+    /** Idempotent; archived threads cannot be pinned. */
+    readonly pin: (id: string) => Effect.Effect<Thread, ThreadNotFound | ThreadArchived>
+    /** Idempotent. */
+    readonly unpin: (id: string) => Effect.Effect<Thread, ThreadNotFound>
     /** Kill the live linked terminal and release adapter resources, then
      * remove the record. */
     readonly delete: (id: string) => Effect.Effect<void, ThreadNotFound | ZmxUnavailable>
@@ -301,6 +308,7 @@ export const layerWith = (options: ThreadsOptions) =>
         workingDirectory: record.workingDirectory,
         activityState,
         ...(linkedTerminalId !== undefined ? { linkedTerminalId } : {}),
+        ...(record.pinnedAt !== undefined ? { pinnedAt: record.pinnedAt } : {}),
         ...(record.archivedAt !== undefined ? { archivedAt: record.archivedAt } : {}),
         createdAt: record.createdAt,
         updatedAt: record.updatedAt,
@@ -679,6 +687,25 @@ export const layerWith = (options: ThreadsOptions) =>
             const record = yield* repository.require(id)
             if (record.archivedAt === undefined) return yield* assembleAlone(record)
             const updated = yield* repository.setArchived(id, false)
+            yield* events.publish({ resource: "thread", id, change: "updated" })
+            return yield* assembleAlone(updated)
+          }),
+        pin: (id) =>
+          Effect.gen(function* () {
+            const record = yield* repository.require(id)
+            if (record.archivedAt !== undefined) {
+              return yield* Effect.fail(new ThreadArchived({ threadId: id }))
+            }
+            if (record.pinnedAt !== undefined) return yield* assembleAlone(record)
+            const updated = yield* repository.setPinned(id, true)
+            yield* events.publish({ resource: "thread", id, change: "updated" })
+            return yield* assembleAlone(updated)
+          }),
+        unpin: (id) =>
+          Effect.gen(function* () {
+            const record = yield* repository.require(id)
+            if (record.pinnedAt === undefined) return yield* assembleAlone(record)
+            const updated = yield* repository.setPinned(id, false)
             yield* events.publish({ resource: "thread", id, change: "updated" })
             return yield* assembleAlone(updated)
           }),

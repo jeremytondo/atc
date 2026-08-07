@@ -77,4 +77,8 @@ export const migrations: Record<string, Effect.Effect<void, unknown, SqlClient.S
       ADD COLUMN thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL
     `
   }),
+  "0004_thread_pins": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`ALTER TABLE threads ADD COLUMN pinned_at TEXT`
+  }),
 }

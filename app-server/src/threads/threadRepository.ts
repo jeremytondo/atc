@@ -25,6 +25,7 @@ export interface ThreadRecord {
   readonly confirmedAt?: string
   /** Opaque adapter-owned blob; the domain never reads inside it. */
   readonly providerMetadata?: string
+  readonly pinnedAt?: string
   readonly archivedAt?: string
   readonly createdAt: string
   readonly updatedAt: string
@@ -40,6 +41,7 @@ const ThreadRow = Schema.Struct({
   provider_session_id: Schema.NullOr(Schema.String),
   confirmed_at: Schema.NullOr(Schema.String),
   provider_metadata: Schema.NullOr(Schema.String),
+  pinned_at: Schema.NullOr(Schema.String),
   archived_at: Schema.NullOr(Schema.String),
   created_at: Schema.String,
   updated_at: Schema.String,
@@ -54,6 +56,7 @@ const toRecord = (row: typeof ThreadRow.Type): ThreadRecord => ({
   ...(row.provider_session_id !== null ? { providerSessionId: row.provider_session_id } : {}),
   ...(row.confirmed_at !== null ? { confirmedAt: row.confirmed_at } : {}),
   ...(row.provider_metadata !== null ? { providerMetadata: row.provider_metadata } : {}),
+  ...(row.pinned_at !== null ? { pinnedAt: row.pinned_at } : {}),
   ...(row.archived_at !== null ? { archivedAt: row.archived_at } : {}),
   createdAt: row.created_at,
   updatedAt: row.updated_at,
@@ -96,6 +99,8 @@ export class ThreadRepository extends Context.Service<
      * a vanished row is a no-op, and an existing marker is never rewritten.
      */
     readonly confirm: (id: string) => Effect.Effect<void>
+    /** Set or clear the pin marker; callers hold the record (see rename). */
+    readonly setPinned: (id: string, pinned: boolean) => Effect.Effect<ThreadRecord>
     /** Set or clear the archive marker; callers hold the record (see rename). */
     readonly setArchived: (id: string, archived: boolean) => Effect.Effect<ThreadRecord>
     readonly delete: (id: string) => Effect.Effect<void>
@@ -195,7 +200,26 @@ export const layer = Layer.effect(ThreadRepository)(
       }),
       Result: ThreadRow,
       execute: (patch) => sql`
-        UPDATE threads SET archived_at = ${patch.archived_at}, updated_at = ${patch.updated_at}
+        UPDATE threads SET
+          archived_at = ${patch.archived_at},
+          pinned_at = CASE WHEN ${patch.archived_at} IS NOT NULL THEN NULL ELSE pinned_at END,
+          updated_at = ${patch.updated_at}
+        WHERE id = ${patch.id}
+        RETURNING *
+      `,
+    })
+
+    const setPinnedRows = SqlSchema.findAll({
+      Request: Schema.Struct({
+        id: Schema.String,
+        pinned_at: Schema.NullOr(Schema.String),
+        updated_at: Schema.String,
+      }),
+      Result: ThreadRow,
+      execute: (patch) => sql`
+        UPDATE threads SET
+          pinned_at = CASE WHEN archived_at IS NOT NULL THEN NULL ELSE ${patch.pinned_at} END,
+          updated_at = ${patch.updated_at}
         WHERE id = ${patch.id}
         RETURNING *
       `,
@@ -240,6 +264,7 @@ export const layer = Layer.effect(ThreadRepository)(
             provider_session_id: null,
             confirmed_at: null,
             provider_metadata: null,
+            pinned_at: null,
             archived_at: null,
             created_at: now,
             updated_at: now,
@@ -287,6 +312,11 @@ export const layer = Layer.effect(ThreadRepository)(
         Effect.suspend(() => confirmRows({ id, confirmed_at: new Date().toISOString() })).pipe(
           Effect.orDie,
         ),
+      setPinned: (id, pinned) =>
+        Effect.suspend(() => {
+          const now = new Date().toISOString()
+          return setPinnedRows({ id, pinned_at: pinned ? now : null, updated_at: now })
+        }).pipe(Effect.orDie, Effect.flatMap(requireFirst("setPinned"))),
       setArchived: (id, archived) =>
         Effect.suspend(() => {
           const now = new Date().toISOString()

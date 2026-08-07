@@ -263,6 +263,9 @@ export const Thread = Schema.Struct({
       description: "The thread's live TUI terminal, when one is open (derived; never required).",
     }),
   ),
+  pinnedAt: Schema.optionalKey(
+    timestamp("When the thread was pinned; absent while unpinned. The pin-order key."),
+  ),
   archivedAt: Schema.optionalKey(timestamp("When the thread was archived; absent while active.")),
   createdAt: timestamp("Creation time."),
   updatedAt: timestamp("Last update time."),
@@ -767,6 +770,23 @@ export class V1 extends HttpApiGroup.make("v1")
     })
       .annotate(OpenApi.Identifier, "unarchiveThread")
       .annotate(OpenApi.Description, "Restore an archived thread (idempotent)."),
+    HttpApiEndpoint.post("pinThread", "/threads/:threadId/pin", {
+      params: threadIdParam,
+      success: Thread,
+      error: [ThreadNotFound, ThreadArchived],
+    })
+      .annotate(OpenApi.Identifier, "pinThread")
+      .annotate(
+        OpenApi.Description,
+        "Pin an active thread (idempotent). Refused while the thread is archived.",
+      ),
+    HttpApiEndpoint.post("unpinThread", "/threads/:threadId/unpin", {
+      params: threadIdParam,
+      success: Thread,
+      error: ThreadNotFound,
+    })
+      .annotate(OpenApi.Identifier, "unpinThread")
+      .annotate(OpenApi.Description, "Unpin a thread (idempotent)."),
     HttpApiEndpoint.delete("deleteThread", "/threads/:threadId", {
       params: threadIdParam,
       error: [ThreadNotFound, ZmxUnavailable],

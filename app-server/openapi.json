@@ -853,6 +853,100 @@
         "description": "Restore an archived thread (idempotent)."
       }
     },
+    "/api/v1/threads/{threadId}/pin": {
+      "post": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "pinThread",
+        "parameters": [
+          {
+            "name": "threadId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "A durable Thread: the primary unit of agent work. Its ATC identity is separate from provider identity, and it never requires a Terminal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Thread"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No thread exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadNotFoundJsonEncoding"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The thread is archived; unarchive it first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadArchivedJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "Pin an active thread (idempotent). Refused while the thread is archived."
+      }
+    },
+    "/api/v1/threads/{threadId}/unpin": {
+      "post": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "unpinThread",
+        "parameters": [
+          {
+            "name": "threadId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "A durable Thread: the primary unit of agent work. Its ATC identity is separate from provider identity, and it never requires a Terminal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Thread"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No thread exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadNotFoundJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "Unpin a thread (idempotent)."
+      }
+    },
     "/api/v1/threads/{threadId}/terminal": {
       "post": {
         "tags": [
@@ -1676,6 +1770,11 @@
           "linkedTerminalId": {
             "type": "string",
             "description": "The thread's live TUI terminal, when one is open (derived; never required)."
+          },
+          "pinnedAt": {
+            "type": "string",
+            "description": "When the thread was pinned; absent while unpinned. The pin-order key.",
+            "format": "date-time"
           },
           "archivedAt": {
             "type": "string",

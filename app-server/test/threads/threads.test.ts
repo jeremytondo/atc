@@ -10,6 +10,7 @@ import { Api } from "../../src/api/contract.ts"
 import { V1Handlers } from "../../src/api/handlers.ts"
 import { sessionNameForTerminalId } from "../../src/terminals/terminalAdapter.ts"
 import { TerminalRepository } from "../../src/terminals/terminalRepository.ts"
+import { ThreadRepository } from "../../src/threads/threadRepository.ts"
 import { TestBuildInfoLayer } from "../testBuildInfo.ts"
 import { makeTestServiceLayers } from "../testLayers.ts"
 
@@ -62,6 +63,7 @@ describe("/api/v1/threads", () => {
       assert.strictEqual(created.activityState, "idle")
       assert.isUndefined(created.name)
       assert.isUndefined(created.linkedTerminalId)
+      assert.isUndefined(created.pinnedAt)
       assert.isUndefined(created.archivedAt)
       assert.strictEqual(created.createdAt, created.updatedAt)
 
@@ -100,12 +102,32 @@ describe("/api/v1/threads", () => {
       })
       assert.deepStrictEqual(unchanged, renamed)
 
-      // Archive: idempotent, excluded from the default list, in the
-      // archived list; unarchive restores.
+      // Pin/unpin are idempotent and use pinnedAt as the durable order key.
+      const pinned = yield* client.v1.pinThread({ params: { threadId: created.id } })
+      assert.isString(pinned.pinnedAt)
+      const pinnedAgain = yield* client.v1.pinThread({ params: { threadId: created.id } })
+      assert.deepStrictEqual(pinnedAgain, pinned)
+      const unpinned = yield* client.v1.unpinThread({ params: { threadId: created.id } })
+      assert.isUndefined(unpinned.pinnedAt)
+      const unpinnedAgain = yield* client.v1.unpinThread({ params: { threadId: created.id } })
+      assert.deepStrictEqual(unpinnedAgain, unpinned)
+
+      // Archive is idempotent, clears a pin, and excludes the thread from
+      // the default list. Restoring never silently re-pins it.
+      yield* client.v1.pinThread({ params: { threadId: created.id } })
       const archived = yield* client.v1.archiveThread({ params: { threadId: created.id } })
       assert.isString(archived.archivedAt)
+      assert.isUndefined(archived.pinnedAt)
       const again = yield* client.v1.archiveThread({ params: { threadId: created.id } })
       assert.deepStrictEqual(again, archived)
+      const pinArchived = yield* Effect.flip(
+        client.v1.pinThread({ params: { threadId: created.id } }),
+      )
+      assert.strictEqual(pinArchived._tag, "ThreadArchived")
+      assert.deepStrictEqual(
+        yield* client.v1.unpinThread({ params: { threadId: created.id } }),
+        archived,
+      )
       assert.deepStrictEqual(yield* client.v1.listThreads({ query: { projectId: project.id } }), [
         canonical,
       ])
@@ -115,6 +137,7 @@ describe("/api/v1/threads", () => {
       )
       const restored = yield* client.v1.unarchiveThread({ params: { threadId: created.id } })
       assert.isUndefined(restored.archivedAt)
+      assert.isUndefined(restored.pinnedAt)
 
       // Project-scoped listing.
       assert.deepStrictEqual(
@@ -137,6 +160,8 @@ describe("/api/v1/threads", () => {
         client.v1.updateThread({ params: { threadId: "missing" }, payload: { name: "x" } }),
         client.v1.archiveThread({ params: { threadId: "missing" } }),
         client.v1.unarchiveThread({ params: { threadId: "missing" } }),
+        client.v1.pinThread({ params: { threadId: "missing" } }),
+        client.v1.unpinThread({ params: { threadId: "missing" } }),
         client.v1.deleteThread({ params: { threadId: "missing" } }),
       ]
       for (const attempt of attempts) {
@@ -186,6 +211,27 @@ describe("/api/v1/threads", () => {
       if (restricted._tag === "ProjectHasThreads") {
         assert.strictEqual(restricted.threadCount, 1)
       }
+      yield* client.v1.deleteThread({ params: { threadId: thread.id } })
+      yield* client.v1.deleteProject({ params: { projectId: project.id } })
+    }).pipe(Effect.provide(TestLayer)),
+  )
+
+  it.effect("an archived row rejects a stale pin write", () =>
+    Effect.gen(function* () {
+      const { client, makeProject } = yield* testClient
+      const repository = yield* ThreadRepository
+      const project = yield* makeProject
+      const thread = yield* client.v1.createThread({
+        payload: { projectId: project.id, agentId: "codex" },
+      })
+      yield* client.v1.archiveThread({ params: { threadId: thread.id } })
+
+      // Models pin() racing after its active-record read but losing the SQL
+      // write race to archive(): storage keeps the archived row unpinned.
+      const guarded = yield* repository.setPinned(thread.id, true)
+      assert.isUndefined(guarded.pinnedAt)
+      assert.isUndefined((yield* client.v1.getThread({ params: { threadId: thread.id } })).pinnedAt)
+
       yield* client.v1.deleteThread({ params: { threadId: thread.id } })
       yield* client.v1.deleteProject({ params: { projectId: project.id } })
     }).pipe(Effect.provide(TestLayer)),

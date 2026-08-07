@@ -150,6 +150,8 @@ describe("openapi document vs runtime", () => {
       "/api/v1/threads/{threadId}",
       "/api/v1/threads/{threadId}/archive",
       "/api/v1/threads/{threadId}/unarchive",
+      "/api/v1/threads/{threadId}/pin",
+      "/api/v1/threads/{threadId}/unpin",
       "/api/v1/threads/{threadId}/terminal",
       "/api/v1/agents",
       "/api/v1/agents/{agentId}",
@@ -310,7 +312,7 @@ describe("openapi document vs runtime", () => {
       const createdBody = (yield* created.json) as Record<string, unknown>
       const schema = componentSchema("Thread")
       // A fresh unnamed thread carries exactly the required keys;
-      // name/linkedTerminalId/archivedAt are absent optional keys, never null.
+      // name/linkedTerminalId/pinnedAt/archivedAt are absent optional keys, never null.
       assert.sameMembers([...schema.required], Object.keys(createdBody))
       assert.includeMembers(Object.keys(schema.properties), Object.keys(createdBody))
       assert.deepStrictEqual(
@@ -347,7 +349,7 @@ describe("openapi document vs runtime", () => {
     }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
   )
 
-  it.effect("/api/v1/threads/{threadId}/archive and /unarchive round-trip the Thread schema", () =>
+  it.effect("thread pin and archive actions round-trip the Thread schema", () =>
     Effect.gen(function* () {
       const client = yield* rawClient
       const project = yield* client.post("http://127.0.0.1/api/v1/projects", {
@@ -358,6 +360,33 @@ describe("openapi document vs runtime", () => {
         body: HttpBody.jsonUnsafe({ projectId: projectBody.id, agentId: "claude-code" }),
       })
       const createdBody = (yield* created.json) as { id: string }
+
+      const pinned = yield* client.post(`http://127.0.0.1/api/v1/threads/${createdBody.id}/pin`, {
+        body: HttpBody.empty,
+      })
+      assert.strictEqual(pinned.status, 200)
+      const pinnedBody = (yield* pinned.json) as Record<string, unknown>
+      assert.isString(pinnedBody["pinnedAt"])
+      assert.deepStrictEqual(
+        operation(`/api/v1/threads/{threadId}/pin`, "post").responses["200"]!.content[
+          "application/json"
+        ]!.schema,
+        { $ref: "#/components/schemas/Thread" },
+      )
+
+      const unpinned = yield* client.post(
+        `http://127.0.0.1/api/v1/threads/${createdBody.id}/unpin`,
+        { body: HttpBody.empty },
+      )
+      assert.strictEqual(unpinned.status, 200)
+      const unpinnedBody = (yield* unpinned.json) as Record<string, unknown>
+      assert.notProperty(unpinnedBody, "pinnedAt")
+      assert.deepStrictEqual(
+        operation(`/api/v1/threads/{threadId}/unpin`, "post").responses["200"]!.content[
+          "application/json"
+        ]!.schema,
+        { $ref: "#/components/schemas/Thread" },
+      )
 
       const archived = yield* client.post(
         `http://127.0.0.1/api/v1/threads/${createdBody.id}/archive`,
