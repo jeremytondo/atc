@@ -125,37 +125,45 @@ struct NavigatorSidebar: View {
 
     private func filterRow(_ model: ThreadListModel) -> some View {
         HStack(spacing: Spacing.sm) {
-            Menu {
-                Button("All Projects") { select(.all) }
-                if !model.projects.isEmpty {
-                    Divider()
-                    ForEach(model.projects) { option in
-                        Button(option.label) { select(.project(option.ref)) }
-                    }
-                }
-                Divider()
-                Button("Archived") { select(.archived) }
-            } label: {
-                HStack(spacing: Spacing.sm) {
-                    Image(systemName: "folder")
-                        .foregroundStyle(.secondary)
-                    Text(filterTitle(model))
-                        .font(.callout.weight(.medium))
-                        .lineLimit(1)
-                    Spacer(minLength: Spacing.xs)
-                    Image(systemName: "chevron.down")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, Spacing.md)
-                .frame(maxWidth: .infinity, minHeight: NavigatorMetrics.chipSize)
-                .contentShape(RoundedRectangle(cornerRadius: Radius.chip, style: .continuous))
+            // The bordered dropdown is drawn directly so the box always
+            // spans the available width with the chevron pinned trailing —
+            // a borderless Menu sizes to its label, so the Menu instead
+            // rides on top as a clear, full-size click target.
+            HStack(spacing: Spacing.sm) {
+                Image(systemName: "folder")
+                    .foregroundStyle(.secondary)
+                Text(filterTitle(model))
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                Spacer(minLength: Spacing.xs)
+                Image(systemName: "chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
+            .padding(.horizontal, Spacing.md)
+            .frame(maxWidth: .infinity, minHeight: NavigatorMetrics.chipSize)
             .navigatorChipSurface()
-            .help("Filter threads")
-            .accessibilityLabel("Thread filter: \(filterTitle(model))")
+            .accessibilityHidden(true)
+            .overlay {
+                Menu {
+                    Button("All Projects") { select(.all) }
+                    if !model.projects.isEmpty {
+                        Divider()
+                        ForEach(model.projects) { option in
+                            Button(option.label) { select(.project(option.ref)) }
+                        }
+                    }
+                    Divider()
+                    Button("Archived") { select(.archived) }
+                } label: {
+                    Color.clear
+                        .contentShape(RoundedRectangle(cornerRadius: Radius.chip, style: .continuous))
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .help("Filter threads")
+                .accessibilityLabel("Thread filter: \(filterTitle(model))")
+            }
 
             NavigatorChipButton(
                 systemImage: "plus",
