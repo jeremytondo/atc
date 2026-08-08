@@ -24,7 +24,21 @@ struct ThreadListItem: Identifiable, Equatable {
     /// default — an identical path is noise on every card.
     let distinctWorkingDirectory: String?
 
-    var id: ThreadRef { ref }
+    /// Row identity is section-scoped, not the bare `ThreadRef`. The pinned,
+    /// recent, and archived sections are sibling `ForEach`es inside one
+    /// `LazyVStack`, whose item cache is keyed by id across the whole stack:
+    /// with a ref-only id, pin/unpin/archive reads as a *move* of one row
+    /// between sections and the lazy layout keeps serving the stale cached
+    /// view — a card that neither updates nor responds until relaunch.
+    /// Folding the section-determining flags into the id turns those
+    /// transitions into remove-plus-insert of distinct rows.
+    struct ID: Hashable {
+        let ref: ThreadRef
+        let isPinned: Bool
+        let isArchived: Bool
+    }
+
+    var id: ID { ID(ref: ref, isPinned: thread.isPinned, isArchived: thread.isArchived) }
 }
 
 /// One project as the filter menu and the New Thread picker present it.
