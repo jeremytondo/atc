@@ -125,26 +125,12 @@ struct NavigatorSidebar: View {
 
     private func filterRow(_ model: ThreadListModel) -> some View {
         HStack(spacing: Spacing.sm) {
-            // The bordered dropdown is drawn directly so the box always
-            // spans the available width with the chevron pinned trailing —
-            // a borderless Menu sizes to its label, so the Menu instead
-            // rides on top as a clear, full-size click target.
-            HStack(spacing: Spacing.sm) {
-                Image(systemName: "folder")
-                    .foregroundStyle(.secondary)
-                Text(filterTitle(model))
-                    .font(.callout.weight(.medium))
-                    .lineLimit(1)
-                Spacer(minLength: Spacing.xs)
-                Image(systemName: "chevron.down")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, Spacing.md)
-            .frame(maxWidth: .infinity, minHeight: NavigatorMetrics.chipSize)
-            .navigatorChipSurface()
-            .accessibilityHidden(true)
-            .overlay {
+            // A borderless Menu adopts its label's ideal width — maxWidth
+            // expansion collapses to a text-hugging pill, and a clear
+            // overlay label never gets a clickable size. GeometryReader
+            // hands the label the concrete leftover width, so the menu is
+            // full-width and natively clickable at once.
+            GeometryReader { geometry in
                 Menu {
                     Button("All Projects") { select(.all) }
                     if !model.projects.isEmpty {
@@ -156,14 +142,28 @@ struct NavigatorSidebar: View {
                     Divider()
                     Button("Archived") { select(.archived) }
                 } label: {
-                    Color.clear
-                        .contentShape(RoundedRectangle(cornerRadius: Radius.chip, style: .continuous))
+                    HStack(spacing: Spacing.sm) {
+                        Image(systemName: "folder")
+                            .foregroundStyle(.secondary)
+                        Text(filterTitle(model))
+                            .font(.callout.weight(.medium))
+                            .lineLimit(1)
+                        Spacer(minLength: Spacing.xs)
+                        Image(systemName: "chevron.down")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, Spacing.md)
+                    .frame(width: geometry.size.width, height: NavigatorMetrics.chipSize)
+                    .contentShape(RoundedRectangle(cornerRadius: Radius.chip, style: .continuous))
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
+                .navigatorChipSurface()
                 .help("Filter threads")
                 .accessibilityLabel("Thread filter: \(filterTitle(model))")
             }
+            .frame(height: NavigatorMetrics.chipSize)
 
             NavigatorChipButton(
                 systemImage: "plus",
