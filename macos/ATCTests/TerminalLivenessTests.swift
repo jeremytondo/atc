@@ -38,7 +38,7 @@ struct TerminalLivenessTests {
     func endedControllerRetainedNotLive() async throws {
         let client = ScriptableAppServerClient()
         Fixtures.seed(client)
-        let test = try makeModel(client: client)
+        let test = try await makeModel(client: client)
         await test.runtime.refresh()
 
         let terminal = try #require(test.runtime.terminals.terminal(id: "trm_live"))
@@ -62,7 +62,7 @@ struct TerminalLivenessTests {
     func endedTerminalRefetchesStores() async throws {
         let client = ScriptableAppServerClient()
         Fixtures.seed(client)
-        let test = try makeModel(client: client)
+        let test = try await makeModel(client: client)
         await test.runtime.refresh()
 
         let terminal = try #require(test.runtime.terminals.terminal(id: "trm_live"))
@@ -86,7 +86,7 @@ struct TerminalLivenessTests {
     func explicitDisconnectRemoves() async throws {
         let client = ScriptableAppServerClient()
         Fixtures.seed(client)
-        let test = try makeModel(client: client)
+        let test = try await makeModel(client: client)
         await test.runtime.refresh()
 
         let terminal = try #require(test.runtime.terminals.terminal(id: "trm_live"))

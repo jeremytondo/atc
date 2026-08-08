@@ -2,6 +2,33 @@
 # independently buildable; these tasks fan out so one command answers
 # "is the repo healthy?" the same way locally and in CI.
 
+# --- Primary entrypoints (the App Server is the atc service; the Go
+# server/ tree is legacy awaiting removal and must never win a task name) ---
+
+[tasks.dev]
+description = "Run the App Server in the foreground (http://127.0.0.1:7332)"
+run = "mise run -C app-server dev"
+
+[tasks.install]
+description = "Build the App Server and install it as the local atc binary (default: ~/.local/bin/atc)"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+mise run -C app-server build
+case "$(uname -m)" in
+  arm64|aarch64) arch=arm64 ;;
+  x86_64) arch=x64 ;;
+  *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+dir="${ATC_INSTALL_DIR:-$HOME/.local/bin}"
+mkdir -p "$dir"
+install -m 0755 "app-server/dist/atc-$os-$arch" "$dir/atc"
+# --version is the binary's own build stamp; `atc version` would ask a
+# running server and fail when none is up.
+echo "installed $dir/atc ($("$dir/atc" --version))"
+"""
+
 [tasks.check]
 description = "All gates: server fmt/vet/tests + web check, App Server check, Kit tests, macOS app tests"
 depends = ["server:check", "app-server:check", "kit:test", "macos:test"]

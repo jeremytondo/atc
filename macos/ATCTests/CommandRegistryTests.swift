@@ -34,7 +34,7 @@ struct CommandRegistryTests {
         let client = ScriptableAppServerClient()
         Fixtures.seed(client)
         let events = ScriptedEventStream()
-        let test = try makeModel(client: client, events: events)
+        let test = try await makeModel(client: client, events: events)
         events.connect()
         await settle(until: { test.model.canMutate(connectionID: test.connectionID) })
 
@@ -90,7 +90,7 @@ struct CommandRegistryTests {
         let client = ScriptableAppServerClient()
         Fixtures.seed(client)
         let events = ScriptedEventStream()
-        let test = try makeModel(client: client, events: events)
+        let test = try await makeModel(client: client, events: events)
         events.connect()
         await settle(until: { test.model.canMutate(connectionID: test.connectionID) })
 

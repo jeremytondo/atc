@@ -107,9 +107,9 @@ final class TerminalSessionController: Identifiable {
     let terminalID: String
     let viewState: TerminalViewState
     private(set) var phase: Phase = .connecting
-    /// Fired once when the server proves the terminal gone (authoritative
-    /// close or reconciled read) — the owner refreshes stores so the
-    /// tombstone and dropped thread link land.
+    /// Fired when the terminal may be gone — an authoritative close, a
+    /// reconciled read, or a pre-upgrade rejection — so the owner refetches
+    /// and the tombstone (or corrected state) lands.
     @ObservationIgnored var onTerminalEnded: (() -> Void)?
 
     var id: String { terminalID }

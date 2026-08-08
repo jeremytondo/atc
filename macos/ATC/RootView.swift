@@ -45,6 +45,11 @@ struct RootView: View {
             ToolbarItem(placement: .principal) {
                 contextTitle
             }
+            // The design's exceptional-state surface: needs-input and
+            // Connection-unreachable live here; healthy states show nothing.
+            ToolbarItem(placement: .status) {
+                exceptionalStatus
+            }
             ToolbarItem(placement: .primaryAction) {
                 Toggle(isOn: $windowState.isInspectorPresented) {
                     Label("Inspector", systemImage: "sidebar.trailing")
@@ -110,6 +115,36 @@ struct RootView: View {
                     .lineLimit(1)
             }
         }
+    }
+
+    @ViewBuilder
+    private var exceptionalStatus: some View {
+        HStack(spacing: Spacing.md) {
+            if let ref = selectedThread,
+               appModel.thread(for: ref)?.activityState == .needsInput {
+                Label("Needs input", systemImage: "exclamationmark.bubble.fill")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(Color.accentColor)
+                    .help("The agent is waiting for your input")
+            }
+            if let name = unreachableConnectionName {
+                Label("\(name) unreachable", systemImage: "wifi.exclamationmark")
+                    .font(.callout.weight(.medium))
+                    // Orange like the app's other warning banners: this is a
+                    // persistent surface, softer than the red state dot.
+                    .foregroundStyle(.orange)
+                    // The attach WebSocket is deliberately independent of
+                    // this state — an open terminal keeps working — so the
+                    // copy only claims what canMutate actually gates.
+                    .help("Showing cached content; creating and organizing are disabled until the connection returns")
+            }
+        }
+    }
+
+    /// The first unreachable Connection's display name; nil while all are
+    /// healthy or still unknown (launch must not flash a warning).
+    private var unreachableConnectionName: String? {
+        appModel.runtimes.first { $0.reachability == .unreachable }?.record.name
     }
 
     @ViewBuilder

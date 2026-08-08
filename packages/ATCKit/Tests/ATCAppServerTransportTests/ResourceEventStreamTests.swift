@@ -18,8 +18,10 @@ private final class ScriptedConnector: @unchecked Sendable {
     private let lock = NSLock()
     private var script: [Connection]
     private var recordedAttempts = 0
+    private var recordedHeaders: [String: String] = [:]
 
     var attempts: Int { lock.withLock { recordedAttempts } }
+    var headers: [String: String] { lock.withLock { recordedHeaders } }
 
     init(_ script: [Connection]) {
         self.script = script
@@ -33,7 +35,8 @@ private final class ScriptedConnector: @unchecked Sendable {
     }
 
     func connect() -> ResourceEventStream.Connector {
-        { _, _ in
+        { _, headers in
+            self.lock.withLock { self.recordedHeaders = headers }
             switch self.next() {
             case .failure:
                 throw URLError(.cannotConnectToHost)
@@ -153,6 +156,21 @@ struct ResourceEventStreamTests {
         // reached the opening comment.
         #expect(events == [.connected])
         #expect(connector.attempts == 3)
+    }
+
+    @Test("headers reach the connector — the bearer-auth seam")
+    func headersPassThrough() async {
+        let connector = ScriptedConnector([.stream([": connected\n\n"], thenHang: true)])
+        let stream = ResourceEventStream.stream(
+            url: eventsURL,
+            headers: ["Authorization": "Bearer token-1"],
+            configuration: fastConfiguration(),
+            connector: connector.connect()
+        )
+
+        _ = await collect(stream, count: 1)
+
+        #expect(connector.headers == ["Authorization": "Bearer token-1"])
     }
 
     @Test("heartbeats keep the stream alive without surfacing events")

@@ -21,6 +21,8 @@ Tasks run with [mise](https://mise.jdx.dev), which also installs the pinned
 toolchains. `mise tasks` lists everything; from the repo root:
 
 ```sh
+mise run dev            # run the App Server in the foreground (http://127.0.0.1:7332)
+mise run install        # build the App Server and install it as ~/.local/bin/atc
 mise run check          # every gate: Go server, web, App Server, ATCKit, macOS app
 mise run test           # every test suite
 mise run refs           # fetch read-only reference source into repos/ (gitignored)

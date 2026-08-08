@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// The one reachability/liveness dot used across the app.
+/// The one reachability dot used across the app. Takes the state, not a
+/// color, so the color and its spoken description cannot drift apart.
 struct StatusDot: View {
     enum Size {
         /// 6pt — inside captions and chips.
@@ -16,19 +17,13 @@ struct StatusDot: View {
         }
     }
 
-    let color: Color
+    let reachability: Reachability
     var size: Size = .standard
-    /// Hollow ring for "present but inactive" (e.g. no active sessions).
-    var hollow = false
 
     var body: some View {
         Circle()
-            .fill(hollow ? Color.clear : color)
-            .overlay {
-                if hollow {
-                    Circle().stroke(.tertiary, lineWidth: 2)
-                }
-            }
+            .fill(reachability.color)
             .frame(width: size.diameter, height: size.diameter)
+            .accessibilityLabel("Connection \(reachability.accessibilityDescription)")
     }
 }

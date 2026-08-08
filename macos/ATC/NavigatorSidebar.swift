@@ -148,6 +148,7 @@ struct NavigatorSidebar: View {
             .menuIndicator(.hidden)
             .foregroundStyle(.secondary)
             .help("Filter threads")
+            .accessibilityLabel("Thread filter: \(filterTitle(model))")
 
             NavigatorActionButton(
                 systemImage: "folder.badge.plus",

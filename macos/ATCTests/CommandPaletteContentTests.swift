@@ -19,7 +19,7 @@ struct CommandPaletteContentTests {
         let client = ScriptableAppServerClient()
         Fixtures.seed(client)
         let events = ScriptedEventStream()
-        let test = try makeModel(client: client, events: events)
+        let test = try await makeModel(client: client, events: events)
         events.connect()
         await settle(until: { test.model.canMutate(connectionID: test.connectionID) })
         await test.runtime.threads.loadArchivedIfNeeded()
@@ -131,7 +131,7 @@ struct CommandPaletteContentTests {
             return named
         }
         let events = ScriptedEventStream()
-        let test = try makeModel(client: client, events: events)
+        let test = try await makeModel(client: client, events: events)
         events.connect()
         await settle(until: { test.model.canMutate(connectionID: test.connectionID) })
         let context = CommandContext(

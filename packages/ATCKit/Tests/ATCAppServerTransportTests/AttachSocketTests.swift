@@ -17,6 +17,7 @@ private final class FakeWebSocket: AttachWebSocketTask, @unchecked Sendable {
     private var recordedCancel: (code: URLSessionWebSocketTask.CloseCode, reason: String?)?
     private var recordedInvalidated = false
     private var openHandler: (@Sendable () -> Void)?
+    private var recordedRequest: URLRequest?
     private var storedCloseCode: URLSessionWebSocketTask.CloseCode = .invalid
     private var storedCloseReason: Data?
     private var storedStatusCode: Int?
@@ -31,11 +32,16 @@ private final class FakeWebSocket: AttachWebSocketTask, @unchecked Sendable {
     // MARK: - Test controls
 
     func transport() -> AttachTransport {
-        { _, onOpen in
-            self.lock.withLock { self.openHandler = onOpen }
+        { request, onOpen in
+            self.lock.withLock {
+                self.openHandler = onOpen
+                self.recordedRequest = request
+            }
             return self
         }
     }
+
+    var request: URLRequest? { lock.withLock { recordedRequest } }
 
     func open() {
         lock.withLock { openHandler }?()
@@ -239,6 +245,22 @@ struct AttachSocketTests {
         }
         #expect(detached)
         #expect(await waitUntil { fake.invalidated })
+    }
+
+    @Test("headers reach the connection request — the bearer-auth seam")
+    func headersPassThrough() async {
+        let fake = FakeWebSocket()
+        let socket = AttachSocket(
+            url: attachURL,
+            headers: ["Authorization": "Bearer token-1"],
+            transport: fake.transport()
+        )
+        let log = EventLog()
+        log.observe(await socket.start())
+
+        #expect(fake.request?.value(forHTTPHeaderField: "Authorization") == "Bearer token-1")
+        await socket.close()
+        log.cancel()
     }
 
     @Test("close() sends the protocol's detach close")

@@ -112,6 +112,7 @@ final class ThreadsStore {
 
     func delete(id: String) async throws {
         _ = try await client.deleteThread(path: .init(threadId: id)).noContent
+        refreshState.invalidateInFlight()
         threads.removeAll { $0.id == id }
         archivedThreads.removeAll { $0.id == id }
     }

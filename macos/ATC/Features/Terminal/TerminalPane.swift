@@ -66,6 +66,9 @@ struct TerminalStatusBanner: View {
                 Button("Reconnect") { controller.reconnect() }
             }
         case .ended(.closedByClient):
+            // No production path renders this today (disconnects also drop
+            // the controller); the branch exists for a future user-facing
+            // detach and to keep the switch exhaustive.
             banner {
                 Image(systemName: "cable.connector.slash")
                 Text("Disconnected")

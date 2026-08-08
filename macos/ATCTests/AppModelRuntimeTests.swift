@@ -81,14 +81,16 @@ struct AppModelRuntimeTests {
     func navigationSnapshot() async throws {
         let client = ScriptableAppServerClient()
         Fixtures.seed(client)
-        let test = try makeModel(client: client)
-        // Before any refresh nothing is current, so the window treats every
-        // reference as unresolved rather than deleted.
+        // A failed first-contact probe leaves nothing current, so the window
+        // treats every reference as unresolved rather than deleted.
+        client.shouldFail = true
+        let test = try await makeModel(client: client)
         let cold = test.model.windowNavigationSnapshot()
         #expect(cold.connections.map(\.id) == [test.connectionID])
         #expect(!cold.connections[0].threadsCurrent)
         #expect(!cold.connections[0].terminalsCurrent)
 
+        client.shouldFail = false
         await test.runtime.refresh()
         await test.runtime.threads.loadArchivedIfNeeded()
         let warm = test.model.windowNavigationSnapshot()
@@ -109,7 +111,7 @@ struct AppModelRuntimeTests {
     func staleRefreshHarmless() async throws {
         let client = ScriptableAppServerClient()
         Fixtures.seed(client)
-        let test = try makeModel(client: client)
+        let test = try await makeModel(client: client)
         client.delay = .milliseconds(200)
         let oldRuntime = test.runtime
         let slowRefresh = Task { await oldRuntime.refresh() }
@@ -123,9 +125,11 @@ struct AppModelRuntimeTests {
         #expect(newRuntime !== oldRuntime)
 
         await slowRefresh.value
-        // The late result mutated only the discarded runtime's stores.
+        // The late result mutated only the discarded runtime's stores; the
+        // rebuilt runtime's own first-contact probe loads current data.
         #expect(test.runtime === newRuntime)
-        #expect(test.runtime.threads.threads.isEmpty)
+        await settle(until: { newRuntime.threads.hasLoadedOnce })
+        #expect(newRuntime.threads.threads.count == 3)
         #expect(test.model.runtimes.count == 1)
     }
 
@@ -135,7 +139,7 @@ struct AppModelRuntimeTests {
     func openThreadAttaches() async throws {
         let client = ScriptableAppServerClient()
         Fixtures.seed(client)
-        let test = try makeModel(client: client)
+        let test = try await makeModel(client: client)
         await test.runtime.refresh()
 
         let ref = try await test.model.openThread(test.threadRef("thr1"))
@@ -164,7 +168,7 @@ struct AppModelRuntimeTests {
     func openThreadFailure() async throws {
         let client = ScriptableAppServerClient()
         Fixtures.seed(client)
-        let test = try makeModel(client: client)
+        let test = try await makeModel(client: client)
         await test.runtime.refresh()
 
         client.shouldFail = true
@@ -180,7 +184,7 @@ struct AppModelRuntimeTests {
     func reconcileDisconnectsEndedTerminal() async throws {
         let client = ScriptableAppServerClient()
         Fixtures.seed(client)
-        let test = try makeModel(client: client)
+        let test = try await makeModel(client: client)
         await test.runtime.refresh()
 
         let terminal = try #require(test.runtime.terminals.terminal(id: "trm_live"))
@@ -207,7 +211,7 @@ struct AppModelRuntimeTests {
     func reconcileIgnoresFailedRefresh() async throws {
         let client = ScriptableAppServerClient()
         Fixtures.seed(client)
-        let test = try makeModel(client: client)
+        let test = try await makeModel(client: client)
         await test.runtime.refresh()
 
         let terminal = try #require(test.runtime.terminals.terminal(id: "trm_live"))
@@ -227,7 +231,7 @@ struct AppModelRuntimeTests {
     func attachRequiresLiveness() async throws {
         let client = ScriptableAppServerClient()
         Fixtures.seed(client)
-        let test = try makeModel(client: client)
+        let test = try await makeModel(client: client)
         await test.runtime.refresh()
 
         let ended = try #require(test.runtime.terminals.terminal(id: "trm_ended"))
@@ -243,7 +247,7 @@ struct AppModelRuntimeTests {
     func removingConnectionTearsDownTerminals() async throws {
         let client = ScriptableAppServerClient()
         Fixtures.seed(client)
-        let test = try makeModel(client: client)
+        let test = try await makeModel(client: client)
         await test.runtime.refresh()
 
         let terminal = try #require(test.runtime.terminals.terminal(id: "trm_live"))
@@ -260,7 +264,7 @@ struct AppModelRuntimeTests {
     func livenessFollowsPhase() async throws {
         let client = ScriptableAppServerClient()
         Fixtures.seed(client)
-        let test = try makeModel(client: client)
+        let test = try await makeModel(client: client)
         await test.runtime.refresh()
 
         let terminal = try #require(test.runtime.terminals.terminal(id: "trm_live"))
