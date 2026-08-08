@@ -6,6 +6,9 @@ enum NavigatorMetrics {
     static let rowHeight: CGFloat = 28
     static let iconWidth: CGFloat = 18
     static let actionSize: CGFloat = 22
+    /// Bordered chip controls: the New Thread compose button, the thread
+    /// filter, and New Project.
+    static let chipSize: CGFloat = 28
     static let horizontalPadding = Spacing.sm
     static let contentHorizontalPadding = Spacing.sm
     static let rowVerticalInset: CGFloat = 1
@@ -122,6 +125,30 @@ struct NavigatorActionButton: View {
     }
 }
 
+/// A bordered rounded-square icon button, per the design's chip controls
+/// (compose, New Project). The chip surface stays visible at rest.
+struct NavigatorChipButton: View {
+    let systemImage: String
+    let help: String
+    var isEnabled = true
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .frame(width: NavigatorMetrics.chipSize, height: NavigatorMetrics.chipSize)
+                .contentShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .navigatorChipSurface()
+        .opacity(isEnabled ? 1 : Dimming.unavailable)
+        .disabled(!isEnabled)
+        .help(help)
+        .accessibilityLabel(help)
+    }
+}
+
 struct NavigatorDisclosureHeader: View {
     let title: String
     @Binding var isExpanded: Bool
@@ -149,14 +176,14 @@ struct NavigatorDisclosureHeader: View {
             }
             .buttonStyle(.plain)
 
-            if isHovering {
-                NavigatorActionButton(
-                    systemImage: "plus",
-                    help: addHelp,
-                    isEnabled: isAddEnabled,
-                    action: onAdd
-                )
-            }
+            // Persistent per the design: the add affordance is part of the
+            // section header, not a hover reveal.
+            NavigatorActionButton(
+                systemImage: "plus",
+                help: addHelp,
+                isEnabled: isAddEnabled,
+                action: onAdd
+            )
         }
         .frame(minHeight: NavigatorMetrics.rowHeight)
         .foregroundStyle(.secondary)
@@ -186,5 +213,18 @@ extension View {
                         .fill(.quaternary)
                 }
             }
+    }
+
+    /// The bordered chip surface shared by the filter dropdown and chip
+    /// buttons: a faint fill with a hairline stroke, visible at rest.
+    func navigatorChipSurface() -> some View {
+        background {
+            RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                .fill(Color.white.opacity(0.05))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.08))
+        }
     }
 }
