@@ -125,45 +125,23 @@ struct NavigatorSidebar: View {
 
     private func filterRow(_ model: ThreadListModel) -> some View {
         HStack(spacing: Spacing.sm) {
-            // A borderless Menu adopts its label's ideal width — maxWidth
-            // expansion collapses to a text-hugging pill, and a clear
-            // overlay label never gets a clickable size. GeometryReader
-            // hands the label the concrete leftover width, so the menu is
-            // full-width and natively clickable at once.
-            GeometryReader { geometry in
-                Menu {
-                    Button("All Projects") { select(.all) }
-                    if !model.projects.isEmpty {
-                        Divider()
-                        ForEach(model.projects) { option in
-                            Button(option.label) { select(.project(option.ref)) }
-                        }
-                    }
-                    Divider()
-                    Button("Archived") { select(.archived) }
-                } label: {
-                    HStack(spacing: Spacing.sm) {
-                        Image(systemName: "folder")
-                            .foregroundStyle(.secondary)
-                        Text(filterTitle(model))
-                            .font(.callout.weight(.medium))
-                            .lineLimit(1)
-                        Spacer(minLength: Spacing.xs)
-                        Image(systemName: "chevron.down")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, Spacing.md)
-                    .frame(width: geometry.size.width, height: NavigatorMetrics.chipSize)
-                    .contentShape(RoundedRectangle(cornerRadius: Radius.chip, style: .continuous))
+            NavigatorDropdown(entries: filterEntries(model)) {
+                HStack(spacing: Spacing.sm) {
+                    Image(systemName: "folder")
+                        .foregroundStyle(.secondary)
+                    Text(filterTitle(model))
+                        .font(.callout.weight(.medium))
+                        .lineLimit(1)
+                    Spacer(minLength: Spacing.xs)
+                    Image(systemName: "chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .navigatorChipSurface()
-                .help("Filter threads")
-                .accessibilityLabel("Thread filter: \(filterTitle(model))")
+                .padding(.horizontal, Spacing.md)
+                .frame(maxWidth: .infinity, minHeight: NavigatorMetrics.chipSize)
             }
-            .frame(height: NavigatorMetrics.chipSize)
+            .help("Filter threads")
+            .accessibilityLabel("Thread filter: \(filterTitle(model))")
 
             NavigatorChipButton(
                 systemImage: "plus",
@@ -431,6 +409,33 @@ struct NavigatorSidebar: View {
         case .project(let ref):
             model.projects.first { $0.ref == ref }?.label ?? "Project"
         }
+    }
+
+    private func filterEntries(_ model: ThreadListModel) -> [NavigatorDropdownEntry] {
+        var entries: [NavigatorDropdownEntry] = [
+            .item(
+                title: "All Projects",
+                isSelected: windowState.threadFilter == .all,
+                action: { select(.all) }
+            ),
+        ]
+        if !model.projects.isEmpty {
+            entries.append(.separator)
+            for option in model.projects {
+                entries.append(.item(
+                    title: option.label,
+                    isSelected: windowState.threadFilter == .project(option.ref),
+                    action: { select(.project(option.ref)) }
+                ))
+            }
+        }
+        entries.append(.separator)
+        entries.append(.item(
+            title: "Archived",
+            isSelected: windowState.threadFilter == .archived,
+            action: { select(.archived) }
+        ))
+        return entries
     }
 
     private func limited<T>(_ items: [T], expanded: Bool) -> [T] {

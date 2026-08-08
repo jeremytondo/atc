@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Shared geometry for every Navigator. Sidebar-specific values live here so
@@ -124,6 +125,95 @@ struct NavigatorActionButton: View {
         .foregroundStyle(.secondary)
         .disabled(!isEnabled)
         .help(help)
+    }
+}
+
+/// One entry in a `NavigatorDropdown` menu.
+enum NavigatorDropdownEntry {
+    case item(title: String, isSelected: Bool, action: () -> Void)
+    case separator
+}
+
+/// A full-width dropdown with a caller-drawn label that pops a native
+/// NSMenu. SwiftUI's borderless `Menu` sizes to its label's compressed
+/// ideal width — every frame-based expansion collapses back to a text
+/// pill — so the label is an ordinary Button (layout we fully control)
+/// and AppKit owns the popup.
+struct NavigatorDropdown<Label: View>: View {
+    let entries: [NavigatorDropdownEntry]
+    @ViewBuilder let label: () -> Label
+
+    @State private var anchor = AnchorHolder()
+
+    var body: some View {
+        Button {
+            popUp()
+        } label: {
+            label()
+                .contentShape(RoundedRectangle(cornerRadius: Radius.chip, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .navigatorChipSurface()
+        .background {
+            AnchorView(holder: anchor)
+        }
+    }
+
+    private func popUp() {
+        guard let view = anchor.view else { return }
+        let menu = NSMenu()
+        for entry in entries {
+            switch entry {
+            case .separator:
+                menu.addItem(.separator())
+            case .item(let title, let isSelected, let action):
+                let item = ClosureMenuItem(title: title, handler: action)
+                item.state = isSelected ? .on : .off
+                menu.addItem(item)
+            }
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.maxY + 4), in: view)
+    }
+
+    /// Bridges the SwiftUI position to AppKit: the invisible background
+    /// view is the menu's positioning anchor.
+    private final class AnchorHolder {
+        weak var view: NSView?
+    }
+
+    private struct AnchorView: NSViewRepresentable {
+        let holder: AnchorHolder
+
+        func makeNSView(context: Context) -> NSView {
+            let view = NSView()
+            holder.view = view
+            return view
+        }
+
+        func updateNSView(_ nsView: NSView, context: Context) {
+            holder.view = nsView
+        }
+    }
+
+    /// NSMenuItem needs a target/selector pair; this carries the closure
+    /// and targets itself.
+    private final class ClosureMenuItem: NSMenuItem {
+        private let handler: () -> Void
+
+        init(title: String, handler: @escaping () -> Void) {
+            self.handler = handler
+            super.init(title: title, action: #selector(invoke), keyEquivalent: "")
+            target = self
+        }
+
+        @available(*, unavailable)
+        required init(coder: NSCoder) {
+            fatalError("not used")
+        }
+
+        @objc private func invoke() {
+            handler()
+        }
     }
 }
 
