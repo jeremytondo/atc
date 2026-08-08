@@ -7,11 +7,8 @@ let package = Package(
         .macOS(.v26),
     ],
     products: [
-        // Hand-written models for the legacy Go server contract.
-        .library(name: "ATCAPI", targets: ["ATCAPI"]),
         // Client generated from the App Server OpenAPI contract
-        // (app-server/openapi.json). Coexists with ATCAPI until the app
-        // migrates to the App Server.
+        // (app-server/openapi.json).
         .library(name: "ATCAppServerAPI", targets: ["ATCAppServerAPI"]),
         // Hand-written App Server transports the OpenAPI document cannot
         // express: the terminal-attach WebSocket and the SSE event stream.
@@ -26,13 +23,12 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-http-types", exact: "1.6.0"),
     ],
     targets: [
-        .target(name: "ATCAPI"),
-        .testTarget(name: "ATCAPITests", dependencies: ["ATCAPI"]),
         .target(
             name: "ATCAppServerAPI",
             dependencies: [
                 .product(name: "OpenAPIRuntime", package: "swift-openapi-runtime"),
                 .product(name: "OpenAPIURLSession", package: "swift-openapi-urlsession"),
+                .product(name: "HTTPTypes", package: "swift-http-types"),
             ],
             plugins: [
                 .plugin(name: "OpenAPIGenerator", package: "swift-openapi-generator"),

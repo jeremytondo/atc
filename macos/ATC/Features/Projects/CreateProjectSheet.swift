@@ -1,55 +1,22 @@
+// Form for `POST /projects`: which Connection owns it, a name, and an
+// existing directory on that server. ATC never creates the directory, so the
+// server's `checkDirectory` verdict is what gates Create.
+
+import ATCAppServerAPI
 import SwiftUI
-import ATCAPI
 
-/// Editable state behind the New Project sheet, split out so the
-/// selection/clear rules are testable without hosting the view. The chosen
-/// folder is Connection-specific, so switching Connections drops it.
-@Observable
-final class CreateProjectDraft {
-    /// The Connection new projects are created on. Nil only before
-    /// preselection or when no Connections exist.
-    var connectionID: UUID?
-    var name = ""
-    var workingDir = ""
-
-    init(connectionID: UUID? = nil) {
-        self.connectionID = connectionID
-    }
-
-    /// Preselect the first Connection in creation order, once, without
-    /// clobbering a choice the user already made.
-    func preselectFirst(in runtimes: [ConnectionRuntime]) {
-        guard connectionID == nil else { return }
-        connectionID = runtimes.first?.id
-    }
-
-    /// Changing the selected Connection clears the chosen folder (browsing is
-    /// server-specific) but keeps the typed name.
-    func selectConnection(_ id: UUID?) {
-        guard id != connectionID else { return }
-        connectionID = id
-        workingDir = ""
-    }
-}
-
-/// Form for `POST /projects`: pick the owning Connection, a name, and a
-/// workstation directory browsed through that Connection's folder picker.
 struct CreateProjectSheet: View {
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismiss) private var dismiss
-    /// Called with the new project so the shell can expand/target it.
+    /// Called with the new project so a caller can target it.
     var onCreated: (Project) -> Void = { _ in }
 
-    @State private var draft = CreateProjectDraft()
+    @State private var connectionID: UUID?
+    @State private var name = ""
+    @State private var workingDirectory = ""
+    @State private var directoryState: DirectoryCheckState = .idle
     @State private var isSubmitting = false
     @State private var submitError: String?
-    @State private var showFolderPicker = false
-
-    /// The runtime new projects route through; nil only when no Connection is
-    /// selected (i.e. there are none).
-    private var selectedRuntime: ConnectionRuntime? {
-        draft.connectionID.flatMap { appModel.runtime(id: $0) }
-    }
 
     var body: some View {
         SheetScaffold(
@@ -63,66 +30,62 @@ struct CreateProjectSheet: View {
         ) {
             Section {
                 Picker("Connection", selection: Binding(
-                    get: { draft.connectionID },
-                    set: { draft.selectConnection($0) }
+                    get: { connectionID },
+                    set: { connectionID = $0 }
                 )) {
-                    // The selection is nil until onAppear preselects (and
-                    // always when no Connections exist); keep a matching
-                    // tag so AppKit doesn't log an invalid selection.
+                    // The selection is nil until `.task` preselects (and
+                    // always when no Connections exist); keep a matching tag
+                    // so AppKit doesn't log an invalid selection.
                     if selectedRuntime == nil {
                         Text(appModel.runtimes.isEmpty ? "No Connections" : "Select Connection")
-                            .tag(draft.connectionID)
+                            .tag(UUID?.none)
                     }
                     ForEach(appModel.runtimes) { runtime in
-                        Text(runtime.record.name).tag(runtime.id as UUID?)
+                        Text(runtime.record.name).tag(UUID?.some(runtime.id))
                     }
                 }
-                TextField("Name", text: $draft.name, prompt: Text("My Project"))
-                HStack {
-                    TextField("Directory", text: $draft.workingDir, prompt: Text("/path/on/the/server"))
-                        .autocorrectionDisabled()
-                    Button {
-                        showFolderPicker = true
-                    } label: {
-                        Image(systemName: "folder")
-                    }
-                    .disabled(selectedRuntime == nil)
-                    .help("Browse folders on the server")
-                }
+                TextField("Name", text: $name, prompt: Text("My Project"))
+            }
+
+            Section {
+                WorkingDirectoryField(
+                    label: "Default Working Directory",
+                    path: $workingDirectory,
+                    client: selectedRuntime?.client,
+                    connectionID: selectedRuntime?.id,
+                    state: $directoryState
+                )
             } footer: {
-                Text("Sessions started in this project run in its directory on the workstation.")
+                Text("New threads and terminals in this project start here.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            if let message = submitError {
+            if let submitError {
                 Section {
-                    Label(message, systemImage: "exclamationmark.triangle")
+                    Label(submitError, systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.red)
                         .font(.callout)
                 }
             }
         }
-        .frame(width: 460, height: 300)
-        .onAppear { draft.preselectFirst(in: appModel.runtimes) }
-        .sheet(isPresented: $showFolderPicker) {
-            if let runtime = selectedRuntime {
-                RemoteFolderPickerSheet(client: runtime.client, initialPath: draft.workingDir) { path in
-                    draft.workingDir = path
-                    // Picking a folder before typing a name suggests one.
-                    if draft.name.trimmingCharacters(in: .whitespaces).isEmpty {
-                        draft.name = URL(filePath: path).lastPathComponent
-                    }
-                }
+        .frame(width: 480, height: 340)
+        .task {
+            if connectionID == nil {
+                connectionID = appModel.runtimes.first?.id
             }
         }
+    }
+
+    private var selectedRuntime: ConnectionRuntime? {
+        connectionID.flatMap { appModel.runtime(id: $0) }
     }
 
     private var canSubmit: Bool {
         !isSubmitting
             && selectedRuntime != nil
-            && !draft.name.trimmingCharacters(in: .whitespaces).isEmpty
-            && !draft.workingDir.trimmingCharacters(in: .whitespaces).isEmpty
+            && !name.trimmingCharacters(in: .whitespaces).isEmpty
+            && directoryState.isAvailable
     }
 
     private func submit() async {
@@ -131,8 +94,8 @@ struct CreateProjectSheet: View {
         defer { isSubmitting = false }
         do {
             let project = try await runtime.projects.create(
-                name: draft.name.trimmingCharacters(in: .whitespaces),
-                workingDir: draft.workingDir.trimmingCharacters(in: .whitespaces)
+                name: name.trimmingCharacters(in: .whitespaces),
+                defaultWorkingDirectory: workingDirectory.trimmingCharacters(in: .whitespaces)
             )
             submitError = nil
             dismiss()
@@ -141,19 +104,4 @@ struct CreateProjectSheet: View {
             submitError = error.localizedDescription
         }
     }
-}
-
-#Preview {
-    CreateProjectSheet()
-        .environment(AppModel.preview())
-        .preferredColorScheme(.dark)
-}
-
-#Preview("Two connections") {
-    CreateProjectSheet()
-        .environment(AppModel.preview(connections: [
-            (name: "Workstation", client: MockATCClient()),
-            (name: "Laptop", client: MockATCClient()),
-        ]))
-        .preferredColorScheme(.dark)
 }

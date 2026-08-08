@@ -1,8 +1,9 @@
+import ATCAppServerAPI
 import SwiftUI
-import ATCAPI
 
-/// One stable window-root split view. Navigators replace only the leading
-/// column while the terminal stack remains mounted in the detail column.
+/// One stable window-root split view. The sidebar rebuilds freely while the
+/// terminal stack stays mounted in the detail column, so navigation never
+/// tears down a surface or drops an attach.
 @MainActor
 struct RootView: View {
     @Environment(AppModel.self) private var appModel
@@ -42,7 +43,7 @@ struct RootView: View {
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                WorkspaceSwitcher()
+                contextTitle
             }
             ToolbarItem(placement: .primaryAction) {
                 Toggle(isOn: $windowState.isInspectorPresented) {
@@ -50,148 +51,85 @@ struct RootView: View {
                         .labelStyle(.iconOnly)
                 }
                 .toggleStyle(.button)
-                // Closing is always allowed; opening needs a session to show.
-                .disabled(!windowState.isInspectorPresented
-                    && !windowState.hasInspectorTarget(in: appModel))
+                // Closing is always allowed; opening needs a thread to show.
+                .disabled(!windowState.isInspectorPresented && selectedThread == nil)
                 .help(windowState.isInspectorPresented ? "Hide Inspector" : "Show Inspector")
             }
         }
         .sheet(isPresented: $windowState.isCreateProjectPresented) {
             CreateProjectSheet()
         }
-        .sheet(item: $windowState.createWorkspaceContext, onDismiss: {
-            windowState.presentPendingWorkspaceStartupEditor()
-        }) { context in
-            CreateWorkspaceSheet(
-                context: context,
-                onCreated: { workspaceRef, sessionRef in
-                    guard windowState.activateWorkspace(workspaceRef, in: appModel) else {
-                        return
-                    }
-                    if let sessionRef {
-                        _ = windowState.selectSession(sessionRef, in: appModel)
-                    }
-                },
-                onNotice: { windowState.startupNotice = $0 },
-                onEditStartupSettings: {
-                    windowState.editWorkspaceStartupAfterCreateSheetDismisses($0)
-                }
-            )
-        }
-        .sheet(item: $windowState.startSessionKind, onDismiss: {
+        .sheet(item: $windowState.newThreadContext, onDismiss: {
             windowState.requestTerminalFocus()
-        }) { kind in
-            if let ref = windowState.activeWorkspace {
-                StartWorkspaceSessionSheet(kind: kind, workspaceRef: ref) { newRef in
-                    _ = windowState.selectSession(newRef, in: appModel)
-                }
-            }
+        }) { context in
+            NewThreadSheet(context: context)
         }
-        .sheet(item: $windowState.workspaceStartupProject) { ref in
-            WorkspaceStartupEditorSheet(target: .project(ref))
+        .sheet(item: $windowState.newTerminalProject, onDismiss: {
+            windowState.requestTerminalFocus()
+        }) { ref in
+            NewTerminalSheet(projectRef: ref)
         }
         .onChange(of: appModel.windowNavigationSnapshot(), initial: true) {
             appModel.reconcileTerminalLifecycle()
             windowState.reconcile(in: appModel)
         }
-        .overlay(alignment: .top) {
-            if let notice = windowState.startupNotice {
-                StartupNoticeBanner(notice: notice) {
-                    windowState.startupNotice = nil
-                }
-                .padding(Spacing.md)
-                .transition(.move(edge: .top).combined(with: .opacity))
-            }
-        }
-        .animation(.snappy, value: windowState.startupNotice?.id)
     }
 
     private var mainContent: some View {
         ZStack {
-            SessionContentView(
-                selectedRef: visibleSessionRef,
-                selectedSession: visibleSession,
-                terminalFocusRequest: windowState.terminalFocusRequest,
-                emptyState: workspaceEmptyActions
-            )
+            ThreadContentView()
             if windowState.selectedContent == .dashboard {
-                DashboardView(
-                    onOpenWorkspace: { _ = windowState.activateWorkspace($0, in: appModel) },
-                    onCreateWorkspace: { ref in
-                        windowState.createWorkspaceContext = .init(mode: .fixed(ref))
-                    },
-                    onCreateProject: { windowState.isCreateProjectPresented = true },
-                    onWorkspaceDeleted: { windowState.forgetSelection(for: $0) }
-                )
-                .background(AppColors.canvas)
+                DashboardView()
+                    .background(AppColors.canvas)
             }
         }
         .background(AppColors.canvas.ignoresSafeArea(.container, edges: .top))
     }
 
     @ViewBuilder
-    private var inspectorContent: some View {
-        if windowState.hasInspectorTarget(in: appModel),
-           let session = visibleSession {
-            SessionDetailView(session: session)
-                .inspectorColumnWidth(min: 260, ideal: 320)
-        }
-    }
-
-    private var visibleSessionRef: SessionRef? {
-        windowState.selectedSession
-    }
-
-    private var visibleSession: Session? {
-        visibleSessionRef.flatMap { appModel.session(for: $0) }
-    }
-
-    private var workspaceEmptyActions: SessionContentView.EmptyStateActions? {
-        guard case .workspace(let ref) = windowState.selectedContent,
-              ref == windowState.activeWorkspace,
-              let runtime = appModel.runtime(id: ref.connectionID)
-        else { return nil }
-        let isEmpty = !runtime.sessions.sessions.contains { $0.belongs(to: ref) }
-        guard isEmpty else { return nil }
-        return .init(
-            newSession: { windowState.startSessionKind = .agentSession },
-            newTerminal: { windowState.startSessionKind = .terminal },
-            creationEnabled: windowState.canStartSession(in: appModel)
-        )
-    }
-}
-
-private struct StartupNoticeBanner: View {
-    let notice: StartupNotice
-    let onDismiss: () -> Void
-
-    var body: some View {
-        HStack(alignment: .top, spacing: Spacing.md) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: Spacing.xs) {
-                Text("Workspace Startup — \(notice.workspaceName)")
-                    .font(.callout.weight(.semibold))
-                ForEach(notice.messages, id: \.self) {
-                    Text($0)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+    private var contextTitle: some View {
+        switch windowState.selectedContent {
+        case .dashboard:
+            Text("atc")
+                .font(.headline)
+        case .thread(let ref):
+            if let thread = appModel.thread(for: ref) {
+                Label {
+                    Text("\(thread.displayName) · \(projectName(for: ref.connectionID, projectID: thread.projectId))")
+                        .font(.headline)
+                        .lineLimit(1)
+                } icon: {
+                    Image(systemName: thread.agentId.systemImage)
+                        .accessibilityLabel(thread.agentId.displayName)
                 }
             }
-            Spacer(minLength: Spacing.md)
-            Button("Dismiss", systemImage: "xmark", action: onDismiss)
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
+        case .terminal(let ref):
+            if let terminal = appModel.terminal(for: ref) {
+                Label(terminal.displayName, systemImage: "terminal")
+                    .font(.headline)
+                    .lineLimit(1)
+            }
         }
-        .padding(Spacing.md)
-        .frame(maxWidth: 560)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color(nsColor: .separatorColor).opacity(0.5))
+    }
+
+    @ViewBuilder
+    private var inspectorContent: some View {
+        if let ref = selectedThread, let thread = appModel.thread(for: ref) {
+            ThreadInspectorView(
+                thread: thread,
+                projectName: projectName(for: ref.connectionID, projectID: thread.projectId)
+            )
+            .inspectorColumnWidth(min: 260, ideal: 320)
         }
-        .shadow(radius: 8, y: 3)
-        .accessibilityElement(children: .contain)
+    }
+
+    private var selectedThread: ThreadRef? {
+        windowState.selectedThread
+    }
+
+    private func projectName(for connectionID: UUID, projectID: String) -> String {
+        appModel.runtime(id: connectionID)?.projects.project(id: projectID)?.name
+            ?? "Unknown Project"
     }
 }
 

@@ -15,12 +15,11 @@ struct AppCommands: Commands {
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            commandButton(.newSession)
+            commandButton(.newThread)
             commandButton(.newTerminal)
 
             Divider()
 
-            commandButton(.newWorkspace)
             commandButton(.newProject)
         }
 
@@ -29,9 +28,8 @@ struct AppCommands: Commands {
             commandButton(.showDashboard)
             commandButton(.refresh)
             commandButton(.toggleCommandPalette)
-            commandButton(.searchSessions)
+            commandButton(.searchThreads)
             commandButton(.searchTerminals)
-            commandButton(.searchWorkspaces)
             Divider()
         }
 

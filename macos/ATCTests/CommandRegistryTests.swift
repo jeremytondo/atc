@@ -1,26 +1,18 @@
 import Foundation
 import SwiftUI
 import Testing
-import ATCAPI
+import ATCAppServerAPI
 @testable import ATC
 
+/// The command surface: every id has a descriptor, availability gates the
+/// commands that need a reachable Connection or an active Project, and
+/// executing an unavailable command mutates nothing.
+///
+/// Reason strings are presentation, so these tests assert on availability and
+/// on the state each command actually changes, not on copy.
 @MainActor
 @Suite("Command registry")
 struct CommandRegistryTests {
-    private func makeModel() -> AppModel {
-        let suite = "CommandRegistryTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
-        return AppModel(
-            connections: ConnectionsStore(
-                defaults: defaults,
-                credentials: InMemoryCredentialStore()
-            ),
-            clientFactory: { _ in MockATCClient() },
-            terminalRecoveryMonitor: .disabled()
-        )
-    }
-
     private func makeContext(
         model: AppModel,
         state: WindowState,
@@ -36,113 +28,125 @@ struct CommandRegistryTests {
         )
     }
 
-    private func loadedContext() async throws -> (CommandContext, ConnectionRuntime) {
-        let model = makeModel()
-        let record = try model.addConnection(
-            name: "A", urlString: "http://a:1", token: ""
-        )
-        let runtime = try #require(model.runtime(id: record.id))
-        runtime.stopPolling()
-        await runtime.refresh()
-        let state = WindowState.ephemeral()
-        #expect(state.activateWorkspace(
-            WorkspaceRef(connectionID: runtime.id, workspaceID: "wsp_parser"),
-            in: model
-        ))
-        return (makeContext(model: model, state: state), runtime)
+    /// A context whose one Connection has completed a clean refresh, so
+    /// `canMutate` is true and a Project context is established.
+    private func connectedContext() async throws -> (CommandContext, TestModel) {
+        let client = ScriptableAppServerClient()
+        Fixtures.seed(client)
+        let events = ScriptedEventStream()
+        let test = try makeModel(client: client, events: events)
+        events.connect()
+        await settle(until: { test.model.canMutate(connectionID: test.connectionID) })
+
+        let state = WindowState()
+        await state.openThread(test.threadRef("thr1"), in: test.model)
+        return (makeContext(model: test.model, state: state), test)
     }
 
-    @Test("descriptor enumeration is complete, unique, and stable")
+    @Test("every command id has exactly one titled descriptor")
     func descriptors() {
-        let expectedIDs = [
+        #expect(CommandID.allCases.map(\.rawValue) == [
             "view.toggle-sidebar", "view.toggle-command-palette",
-            "view.search-sessions", "view.search-terminals",
-            "view.search-workspaces", "view.show-dashboard", "session.new",
-            "terminal.new", "project.new",
-            "workspace.new", "data.refresh", "configuration.reload",
+            "view.search-threads", "view.search-terminals",
+            "view.show-dashboard", "thread.new", "terminal.new",
+            "project.new", "data.refresh", "configuration.reload",
             "configuration.reveal",
-        ]
+        ])
         let descriptors = CommandRegistry.allDescriptors
-
-        #expect(CommandID.allCases.map(\.rawValue) == expectedIDs)
         #expect(descriptors.map(\.id) == CommandID.allCases)
-        #expect(Set(descriptors.map { $0.id.rawValue }).count == descriptors.count)
+        #expect(Set(descriptors.map(\.id)).count == descriptors.count)
         #expect(descriptors.allSatisfy { !$0.title.isEmpty })
+        // The palette openers never list themselves.
         #expect(descriptors.filter { !$0.isPaletteEligible }.map(\.id)
-            == [.toggleCommandPalette, .searchSessions, .searchTerminals, .searchWorkspaces])
+            == [.toggleCommandPalette, .searchThreads, .searchTerminals])
     }
 
-    @Test("categories use the shared presentation order and assignments")
-    func categories() {
-        #expect(CommandCategory.allCases.map(\.title) == [
-            "General", "Projects & Workspaces", "Sessions & Terminals", "View",
-        ])
-        #expect(Dictionary(uniqueKeysWithValues: CommandRegistry.allDescriptors.map {
-            ($0.id, $0.category)
-        }) == [
-            .toggleSidebar: .view,
-            .toggleCommandPalette: .view,
-            .searchSessions: .view,
-            .searchTerminals: .view,
-            .searchWorkspaces: .view,
-            .showDashboard: .view,
-            .newSession: .sessionsAndTerminals,
-            .newTerminal: .sessionsAndTerminals,
-            .newProject: .projectsAndWorkspaces,
-            .newWorkspace: .projectsAndWorkspaces,
-            .refresh: .general,
-            .reloadConfiguration: .general,
-            .revealConfiguration: .general,
-        ])
+    @Test("commands that need no server are always available")
+    func alwaysAvailableCommands() {
+        let context = makeContext(model: makeEmptyAppModel(), state: WindowState())
+        for id in [
+            CommandID.toggleSidebar, .showDashboard, .refresh,
+            .reloadConfiguration, .revealConfiguration,
+        ] {
+            #expect(CommandRegistry.descriptor(for: id).availability(context).isAvailable)
+        }
     }
 
-    @Test("the palette opener toggles and is unavailable for every sheet driver")
+    @Test("New Thread and New Project require a Connection that can be mutated")
+    func mutationCommandsRequireAReachableConnection() async throws {
+        let cold = makeContext(model: makeEmptyAppModel(), state: WindowState())
+        for id in [CommandID.newThread, .newProject] {
+            #expect(!CommandRegistry.descriptor(for: id).availability(cold).isAvailable)
+        }
+
+        let (connected, _) = try await connectedContext()
+        for id in [CommandID.newThread, .newProject] {
+            #expect(CommandRegistry.descriptor(for: id).availability(connected).isAvailable)
+        }
+    }
+
+    @Test("New Terminal additionally requires an active Project")
+    func newTerminalRequiresAProject() async throws {
+        let client = ScriptableAppServerClient()
+        Fixtures.seed(client)
+        let events = ScriptedEventStream()
+        let test = try makeModel(client: client, events: events)
+        events.connect()
+        await settle(until: { test.model.canMutate(connectionID: test.connectionID) })
+
+        let state = WindowState()
+        let context = makeContext(model: test.model, state: state)
+        #expect(state.activeProject == nil)
+        #expect(!CommandRegistry.descriptor(for: .newTerminal).availability(context).isAvailable)
+
+        // Opening a thread establishes the launch-local Project context.
+        await state.openThread(test.threadRef("thr1"), in: test.model)
+        #expect(state.activeProject != nil)
+        #expect(CommandRegistry.descriptor(for: .newTerminal).availability(context).isAvailable)
+    }
+
+    @Test("the palette opener toggles and is unavailable while any sheet is up")
     func paletteOpener() {
-        let model = makeModel()
-        let state = WindowState.ephemeral()
-        let context = makeContext(model: model, state: state)
+        let state = WindowState()
+        let context = makeContext(model: makeEmptyAppModel(), state: state)
         let descriptor = CommandRegistry.descriptor(for: .toggleCommandPalette)
-        let unavailable = CommandAvailability.unavailable(
-            reason: "Not available while a dialog is open"
-        )
 
-        #expect(descriptor.availability(context) == .available)
+        #expect(descriptor.availability(context).isAvailable)
         CommandRegistry.execute(.toggleCommandPalette, context: context)
         #expect(state.commandPalettePresentation == .all)
         CommandRegistry.execute(.toggleCommandPalette, context: context)
         #expect(state.commandPalettePresentation == nil)
 
-        state.commandPalettePresentation = .sessions
+        // A scoped palette closes on the toggle too.
+        state.commandPalettePresentation = .threads
         CommandRegistry.execute(.toggleCommandPalette, context: context)
         #expect(state.commandPalettePresentation == nil)
 
-        state.isCreateProjectPresented = true
-        #expect(state.isSheetPresented)
-        #expect(descriptor.availability(context) == unavailable)
-        state.isCreateProjectPresented = false
-
-        state.createWorkspaceContext = .init(mode: .free)
-        #expect(state.isSheetPresented)
-        #expect(descriptor.availability(context) == unavailable)
-        state.createWorkspaceContext = nil
-
-        state.startSessionKind = .terminal
-        #expect(state.isSheetPresented)
-        #expect(descriptor.availability(context) == unavailable)
-        state.startSessionKind = nil
+        let presenters: [() -> Void] = [
+            { state.isCreateProjectPresented = true },
+            { state.newThreadContext = NewThreadContext(projectRef: nil) },
+            { state.newTerminalProject = ProjectRef(connectionID: UUID(), projectID: "prj") },
+        ]
+        for present in presenters {
+            present()
+            #expect(state.isSheetPresented)
+            #expect(!descriptor.availability(context).isAvailable)
+            state.isCreateProjectPresented = false
+            state.newThreadContext = nil
+            state.newTerminalProject = nil
+        }
         #expect(!state.isSheetPresented)
-        #expect(descriptor.availability(context) == .available)
+        #expect(descriptor.availability(context).isAvailable)
     }
 
-    @Test("scoped palette commands execute into their presentation")
+    @Test("scoped search commands execute into their palette presentation")
     func scopedPaletteExecution() async throws {
-        let (context, _) = try await loadedContext()
+        let (context, _) = try await connectedContext()
         let state = context.windowState
 
         for (id, presentation) in [
-            (CommandID.searchSessions, CommandPalettePresentation.sessions),
+            (CommandID.searchThreads, CommandPalettePresentation.threads),
             (.searchTerminals, .terminals),
-            (.searchWorkspaces, .workspaces),
         ] {
             #expect(CommandRegistry.execute(id, context: context) == .available)
             #expect(state.commandPalettePresentation == presentation)
@@ -150,92 +154,41 @@ struct CommandRegistryTests {
         }
     }
 
-    @Test("scoped palette availability follows dialog, palette, and Workspace state")
+    @Test("scoped search is unavailable while a dialog or the palette is already open")
     func scopedPaletteAvailability() async throws {
-        let model = makeModel()
-        let state = WindowState.ephemeral()
-        let context = makeContext(model: model, state: state)
-        let workspaceRequired = CommandAvailability.unavailable(
-            reason: "Requires an Active Workspace"
-        )
-        #expect(CommandRegistry.descriptor(for: .searchSessions).availability(context)
-            == workspaceRequired)
-        #expect(CommandRegistry.descriptor(for: .searchTerminals).availability(context)
-            == workspaceRequired)
-        #expect(CommandRegistry.descriptor(for: .searchWorkspaces).availability(context)
-            == .available)
+        let (context, _) = try await connectedContext()
+        let state = context.windowState
+        let scoped = [CommandID.searchThreads, .searchTerminals]
 
-        let scopedIDs = [
-            CommandID.searchSessions, .searchTerminals, .searchWorkspaces,
-        ]
+        for id in scoped {
+            #expect(CommandRegistry.descriptor(for: id).availability(context).isAvailable)
+        }
+
         state.commandPalettePresentation = .all
-        for id in scopedIDs {
-            #expect(CommandRegistry.descriptor(for: id).availability(context) == .unavailable(
-                reason: "Not available while the Command Palette is open"
-            ))
+        for id in scoped {
+            #expect(!CommandRegistry.descriptor(for: id).availability(context).isAvailable)
         }
-        state.commandPalettePresentation = .workspaces
-        for id in scopedIDs {
-            #expect(CommandRegistry.descriptor(for: id).availability(context) == .unavailable(
-                reason: "Not available while the Command Palette is open"
-            ))
-        }
+        state.commandPalettePresentation = nil
 
         state.isCreateProjectPresented = true
-        for id in scopedIDs {
-            #expect(CommandRegistry.descriptor(for: id).availability(context) == .unavailable(
-                reason: "Not available while a dialog is open"
-            ))
-        }
-
-        let (loaded, _) = try await loadedContext()
-        for id in scopedIDs {
-            #expect(CommandRegistry.descriptor(for: id).availability(loaded) == .available)
+        for id in scoped {
+            #expect(!CommandRegistry.descriptor(for: id).availability(context).isAvailable)
         }
     }
 
-    @Test("availability follows the complete command truth table")
-    func availability() async throws {
-        let emptyModel = makeModel()
-        let emptyState = WindowState.ephemeral()
-        let empty = makeContext(model: emptyModel, state: emptyState)
-        #expect(CommandRegistry.descriptor(for: .toggleSidebar).availability(empty) == .available)
-        #expect(CommandRegistry.descriptor(for: .refresh).availability(empty) == .available)
-        #expect(CommandRegistry.descriptor(for: .reloadConfiguration).availability(empty)
-            == .available)
-        #expect(CommandRegistry.descriptor(for: .revealConfiguration).availability(empty)
-            == .available)
-        let sessionAvailability = CommandRegistry.descriptor(for: .newSession)
-            .availability(empty)
-        #expect(sessionAvailability == .unavailable(
-            reason: "Requires an open Workspace on a reachable Connection"
-        ))
-        for id in [CommandID.newWorkspace, .newProject] {
-            #expect(CommandRegistry.descriptor(for: id).availability(empty)
-                == .unavailable(reason: "Requires a configured Connection"))
-        }
-
-        let (loaded, _) = try await loadedContext()
-        for id in [CommandID.newSession, .newTerminal, .newWorkspace, .newProject] {
-            #expect(CommandRegistry.descriptor(for: id).availability(loaded) == .available)
-        }
-    }
-
-    @Test("unavailable execution returns its reason and performs nothing")
+    @Test("an unavailable command returns its reason and performs nothing")
     func unavailableExecution() {
-        let model = makeModel()
-        let state = WindowState.ephemeral()
-        let context = makeContext(model: model, state: state)
-        let outcome = CommandRegistry.execute(.newSession, context: context)
-        #expect(outcome == .unavailable(
-            reason: "Requires an open Workspace on a reachable Connection"
-        ))
-        #expect(state.startSessionKind == nil)
+        let state = WindowState()
+        let context = makeContext(model: makeEmptyAppModel(), state: state)
+        let outcome = CommandRegistry.execute(.newThread, context: context)
+        #expect(!outcome.isAvailable)
+        #expect(state.newThreadContext == nil)
+        #expect(!state.isSheetPresented)
     }
 
-    @Test("window and creation commands perform the original menu mutations")
-    func windowMutations() async throws {
-        let (context, _) = try await loadedContext()
+    @Test("window and creation commands perform their menu mutations")
+    func commandMutations() async throws {
+        let (context, _) = try await connectedContext()
         let state = context.windowState
 
         #expect(state.columnVisibility == .all)
@@ -246,27 +199,27 @@ struct CommandRegistryTests {
         CommandRegistry.execute(.showDashboard, context: context)
         #expect(state.selectedContent == .dashboard)
 
-        CommandRegistry.execute(.newSession, context: context)
-        #expect(state.startSessionKind?.rawValue == StartSessionKind.agentSession.rawValue)
-        state.startSessionKind = nil
-        CommandRegistry.execute(.newTerminal, context: context)
-        #expect(state.startSessionKind?.rawValue == StartSessionKind.terminal.rawValue)
+        CommandRegistry.execute(.newThread, context: context)
+        #expect(state.newThreadContext != nil)
+        state.newThreadContext = nil
 
-        CommandRegistry.execute(.newWorkspace, context: context)
-        #expect(state.createWorkspaceContext != nil)
+        CommandRegistry.execute(.newTerminal, context: context)
+        #expect(state.newTerminalProject != nil)
+        state.newTerminalProject = nil
+
         CommandRegistry.execute(.newProject, context: context)
         #expect(state.isCreateProjectPresented)
     }
 
-    @Test("reload and refresh use the registry's always-available path")
+    @Test("refresh and configuration reload always take the available path")
     func appCommands() {
-        let model = makeModel()
-        let state = WindowState.ephemeral()
         let store = ConfigurationStore(
             configURL: FileManager.default.temporaryDirectory
                 .appending(path: UUID().uuidString)
         )
-        let context = makeContext(model: model, state: state, store: store)
+        let context = makeContext(
+            model: makeEmptyAppModel(), state: WindowState(), store: store
+        )
         #expect(CommandRegistry.execute(.refresh, context: context) == .available)
         #expect(CommandRegistry.execute(.reloadConfiguration, context: context) == .available)
         #expect(store.configuration.keymap.generation == 1)

@@ -1,14 +1,26 @@
 import Foundation
 import Observation
 import OSLog
-import ATCAPI
+import ATCAppServerTransport
 import GhosttyTerminal
 
 private let logger = Logger(subsystem: "ElevenIdeas.atc", category: "terminal")
 
-/// Bridges one atc session's attach WebSocket to one Ghostty surface.
-/// Lives in the AppModel registry so the surface and connection survive
-/// sidebar switches; views only render it.
+/// Where a terminal's attach WebSocket lives: the Connection's origin plus
+/// its transport headers (the bearer-auth seam).
+struct AttachEndpoint: Sendable {
+    let baseURL: URL
+    let headers: [String: String]
+}
+
+/// Bridges one App Server terminal's attach WebSocket to one Ghostty
+/// surface. Lives in the AppModel registry so the surface and connection
+/// survive sidebar switches; views only render it.
+///
+/// End-state discipline per the attach protocol: only `terminalEnded` (or a
+/// reconciled server read) proves the terminal is gone. Every retryable
+/// close consults the server through `checkLive` before reconnecting, so a
+/// socket drop is never presented as a dead terminal.
 @Observable
 final class TerminalSessionController: Identifiable {
     struct RetryPolicy: Sendable {
@@ -49,8 +61,8 @@ final class TerminalSessionController: Identifiable {
     enum Phase: Equatable {
         case connecting
         case connected
-        /// A dropped attach is being replaced automatically — either a
-        /// backoff timer is pending or a replacement attempt is in flight.
+        /// A dropped attach is being replaced automatically — a server
+        /// recheck, a backoff timer, or a replacement attempt is in flight.
         /// Distinct from `.connecting` so the status banner reads
         /// "Reconnecting" instead of flickering through `.ended` and
         /// "Connecting" on every retry cycle.
@@ -92,25 +104,33 @@ final class TerminalSessionController: Identifiable {
         return controller
     }
 
-    let sessionID: String
+    let terminalID: String
     let viewState: TerminalViewState
     private(set) var phase: Phase = .connecting
-    @ObservationIgnored var onSessionEnded: (() -> Void)?
+    /// Fired once when the server proves the terminal gone (authoritative
+    /// close or reconciled read) — the owner refreshes stores so the
+    /// tombstone and dropped thread link land.
+    @ObservationIgnored var onTerminalEnded: (() -> Void)?
 
-    var id: String { sessionID }
+    var id: String { terminalID }
 
     /// See `Phase.isActivelyAttached` — liveness for indicators and
     /// destructive-action confirmation, distinct from retained history.
     var isActivelyAttached: Bool { phase.isActivelyAttached }
 
-    private let attachURL: URL
-    private let attachHeaders: [String: String]
+    private let endpoint: AttachEndpoint
+    /// Reconciled server read: true/false is authoritative, nil means the
+    /// server could not be asked (keep retrying rather than guessing).
+    private let checkLive: () async -> Bool?
     private var terminalSession: InMemoryTerminalSession
     private let connectionRef: ConnectionRef
     private let connectionFactory: TerminalAttachFactory
     private let retryPolicy: RetryPolicy
     private let retrySleep: (Duration) async throws -> Void
     private let jitterUnit: () -> Double
+    private let now: () -> ContinuousClock.Instant
+    /// When the current attach reached `.connected`; nil while not open.
+    private var connectionOpenedAt: ContinuousClock.Instant?
     private var connection: TerminalAttachHandle?
     private var eventTask: Task<Void, Never>?
     private var retryTask: Task<Void, Never>?
@@ -127,22 +147,25 @@ final class TerminalSessionController: Identifiable {
     private var surfaceIsReady = false
 
     init(
-        sessionID: String,
-        client: any ATCClient,
+        terminalID: String,
+        endpoint: AttachEndpoint,
+        checkLive: @escaping () async -> Bool?,
         connectionFactory: @escaping TerminalAttachFactory = TerminalAttachHandle.live,
         retryPolicy: RetryPolicy = .default,
         retrySleep: @escaping (Duration) async throws -> Void = { duration in
             try await Task.sleep(for: duration)
         },
-        jitterUnit: @escaping () -> Double = { Double.random(in: 0...1) }
+        jitterUnit: @escaping () -> Double = { Double.random(in: 0...1) },
+        now: @escaping () -> ContinuousClock.Instant = { ContinuousClock.now }
     ) {
-        self.sessionID = sessionID
-        attachURL = client.attachURL(sessionID: sessionID)
-        attachHeaders = client.attachHeaders()
+        self.terminalID = terminalID
+        self.endpoint = endpoint
+        self.checkLive = checkLive
         self.connectionFactory = connectionFactory
         self.retryPolicy = retryPolicy
         self.retrySleep = retrySleep
         self.jitterUnit = jitterUnit
+        self.now = now
 
         let ref = ConnectionRef()
         connectionRef = ref
@@ -169,16 +192,29 @@ final class TerminalSessionController: Identifiable {
     /// A wake or recovered network path can leave URLSession believing a
     /// dead WebSocket is still open. Replace any controller that should
     /// still be attached, including one whose stale socket has not failed
-    /// locally yet. Terminal/session end states deliberately opt out.
+    /// locally yet. Terminal end states deliberately opt out.
     func recoverAfterInterruption() {
         guard automaticRecoveryEnabled else { return }
         retryAttempt = 0
         beginReconnect()
     }
 
-    /// Detach: WS close = zmx detach; the session keeps running server-side.
+    /// Detach: WS close = zmx detach; the terminal keeps running server-side.
     func disconnect() {
+        stop(phase: .ended(.closedByClient))
+    }
+
+    /// A reconciled read proved the terminal ended while this controller was
+    /// not attached to hear the authoritative close: stop retrying and show
+    /// the ended state, keeping the surface's final frame.
+    func confirmEnded() {
+        guard phase != .ended(.terminalEnded) else { return }
+        stop(phase: .ended(.terminalEnded))
+    }
+
+    private func stop(phase endPhase: Phase) {
         automaticRecoveryEnabled = false
+        retryAttempt = 0
         cancelRetry()
         let connection = connection
         self.connection = nil
@@ -187,7 +223,7 @@ final class TerminalSessionController: Identifiable {
         eventTask = nil
         drainTask?.cancel()
         drainTask = nil
-        phase = .ended(.closedByClient)
+        phase = endPhase
         Task { await connection?.close() }
     }
 
@@ -206,7 +242,14 @@ final class TerminalSessionController: Identifiable {
         phase = isReconnect ? .reconnecting : .connecting
         connectionGeneration += 1
         let generation = connectionGeneration
-        let connection = connectionFactory(attachURL, attachHeaders)
+        // The attach URL carries the current viewport so the server sizes
+        // the PTY before the repaint; reattaching also makes us the leader.
+        let url = AttachProtocol.attachURL(
+            base: endpoint.baseURL,
+            terminalID: terminalID,
+            size: connectionRef.lastViewport.map { (cols: Int($0.cols), rows: Int($0.rows)) }
+        )
+        let connection = connectionFactory(url, endpoint.headers)
         self.connection = connection
         connectionRef.set(connection)
 
@@ -224,9 +267,12 @@ final class TerminalSessionController: Identifiable {
         switch event {
         case .connected:
             prepareSurfaceForReplayIfNeeded(generation: generation, isReconnect: isReconnect)
-            retryAttempt = 0
+            // The retry budget resets only once the connection proves stable
+            // (see the `.retryable` end below): a peer that greets and
+            // immediately drops must not defeat the budget and loop forever.
+            connectionOpenedAt = now()
             phase = .connected
-            logger.debug("attached \(self.sessionID)")
+            logger.debug("attached \(self.terminalID)")
             // zmx needs dimensions before it repaints; resend the last
             // known viewport as the mandatory initial resize.
             if let viewport = connectionRef.lastViewport {
@@ -239,25 +285,60 @@ final class TerminalSessionController: Identifiable {
             prepareSurfaceForReplayIfNeeded(generation: generation, isReconnect: isReconnect)
             deliver(data)
         case .ended(let reason):
-            logger.debug("attach ended \(self.sessionID): \(String(describing: reason))")
+            logger.debug("attach ended \(self.terminalID): \(String(describing: reason))")
             connection = nil
             connectionRef.set(nil)
             eventTask = nil
+            if let opened = connectionOpenedAt,
+               now() - opened >= .milliseconds(retryPolicy.maximumDelayMilliseconds) {
+                retryAttempt = 0
+            }
+            connectionOpenedAt = nil
             switch reason {
-            case .serverError, .transportFailure:
-                // Stay in `.reconnecting` across backoff cycles so the banner
-                // doesn't flicker. `.ended` is the give-up state: its banner
-                // offers a manual Reconnect, and wake/path recovery still
-                // revives the controller with a fresh retry budget.
-                phase = scheduleAutomaticReconnect() ? .reconnecting : .ended(reason)
-            case .sessionEnded, .closedByClient:
+            case .retryable:
+                // The socket says nothing about the terminal. Ask the
+                // server before reconnecting; stay in `.reconnecting` so
+                // the banner doesn't flicker through retry cycles.
+                phase = .reconnecting
+                verifyThenReconnect(afterEnd: reason)
+            case .terminalEnded, .rejected:
+                // Authoritative (or a pre-upgrade rejection that a refetch
+                // must explain): stop and let stores reconcile.
                 automaticRecoveryEnabled = false
                 retryAttempt = 0
                 cancelRetry()
                 phase = .ended(reason)
-                if reason == .sessionEnded {
-                    onSessionEnded?()
-                }
+                onTerminalEnded?()
+            case .closedByClient:
+                automaticRecoveryEnabled = false
+                retryAttempt = 0
+                cancelRetry()
+                phase = .ended(reason)
+            }
+        }
+    }
+
+    /// The reconnect flow's first step: a reconciled read. A dead terminal
+    /// becomes an authoritative end; a live (or unknowable) one proceeds to
+    /// the backoff schedule.
+    private func verifyThenReconnect(afterEnd reason: AttachEndReason) {
+        let generation = connectionGeneration
+        Task { [weak self] in
+            guard let self else { return }
+            let live = await self.checkLive()
+            guard generation == self.connectionGeneration,
+                  self.connection == nil,
+                  self.automaticRecoveryEnabled
+            else { return }
+            if live == false {
+                self.retryAttempt = 0
+                self.cancelRetry()
+                self.phase = .ended(.terminalEnded)
+                self.onTerminalEnded?()
+                return
+            }
+            if !self.scheduleAutomaticReconnect() {
+                self.phase = .ended(reason)
             }
         }
     }
@@ -371,7 +452,7 @@ final class TerminalSessionController: Identifiable {
 }
 
 /// Sendable type erasure keeps the controller testable without widening
-/// `AttachConnection` itself or making its actor API synchronous.
+/// `AttachSocket` itself or making its actor API synchronous.
 nonisolated struct TerminalAttachHandle: Sendable {
     private let startHandler: @Sendable () async -> AsyncStream<AttachEvent>
     private let enqueueHandler: @Sendable (Data) -> Void
@@ -396,12 +477,12 @@ nonisolated struct TerminalAttachHandle: Sendable {
     func close() async { await closeHandler() }
 
     static func live(url: URL, headers: [String: String]) -> TerminalAttachHandle {
-        let connection = AttachConnection(url: url, headers: headers)
+        let socket = AttachSocket(url: url, headers: headers)
         return TerminalAttachHandle(
-            start: { await connection.start() },
-            enqueue: { connection.enqueue($0) },
-            enqueueResize: { connection.enqueueResize(cols: $0, rows: $1) },
-            close: { await connection.close() }
+            start: { await socket.start() },
+            enqueue: { socket.enqueue($0) },
+            enqueueResize: { socket.enqueueResize(cols: Int($0), rows: Int($1)) },
+            close: { await socket.close() }
         )
     }
 }

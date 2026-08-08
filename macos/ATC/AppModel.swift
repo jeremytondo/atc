@@ -1,87 +1,94 @@
 import Foundation
 import Observation
 import OSLog
-import ATCAPI
+import ATCAppServerAPI
 
 private let logger = Logger(subsystem: "ElevenIdeas.atc", category: "appmodel")
 
+/// A compact, value-semantic projection of every runtime's threads and
+/// terminals, used by the window to reconcile store-driven removals.
 struct WindowNavigationSnapshot: Equatable {
     struct Connection: Equatable {
-        struct WorkspaceRecord: Equatable {
+        struct ThreadRecord: Equatable {
             let id: String
             let projectID: String
+            let isArchived: Bool
         }
 
-        struct SessionRecord: Equatable {
+        struct TerminalRecord: Equatable {
             let id: String
-            let workspaceID: String?
-            let status: SessionStatus
+            let projectID: String
+            let threadID: String?
+            let isLive: Bool
         }
 
         let id: UUID
-        let workspacesCurrent: Bool
-        let sessionsCurrent: Bool
-        let workspaces: [WorkspaceRecord]
-        let sessions: [SessionRecord]
+        let threadsCurrent: Bool
+        let terminalsCurrent: Bool
+        let threads: [ThreadRecord]
+        let terminals: [TerminalRecord]
     }
 
     let connections: [Connection]
 }
 
 /// Root domain model: owns the Connection list and one `ConnectionRuntime`
-/// per Connection. Aggregation across Connections happens above the
-/// per-runtime stores, in pure code (`DashboardGroups`).
+/// per Connection, plus the terminal-controller registry that keeps attach
+/// WebSockets and Ghostty surfaces alive across navigation.
 @Observable
 final class AppModel {
     let connections: ConnectionsStore
-    let workspaceStartup: WorkspaceStartupStore
     private(set) var runtimes: [ConnectionRuntime] = []
 
     /// Live terminal attaches by composite ref. Connections and surfaces
     /// stay alive here while the user switches around the sidebar, bounded
     /// by `attachmentBudget`.
-    private(set) var terminals: [SessionRef: TerminalSessionController] = [:]
+    private(set) var terminals: [TerminalRef: TerminalSessionController] = [:]
 
     /// Maximum simultaneously attached terminals (WebSocket + Ghostty
-    /// surface each). Not user-facing configuration. Pinned refs — the
-    /// the selected Session and Active Workspace supplied by the window are
-    /// never evicted, even if that means temporarily exceeding the budget.
+    /// surface each). Not user-facing configuration. The visible terminal
+    /// supplied by the window is never evicted, even if that means
+    /// temporarily exceeding the budget.
     let attachmentBudget: Int
 
     /// LRU order over `terminals` keys, least-recently-used first.
-    private var attachOrder: [SessionRef] = []
+    private var attachOrder: [TerminalRef] = []
 
-    /// Refs whose terminals were torn down through `disconnectTerminal`.
-    /// Window reconciliation consults this so a Disconnect sticks instead
-    /// of being silently undone on the next store change; any explicit
-    /// attach clears the mark.
-    private var detachedRefs: Set<SessionRef> = []
-
-    private let clientFactory: (ConnectionRecord) -> any ATCClient
-    private let terminalControllerFactory: (String, any ATCClient) -> TerminalSessionController
+    private let clientFactory: (ConnectionRecord, URL) -> any APIProtocol
+    private let terminalControllerFactory: (String, ConnectionRuntime) -> TerminalSessionController
     private let terminalRecoveryMonitor: TerminalRecoveryMonitor
+    private let eventStreamFactory: ConnectionRuntime.EventStreamFactory?
 
     init(
         connections: ConnectionsStore? = nil,
-        clientFactory: ((ConnectionRecord) -> any ATCClient)? = nil,
-        terminalControllerFactory: ((String, any ATCClient) -> TerminalSessionController)? = nil,
+        clientFactory: ((ConnectionRecord, URL) -> any APIProtocol)? = nil,
+        terminalControllerFactory: ((String, ConnectionRuntime) -> TerminalSessionController)? = nil,
         terminalRecoveryMonitor: TerminalRecoveryMonitor? = nil,
-        workspaceStartupDefaults: UserDefaults = .standard,
+        eventStreamFactory: ConnectionRuntime.EventStreamFactory? = nil,
         attachmentBudget: Int = 12
     ) {
         self.attachmentBudget = attachmentBudget
         self.connections = connections ?? ConnectionsStore()
-        self.workspaceStartup = WorkspaceStartupStore(defaults: workspaceStartupDefaults)
-        self.clientFactory = clientFactory ?? { record in
-            // makeRuntime rejects records whose urlString doesn't parse, so
-            // the unwrap here can't be reached with a corrupted record.
-            let url = URL(string: record.urlString)!
-            return HTTPATCClient(server: ATCServer(baseURL: url, token: record.token))
+        self.clientFactory = clientFactory ?? { record, url in
+            ATCAppServerAPI.makeClient(
+                baseURL: url,
+                bearerToken: record.token.isEmpty ? nil : record.token
+            )
         }
-        self.terminalControllerFactory = terminalControllerFactory ?? { sessionID, client in
-            TerminalSessionController(sessionID: sessionID, client: client)
+        self.terminalControllerFactory = terminalControllerFactory ?? { terminalID, runtime in
+            TerminalSessionController(
+                terminalID: terminalID,
+                endpoint: AttachEndpoint(
+                    baseURL: runtime.baseURL,
+                    headers: runtime.transportHeaders
+                ),
+                checkLive: { [weak runtime] in
+                    await runtime?.terminals.checkLive(id: terminalID) ?? nil
+                }
+            )
         }
         self.terminalRecoveryMonitor = terminalRecoveryMonitor ?? TerminalRecoveryMonitor()
+        self.eventStreamFactory = eventStreamFactory
         for record in self.connections.connections {
             if let runtime = makeRuntime(record) {
                 runtimes.append(runtime)
@@ -99,52 +106,37 @@ final class AppModel {
         runtimes.first { $0.id == id }
     }
 
-    /// Reachability of a Connection for status dots; `.unknown` when no
+    /// Reachability of a Connection for status surfaces; `.unknown` when no
     /// runtime exists (e.g. a not-yet-saved draft).
     func reachability(of id: UUID) -> Reachability {
         runtime(id: id)?.reachability ?? .unknown
     }
 
-    /// Network-backed mutations are only offered after the Connection's
-    /// latest combined refresh succeeded. Unknown and unreachable runtimes
-    /// are read-only until polling establishes a current model again.
+    /// Network-backed mutations are only offered while the Connection's
+    /// event stream is live and its latest combined refresh succeeded.
     func canMutate(connectionID: UUID) -> Bool {
         runtime(id: connectionID)?.reachability == .connected
     }
 
-    func canCreateWorkspace(in ref: ProjectRef) -> Bool {
-        canMutate(connectionID: ref.connectionID)
-            && runtime(id: ref.connectionID)?.projects.project(id: ref.projectID) != nil
+    func thread(for ref: ThreadRef) -> ATCThread? {
+        runtime(id: ref.connectionID)?.threads.thread(id: ref.threadID)
     }
 
-    func canStartSession(in ref: WorkspaceRef) -> Bool {
-        canMutate(connectionID: ref.connectionID)
-            && runtime(id: ref.connectionID)?.workspaces.workspace(id: ref.workspaceID) != nil
+    func terminal(for ref: TerminalRef) -> Terminal? {
+        runtime(id: ref.connectionID)?.terminals.terminal(id: ref.terminalID)
     }
 
-    func session(for ref: SessionRef) -> Session? {
-        runtime(id: ref.connectionID)?.sessions.session(id: ref.sessionID)
-    }
-
-    /// A compact, value-semantic projection used by the window to reconcile
-    /// store-driven removals and delayed selection restoration.
     func windowNavigationSnapshot() -> WindowNavigationSnapshot {
         WindowNavigationSnapshot(connections: runtimes.map { runtime in
             WindowNavigationSnapshot.Connection(
                 id: runtime.id,
-                workspacesCurrent: runtime.workspaces.hasLoadedOnce
-                    && runtime.workspaces.lastError == nil,
-                sessionsCurrent: runtime.sessions.hasLoadedOnce
-                    && runtime.sessions.lastError == nil,
-                workspaces: runtime.workspaces.workspaces.map {
-                    .init(id: $0.id, projectID: $0.projectId)
+                threadsCurrent: runtime.threads.isResolved,
+                terminalsCurrent: runtime.terminals.isResolved,
+                threads: (runtime.threads.threads + runtime.threads.archivedThreads).map {
+                    .init(id: $0.id, projectID: $0.projectId, isArchived: $0.isArchived)
                 },
-                sessions: runtime.sessions.sessions.map {
-                    .init(
-                        id: $0.id,
-                        workspaceID: $0.workspace?.id,
-                        status: $0.status
-                    )
+                terminals: runtime.terminals.terminals.map {
+                    .init(id: $0.id, projectID: $0.projectId, threadID: $0.threadId, isLive: $0.isLive)
                 }
             )
         })
@@ -192,7 +184,7 @@ final class AppModel {
     /// Refs whose terminals have a live attach, for connection indicators.
     /// `terminals.keys` would also include ended controllers kept for
     /// scrollback.
-    var activelyAttachedRefs: Set<SessionRef> {
+    var activelyAttachedRefs: Set<TerminalRef> {
         Set(terminals.filter { $0.value.isActivelyAttached }.keys)
     }
 
@@ -203,8 +195,15 @@ final class AppModel {
     func updateConnection(id: UUID, name: String, urlString: String, token: String) throws {
         let rebuild = wouldRebuildConnection(id: id, urlString: urlString, token: token)
         try connections.update(id: id, name: name, urlString: urlString, token: token)
-        guard let record = connections.connections.first(where: { $0.id == id }),
-              let index = runtimes.firstIndex(where: { $0.id == id }) else { return }
+        guard let record = connections.connections.first(where: { $0.id == id }) else { return }
+        guard let index = runtimes.firstIndex(where: { $0.id == id }) else {
+            // A record whose runtime was skipped at launch (corrupted URL)
+            // becomes usable again the moment an edit makes it valid.
+            if let runtime = makeRuntime(record) {
+                runtimes.append(runtime)
+            }
+            return
+        }
         if rebuild, let runtime = makeRuntime(record) {
             teardown(runtimes[index])
             runtimes[index] = runtime
@@ -217,72 +216,64 @@ final class AppModel {
     /// navigation references are reconciled by `WindowState`.
     func removeConnection(id: UUID) {
         connections.remove(id: id)
-        workspaceStartup.removeConnection(connectionID: id)
         guard let index = runtimes.firstIndex(where: { $0.id == id }) else { return }
         teardown(runtimes[index])
         runtimes.remove(at: index)
     }
 
-    /// Deletes a Project on its server, then removes its local startup
-    /// override only after the server mutation succeeds.
-    func deleteProject(_ ref: ProjectRef) async throws {
+    // MARK: - Thread and terminal opening
+
+    /// Idempotently opens the thread's TUI terminal on the server, then
+    /// attaches (or reuses) its controller. Returns the terminal ref the
+    /// window should display.
+    @discardableResult
+    func openThread(_ ref: ThreadRef, retentionContext: TerminalRetentionContext = .empty) async throws -> TerminalRef {
         guard let runtime = runtime(id: ref.connectionID) else {
-            throw ATCError.api(
-                code: "connection_not_found",
-                message: "This connection no longer exists.",
-                sessionID: nil
-            )
+            throw AppServerUnavailable()
         }
-        try await runtime.projects.delete(id: ref.projectID)
-        workspaceStartup.removeProject(
-            connectionID: ref.connectionID,
-            projectID: ref.projectID
-        )
+        let terminal = try await runtime.threads.openTerminal(threadID: ref.threadID)
+        runtime.terminals.merge(terminal)
+        let terminalRef = TerminalRef(connectionID: ref.connectionID, terminalID: terminal.id)
+        attachIfNeeded(to: terminal, connectionID: ref.connectionID, retentionContext: retentionContext)
+        return terminalRef
     }
 
-    // MARK: - Terminal registry
-
+    /// Attaches a live terminal's controller, or reuses the retained one.
     func attachIfNeeded(
-        to session: Session,
+        to terminal: Terminal,
         connectionID: UUID,
         retentionContext: TerminalRetentionContext = .empty
     ) {
-        let ref = SessionRef(connectionID: connectionID, sessionID: session.id)
-        detachedRefs.remove(ref)
+        let ref = TerminalRef(connectionID: connectionID, terminalID: terminal.id)
         if terminals[ref] != nil {
             markRecentlyUsed(ref)
             return
         }
-        guard session.status == .live,
-              let runtime = runtime(id: connectionID) else { return }
-        let controller = terminalControllerFactory(session.id, runtime.client)
-        controller.onSessionEnded = { [weak self] in
-            self?.reconcileEndedSession(ref)
+        guard terminal.isLive, let runtime = runtime(id: connectionID) else { return }
+        let controller = terminalControllerFactory(terminal.id, runtime)
+        controller.onTerminalEnded = { [weak self] in
+            self?.reconcileEndedTerminal(ref)
         }
         terminals[ref] = controller
         markRecentlyUsed(ref)
         evictOverBudget(retentionContext: retentionContext)
     }
 
-    func touchTerminal(_ ref: SessionRef) {
+    func touchTerminal(_ ref: TerminalRef) {
         guard terminals[ref] != nil else { return }
         markRecentlyUsed(ref)
     }
 
-    func disconnectTerminal(ref: SessionRef) {
+    /// Tears the controller down and releases its surface — eviction and
+    /// Connection teardown, not a lifecycle judgment about the terminal.
+    func disconnectTerminal(ref: TerminalRef) {
         terminals[ref]?.disconnect()
         terminals.removeValue(forKey: ref)
         attachOrder.removeAll { $0 == ref }
-        detachedRefs.insert(ref)
-    }
-
-    /// Whether this ref was disconnected and never explicitly re-attached.
-    func isDetached(_ ref: SessionRef) -> Bool {
-        detachedRefs.contains(ref)
     }
 
     /// Wake and path recovery are app-wide signals. A controller decides
-    /// whether it is still expected to be live; ended sessions and explicit
+    /// whether it is still expected to be live; ended terminals and explicit
     /// disconnects therefore remain stopped.
     func recoverTerminalsAfterInterruption() {
         for controller in terminals.values {
@@ -290,32 +281,25 @@ final class AppModel {
         }
     }
 
-    /// Tears down interaction for sessions the latest successful poll says
-    /// are Ended or deleted. Failed refreshes are deliberately ignored so
+    /// Stops interaction for terminals the latest successful refresh says
+    /// are ended, keeping the controller and its surface registered — the
+    /// final frame stays visible under the relaunch affordance, and only
+    /// LRU eviction or teardown releases it. A terminal deleted outright is
+    /// fully disconnected. Failed refreshes are deliberately ignored so
     /// connection loss never manufactures a lifecycle transition.
     func reconcileTerminalLifecycle() {
         for ref in Array(terminals.keys) {
             guard let runtime = runtime(id: ref.connectionID),
-                  runtime.sessions.hasLoadedOnce,
-                  runtime.sessions.lastError == nil
+                  runtime.terminals.isResolved
             else { continue }
-            guard runtime.sessions.session(id: ref.sessionID)?.status == .live else {
+            guard let terminal = runtime.terminals.terminal(id: ref.terminalID) else {
                 disconnectTerminal(ref: ref)
                 continue
             }
+            if !terminal.isLive {
+                terminals[ref]?.confirmEnded()
+            }
         }
-    }
-
-    /// Central stale-interaction reconciliation. Returns true when the
-    /// error is the expected `session_ended` response and was consumed.
-    @discardableResult
-    func handleSessionInteractionError(_ error: any Error, connectionID: UUID) -> Bool {
-        guard let error = error as? ATCError,
-              error.apiCode == "session_ended",
-              let sessionID = error.sessionID
-        else { return false }
-        reconcileEndedSession(SessionRef(connectionID: connectionID, sessionID: sessionID))
-        return true
     }
 
     // MARK: - Attachment budget
@@ -323,43 +307,32 @@ final class AppModel {
     /// Moves `ref` to the most-recently-used end of the LRU order. Called
     /// only for attached refs, so `attachOrder` stays a permutation of
     /// `terminals.keys` and never accumulates stale entries.
-    private func markRecentlyUsed(_ ref: SessionRef) {
+    private func markRecentlyUsed(_ ref: TerminalRef) {
         attachOrder.removeAll { $0 == ref }
         attachOrder.append(ref)
     }
 
     /// Evicts least-recently-used attaches past the budget through the
-    /// standard disconnect path. Pinned refs and the just-attached ref
+    /// standard disconnect path. The visible ref and the just-attached ref
     /// (the LRU tail) are skipped; if they alone exceed the budget, it is
     /// simply exceeded.
     private func evictOverBudget(retentionContext: TerminalRetentionContext) {
         guard terminals.count > attachmentBudget else { return }
-        // Ordering invariant: every terminals key was appended in
-        // markRecentlyUsed, so attachOrder covers all candidates.
         let newest = attachOrder.last
         for ref in attachOrder where terminals.count > attachmentBudget {
-            if ref == newest || isPinned(ref, retentionContext: retentionContext) { continue }
+            if ref == newest || ref == retentionContext.visibleTerminal { continue }
             disconnectTerminal(ref: ref)
         }
     }
 
-    /// Navigation state is window-owned, so eviction receives a derived
-    /// retention context instead of reading a duplicate mutable selection.
-    private func isPinned(
-        _ ref: SessionRef,
-        retentionContext: TerminalRetentionContext
-    ) -> Bool {
-        if ref == retentionContext.selectedSession { return true }
-        guard let activeWorkspace = retentionContext.activeWorkspace,
-              activeWorkspace.connectionID == ref.connectionID
-        else { return false }
-        return session(for: ref)?.belongs(to: activeWorkspace) == true
-    }
-
-    private func reconcileEndedSession(_ ref: SessionRef) {
-        runtime(id: ref.connectionID)?.sessions.reconcileEnded(id: ref.sessionID)
-        if terminals[ref] != nil {
-            disconnectTerminal(ref: ref)
+    /// A terminal ended mid-attach: refetch so the tombstone (and the
+    /// thread's dropped link) lands, and tear down the dead controller's
+    /// socket while keeping its surface for the final frame.
+    private func reconcileEndedTerminal(_ ref: TerminalRef) {
+        guard let runtime = runtime(id: ref.connectionID) else { return }
+        Task {
+            await runtime.terminals.refresh()
+            await runtime.threads.refresh()
         }
     }
 
@@ -369,22 +342,35 @@ final class AppModel {
     /// parses): the Connection is skipped with a log instead of crashing at
     /// launch — records created through the store are always valid.
     private func makeRuntime(_ record: ConnectionRecord) -> ConnectionRuntime? {
-        guard URL(string: record.urlString) != nil else {
+        guard let url = URL(string: record.urlString) else {
             logger.error("skipping connection \(record.id) — unparseable URL \(record.urlString)")
             return nil
         }
-        let runtime = ConnectionRuntime(record: record, client: clientFactory(record))
-        runtime.startPolling()
+        let runtime: ConnectionRuntime
+        if let eventStreamFactory {
+            runtime = ConnectionRuntime(
+                record: record,
+                client: clientFactory(record, url),
+                baseURL: url,
+                eventStreamFactory: eventStreamFactory
+            )
+        } else {
+            runtime = ConnectionRuntime(record: record, client: clientFactory(record, url), baseURL: url)
+        }
+        runtime.start()
         return runtime
     }
 
     private func teardown(_ runtime: ConnectionRuntime) {
-        runtime.stopPolling()
+        runtime.stop()
         for ref in terminals.keys where ref.connectionID == runtime.id {
             disconnectTerminal(ref: ref)
         }
-        // A teardown disconnect is infrastructure, not user intent: a
-        // rebuilt Connection may auto-reattach its selected session.
-        detachedRefs = detachedRefs.filter { $0.connectionID != runtime.id }
     }
+}
+
+/// The one client-side domain error: a mutation was attempted against a
+/// Connection that no longer exists locally.
+struct AppServerUnavailable: LocalizedError {
+    var errorDescription: String? { "This connection no longer exists." }
 }

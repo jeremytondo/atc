@@ -1,5 +1,5 @@
 import SwiftUI
-import ATCAPI
+import ATCAppServerAPI
 
 /// What the editor pane is currently editing: an existing record by ID, or a
 /// brand-new draft that isn't in the store until Save.
@@ -132,7 +132,6 @@ private struct ConnectionEditorView: View {
     @State private var confirmRebuild = false
 
     @State private var testState: TestState = .idle
-    @State private var workspaceStartupTarget: WorkspaceStartupEditorTarget?
     /// Bumped on every draft edit and every new test; stale results are dropped.
     @State private var testGeneration = 0
 
@@ -203,29 +202,6 @@ private struct ConnectionEditorView: View {
                         Spacer()
                     }
                 }
-                if let record = currentRecord {
-                    Section {
-                        HStack(spacing: Spacing.md) {
-                            Text(WorkspaceStartupSummary.text(
-                                configuration: appModel.workspaceStartup.connectionConfiguration(
-                                    connectionID: record.id
-                                ),
-                                actions: appModel.runtime(id: record.id)?.actions.actions ?? [],
-                                hasLoadedOnce: appModel.runtime(id: record.id)?.actions.hasLoadedOnce ?? false
-                            ))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            Spacer()
-                            Button("Edit…") {
-                                workspaceStartupTarget = .connection(record.id)
-                            }
-                        }
-                    } header: {
-                        Text("Workspace Startup")
-                    } footer: {
-                        Text("Sessions configured here are inherited by Projects that use Connection defaults.")
-                    }
-                }
             }
             .formStyle(.grouped)
 
@@ -250,10 +226,7 @@ private struct ConnectionEditorView: View {
         ) {
             Button("Save and Disconnect", role: .destructive) { performSave() }
         } message: {
-            Text("Changing the URL or token reconnects this connection, and its open terminal sessions will be disconnected. Sessions keep running on the server.")
-        }
-        .sheet(item: $workspaceStartupTarget) { target in
-            WorkspaceStartupEditorSheet(target: target)
+            Text("Changing the URL or token reconnects this connection, and its open terminals will be disconnected. They keep running on the server.")
         }
     }
 
@@ -319,12 +292,15 @@ private struct ConnectionEditorView: View {
         let draftToken = token
         testState = .testing
         Task {
-            let client = HTTPATCClient(server: ATCServer(baseURL: url, token: draftToken))
+            let client = ATCAppServerAPI.makeClient(
+                baseURL: url,
+                bearerToken: draftToken.isEmpty ? nil : draftToken
+            )
             do {
-                _ = try await client.health()
-                let version = try await client.version()
+                _ = try await client.getHealth().ok.body.json
+                let version = try await client.getVersion().ok.body.json
                 guard generation == testGeneration else { return }
-                testState = .success("Connected — \(version.name) \(version.version)")
+                testState = .success("Connected — atc \(version.version)")
             } catch {
                 guard generation == testGeneration else { return }
                 testState = .failure(error.localizedDescription)
@@ -347,19 +323,19 @@ private struct ConnectionEditorView: View {
 }
 
 #Preview("Connections — populated") {
-    let store = ConnectionsStore(defaults: UserDefaults(suiteName: "preview.connections.populated")!, credentials: InMemoryCredentialStore())
-    _ = try? store.add(name: "Workstation", urlString: "http://workstation.tail1f9a09.ts.net:7331", token: "")
-    _ = try? store.add(name: "Local Dev", urlString: "http://127.0.0.1:7331", token: "")
-    return ConnectionsSettingsView()
-        .environment(AppModel(connections: store, clientFactory: { _ in MockATCClient() }))
+    ConnectionsSettingsView()
+        .environment(AppModel.preview())
         .frame(width: 700, height: 450)
         .preferredColorScheme(.dark)
 }
 
 #Preview("Connections — empty") {
-    let store = ConnectionsStore(defaults: UserDefaults(suiteName: "preview.connections.empty")!, credentials: InMemoryCredentialStore())
+    let store = ConnectionsStore(
+        defaults: UserDefaults(suiteName: "preview.connections.empty")!,
+        credentials: InMemoryCredentialStore()
+    )
     return ConnectionsSettingsView()
-        .environment(AppModel(connections: store, clientFactory: { _ in MockATCClient() }))
+        .environment(AppModel(connections: store))
         .frame(width: 700, height: 450)
         .preferredColorScheme(.dark)
 }

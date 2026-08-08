@@ -1,22 +1,22 @@
+import ATCAppServerAPI
 import Foundation
-import ATCAPI
 
 enum PaletteResultID: Hashable {
     case command(CommandID)
-    case workspace(WorkspaceRef)
-    case session(SessionRef)
+    case thread(ThreadRef)
+    case terminal(TerminalRef)
 }
 
 enum PaletteResult: Identifiable {
     case command(CommandPaletteRow)
-    case workspace(WorkspaceResult)
-    case session(SessionResult)
+    case thread(ThreadResult)
+    case terminal(TerminalResult)
 
     var id: PaletteResultID {
         switch self {
         case .command(let row): .command(row.id)
-        case .workspace(let row): row.id
-        case .session(let row): row.id
+        case .thread(let row): row.id
+        case .terminal(let row): row.id
         }
     }
 }
@@ -29,43 +29,32 @@ struct CommandPaletteRow: Identifiable {
     let availability: CommandAvailability
 }
 
-struct WorkspaceResult: Identifiable {
-    let ref: WorkspaceRef
+struct ThreadResult: Identifiable {
+    let ref: ThreadRef
     let title: String
-    let projectName: String
-    let connectionName: String
+    /// Project (and Connection when ambiguous).
+    let subtitle: String
     let matchedRanges: [Range<String.Index>]
     let availability: CommandAvailability
-    var id: PaletteResultID { .workspace(ref) }
+    var id: PaletteResultID { .thread(ref) }
 }
 
-struct SessionResult: Identifiable {
-    let ref: SessionRef
-    let identity: SessionIdentity
+struct TerminalResult: Identifiable {
+    let ref: TerminalRef
     let title: String
-    let kind: SessionKind
+    let subtitle: String
     let matchedRanges: [Range<String.Index>]
-    fileprivate let matchQuality: SessionMatchQuality
-    var id: PaletteResultID { .session(ref) }
-}
-
-fileprivate enum SessionMatchQuality: Int {
-    case index = 0
-    case title = 1
-    case identity = 2
-    case typeExpansion = 3
+    var id: PaletteResultID { .terminal(ref) }
 }
 
 /// A whole-query type keyword for the unscoped palette: a trimmed query of
 /// three or more characters that is a case-insensitive prefix of one plural
-/// keyword ("sessions", "terminals", "workspaces") lists every target of that
-/// type, additively with ordinary matching. Anything else — shorter, longer
-/// than the keyword, or a composed query like "session parser" — matches only
-/// by title.
+/// keyword ("threads", "terminals") lists every target of that type,
+/// additively with ordinary matching. Anything else — shorter, longer than the
+/// keyword, or a composed query like "thread parser" — matches only by title.
 enum PaletteTypeKeyword: CaseIterable, Equatable {
-    case sessions
+    case threads
     case terminals
-    case workspaces
 
     static func match(_ query: String) -> PaletteTypeKeyword? {
         let query = query
@@ -77,9 +66,8 @@ enum PaletteTypeKeyword: CaseIterable, Equatable {
 
     private var keyword: String {
         switch self {
-        case .sessions: "sessions"
+        case .threads: "threads"
         case .terminals: "terminals"
-        case .workspaces: "workspaces"
         }
     }
 }
@@ -95,16 +83,12 @@ enum CommandPaletteContent {
         switch presentation {
         case .all:
             return allResults(query: query, keymap: keymap, context: context)
-        case .sessions:
-            return scopedSessionResults(query: query, kind: .agent, context: context)
+        case .threads:
+            return threadResults(query: query, context: context, keyword: PaletteTypeKeyword.match(query))
+                .map(PaletteResult.thread)
         case .terminals:
-            return scopedSessionResults(query: query, kind: .terminal, context: context)
-        case .workspaces:
-            return workspaceResults(
-                query: query,
-                groups: ProjectsNavigatorGroups(runtimes: context.appModel.runtimes),
-                keyword: nil
-            ).map(PaletteResult.workspace)
+            return terminalResults(query: query, context: context, keyword: PaletteTypeKeyword.match(query))
+                .map(PaletteResult.terminal)
         }
     }
 
@@ -118,107 +102,70 @@ enum CommandPaletteContent {
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return commands
         }
-
         let keyword = PaletteTypeKeyword.match(query)
-
-        let workspaces = workspaceResults(
-            query: query,
-            groups: ProjectsNavigatorGroups(runtimes: context.appModel.runtimes),
-            keyword: keyword
-        ).map(PaletteResult.workspace)
-
-        guard let activeWorkspace = context.windowState.activeWorkspace,
-              let runtime = context.appModel.runtime(id: activeWorkspace.connectionID)
-        else { return commands + workspaces }
-        let sessions = sessionResults(
-            query: query,
-            activeWorkspace: activeWorkspace,
-            sessions: runtime.sessions.sessions,
-            keyword: keyword
-        ).map(PaletteResult.session)
-        return commands + workspaces + sessions
+        let threads = threadResults(query: query, context: context, keyword: keyword)
+            .map(PaletteResult.thread)
+        let terminals = terminalResults(query: query, context: context, keyword: keyword)
+            .map(PaletteResult.terminal)
+        return commands + threads + terminals
     }
 
-    private static func scopedSessionResults(
+    /// Active threads only: an archived thread is a management row in the
+    /// sidebar, never a navigation target.
+    static func threadResults(
         query: String,
-        kind: SessionKind,
-        context: CommandContext
-    ) -> [PaletteResult] {
-        guard let activeWorkspace = context.windowState.activeWorkspace,
-              let runtime = context.appModel.runtime(id: activeWorkspace.connectionID)
-        else { return [] }
-        return sessionResults(
-            query: query,
-            activeWorkspace: activeWorkspace,
-            sessions: runtime.sessions.sessions,
-            keyword: nil,
-            kind: kind
-        ).map(PaletteResult.session)
-    }
-
-    static func workspaceResults(
-        query: String,
-        groups: ProjectsNavigatorGroups,
+        context: CommandContext,
         keyword: PaletteTypeKeyword?
-    ) -> [WorkspaceResult] {
-        let expandsWorkspaces = keyword == .workspaces
-        return groups.projects.flatMap { group in
-            group.workspaces.compactMap { row in
-                let titleMatch = QueryMatcher.match(query, in: row.workspace.name)
-                guard expandsWorkspaces
+    ) -> [ThreadResult] {
+        let model = ThreadListModel(
+            inputs: context.appModel.runtimes.map(ThreadListModel.ConnectionInput.init(runtime:)),
+            filter: .all
+        )
+        let expands = keyword == .threads
+        return (model.pinned + model.recent).compactMap { item in
+            let titleMatch = QueryMatcher.match(query, in: item.thread.displayName)
+            guard expands
+                || titleMatch != nil
+                || QueryMatcher.match(query, in: item.projectLabel) != nil
+            else { return nil }
+            return ThreadResult(
+                ref: item.ref,
+                title: item.thread.displayName,
+                subtitle: item.projectLabel,
+                matchedRanges: titleMatch?.ranges ?? [],
+                availability: context.appModel.canMutate(connectionID: item.ref.connectionID)
+                    ? .available
+                    : .unavailable(reason: "Requires a reachable Connection")
+            )
+        }.sorted(by: threadComesFirst)
+    }
+
+    /// Standalone terminals only: a thread's TUI terminal is reached through
+    /// its thread.
+    static func terminalResults(
+        query: String,
+        context: CommandContext,
+        keyword: PaletteTypeKeyword?
+    ) -> [TerminalResult] {
+        let expands = keyword == .terminals
+        return context.appModel.runtimes.flatMap { runtime -> [TerminalResult] in
+            runtime.terminals.terminals.compactMap { terminal in
+                guard terminal.threadId == nil else { return nil }
+                let projectName = runtime.projects.project(id: terminal.projectId)?.name
+                    ?? "Unknown Project"
+                let titleMatch = QueryMatcher.match(query, in: terminal.displayName)
+                guard expands
                     || titleMatch != nil
-                    || QueryMatcher.match(query, in: group.project.name) != nil
-                    || QueryMatcher.match(query, in: group.connectionName) != nil
+                    || QueryMatcher.match(query, in: projectName) != nil
                 else { return nil }
-                return WorkspaceResult(
-                    ref: row.ref,
-                    title: row.workspace.name,
-                    projectName: group.project.name,
-                    connectionName: group.connectionName,
-                    matchedRanges: titleMatch?.ranges ?? [],
-                    availability: group.reachability == .connected
-                        ? .available
-                        : .unavailable(reason: "Requires a reachable Connection")
+                return TerminalResult(
+                    ref: TerminalRef(connectionID: runtime.id, terminalID: terminal.id),
+                    title: terminal.displayName,
+                    subtitle: terminal.isLive ? projectName : "\(projectName) · Ended",
+                    matchedRanges: titleMatch?.ranges ?? []
                 )
             }
-        }.sorted(by: workspaceComesFirst)
-    }
-
-    static func sessionResults(
-        query: String,
-        activeWorkspace: WorkspaceRef,
-        sessions: [Session],
-        keyword: PaletteTypeKeyword?,
-        kind requiredKind: SessionKind? = nil
-    ) -> [SessionResult] {
-        let sessionQuery = SessionQuery(query)
-        return sessions.compactMap { session in
-            guard session.belongs(to: activeWorkspace) else { return nil }
-            let identity = SessionIdentity(session: session)
-            let title = identity.fullLabel
-            let kind = identity.kind
-            guard requiredKind == nil || kind == requiredKind else { return nil }
-            let match = sessionQuery.match(identity: identity, title: title)
-            let expandsKind: Bool
-            switch kind {
-            case .agent:
-                expandsKind = keyword == .sessions
-            case .terminal:
-                expandsKind = keyword == .terminals
-            }
-            guard match != nil || expandsKind else { return nil }
-            return SessionResult(
-                ref: SessionRef(
-                    connectionID: activeWorkspace.connectionID,
-                    sessionID: session.id
-                ),
-                identity: identity,
-                title: title,
-                kind: kind,
-                matchedRanges: match?.query?.ranges ?? [],
-                matchQuality: match?.quality ?? .typeExpansion
-            )
-        }.sorted(by: sessionComesFirst)
+        }.sorted(by: terminalComesFirst)
     }
 
     static func isOrderedBefore(
@@ -254,113 +201,23 @@ enum CommandPaletteContent {
         ) }
     }
 
-    private static func workspaceComesFirst(
-        _ lhs: WorkspaceResult,
-        _ rhs: WorkspaceResult
-    ) -> Bool {
+    private static func threadComesFirst(_ lhs: ThreadResult, _ rhs: ThreadResult) -> Bool {
         let lhsTitle = lhs.title.lowercased()
         let rhsTitle = rhs.title.lowercased()
         if lhsTitle != rhsTitle { return lhsTitle < rhsTitle }
         let lhsConnection = lhs.ref.connectionID.uuidString
         let rhsConnection = rhs.ref.connectionID.uuidString
         if lhsConnection != rhsConnection { return lhsConnection < rhsConnection }
-        return lhs.ref.workspaceID < rhs.ref.workspaceID
+        return lhs.ref.threadID < rhs.ref.threadID
     }
 
-    private static func sessionComesFirst(
-        _ lhs: SessionResult,
-        _ rhs: SessionResult
-    ) -> Bool {
-        if lhs.matchQuality != rhs.matchQuality {
-            return lhs.matchQuality.rawValue < rhs.matchQuality.rawValue
-        }
-        switch (lhs.identity.index, rhs.identity.index) {
-        case let (lhsIndex?, rhsIndex?) where lhsIndex != rhsIndex:
-            return lhsIndex < rhsIndex
-        case (_?, nil):
-            return true
-        case (nil, _?):
-            return false
-        default:
-            break
-        }
+    private static func terminalComesFirst(_ lhs: TerminalResult, _ rhs: TerminalResult) -> Bool {
         let lhsTitle = lhs.title.lowercased()
         let rhsTitle = rhs.title.lowercased()
-        return lhsTitle == rhsTitle
-            ? lhs.ref.sessionID < rhs.ref.sessionID
-            : lhsTitle < rhsTitle
-    }
-}
-
-private struct SessionQuery {
-    enum Kind {
-        case title(String)
-        case index(String)
-        case indexAndTitle(index: String, title: String)
-    }
-
-    struct Match {
-        let query: QueryMatch?
-        let quality: SessionMatchQuality
-    }
-
-    let kind: Kind
-
-    init(_ query: String) {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty, trimmed.allSatisfy(\.isNumber) {
-            kind = .index(trimmed)
-            return
-        }
-
-        if let separator = trimmed.firstIndex(where: \.isWhitespace) {
-            let index = String(trimmed[..<separator])
-            let title = trimmed[separator...]
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !index.isEmpty, index.allSatisfy(\.isNumber), !title.isEmpty {
-                kind = .indexAndTitle(index: index, title: title)
-                return
-            }
-        }
-
-        kind = .title(query)
-    }
-
-    func match(identity: SessionIdentity, title: String) -> Match? {
-        switch kind {
-        case .title(let query):
-            return textMatch(query, identity: identity, title: title)
-        case .index(let digits):
-            if index(digits, matches: identity.index) {
-                return Match(query: nil, quality: .index)
-            }
-            return textMatch(digits, identity: identity, title: title)
-        case .indexAndTitle(let digits, let query):
-            guard index(digits, matches: identity.index),
-                  let match = textMatch(query, identity: identity, title: title)
-            else { return nil }
-            return Match(query: match.query, quality: .index)
-        }
-    }
-
-    /// A named Terminal hides its launch identity from the visible title, but
-    /// that Action name remains useful search metadata. Visible-title matches
-    /// rank first and carry highlight ranges; hidden-identity matches do not.
-    private func textMatch(
-        _ query: String,
-        identity: SessionIdentity,
-        title: String
-    ) -> Match? {
-        if let titleMatch = QueryMatcher.match(query, in: title) {
-            return Match(query: titleMatch, quality: .title)
-        }
-        guard identity.identityText != title,
-              QueryMatcher.match(query, in: identity.identityText) != nil
-        else { return nil }
-        return Match(query: nil, quality: .identity)
-    }
-
-    private func index(_ digits: String, matches index: Int?) -> Bool {
-        index.map { String($0).hasPrefix(digits) } ?? false
+        if lhsTitle != rhsTitle { return lhsTitle < rhsTitle }
+        let lhsConnection = lhs.ref.connectionID.uuidString
+        let rhsConnection = rhs.ref.connectionID.uuidString
+        if lhsConnection != rhsConnection { return lhsConnection < rhsConnection }
+        return lhs.ref.terminalID < rhs.ref.terminalID
     }
 }

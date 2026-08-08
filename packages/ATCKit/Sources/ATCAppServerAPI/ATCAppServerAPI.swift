@@ -7,21 +7,52 @@
 // (`mise run app-server:openapi`). Nothing in this target is written by hand
 // except this file.
 //
-// Construct a client with the URLSession transport and the ATC date
-// transcoder (the runtime's default `.iso8601` cannot parse the server's
-// fractional-second timestamps):
+// Construct a client through `makeClient(baseURL:bearerToken:)`, which wires
+// the URLSession transport, the ATC date transcoder (the runtime's default
+// `.iso8601` cannot parse the server's fractional-second timestamps), and —
+// when a token is supplied — the bearer-auth middleware that future remote
+// servers will require (the local server ignores the header):
 //
-//     import OpenAPIURLSession
-//
-//     let client = Client(
-//         serverURL: try Servers.Server1.url(),
-//         configuration: Configuration(dateTranscoder: ATCDateTranscoder()),
-//         transport: URLSessionTransport()
-//     )
+//     let client = ATCAppServerAPI.makeClient(baseURL: url, bearerToken: nil)
 //     let health = try await client.getHealth().ok.body.json
 
 import Foundation
+import HTTPTypes
 import OpenAPIRuntime
+import OpenAPIURLSession
+
+/// The documented construction path for a `Client`: URLSession transport,
+/// ATC date transcoder, optional additive bearer auth.
+public func makeClient(baseURL: URL, bearerToken: String?) -> Client {
+    Client(
+        serverURL: baseURL,
+        configuration: Configuration(dateTranscoder: ATCDateTranscoder()),
+        transport: URLSessionTransport(),
+        middlewares: bearerToken.map { [BearerAuthMiddleware(token: $0)] } ?? []
+    )
+}
+
+/// Adds `Authorization: Bearer <token>` to every request. Loopback servers
+/// ignore it today; remote bearer-token access lands additively on this seam.
+public struct BearerAuthMiddleware: ClientMiddleware {
+    private let token: String
+
+    public init(token: String) {
+        self.token = token
+    }
+
+    public func intercept(
+        _ request: HTTPRequest,
+        body: HTTPBody?,
+        baseURL: URL,
+        operationID: String,
+        next: (HTTPRequest, HTTPBody?, URL) async throws -> (HTTPResponse, HTTPBody?)
+    ) async throws -> (HTTPResponse, HTTPBody?) {
+        var request = request
+        request.headerFields[.authorization] = "Bearer \(token)"
+        return try await next(request, body, baseURL)
+    }
+}
 
 /// Transcodes the App Server's `format: date-time` fields. The server emits
 /// `Date.toISOString()` output — RFC 3339 UTC with exactly three fractional

@@ -11,19 +11,12 @@ struct SettingsView: View {
                 ConnectionsSettingsView()
                     .frame(width: Self.windowSize.width, height: Self.windowSize.height)
             }
-            Tab("Actions", systemImage: "bolt") {
-                ActionsSettingsView()
-                    .frame(width: Self.windowSize.width, height: Self.windowSize.height)
-            }
         }
     }
 }
 
 #Preview("Settings") {
-    let store = ConnectionsStore(defaults: UserDefaults(suiteName: "preview.settings.connections")!, credentials: InMemoryCredentialStore())
-    _ = try? store.add(name: "Workstation", urlString: "http://workstation.tail1f9a09.ts.net:7331", token: "")
-    _ = try? store.add(name: "Local Dev", urlString: "http://127.0.0.1:7331", token: "")
-    return SettingsView()
-        .environment(AppModel(connections: store, clientFactory: { _ in MockATCClient() }))
+    SettingsView()
+        .environment(AppModel.preview())
         .preferredColorScheme(.dark)
 }
