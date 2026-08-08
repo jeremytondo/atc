@@ -119,7 +119,6 @@ struct NavigatorSidebar: View {
             ) {
                 windowState.presentNewThread(in: appModel)
             }
-            .padding(.trailing, NavigatorMetrics.contentHorizontalPadding)
         }
         .navigatorListRow(top: Spacing.sm, bottom: Spacing.sm)
     }
@@ -148,9 +147,9 @@ struct NavigatorSidebar: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
-                .padding(.horizontal, Spacing.sm)
+                .padding(.horizontal, Spacing.md)
                 .frame(maxWidth: .infinity, minHeight: NavigatorMetrics.chipSize)
-                .contentShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: Radius.chip, style: .continuous))
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
@@ -166,7 +165,7 @@ struct NavigatorSidebar: View {
                 windowState.isCreateProjectPresented = true
             }
         }
-        .padding(.horizontal, NavigatorMetrics.contentHorizontalPadding)
+        // Flush with the card edges — the chips share the cards' gutter.
         .navigatorListRow(top: Spacing.sm, bottom: Spacing.sm)
     }
 
@@ -196,6 +195,7 @@ struct NavigatorSidebar: View {
         ForEach(limited(items, expanded: isExpanded.wrappedValue)) { item in
             ThreadCard(
                 item: item,
+                reachability: appModel.runtime(id: item.ref.connectionID)?.reachability ?? .unknown,
                 isSelected: windowState.isThreadHighlighted(item.ref),
                 isBusy: inFlightThreads.contains(item.ref),
                 canMutate: appModel.canMutate(connectionID: item.ref.connectionID),
@@ -435,6 +435,7 @@ struct NavigatorSidebar: View {
 /// independently clickable and tabbable when shown.
 private struct ThreadCard: View {
     let item: ThreadListItem
+    let reachability: Reachability
     let isSelected: Bool
     let isBusy: Bool
     let canMutate: Bool
@@ -451,8 +452,8 @@ private struct ThreadCard: View {
     var body: some View {
         let thread = item.thread
         VStack(alignment: .leading, spacing: Spacing.xs) {
-            // Top row: Project name as compact context, actions on the
-            // upper-trailing area per the design.
+            // Top row: Project name as compact context; the trailing area
+            // shows the Connection at rest and the actions on hover/focus.
             HStack(alignment: .center, spacing: Spacing.sm) {
                 Text(item.projectLabel)
                     .font(.caption.weight(.semibold))
@@ -478,28 +479,27 @@ private struct ThreadCard: View {
                         )
                     }
                 } else {
-                    // Reserve the action row's height so the card does not
+                    HStack(spacing: Spacing.xs) {
+                        Text(item.connectionName)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        StatusDot(reachability: reachability, size: .inline)
+                    }
+                    // Match the action chips' height so the card does not
                     // resize under the pointer.
-                    Color.clear.frame(width: 1, height: NavigatorMetrics.actionSize)
+                    .frame(height: NavigatorMetrics.actionSize)
                 }
             }
 
             // The dominant element.
-            HStack(alignment: .firstTextBaseline, spacing: Spacing.xs) {
-                Text(thread.displayName)
-                    .font(.callout.weight(.medium))
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                if thread.activityState == .working {
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .controlSize(.mini)
-                        .accessibilityLabel("Working")
-                }
-            }
+            Text(thread.displayName)
+                .font(.body.weight(.medium))
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
 
             // Bottom metadata row: working directory when it differs from
-            // the Project default; exceptional state and Agent trailing.
+            // the Project default; activity state and Agent trailing.
             HStack(alignment: .center, spacing: Spacing.sm) {
                 if let directory = item.distinctWorkingDirectory {
                     Text(directory)
@@ -509,8 +509,10 @@ private struct ThreadCard: View {
                         .truncationMode(.head)
                 }
                 Spacer(minLength: Spacing.sm)
-                if thread.activityState == .needsInput {
-                    needsInputBadge
+                if let status = thread.activityState.statusLabel {
+                    Text(status)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(thread.activityState.statusColor)
                 }
                 agentBadge
             }
@@ -592,16 +594,6 @@ private struct ThreadCard: View {
         .disabled(!isEnabled)
         .help(help)
         .accessibilityLabel(help)
-    }
-
-    /// Symbol plus text, never color alone — the badge has to read for
-    /// color-blind users and in monochrome accessibility modes. Amber like
-    /// the app's other warnings, per the design.
-    private var needsInputBadge: some View {
-        Label("Needs input", systemImage: "exclamationmark.bubble.fill")
-            .font(.caption.weight(.medium))
-            .labelStyle(.titleAndIcon)
-            .foregroundStyle(.orange)
     }
 
     /// Cards read as bordered containers at rest; selection is the accent

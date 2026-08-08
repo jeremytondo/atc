@@ -18,6 +18,8 @@ struct ThreadListItem: Identifiable, Equatable {
     let thread: ATCThread
     /// Project name, suffixed with the Connection name when ambiguous.
     let projectLabel: String
+    /// The Connection's display name, shown on every card per the design.
+    let connectionName: String
     /// Working directory, present only when it differs from the Project's
     /// default — an identical path is noise on every card.
     let distinctWorkingDirectory: String?
@@ -82,13 +84,14 @@ struct ThreadListModel {
         }
         projects = options
 
-        func item(_ thread: ATCThread, connectionID: UUID) -> ThreadListItem {
-            let projectRef = ProjectRef(connectionID: connectionID, projectID: thread.projectId)
+        func item(_ thread: ATCThread, input: ConnectionInput) -> ThreadListItem {
+            let projectRef = ProjectRef(connectionID: input.connectionID, projectID: thread.projectId)
             let project = projectsByRef[projectRef]
             return ThreadListItem(
-                ref: ThreadRef(connectionID: connectionID, threadID: thread.id),
+                ref: ThreadRef(connectionID: input.connectionID, threadID: thread.id),
                 thread: thread,
                 projectLabel: labelsByRef[projectRef] ?? "Unknown Project",
+                connectionName: input.connectionName,
                 distinctWorkingDirectory: thread.workingDirectory == project?.defaultWorkingDirectory
                     ? nil
                     : thread.workingDirectory
@@ -101,16 +104,16 @@ struct ThreadListModel {
         for input in inputs {
             for thread in input.threads where !thread.isArchived {
                 if thread.isPinned {
-                    pinnedItems.append(item(thread, connectionID: input.connectionID))
+                    pinnedItems.append(item(thread, input: input))
                     continue
                 }
                 guard Self.matches(thread, connectionID: input.connectionID, filter: filter) else {
                     continue
                 }
-                recentItems.append(item(thread, connectionID: input.connectionID))
+                recentItems.append(item(thread, input: input))
             }
             for thread in input.archivedThreads {
-                archivedItems.append(item(thread, connectionID: input.connectionID))
+                archivedItems.append(item(thread, input: input))
             }
         }
 

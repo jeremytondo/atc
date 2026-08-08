@@ -8,9 +8,11 @@ enum NavigatorMetrics {
     static let actionSize: CGFloat = 22
     /// Bordered chip controls: the New Thread compose button, the thread
     /// filter, and New Project.
-    static let chipSize: CGFloat = 28
-    static let horizontalPadding = Spacing.sm
-    static let contentHorizontalPadding = Spacing.sm
+    static let chipSize: CGFloat = 32
+    static let horizontalPadding = Spacing.md
+    /// Keeps plain-row text aligned with card interiors: outer padding plus
+    /// this equals the outer padding plus a card's internal padding.
+    static let contentHorizontalPadding = Spacing.md
     static let rowVerticalInset: CGFloat = 1
 }
 
@@ -137,7 +139,7 @@ struct NavigatorChipButton: View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .frame(width: NavigatorMetrics.chipSize, height: NavigatorMetrics.chipSize)
-                .contentShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: Radius.chip, style: .continuous))
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
@@ -216,15 +218,15 @@ extension View {
     }
 
     /// The bordered chip surface shared by the filter dropdown and chip
-    /// buttons: a faint fill with a hairline stroke, visible at rest.
+    /// buttons: a faint fill with a clearly visible stroke, present at rest.
     func navigatorChipSurface() -> some View {
         background {
-            RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
-                .fill(Color.white.opacity(0.05))
+            RoundedRectangle(cornerRadius: Radius.chip, style: .continuous)
+                .fill(Color.white.opacity(0.06))
         }
         .overlay {
-            RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.08))
+            RoundedRectangle(cornerRadius: Radius.chip, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.12))
         }
     }
 }
