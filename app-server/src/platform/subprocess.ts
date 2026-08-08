@@ -11,6 +11,7 @@ import {
   Stream,
 } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
+import { spawn as nodeSpawn } from "node:child_process"
 
 // The generic subprocess seam: how the App Server launches and supervises
 // child processes. Children are acquired in Scopes, so closing the scope —
@@ -116,6 +117,16 @@ export class Subprocess extends Context.Service<
      * escalating to SIGKILL) and releases the PTY.
      */
     readonly spawnPty: (spec: PtySpawnSpec) => Effect.Effect<PtyChild, SubprocessError, Scope.Scope>
+    /**
+     * The one deliberate exception to scope ownership: spawn a child meant
+     * to OUTLIVE this process (`atc start`'s background server). Detached
+     * session, stdio ignored, environment inherited; returns the pid. The
+     * caller owns liveness from here — nothing supervises the child.
+     */
+    readonly spawnDetached: (spec: {
+      readonly executable: string
+      readonly args?: ReadonlyArray<string>
+    }) => Effect.Effect<number, SubprocessError>
   }
 >()("app-server/Subprocess") {}
 
@@ -138,6 +149,36 @@ export const isProcessAlive = (pid: number): boolean => {
     return false
   }
 }
+
+/**
+ * Whether `pid`'s argv contains `token` as an exact whitespace-delimited
+ * word — the one pid-recycling guard used before signaling any process we
+ * only know by number. A substring would match any command whose path
+ * merely contains the token. `ps` exits non-zero for a missing pid, and any
+ * failure lands in the false branch: an unverifiable pid is never signaled.
+ */
+export const processHasArgvToken = (
+  subprocess: Subprocess["Service"],
+  pid: number,
+  token: string,
+): Effect.Effect<boolean> =>
+  Effect.gen(function* () {
+    const ps = yield* subprocess.spawn({
+      executable: "ps",
+      args: ["-p", String(pid), "-o", "command="],
+      env: {},
+      extendEnv: true,
+    })
+    const lines = yield* Stream.runCollect(ps.stdoutLines)
+    yield* ps.exitCode
+    return lines
+      .join(" ")
+      .split(/\s+/)
+      .some((word) => word === token)
+  }).pipe(
+    Effect.scoped,
+    Effect.orElseSucceed(() => false),
+  )
 
 /**
  * Poll until `pid` is gone; resolves to whether it exited within the window.
@@ -380,9 +421,42 @@ const spawnPty = Effect.fnUntraced(function* (spec: PtySpawnSpec) {
   return child
 })
 
+// node:child_process rather than Bun.spawn: only it offers `detached`
+// (its own session, immune to the parent's terminal lifetime). Spawn
+// failures for a bad executable surface on the child's async error event,
+// not as a throw — the caller's bounded health wait is what detects a
+// child that died immediately.
+const spawnDetached = (spec: {
+  readonly executable: string
+  readonly args?: ReadonlyArray<string>
+}) =>
+  Effect.try({
+    try: () => {
+      const child = nodeSpawn(spec.executable, [...(spec.args ?? [])], {
+        detached: true,
+        stdio: "ignore",
+      })
+      // An EventEmitter with no error listener re-throws asynchronously and
+      // would crash this process; the missing-pid check below is the actual
+      // fast-fail, and anything later is the caller's bounded-wait problem.
+      child.on("error", () => {})
+      if (child.pid === undefined) {
+        throw new Error("the child reported no pid")
+      }
+      child.unref()
+      return child.pid
+    },
+    catch: (error) =>
+      new SubprocessError({
+        executable: spec.executable,
+        operation: "spawn",
+        message: error instanceof Error ? error.message : String(error),
+      }),
+  })
+
 export const layer = Layer.effect(Subprocess)(
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-    return { spawn: (spec) => spawn(spawner, spec), spawnPty }
+    return { spawn: (spec) => spawn(spawner, spec), spawnPty, spawnDetached }
   }),
 )
