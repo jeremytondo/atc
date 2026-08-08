@@ -16,6 +16,12 @@
       "expect": "ws://127.0.0.1:7332/api/v1/terminals/abc/attach"
     },
     {
+      "name": "trailing slash on the base does not double the path",
+      "base": "http://127.0.0.1:7332/",
+      "terminalId": "abc",
+      "expect": "ws://127.0.0.1:7332/api/v1/terminals/abc/attach"
+    },
+    {
       "name": "https base becomes wss",
       "base": "https://example.test:8443",
       "terminalId": "abc",

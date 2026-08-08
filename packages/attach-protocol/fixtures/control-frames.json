@@ -21,6 +21,7 @@
     { "name": "unknown type", "wire": "{\"type\":\"scroll\",\"lines\":3}" },
     { "name": "resize missing rows", "wire": "{\"type\":\"resize\",\"cols\":120}" },
     { "name": "resize with string dimensions", "wire": "{\"type\":\"resize\",\"cols\":\"120\",\"rows\":\"40\"}" },
+    { "name": "resize with boolean dimensions", "wire": "{\"type\":\"resize\",\"cols\":true,\"rows\":false}" },
     { "name": "not json", "wire": "resize 120 40" },
     { "name": "json but not an object", "wire": "42" },
     { "name": "empty string", "wire": "" }
