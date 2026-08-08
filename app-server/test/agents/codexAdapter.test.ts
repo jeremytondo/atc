@@ -426,8 +426,11 @@ describe("CodexAdapter TUI session plumbing", () => {
             Effect.gen(function* () {
               const prepared = yield* adapter.prepareTuiSession({ cwd: sandbox.cwd })
               assert.strictEqual(prepared.launchSpec.command[0], sandbox.wrapper)
-              assert.strictEqual(prepared.launchSpec.command[1], "--remote")
-              const url = prepared.launchSpec.command[2] ?? ""
+              // --cd pins the thread's cwd server-side: the remote TUI does
+              // not forward its own working directory (codex 0.146.0).
+              assert.deepStrictEqual(prepared.launchSpec.command.slice(1, 3), ["--cd", sandbox.cwd])
+              assert.strictEqual(prepared.launchSpec.command[3], "--remote")
+              const url = prepared.launchSpec.command[4] ?? ""
               assert.match(url, /^ws:\/\/127\.0\.0\.1:\d+$/)
 
               // The launched TUI stand-in bootstraps a thread in the cwd.
@@ -454,7 +457,7 @@ describe("CodexAdapter TUI session plumbing", () => {
           Effect.scoped(
             Effect.gen(function* () {
               const prepared = yield* adapter.prepareTuiSession({ cwd: sandbox.cwd })
-              const url = prepared.launchSpec.command[2] ?? ""
+              const url = prepared.launchSpec.command[4] ?? ""
               const external = yield* openExternal(url)
               // Another client's thread in a different cwd is not ours.
               const foreignId = yield* startExternalThread(external, 1, otherCwd)

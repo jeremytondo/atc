@@ -266,6 +266,11 @@ export const layerWith = (options: CodexServerOptions) =>
               env: {},
               // The server needs the user's full environment (auth state).
               extendEnv: true,
+              // A fixed, neutral cwd: the detached server outlives ATC, and
+              // codex uses the server's cwd as the default for threads whose
+              // client did not send one — an inherited launch cwd would leak
+              // into those threads (and pin a project directory open).
+              cwd: config.stateDir,
             })
             const lines = yield* Stream.runCollect(child.stdoutLines)
             yield* child.exitCode
