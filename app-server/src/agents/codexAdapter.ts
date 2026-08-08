@@ -758,7 +758,14 @@ export const layer = Layer.effect(CodexAdapter)(
             }),
           )
           return {
-            launchSpec: { command: [executable, "--remote", info.url], env: {} },
+            // --cd is load-bearing: in --remote mode the TUI does not forward
+            // its own working directory, so without it the app-server stamps
+            // the new thread with ITS process cwd and the capture's cwd match
+            // below can never adopt the thread (observed on codex 0.146.0).
+            launchSpec: {
+              command: [executable, "--cd", options.cwd, "--remote", info.url],
+              env: {},
+            },
             identity: Deferred.await(gate),
           }
         }),
