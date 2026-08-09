@@ -135,6 +135,9 @@ validate_github_auth
 
 mkdir -p "$RUN_DIR" "$EXPORT_PATH" "$DERIVED_DATA_PATH" "$SOURCE_PACKAGES_PATH" "$DMG_ROOT"
 
+log "Generating App Server API sources for Xcode"
+"$SCRIPT_DIR/prepare-xcode-openapi.sh" "$DERIVED_DATA_PATH"
+
 XCODE_OVERRIDES=(
   "ARCHS=arm64"
   "ONLY_ACTIVE_ARCH=NO"
