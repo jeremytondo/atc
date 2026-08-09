@@ -27,6 +27,7 @@ coverage/
 .cache/
 .bun/
 *.tsbuildinfo
+.svelte-kit/
 
 # Logs
 *.log

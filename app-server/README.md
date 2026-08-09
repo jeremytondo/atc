@@ -15,7 +15,7 @@ mise run fmt:check     # fail if formatting is needed
 mise run typecheck     # strict TypeScript type check
 mise run openapi       # regenerate the checked-in OpenAPI artifact (openapi.json)
 mise run openapi:check # fail if openapi.json is stale relative to the contract
-mise run check         # standing CI gates: fmt:check + typecheck + test + openapi:check
+mise run check         # standing CI gates: fmt:check + typecheck + test + openapi:check + web:assets:check
 mise run build         # compile the standalone atc executable (dist/atc-<os>-<arch>)
 mise run build:all     # cross-compile all four release targets
 mise run test:compiled # black-box tests of the compiled artifact (builds first)
@@ -116,9 +116,29 @@ module header has the full reasoning). Remote browser access to the Web UI
 stays unsupported — browsers cannot attach bearer headers to SSE or
 WebSockets.
 
+## Admin UI
+
+A running server serves a small read-only console at its base URL
+(`http://127.0.0.1:7332/`): a health/build overview at `/`, and the full API
+reference (Scalar over `openapi.json`) at `/docs`. It is an admin surface for
+observing the server and reading the docs, not an API client.
+
+The UI is a prerendered SvelteKit app in [`web/`](web). Its build output
+(`web/build/`) and the embed manifest that compiles it into the executable are
+committed, so building or running the server never needs the web toolchain.
+After changing `web/src`, run:
+
+```sh
+mise run web:dev          # UI dev server with /api proxied to a running App Server
+mise run web:check        # svelte-check over the UI source
+mise run web:build        # rebuild web/build and the embed manifest — commit the result
+```
+
 ## Structure
 
-One Bun package, one `package.json`, one committed `bun.lock`. Runtime
+One Bun package, one `package.json`, one committed `bun.lock` — plus the
+deliberately separate admin UI toolchain under `web/` (its own lockfile, only
+needed when changing the UI). Runtime
 dependencies are pinned exactly and kept minimal: `effect` (the application
 spine — HTTP, CLI, Schema, concurrency), `@effect/platform-bun` (the Bun
 adapter), and `@anthropic-ai/claude-agent-sdk` (the Claude provider seam),

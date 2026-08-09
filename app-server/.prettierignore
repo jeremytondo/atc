@@ -1,2 +1,6 @@
 bun.lock
 openapi.json
+src/adminUi/manifest.generated.ts
+web/build
+web/bun.lock
+web/.svelte-kit

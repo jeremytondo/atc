@@ -3,6 +3,7 @@ import { Effect, Layer } from "effect"
 import { HttpMiddleware, HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { Api } from "./api/contract.ts"
+import * as AdminUi from "./adminUi/adminUi.ts"
 import * as AgentRegistry from "./agents/agentRegistry.ts"
 import * as AuthToken from "./platform/authToken.ts"
 import * as ClaudeAdapter from "./agents/claudeAdapter.ts"
@@ -40,12 +41,14 @@ const openApiRoute = HttpRouter.add(
  * Requires the handler services (BuildInfo, Projects, Directories, Terminals,
  * Threads, ClaudeHooks) plus AuthToken for the guard's bearer check. The
  * Claude hook webhook is an internal route (claudeHooks.ts), deliberately
- * outside the contract.
+ * outside the contract. The admin UI rides a GET wildcard, which the router
+ * only consults after every static route misses.
  */
 export const routes = Layer.mergeAll(
   HttpApiBuilder.layer(Api).pipe(Layer.provide(V1Handlers)),
   openApiRoute,
   ClaudeHooks.route,
+  AdminUi.route,
   LocalTrust.middleware,
 )
 
