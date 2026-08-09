@@ -70,7 +70,7 @@ struct ClientTests {
 
     @Test("the default server is the local loopback App Server")
     func defaultServer() throws {
-        #expect(try Servers.Server1.url() == URL(string: "http://127.0.0.1:7332"))
+        #expect(try Servers.Server1.url() == URL(string: "http://127.0.0.1:7331"))
     }
 
     // The bearer-auth seam remote servers will rely on: the middleware must
@@ -82,7 +82,7 @@ struct ClientTests {
         _ = try await middleware.intercept(
             HTTPRequest(method: .get, scheme: nil, authority: nil, path: "/api/v1/health"),
             body: nil,
-            baseURL: URL(string: "http://127.0.0.1:7332")!,
+            baseURL: URL(string: "http://127.0.0.1:7331")!,
             operationID: "getHealth"
         ) { request, body, _ in
             forwarded = request

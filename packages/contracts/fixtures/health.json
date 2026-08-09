@@ -1,6 +1,0 @@
-{
-  "routes": ["GET /health"],
-  "response": {
-    "status": "ok"
-  }
-}

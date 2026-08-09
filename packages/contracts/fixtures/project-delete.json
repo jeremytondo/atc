@@ -1,6 +1,0 @@
-{
-  "routes": [
-    "DELETE /projects/{id}"
-  ],
-  "response": {}
-}

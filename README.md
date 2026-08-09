@@ -7,10 +7,22 @@ native client apps that attach to it.
 The server is useful on its own — no native client required. It runs on the
 workstation where your terminal sessions live.
 
-Two directories hold servers, which their names do not make obvious:
-[`app-server/`](app-server/) is the active implementation (TypeScript, Effect +
-Bun) and owns the `atc` CLI, while [`server/`](server/) is the legacy Go server
-being migrated away from.
+The server and `atc` CLI live in [`app-server/`](app-server/) (TypeScript,
+Effect + Bun).
+
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jeremytondo/atc/main/install.sh | sh
+```
+
+This downloads the latest GitHub Release for your platform, verifies its
+checksum, and installs `atc` to `~/.local/bin` (`ATC_INSTALL_DIR` overrides).
+Run `atc service install` to start it as a login service, or `atc serve` for
+the foreground. A running server serves its console at
+`http://127.0.0.1:7331/` and the API reference at `/docs`. To update,
+re-run the installer, then `atc service install` again — it restarts the
+service onto the new binary.
 
 ## Development
 
@@ -21,9 +33,9 @@ Tasks run with [mise](https://mise.jdx.dev), which also installs the pinned
 toolchains. `mise tasks` lists everything; from the repo root:
 
 ```sh
-mise run dev            # run the App Server in the foreground (http://127.0.0.1:7332)
+mise run dev            # run the App Server in the foreground (http://127.0.0.1:7331)
 mise run install        # build the App Server and install it as ~/.local/bin/atc
-mise run check          # every gate: Go server, web, App Server, ATCKit, macOS app
+mise run check          # every gate: App Server, ATCKit, macOS app
 mise run test           # every test suite
 mise run refs           # fetch read-only reference source into repos/ (gitignored)
 ```
@@ -32,7 +44,6 @@ Working on one surface? Run only its gate:
 
 ```sh
 mise run app-server:check   # fmt, typecheck, tests, OpenAPI drift
-mise run server:check       # gofmt, go vet, Go tests, web type check
 mise run kit:test           # ATCKit package tests
 mise run macos:test         # macOS app tests
 mise run contract:check     # after any API contract change
@@ -51,7 +62,6 @@ green build.
 - [`app-server/README.md`](app-server/README.md) — server and CLI setup,
   configuration, and data locations.
 - [`macos/README.md`](macos/README.md) — macOS app configuration.
-- [`server/README.md`](server/README.md) — the legacy Go server.
 
 Subsystem architecture is documented in module header comments, next to the
 code it describes, rather than in this file.

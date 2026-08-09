@@ -1,9 +1,8 @@
 # atc Agent Instructions
 
 atc is a standalone server that owns Projects and Terminal Sessions, plus
-native clients that attach to it. The TypeScript App Server (`app-server/`,
-Effect + Bun) is the active implementation; `server/` is the legacy Go server
-still being migrated away from.
+native clients that attach to it. The server and `atc` CLI live in
+`app-server/` (TypeScript, Effect + Bun).
 
 This file holds what you cannot learn by reading the code: priorities, taste,
 protocol, and the invariants that are invisible from the call site.
@@ -79,7 +78,9 @@ should enforce an API-to-CLI mapping.
    you did not create.
 3. **Editing generated output.** `app-server/openapi.json` is generated from
    the contract, and `packages/ATCKit/Sources/ATCAppServerAPI/openapi.json` is
-   a symlink to it. Regenerate; never hand-edit either.
+   a symlink to it. The admin UI build (`app-server/web/build/`) and its embed
+   manifest (`app-server/src/adminUi/manifest.generated.ts`) come from
+   `mise run -C app-server web:build`. Regenerate; never hand-edit any of them.
 4. **Killing by pattern.** No `pkill -f` / `pgrep | kill`. Your own agent
    process carries this repo's path in its argv. Kill only a PID you captured
    at spawn.
@@ -209,9 +210,10 @@ Rules you cannot infer from the file you are editing.
 - **zmx is reached only through the `TerminalAdapter` seam.** Tests point
   `ATC_ZMX_EXECUTABLE` at `test/fixtures/fake-zmx.ts`; policy and transports
   live above the seam.
-- **Trust is loopback-only.** One HTTP-over-TCP transport bound to 127.0.0.1
-  with `Host`/`Origin` validation. Remote access will add bearer tokens purely
-  additively; non-loopback binding stays refused until then.
+- **Trust is loopback-or-token.** One HTTP-over-TCP transport, loopback-bound
+  by default with `Host`/`Origin` validation; the `bind` setting opens it and
+  the bearer token gates every non-loopback request (localTrust.ts owns the
+  rule — change it only there).
 
 ## Reference Apps
 

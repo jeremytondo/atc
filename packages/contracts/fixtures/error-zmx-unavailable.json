@@ -1,7 +1,0 @@
-{
-  "routes": [],
-  "response": {
-    "error": "zmx_unavailable",
-    "message": "zmx session inventory is unavailable"
-  }
-}

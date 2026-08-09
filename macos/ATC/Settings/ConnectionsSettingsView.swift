@@ -313,7 +313,7 @@ private struct ConnectionEditorView: View {
         case .emptyName:
             return "Enter a name for this connection."
         case .invalidURL:
-            return "Enter a valid URL, including scheme — e.g. http://127.0.0.1:7332"
+            return "Enter a valid URL, including scheme — e.g. http://127.0.0.1:7331"
         case .duplicate:
             return "Another connection already uses this host and port."
         case .notFound:
