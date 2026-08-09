@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, describe, expect, test } from "vitest"
@@ -7,6 +7,8 @@ import {
   cleanupTempDirs,
   freePort,
   isolatedEnv,
+  rawStatus,
+  runCli,
   spawnServe,
   waitForHealth,
 } from "../blackbox.ts"
@@ -82,6 +84,65 @@ describe("atc serve (black box)", () => {
     },
     30_000,
   )
+
+  // The remote-access trust rule (ATC-148) end to end: the real server
+  // generates the credential at startup, enforces it for any non-loopback
+  // Host, and honors a CLI rotation immediately — no restart. A loopback
+  // connection with a non-loopback Host is the shape both a proxied request
+  // (`tailscale serve` preserves the incoming Host) and a DNS-rebinding
+  // attempt present, so the token is required for it by design.
+  test("generates the auth token on start and enforces rotation live", async () => {
+    const port = await freePort()
+    const env = serveEnv()
+    const proc = spawnFromSource(port, env)
+    try {
+      await waitForHealth(`http://127.0.0.1:${port}`, proc)
+
+      const tokenFile = `${env.XDG_DATA_HOME}/atc/auth-token`
+      expect(statSync(tokenFile).mode & 0o777).toBe(0o600)
+      const token = readFileSync(tokenFile, "utf8").trim()
+      expect(token).toMatch(/^atc_/)
+
+      const remoteHost = "Host: workstation.tailnet:7332"
+      expect(await rawStatus(port, [remoteHost])).toBe(403)
+      expect(await rawStatus(port, [remoteHost, `Authorization: Bearer ${token}`])).toBe(200)
+
+      const rotated = await runCli(
+        [process.execPath, "src/main.ts"],
+        ["token", "rotate"],
+        appServerRoot,
+        env,
+      )
+      expect(rotated.exitCode).toBe(0)
+      const newToken = rotated.stdout.trim()
+      expect(newToken).not.toBe(token)
+      expect(await rawStatus(port, [remoteHost, `Authorization: Bearer ${token}`])).toBe(403)
+      expect(await rawStatus(port, [remoteHost, `Authorization: Bearer ${newToken}`])).toBe(200)
+    } finally {
+      proc.kill()
+      await proc.exited
+    }
+  }, 30_000)
+
+  // `--bind 0.0.0.0` opens the listener beyond loopback while loopback still
+  // answers (0.0.0.0 includes it), so local clients keep working. Exercises
+  // the serve.ts flag-resolution path end to end.
+  test("serves over loopback when bound to 0.0.0.0 via --bind", async () => {
+    const port = await freePort()
+    const base = `http://127.0.0.1:${port}`
+    const proc = Bun.spawn(
+      [process.execPath, "src/main.ts", "serve", "--port", String(port), "--bind", "0.0.0.0"],
+      { cwd: appServerRoot, env: serveEnv(), stdout: "pipe", stderr: "pipe" },
+    )
+    try {
+      const health = await waitForHealth(base, proc)
+      expect(health.status).toBe(200)
+      expect(await health.json()).toEqual({ status: "ok" })
+    } finally {
+      proc.kill()
+      await proc.exited
+    }
+  }, 30_000)
 
   test("fails with one friendly stderr line when the port is taken", async () => {
     const occupant = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") })

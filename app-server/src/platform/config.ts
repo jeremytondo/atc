@@ -57,6 +57,14 @@ export class AppConfig extends Context.Service<
     /** TCP port the server listens on / the CLI connects to. */
     readonly port: number
     /**
+     * Address the server binds. Default 127.0.0.1 (loopback only). The
+     * practical non-loopback value is 0.0.0.0: binding a single non-loopback
+     * address drops the loopback listener and breaks local clients (zmx
+     * children, the `atc start` health probe, the Web UI). Documented, not
+     * policed — any address is accepted.
+     */
+    readonly bind: string
+    /**
      * App Server base URL from ATC_ENDPOINT (set for processes ATC
      * launches); undefined means "derive from the local port". Environment
      * only — never a config-file key, because it describes the launching
@@ -75,6 +83,8 @@ export class AppConfig extends Context.Service<
     readonly stateDir: string
     /** SQLite database file path. */
     readonly dbFile: string
+    /** Bearer token file path (remote-access credential; 0600 in dataDir). */
+    readonly tokenFile: string
     /** Structured JSON log file path. */
     readonly logFile: string
     /** Background-service pidfile path (written by `atc start`). */
@@ -116,6 +126,7 @@ const configFilePath = (env: Env) =>
 // falling back to a default would be a partial boot).
 const FILE_KEYS = [
   "port",
+  "bind",
   "logLevel",
   "dataDir",
   "zmxExecutable",
@@ -226,6 +237,7 @@ export const load = (
 
     const settings = yield* Config.all({
       port: Config.port("port").pipe(Config.withDefault(DEFAULT_PORT)),
+      bind: Config.string("bind").pipe(Config.withDefault("127.0.0.1")),
       logLevel: logLevelConfig,
       dataDir: Config.string("dataDir").pipe(
         Config.withDefault(xdgDir(env, "XDG_DATA_HOME", [".local", "share"])),
@@ -296,6 +308,7 @@ export const load = (
     )
     return {
       port: settings.port,
+      bind: settings.bind,
       endpoint,
       context,
       logLevel: settings.logLevel,
@@ -303,6 +316,7 @@ export const load = (
       dataDir,
       stateDir,
       dbFile: path.join(dataDir, "atc.db"),
+      tokenFile: path.join(dataDir, "auth-token"),
       logFile: path.join(stateDir, "atc.log"),
       pidFile: path.join(stateDir, "atc.pid"),
       zmxExecutable: settings.zmxExecutable,

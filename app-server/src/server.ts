@@ -1,9 +1,10 @@
 import { BunHttpServer } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
-import { HttpMiddleware, HttpRouter, HttpServerResponse } from "effect/unstable/http"
+import { HttpMiddleware, HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { Api } from "./api/contract.ts"
 import * as AgentRegistry from "./agents/agentRegistry.ts"
+import * as AuthToken from "./platform/authToken.ts"
 import * as ClaudeAdapter from "./agents/claudeAdapter.ts"
 import * as ClaudeHooks from "./agents/claudeHooks.ts"
 import * as CodexAdapter from "./agents/codexAdapter.ts"
@@ -35,10 +36,11 @@ const openApiRoute = HttpRouter.add(
 )
 
 /**
- * All HTTP routes with the local-trust guard applied, independent of any
- * listener. Requires the handler services (BuildInfo, Projects, Directories,
- * Terminals, Threads, ClaudeHooks). The Claude hook webhook is an internal
- * route (claudeHooks.ts), deliberately outside the contract.
+ * All HTTP routes with the trust guard applied, independent of any listener.
+ * Requires the handler services (BuildInfo, Projects, Directories, Terminals,
+ * Threads, ClaudeHooks) plus AuthToken for the guard's bearer check. The
+ * Claude hook webhook is an internal route (claudeHooks.ts), deliberately
+ * outside the contract.
  */
 export const routes = Layer.mergeAll(
   HttpApiBuilder.layer(Api).pipe(Layer.provide(V1Handlers)),
@@ -65,19 +67,36 @@ const drainEventsBeforeStop = Layer.effectDiscard(
   }),
 )
 
+/** IPv6 literals need brackets to form a valid URL host (`[::1]:7332`). */
+export const hostForUrl = (host: string): string => (host.includes(":") ? `[${host}]` : host)
+
+// The resolved listen address, logged once the listener is up: with `bind`
+// configurable, the file log must record what the server actually bound.
+const logListenAddress = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const server = yield* HttpServer.HttpServer
+    const address = server.address
+    if (address._tag === "TcpAddress") {
+      yield* Effect.logInfo(`listening on http://${hostForUrl(address.hostname)}:${address.port}`)
+    }
+  }),
+)
+
 /**
- * The full server: guarded routes on a loopback TCP listener, each request
- * wrapped in a tracer span (the correlation id source for logs). The layer's
- * scope owns the listener, so closing the scope (e.g. on SIGINT/SIGTERM
- * interruption) stops the server and releases the port.
+ * The full server: guarded routes on a TCP listener bound to `hostname`
+ * (loopback by default; the `bind` setting opens it — see localTrust.ts for
+ * the trust rule), each request wrapped in a tracer span (the correlation id
+ * source for logs). The layer's scope owns the listener, so closing the
+ * scope (e.g. on SIGINT/SIGTERM interruption) stops the server and releases
+ * the port.
  */
-export const layer = (options: { readonly port: number }) =>
-  drainEventsBeforeStop.pipe(
+export const layer = (options: { readonly port: number; readonly hostname?: string }) =>
+  Layer.mergeAll(drainEventsBeforeStop, logListenAddress).pipe(
     Layer.provideMerge(HttpRouter.serve(routes, { middleware: HttpMiddleware.tracer })),
     Layer.provideMerge(
       BunHttpServer.layer({
         port: options.port,
-        hostname: "127.0.0.1",
+        hostname: options.hostname ?? "127.0.0.1",
         // Bun never finishes a graceful stop once the server has initiated
         // a WebSocket close (the connection stays in its bookkeeping), so a
         // long grace period turns every shutdown after a terminal attach
@@ -98,8 +117,9 @@ export const layer = (options: { readonly port: number }) =>
  * layers. What remains open are the process-level services — AppConfig,
  * Subprocess, and the Bun runtime — supplied by the entrypoint.
  */
-export const production = (options: { readonly port: number }) =>
+export const production = (options: { readonly port: number; readonly hostname?: string }) =>
   layer(options).pipe(
+    Layer.provide(AuthToken.layer),
     Layer.provide([Projects.layer, Threads.layer]),
     Layer.provide([Terminals.layer, AgentRegistry.layer]),
     // Below Terminals (the deepest publisher) so one memoized Events instance

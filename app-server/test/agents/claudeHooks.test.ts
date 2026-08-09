@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest"
 import { BunHttpServer } from "@effect/platform-bun"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Option } from "effect"
 import { HttpBody, HttpClientRequest, HttpRouter, HttpServerRequest } from "effect/unstable/http"
 import * as fs from "node:fs"
 import { fileURLToPath } from "node:url"
@@ -8,7 +8,7 @@ import type { AgentActivity } from "../../src/agents/agentAdapter.ts"
 import * as ClaudeHooks from "../../src/agents/claudeHooks.ts"
 import * as Server from "../../src/server.ts"
 import { TestBuildInfoLayer } from "../testBuildInfo.ts"
-import { TestRepositoryLayers } from "../testLayers.ts"
+import { TestAuthTokenLayer, TestRepositoryLayers } from "../testLayers.ts"
 
 // The Claude hook receiver, exercised with payloads RECORDED from a real
 // Claude Code 2.1.221 run (fixtures/claude-hook-payloads.json): secret
@@ -117,7 +117,7 @@ describe("claude hook webhook delivery", () => {
                   HttpClientRequest.setHeader(ClaudeHooks.SECRET_HEADER, headerSecret),
                   HttpClientRequest.setBody(HttpBody.jsonUnsafe(recorded[3])),
                 ),
-              ),
+              ).modify({ remoteAddress: Option.some("127.0.0.1") }),
             ),
             Effect.provideService(ClaudeHooks.ClaudeHooks, hooks),
             Effect.orDie,
@@ -126,6 +126,8 @@ describe("claude hook webhook delivery", () => {
         assert.deepStrictEqual(seen, ["idle"])
         assert.strictEqual((yield* post("bogus")).status, 404)
       }),
-    ).pipe(Effect.provide([ClaudeHooks.layer, BunHttpServer.layerHttpServices])),
+    ).pipe(
+      Effect.provide([ClaudeHooks.layer, TestAuthTokenLayer, BunHttpServer.layerHttpServices]),
+    ),
   )
 })

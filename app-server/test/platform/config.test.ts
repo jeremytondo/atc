@@ -36,11 +36,13 @@ describe("configuration", () => {
     Effect.gen(function* () {
       const config = yield* load({})
       assert.strictEqual(config.port, DEFAULT_PORT)
+      assert.strictEqual(config.bind, "127.0.0.1")
       assert.strictEqual(config.logLevel, "Info")
       assert.strictEqual(config.configFile, join(home, ".config", "atc", "config.toml"))
       assert.strictEqual(config.dataDir, join(home, ".local", "share", "atc"))
       assert.strictEqual(config.stateDir, join(home, ".local", "state", "atc"))
       assert.strictEqual(config.dbFile, join(home, ".local", "share", "atc", "atc.db"))
+      assert.strictEqual(config.tokenFile, join(home, ".local", "share", "atc", "auth-token"))
       assert.strictEqual(config.logFile, join(home, ".local", "state", "atc", "atc.log"))
       assert.strictEqual(config.zmxExecutable, "zmx")
       assert.strictEqual(config.codexExecutable, "codex")
@@ -112,25 +114,31 @@ describe("configuration", () => {
 
   it.effect("config file values apply when the environment is silent", () =>
     Effect.gen(function* () {
-      const file = writeConfig(`port = 9100\nlogLevel = "debug"\ndataDir = "${scratch}/d"\n`)
+      const file = writeConfig(
+        `port = 9100\nbind = "0.0.0.0"\nlogLevel = "debug"\ndataDir = "${scratch}/d"\n`,
+      )
       const config = yield* load({ ATC_CONFIG: file })
       assert.strictEqual(config.port, 9100)
+      assert.strictEqual(config.bind, "0.0.0.0")
       assert.strictEqual(config.logLevel, "Debug")
       assert.strictEqual(config.dataDir, `${scratch}/d`)
       assert.strictEqual(config.dbFile, `${scratch}/d/atc.db`)
+      assert.strictEqual(config.tokenFile, `${scratch}/d/auth-token`)
     }),
   )
 
   it.effect("environment beats the config file", () =>
     Effect.gen(function* () {
-      const file = writeConfig(`port = 9100\nlogLevel = "debug"\n`)
+      const file = writeConfig(`port = 9100\nbind = "0.0.0.0"\nlogLevel = "debug"\n`)
       const config = yield* load({
         ATC_CONFIG: file,
         ATC_PORT: "9200",
+        ATC_BIND: "100.64.0.7",
         ATC_LOG_LEVEL: "warn",
         ATC_DATA_DIR: join(scratch, "env-data"),
       })
       assert.strictEqual(config.port, 9200)
+      assert.strictEqual(config.bind, "100.64.0.7")
       assert.strictEqual(config.logLevel, "Warn")
       assert.strictEqual(config.dataDir, join(scratch, "env-data"))
     }),

@@ -97,6 +97,41 @@ describe("atc start / stop / status (black box)", () => {
     expect(stopAgain.stdout).toContain("not running")
   }, 60_000)
 
+  // The release before ATC-148 wrote `{ pid, port }` pidfiles (no bind).
+  // `stop` proving it decodes the old shape — dead pid, so it removes the
+  // stale file rather than reporting "not running" from a failed decode —
+  // is what keeps upgrades able to manage a server the old binary started.
+  test("a pre-bind pidfile ({ pid, port }) still decodes", async () => {
+    const shortLived = Bun.spawn(["sh", "-c", "exit 0"])
+    await shortLived.exited
+    mkdirSync(join(env.XDG_STATE_HOME, "atc"), { recursive: true })
+    writeFileSync(pidFile, JSON.stringify({ pid: shortLived.pid, port: 1 }))
+
+    const stopped = await cli("stop")
+    expect(stopped.exitCode).toBe(0)
+    expect(stopped.stdout).toContain("removed a stale pidfile")
+    expect(existsSync(pidFile)).toBe(false)
+  }, 60_000)
+
+  // A specific (non-wildcard) bind: probes and reported URLs target the bind
+  // itself, and IPv6 literals come out bracketed.
+  test("start/status/stop manage a server bound to a specific address (::1)", async () => {
+    const port = await freePort()
+    const started = await cli("start", "--port", String(port), "--bind", "::1")
+    expect(started.stderr).toBe("")
+    expect(started.exitCode).toBe(0)
+    expect(started.stdout).toContain(`http://[::1]:${port}`)
+    const record = JSON.parse(readFileSync(pidFile, "utf8")) as { pid: number }
+    startedPids.push(record.pid)
+
+    const status = await cli("status")
+    expect(status.exitCode).toBe(0)
+    expect(status.stdout).toContain(`http://[::1]:${port}`)
+
+    const stopped = await cli("stop")
+    expect(stopped.exitCode).toBe(0)
+  }, 60_000)
+
   test("a stale pidfile is replaced by start and reported by status", async () => {
     // A pid that existed and is certainly gone now. The pidfile's parent
     // exists regardless of test order.

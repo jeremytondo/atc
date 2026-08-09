@@ -1,15 +1,16 @@
 import { assert, describe, it } from "@effect/vitest"
 import { BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
-import { isLoopbackHost, isLoopbackOrigin } from "../../src/api/localTrust.ts"
+import { isLoopbackAddress, isLoopbackHost, isLoopbackOrigin } from "../../src/api/localTrust.ts"
 import { openApiJson } from "../../src/api/openapi.ts"
 import * as Server from "../../src/server.ts"
-import { freePort } from "../blackbox.ts"
+import { freePort, rawStatus } from "../blackbox.ts"
 import { TestBuildInfoLayer } from "../testBuildInfo.ts"
-import { TestRepositoryLayers } from "../testLayers.ts"
+import { TEST_AUTH_TOKEN, TestRepositoryLayers } from "../testLayers.ts"
 
-// Listener hardening: spoofed-Host / cross-Origin requests are rejected with
-// 403 while ordinary local requests pass. Runs against a real loopback
+// Listener trust: spoofed-Host / cross-Origin requests are rejected with 403
+// while ordinary local requests pass, and non-loopback requests pass exactly
+// when they present the bearer token (ATC-148). Runs against a real loopback
 // listener because the guard sits on the HTTP layer, not in the handlers.
 
 const withServer = <A, E, R>(run: (port: number) => Effect.Effect<A, E, R>) =>
@@ -20,38 +21,6 @@ const withServer = <A, E, R>(run: (port: number) => Effect.Effect<A, E, R>) =>
     )
     return yield* run(port)
   }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
-
-/** Raw HTTP exchange so tests can send arbitrary Host headers (fetch can't). */
-const rawStatus = (
-  port: number,
-  headers: ReadonlyArray<string>,
-  path = "/api/v1/health",
-): Promise<number> =>
-  new Promise((resolve, reject) => {
-    let data = ""
-    Bun.connect({
-      hostname: "127.0.0.1",
-      port,
-      socket: {
-        open(socket) {
-          socket.write(
-            [`GET ${path} HTTP/1.1`, ...headers, "Connection: close", "", ""].join("\r\n"),
-          )
-        },
-        data(socket, chunk) {
-          data += chunk.toString()
-          const match = data.match(/^HTTP\/1\.1 (\d{3})/)
-          if (match) {
-            socket.end()
-            resolve(Number(match[1]))
-          }
-        },
-        error(_socket, error) {
-          reject(error)
-        },
-      },
-    }).catch(reject)
-  })
 
 describe("host validation", () => {
   it("accepts loopback hosts and rejects everything else", () => {
@@ -66,6 +35,18 @@ describe("host validation", () => {
     assert.isFalse(isLoopbackHost("127.0.0.1.evil.example"))
     assert.isFalse(isLoopbackHost("localhost.evil.example"))
     assert.isFalse(isLoopbackHost("192.168.1.10:7332"))
+  })
+
+  it("recognizes loopback peer addresses and rejects routable ones", () => {
+    assert.isTrue(isLoopbackAddress("127.0.0.1"))
+    assert.isTrue(isLoopbackAddress("127.1.2.3"))
+    assert.isTrue(isLoopbackAddress("::1"))
+    assert.isTrue(isLoopbackAddress("::ffff:127.0.0.1"))
+    // The gate that stops a remote client spoofing `Host: localhost`.
+    assert.isFalse(isLoopbackAddress("192.168.1.10"))
+    assert.isFalse(isLoopbackAddress("10.0.0.5"))
+    assert.isFalse(isLoopbackAddress("100.64.0.7"))
+    assert.isFalse(isLoopbackAddress("::ffff:192.168.1.10"))
   })
 
   it("accepts loopback origins and rejects everything else", () => {
@@ -133,6 +114,52 @@ describe("hardened listener", () => {
           headers: { Origin: "null" },
         })
         assert.strictEqual(nullOrigin.status, 403)
+      }),
+    ),
+  )
+})
+
+describe("bearer token trust (remote access)", () => {
+  // A loopback connection carrying a non-loopback Host: the shape of both a
+  // request proxied by `tailscale serve` (which preserves the incoming Host)
+  // and a DNS-rebinding attempt — indistinguishable server-side, so the
+  // token is required for it either way (see localTrust.ts).
+  const remoteHost = "Host: workstation.tailnet:7332"
+  const bearer = `Authorization: Bearer ${TEST_AUTH_TOKEN}`
+
+  it.effect("a non-loopback request passes exactly when it presents the token", () =>
+    withServer((port) =>
+      Effect.promise(async () => {
+        assert.strictEqual(await rawStatus(port, [remoteHost, bearer]), 200)
+        assert.strictEqual(await rawStatus(port, [remoteHost]), 403)
+        assert.strictEqual(
+          await rawStatus(port, [remoteHost, "Authorization: Bearer atc_wrong"]),
+          403,
+        )
+        assert.strictEqual(
+          await rawStatus(port, [remoteHost, `Authorization: Basic ${TEST_AUTH_TOKEN}`]),
+          403,
+        )
+      }),
+    ),
+  )
+
+  it.effect("the attach WebSocket path sits under the same guard", () =>
+    withServer((port) =>
+      Effect.promise(async () => {
+        const attach = "/api/v1/terminals/nonexistent/attach"
+        assert.strictEqual(await rawStatus(port, [remoteHost], attach), 403)
+        // With the token the guard passes and the handler answers (404: no
+        // such terminal) — proof the token opens the pre-upgrade path too.
+        assert.strictEqual(await rawStatus(port, [remoteHost, bearer], attach), 404)
+      }),
+    ),
+  )
+
+  it.effect("loopback requests never need the token", () =>
+    withServer((port) =>
+      Effect.promise(async () => {
+        assert.strictEqual(await rawStatus(port, [`Host: 127.0.0.1:${port}`]), 200)
       }),
     ),
   )

@@ -1,5 +1,7 @@
 import { Console, Effect, FileSystem, Layer, Option, Schema } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
+import * as LocalTrust from "../api/localTrust.ts"
+import * as AuthToken from "../platform/authToken.ts"
 import { BuildInfo } from "../platform/buildInfo.ts"
 import { AppConfig, layer as appConfigLayer } from "../platform/config.ts"
 import {
@@ -27,8 +29,13 @@ export const Port = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 655
 export const port = Flag.integer("port").pipe(
   Flag.withSchema(Port),
   Flag.optional,
+  Flag.withDescription("TCP port to listen on (overrides ATC_PORT/config.toml/default)"),
+)
+
+export const bind = Flag.string("bind").pipe(
+  Flag.optional,
   Flag.withDescription(
-    "TCP port to listen on (loopback only; overrides ATC_PORT/config.toml/default)",
+    "Address to bind (default 127.0.0.1; 0.0.0.0 also opens remote access — overrides ATC_BIND/config.toml)",
   ),
 )
 
@@ -43,14 +50,18 @@ const isSystemError = (defect: unknown): defect is Error & { code: string } =>
 const isMigrationError = (defect: unknown): defect is Error =>
   defect instanceof Error && (defect as { _tag?: unknown })._tag === "MigrationError"
 
-export const serve = Command.make("serve", { port }, ({ port }) =>
+export const serve = Command.make("serve", { port, bind }, ({ port, bind }) =>
   Effect.gen(function* () {
     const config = yield* AppConfig
     // The flag level of the precedence rule: flags > env > file > defaults.
     // The override is folded back into the AppConfig the server stack sees,
     // so consumers of the settled port (e.g. the zmx adapter's ATC_ENDPOINT
     // injection) always read the port actually being served.
-    const effective = { ...config, port: Option.getOrElse(port, () => config.port) }
+    const effective = {
+      ...config,
+      port: Option.getOrElse(port, () => config.port),
+      bind: Option.getOrElse(bind, () => config.bind),
+    }
     // Compiled builds keep structured logs file-only (see logging.ts), which
     // would make a successful foreground start indistinguishable from a
     // hang. One human-facing stderr line announces the server; dev runs
@@ -60,11 +71,11 @@ export const serve = Command.make("serve", { port }, ({ port }) =>
     if (build.commit !== "dev") {
       yield* Effect.sync(() => {
         process.stderr.write(
-          `atc app server starting on http://127.0.0.1:${effective.port} (logs: ${effective.logFile})\n`,
+          `atc app server starting on http://${Server.hostForUrl(effective.bind)}:${effective.port} (logs: ${effective.logFile})\n`,
         )
       })
     }
-    yield* Layer.launch(Server.production({ port: effective.port })).pipe(
+    yield* Layer.launch(Server.production({ port: effective.port, hostname: effective.bind })).pipe(
       Effect.provideService(AppConfig, effective),
     )
   }).pipe(
@@ -80,8 +91,15 @@ export const serve = Command.make("serve", { port }, ({ port }) =>
 
 // --- Background management ---
 
-/** Pidfile contents: which process, and which port it was started on. */
-const PidRecord = Schema.Struct({ pid: Schema.Int, port: Schema.Int })
+/** Pidfile contents: which process, and where it was told to listen. `bind`
+ * is optional because the release before ATC-148 wrote `{ pid, port }`; those
+ * servers listened on the then-hardcoded loopback address, so a missing bind
+ * decodes as `127.0.0.1` and upgrades keep managing the old process. */
+const PidRecord = Schema.Struct({
+  pid: Schema.Int,
+  port: Schema.Int,
+  bind: Schema.optionalKey(Schema.String),
+})
 const decodePidRecord = Schema.decodeEffect(Schema.fromJsonString(PidRecord))
 const encodePidRecord = Schema.encodeEffect(Schema.fromJsonString(PidRecord))
 
@@ -89,14 +107,27 @@ const encodePidRecord = Schema.encodeEffect(Schema.fromJsonString(PidRecord))
 const readPidRecord = (fs: FileSystem.FileSystem, file: string) =>
   fs.readFileString(file).pipe(
     Effect.flatMap(decodePidRecord),
+    Effect.map((record) => ({ ...record, bind: record.bind ?? "127.0.0.1" })),
     Effect.catch(() => Effect.succeed(undefined)),
   )
 
-/** One bounded health probe; false on any failure. */
-const probeHealth = (port: number, timeoutMillis: number) =>
+// The wildcard binds are not connectable addresses; probe and report loopback
+// for them. A specific address (loopback or a real interface) is reachable at
+// itself from the same host.
+const reachableHost = (bind: string): string =>
+  bind === "0.0.0.0" || bind === "::" || bind === "" ? "127.0.0.1" : bind
+
+// A probe at a host the trust rule does not recognize as loopback is itself
+// a remote request (api/localTrust.ts) and only passes with the bearer token.
+const probeNeedsToken = (host: string): boolean =>
+  !LocalTrust.isLoopbackHost(Server.hostForUrl(host))
+
+/** One bounded health probe against `host`; false on any failure. */
+const probeHealth = (host: string, port: number, timeoutMillis: number, token?: string) =>
   Effect.tryPromise(() =>
-    fetch(`http://127.0.0.1:${port}/api/v1/health`, {
+    fetch(`http://${Server.hostForUrl(host)}:${port}/api/v1/health`, {
       signal: AbortSignal.timeout(timeoutMillis),
+      headers: token === undefined ? {} : { authorization: `Bearer ${token}` },
     }),
   ).pipe(
     Effect.map((response) => response.ok),
@@ -133,23 +164,35 @@ const serviceCommand = (name: string) => {
   ) => effect.pipe(Effect.provide(appConfigLayer), Effect.catch(Cli.reportOnce(`atc ${name}`)))
 }
 
-export const start = Command.make("start", { port }, ({ port }) =>
+export const start = Command.make("start", { port, bind }, ({ port, bind }) =>
   Effect.gen(function* () {
     const config = yield* AppConfig
-    const effective = { ...config, port: Option.getOrElse(port, () => config.port) }
+    const effective = {
+      ...config,
+      port: Option.getOrElse(port, () => config.port),
+      bind: Option.getOrElse(bind, () => config.bind),
+    }
     const fs = yield* FileSystem.FileSystem
     const subprocess = yield* Subprocess
     const existing = yield* readPidRecord(fs, effective.pidFile)
     if (existing !== undefined && isProcessAlive(existing.pid)) {
       yield* Console.log(
-        `atc app server already running (pid ${existing.pid}) on http://127.0.0.1:${existing.port}`,
+        `atc app server already running (pid ${existing.pid}) on http://${Server.hostForUrl(existing.bind)}:${existing.port}`,
       )
       return
     }
+    // A non-loopback probe host needs the bearer token; prepare it up front
+    // (the spawned server adopts the same file — `ensure` resolves the
+    // create race), and let token-file trouble fail with its own actionable
+    // diagnostic rather than 15 s of 403s and a generic unhealthy report.
+    // Loopback starts never touch the token, so a broken token file cannot
+    // block them (mirroring the server's own boot rule).
+    const probeHost = reachableHost(effective.bind)
+    const token = probeNeedsToken(probeHost) ? yield* AuthToken.ensure : undefined
     // A healthy responder without a live pidfile is a foreground serve or
     // someone else's instance; a second server would only fail its bind
     // after the fact and this start would then claim the wrong process.
-    if (yield* probeHealth(effective.port, 1_000)) {
+    if (yield* probeHealth(probeHost, effective.port, 1_000, token)) {
       return yield* Cli.failReported(
         `atc start: something is already serving on port ${effective.port} (a foreground \`atc serve\`?); stop it or pass --port`,
       )
@@ -158,17 +201,21 @@ export const start = Command.make("start", { port }, ({ port }) =>
     // source run is the bun runtime plus the entry script (argv[1]),
     // resolved against this same working directory.
     const build = yield* BuildInfo
-    const serveArgs = ["serve", "--port", String(effective.port)]
+    const serveArgs = ["serve", "--port", String(effective.port), "--bind", effective.bind]
     const pid = yield* subprocess.spawnDetached(
       build.commit === "dev"
         ? { executable: process.execPath, args: [process.argv[1] ?? "src/main.ts", ...serveArgs] }
         : { executable: process.execPath, args: serveArgs },
     )
     yield* fs.makeDirectory(config.stateDir, { recursive: true })
-    yield* encodePidRecord({ pid, port: effective.port }).pipe(
+    yield* encodePidRecord({ pid, port: effective.port, bind: effective.bind }).pipe(
       Effect.flatMap((json) => fs.writeFileString(effective.pidFile, json)),
     )
-    const healthy = yield* pollUntil(15_000, 150, probeHealth(effective.port, 1_000))
+    const healthy = yield* pollUntil(
+      15_000,
+      150,
+      probeHealth(probeHost, effective.port, 1_000, token),
+    )
     if (!healthy) {
       // Success is only ever reported for a healthy server, so the spawned
       // child is stopped rather than left as an orphan no `stop` can reach.
@@ -186,7 +233,7 @@ export const start = Command.make("start", { port }, ({ port }) =>
       )
     }
     yield* Console.log(
-      `started atc app server (pid ${pid}) on http://127.0.0.1:${effective.port} (logs: ${effective.logFile})`,
+      `started atc app server (pid ${pid}) on http://${Server.hostForUrl(effective.bind)}:${effective.port} (logs: ${effective.logFile})`,
     )
   }).pipe(serviceCommand("start")),
 ).pipe(Command.withDescription("Start the App Server in the background"))
@@ -248,12 +295,20 @@ export const status = Command.make("status", {}, () =>
     if (record === undefined || !isProcessAlive(record.pid)) {
       return yield* Cli.failReported("atc status: not running")
     }
-    const healthy = yield* probeHealth(record.port, 2_000)
+    // Status never creates or repairs the token file; a missing or invalid
+    // one simply leaves the probe unauthenticated (and the server it cannot
+    // reach was not serving remote clients anyway — verify fails closed).
+    const probeHost = reachableHost(record.bind)
+    const token = probeNeedsToken(probeHost)
+      ? yield* AuthToken.read.pipe(Effect.catch(() => Effect.succeed(undefined)))
+      : undefined
+    const healthy = yield* probeHealth(probeHost, record.port, 2_000, token)
+    const url = `http://${Server.hostForUrl(record.bind)}:${record.port}`
     if (!healthy) {
       return yield* Cli.failReported(
-        `atc status: running (pid ${record.pid}) but not answering on http://127.0.0.1:${record.port}; logs: ${config.logFile}`,
+        `atc status: running (pid ${record.pid}) but not answering on ${url}; logs: ${config.logFile}`,
       )
     }
-    yield* Console.log(`running (pid ${record.pid}) on http://127.0.0.1:${record.port}`)
+    yield* Console.log(`running (pid ${record.pid}) on ${url}`)
   }).pipe(serviceCommand("status")),
 ).pipe(Command.withDescription("Report background App Server status"))

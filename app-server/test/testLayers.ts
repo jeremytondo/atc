@@ -6,6 +6,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
 import * as AgentRegistry from "../src/agents/agentRegistry.ts"
+import * as AuthToken from "../src/platform/authToken.ts"
 import * as ClaudeAdapter from "../src/agents/claudeAdapter.ts"
 import * as ClaudeHooks from "../src/agents/claudeHooks.ts"
 import * as CodexAdapter from "../src/agents/codexAdapter.ts"
@@ -47,10 +48,19 @@ type ServiceLayer = Layer.Layer<
   unknown
 >
 
+/** The fixed bearer token the test AuthToken layer accepts. */
+export const TEST_AUTH_TOKEN = "atc_test-token"
+
+/** AuthToken over a fixed credential — no filesystem, deterministic. */
+export const TestAuthTokenLayer = Layer.succeed(AuthToken.AuthToken)({
+  verify: (authorization) => Effect.succeed(authorization === `Bearer ${TEST_AUTH_TOKEN}`),
+})
+
 /** A settled AppConfig for tests that only need a few fields overridden. */
 export const testAppConfig = (overrides: Partial<AppConfig["Service"]>): Layer.Layer<AppConfig> =>
   Layer.succeed(AppConfig)({
     port: 0,
+    bind: "127.0.0.1",
     endpoint: undefined,
     context: {},
     logLevel: "Info",
@@ -58,6 +68,7 @@ export const testAppConfig = (overrides: Partial<AppConfig["Service"]>): Layer.L
     dataDir: "/tmp",
     stateDir: "/tmp",
     dbFile: "/tmp/atc.db",
+    tokenFile: "/tmp/atc-auth-token",
     logFile: "/tmp/atc.log",
     pidFile: "/tmp/atc.pid",
     zmxExecutable: "zmx",
@@ -90,7 +101,8 @@ export const makeTestServiceLayers = (
     | Threads.Threads
     | Projects.Projects
     | AgentRegistry.AgentRegistry
-    | Events.Events,
+    | Events.Events
+    | AuthToken.AuthToken,
     unknown
   >
 } => {
@@ -128,6 +140,7 @@ export const makeTestServiceLayers = (
       terminals,
       registry,
       eventsLayer,
+      TestAuthTokenLayer,
       Threads.layerWith(threadsOptions).pipe(
         Layer.provide([services, terminals, registry, eventsLayer]),
       ),
