@@ -98,10 +98,18 @@ description = "macOS app tests (signing disabled so any machine/CI can run them)
 # Swift OpenAPI Generator build plugin, which xcodebuild refuses to run until
 # trusted; the plugin is version-pinned in ATCKit's Package.swift.
 run = """
+#!/usr/bin/env bash
+set -euo pipefail
+
+derived_data_path="$(mktemp -d "${TMPDIR:-/tmp}/atc-macos-test.XXXXXX")"
+trap 'rm -rf "$derived_data_path"' EXIT
+
+scripts/prepare-xcode-openapi.sh "$derived_data_path"
 xcodebuild test \
   -project macos/atc.xcodeproj \
   -scheme atc \
   -destination platform=macOS \
+  -derivedDataPath "$derived_data_path" \
   -skipPackagePluginValidation \
   CODE_SIGNING_ALLOWED=NO
 """

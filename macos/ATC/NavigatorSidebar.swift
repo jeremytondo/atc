@@ -38,18 +38,18 @@ struct NavigatorSidebar: View {
             filter: windowState.threadFilter
         )
         NavigatorList {
-            dashboardRow
-            newThreadRow
+            headerRow
 
             if !model.pinned.isEmpty {
-                sectionLabel("Pinned")
                 threadCards(model.pinned, isExpanded: $windowState.isPinnedExpanded)
+                sectionDivider
             }
 
             filterRow(model)
             threadListSection(model)
 
             if let project = windowState.activeProject {
+                sectionDivider
                 terminalsSection(project)
             }
         }
@@ -99,68 +99,60 @@ struct NavigatorSidebar: View {
 
     // MARK: - Fixed rows
 
-    private var dashboardRow: some View {
-        NavigatorRow(
-            isSelected: windowState.selectedContent == .dashboard,
-            action: { windowState.showDashboard() }
-        ) { _ in
-            NavigatorIconLabel(title: "Dashboard", systemImage: "rectangle.3.group")
-        } actions: {
-            EmptyView()
-        }
-    }
+    /// Dashboard plus the compose (New Thread) chip in one header row, per
+    /// the design: the chip is the dedicated New Thread action.
+    private var headerRow: some View {
+        HStack(spacing: Spacing.sm) {
+            NavigatorRow(
+                isSelected: windowState.selectedContent == .dashboard,
+                action: { windowState.showDashboard() }
+            ) { _ in
+                NavigatorIconLabel(title: "Dashboard", systemImage: "square.grid.2x2")
+            } actions: {
+                EmptyView()
+            }
 
-    private var newThreadRow: some View {
-        NavigatorRow(
-            isEnabled: canCreateAnywhere,
-            action: { windowState.presentNewThread(in: appModel) }
-        ) { _ in
-            NavigatorIconLabel(title: "New Thread", systemImage: "plus.bubble")
-        } actions: {
-            EmptyView()
+            NavigatorChipButton(
+                systemImage: "square.and.pencil",
+                help: "New Thread",
+                isEnabled: canCreateAnywhere
+            ) {
+                windowState.presentNewThread(in: appModel)
+            }
         }
+        .navigatorListRow(top: Spacing.sm, bottom: Spacing.sm)
     }
 
     private func filterRow(_ model: ThreadListModel) -> some View {
-        HStack(spacing: Spacing.xs) {
-            Menu {
-                Button("All Projects") { select(.all) }
-                if !model.projects.isEmpty {
-                    Divider()
-                    ForEach(model.projects) { option in
-                        Button(option.label) { select(.project(option.ref)) }
-                    }
-                }
-                Divider()
-                Button("Archived") { select(.archived) }
-            } label: {
-                HStack(spacing: Spacing.xs) {
+        HStack(spacing: Spacing.sm) {
+            NavigatorDropdown(entries: filterEntries(model)) {
+                HStack(spacing: Spacing.sm) {
+                    Image(systemName: "folder")
+                        .foregroundStyle(.secondary)
                     Text(filterTitle(model))
-                        .font(.headline)
+                        .font(.callout.weight(.medium))
                         .lineLimit(1)
-                    Image(systemName: "chevron.up.chevron.down")
+                    Spacer(minLength: Spacing.xs)
+                    Image(systemName: "chevron.down")
                         .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+                .padding(.horizontal, Spacing.md)
+                .frame(maxWidth: .infinity, minHeight: NavigatorMetrics.chipSize)
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .foregroundStyle(.secondary)
             .help("Filter threads")
             .accessibilityLabel("Thread filter: \(filterTitle(model))")
 
-            NavigatorActionButton(
-                systemImage: "folder.badge.plus",
+            NavigatorChipButton(
+                systemImage: "plus",
                 help: "New project",
                 isEnabled: canCreateAnywhere
             ) {
                 windowState.isCreateProjectPresented = true
             }
         }
-        .padding(.horizontal, NavigatorMetrics.contentHorizontalPadding)
-        .frame(minHeight: NavigatorMetrics.rowHeight)
-        .navigatorListRow(top: Spacing.md)
+        // Flush with the card edges — the chips share the cards' gutter.
+        .navigatorListRow(top: Spacing.sm, bottom: Spacing.sm)
     }
 
     // MARK: - Thread list
@@ -189,6 +181,7 @@ struct NavigatorSidebar: View {
         ForEach(limited(items, expanded: isExpanded.wrappedValue)) { item in
             ThreadCard(
                 item: item,
+                reachability: appModel.runtime(id: item.ref.connectionID)?.reachability ?? .unknown,
                 isSelected: windowState.isThreadHighlighted(item.ref),
                 isBusy: inFlightThreads.contains(item.ref),
                 canMutate: appModel.canMutate(connectionID: item.ref.connectionID),
@@ -316,13 +309,10 @@ struct NavigatorSidebar: View {
 
     // MARK: - Shared row chrome
 
-    private func sectionLabel(_ title: String) -> some View {
-        Text(title)
-            .font(.headline)
-            .foregroundStyle(.secondary)
+    private var sectionDivider: some View {
+        Divider()
             .padding(.horizontal, NavigatorMetrics.contentHorizontalPadding)
-            .frame(minHeight: NavigatorMetrics.rowHeight, alignment: .leading)
-            .navigatorListRow(top: Spacing.md)
+            .navigatorListRow(top: Spacing.sm, bottom: Spacing.sm)
     }
 
     private func emptyLabel(_ title: String) -> some View {
@@ -340,17 +330,21 @@ struct NavigatorSidebar: View {
             Button {
                 isExpanded.wrappedValue.toggle()
             } label: {
-                Text(isExpanded.wrappedValue
-                    ? "Hide"
-                    : "More (\(total - Self.initialRowLimit))")
-                    .font(.caption.weight(.medium))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
+                HStack(spacing: Spacing.xs) {
+                    Text(isExpanded.wrappedValue
+                        ? "Hide"
+                        : "\(total - Self.initialRowLimit) more")
+                    Image(systemName: isExpanded.wrappedValue ? "chevron.up" : "chevron.down")
+                        .font(.caption2)
+                }
+                .font(.caption.weight(.medium))
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .padding(.horizontal, NavigatorMetrics.contentHorizontalPadding)
-            .frame(minHeight: NavigatorMetrics.rowHeight, alignment: .leading)
+            .frame(minHeight: NavigatorMetrics.rowHeight)
             .navigatorListRow()
         }
     }
@@ -417,6 +411,33 @@ struct NavigatorSidebar: View {
         }
     }
 
+    private func filterEntries(_ model: ThreadListModel) -> [NavigatorDropdownEntry] {
+        var entries: [NavigatorDropdownEntry] = [
+            .item(
+                title: "All Projects",
+                isSelected: windowState.threadFilter == .all,
+                action: { select(.all) }
+            ),
+        ]
+        if !model.projects.isEmpty {
+            entries.append(.separator)
+            for option in model.projects {
+                entries.append(.item(
+                    title: option.label,
+                    isSelected: windowState.threadFilter == .project(option.ref),
+                    action: { select(.project(option.ref)) }
+                ))
+            }
+        }
+        entries.append(.separator)
+        entries.append(.item(
+            title: "Archived",
+            isSelected: windowState.threadFilter == .archived,
+            action: { select(.archived) }
+        ))
+        return entries
+    }
+
     private func limited<T>(_ items: [T], expanded: Bool) -> [T] {
         expanded ? items : Array(items.prefix(Self.initialRowLimit))
     }
@@ -427,6 +448,7 @@ struct NavigatorSidebar: View {
 /// independently clickable and tabbable when shown.
 private struct ThreadCard: View {
     let item: ThreadListItem
+    let reachability: Reachability
     let isSelected: Bool
     let isBusy: Bool
     let canMutate: Bool
@@ -442,52 +464,81 @@ private struct ThreadCard: View {
 
     var body: some View {
         let thread = item.thread
-        HStack(alignment: .top, spacing: Spacing.sm) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: Spacing.xs) {
-                    Text(thread.displayName)
-                        .font(.callout.weight(.medium))
-                        .lineLimit(1)
-                    if thread.activityState == .working {
-                        ProgressView()
-                            .progressViewStyle(.circular)
-                            .controlSize(.mini)
-                            .accessibilityLabel("Working")
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            // Top row: Project name as compact context; the trailing area
+            // shows the Connection at rest and the actions on hover/focus.
+            HStack(alignment: .center, spacing: Spacing.sm) {
+                Text(item.projectLabel)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                Spacer(minLength: Spacing.sm)
+                if isHovering || isFocused {
+                    HStack(spacing: Spacing.xs) {
+                        cardAction(
+                            systemImage: thread.isPinned ? "pin.slash" : "pin",
+                            help: thread.isPinned ? "Unpin" : "Pin",
+                            isEnabled: canMutate && !isBusy,
+                            action: onTogglePin
+                        )
+                        cardAction(
+                            systemImage: "archivebox",
+                            help: "Archive",
+                            // The server refuses archiving a working thread;
+                            // the control is disabled rather than surfacing
+                            // that as an error the user did not ask for.
+                            isEnabled: canMutate && !isBusy
+                                && thread.activityState != .working,
+                            action: onArchive
+                        )
                     }
-                }
-                HStack(spacing: Spacing.xs) {
-                    Text(item.projectLabel)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    if thread.activityState == .needsInput {
-                        needsInputBadge
+                } else {
+                    HStack(spacing: Spacing.xs) {
+                        Text(item.connectionName)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        StatusDot(reachability: reachability, size: .inline)
                     }
+                    // Match the action chips' height so the card does not
+                    // resize under the pointer.
+                    .frame(height: NavigatorMetrics.actionSize)
                 }
+            }
+
+            // The dominant element.
+            Text(thread.displayName)
+                .font(.body.weight(.medium))
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+
+            // Bottom metadata row: working directory when it differs from
+            // the Project default; activity state and Agent trailing.
+            HStack(alignment: .center, spacing: Spacing.sm) {
                 if let directory = item.distinctWorkingDirectory {
                     Text(directory)
-                        .font(.caption2.monospaced())
+                        .font(.caption.monospaced())
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                         .truncationMode(.head)
                 }
+                Spacer(minLength: Spacing.sm)
+                if let status = thread.activityState.statusLabel {
+                    Text(status)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(thread.activityState.statusColor)
+                }
+                agentBadge
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            trailingColumn
         }
-        .padding(.horizontal, NavigatorMetrics.contentHorizontalPadding)
-        .padding(.vertical, Spacing.sm)
+        .padding(Spacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
-            RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+            RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
                 .fill(backgroundStyle)
         }
         .overlay {
-            if isFocused {
-                RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
-                    .stroke(Color.accentColor, lineWidth: 1)
-            }
+            RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                .strokeBorder(borderColor, lineWidth: 1)
         }
         .opacity(isBusy ? Dimming.unavailable : 1)
         .contentShape(Rectangle())
@@ -518,42 +569,21 @@ private struct ThreadCard: View {
         .accessibilityElement(children: .contain)
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
         .accessibilityAction(named: "Open", onOpen)
-        .navigatorListRow()
+        .navigatorListRow(top: Spacing.xs, bottom: Spacing.xs)
     }
 
-    private var trailingColumn: some View {
-        VStack(alignment: .trailing, spacing: Spacing.xs) {
-            if isHovering || isFocused {
-                HStack(spacing: 0) {
-                    cardAction(
-                        systemImage: item.thread.isPinned ? "pin.slash" : "pin",
-                        help: item.thread.isPinned ? "Unpin" : "Pin",
-                        isEnabled: canMutate && !isBusy,
-                        action: onTogglePin
-                    )
-                    cardAction(
-                        systemImage: "archivebox",
-                        help: "Archive",
-                        // The server refuses archiving a working thread; the
-                        // control is disabled rather than surfacing that as an
-                        // error the user did not ask for.
-                        isEnabled: canMutate && !isBusy
-                            && item.thread.activityState != .working,
-                        action: onArchive
-                    )
-                }
-            } else {
-                // Reserve the action row's height so the card does not
-                // resize under the pointer.
-                Color.clear.frame(height: NavigatorMetrics.actionSize)
-            }
-            Spacer(minLength: 0)
-            Image(systemName: item.thread.agentId.systemImage)
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .accessibilityLabel(item.thread.agentId.displayName)
-        }
-        .frame(width: NavigatorMetrics.actionSize * 2)
+    /// The Agent icon in a small rounded-square badge, lower-trailing per
+    /// the design.
+    private var agentBadge: some View {
+        Image(systemName: item.thread.agentId.systemImage)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .frame(width: NavigatorMetrics.actionSize, height: NavigatorMetrics.actionSize)
+            .background(
+                Color.white.opacity(0.07),
+                in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+            )
+            .accessibilityLabel(item.thread.agentId.displayName)
     }
 
     private func cardAction(
@@ -566,7 +596,11 @@ private struct ThreadCard: View {
             Image(systemName: systemImage)
                 .font(.caption)
                 .frame(width: NavigatorMetrics.actionSize, height: NavigatorMetrics.actionSize)
-                .contentShape(Rectangle())
+                .background(
+                    Color.white.opacity(0.07),
+                    in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
@@ -575,21 +609,16 @@ private struct ThreadCard: View {
         .accessibilityLabel(help)
     }
 
-    /// Symbol plus text, never color alone — the badge has to read for
-    /// color-blind users and in monochrome accessibility modes.
-    private var needsInputBadge: some View {
-        Label("Needs input", systemImage: "exclamationmark.bubble.fill")
-            .font(.caption2.weight(.semibold))
-            .labelStyle(.titleAndIcon)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Color.accentColor.opacity(0.22), in: Capsule())
-            .foregroundStyle(Color.accentColor)
+    /// Cards read as bordered containers at rest; selection is the accent
+    /// border plus tint, hover a brighter neutral fill.
+    private var backgroundStyle: AnyShapeStyle {
+        if isSelected { return AnyShapeStyle(Color.accentColor.opacity(0.13)) }
+        if isHovering { return AnyShapeStyle(Color.white.opacity(0.07)) }
+        return AnyShapeStyle(Color.white.opacity(0.035))
     }
 
-    private var backgroundStyle: AnyShapeStyle {
-        if isSelected { return AnyShapeStyle(Color.accentColor.opacity(0.28)) }
-        if isHovering { return AnyShapeStyle(.quaternary) }
-        return AnyShapeStyle(Color.clear)
+    private var borderColor: Color {
+        if isSelected || isFocused { return Color.accentColor }
+        return Color.white.opacity(0.08)
     }
 }

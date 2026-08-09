@@ -34,9 +34,11 @@ enum Spacing {
     static let xxl: CGFloat = 32
 }
 
-/// Corner radii: small controls and cards. Text pills use `Capsule`.
+/// Corner radii: small controls, chip controls, and cards. Text pills use
+/// `Capsule`.
 enum Radius {
     static let control: CGFloat = 6
+    static let chip: CGFloat = 8
     static let card: CGFloat = 12
 }
 

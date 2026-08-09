@@ -5,6 +5,7 @@
 
 import ATCAppServerAPI
 import Foundation
+import SwiftUI
 
 typealias ATCThread = Components.Schemas.Thread
 typealias Project = Components.Schemas.Project
@@ -40,6 +41,28 @@ extension ATCThread {
 
     var isArchived: Bool { archivedAt != nil }
     var isPinned: Bool { pinnedAt != nil }
+}
+
+extension ThreadActivityState {
+    /// Card status text per the design comps; `unknown` is deliberately
+    /// unlabeled. The wording differs per state so color is never the only
+    /// signal.
+    var statusLabel: String? {
+        switch self {
+        case .working: "Running"
+        case .needsInput: "Needs you"
+        case .idle: "Idle"
+        case .unknown: nil
+        }
+    }
+
+    var statusColor: Color {
+        switch self {
+        case .working: .green
+        case .needsInput: .orange
+        case .idle, .unknown: .secondary
+        }
+    }
 }
 
 extension Terminal {
