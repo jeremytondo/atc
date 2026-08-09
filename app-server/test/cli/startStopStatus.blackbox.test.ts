@@ -12,10 +12,12 @@ import {
 } from "../blackbox.ts"
 import { makeFakeZmxSandbox } from "../testLayers.ts"
 
-// Black-box lifecycle of the background service commands: `atc start` spawns
-// a detached `atc serve` and owns the pidfile; `status` and `stop` re-verify
-// liveness rather than trusting it. Spawned from source, so the detached
-// child is `bun src/main.ts serve` resolved against the repo cwd.
+// Black-box lifecycle of the self-managed background commands: `atc start`
+// spawns a detached `atc serve` and owns the pidfile; `status` and `stop`
+// re-verify liveness rather than trusting it. Spawned from source, so the
+// detached child is `bun src/main.ts serve` resolved against the repo cwd.
+// (The supervisor-based `atc service` family is a different feature —
+// cli/service.ts — unit-tested in service.test.ts.)
 
 const scratch = mkdtempSync(join(tmpdir(), "atc-service-blackbox-"))
 const startedPids: Array<number> = []

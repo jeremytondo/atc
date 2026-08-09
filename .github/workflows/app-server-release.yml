@@ -1,0 +1,234 @@
+# Manual-dispatch release pipeline for the App Server executable (ATC-127).
+#
+# channel=test    build + validate + upload a snapshot workflow artifact
+# channel=stable  additionally tag (vX.Y.Z, continuing the existing series)
+#                 and publish a GitHub Release with tarballs + checksums
+#
+# Darwin targets build on macOS so Bun's ad-hoc code signature is applied
+# (and verified) natively; Linux targets cross-compile on ubuntu. Three of
+# the four targets are validated natively with the compiled black-box suite
+# against the release-built binary — darwin-x64 is compile-only best-effort
+# (GitHub's free Intel macOS runners are retired). The tag is only pushed
+# after every build and validation job has passed.
+name: App Server Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Build a test artifact or publish a stable GitHub release"
+        type: choice
+        required: true
+        default: test
+        options:
+          - test
+          - stable
+      release_type:
+        description: "Stable release version bump"
+        type: choice
+        required: true
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: read
+
+# One release at a time: two stable dispatches would compute the same tag.
+concurrency:
+  group: app-server-release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: app-server
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Compute release version
+        id: version
+        run: |
+          if [ "${{ inputs.channel }}" = "stable" ]; then
+            if [ "${GITHUB_REF_NAME}" != "${{ github.event.repository.default_branch }}" ]; then
+              echo "stable releases must run from ${{ github.event.repository.default_branch }}; use channel=test for branch builds" >&2
+              exit 1
+            fi
+            tag="$(scripts/next-version.sh "${{ inputs.release_type }}")"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "version=0.0.0-test.$(echo "$GITHUB_SHA" | cut -c1-7)" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-darwin:
+    needs: plan
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: jdx/mise-action@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          working_directory: app-server
+
+      - name: Build darwin targets
+        run: |
+          mise run install
+          bun run scripts/build.ts --version=${{ needs.plan.outputs.version }} darwin-arm64 darwin-x64
+
+      # Bun applies an ad-hoc signature at compile time; verify it, and
+      # re-sign in place if a Bun upgrade ever stops doing so.
+      - name: Verify ad-hoc signatures
+        run: |
+          for target in darwin-arm64 darwin-x64; do
+            codesign --verify --strict "dist/atc-$target" || codesign --force -s - "dist/atc-$target"
+            codesign --verify --strict "dist/atc-$target"
+          done
+
+      - name: Verify version stamp
+        run: test "$(dist/atc-darwin-arm64 --version)" = "atc v${{ needs.plan.outputs.version }}"
+
+      - name: Compiled black-box tests (native arm64)
+        run: ATC_COMPILED_BIN="$PWD/dist/atc-darwin-arm64" bun --bun vitest run test/compiled.blackbox.test.ts
+
+      - name: Package tarballs
+        run: |
+          mkdir -p out
+          for target in darwin-arm64 darwin-x64; do
+            staging="$(mktemp -d)"
+            cp "dist/atc-$target" "$staging/atc"
+            tar -czf "out/atc-$target.tar.gz" -C "$staging" atc
+          done
+          (cd out && shasum -a 256 *.tar.gz > checksums-darwin.txt)
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: atc-darwin
+          path: app-server/out/*
+          if-no-files-found: error
+
+  build-linux:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: jdx/mise-action@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          working_directory: app-server
+
+      - name: Build linux targets
+        run: |
+          mise run install
+          bun run scripts/build.ts --version=${{ needs.plan.outputs.version }} linux-x64 linux-arm64
+
+      - name: Standing gates (fmt, typecheck, tests, drift)
+        run: mise run check
+
+      - name: Verify version stamp
+        run: test "$(dist/atc-linux-x64 --version)" = "atc v${{ needs.plan.outputs.version }}"
+
+      - name: Compiled black-box tests (native x64)
+        run: ATC_COMPILED_BIN="$PWD/dist/atc-linux-x64" bun --bun vitest run test/compiled.blackbox.test.ts
+
+      - name: Package tarballs
+        run: |
+          mkdir -p out
+          for target in linux-x64 linux-arm64; do
+            staging="$(mktemp -d)"
+            cp "dist/atc-$target" "$staging/atc"
+            tar -czf "out/atc-$target.tar.gz" -C "$staging" atc
+          done
+          (cd out && sha256sum *.tar.gz > checksums-linux.txt)
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: atc-linux
+          path: app-server/out/*
+          if-no-files-found: error
+
+  # Native validation of the cross-compiled arm64 binary, from the packaged
+  # tarball — this also proves the archive layout install.sh relies on.
+  validate-linux-arm:
+    needs: build-linux
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: jdx/mise-action@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          working_directory: app-server
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: atc-linux
+          path: app-server/out
+
+      - name: Compiled black-box tests (native arm64, extracted tarball)
+        run: |
+          mise run install
+          tar -xzf out/atc-linux-arm64.tar.gz -C out
+          ATC_COMPILED_BIN="$PWD/out/atc" bun --bun vitest run test/compiled.blackbox.test.ts
+
+  release:
+    needs: [plan, build-darwin, build-linux, validate-linux-arm]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v7
+        with:
+          path: app-server/release
+          merge-multiple: true
+
+      - name: Merge checksums
+        run: |
+          cd release
+          cat checksums-*.txt | sort -k2 > checksums.txt
+          rm checksums-*.txt
+          ls -l
+
+      - name: Upload test release artifact
+        if: inputs.channel == 'test'
+        uses: actions/upload-artifact@v6
+        with:
+          name: atc-test-release-${{ github.run_id }}
+          path: app-server/release/*
+          if-no-files-found: error
+
+      - name: Publish stable GitHub release
+        if: inputs.channel == 'stable'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ needs.plan.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "Release $tag"
+          git push origin "$tag"
+          gh release create "$tag" release/*.tar.gz release/checksums.txt \
+            --title "$tag" \
+            --notes "$(printf 'Install or update:\n\n    curl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | sh\n\nThen run `atc service install` to start it as a login service.' "$GITHUB_REPOSITORY")"

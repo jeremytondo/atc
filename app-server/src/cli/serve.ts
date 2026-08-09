@@ -1,6 +1,5 @@
 import { Console, Effect, FileSystem, Layer, Option, Schema } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
-import * as LocalTrust from "../api/localTrust.ts"
 import * as AuthToken from "../platform/authToken.ts"
 import { BuildInfo } from "../platform/buildInfo.ts"
 import { AppConfig, layer as appConfigLayer } from "../platform/config.ts"
@@ -111,40 +110,6 @@ const readPidRecord = (fs: FileSystem.FileSystem, file: string) =>
     Effect.catch(() => Effect.succeed(undefined)),
   )
 
-// The wildcard binds are not connectable addresses; probe and report loopback
-// for them. A specific address (loopback or a real interface) is reachable at
-// itself from the same host.
-const reachableHost = (bind: string): string =>
-  bind === "0.0.0.0" || bind === "::" || bind === "" ? "127.0.0.1" : bind
-
-// A probe at a host the trust rule does not recognize as loopback is itself
-// a remote request (api/localTrust.ts) and only passes with the bearer token.
-const probeNeedsToken = (host: string): boolean =>
-  !LocalTrust.isLoopbackHost(Server.hostForUrl(host))
-
-/** One bounded health probe against `host`; false on any failure. */
-const probeHealth = (host: string, port: number, timeoutMillis: number, token?: string) =>
-  Effect.tryPromise(() =>
-    fetch(`http://${Server.hostForUrl(host)}:${port}/api/v1/health`, {
-      signal: AbortSignal.timeout(timeoutMillis),
-      headers: token === undefined ? {} : { authorization: `Bearer ${token}` },
-    }),
-  ).pipe(
-    Effect.map((response) => response.ok),
-    Effect.catch(() => Effect.succeed(false)),
-  )
-
-/** Polls `check` until true or the deadline lapses. */
-const pollUntil = (deadlineMillis: number, intervalMillis: number, check: Effect.Effect<boolean>) =>
-  Effect.gen(function* () {
-    const attempts = Math.ceil(deadlineMillis / intervalMillis)
-    for (let attempt = 0; attempt < attempts; attempt++) {
-      if (yield* check) return true
-      yield* Effect.sleep(intervalMillis)
-    }
-    return yield* check
-  })
-
 const signal = (pid: number, name: "SIGTERM" | "SIGKILL") =>
   Effect.sync(() => {
     // A process that exits between the liveness check and the signal is
@@ -155,14 +120,6 @@ const signal = (pid: number, name: "SIGTERM" | "SIGKILL") =>
       // ignored
     }
   })
-
-/** Shared command tail: settled config plus the one-line diagnostic.
- * Failures the body already reported pass through unchanged. */
-const serviceCommand = (name: string) => {
-  return <E>(
-    effect: Effect.Effect<void, E, AppConfig | FileSystem.FileSystem | Subprocess | BuildInfo>,
-  ) => effect.pipe(Effect.provide(appConfigLayer), Effect.catch(Cli.reportOnce(`atc ${name}`)))
-}
 
 export const start = Command.make("start", { port, bind }, ({ port, bind }) =>
   Effect.gen(function* () {
@@ -187,12 +144,12 @@ export const start = Command.make("start", { port, bind }, ({ port, bind }) =>
     // diagnostic rather than 15 s of 403s and a generic unhealthy report.
     // Loopback starts never touch the token, so a broken token file cannot
     // block them (mirroring the server's own boot rule).
-    const probeHost = reachableHost(effective.bind)
-    const token = probeNeedsToken(probeHost) ? yield* AuthToken.ensure : undefined
+    const probeHost = Cli.reachableHost(effective.bind)
+    const token = Cli.probeNeedsToken(probeHost) ? yield* AuthToken.ensure : undefined
     // A healthy responder without a live pidfile is a foreground serve or
     // someone else's instance; a second server would only fail its bind
     // after the fact and this start would then claim the wrong process.
-    if (yield* probeHealth(probeHost, effective.port, 1_000, token)) {
+    if (yield* Cli.probeHealth(probeHost, effective.port, 1_000, token)) {
       return yield* Cli.failReported(
         `atc start: something is already serving on port ${effective.port} (a foreground \`atc serve\`?); stop it or pass --port`,
       )
@@ -211,10 +168,10 @@ export const start = Command.make("start", { port, bind }, ({ port, bind }) =>
     yield* encodePidRecord({ pid, port: effective.port, bind: effective.bind }).pipe(
       Effect.flatMap((json) => fs.writeFileString(effective.pidFile, json)),
     )
-    const healthy = yield* pollUntil(
+    const healthy = yield* Cli.pollUntil(
       15_000,
       150,
-      probeHealth(probeHost, effective.port, 1_000, token),
+      Cli.probeHealth(probeHost, effective.port, 1_000, token),
     )
     if (!healthy) {
       // Success is only ever reported for a healthy server, so the spawned
@@ -235,7 +192,7 @@ export const start = Command.make("start", { port, bind }, ({ port, bind }) =>
     yield* Console.log(
       `started atc app server (pid ${pid}) on http://${Server.hostForUrl(effective.bind)}:${effective.port} (logs: ${effective.logFile})`,
     )
-  }).pipe(serviceCommand("start")),
+  }).pipe(Cli.withSettledConfig("atc start")),
 ).pipe(Command.withDescription("Start the App Server in the background"))
 
 export const stop = Command.make("stop", {}, () =>
@@ -284,7 +241,7 @@ export const stop = Command.make("stop", {}, () =>
     }
     yield* fs.remove(config.pidFile).pipe(Effect.ignore)
     yield* Console.log(`stopped atc app server (pid ${record.pid})`)
-  }).pipe(serviceCommand("stop")),
+  }).pipe(Cli.withSettledConfig("atc stop")),
 ).pipe(Command.withDescription("Stop the background App Server"))
 
 export const status = Command.make("status", {}, () =>
@@ -298,11 +255,11 @@ export const status = Command.make("status", {}, () =>
     // Status never creates or repairs the token file; a missing or invalid
     // one simply leaves the probe unauthenticated (and the server it cannot
     // reach was not serving remote clients anyway — verify fails closed).
-    const probeHost = reachableHost(record.bind)
-    const token = probeNeedsToken(probeHost)
+    const probeHost = Cli.reachableHost(record.bind)
+    const token = Cli.probeNeedsToken(probeHost)
       ? yield* AuthToken.read.pipe(Effect.catch(() => Effect.succeed(undefined)))
       : undefined
-    const healthy = yield* probeHealth(probeHost, record.port, 2_000, token)
+    const healthy = yield* Cli.probeHealth(probeHost, record.port, 2_000, token)
     const url = `http://${Server.hostForUrl(record.bind)}:${record.port}`
     if (!healthy) {
       return yield* Cli.failReported(
@@ -310,5 +267,5 @@ export const status = Command.make("status", {}, () =>
       )
     }
     yield* Console.log(`running (pid ${record.pid}) on ${url}`)
-  }).pipe(serviceCommand("status")),
+  }).pipe(Cli.withSettledConfig("atc status")),
 ).pipe(Command.withDescription("Report background App Server status"))

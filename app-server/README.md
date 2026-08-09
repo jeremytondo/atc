@@ -58,7 +58,9 @@ Almost everything else is a client of the HTTP API, which is the complete
 canonical interface: `atc api <method> <path>` (GET, POST, PUT, PATCH, DELETE)
 reaches every operation, and curated commands exist only where they add local
 behavior (relative-path resolution, TTY attach, `--yes` delete guards). The
-exceptions are `atc start`/`stop`/`status` (background process management) and
+exceptions are `atc start`/`stop`/`status` (self-managed background process),
+`atc service` (user-scope launchd/systemd units for running the server as a
+login service — separate from `start`, which supervises nothing), and
 `atc token` (the remote-access credential is a local `0600` file, not an API
 resource). Run `atc --help` for the command surface and
 `atc capabilities --json` for the machine-readable summary.

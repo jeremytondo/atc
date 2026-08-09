@@ -98,6 +98,16 @@ describe.skipIf(!enabled)("compiled atc artifact (opt-in: mise run test:compiled
       expect(JSON.parse(versionCli.stdout)).toEqual(body)
       expect(versionCli.exitCode).toBe(0)
 
+      // The service command group ships in the executable. Status checks the
+      // unit file before ever touching launchctl/systemctl, so with HOME and
+      // XDG_CONFIG_HOME isolated this never reaches the host's supervisor.
+      const serviceStatus = await runCli([compiledBinaryPath], ["service", "status"], outsideCwd, {
+        ...env,
+        HOME: outsideCwd,
+      })
+      expect(serviceStatus.exitCode).toBe(1)
+      expect(serviceStatus.stderr).toContain("not installed")
+
       // The full persistence stack works in the compiled binary.
       const created = await runCli(
         [compiledBinaryPath],

@@ -1,8 +1,12 @@
 // Compiles src/main.ts into standalone `atc` executables with Bun.
 //
-// Usage: bun run scripts/build.ts [--all]
-//   default  compile for the host platform only
-//   --all    cross-compile every release target
+// Usage: bun run scripts/build.ts [--all] [--version=X.Y.Z] [target ...]
+//   default          compile for the host platform only
+//   --all            cross-compile every release target
+//   --version=X.Y.Z  stamp a release version (default: package.json version)
+//   target ...       compile exactly these targets (release CI builds darwin
+//                    targets on macOS so Bun's ad-hoc code signature is
+//                    applied natively)
 //
 // Output names are deterministic (dist/atc-<os>-<arch>) so CI and release
 // tooling can consume them without discovery logic.
@@ -34,11 +38,29 @@ const dirty = run(["git", "status", "--porcelain"]) === "" ? "" : "-dirty"
 const commit = run(["git", "rev-parse", "HEAD"]) + dirty
 const builtAt = new Date().toISOString()
 
-const targets: ReadonlyArray<Target> = process.argv.includes("--all")
+const args = process.argv.slice(2)
+// A typo'd flag must not silently release with the package.json fallback
+// version, so anything dash-prefixed and unrecognized is fatal.
+const unknownFlags = args.filter(
+  (arg) => arg.startsWith("--") && arg !== "--all" && !arg.startsWith("--version="),
+)
+if (unknownFlags.length > 0) {
+  throw new Error(`unknown flag(s): ${unknownFlags.join(", ")}`)
+}
+const version = args.find((arg) => arg.startsWith("--version="))?.slice("--version=".length)
+const requested = args.filter((arg) => !arg.startsWith("--"))
+const invalid = requested.filter((target) => !(TARGETS as readonly string[]).includes(target))
+if (invalid.length > 0) {
+  throw new Error(`unknown target(s) ${invalid.join(", ")}; expected: ${TARGETS.join(", ")}`)
+}
+
+const targets: ReadonlyArray<Target> = args.includes("--all")
   ? TARGETS
-  : hostTarget !== null
-    ? [hostTarget]
-    : []
+  : requested.length > 0
+    ? (requested as ReadonlyArray<Target>)
+    : hostTarget !== null
+      ? [hostTarget]
+      : []
 if (targets.length === 0) {
   throw new Error(`unsupported host platform ${host}; expected one of: ${TARGETS.join(", ")}`)
 }
@@ -57,8 +79,11 @@ for (const target of targets) {
     // The define value is a JS expression, so a string needs its quotes.
     `--define=ATC_BUILD_COMMIT=${JSON.stringify(commit)}`,
     `--define=ATC_BUILD_BUILT_AT=${JSON.stringify(builtAt)}`,
+    ...(version === undefined ? [] : [`--define=ATC_BUILD_VERSION=${JSON.stringify(version)}`]),
     `--outfile=${outfile}`,
     "src/main.ts",
   ])
-  console.log(`built ${outfile} (commit ${commit.slice(0, 12)}${dirty}, ${builtAt})`)
+  console.log(
+    `built ${outfile} (${version === undefined ? "" : `version ${version}, `}commit ${commit.slice(0, 12)}${dirty}, ${builtAt})`,
+  )
 }

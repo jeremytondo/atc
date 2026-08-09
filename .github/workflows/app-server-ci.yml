@@ -5,6 +5,7 @@ on:
     paths:
       - "app-server/**"
       - "mise.toml"
+      - "install.sh"
       - ".github/workflows/app-server-ci.yml"
   push:
     branches:
@@ -12,6 +13,7 @@ on:
     paths:
       - "app-server/**"
       - "mise.toml"
+      - "install.sh"
       - ".github/workflows/app-server-ci.yml"
 
 permissions:
@@ -44,6 +46,10 @@ jobs:
       # contract).
       - name: Check
         run: mise run check
+
+      # The root install script has no test suite; at least keep it parseable.
+      - name: Syntax-check install.sh
+        run: sh -n ../install.sh
 
   # Proves all four release targets compile. Cross-compilation alone says
   # nothing about runtime behavior — that is what native-validate is for.
