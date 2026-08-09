@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest"
 import { BunHttpServer } from "@effect/platform-bun"
-import { Context, Effect, Layer } from "effect"
+import { Context, Effect, Layer, Option } from "effect"
 import {
   HttpBody,
   HttpClient,
@@ -16,7 +16,7 @@ import { openApiDocument, openApiJson } from "../../src/api/openapi.ts"
 import * as Server from "../../src/server.ts"
 import { appServerRoot } from "../blackbox.ts"
 import { TestBuildInfoLayer, testBuildInfo } from "../testBuildInfo.ts"
-import { TestRepositoryLayers } from "../testLayers.ts"
+import { TestAuthTokenLayer, TestRepositoryLayers } from "../testLayers.ts"
 
 // Contract-generation tests: the document must be deterministic, match the
 // checked-in artifact, cover every contract operation, and agree with what
@@ -117,15 +117,17 @@ const rawClient = Effect.gen(function* () {
   )
   return HttpClient.make(
     Effect.fnUntraced(function* (request) {
-      // fromClientRequest synthesizes no Host header; the local-trust guard in
-      // Server.routes requires a loopback one just like a real client sends.
+      // fromClientRequest synthesizes no Host header or peer address; the
+      // trust guard in Server.routes requires both a loopback Host and a
+      // loopback peer, just as Bun reports for a real local client.
       const serverRequest = HttpServerRequest.fromClientRequest(
         HttpClientRequest.setHeader(request, "host", "127.0.0.1"),
-      )
+      ).modify({ remoteAddress: Option.some("127.0.0.1") })
       const response = yield* handler.pipe(
         Effect.provideService(HttpServerRequest.HttpServerRequest, serverRequest),
-        // The internal Claude hook route resolves its service per request.
-        Effect.provide(ClaudeHooks.layer),
+        // The internal Claude hook route resolves its service per request;
+        // the trust middleware resolves AuthToken the same way.
+        Effect.provide([ClaudeHooks.layer, TestAuthTokenLayer]),
         Effect.orDie,
       )
       return HttpServerResponse.toClientResponse(response)

@@ -102,6 +102,38 @@ export const freePort = async (): Promise<number> => {
   return port
 }
 
+/** Raw HTTP exchange so tests can send arbitrary Host headers (fetch can't). */
+export const rawStatus = (
+  port: number,
+  headers: ReadonlyArray<string>,
+  path = "/api/v1/health",
+): Promise<number> =>
+  new Promise((resolve, reject) => {
+    let data = ""
+    Bun.connect({
+      hostname: "127.0.0.1",
+      port,
+      socket: {
+        open(socket) {
+          socket.write(
+            [`GET ${path} HTTP/1.1`, ...headers, "Connection: close", "", ""].join("\r\n"),
+          )
+        },
+        data(socket, chunk) {
+          data += chunk.toString()
+          const match = data.match(/^HTTP\/1\.1 (\d{3})/)
+          if (match) {
+            socket.end()
+            resolve(Number(match[1]))
+          }
+        },
+        error(_socket, error) {
+          reject(error)
+        },
+      },
+    }).catch(reject)
+  })
+
 export const waitForHealth = async (base: string, proc: Bun.Subprocess): Promise<Response> => {
   for (let attempt = 0; attempt < 100; attempt++) {
     try {

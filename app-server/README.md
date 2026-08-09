@@ -38,13 +38,13 @@ overrides:
 | Data dir    | `~/.local/share/atc/`       | SQLite database (`atc.db`)                       |
 | State dir   | `~/.local/state/atc/`       | JSON log (`atc.log`), zmx sockets (`terminals/`) |
 
-Environment variables are flat `ATC_<KEY>`: `ATC_PORT`, `ATC_LOG_LEVEL`,
-`ATC_DATA_DIR`, `ATC_ZMX_EXECUTABLE`, `ATC_CODEX_EXECUTABLE`,
+Environment variables are flat `ATC_<KEY>`: `ATC_PORT`, `ATC_BIND`,
+`ATC_LOG_LEVEL`, `ATC_DATA_DIR`, `ATC_ZMX_EXECUTABLE`, `ATC_CODEX_EXECUTABLE`,
 `ATC_CLAUDE_EXECUTABLE`, and `ATC_CONFIG` (path to an alternate config file).
-The config file may set `port`, `logLevel` (case-insensitive), `dataDir`,
-`zmxExecutable`, `codexExecutable`, and `claudeExecutable`; unknown keys are
-rejected. `atc serve --port` overrides the configured port for that server
-only.
+The config file may set `port`, `bind`, `logLevel` (case-insensitive),
+`dataDir`, `zmxExecutable`, `codexExecutable`, and `claudeExecutable`; unknown
+keys are rejected. `atc serve --port`/`--bind` override the configured values
+for that server only.
 
 atc bundles no third-party binaries — install them yourself. Terminals
 require [zmx](https://github.com/neurosnap/zmx); the agent integrations use
@@ -54,12 +54,14 @@ variable or config key, else its bare name on PATH.
 ## CLI
 
 `atc serve` runs the server (it creates and migrates the database on boot).
-Everything else is a client of the HTTP API, which is the complete canonical
-interface: `atc api <method> <path>` (GET, POST, PUT, PATCH, DELETE) reaches
-every operation, and curated commands exist only where they add local
-behavior (relative-path resolution, TTY attach, `--yes` delete guards). Run
-`atc --help` for the command surface and `atc capabilities --json` for the
-machine-readable summary.
+Almost everything else is a client of the HTTP API, which is the complete
+canonical interface: `atc api <method> <path>` (GET, POST, PUT, PATCH, DELETE)
+reaches every operation, and curated commands exist only where they add local
+behavior (relative-path resolution, TTY attach, `--yes` delete guards). The
+exceptions are `atc start`/`stop`/`status` (background process management) and
+`atc token` (the remote-access credential is a local `0600` file, not an API
+resource). Run `atc --help` for the command surface and
+`atc capabilities --json` for the machine-readable summary.
 
 API-backed commands take zero connection flags — `ATC_ENDPOINT` (a full base
 URL, set automatically in the environment of ATC-launched terminal sessions)
@@ -90,9 +92,24 @@ change — never edit it by hand. It is symlinked into `packages/ATCKit` to gene
 client, so the server, the TypeScript client (`src/api/client.ts`), and the Swift
 client all derive from the same definition.
 
-The loopback listener validates `Host`/`Origin` on every request (403
-otherwise) — the local half of the settled trust architecture; bearer-token
-remote access is a later, purely additive layer.
+One trust rule guards every route (API, SSE, the attach WebSocket): a request
+passes if it presents a recognized loopback `Host`/`Origin`, or if it carries
+`Authorization: Bearer <token>` matching the server's token; everything else
+is an empty 403. Loopback clients never need the token.
+
+### Remote access
+
+The listener binds `127.0.0.1` by default. Setting `bind = "0.0.0.0"` (or
+`ATC_BIND` / `--bind`; see the `bind` note in `platform/config.ts` for why a
+single non-loopback address is the wrong choice) opens it, and the bearer
+token gates every non-loopback request. The intended posture is tailnet-only
+reachability (Tailscale) — the token is the just-in-case backstop, not an
+invitation to expose the server publicly. The token is generated on first
+server start (or by `atc token`) into a `0600` file in the data dir; `atc
+token` prints it for pasting into a client, and `atc token rotate` reissues
+it, taking effect immediately on a running server. Remote browser access to
+the Web UI stays unsupported — browsers cannot attach bearer headers to SSE
+or WebSockets.
 
 ## Structure
 

@@ -27,8 +27,13 @@ export const Port = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 655
 export const port = Flag.integer("port").pipe(
   Flag.withSchema(Port),
   Flag.optional,
+  Flag.withDescription("TCP port to listen on (overrides ATC_PORT/config.toml/default)"),
+)
+
+export const bind = Flag.string("bind").pipe(
+  Flag.optional,
   Flag.withDescription(
-    "TCP port to listen on (loopback only; overrides ATC_PORT/config.toml/default)",
+    "Address to bind (default 127.0.0.1; 0.0.0.0 also opens remote access — overrides ATC_BIND/config.toml)",
   ),
 )
 
@@ -43,14 +48,18 @@ const isSystemError = (defect: unknown): defect is Error & { code: string } =>
 const isMigrationError = (defect: unknown): defect is Error =>
   defect instanceof Error && (defect as { _tag?: unknown })._tag === "MigrationError"
 
-export const serve = Command.make("serve", { port }, ({ port }) =>
+export const serve = Command.make("serve", { port, bind }, ({ port, bind }) =>
   Effect.gen(function* () {
     const config = yield* AppConfig
     // The flag level of the precedence rule: flags > env > file > defaults.
     // The override is folded back into the AppConfig the server stack sees,
     // so consumers of the settled port (e.g. the zmx adapter's ATC_ENDPOINT
     // injection) always read the port actually being served.
-    const effective = { ...config, port: Option.getOrElse(port, () => config.port) }
+    const effective = {
+      ...config,
+      port: Option.getOrElse(port, () => config.port),
+      bind: Option.getOrElse(bind, () => config.bind),
+    }
     // Compiled builds keep structured logs file-only (see logging.ts), which
     // would make a successful foreground start indistinguishable from a
     // hang. One human-facing stderr line announces the server; dev runs
@@ -60,11 +69,11 @@ export const serve = Command.make("serve", { port }, ({ port }) =>
     if (build.commit !== "dev") {
       yield* Effect.sync(() => {
         process.stderr.write(
-          `atc app server starting on http://127.0.0.1:${effective.port} (logs: ${effective.logFile})\n`,
+          `atc app server starting on http://${effective.bind}:${effective.port} (logs: ${effective.logFile})\n`,
         )
       })
     }
-    yield* Layer.launch(Server.production({ port: effective.port })).pipe(
+    yield* Layer.launch(Server.production({ port: effective.port, hostname: effective.bind })).pipe(
       Effect.provideService(AppConfig, effective),
     )
   }).pipe(
@@ -80,8 +89,8 @@ export const serve = Command.make("serve", { port }, ({ port }) =>
 
 // --- Background management ---
 
-/** Pidfile contents: which process, and which port it was started on. */
-const PidRecord = Schema.Struct({ pid: Schema.Int, port: Schema.Int })
+/** Pidfile contents: which process, and where it was told to listen. */
+const PidRecord = Schema.Struct({ pid: Schema.Int, port: Schema.Int, bind: Schema.String })
 const decodePidRecord = Schema.decodeEffect(Schema.fromJsonString(PidRecord))
 const encodePidRecord = Schema.encodeEffect(Schema.fromJsonString(PidRecord))
 
@@ -92,10 +101,17 @@ const readPidRecord = (fs: FileSystem.FileSystem, file: string) =>
     Effect.catch(() => Effect.succeed(undefined)),
   )
 
-/** One bounded health probe; false on any failure. */
-const probeHealth = (port: number, timeoutMillis: number) =>
+// The wildcard binds are not connectable addresses; probe and report loopback
+// for them. A specific address (loopback or a real interface) is reachable at
+// itself from the same host. IPv6 literals need brackets in a URL.
+const reachableHost = (bind: string): string =>
+  bind === "0.0.0.0" || bind === "::" || bind === "" ? "127.0.0.1" : bind
+const hostForUrl = (host: string): string => (host.includes(":") ? `[${host}]` : host)
+
+/** One bounded health probe against `host`; false on any failure. */
+const probeHealth = (host: string, port: number, timeoutMillis: number) =>
   Effect.tryPromise(() =>
-    fetch(`http://127.0.0.1:${port}/api/v1/health`, {
+    fetch(`http://${hostForUrl(host)}:${port}/api/v1/health`, {
       signal: AbortSignal.timeout(timeoutMillis),
     }),
   ).pipe(
@@ -133,23 +149,27 @@ const serviceCommand = (name: string) => {
   ) => effect.pipe(Effect.provide(appConfigLayer), Effect.catch(Cli.reportOnce(`atc ${name}`)))
 }
 
-export const start = Command.make("start", { port }, ({ port }) =>
+export const start = Command.make("start", { port, bind }, ({ port, bind }) =>
   Effect.gen(function* () {
     const config = yield* AppConfig
-    const effective = { ...config, port: Option.getOrElse(port, () => config.port) }
+    const effective = {
+      ...config,
+      port: Option.getOrElse(port, () => config.port),
+      bind: Option.getOrElse(bind, () => config.bind),
+    }
     const fs = yield* FileSystem.FileSystem
     const subprocess = yield* Subprocess
     const existing = yield* readPidRecord(fs, effective.pidFile)
     if (existing !== undefined && isProcessAlive(existing.pid)) {
       yield* Console.log(
-        `atc app server already running (pid ${existing.pid}) on http://127.0.0.1:${existing.port}`,
+        `atc app server already running (pid ${existing.pid}) on http://${hostForUrl(existing.bind)}:${existing.port}`,
       )
       return
     }
     // A healthy responder without a live pidfile is a foreground serve or
     // someone else's instance; a second server would only fail its bind
     // after the fact and this start would then claim the wrong process.
-    if (yield* probeHealth(effective.port, 1_000)) {
+    if (yield* probeHealth(reachableHost(effective.bind), effective.port, 1_000)) {
       return yield* Cli.failReported(
         `atc start: something is already serving on port ${effective.port} (a foreground \`atc serve\`?); stop it or pass --port`,
       )
@@ -158,17 +178,21 @@ export const start = Command.make("start", { port }, ({ port }) =>
     // source run is the bun runtime plus the entry script (argv[1]),
     // resolved against this same working directory.
     const build = yield* BuildInfo
-    const serveArgs = ["serve", "--port", String(effective.port)]
+    const serveArgs = ["serve", "--port", String(effective.port), "--bind", effective.bind]
     const pid = yield* subprocess.spawnDetached(
       build.commit === "dev"
         ? { executable: process.execPath, args: [process.argv[1] ?? "src/main.ts", ...serveArgs] }
         : { executable: process.execPath, args: serveArgs },
     )
     yield* fs.makeDirectory(config.stateDir, { recursive: true })
-    yield* encodePidRecord({ pid, port: effective.port }).pipe(
+    yield* encodePidRecord({ pid, port: effective.port, bind: effective.bind }).pipe(
       Effect.flatMap((json) => fs.writeFileString(effective.pidFile, json)),
     )
-    const healthy = yield* pollUntil(15_000, 150, probeHealth(effective.port, 1_000))
+    const healthy = yield* pollUntil(
+      15_000,
+      150,
+      probeHealth(reachableHost(effective.bind), effective.port, 1_000),
+    )
     if (!healthy) {
       // Success is only ever reported for a healthy server, so the spawned
       // child is stopped rather than left as an orphan no `stop` can reach.
@@ -186,7 +210,7 @@ export const start = Command.make("start", { port }, ({ port }) =>
       )
     }
     yield* Console.log(
-      `started atc app server (pid ${pid}) on http://127.0.0.1:${effective.port} (logs: ${effective.logFile})`,
+      `started atc app server (pid ${pid}) on http://${hostForUrl(effective.bind)}:${effective.port} (logs: ${effective.logFile})`,
     )
   }).pipe(serviceCommand("start")),
 ).pipe(Command.withDescription("Start the App Server in the background"))
@@ -248,12 +272,13 @@ export const status = Command.make("status", {}, () =>
     if (record === undefined || !isProcessAlive(record.pid)) {
       return yield* Cli.failReported("atc status: not running")
     }
-    const healthy = yield* probeHealth(record.port, 2_000)
+    const healthy = yield* probeHealth(reachableHost(record.bind), record.port, 2_000)
+    const url = `http://${hostForUrl(record.bind)}:${record.port}`
     if (!healthy) {
       return yield* Cli.failReported(
-        `atc status: running (pid ${record.pid}) but not answering on http://127.0.0.1:${record.port}; logs: ${config.logFile}`,
+        `atc status: running (pid ${record.pid}) but not answering on ${url}; logs: ${config.logFile}`,
       )
     }
-    yield* Console.log(`running (pid ${record.pid}) on http://127.0.0.1:${record.port}`)
+    yield* Console.log(`running (pid ${record.pid}) on ${url}`)
   }).pipe(serviceCommand("status")),
 ).pipe(Command.withDescription("Report background App Server status"))

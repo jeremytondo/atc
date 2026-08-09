@@ -118,6 +118,27 @@ describe("atc health/version (black box)", () => {
   })
 })
 
+// Local filesystem commands over the data dir — they need no server, and the
+// shared suite server ignores them (loopback requests never read the token).
+describe("atc token (black box)", () => {
+  test("prints the persisted token, stable across calls", async () => {
+    const first = await cli(["token"])
+    expect(first.stdout).toMatch(/^atc_[A-Za-z0-9_-]{43}\n$/)
+    expect(first.stderr).toBe("")
+    expect(first.exitCode).toBe(0)
+    expect((await cli(["token"])).stdout).toBe(first.stdout)
+  })
+
+  test("rotate reissues the token and the file follows", async () => {
+    const before = (await cli(["token"])).stdout
+    const rotated = await cli(["token", "rotate"])
+    expect(rotated.stdout).toMatch(/^atc_[A-Za-z0-9_-]{43}\n$/)
+    expect(rotated.stdout).not.toBe(before)
+    expect(rotated.exitCode).toBe(0)
+    expect((await cli(["token"])).stdout).toBe(rotated.stdout)
+  })
+})
+
 describe("atc project / atc fs (black box)", () => {
   test("the server created and migrated the database in the configured data directory", () => {
     expect(existsSync(join(dataRoot, "data", "atc", "atc.db"))).toBe(true)

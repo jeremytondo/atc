@@ -20,8 +20,12 @@ const startServer = <R, E>(layer: Layer.Layer<R | HttpServer.HttpServer, E>) =>
     if (address._tag !== "TcpAddress") {
       return yield* Effect.die(`expected a TCP address, got ${address._tag}`)
     }
-    assert.strictEqual(address.hostname, "127.0.0.1")
-    return { scope, context, base: `http://127.0.0.1:${address.port}` }
+    return {
+      scope,
+      context,
+      hostname: address.hostname,
+      base: `http://127.0.0.1:${address.port}`,
+    }
   })
 
 describe("server layer", () => {
@@ -29,9 +33,10 @@ describe("server layer", () => {
   // timeout must run on the real clock, not it.effect's TestClock.
   it.live("binds loopback, serves the API, and releases the port when closed", () =>
     Effect.gen(function* () {
-      const { scope, base } = yield* startServer(
+      const { scope, base, hostname } = yield* startServer(
         Server.layer({ port: 0 }).pipe(Layer.provide([TestBuildInfoLayer, TestRepositoryLayers])),
       )
+      assert.strictEqual(hostname, "127.0.0.1")
 
       // Connection: close keeps fetch from pooling an idle socket, so the
       // release check below is forced onto a fresh connection.
@@ -50,6 +55,24 @@ describe("server layer", () => {
         ),
       )
       assert.strictEqual(released, true)
+    }),
+  )
+
+  // The `bind` setting (ATC-148) reaches the listener: a non-loopback bind
+  // still answers on loopback (0.0.0.0 includes it), keeping local clients
+  // working while remote interfaces open.
+  it.live("binds the configured address", () =>
+    Effect.gen(function* () {
+      const { base, hostname } = yield* startServer(
+        Server.layer({ port: 0, hostname: "0.0.0.0" }).pipe(
+          Layer.provide([TestBuildInfoLayer, TestRepositoryLayers]),
+        ),
+      )
+      assert.strictEqual(hostname, "0.0.0.0")
+      const health = yield* Effect.promise(() =>
+        fetch(`${base}/api/v1/health`, { headers: { connection: "close" } }),
+      )
+      assert.strictEqual(health.status, 200)
     }),
   )
 
