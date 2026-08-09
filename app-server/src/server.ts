@@ -67,6 +67,9 @@ const drainEventsBeforeStop = Layer.effectDiscard(
   }),
 )
 
+/** IPv6 literals need brackets to form a valid URL host (`[::1]:7332`). */
+export const hostForUrl = (host: string): string => (host.includes(":") ? `[${host}]` : host)
+
 // The resolved listen address, logged once the listener is up: with `bind`
 // configurable, the file log must record what the server actually bound.
 const logListenAddress = Layer.effectDiscard(
@@ -74,7 +77,7 @@ const logListenAddress = Layer.effectDiscard(
     const server = yield* HttpServer.HttpServer
     const address = server.address
     if (address._tag === "TcpAddress") {
-      yield* Effect.logInfo(`listening on http://${address.hostname}:${address.port}`)
+      yield* Effect.logInfo(`listening on http://${hostForUrl(address.hostname)}:${address.port}`)
     }
   }),
 )

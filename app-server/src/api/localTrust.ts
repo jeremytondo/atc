@@ -28,9 +28,15 @@ import * as AuthToken from "../platform/authToken.ts"
 // The token-free path is gated on the TCP PEER address, never on the `Host`
 // header alone: `Host` is client-controlled, so trusting a "loopback" Host
 // from a non-loopback peer would let any remote client send `Host: localhost`
-// and skip the token entirely. Peer-gating also keeps `tailscale serve`
-// working token-free — it proxies to us over loopback — while a direct
-// tailnet/LAN connection (a non-loopback peer) must present the token.
+// and skip the token entirely. The loopback-Host requirement still applies
+// to loopback peers because a DNS-rebinding request IS a loopback peer
+// carrying the hostile name in `Host` — and a local reverse proxy
+// (`tailscale serve` preserves the incoming Host) presents exactly that same
+// shape, indistinguishable from rebinding here. Proxied requests therefore
+// authenticate with the bearer token like any other remote path; making them
+// token-free would take a configured Host allowlist, which nothing needs
+// while every remote client attaches the token anyway (remote browsers are
+// out of scope by design).
 
 const LOOPBACK_NAMES = new Set(["localhost", "127.0.0.1", "[::1]"])
 

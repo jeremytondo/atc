@@ -120,6 +120,10 @@ describe("hardened listener", () => {
 })
 
 describe("bearer token trust (remote access)", () => {
+  // A loopback connection carrying a non-loopback Host: the shape of both a
+  // request proxied by `tailscale serve` (which preserves the incoming Host)
+  // and a DNS-rebinding attempt — indistinguishable server-side, so the
+  // token is required for it either way (see localTrust.ts).
   const remoteHost = "Host: workstation.tailnet:7332"
   const bearer = `Authorization: Bearer ${TEST_AUTH_TOKEN}`
 

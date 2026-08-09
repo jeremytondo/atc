@@ -1,4 +1,4 @@
-import { Context, Effect, FileSystem, Layer } from "effect"
+import { Context, Effect, FileSystem, Layer, Schema } from "effect"
 import { timingSafeEqual } from "node:crypto"
 import * as path from "node:path"
 import { AppConfig } from "./config.ts"
@@ -12,7 +12,8 @@ import { AppConfig } from "./config.ts"
 // at startup, so `atc token rotate` takes effect immediately — the old token
 // stops working without a server restart, and there is no cache-invalidation
 // machinery to get wrong. The read cost is paid only by non-loopback
-// requests presenting a token. A missing or unreadable file fails closed.
+// requests presenting a token. A missing, unreadable, or malformed file
+// fails closed.
 
 /** Prefixed 256-bit random token; the prefix makes leaks greppable. */
 const generate = (): string => {
@@ -20,6 +21,23 @@ const generate = (): string => {
   crypto.getRandomValues(bytes)
   return `atc_${Buffer.from(bytes).toString("base64url")}`
 }
+
+// Exactly the shape `generate` produces (32 base64url bytes = 43 chars). A
+// file holding anything else — a restored fragment, a hand-typed value — is
+// never adopted as a credential: `ensure` refuses it with a remedy and
+// `verify` fails closed, so weak or corrupt contents cannot become a
+// remotely accepted secret.
+const TOKEN_FORMAT = /^atc_[A-Za-z0-9_-]{43}$/
+
+/** The token file exists but does not hold a token we could have issued. */
+export class TokenFileError extends Schema.TaggedErrorClass<TokenFileError>()("TokenFileError", {
+  message: Schema.String,
+}) {}
+
+const malformed = (file: string) =>
+  new TokenFileError({
+    message: `token file ${file} does not hold a valid token; delete it or run \`atc token rotate\``,
+  })
 
 // Byte-wise timing-safe comparison. Length is not secret (the format is
 // public), so a length mismatch may return early.
@@ -29,13 +47,10 @@ const tokenEquals = (presented: string, actual: string): boolean => {
   return a.length === b.length && timingSafeEqual(a, b)
 }
 
-/** The stored token, or undefined when the file does not exist yet. */
+/** The trimmed file contents, or undefined when the file does not exist. */
 const readToken = (fs: FileSystem.FileSystem, file: string) =>
   fs.readFileString(file).pipe(
-    Effect.map((text) => {
-      const token = text.trim()
-      return token === "" ? undefined : token
-    }),
+    Effect.map((text) => text.trim()),
     Effect.catchTag("PlatformError", (error) =>
       error.reason._tag === "NotFound" ? Effect.succeed(undefined) : Effect.fail(error),
     ),
@@ -55,25 +70,47 @@ const replaceToken = (fs: FileSystem.FileSystem, file: string, token: string) =>
     return token
   })
 
+/** The persisted token when present and valid; never generates one. */
+export const read = Effect.gen(function* () {
+  const config = yield* AppConfig
+  const fs = yield* FileSystem.FileSystem
+  const token = yield* readToken(fs, config.tokenFile)
+  return token !== undefined && TOKEN_FORMAT.test(token) ? token : undefined
+})
+
 /** Read the persisted token, generating and persisting one if absent. */
 export const ensure = Effect.gen(function* () {
   const config = yield* AppConfig
   const fs = yield* FileSystem.FileSystem
   const existing = yield* readToken(fs, config.tokenFile)
-  if (existing !== undefined) return existing
+  if (existing !== undefined) {
+    if (!TOKEN_FORMAT.test(existing)) return yield* Effect.fail(malformed(config.tokenFile))
+    // Re-assert 0600: a copy or restore may have widened the mode, and a
+    // world-readable bearer credential defeats the point of one.
+    yield* fs.chmod(config.tokenFile, 0o600)
+    return existing
+  }
   yield* fs.makeDirectory(path.dirname(config.tokenFile), { recursive: true })
   const token = generate()
   // Exclusive create ("wx"): if a concurrent ensure (server boot racing
   // `atc token` on a fresh install) already created the file, adopt the
   // winner's token instead of overwriting it — otherwise each caller could
-  // mint and hand out a different token.
+  // mint and hand out a different token. When the winner's contents cannot
+  // be read back as a valid token, fail: returning our own value here would
+  // hand out a credential that is not on disk and will never verify.
   return yield* fs
     .writeFileString(config.tokenFile, `${token}\n`, { flag: "wx", mode: 0o600 })
     .pipe(
       Effect.as(token),
       Effect.catchTag("PlatformError", (error) =>
         error.reason._tag === "AlreadyExists"
-          ? readToken(fs, config.tokenFile).pipe(Effect.map((winner) => winner ?? token))
+          ? readToken(fs, config.tokenFile).pipe(
+              Effect.flatMap((winner) =>
+                winner !== undefined && TOKEN_FORMAT.test(winner)
+                  ? Effect.succeed(winner)
+                  : Effect.fail(malformed(config.tokenFile)),
+              ),
+            )
           : Effect.fail(error),
       ),
     )
@@ -111,7 +148,7 @@ export const layer = Layer.effect(AuthToken)(
     // file (bad permissions, wrong type) leaves remote access unavailable
     // (verify fails closed below), never blocks the server from starting.
     yield* ensure.pipe(
-      Effect.catchTag("PlatformError", (error) =>
+      Effect.catch((error) =>
         Effect.logWarning(`remote-access token unavailable: ${error.message}`),
       ),
     )
@@ -119,8 +156,13 @@ export const layer = Layer.effect(AuthToken)(
       verify: (authorization) => {
         const presented = authorization?.match(/^Bearer\s+(.+)$/i)?.[1]
         if (presented === undefined) return Effect.succeed(false)
+        // A stored value `generate` could not have produced never matches:
+        // a corrupt or hand-written file must not become a live credential.
         return readToken(fs, config.tokenFile).pipe(
-          Effect.map((token) => token !== undefined && tokenEquals(presented, token)),
+          Effect.map(
+            (token) =>
+              token !== undefined && TOKEN_FORMAT.test(token) && tokenEquals(presented, token),
+          ),
           Effect.catch(() => Effect.succeed(false)),
         )
       },

@@ -60,6 +60,42 @@ describe("auth token", () => {
     }).pipe(Effect.provide(AuthToken.layer.pipe(Layer.provideMerge([config, BunServices.layer]))))
   })
 
+  it.effect("ensure refuses foreign token-file contents and repairs permissions", () => {
+    const { tokenFile, config } = withTokenDir()
+    return Effect.gen(function* () {
+      // Contents `generate` could not have produced are never adopted — a
+      // restored or hand-written value must not become a live credential.
+      fs.mkdirSync(path.dirname(tokenFile), { recursive: true })
+      fs.writeFileSync(tokenFile, "hunter2\n")
+      const malformed = yield* Effect.flip(AuthToken.ensure)
+      assert.strictEqual(malformed._tag, "TokenFileError")
+      assert.include(String(malformed.message), "atc token rotate")
+
+      // An empty file fails the same way rather than handing out a token
+      // that was never persisted.
+      fs.writeFileSync(tokenFile, "")
+      assert.strictEqual((yield* Effect.flip(AuthToken.ensure))._tag, "TokenFileError")
+
+      // A valid file whose mode was widened (copy, restore) is re-secured.
+      fs.rmSync(tokenFile)
+      const token = yield* AuthToken.ensure
+      fs.chmodSync(tokenFile, 0o644)
+      assert.strictEqual(yield* AuthToken.ensure, token)
+      assert.strictEqual(fs.statSync(tokenFile).mode & 0o777, 0o600)
+    }).pipe(Effect.provide([config, BunServices.layer]))
+  })
+
+  it.effect("a malformed token file fails closed in verify without blocking the layer", () => {
+    const { tokenFile, config } = withTokenDir()
+    fs.mkdirSync(path.dirname(tokenFile), { recursive: true })
+    fs.writeFileSync(tokenFile, "hunter2\n")
+    return Effect.gen(function* () {
+      const auth = yield* AuthToken.AuthToken
+      // The weak stored value is not accepted even when presented exactly.
+      assert.isFalse(yield* auth.verify("Bearer hunter2"))
+    }).pipe(Effect.provide(AuthToken.layer.pipe(Layer.provideMerge([config, BunServices.layer]))))
+  })
+
   it.effect("the service layer ensures the token exists at startup", () => {
     const { tokenFile, config } = withTokenDir()
     return Effect.gen(function* () {

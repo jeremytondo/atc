@@ -93,9 +93,10 @@ client, so the server, the TypeScript client (`src/api/client.ts`), and the Swif
 client all derive from the same definition.
 
 One trust rule guards every route (API, SSE, the attach WebSocket): a request
-passes if it presents a recognized loopback `Host`/`Origin`, or if it carries
-`Authorization: Bearer <token>` matching the server's token; everything else
-is an empty 403. Loopback clients never need the token.
+passes if it arrives on a loopback connection presenting a recognized loopback
+`Host`/`Origin`, or if it carries `Authorization: Bearer <token>` matching the
+server's token; everything else is an empty 403. Local loopback clients never
+need the token.
 
 ### Remote access
 
@@ -107,9 +108,13 @@ reachability (Tailscale) — the token is the just-in-case backstop, not an
 invitation to expose the server publicly. The token is generated on first
 server start (or by `atc token`) into a `0600` file in the data dir; `atc
 token` prints it for pasting into a client, and `atc token rotate` reissues
-it, taking effect immediately on a running server. Remote browser access to
-the Web UI stays unsupported — browsers cannot attach bearer headers to SSE
-or WebSockets.
+it, taking effect immediately on a running server. Requests arriving through
+a local reverse proxy (`tailscale serve`) also need the token: the proxy
+preserves the incoming `Host`, which makes its requests indistinguishable
+from DNS rebinding, so only direct loopback traffic is token-free (the trust
+module header has the full reasoning). Remote browser access to the Web UI
+stays unsupported — browsers cannot attach bearer headers to SSE or
+WebSockets.
 
 ## Structure
 

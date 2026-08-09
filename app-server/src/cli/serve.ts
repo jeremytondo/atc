@@ -1,5 +1,7 @@
 import { Console, Effect, FileSystem, Layer, Option, Schema } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
+import * as LocalTrust from "../api/localTrust.ts"
+import * as AuthToken from "../platform/authToken.ts"
 import { BuildInfo } from "../platform/buildInfo.ts"
 import { AppConfig, layer as appConfigLayer } from "../platform/config.ts"
 import {
@@ -69,7 +71,7 @@ export const serve = Command.make("serve", { port, bind }, ({ port, bind }) =>
     if (build.commit !== "dev") {
       yield* Effect.sync(() => {
         process.stderr.write(
-          `atc app server starting on http://${effective.bind}:${effective.port} (logs: ${effective.logFile})\n`,
+          `atc app server starting on http://${Server.hostForUrl(effective.bind)}:${effective.port} (logs: ${effective.logFile})\n`,
         )
       })
     }
@@ -89,8 +91,15 @@ export const serve = Command.make("serve", { port, bind }, ({ port, bind }) =>
 
 // --- Background management ---
 
-/** Pidfile contents: which process, and where it was told to listen. */
-const PidRecord = Schema.Struct({ pid: Schema.Int, port: Schema.Int, bind: Schema.String })
+/** Pidfile contents: which process, and where it was told to listen. `bind`
+ * is optional because the release before ATC-148 wrote `{ pid, port }`; those
+ * servers listened on the then-hardcoded loopback address, so a missing bind
+ * decodes as `127.0.0.1` and upgrades keep managing the old process. */
+const PidRecord = Schema.Struct({
+  pid: Schema.Int,
+  port: Schema.Int,
+  bind: Schema.optionalKey(Schema.String),
+})
 const decodePidRecord = Schema.decodeEffect(Schema.fromJsonString(PidRecord))
 const encodePidRecord = Schema.encodeEffect(Schema.fromJsonString(PidRecord))
 
@@ -98,21 +107,27 @@ const encodePidRecord = Schema.encodeEffect(Schema.fromJsonString(PidRecord))
 const readPidRecord = (fs: FileSystem.FileSystem, file: string) =>
   fs.readFileString(file).pipe(
     Effect.flatMap(decodePidRecord),
+    Effect.map((record) => ({ ...record, bind: record.bind ?? "127.0.0.1" })),
     Effect.catch(() => Effect.succeed(undefined)),
   )
 
 // The wildcard binds are not connectable addresses; probe and report loopback
 // for them. A specific address (loopback or a real interface) is reachable at
-// itself from the same host. IPv6 literals need brackets in a URL.
+// itself from the same host.
 const reachableHost = (bind: string): string =>
   bind === "0.0.0.0" || bind === "::" || bind === "" ? "127.0.0.1" : bind
-const hostForUrl = (host: string): string => (host.includes(":") ? `[${host}]` : host)
+
+// A probe at a host the trust rule does not recognize as loopback is itself
+// a remote request (api/localTrust.ts) and only passes with the bearer token.
+const probeNeedsToken = (host: string): boolean =>
+  !LocalTrust.isLoopbackHost(Server.hostForUrl(host))
 
 /** One bounded health probe against `host`; false on any failure. */
-const probeHealth = (host: string, port: number, timeoutMillis: number) =>
+const probeHealth = (host: string, port: number, timeoutMillis: number, token?: string) =>
   Effect.tryPromise(() =>
-    fetch(`http://${hostForUrl(host)}:${port}/api/v1/health`, {
+    fetch(`http://${Server.hostForUrl(host)}:${port}/api/v1/health`, {
       signal: AbortSignal.timeout(timeoutMillis),
+      headers: token === undefined ? {} : { authorization: `Bearer ${token}` },
     }),
   ).pipe(
     Effect.map((response) => response.ok),
@@ -162,14 +177,22 @@ export const start = Command.make("start", { port, bind }, ({ port, bind }) =>
     const existing = yield* readPidRecord(fs, effective.pidFile)
     if (existing !== undefined && isProcessAlive(existing.pid)) {
       yield* Console.log(
-        `atc app server already running (pid ${existing.pid}) on http://${hostForUrl(existing.bind)}:${existing.port}`,
+        `atc app server already running (pid ${existing.pid}) on http://${Server.hostForUrl(existing.bind)}:${existing.port}`,
       )
       return
     }
+    // A non-loopback probe host needs the bearer token; prepare it up front
+    // (the spawned server adopts the same file — `ensure` resolves the
+    // create race), and let token-file trouble fail with its own actionable
+    // diagnostic rather than 15 s of 403s and a generic unhealthy report.
+    // Loopback starts never touch the token, so a broken token file cannot
+    // block them (mirroring the server's own boot rule).
+    const probeHost = reachableHost(effective.bind)
+    const token = probeNeedsToken(probeHost) ? yield* AuthToken.ensure : undefined
     // A healthy responder without a live pidfile is a foreground serve or
     // someone else's instance; a second server would only fail its bind
     // after the fact and this start would then claim the wrong process.
-    if (yield* probeHealth(reachableHost(effective.bind), effective.port, 1_000)) {
+    if (yield* probeHealth(probeHost, effective.port, 1_000, token)) {
       return yield* Cli.failReported(
         `atc start: something is already serving on port ${effective.port} (a foreground \`atc serve\`?); stop it or pass --port`,
       )
@@ -191,7 +214,7 @@ export const start = Command.make("start", { port, bind }, ({ port, bind }) =>
     const healthy = yield* pollUntil(
       15_000,
       150,
-      probeHealth(reachableHost(effective.bind), effective.port, 1_000),
+      probeHealth(probeHost, effective.port, 1_000, token),
     )
     if (!healthy) {
       // Success is only ever reported for a healthy server, so the spawned
@@ -210,7 +233,7 @@ export const start = Command.make("start", { port, bind }, ({ port, bind }) =>
       )
     }
     yield* Console.log(
-      `started atc app server (pid ${pid}) on http://${hostForUrl(effective.bind)}:${effective.port} (logs: ${effective.logFile})`,
+      `started atc app server (pid ${pid}) on http://${Server.hostForUrl(effective.bind)}:${effective.port} (logs: ${effective.logFile})`,
     )
   }).pipe(serviceCommand("start")),
 ).pipe(Command.withDescription("Start the App Server in the background"))
@@ -272,8 +295,15 @@ export const status = Command.make("status", {}, () =>
     if (record === undefined || !isProcessAlive(record.pid)) {
       return yield* Cli.failReported("atc status: not running")
     }
-    const healthy = yield* probeHealth(reachableHost(record.bind), record.port, 2_000)
-    const url = `http://${hostForUrl(record.bind)}:${record.port}`
+    // Status never creates or repairs the token file; a missing or invalid
+    // one simply leaves the probe unauthenticated (and the server it cannot
+    // reach was not serving remote clients anyway — verify fails closed).
+    const probeHost = reachableHost(record.bind)
+    const token = probeNeedsToken(probeHost)
+      ? yield* AuthToken.read.pipe(Effect.catch(() => Effect.succeed(undefined)))
+      : undefined
+    const healthy = yield* probeHealth(probeHost, record.port, 2_000, token)
+    const url = `http://${Server.hostForUrl(record.bind)}:${record.port}`
     if (!healthy) {
       return yield* Cli.failReported(
         `atc status: running (pid ${record.pid}) but not answering on ${url}; logs: ${config.logFile}`,
