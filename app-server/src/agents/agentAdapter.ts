@@ -64,6 +64,33 @@ export const NESTED_SESSION_ENV_VARIABLES = [
  */
 export type AgentActivity = "idle" | "working" | "needs_input" | "unknown"
 
+const ACTIVITY_PRECEDENCE: Record<AgentActivity, number> = {
+  needs_input: 3,
+  working: 2,
+  unknown: 1,
+  idle: 0,
+}
+
+/**
+ * Reduce a session tree's activities (ATC-158): the root agent loop plus
+ * every tracked background descendant (subagents, backgrounded shells,
+ * workflows, pending session crons). Precedence is
+ * `needs_input > working > unknown > idle`: any member needing user action
+ * wins, any active member keeps the whole tree busy, and `idle` requires
+ * EVERY member known-inactive — one unestablished member keeps the
+ * aggregate `unknown`, never a guess.
+ */
+export const aggregateActivity = (
+  root: AgentActivity,
+  descendants: Iterable<AgentActivity>,
+): AgentActivity => {
+  let aggregate = root
+  for (const activity of descendants) {
+    if (ACTIVITY_PRECEDENCE[activity] > ACTIVITY_PRECEDENCE[aggregate]) aggregate = activity
+  }
+  return aggregate
+}
+
 export type AgentTurnOutcome = "completed" | "interrupted" | "failed"
 
 export type AgentRequestKind = "approval" | "question"
