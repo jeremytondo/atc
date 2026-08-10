@@ -6,6 +6,7 @@ import { fs, health, version } from "./cli/cli.ts"
 import { api, capabilities, context } from "./cli/gateway.ts"
 import { project } from "./cli/projects.ts"
 import { serve, start, status, stop } from "./cli/serve.ts"
+import { service } from "./cli/service.ts"
 import { terminal } from "./cli/terminals.ts"
 import { token } from "./cli/token.ts"
 import { thread } from "./cli/threads.ts"
@@ -22,6 +23,7 @@ const atc = Command.make("atc").pipe(
     start,
     stop,
     status,
+    service,
     api,
     context,
     capabilities,

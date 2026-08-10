@@ -4,7 +4,9 @@ import { Argument, Command, Flag } from "effect/unstable/cli"
 import { HttpClient } from "effect/unstable/http"
 import * as path from "node:path"
 import * as Client from "../api/client.ts"
+import * as LocalTrust from "../api/localTrust.ts"
 import { AppConfig, ConfigLoadError, layer as appConfigLayer } from "../platform/config.ts"
+import * as Server from "../server.ts"
 
 // Shared CLI plumbing: the one-line stderr diagnostic contract, the base-URL
 // resolution seam, and the clientCommand shape every API-backed command uses.
@@ -45,6 +47,57 @@ export const describeError = (error: unknown): string =>
     : error instanceof Error && error.message !== ""
       ? error.message
       : String(error)
+
+/**
+ * The command tail shared by every settled-config command (serve, the
+ * start/stop/status family, the service group): provide AppConfig and
+ * collapse failures into the one-line diagnostic under `prefix`.
+ */
+export const withSettledConfig = (prefix: string) => {
+  return <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    effect.pipe(Effect.provide(appConfigLayer), Effect.catch(reportOnce(prefix)))
+}
+
+// --- Server liveness probing (shared by serve.ts and service.ts, whose two
+// process families are otherwise deliberately independent) ---
+
+// The wildcard binds are not connectable addresses; probe and report loopback
+// for them. A specific address (loopback or a real interface) is reachable at
+// itself from the same host.
+export const reachableHost = (bind: string): string =>
+  bind === "0.0.0.0" || bind === "::" || bind === "" ? "127.0.0.1" : bind
+
+// A probe at a host the trust rule does not recognize as loopback is itself
+// a remote request (api/localTrust.ts) and only passes with the bearer token.
+export const probeNeedsToken = (host: string): boolean =>
+  !LocalTrust.isLoopbackHost(Server.hostForUrl(host))
+
+/** One bounded health probe against `host`; false on any failure. */
+export const probeHealth = (host: string, port: number, timeoutMillis: number, token?: string) =>
+  Effect.tryPromise(() =>
+    fetch(`http://${Server.hostForUrl(host)}:${port}/api/v1/health`, {
+      signal: AbortSignal.timeout(timeoutMillis),
+      headers: token === undefined ? {} : { authorization: `Bearer ${token}` },
+    }),
+  ).pipe(
+    Effect.map((response) => response.ok),
+    Effect.catch(() => Effect.succeed(false)),
+  )
+
+/** Polls `check` until true or the deadline lapses. */
+export const pollUntil = (
+  deadlineMillis: number,
+  intervalMillis: number,
+  check: Effect.Effect<boolean>,
+) =>
+  Effect.gen(function* () {
+    const attempts = Math.ceil(deadlineMillis / intervalMillis)
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      if (yield* check) return true
+      yield* Effect.sleep(intervalMillis)
+    }
+    return yield* check
+  })
 
 // Base-URL resolution seam for client commands: ATC_ENDPOINT (set in the
 // environment of processes ATC launches) wins; otherwise the URL derives
