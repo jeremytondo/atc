@@ -30,6 +30,7 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         var delay: Duration?
         var directoryCheck: Components.Schemas.FsCheckResponse?
         var directoryListings: [String?: Components.Schemas.FsListResponse] = [:]
+        var directoryListingFailure: Components.Schemas.DirectoryUnavailableJsonEncoding?
         var createdThreadRequests: [Components.Schemas.CreateThreadRequest] = []
         var createdTerminalRequests: [Components.Schemas.CreateTerminalRequest] = []
         var listProjectsCount = 0
@@ -122,10 +123,17 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
 
     /// Listings served by `listDirectory`, keyed by the requested path
     /// (`nil` = the home-directory request). A request for an unseeded path
-    /// throws, standing in for the server's DirectoryUnavailable.
+    /// throws, standing in for a transport failure.
     var directoryListings: [String?: Components.Schemas.FsListResponse] {
         get { lock.withLock { state.directoryListings } }
         set { lock.withLock { state.directoryListings = newValue } }
+    }
+
+    /// While set, every `listDirectory` answers the documented 422 with this
+    /// payload — the server's tagged DirectoryUnavailable diagnostic.
+    var directoryListingFailure: Components.Schemas.DirectoryUnavailableJsonEncoding? {
+        get { lock.withLock { state.directoryListingFailure } }
+        set { lock.withLock { state.directoryListingFailure = newValue } }
     }
 
     // MARK: - Captured requests and call counts
@@ -524,6 +532,9 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     func listDirectory(_ input: Operations.ListDirectory.Input) async throws
         -> Operations.ListDirectory.Output {
         try await gate()
+        if let failure = directoryListingFailure {
+            return .unprocessableContent(.init(body: .json(.init(value1: failure))))
+        }
         guard let listing = directoryListings[input.query.path] else {
             throw StubUnimplemented("listDirectory \(input.query.path ?? "<home>")")
         }
