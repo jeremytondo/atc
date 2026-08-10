@@ -65,6 +65,21 @@ describe.skipIf(!enabled)("compiled atc artifact (opt-in: mise run test:compiled
       expect(body.commit).toMatch(/^[0-9a-f]{40}(-dirty)?$/)
       expect(Number.isNaN(Date.parse(body.builtAt))).toBe(false)
 
+      // The admin UI ships inside the executable: pages and hashed assets
+      // are embedded at compile time, served from a cwd outside the repo.
+      const home = await fetch(`${base}/`)
+      expect(home.status).toBe(200)
+      expect(home.headers.get("content-type")).toContain("text/html")
+      const homeHtml = await home.text()
+      const docs = await fetch(`${base}/docs`)
+      expect(docs.status).toBe(200)
+      const assetPath = homeHtml.match(/_app\/immutable\/entry\/[\w.-]+\.js/)?.[0]
+      expect(assetPath).toBeDefined()
+      const asset = await fetch(`${base}/${assetPath}`)
+      expect(asset.status).toBe(200)
+      expect(asset.headers.get("cache-control")).toContain("immutable")
+      expect((await fetch(`${base}/no-such-page`)).status).toBe(404)
+
       // The local trust boundary ships in the executable: cross-origin
       // browser requests are rejected.
       const crossOrigin = await fetch(`${base}/api/v1/health`, {

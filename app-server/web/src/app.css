@@ -1,0 +1,204 @@
+/* Design tokens carried over from the legacy console (server/web) so the
+   admin UI keeps the same look. System font stacks keep the page fully
+   self-contained — no network font loading. */
+:root {
+  --dc-bg: #08090a;
+  --dc-side: #0b0c0d;
+  --dc-panel: #101113;
+  --dc-raise: #1a1b1e;
+  --dc-bd: rgba(255, 255, 255, 0.07);
+  --dc-bd2: rgba(255, 255, 255, 0.11);
+  --dc-tx: #f7f8f8;
+  --dc-mut: #8a8f98;
+  --dc-dim: #62666d;
+  --dc-acc: #3b82f6;
+  --dc-green: #4cb782;
+  --dc-amber: #e2a93b;
+  --dc-red: #e5484d;
+  --font-ui:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--dc-bg);
+  color: var(--dc-tx);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 0 20px;
+  height: 48px;
+  flex: none;
+  background: var(--dc-side);
+  border-bottom: 1px solid var(--dc-bd);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.brand .mark {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: linear-gradient(150deg, var(--dc-acc), color-mix(in srgb, var(--dc-acc) 55%, #000));
+}
+
+.topnav {
+  display: flex;
+  gap: 4px;
+}
+
+.topnav a {
+  padding: 4px 10px;
+  border-radius: 6px;
+  color: var(--dc-mut);
+}
+
+.topnav a:hover {
+  color: var(--dc-tx);
+}
+
+.topnav a.active {
+  background: var(--dc-raise);
+  color: var(--dc-tx);
+}
+
+.content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.page {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 40px 24px;
+}
+
+.h1 {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+
+.lede {
+  color: var(--dc-mut);
+  margin: 0 0 24px;
+}
+
+.card {
+  background: var(--dc-panel);
+  border: 1px solid var(--dc-bd);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.card + .card {
+  margin-top: 16px;
+}
+
+.card .head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--dc-bd);
+  font-weight: 500;
+}
+
+.rows {
+  padding: 4px 0;
+}
+
+.row {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  padding: 8px 16px;
+}
+
+.row .k {
+  width: 120px;
+  flex: none;
+  color: var(--dc-mut);
+}
+
+.row .v {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.sdot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.sdot.ok {
+  background: var(--dc-green);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--dc-green) 60%, transparent);
+}
+
+.sdot.bad {
+  background: var(--dc-red);
+}
+
+.sdot.wait {
+  background: var(--dc-amber);
+}
+
+.muted {
+  color: var(--dc-dim);
+  font-size: 12px;
+}
+
+.errorbox {
+  border: 1px solid color-mix(in srgb, var(--dc-red) 40%, transparent);
+  background: color-mix(in srgb, var(--dc-red) 10%, transparent);
+  color: var(--dc-tx);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+/* Scalar fills the viewport below the topbar with its own scrolling. */
+.docs-host {
+  height: 100%;
+}
