@@ -75,12 +75,25 @@ describe("sanitizeTitle", () => {
 })
 
 describe("titleInstruction", () => {
-  it("requests sentence case and carries a capped prompt", () => {
+  it("requests the closed activity-prefix taxonomy", () => {
     const instruction = titleInstruction("add a login page")
     assert.include(
       instruction,
       "Use sentence case, not title case: capitalize only the first word and proper nouns.",
     )
+    assert.include(instruction, "Build: create, implement, change, or fix something.")
+    assert.include(instruction, "Review: review or critique existing code or work.")
+    assert.include(instruction, "Grill: explicitly grill or stress-test a plan or design.")
+    assert.include(instruction, "Explore: brainstorm, research, compare, or understand options.")
+    assert.include(
+      instruction,
+      "Investigate: diagnose a suspected bug or problem without asking for a fix.",
+    )
+    assert.include(instruction, "If no category clearly matches, omit the prefix.")
+  })
+
+  it("carries a capped prompt", () => {
+    const instruction = titleInstruction("add a login page")
     assert.include(instruction, "add a login page")
     const capped = titleInstruction("x".repeat(10_000))
     assert.isBelow(capped.length, 5_000)
