@@ -1,6 +1,6 @@
 import { Context, Effect, Layer, Schema } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
-import type { AgentActivity } from "./agentAdapter.ts"
+import type { AgentActivity, AgentSessionEvent } from "./agentAdapter.ts"
 import { aggregateActivity } from "./agentAdapter.ts"
 
 // Claude hook ingestion (ATC-123): one normalization of Claude Code's hook
@@ -17,8 +17,9 @@ import { aggregateActivity } from "./agentAdapter.ts"
 // opaque provider metadata and adopted back after restarts; registering a
 // different secret invalidates the prior one); a payload whose session_id
 // disagrees with the secret's registration is dropped. Hooks carry no turn
-// or request correlation ids, so they normalize to activity only — never
-// to turn or request events.
+// or request correlation ids, so they normalize to activity — never to
+// turn or request events — plus root UserPromptSubmit prompt text
+// (ATC-155 auto-naming evidence).
 //
 // Activity is the AGGREGATE of the whole session tree (ATC-158): the root
 // agent loop plus its background work (subagents, backgrounded shells,
@@ -195,7 +196,22 @@ const HookPayload = Schema.Struct({
   hook_event_name: Schema.String,
 })
 
-export type HookListener = (providerSessionId: string, activity: AgentActivity) => void
+export type HookListener = (providerSessionId: string, event: AgentSessionEvent) => void
+
+/**
+ * The ROOT session's user prompt from a UserPromptSubmit payload, or null:
+ * a payload carrying `agent_id` fired inside a subagent — its prompt is
+ * synthetic dispatch, never the user's message (ATC-155).
+ */
+export const userPromptOf = (
+  eventName: string,
+  payload: Record<string, unknown>,
+): string | null => {
+  if (eventName !== "UserPromptSubmit") return null
+  if (typeof payload["agent_id"] === "string") return null
+  const prompt = payload["prompt"]
+  return typeof prompt === "string" && prompt !== "" ? prompt : null
+}
 
 export class ClaudeHooks extends Context.Service<
   ClaudeHooks,
@@ -215,8 +231,8 @@ export class ClaudeHooks extends Context.Service<
     /** Drop the session's registration (thread deletion). Idempotent. */
     readonly revokeSecret: (providerSessionId: string) => Effect.Effect<void>
     /**
-     * Subscribe to normalized webhook activity for TUI-driven sessions.
-     * Scoped: closing unsubscribes.
+     * Subscribe to normalized webhook session events (activity and root
+     * user prompts) for TUI-driven sessions. Scoped: closing unsubscribes.
      */
     readonly subscribe: (
       listener: HookListener,
@@ -277,12 +293,19 @@ export const layer = Layer.effect(ClaudeHooks)(
           if (decoded.value.session_id !== providerSessionId) return 400 as const
           const tracker = trackers.get(providerSessionId) ?? makeActivityTracker()
           trackers.set(providerSessionId, tracker)
-          const activity = tracker.update(
-            decoded.value.hook_event_name,
-            payload as Record<string, unknown>,
-          )
+          const record = payload as Record<string, unknown>
+          // The prompt (its cause) goes out before the activity transition.
+          const prompt = userPromptOf(decoded.value.hook_event_name, record)
+          if (prompt !== null) {
+            for (const listener of listeners) {
+              listener(providerSessionId, { type: "userPrompt", text: prompt })
+            }
+          }
+          const activity = tracker.update(decoded.value.hook_event_name, record)
           if (activity !== null) {
-            for (const listener of listeners) listener(providerSessionId, activity)
+            for (const listener of listeners) {
+              listener(providerSessionId, { type: "activity", activity })
+            }
           }
           return 204 as const
         }),

@@ -7,10 +7,11 @@ import type {
   AgentIdentityMismatch,
   AgentProtocolError,
   AgentResumeFailed,
+  AgentSessionEvent,
   AgentUnavailable,
   TuiLaunchSpec,
 } from "../agents/agentAdapter.ts"
-import { NESTED_SESSION_ENV_VARIABLES } from "../agents/agentAdapter.ts"
+import { NESTED_SESSION_ENV_VARIABLES, sanitizeTitle } from "../agents/agentAdapter.ts"
 import {
   AGENT_IDS,
   ProviderSessionConflict,
@@ -75,6 +76,12 @@ export type Thread = typeof ThreadSchema.Type
 //     worth protecting, and writing at onset (not busy→idle) keeps the
 //     marker across a restart or observer gap mid-first-turn — the same
 //     signal for every provider.
+//   - Auto-naming (ATC-155): the first user prompt observed on a thread
+//     that was unnamed AND unconfirmed when its subscription started forks
+//     one fire-and-forget title generation through the adapter seam. A
+//     creation-time or manual name always wins — checked before the
+//     generation call and enforced atomically by the guarded rename (name
+//     IS NULL) — and every failure leaves the fallback name, silently.
 //   - archived threads are never pinned: pin refuses archived records, and
 //     archive clears the pin in the same repository write so no client can
 //     observe or restore an archived pin.
@@ -208,6 +215,39 @@ export const layerWith = (options: ThreadsOptions) =>
         activity === "working" || activity === "needs_input"
 
       /**
+       * The auto-naming transition (ATC-155): one title one-shot through
+       * the adapter seam, adopted only while the thread is still unnamed
+       * (pre-checked here, enforced atomically by the guarded rename).
+       * Every failure logs and leaves the fallback name — a missing title
+       * is never an error, so the effect itself cannot fail.
+       */
+      const generateThreadTitle = (record: ThreadRecord, prompt: string): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          const adapter = adapterFor(record)
+          if (adapter === undefined) return
+          // A rename that landed since the prompt was captured makes the
+          // generation pointless — skip the provider call, not just the
+          // write (T3Code semantics).
+          const current = yield* repository.get(record.id)
+          if (Option.isNone(current) || current.value.name !== undefined) return
+          const raw = yield* adapter.generateTitle({
+            cwd: record.workingDirectory,
+            prompt,
+          })
+          const title = sanitizeTitle(raw)
+          if (title === null) return
+          const renamed = yield* repository.renameIfUnnamed(record.id, title)
+          if (Option.isNone(renamed)) return
+          yield* events.publish({ resource: "thread", id: record.id, change: "updated" })
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.logDebug("thread auto-naming failed").pipe(
+              Effect.annotateLogs({ threadId: record.id, reason: error.message }),
+            ),
+          ),
+        )
+
+      /**
        * Start (once) the thread's normalized activity subscription. The
        * consumer keeps the in-memory snapshot current and persists the
        * confirmed marker at the first busy evidence it sees (the header's
@@ -250,14 +290,29 @@ export const layerWith = (options: ThreadsOptions) =>
               })
               .pipe(
                 Effect.catchTag("AgentUnavailable", () =>
-                  Effect.succeed(Stream.empty as Stream.Stream<AgentActivity>),
+                  Effect.succeed(Stream.empty as Stream.Stream<AgentSessionEvent>),
                 ),
                 Scope.provide(child),
               )
             let confirmed = record.confirmedAt !== undefined
+            // Auto-name eligibility is fixed at subscription start: a name
+            // or a confirmed first turn already on the record rules the
+            // thread out (retro-naming is a non-goal), and the first prompt
+            // event spends the one attempt.
+            let untitled = record.name === undefined && record.confirmedAt === undefined
             yield* stream.pipe(
-              Stream.runForEach((activity) =>
+              Stream.runForEach((event) =>
                 Effect.gen(function* () {
+                  if (event.type === "userPrompt") {
+                    if (!untitled) return
+                    untitled = false
+                    // Fire-and-forget in the SERVICE scope: the generation
+                    // outlives observation churn (a closed terminal) but
+                    // not the server.
+                    yield* generateThreadTitle(record, event.text).pipe(Effect.forkIn(serviceScope))
+                    return
+                  }
+                  const activity = event.activity
                   const previous = liveActivity.get(record.id)
                   liveActivity.set(record.id, activity)
                   if (!confirmed && isBusy(activity)) {

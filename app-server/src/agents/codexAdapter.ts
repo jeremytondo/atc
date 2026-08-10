@@ -1,9 +1,23 @@
-import { Cause, Context, Deferred, Effect, Layer, Queue, Schema, Semaphore, Stream } from "effect"
+import {
+  Cause,
+  Context,
+  Deferred,
+  Duration,
+  Effect,
+  FileSystem,
+  Layer,
+  Queue,
+  Schema,
+  Semaphore,
+  Stream,
+} from "effect"
+import * as path from "node:path"
 import type {
   AgentActivity,
   AgentAdapter,
   AgentConnection,
   AgentEvent,
+  AgentSessionEvent,
   EstablishedIdentity,
 } from "./agentAdapter.ts"
 import {
@@ -14,8 +28,10 @@ import {
   AgentUnavailable,
   aggregateActivity,
   makeVersionGate,
+  NESTED_SESSION_ENV_VARIABLES,
   resolveProviderExecutable,
   samePath,
+  titleInstruction,
 } from "./agentAdapter.ts"
 import * as BuildInfo from "../platform/buildInfo.ts"
 import * as CodexServer from "./codexServer.ts"
@@ -51,6 +67,22 @@ import * as Subprocess from "../platform/subprocess.ts"
 export const CODEX_TESTED_VERSION = "0.146.0"
 
 const REQUEST_TIMEOUT = "30 seconds"
+
+/** Bound on one `codex exec` title one-shot (ATC-155). */
+const TITLE_TIMEOUT = "90 seconds"
+
+/** The title one-shot's pinned model (ATC-155): a title needs the cheap
+ * high-volume tier (~25× cheaper than the default coding models), never
+ * the user's configured coding model. Verified live 2026-08-10. */
+const TITLE_MODEL = "gpt-5.6-luna"
+
+// One arming of the first-prompt discovery loop (ATC-155): first read
+// immediately at the transition, then capped backoff while the rollout
+// flush catches up (~1.4s behind turn start, probed live 2026-08-10).
+// Worst case ~28s of polling per arming, then re-arm on a later transition.
+const PROMPT_READ_ATTEMPTS = 8
+const PROMPT_READ_BACKOFF_MS = 500
+const PROMPT_READ_BACKOFF_CAP_MS = 5_000
 
 export class CodexAdapter extends Context.Service<CodexAdapter, AgentAdapter>()(
   "app-server/CodexAdapter",
@@ -97,6 +129,16 @@ const ThreadReadReply = Schema.Struct({
     parentThreadId: Schema.optional(Schema.NullOr(Schema.String)),
     status: Schema.optional(Schema.Unknown),
   }),
+})
+
+// thread/read: the reply's required `preview` field is "usually the first
+// user message in the thread, if available" (generated schema, codex
+// 0.147) — the first-prompt evidence a passive socket can reach (ATC-155).
+// `thread/read {includeTurns: true}` is NOT usable for this: TUI-created
+// threads run in paginated history mode and the server rejects
+// includeTurns for them outright (probed live 2026-08-10).
+const ThreadPreviewReply = Schema.Struct({
+  thread: Schema.Struct({ preview: Schema.optional(Schema.NullOr(Schema.String)) }),
 })
 
 const statusToActivity = (status: unknown): AgentActivity => {
@@ -150,6 +192,7 @@ export const layer = Layer.effect(CodexAdapter)(
     const build = yield* BuildInfo.BuildInfo
     const codexServer = yield* CodexServer.CodexServer
     const subprocess = yield* Subprocess.Subprocess
+    const fs = yield* FileSystem.FileSystem
 
     // All live writer sessions, keyed by thread id. They always belong to
     // `current`; a connection teardown fails and clears every one of them.
@@ -998,8 +1041,168 @@ export const layer = Layer.effect(CodexAdapter)(
               Queue.endUnsafe(queue)
             }),
           )
-          return Stream.fromQueue(queue)
+          // User-prompt evidence is demand-driven (ATC-155 probe: item/*
+          // notifications never fan out to this passive socket): the first
+          // provider-evidenced transition arms ONE single-flight discovery
+          // fiber, forked so the activity feed — and the confirmed-marker
+          // write it drives — never waits on an RPC. The fiber polls
+          // thread/read for the session's `preview` (its first user
+          // message) on a capped backoff: the rollout flush LAGS the
+          // turn's start (probed ~1.4s on the live server) while the turn
+          // emits no further transitions until it ends, so waiting for the
+          // next transition would name long turns only at completion.
+          // Exhausting the backoff re-arms on a later transition (turn end
+          // stays the worst-case fallback); a hard read failure spends the
+          // attempt for good (logged at debug). The feed never lies — it
+          // just goes without prompt evidence.
+          const scope = yield* Effect.scope
+          const promptQueue = yield* Queue.make<AgentSessionEvent, Cause.Done>()
+          yield* Effect.addFinalizer(() => Effect.sync(() => Queue.endUnsafe(promptQueue)))
+          let promptPhase: "pending" | "reading" | "done" = "pending"
+          const readPreview = Effect.gen(function* () {
+            const state = yield* getClientRetryable
+            const reply = yield* request(state, "thread/read", {
+              threadId: options.providerSessionId,
+            }).pipe(Effect.mapError(rpcToProtocol))
+            const decoded = yield* decodeReply(ThreadPreviewReply, reply)
+            const preview = (decoded.thread.preview ?? "").trim()
+            return preview === "" ? null : preview
+          })
+          const discoverPrompt = Effect.gen(function* () {
+            let delay = PROMPT_READ_BACKOFF_MS
+            for (let attempt = 0; attempt < PROMPT_READ_ATTEMPTS; attempt++) {
+              if (attempt > 0) {
+                yield* Effect.sleep(Duration.millis(delay))
+                delay = Math.min(delay * 2, PROMPT_READ_BACKOFF_CAP_MS)
+              }
+              const text = yield* readPreview
+              if (text !== null) {
+                promptPhase = "done"
+                Queue.offerUnsafe(promptQueue, { type: "userPrompt", text })
+                return
+              }
+            }
+            promptPhase = "pending"
+          }).pipe(
+            Effect.catch((error) =>
+              Effect.gen(function* () {
+                promptPhase = "done"
+                yield* Effect.logDebug("codex first-prompt read failed").pipe(
+                  Effect.annotateLogs({
+                    providerSessionId: options.providerSessionId,
+                    reason: error.message,
+                  }),
+                )
+              }),
+            ),
+          )
+          const activityEvents = Stream.fromQueue(queue).pipe(
+            Stream.mapEffect((activity): Effect.Effect<AgentSessionEvent> =>
+              Effect.gen(function* () {
+                // Any provider-evidenced transition can carry the news that
+                // history exists; `unknown` is the teardown signal, where a
+                // read could only fail and burn the attempt.
+                if (promptPhase === "pending" && activity !== "unknown") {
+                  promptPhase = "reading"
+                  yield* discoverPrompt.pipe(Effect.forkIn(scope))
+                }
+                return { type: "activity", activity }
+              }),
+            ),
+          )
+          return Stream.merge(activityEvents, Stream.fromQueue(promptQueue))
         }),
+      generateTitle: (options) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const executable = yield* resolveProviderExecutable("codex", config.codexExecutable)
+            yield* versionCheck
+            // The cheapest ephemeral invocation (T3Code precedent): no
+            // session files, read-only sandbox, low reasoning. The prompt
+            // rides stdin (never argv — ps would show it) and the reply
+            // rides --output-last-message (stdout carries progress noise).
+            const outputFile = path.join(config.stateDir, `codex-title-${crypto.randomUUID()}.txt`)
+            yield* fs
+              .makeDirectory(config.stateDir, { recursive: true })
+              .pipe(
+                Effect.mapError((error) =>
+                  unavailable(`could not create stateDir: ${error.message}`),
+                ),
+              )
+            yield* Effect.addFinalizer(() => fs.remove(outputFile).pipe(Effect.ignore))
+            return yield* Effect.gen(function* () {
+              const child = yield* subprocess
+                .spawn({
+                  executable,
+                  args: [
+                    "exec",
+                    "--ephemeral",
+                    "--skip-git-repo-check",
+                    "-s",
+                    "read-only",
+                    "--model",
+                    TITLE_MODEL,
+                    "--config",
+                    'model_reasoning_effort="low"',
+                    "--color",
+                    "never",
+                    "--output-last-message",
+                    outputFile,
+                    "-",
+                  ],
+                  // The user's full environment (auth state) minus the
+                  // shared nested-session markers (agentAdapter.ts scrub
+                  // rule), composed inside the Subprocess seam.
+                  env: {},
+                  extendEnv: true,
+                  unsetEnv: NESTED_SESSION_ENV_VARIABLES,
+                  cwd: options.cwd,
+                })
+                .pipe(
+                  Effect.mapError((error) =>
+                    unavailable(`could not launch codex exec: ${error.message}`),
+                  ),
+                )
+              // Keep the pipe drained so a chatty exec can never block on it.
+              yield* Stream.runDrain(child.stdoutLines).pipe(Effect.ignore, Effect.forkScoped)
+              yield* child.writeLine(titleInstruction(options.prompt)).pipe(
+                Effect.andThen(child.endInput),
+                Effect.mapError((error) =>
+                  protocolError(`could not write the title prompt: ${error.message}`),
+                ),
+              )
+              const exitCode = yield* child.exitCode.pipe(
+                Effect.mapError((error) => protocolError(`codex exec failed: ${error.message}`)),
+              )
+              if (exitCode !== 0) {
+                const tail = yield* child.stderrTail
+                return yield* Effect.fail(
+                  protocolError(
+                    `codex exec exited with ${exitCode}` +
+                      (tail.length > 0 ? `: ${tail.join("\n")}` : ""),
+                  ),
+                )
+              }
+              return yield* fs
+                .readFileString(outputFile)
+                .pipe(
+                  Effect.mapError((error) =>
+                    protocolError(`could not read the title output: ${error.message}`),
+                  ),
+                )
+            }).pipe(
+              Effect.timeoutOrElse({
+                duration: TITLE_TIMEOUT,
+                orElse: () =>
+                  Effect.fail(
+                    protocolError(
+                      `title generation produced no result within ${Duration.format(Duration.fromInputUnsafe(TITLE_TIMEOUT))}`,
+                    ),
+                  ),
+              }),
+            )
+          }),
+        ),
       checkSession: (options) =>
         Effect.gen(function* () {
           const state = yield* getClientRetryable

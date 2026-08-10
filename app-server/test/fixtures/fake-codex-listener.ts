@@ -23,9 +23,59 @@
 //   FAKE_CODEX_PID_FILE   record this pid for reap assertions
 //   FAKE_CODEX_TTL_MS     self-exit backstop (default 120s) so a test that
 //                         fails to stop() a detached fixture cannot leak it
+//   FAKE_CODEX_READ_DELAY_MS  delay root thread/read replies, so tests can
+//                         prove activity never waits on the ATC-155
+//                         prompt (preview) read
+//   FAKE_CODEX_PREVIEW_DELAY_MS  make preview readable only this long
+//                         after the first turn starts (the real rollout
+//                         flush lag), so tests can prove the ATC-155
+//                         discovery loop lands mid-turn
 
 if (process.argv.includes("--version")) {
   console.log(`codex-cli ${process.env["FAKE_CODEX_VERSION"] ?? "0.146.0"}`)
+  process.exit(0)
+}
+
+// `codex exec` stand-in (ATC-155 title generation): read the prompt from
+// stdin, write the "last agent message" to the --output-last-message file.
+//   FAKE_CODEX_EXEC_EXIT    non-zero → fail without writing (default 0)
+//   FAKE_CODEX_TITLE        fixed reply (default: `fake title: <last line>`,
+//                           the last stdin line being the user's message)
+//   FAKE_CODEX_EXEC_RECORD  write {argv, markers} JSON here, so tests can
+//                           pin the safety-relevant invocation shape
+if (process.argv.includes("exec")) {
+  const stdin = await new Response(Bun.stdin.stream()).text()
+  const pidFileEnv = process.env["FAKE_CODEX_PID_FILE"]
+  const recordFile =
+    process.env["FAKE_CODEX_EXEC_RECORD"] ??
+    (pidFileEnv !== undefined && pidFileEnv !== ""
+      ? pidFileEnv.replace(/fixture\.pid$/, "exec-record.json")
+      : undefined)
+  if (recordFile !== undefined && recordFile !== "") {
+    await Bun.write(
+      recordFile,
+      JSON.stringify({
+        argv: process.argv.slice(2),
+        markers: ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID"].filter((name) => name in process.env),
+      }),
+    )
+  }
+  const execExit = Number.parseInt(process.env["FAKE_CODEX_EXEC_EXIT"] ?? "0", 10)
+  if (execExit !== 0) {
+    console.error("fake codex exec: scripted failure")
+    process.exit(execExit)
+  }
+  const outIndex = process.argv.indexOf("--output-last-message")
+  const outFile = outIndex >= 0 ? process.argv[outIndex + 1] : undefined
+  const lastLine =
+    stdin
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "")
+      .pop() ?? ""
+  if (outFile !== undefined) {
+    await Bun.write(outFile, process.env["FAKE_CODEX_TITLE"] ?? `fake title: ${lastLine}`)
+  }
   process.exit(0)
 }
 
@@ -47,6 +97,12 @@ interface Thread {
   readonly id: string
   readonly cwd: string
   readonly turns: Array<{ id: string; status: string }>
+  // "Usually the first user message in the thread, if available" — set at
+  // the first turn/start, like the real rollout history (ATC-155).
+  preview: string
+  // Epoch millis before which reads report an empty preview (the real
+  // rollout flush lag; FAKE_CODEX_PREVIEW_DELAY_MS).
+  previewReadableAt: number
   archived: boolean
 }
 
@@ -82,6 +138,11 @@ const childStatus = (child: Child) =>
         activeFlags: child.status === "needsInput" ? ["waitingOnApproval"] : [],
       }
 
+const settleTurn = (thread: Thread, turnId: string, status: string) => {
+  const turn = thread.turns.find((entry) => entry.id === turnId)
+  if (turn !== undefined) turn.status = status
+}
+
 const finishTurn = (thread: Thread, turnId: string, text: string) => {
   broadcast("item/completed", {
     threadId: thread.id,
@@ -89,7 +150,7 @@ const finishTurn = (thread: Thread, turnId: string, text: string) => {
     item: { id: crypto.randomUUID(), type: "agentMessage", text: `fake: ${text}` },
   })
   broadcast("thread/status/changed", { threadId: thread.id, status: { type: "idle" } })
-  thread.turns.push({ id: turnId, status: "completed" })
+  settleTurn(thread, turnId, "completed")
   broadcast("turn/completed", { threadId: thread.id, turn: { id: turnId, status: "completed" } })
 }
 
@@ -126,7 +187,14 @@ const handle = (
       return
     case "thread/start": {
       const cwd = String(params["cwd"] ?? "/")
-      const thread: Thread = { id: crypto.randomUUID(), cwd, turns: [], archived: false }
+      const thread: Thread = {
+        id: crypto.randomUUID(),
+        cwd,
+        turns: [],
+        preview: "",
+        previewReadableAt: 0,
+        archived: false,
+      }
       threads.set(thread.id, thread)
       const reported = wrongCwd === "start" ? `${cwd}-wrong` : cwd
       respond({ thread: threadShape(thread, reported) })
@@ -157,14 +225,29 @@ const handle = (
       const id = String(params["threadId"] ?? "")
       const thread = threads.get(id)
       if (thread !== undefined) {
-        return respond({
+        // The real server rejects includeTurns for paginated-history
+        // threads — the TUI-created kind ATC observes (probed 2026-08-10).
+        if (params["includeTurns"] === true) {
+          return respondError(
+            -32600,
+            "paginated threads do not support thread/read(includeTurns=true)",
+          )
+        }
+        const reply = {
           thread: {
             id,
             cwd: thread.cwd,
             parentThreadId: null,
+            preview: Date.now() >= thread.previewReadableAt ? thread.preview : "",
             status: hangingTurns.has(id) ? { type: "active", activeFlags: [] } : { type: "idle" },
           },
-        })
+        }
+        const delay = Number.parseInt(process.env["FAKE_CODEX_READ_DELAY_MS"] ?? "0", 10)
+        if (delay > 0) {
+          setTimeout(() => respond(reply), delay)
+          return
+        }
+        return respond(reply)
       }
       const child = children.get(id)
       if (child === undefined) return respondError(-32600, `unknown thread ${id}`)
@@ -218,6 +301,12 @@ const handle = (
       const input = params["input"] as Array<{ text?: string }> | undefined
       const text = input?.[0]?.text ?? ""
       const turnId = crypto.randomUUID()
+      thread.turns.push({ id: turnId, status: "inProgress" })
+      if (thread.preview === "") {
+        thread.preview = text
+        const flushLag = Number.parseInt(process.env["FAKE_CODEX_PREVIEW_DELAY_MS"] ?? "0", 10)
+        thread.previewReadableAt = Date.now() + flushLag
+      }
       respond({ turn: { id: turnId } })
       broadcast("thread/status/changed", {
         threadId,
@@ -282,7 +371,7 @@ const handle = (
       respond({})
       hangingTurns.delete(threadId)
       broadcast("thread/status/changed", { threadId, status: { type: "idle" } })
-      thread.turns.push({ id: turnId, status: "interrupted" })
+      settleTurn(thread, turnId, "interrupted")
       return broadcast("turn/completed", { threadId, turn: { id: turnId, status: "interrupted" } })
     }
     default:

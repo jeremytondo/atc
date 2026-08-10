@@ -79,6 +79,16 @@ export class ThreadRepository extends Context.Service<
     /** Update the display label; callers hold the record — a vanished row is a bug. */
     readonly rename: (id: string, name: string) => Effect.Effect<ThreadRecord>
     /**
+     * Adopt a generated name ONLY while the thread is still unnamed
+     * (ATC-155): the name-IS-NULL guard is in the UPDATE itself, so a
+     * manual rename landing mid-generation wins the race atomically. None
+     * when nothing changed — already named, or the row vanished.
+     */
+    readonly renameIfUnnamed: (
+      id: string,
+      name: string,
+    ) => Effect.Effect<Option.Option<ThreadRecord>>
+    /**
      * Adopt a freshly established provider identity: session id and opaque
      * metadata together, clearing the confirmed marker (a fresh session has
      * no completed turn yet). Callers hold the record (see rename).
@@ -139,6 +149,16 @@ export const layer = Layer.effect(ThreadRepository)(
       execute: (patch) => sql`
         UPDATE threads SET name = ${patch.name}, updated_at = ${patch.updated_at}
         WHERE id = ${patch.id}
+        RETURNING *
+      `,
+    })
+
+    const renameIfUnnamedRows = SqlSchema.findAll({
+      Request: Schema.Struct({ id: Schema.String, name: Schema.String, updated_at: Schema.String }),
+      Result: ThreadRow,
+      execute: (patch) => sql`
+        UPDATE threads SET name = ${patch.name}, updated_at = ${patch.updated_at}
+        WHERE id = ${patch.id} AND name IS NULL
         RETURNING *
       `,
     })
@@ -282,6 +302,10 @@ export const layer = Layer.effect(ThreadRepository)(
           Effect.orDie,
           Effect.flatMap(requireFirst("rename")),
         ),
+      renameIfUnnamed: (id, name) =>
+        Effect.suspend(() =>
+          renameIfUnnamedRows({ id, name, updated_at: new Date().toISOString() }),
+        ).pipe(Effect.orDie, Effect.map(firstRecord)),
       setProviderSession: (id, providerSessionId, providerMetadata) =>
         Effect.suspend(() =>
           setProviderSessionRows({

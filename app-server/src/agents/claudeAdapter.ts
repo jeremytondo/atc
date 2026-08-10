@@ -18,7 +18,13 @@ import {
   Queue,
   Stream,
 } from "effect"
-import type { AgentActivity, AgentAdapter, AgentConnection, AgentEvent } from "./agentAdapter.ts"
+import type {
+  AgentActivity,
+  AgentAdapter,
+  AgentConnection,
+  AgentEvent,
+  AgentSessionEvent,
+} from "./agentAdapter.ts"
 import {
   AgentConflict,
   AgentIdentityMismatch,
@@ -29,6 +35,7 @@ import {
   NESTED_SESSION_ENV_VARIABLES,
   resolveProviderExecutable,
   samePath,
+  titleInstruction,
 } from "./agentAdapter.ts"
 import * as path from "node:path"
 import * as ClaudeHooks from "./claudeHooks.ts"
@@ -81,6 +88,9 @@ import * as Subprocess from "../platform/subprocess.ts"
 
 /** The Claude Code version this adapter was validated against. */
 export const CLAUDE_TESTED_VERSION = "2.1.221"
+
+/** Bound on one title one-shot (ATC-155); a hung child is aborted with it. */
+const TITLE_TIMEOUT = "90 seconds"
 
 export class ClaudeAdapter extends Context.Service<ClaudeAdapter, AgentAdapter>()(
   "app-server/ClaudeAdapter",
@@ -768,15 +778,85 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
             // validating only because the thread's metadata carries it.
             const known = metadataSecret(options.providerMetadata)
             if (known !== null) yield* hooks.adoptSecret(options.providerSessionId, known)
-            const queue = yield* Queue.make<AgentActivity, Cause.Done>()
+            const queue = yield* Queue.make<AgentSessionEvent, Cause.Done>()
             // Registered before the subscription so it runs after it on
             // scope close: unsubscribe first, then end the queue.
             yield* Effect.addFinalizer(() => Effect.sync(() => Queue.endUnsafe(queue)))
-            yield* hooks.subscribe((sessionId, activity) => {
-              if (sessionId === options.providerSessionId) Queue.offerUnsafe(queue, activity)
+            yield* hooks.subscribe((sessionId, event) => {
+              if (sessionId === options.providerSessionId) Queue.offerUnsafe(queue, event)
             })
             return Stream.fromQueue(queue)
           }),
+        generateTitle: (options) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const executable = yield* resolveProviderExecutable("claude", config.claudeExecutable)
+              yield* versionCheck
+              // The smoke-test one-shot shape (smoke.ts claudeRoundTrip):
+              // one turn, no tools, nothing persisted — plus a haiku-class
+              // model, since a title needs speed, not depth.
+              const abort = new AbortController()
+              yield* Effect.addFinalizer(() => Effect.sync(() => abort.abort()))
+              const input = makeInputQueue()
+              input.push(userMessage(titleInstruction(options.prompt)))
+              input.close()
+              // Wrapped so a synchronous SDK setup throw is the promised
+              // typed error, not a defect.
+              const handle = yield* Effect.try({
+                try: () =>
+                  queryFn({
+                    prompt: input.stream(),
+                    options: {
+                      abortController: abort,
+                      cwd: options.cwd,
+                      env: claudeEnvironment(),
+                      pathToClaudeCodeExecutable: executable,
+                      settingSources: [],
+                      permissionMode: "dontAsk",
+                      allowedTools: [],
+                      tools: [],
+                      maxTurns: 1,
+                      persistSession: false,
+                      model: "haiku",
+                    },
+                  }),
+                catch: (error) =>
+                  protocolError(
+                    `title generation failed to start: ${error instanceof Error ? error.message : String(error)}`,
+                  ),
+              })
+              return yield* Effect.tryPromise({
+                // Stop at the FIRST result: the scope's abort (not iterator
+                // exhaustion) ends the query, so a fixture or SDK that holds
+                // the stream open cannot hang the one-shot.
+                try: async () => {
+                  for await (const message of handle) {
+                    if (message.type !== "result") continue
+                    if (message.subtype !== "success") {
+                      const errors = (message as { errors?: ReadonlyArray<string> }).errors ?? []
+                      throw new Error(`the turn ended ${message.subtype}: ${errors.join("; ")}`)
+                    }
+                    return (message as { result?: string }).result ?? ""
+                  }
+                  throw new Error("the stream ended without a result")
+                },
+                catch: (error) =>
+                  protocolError(
+                    `title generation failed: ${error instanceof Error ? error.message : String(error)}`,
+                  ),
+              }).pipe(
+                Effect.timeoutOrElse({
+                  duration: TITLE_TIMEOUT,
+                  orElse: () =>
+                    Effect.fail(
+                      protocolError(
+                        `title generation produced no result within ${Duration.format(Duration.fromInputUnsafe(TITLE_TIMEOUT))}`,
+                      ),
+                    ),
+                }),
+              )
+            }),
+          ),
         // Claude offers no cheap truthful liveness query for a session it
         // is not driving; the domain's linked-terminal liveness carries
         // staleness re-derivation for TUI-driven Claude sessions.

@@ -93,6 +93,18 @@ export const aggregateActivity = (
 
 export type AgentTurnOutcome = "completed" | "interrupted" | "failed"
 
+/**
+ * One entry of a TUI-driven session's observation feed (observeSession).
+ * `userPrompt` is best-effort evidence of a user prompt submitted to the
+ * session — adapters emit at least the session's first prompt when their
+ * evidence source carries it (Claude: the UserPromptSubmit webhook; Codex:
+ * a demand-driven thread/read of the session's preview), and consumers
+ * must tolerate duplicates, later prompts, and absence.
+ */
+export type AgentSessionEvent =
+  | { readonly type: "activity"; readonly activity: AgentActivity }
+  | { readonly type: "userPrompt"; readonly text: string }
+
 export type AgentRequestKind = "approval" | "question"
 
 /**
@@ -321,17 +333,30 @@ export interface AgentAdapter {
     readonly cwd: string
   }) => Effect.Effect<PreparedTuiSession, AgentUnavailable, Scope.Scope>
   /**
-   * The one normalized per-session activity subscription for TUI-driven
-   * sessions. Whether it is fed by hook webhooks (Claude) or the shared
-   * server's status fan-out (Codex) is adapter-internal. Metadata is
-   * handed back so adapters can restore per-session state (hook secrets)
-   * across ATC restarts. Scoped: closing unsubscribes. The stream goes
-   * silent — never lies — when the adapter loses its evidence source.
+   * The one normalized per-session subscription for TUI-driven sessions:
+   * activity plus best-effort user-prompt evidence (AgentSessionEvent).
+   * Whether it is fed by hook webhooks (Claude) or the shared server's
+   * status fan-out (Codex) is adapter-internal. Metadata is handed back so
+   * adapters can restore per-session state (hook secrets) across ATC
+   * restarts. Scoped: closing unsubscribes. The stream goes silent — never
+   * lies — when the adapter loses its evidence source.
    */
   readonly observeSession: (options: {
     readonly providerSessionId: string
     readonly providerMetadata: string | undefined
-  }) => Effect.Effect<Stream.Stream<AgentActivity>, AgentUnavailable, Scope.Scope>
+  }) => Effect.Effect<Stream.Stream<AgentSessionEvent>, AgentUnavailable, Scope.Scope>
+  /**
+   * One bounded, session-less completion: a short display title for a
+   * thread whose first user prompt is `prompt` (ATC-155). Runs as the
+   * provider's cheapest ephemeral invocation — never a persisted provider
+   * session, never a writer on any existing one. Returns the model's raw
+   * text; callers apply `sanitizeTitle`. Failures are ordinary typed
+   * errors — the caller decides that a missing title is not an error.
+   */
+  readonly generateTitle: (options: {
+    readonly cwd: string
+    readonly prompt: string
+  }) => Effect.Effect<string, AgentUnavailable | AgentProtocolError>
   /**
    * Demand-driven reconciliation: the provider's current word on the
    * session's activity, `unknown` when it offers no evidence. Never
@@ -448,6 +473,66 @@ export const resolveProviderExecutable = (
       }),
     )
   })
+
+/**
+ * The one thread-title instruction (ATC-155), shared by every adapter's
+ * generateTitle so Claude and Codex titles read the same. The user prompt
+ * is capped so a pasted wall of text cannot blow up the one-shot's cost —
+ * the opening lines are what a title needs.
+ */
+export const titleInstruction = (prompt: string): string =>
+  [
+    "You write concise titles for coding-agent conversation threads.",
+    "Reply with the title only: a single line of plain text.",
+    "Rules:",
+    "- Summarize the user's request; never answer it or restate it verbatim.",
+    "- 3-8 words, specific over generic.",
+    "- Use sentence case, not title case: capitalize only the first word and proper nouns.",
+    "- No quotes, no markdown, no trailing punctuation.",
+    "",
+    "The user's first message:",
+    prompt.length > 4_000 ? `${prompt.slice(0, 4_000)}…` : prompt,
+  ].join("\n")
+
+const WRAPPING_QUOTES = [
+  ['"', '"'],
+  ["'", "'"],
+  ["“", "”"],
+  ["‘", "’"],
+  ["`", "`"],
+] as const
+
+/**
+ * Output hygiene for generated titles, enforced in code rather than trusted
+ * to the prompt (T3Code/OpenCode precedent): first non-empty line only,
+ * whitespace collapsed, wrapping quotes stripped, trailing punctuation
+ * dropped, capped at ~50 characters on a word boundary. Returns null when
+ * nothing usable remains — the caller gives up silently.
+ */
+export const sanitizeTitle = (raw: string): string | null => {
+  const line = raw
+    .split("\n")
+    .map((candidate) => candidate.trim())
+    .find((candidate) => candidate !== "")
+  if (line === undefined) return null
+  let title = line.replace(/\s+/g, " ").trim()
+  for (let stripped = true; stripped;) {
+    stripped = false
+    for (const [open, close] of WRAPPING_QUOTES) {
+      if (title.length >= 2 && title.startsWith(open) && title.endsWith(close)) {
+        title = title.slice(1, -1).trim()
+        stripped = true
+      }
+    }
+  }
+  title = title.replace(/[.,;:!?…]+$/, "").trim()
+  if (title.length > 50) {
+    const cut = title.slice(0, 50)
+    const lastSpace = cut.lastIndexOf(" ")
+    title = (lastSpace > 20 ? cut.slice(0, lastSpace) : cut).trimEnd()
+  }
+  return title === "" ? null : title
+}
 
 /** Symlink-tolerant path equality (macOS tmpdir lives behind /private). */
 export const samePath = (left: string, right: string): boolean => {

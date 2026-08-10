@@ -167,7 +167,11 @@ describe("claude hook webhook delivery", () => {
       Effect.gen(function* () {
         const hooks = yield* ClaudeHooks.ClaudeHooks
         const seen: Array<{ sessionId: string; activity: AgentActivity }> = []
-        yield* hooks.subscribe((sessionId, activity) => seen.push({ sessionId, activity }))
+        const prompts: Array<string> = []
+        yield* hooks.subscribe((sessionId, event) => {
+          if (event.type === "activity") seen.push({ sessionId, activity: event.activity })
+          else prompts.push(event.text)
+        })
         const secret = yield* hooks.registerSecret(RECORDED_SESSION)
 
         for (const payload of recorded) {
@@ -179,6 +183,12 @@ describe("claude hook webhook delivery", () => {
           ["working", "working", "working", "idle"],
         )
         assert.isTrue(seen.every((entry) => entry.sessionId === RECORDED_SESSION))
+        // The recorded root UserPromptSubmit's prompt text rides alongside
+        // the activity (ATC-155).
+        const recordedPrompt = recorded.find(
+          (payload) => payload["hook_event_name"] === "UserPromptSubmit",
+        )?.["prompt"]
+        assert.deepStrictEqual(prompts, [recordedPrompt])
       }),
     ).pipe(Effect.provide(ClaudeHooks.layer)),
   )
@@ -189,7 +199,9 @@ describe("claude hook webhook delivery", () => {
         const hooks = yield* ClaudeHooks.ClaudeHooks
         const sessionId = background[0]!["session_id"] as string
         const seen: Array<AgentActivity> = []
-        yield* hooks.subscribe((_sessionId, activity) => seen.push(activity))
+        yield* hooks.subscribe((_sessionId, event) => {
+          if (event.type === "activity") seen.push(event.activity)
+        })
         const secret = yield* hooks.registerSecret(sessionId)
         for (const payload of background) {
           assert.strictEqual(yield* hooks.deliver(secret, payload), 204)
@@ -233,7 +245,9 @@ describe("claude hook webhook delivery", () => {
       Effect.gen(function* () {
         const hooks = yield* ClaudeHooks.ClaudeHooks
         const seen: Array<AgentActivity> = []
-        yield* hooks.subscribe((_sessionId, activity) => seen.push(activity))
+        yield* hooks.subscribe((_sessionId, event) => {
+          if (event.type === "activity") seen.push(event.activity)
+        })
         const secret = yield* hooks.registerSecret(RECORDED_SESSION)
         const handler = yield* HttpRouter.toHttpEffect(
           Server.routes.pipe(Layer.provide([TestBuildInfoLayer, TestRepositoryLayers])),
