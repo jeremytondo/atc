@@ -3,8 +3,8 @@ import SwiftUI
 
 /// App-wide Project management rendered as a main-content destination inside
 /// the stable window split view: one section per Connection, one card per
-/// Project. Deletion is server-guarded (a Project owning threads or terminals
-/// is refused), so the card offers it and reports what the server says.
+/// Project. Deletion cascades server-side to everything the Project owns, so
+/// the confirmation spells out the counts before anything is sent.
 struct DashboardView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(WindowState.self) private var windowState
@@ -55,9 +55,12 @@ struct DashboardView: View {
                 }
             }
         } message: {
+            // Counts are the client's view; the catch-all phrase covers
+            // archived and ended residue the stores don't surface.
             Text("""
-            This removes the project from atc. The server refuses while it \
-            still owns threads or terminals, and its directory is never touched.
+            Also deletes its \(countLabel(deletingProject?.activeThreadCount ?? 0, "thread")) and \
+            \(countLabel(deletingProject?.standaloneTerminalCount ?? 0, "terminal")), including \
+            any archived or ended ones. The project directory is never touched.
             """)
         }
         .actionErrorAlert($actionError)

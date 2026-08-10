@@ -54,9 +54,20 @@ final class ProjectsStore {
         return project
     }
 
-    /// Server-refused while the project still owns threads or terminals.
+    /// Deletion cascades server-side to every owned thread and terminal.
+    /// Modeled failures surface their payload message (a zmx outage
+    /// mid-cascade is retryable — already-deleted children stay deleted).
     func delete(id: String) async throws {
-        _ = try await client.deleteProject(path: .init(projectId: id)).noContent
+        switch try await client.deleteProject(path: .init(projectId: id)) {
+        case .noContent:
+            break
+        case .notFound(let failure):
+            throw ServerError(message: try failure.body.json.message)
+        case .serviceUnavailable(let failure):
+            throw ServerError(message: try failure.body.json.message)
+        case .undocumented(statusCode: let status, _):
+            throw ServerError.undocumented(status: status)
+        }
         refreshState.invalidateInFlight()
         projects.removeAll { $0.id == id }
     }
