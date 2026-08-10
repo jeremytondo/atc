@@ -33,11 +33,19 @@ export interface FakeClaudeQuery {
   readonly denials: Array<{ toolName: string; behavior: string }>
   /** Interrupt calls observed. */
   readonly interrupts: Array<string>
+  /**
+   * Fire one hook event into the most recent query's registered callbacks
+   * with a scripted payload (session_id filled in) — how tests replay
+   * recorded background-task evidence (ATC-158) between turns.
+   */
+  readonly fireHook: (eventName: string, payload?: Record<string, unknown>) => Promise<void>
 }
 
 export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeClaudeQuery => {
   const denials: FakeClaudeQuery["denials"] = []
   const interrupts: Array<string> = []
+  let lastFire: ((eventName: string, payload?: Record<string, unknown>) => Promise<void>) | null =
+    null
 
   const queryFn: ClaudeQueryFn = (args) => {
     const output: Array<SDKMessage> = []
@@ -69,17 +77,21 @@ export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeC
     }
     // Deliver the in-process hook vocabulary exactly like the SDK: the
     // registered callback for the event, with the hook payload shape.
-    const fireHook = async (eventName: string): Promise<void> => {
+    const fireHook = async (
+      eventName: string,
+      payload?: Record<string, unknown>,
+    ): Promise<void> => {
       const matchers = (
         args.options.hooks as
           Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>> | undefined
       )?.[eventName]
       for (const matcher of matchers ?? []) {
         for (const callback of matcher.hooks) {
-          await callback({ session_id: sessionId, hook_event_name: eventName })
+          await callback({ session_id: sessionId, hook_event_name: eventName, ...payload })
         }
       }
     }
+    lastFire = fireHook
     const initOnce = (() => {
       let sent = false
       return () => {
@@ -200,5 +212,13 @@ export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeC
     return iterator
   }
 
-  return { queryFn, denials, interrupts }
+  return {
+    queryFn,
+    denials,
+    interrupts,
+    fireHook: (eventName, payload) => {
+      if (lastFire === null) throw new Error("no query started yet")
+      return lastFire(eventName, payload)
+    },
+  }
 }

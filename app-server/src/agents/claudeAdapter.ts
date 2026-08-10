@@ -48,7 +48,22 @@ import * as Subprocess from "../platform/subprocess.ts"
 //   - Error-path idle derives from the `result` message itself — Stop /
 //     StopFailure hooks do NOT fire on error results, and the SDK iterator
 //     throws after one; both are normal turn-end shapes here, never
-//     transport defects.
+//     transport defects. SUCCESS results derive no activity (ATC-158): the
+//     SDK emits extra results for background wake turns and can hold a
+//     turn's result while background work runs (probed 2026-08-10), so
+//     activity flows from hook-level evidence and session_state_changed.
+//   - Activity is the aggregate of the session tree: each session owns a
+//     ClaudeHooks.ActivityTracker fed by the in-process hook callbacks,
+//     session_state_changed (root loop), and background_tasks_changed
+//     (level snapshot); what the feed carries is always the reducer's
+//     aggregate, so a root Stop with live background work stays `working`
+//     and the last SubagentStop lands the `idle` transition.
+//   - Known residual: the SDK stream carries no correlation between a
+//     `result` and the input that caused it, so a background wake-turn's
+//     held result flushing just after a client startTurn is paired with
+//     that client turn (premature turnCompleted). Any discriminator would
+//     be a guess; activity stays truthful either way because results no
+//     longer derive it.
 //   - A turn that ends in anything but success ends the connection (the
 //     interrupted/failed outcome is emitted first); callers re-resume.
 //     Success keeps the held query open for further turns.
@@ -102,15 +117,25 @@ const claudeEnvironment = (): Record<string, string> => {
 }
 
 /** The hook vocabulary delivered in-process while ATC drives (and via the
- * webhook while a TUI drives — same normalization, claudeHooks.ts). */
+ * webhook while a TUI drives — same normalization, claudeHooks.ts). The
+ * subagent/task lifecycle events carry the background evidence the
+ * aggregate tracker needs (ATC-158). */
 const HOOK_EVENTS: ReadonlyArray<HookEvent> = [
+  "SessionStart",
+  "SessionEnd",
   "UserPromptSubmit",
   "PreToolUse",
   "PostToolUse",
+  "PostToolUseFailure",
   "Stop",
   "StopFailure",
+  "SubagentStart",
+  "SubagentStop",
+  "TaskCreated",
+  "TaskCompleted",
   "Notification",
   "PermissionRequest",
+  "PermissionDenied",
 ]
 
 const userMessage = (text: string): SDKUserMessage => ({
@@ -159,6 +184,8 @@ interface LiveSession {
   readonly cwd: string
   readonly queue: Queue.Queue<AgentEvent, AgentProtocolError | Cause.Done>
   readonly abort: AbortController
+  /** Aggregate session-tree activity state (ATC-158). */
+  readonly tracker: ClaudeHooks.ActivityTracker
   readonly pushInput: (text: string) => void
   readonly closeInput: () => void
   readonly initGate: Deferred.Deferred<void, GateError>
@@ -258,10 +285,27 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
           return
         }
         if (message.type === "system" && message.subtype === "session_state_changed") {
+          // Root-loop evidence only: the emitted activity is the tracker's
+          // aggregate, so live background work keeps the session busy.
           const state = (message as { state?: unknown }).state
-          if (state === "running") setActivity(session, "working")
-          if (state === "idle") setActivity(session, "idle")
-          if (state === "requires_action") setActivity(session, "needs_input")
+          if (state === "running") setActivity(session, session.tracker.setRoot("working"))
+          if (state === "idle") setActivity(session, session.tracker.setRoot("idle"))
+          if (state === "requires_action") {
+            setActivity(session, session.tracker.setRoot("needs_input"))
+          }
+          return
+        }
+        if (message.type === "system" && message.subtype === "background_tasks_changed") {
+          // The SDK's level snapshot of in-flight background work; task_id
+          // matches the hook snapshots' id vocabulary (probed 2026-08-10).
+          const tasks = (message as { tasks?: unknown }).tasks
+          const ids = Array.isArray(tasks)
+            ? tasks.flatMap((task) => {
+                const id = (task as { task_id?: unknown }).task_id
+                return typeof id === "string" ? [id] : []
+              })
+            : []
+          setActivity(session, session.tracker.replaceBackground(ids))
           return
         }
         if (message.type === "result") {
@@ -305,10 +349,13 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
                 : { type: "turnCompleted", turnId, outcome },
             )
           }
-          // Error-path idle derives from the result itself (probe finding:
-          // Stop/StopFailure do not fire here).
-          setActivity(session, "idle")
+          // A success result derives NO activity (ATC-158): wake-turn and
+          // held-back results would clobber live background evidence; the
+          // hooks and session_state_changed carry the truth. Error-path
+          // idle still derives from the result itself (probe finding:
+          // Stop/StopFailure do not fire here) — the session is over.
           if (outcome !== "completed") {
+            setActivity(session, "idle")
             session.over = true
             closeSession(session)
           }
@@ -382,7 +429,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
               {
                 hooks: [
                   (input: { hook_event_name: string }) => {
-                    const activity = ClaudeHooks.hookActivity(
+                    const activity = session.tracker.update(
                       input.hook_event_name,
                       input as unknown as Record<string, unknown>,
                     )
@@ -485,6 +532,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
             cwd: options.cwd,
             queue,
             abort: new AbortController(),
+            tracker: ClaudeHooks.makeActivityTracker(),
             pushInput: (text) => input.push(userMessage(text)),
             closeInput: input.close,
             initGate,

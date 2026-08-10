@@ -6,7 +6,15 @@
 //
 // Turn behavior is keyed off the input text: containing "HANG" leaves the
 // turn active until interrupted; containing "APPROVAL" first round-trips an
-// item/commandExecution/requestApproval server request.
+// item/commandExecution/requestApproval server request; containing "SPAWN"
+// creates a descendant thread (`<threadId>-child-N`) that stays active
+// after the parent's turn completes — mirroring the probed real behavior
+// (experiments/subagent-activity): a subAgentActivity item on the parent
+// plus child thread/status/changed broadcasts, NO thread/started, and no
+// thread/list entry. "SPAWN SILENT" skips the spawn broadcasts (the
+// reconnect-reconciliation scenario: state exists server-side only);
+// "NEEDSINPUT" makes the child wait on approval. The test-only
+// "test/child/finish" request completes a child.
 //
 // Env switches (baked into the wrapper script by tests):
 //   FAKE_CODEX_MODE       "ok" (default) | "never-ready" (503 /readyz)
@@ -42,7 +50,13 @@ interface Thread {
   archived: boolean
 }
 
+interface Child {
+  readonly parentId: string
+  status: "active" | "needsInput" | "idle"
+}
+
 const threads = new Map<string, Thread>()
+const children = new Map<string, Child>()
 const sockets = new Set<import("bun").ServerWebSocket<unknown>>()
 const hangingTurns = new Set<string>()
 const pendingServerRequests = new Map<number, () => void>()
@@ -59,6 +73,14 @@ const threadShape = (thread: Thread, cwd: string) => ({
   status: { type: "idle" },
   turns: thread.turns,
 })
+
+const childStatus = (child: Child) =>
+  child.status === "idle"
+    ? { type: "idle" }
+    : {
+        type: "active",
+        activeFlags: child.status === "needsInput" ? ["waitingOnApproval"] : [],
+      }
 
 const finishTurn = (thread: Thread, turnId: string, text: string) => {
   broadcast("item/completed", {
@@ -127,6 +149,47 @@ const handle = (
       thread.archived = true
       return respond({})
     }
+    case "thread/loaded/list":
+      // Loaded = everything this fixture has in memory; descendants
+      // included (the real server keeps running subagents loaded).
+      return respond({ data: [...threads.keys(), ...children.keys()], nextCursor: null })
+    case "thread/read": {
+      const id = String(params["threadId"] ?? "")
+      const thread = threads.get(id)
+      if (thread !== undefined) {
+        return respond({
+          thread: {
+            id,
+            cwd: thread.cwd,
+            parentThreadId: null,
+            status: hangingTurns.has(id) ? { type: "active", activeFlags: [] } : { type: "idle" },
+          },
+        })
+      }
+      const child = children.get(id)
+      if (child === undefined) return respondError(-32600, `unknown thread ${id}`)
+      return respond({
+        thread: { id, parentThreadId: child.parentId, status: childStatus(child) },
+      })
+    }
+    case "test/child/vanish": {
+      // The missed-idle-broadcast scenario: the child finishes and unloads
+      // while nobody hears about it (only reconciliation can notice).
+      if (!children.delete(String(params["threadId"] ?? ""))) {
+        return respondError(-32600, "unknown child")
+      }
+      return respond({})
+    }
+    case "test/child/finish": {
+      const child = children.get(String(params["threadId"] ?? ""))
+      if (child === undefined) return respondError(-32600, "unknown child")
+      child.status = "idle"
+      respond({})
+      return broadcast("thread/status/changed", {
+        threadId: String(params["threadId"]),
+        status: { type: "idle" },
+      })
+    }
     case "thread/list": {
       // Real reply shape is paginated: { data, nextCursor } with nextCursor
       // null on the last page, and the populations are disjoint: archived
@@ -164,6 +227,29 @@ const handle = (
       if (text.includes("HANG")) {
         hangingTurns.add(threadId)
         return
+      }
+      if (text.includes("SPAWN")) {
+        const childId = `${threadId}-child-${children.size + 1}`
+        const child: Child = {
+          parentId: threadId,
+          status: text.includes("NEEDSINPUT") ? "needsInput" : "active",
+        }
+        children.set(childId, child)
+        if (!text.includes("SILENT")) {
+          broadcast("item/started", {
+            threadId,
+            turnId,
+            item: {
+              type: "subAgentActivity",
+              kind: "started",
+              id: crypto.randomUUID(),
+              agentThreadId: childId,
+              agentPath: "/root/child",
+            },
+          })
+          broadcast("thread/status/changed", { threadId: childId, status: childStatus(child) })
+        }
+        return finishTurn(thread, turnId, text)
       }
       if (text.includes("APPROVAL")) {
         const requestId = nextServerRequestId++

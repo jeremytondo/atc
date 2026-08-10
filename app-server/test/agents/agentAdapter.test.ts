@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest"
 import { Effect, Stream } from "effect"
 import type { AgentEvent } from "../../src/agents/agentAdapter.ts"
+import { aggregateActivity } from "../../src/agents/agentAdapter.ts"
 import { makeFakeAgentAdapter } from "./fakeAgentAdapter.ts"
 
 // Seam-semantics tests over the fake adapter: the observable rules every
@@ -27,6 +28,24 @@ const waitForEvent = (sink: Array<AgentEvent>, predicate: (event: AgentEvent) =>
       yield* Effect.yieldNow
     }
   })
+
+describe("aggregateActivity", () => {
+  it("applies the needs_input > working > unknown > idle precedence", () => {
+    assert.strictEqual(aggregateActivity("idle", []), "idle")
+    assert.strictEqual(aggregateActivity("idle", ["idle", "idle"]), "idle")
+    assert.strictEqual(aggregateActivity("idle", ["working"]), "working")
+    assert.strictEqual(aggregateActivity("working", ["idle"]), "working")
+    assert.strictEqual(aggregateActivity("idle", ["working", "needs_input"]), "needs_input")
+    assert.strictEqual(aggregateActivity("needs_input", ["working"]), "needs_input")
+    assert.strictEqual(aggregateActivity("working", ["unknown"]), "working")
+  })
+
+  it("one unestablished member keeps an otherwise idle tree unknown", () => {
+    assert.strictEqual(aggregateActivity("idle", ["unknown"]), "unknown")
+    assert.strictEqual(aggregateActivity("unknown", []), "unknown")
+    assert.strictEqual(aggregateActivity("unknown", ["idle"]), "unknown")
+  })
+})
 
 describe("AgentAdapter seam semantics (fake adapter)", () => {
   it.effect("create starts the first turn and the feed tells the truth", () =>

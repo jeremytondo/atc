@@ -12,6 +12,7 @@ import {
   AgentProtocolError,
   AgentResumeFailed,
   AgentUnavailable,
+  aggregateActivity,
   makeVersionGate,
   resolveProviderExecutable,
   samePath,
@@ -36,6 +37,15 @@ import * as Subprocess from "../platform/subprocess.ts"
 //     next create/resume reconnects. Sessions never survive their socket.
 //   - Wire shapes stay private to this module; raw events are logged at
 //     debug level only.
+//   - Activity is the aggregate of a thread's session tree (ATC-158).
+//     Descendant (subagent) threads broadcast thread/status/changed but NOT
+//     thread/started, and thread/list omits them (probed 2026-08-10,
+//     experiments/subagent-activity): the child→root mapping comes from
+//     subAgentActivity items on the parent's feed, live statuses fold into
+//     the root's writer feed and observer queues as reducer aggregates, and
+//     checkSession reconciles demand-driven via thread/loaded/list +
+//     per-id thread/read. Descendant bookkeeping is in-memory and pruned
+//     on teardown, root unobserve/unregister, and release.
 
 /** The codex-cli version this adapter was validated against (record + warn). */
 export const CODEX_TESTED_VERSION = "0.146.0"
@@ -72,6 +82,21 @@ const TurnReply = Schema.Struct({ turn: Schema.Struct({ id: Schema.String }) })
 const ThreadListReply = Schema.Struct({
   data: Schema.Array(Schema.Struct({ id: Schema.String, status: Schema.optional(Schema.Unknown) })),
   nextCursor: Schema.optional(Schema.NullOr(Schema.String)),
+})
+
+// thread/loaded/list: ids of the sessions currently loaded in memory —
+// running descendants included (probed, experiments/subagent-activity).
+const LoadedListReply = Schema.Struct({
+  data: Schema.Array(Schema.String),
+  nextCursor: Schema.optional(Schema.NullOr(Schema.String)),
+})
+
+const ThreadReadReply = Schema.Struct({
+  thread: Schema.Struct({
+    id: Schema.String,
+    parentThreadId: Schema.optional(Schema.NullOr(Schema.String)),
+    status: Schema.optional(Schema.Unknown),
+  }),
 })
 
 const statusToActivity = (status: unknown): AgentActivity => {
@@ -133,6 +158,75 @@ export const layer = Layer.effect(CodexAdapter)(
     // sessions they survive reconnects: the map is adapter-level, and a new
     // connection's broadcasts route to the same queues.
     const observers = new Map<string, Set<Queue.Queue<AgentActivity, Cause.Done>>>()
+
+    // Descendant bookkeeping (ATC-158): each thread's own last-broadcast
+    // status, the child→parent links learned from subAgentActivity items
+    // (and checkSession reconciliation), and per-root descendant statuses.
+    // Live evidence only — cleared on connection teardown and rebuilt from
+    // fresh broadcasts or the demand-driven checkSession walk.
+    const ownStatus = new Map<string, AgentActivity>()
+    const parentOf = new Map<string, string>()
+    const descendants = new Map<string, Map<string, AgentActivity>>()
+
+    /** Follow parent links to the tree's root (bounded against cycles). */
+    const resolveRoot = (threadId: string): string => {
+      let current = threadId
+      for (let hops = 0; hops < 32; hops++) {
+        const parent = parentOf.get(current)
+        if (parent === undefined) return current
+        current = parent
+      }
+      return current
+    }
+
+    const registerDescendant = (parentId: string, childId: string): void => {
+      if (parentId === childId) return
+      parentOf.set(childId, parentId)
+      const rootId = resolveRoot(childId)
+      const set = descendants.get(rootId) ?? new Map<string, AgentActivity>()
+      if (!set.has(childId)) set.set(childId, ownStatus.get(childId) ?? "working")
+      descendants.set(rootId, set)
+      // A thread that previously looked like a root (its parent link
+      // arrived late) hands its tracked descendants to the real root.
+      if (childId !== rootId) {
+        const orphaned = descendants.get(childId)
+        if (orphaned !== undefined) {
+          descendants.delete(childId)
+          for (const [id, activity] of orphaned) if (!set.has(id)) set.set(id, activity)
+        }
+      }
+    }
+
+    const aggregateFor = (rootId: string): AgentActivity =>
+      aggregateActivity(ownStatus.get(rootId) ?? "unknown", descendants.get(rootId)?.values() ?? [])
+
+    /** Publish the root's current aggregate to its observers and (deduped)
+     * writer-session feed. */
+    const emitAggregate = (rootId: string): void => {
+      const aggregate = aggregateFor(rootId)
+      for (const queue of observers.get(rootId) ?? []) {
+        Queue.offerUnsafe(queue, aggregate)
+      }
+      const session = sessions.get(rootId)
+      if (session !== undefined && aggregate !== session.activity) {
+        session.activity = aggregate
+        emit(session, { type: "activity", activity: aggregate })
+      }
+    }
+
+    /** Drop a root's descendant bookkeeping once nothing consumes it. */
+    const pruneRoot = (rootId: string): void => {
+      if (sessions.has(rootId) || observers.has(rootId)) return
+      const set = descendants.get(rootId)
+      if (set !== undefined) {
+        descendants.delete(rootId)
+        for (const childId of set.keys()) {
+          parentOf.delete(childId)
+          ownStatus.delete(childId)
+        }
+      }
+      ownStatus.delete(rootId)
+    }
     const connectLock = yield* Semaphore.make(1)
     const resumeLock = yield* Semaphore.make(1)
     // Serializes TUI launch → thread/started capture (prepareTuiSession).
@@ -156,8 +250,13 @@ export const layer = Layer.effect(CodexAdapter)(
      */
     const captureStarted = (params: Record<string, unknown>): void => {
       if (pendingCapture === null) return
-      const thread = params["thread"] as { id?: unknown; cwd?: unknown } | undefined
+      const thread = params["thread"] as
+        { id?: unknown; cwd?: unknown; parentThreadId?: unknown } | undefined
       if (typeof thread?.id !== "string" || typeof thread.cwd !== "string") return
+      // A subagent thread spawning in the armed capture's cwd must never
+      // be adopted as a fresh TUI's identity (ATC-158 robustness; probes
+      // show descendants currently skip thread/started, this is defense).
+      if (typeof thread.parentThreadId === "string") return
       if (!samePath(thread.cwd, pendingCapture.cwd)) return
       const capture = pendingCapture
       pendingCapture = null
@@ -186,6 +285,17 @@ export const layer = Layer.effect(CodexAdapter)(
           Queue.failCauseUnsafe(session.queue, Cause.fail(error))
         }
         sessions.clear()
+        // Descendant state is live evidence of THIS connection; a fresh
+        // connection's broadcasts or checkSession's walk rebuild it.
+        ownStatus.clear()
+        parentOf.clear()
+        descendants.clear()
+        // Observers outlive the socket, but their evidence just died with
+        // it: tell them honestly rather than letting the last busy state
+        // sit stale while the provider moves on unheard (ATC-158).
+        for (const set of observers.values()) {
+          for (const queue of set) Queue.offerUnsafe(queue, "unknown")
+        }
         // An armed capture fails closed with the connection: the caller
         // abandons the launch and retries rather than adopting anything
         // observed through a fresh, unserialized window.
@@ -239,25 +349,32 @@ export const layer = Layer.effect(CodexAdapter)(
       if (message.method === "thread/started") return captureStarted(params)
       const threadId = params["threadId"]
       if (typeof threadId !== "string") return
-      // Coarse status fans out to every thread on the shared server without
-      // subscription (probed) — observers get it even with no writer session.
+      // The child→root mapping arrives as a subAgentActivity item on the
+      // PARENT's feed — descendants do not broadcast thread/started
+      // (probed, experiments/subagent-activity).
+      if (message.method === "item/started" || message.method === "item/completed") {
+        const item = params["item"] as { type?: unknown; agentThreadId?: unknown } | undefined
+        if (item?.type === "subAgentActivity" && typeof item.agentThreadId === "string") {
+          registerDescendant(threadId, item.agentThreadId)
+          emitAggregate(resolveRoot(threadId))
+        }
+        return
+      }
+      // Coarse status fans out for EVERY thread on the shared server
+      // without subscription (probed) — descendants included. A
+      // descendant's change folds into its root's aggregate; a root's
+      // change reaches its observers and (deduped) writer feed.
       if (message.method === "thread/status/changed") {
         const activity = statusToActivity(params["status"])
-        for (const queue of observers.get(threadId) ?? []) {
-          Queue.offerUnsafe(queue, activity)
-        }
+        ownStatus.set(threadId, activity)
+        const rootId = resolveRoot(threadId)
+        if (rootId !== threadId) descendants.get(rootId)?.set(threadId, activity)
+        emitAggregate(rootId)
+        return
       }
       const session = sessions.get(threadId)
       if (session === undefined) return
       switch (message.method) {
-        case "thread/status/changed": {
-          const activity = statusToActivity(params["status"])
-          if (activity !== session.activity) {
-            session.activity = activity
-            emit(session, { type: "activity", activity })
-          }
-          return
-        }
         case "turn/started": {
           const turnId = (params["turn"] as { id?: unknown } | undefined)?.id
           if (typeof turnId !== "string") return
@@ -449,19 +566,23 @@ export const layer = Layer.effect(CodexAdapter)(
     ) =>
       Effect.gen(function* () {
         const queue = yield* Queue.make<AgentEvent, AgentProtocolError | Cause.Done>()
+        // Seeded from the provider's own thread status — never a guess —
+        // folded with any descendants already tracked for this root.
+        ownStatus.set(threadId, statusToActivity(initialStatus))
         const session: LiveSession = {
           threadId,
           queue,
-          // Seeded from the provider's own thread status — never a guess.
-          activity: statusToActivity(initialStatus),
+          activity: "unknown",
           activeTurn: null,
           ownTurn: null,
           failed: false,
         }
+        session.activity = aggregateFor(threadId)
         sessions.set(threadId, session)
         const unregister = (): void => {
           if (sessions.get(threadId) !== session) return
           sessions.delete(threadId)
+          pruneRoot(threadId)
           Queue.endUnsafe(queue)
           if (state.alive) {
             state.socket.send(
@@ -596,6 +717,96 @@ export const layer = Layer.effect(CodexAdapter)(
         return live === "absent" && archived === "absent"
           ? ("absent" as const)
           : ("unknown" as const)
+      })
+
+    /**
+     * Rebuild the root's descendant graph from the provider (ATC-158):
+     * walk thread/loaded/list, thread/read every loaded id, and chain
+     * parent links back to the root, REPLACING the root's tracked
+     * descendant set with the findings; `"unknown"` when the enumeration
+     * could not be completed. Replacement is the point: a stale pre-walk
+     * `working` entry whose thread is no longer loaded must not survive
+     * reconciliation (it would pin the aggregate busy forever). parentOf
+     * links are kept, so a child that spawned mid-walk re-enters on its
+     * next status broadcast — racy transients self-heal; only staleness
+     * is permanent, and replacement cures it.
+     */
+    const reconcileDescendants = (
+      state: ClientState,
+      rootId: string,
+    ): Effect.Effect<"reconciled" | "unknown", AgentUnavailable> =>
+      Effect.gen(function* () {
+        const loaded: Array<string> = []
+        let cursor: string | undefined
+        for (let page = 0; ; page++) {
+          if (page >= 100) return "unknown" as const
+          const reply = yield* request(
+            state,
+            "thread/loaded/list",
+            cursor === undefined ? {} : { cursor },
+          ).pipe(
+            Effect.mapError((error) =>
+              unavailable(error._tag === "RpcError" ? error.text : error.reason),
+            ),
+          )
+          const decoded = yield* Schema.decodeUnknownEffect(LoadedListReply)(reply).pipe(
+            Effect.mapError((error) =>
+              unavailable(`unexpected thread/loaded/list reply: ${error.message}`),
+            ),
+          )
+          loaded.push(...decoded.data)
+          const next = decoded.nextCursor
+          if (typeof next !== "string") break
+          if (next === cursor) return "unknown" as const
+          cursor = next
+        }
+        // Cost bound: the loaded set is normally a handful of sessions on
+        // the local in-memory server; a pathological population makes the
+        // walk inconclusive rather than open-ended.
+        if (loaded.length > 200) return "unknown" as const
+        const info = new Map<string, { parent: string | null; activity: AgentActivity }>()
+        for (const id of loaded) {
+          if (id === rootId) continue
+          const reply = yield* request(state, "thread/read", { threadId: id }).pipe(
+            Effect.mapError((error) =>
+              unavailable(error._tag === "RpcError" ? error.text : error.reason),
+            ),
+          )
+          const decoded = yield* Schema.decodeUnknownEffect(ThreadReadReply)(reply).pipe(
+            Effect.mapError((error) =>
+              unavailable(`unexpected thread/read reply: ${error.message}`),
+            ),
+          )
+          info.set(id, {
+            parent:
+              typeof decoded.thread.parentThreadId === "string"
+                ? decoded.thread.parentThreadId
+                : null,
+            activity: statusToActivity(decoded.thread.status),
+          })
+        }
+        // Drop tracked descendants the enumeration no longer contains:
+        // unloaded means finished, and a stale busy entry must go.
+        const tracked = descendants.get(rootId)
+        if (tracked !== undefined) {
+          const loadedSet = new Set(loaded)
+          for (const id of [...tracked.keys()]) {
+            if (!loadedSet.has(id)) tracked.delete(id)
+          }
+        }
+        for (const [id, entry] of info) {
+          let ancestor = entry.parent
+          for (let hops = 0; ancestor !== null && hops < 32; hops++) {
+            if (ancestor === rootId) {
+              if (entry.parent !== null) registerDescendant(entry.parent, id)
+              ownStatus.set(id, entry.activity)
+              descendants.get(resolveRoot(id))?.set(id, entry.activity)
+              break
+            }
+            ancestor = info.get(ancestor)?.parent ?? null
+          }
+        }
+        return "reconciled" as const
       })
 
     const adapter: AgentAdapter = {
@@ -780,7 +991,10 @@ export const layer = Layer.effect(CodexAdapter)(
           yield* Effect.addFinalizer(() =>
             Effect.sync(() => {
               set.delete(queue)
-              if (set.size === 0) observers.delete(options.providerSessionId)
+              if (set.size === 0) {
+                observers.delete(options.providerSessionId)
+                pruneRoot(options.providerSessionId)
+              }
               Queue.endUnsafe(queue)
             }),
           )
@@ -792,11 +1006,24 @@ export const layer = Layer.effect(CodexAdapter)(
           // thread/list (probed) is the reconciliation aid: absent thread or
           // undeterminable status is honestly `unknown`, never a guess.
           const thread = yield* findThread(state, options.providerSessionId)
-          return typeof thread === "string" ? "unknown" : statusToActivity(thread.status)
+          if (typeof thread === "string") return "unknown"
+          // Demand-driven descendant reconciliation (ATC-158): thread/list
+          // omits descendants, so enumerate the loaded sessions and read
+          // each one's parent link and status. An inconclusive walk stays
+          // `unknown` — unseen descendants could still be writing.
+          const walk = yield* reconcileDescendants(state, options.providerSessionId)
+          if (walk === "unknown") return "unknown"
+          // Read the reconciled live map, not a walk-time snapshot, so
+          // this answer and the live feeds cannot disagree.
+          return aggregateActivity(
+            statusToActivity(thread.status),
+            descendants.get(options.providerSessionId)?.values() ?? [],
+          )
         }),
       // Codex holds no per-session launch files or secrets; provider-owned
-      // rollouts are never ATC's to touch.
-      releaseSession: () => Effect.void,
+      // rollouts are never ATC's to touch. Descendant bookkeeping still
+      // goes (guarded: a live observer keeps it until its own finalizer).
+      releaseSession: (options) => Effect.sync(() => pruneRoot(options.providerSessionId)),
     }
     return adapter
   }),
