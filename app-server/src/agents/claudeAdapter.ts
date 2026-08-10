@@ -58,6 +58,12 @@ import * as Subprocess from "../platform/subprocess.ts"
 //     (level snapshot); what the feed carries is always the reducer's
 //     aggregate, so a root Stop with live background work stays `working`
 //     and the last SubagentStop lands the `idle` transition.
+//   - Known residual: the SDK stream carries no correlation between a
+//     `result` and the input that caused it, so a background wake-turn's
+//     held result flushing just after a client startTurn is paired with
+//     that client turn (premature turnCompleted). Any discriminator would
+//     be a guess; activity stays truthful either way because results no
+//     longer derive it.
 //   - A turn that ends in anything but success ends the connection (the
 //     interrupted/failed outcome is emitted first); callers re-resume.
 //     Success keeps the held query open for further turns.
@@ -115,9 +121,12 @@ const claudeEnvironment = (): Record<string, string> => {
  * subagent/task lifecycle events carry the background evidence the
  * aggregate tracker needs (ATC-158). */
 const HOOK_EVENTS: ReadonlyArray<HookEvent> = [
+  "SessionStart",
+  "SessionEnd",
   "UserPromptSubmit",
   "PreToolUse",
   "PostToolUse",
+  "PostToolUseFailure",
   "Stop",
   "StopFailure",
   "SubagentStart",
@@ -126,6 +135,7 @@ const HOOK_EVENTS: ReadonlyArray<HookEvent> = [
   "TaskCompleted",
   "Notification",
   "PermissionRequest",
+  "PermissionDenied",
 ]
 
 const userMessage = (text: string): SDKUserMessage => ({

@@ -290,6 +290,12 @@ export const layer = Layer.effect(CodexAdapter)(
         ownStatus.clear()
         parentOf.clear()
         descendants.clear()
+        // Observers outlive the socket, but their evidence just died with
+        // it: tell them honestly rather than letting the last busy state
+        // sit stale while the provider moves on unheard (ATC-158).
+        for (const set of observers.values()) {
+          for (const queue of set) Queue.offerUnsafe(queue, "unknown")
+        }
         // An armed capture fails closed with the connection: the caller
         // abandons the launch and retries rather than adopting anything
         // observed through a fresh, unserialized window.
@@ -716,15 +722,19 @@ export const layer = Layer.effect(CodexAdapter)(
     /**
      * Rebuild the root's descendant graph from the provider (ATC-158):
      * walk thread/loaded/list, thread/read every loaded id, and chain
-     * parent links back to the root. Returns the descendants' activities,
-     * or `"unknown"` when the enumeration could not be completed. Also
-     * re-seeds the live bookkeeping so subsequent broadcasts for the found
-     * descendants fold into this root again (reconnect reconciliation).
+     * parent links back to the root, REPLACING the root's tracked
+     * descendant set with the findings; `"unknown"` when the enumeration
+     * could not be completed. Replacement is the point: a stale pre-walk
+     * `working` entry whose thread is no longer loaded must not survive
+     * reconciliation (it would pin the aggregate busy forever). parentOf
+     * links are kept, so a child that spawned mid-walk re-enters on its
+     * next status broadcast — racy transients self-heal; only staleness
+     * is permanent, and replacement cures it.
      */
     const reconcileDescendants = (
       state: ClientState,
       rootId: string,
-    ): Effect.Effect<ReadonlyArray<AgentActivity> | "unknown", AgentUnavailable> =>
+    ): Effect.Effect<"reconciled" | "unknown", AgentUnavailable> =>
       Effect.gen(function* () {
         const loaded: Array<string> = []
         let cursor: string | undefined
@@ -750,6 +760,10 @@ export const layer = Layer.effect(CodexAdapter)(
           if (next === cursor) return "unknown" as const
           cursor = next
         }
+        // Cost bound: the loaded set is normally a handful of sessions on
+        // the local in-memory server; a pathological population makes the
+        // walk inconclusive rather than open-ended.
+        if (loaded.length > 200) return "unknown" as const
         const info = new Map<string, { parent: string | null; activity: AgentActivity }>()
         for (const id of loaded) {
           if (id === rootId) continue
@@ -771,12 +785,19 @@ export const layer = Layer.effect(CodexAdapter)(
             activity: statusToActivity(decoded.thread.status),
           })
         }
-        const found: Array<AgentActivity> = []
+        // Drop tracked descendants the enumeration no longer contains:
+        // unloaded means finished, and a stale busy entry must go.
+        const tracked = descendants.get(rootId)
+        if (tracked !== undefined) {
+          const loadedSet = new Set(loaded)
+          for (const id of [...tracked.keys()]) {
+            if (!loadedSet.has(id)) tracked.delete(id)
+          }
+        }
         for (const [id, entry] of info) {
           let ancestor = entry.parent
           for (let hops = 0; ancestor !== null && hops < 32; hops++) {
             if (ancestor === rootId) {
-              found.push(entry.activity)
               if (entry.parent !== null) registerDescendant(entry.parent, id)
               ownStatus.set(id, entry.activity)
               descendants.get(resolveRoot(id))?.set(id, entry.activity)
@@ -785,7 +806,7 @@ export const layer = Layer.effect(CodexAdapter)(
             ancestor = info.get(ancestor)?.parent ?? null
           }
         }
-        return found
+        return "reconciled" as const
       })
 
     const adapter: AgentAdapter = {
@@ -990,9 +1011,14 @@ export const layer = Layer.effect(CodexAdapter)(
           // omits descendants, so enumerate the loaded sessions and read
           // each one's parent link and status. An inconclusive walk stays
           // `unknown` — unseen descendants could still be writing.
-          const found = yield* reconcileDescendants(state, options.providerSessionId)
-          if (found === "unknown") return "unknown"
-          return aggregateActivity(statusToActivity(thread.status), found)
+          const walk = yield* reconcileDescendants(state, options.providerSessionId)
+          if (walk === "unknown") return "unknown"
+          // Read the reconciled live map, not a walk-time snapshot, so
+          // this answer and the live feeds cannot disagree.
+          return aggregateActivity(
+            statusToActivity(thread.status),
+            descendants.get(options.providerSessionId)?.values() ?? [],
+          )
         }),
       // Codex holds no per-session launch files or secrets; provider-owned
       // rollouts are never ATC's to touch. Descendant bookkeeping still

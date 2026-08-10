@@ -784,4 +784,111 @@ describe("CodexAdapter descendant aggregation", () => {
       }),
     30_000,
   )
+
+  it.live(
+    "reconciliation drops a tracked child whose idle broadcast was missed",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox()
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              // Live broadcasts teach the adapter about the child...
+              const { connection, turn } = yield* adapter.createSession({
+                cwd: sandbox.cwd,
+                input: "SPAWN worker",
+              })
+              const sink = yield* collectAgentEvents(connection.events)
+              yield* waitForAgentEvent(
+                sink,
+                (event) => event.type === "turnCompleted" && event.turnId === turn.turnId,
+              )
+              assert.strictEqual(yield* connection.activity, "working")
+              // ...then the child finishes and unloads without a broadcast.
+              yield* Effect.scoped(
+                Effect.gen(function* () {
+                  const socket = yield* openExternal(fixtureUrl(sandbox))
+                  yield* externalRequest(socket, 901, "test/child/vanish", {
+                    threadId: `${connection.providerSessionId}-child-1`,
+                  })
+                }),
+              )
+              // Without reconciliation the stale working entry would pin
+              // the aggregate busy forever; the walk replaces the set.
+              assert.strictEqual(
+                yield* adapter.checkSession({
+                  providerSessionId: connection.providerSessionId,
+                }),
+                "idle",
+              )
+            }),
+          ),
+        )
+      }),
+    30_000,
+  )
+
+  it.live(
+    "a connection teardown tells observers the evidence is gone (unknown)",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox()
+        yield* Effect.gen(function* () {
+          const adapter = yield* CodexAdapter.CodexAdapter
+          const codexServer = yield* CodexServer.CodexServer
+          yield* Effect.ensuring(
+            Effect.scoped(
+              Effect.gen(function* () {
+                yield* adapter.checkSession({ providerSessionId: "missing" })
+                const url = fixtureUrl(sandbox)
+                const rootId = yield* Effect.scoped(
+                  Effect.gen(function* () {
+                    const socket = yield* openExternal(url)
+                    const started = yield* externalRequest(socket, 1, "thread/start", {
+                      cwd: sandbox.cwd,
+                    })
+                    return (started["thread"] as { id: string }).id
+                  }),
+                )
+                const stream = yield* adapter.observeSession({
+                  providerSessionId: rootId,
+                  providerMetadata: undefined,
+                })
+                const sink: Array<string> = []
+                yield* stream.pipe(
+                  Stream.runForEach((activity) => Effect.sync(() => sink.push(activity))),
+                  Effect.forkScoped,
+                )
+                yield* Effect.scoped(
+                  Effect.gen(function* () {
+                    const socket = yield* openExternal(url)
+                    yield* externalRequest(socket, 2, "turn/start", {
+                      threadId: rootId,
+                      input: [{ type: "text", text: "SPAWN then die" }],
+                    })
+                  }),
+                )
+                yield* Effect.gen(function* () {
+                  for (let attempt = 0; !sink.includes("working"); attempt++) {
+                    assert.isBelow(attempt, 200, `never saw working: ${sink.join(",")}`)
+                    yield* Effect.sleep("25 millis")
+                  }
+                })
+                // The evidence source dies with the socket: the observer
+                // must hear `unknown`, never sit on the stale busy state.
+                yield* Effect.orDie(codexServer.stop())
+                yield* Effect.gen(function* () {
+                  for (let attempt = 0; !sink.includes("unknown"); attempt++) {
+                    assert.isBelow(attempt, 200, `never saw unknown: ${sink.join(",")}`)
+                    yield* Effect.sleep("25 millis")
+                  }
+                })
+              }),
+            ),
+            Effect.orDie(codexServer.stop()),
+          )
+        }).pipe(Effect.provide(codexAdapterLayer(sandbox)))
+      }),
+    30_000,
+  )
 })

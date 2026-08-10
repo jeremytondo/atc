@@ -61,10 +61,37 @@ describe("claude aggregate activity tracker", () => {
       "needs_input",
     )
     assert.strictEqual(of("Notification", { notification_type: "idle_prompt" }), "idle")
-    // Lifecycle and unknown events are never guessed at.
-    assert.isNull(of("SessionEnd"))
+    // Session lifecycle edges reset process-local state (nothing runs in a
+    // process that just started or ended).
+    assert.strictEqual(of("SessionStart"), "idle")
+    assert.strictEqual(of("SessionEnd"), "idle")
+    // Unknown events are never guessed at.
     assert.isNull(of("SomethingNew"))
     assert.isNull(of("Notification", { notification_type: "mystery" }))
+  })
+
+  it("a session restart resets process-local background and cron state", () => {
+    const tracker = ClaudeHooks.makeActivityTracker()
+    tracker.update("Stop", {
+      background_tasks: [{ id: "bg1", type: "subagent", status: "running" }],
+      session_crons: [{ id: "c1", schedule: "* * * * *", recurring: true, prompt: "x" }],
+    })
+    assert.strictEqual(tracker.aggregate(), "working")
+    // A crashed TUI's replacement process starts: its SessionStart means
+    // the old process's in-flight work is gone.
+    assert.strictEqual(tracker.update("SessionStart", {}), "idle")
+  })
+
+  it("a denied permission or failed tool clears a descendant's needs_input", () => {
+    const tracker = ClaudeHooks.makeActivityTracker()
+    tracker.update("Stop", {
+      background_tasks: [{ id: "bg1", type: "subagent", status: "running" }],
+      session_crons: [],
+    })
+    assert.strictEqual(tracker.update("PermissionRequest", { agent_id: "bg1" }), "needs_input")
+    assert.strictEqual(tracker.update("PermissionDenied", { agent_id: "bg1" }), "working")
+    assert.strictEqual(tracker.update("PermissionRequest", { agent_id: "bg1" }), "needs_input")
+    assert.strictEqual(tracker.update("PostToolUseFailure", { agent_id: "bg1" }), "working")
   })
 
   it("keeps the recorded background-subagent lifecycle busy until the last child stops", () => {

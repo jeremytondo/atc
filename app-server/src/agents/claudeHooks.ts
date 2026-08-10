@@ -106,11 +106,24 @@ export const makeActivityTracker = (): ActivityTracker => {
     }
 
     switch (eventName) {
+      case "SessionStart":
+      case "SessionEnd":
+        // Background tasks and session crons are process-local: a session
+        // (re)starting or ending means the previous process's in-flight
+        // work is gone, whatever this tracker still holds — and the new or
+        // ended process is running nothing yet. Honest reset, not a guess.
+        background.clear()
+        cronCount = 0
+        root = "idle"
+        return aggregate()
       case "UserPromptSubmit":
       case "PreToolUse":
       case "PostToolUse":
+      case "PostToolUseFailure":
+      case "PermissionDenied":
         // With agent_id the event fired inside a descendant: it is that
-        // descendant's liveness (and clears its needs_input), never the
+        // descendant's liveness (and clears its needs_input — a denied
+        // permission or failed tool means the prompt resolved), never the
         // root's.
         if (agentId === null) root = "working"
         else background.set(agentId, "working")
@@ -156,9 +169,8 @@ export const makeActivityTracker = (): ActivityTracker => {
         return signal ? aggregate() : null
       }
       default:
-        // Lifecycle events (SessionStart/SessionEnd, ...) are ATC-owned
-        // facts elsewhere; everything unrecognized is ignored, never
-        // guessed at — unless it carried a level snapshot above.
+        // Everything unrecognized is ignored, never guessed at — unless
+        // it carried a level snapshot above.
         return signal ? aggregate() : null
     }
   }

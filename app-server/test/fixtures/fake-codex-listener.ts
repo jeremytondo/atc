@@ -172,6 +172,14 @@ const handle = (
         thread: { id, parentThreadId: child.parentId, status: childStatus(child) },
       })
     }
+    case "test/child/vanish": {
+      // The missed-idle-broadcast scenario: the child finishes and unloads
+      // while nobody hears about it (only reconciliation can notice).
+      if (!children.delete(String(params["threadId"] ?? ""))) {
+        return respondError(-32600, "unknown child")
+      }
+      return respond({})
+    }
     case "test/child/finish": {
       const child = children.get(String(params["threadId"] ?? ""))
       if (child === undefined) return respondError(-32600, "unknown child")
