@@ -11,7 +11,7 @@ and uploads the notarized DMG.
 
 Environment overrides:
   ATC_TEAM_ID         Apple Developer Team ID (default: 337D6CNU4E)
-  ATC_NOTARY_PROFILE  notarytool keychain profile (default: atc-notary)
+  ATC_NOTARY_PROFILE  notarytool stored-credentials profile (default: ateliercode-notary)
   ATC_ARTIFACT_ROOT   artifact root (default: .build/release-dev)
 USAGE
 }
@@ -48,7 +48,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 ATC_TEAM_ID="${ATC_TEAM_ID:-337D6CNU4E}"
-ATC_NOTARY_PROFILE="${ATC_NOTARY_PROFILE:-atc-notary}"
+ATC_NOTARY_PROFILE="${ATC_NOTARY_PROFILE:-ateliercode-notary}"
 ATC_ARTIFACT_ROOT="${ATC_ARTIFACT_ROOT:-.build/release-dev}"
 
 APP_NAME="atc"
@@ -97,9 +97,13 @@ find_developer_id_identity() {
 }
 
 validate_notary_profile() {
-  if ! xcrun notarytool history --keychain-profile "$ATC_NOTARY_PROFILE" --no-progress >/dev/null 2>&1; then
-    die "notarytool profile '$ATC_NOTARY_PROFILE' is unavailable or invalid. Store credentials with xcrun notarytool store-credentials, then rerun."
+  local output
+  if output="$(xcrun notarytool history --keychain-profile "$ATC_NOTARY_PROFILE" --no-progress 2>&1)"; then
+    return
   fi
+
+  printf '%s\n' "$output" >&2
+  die "notarytool could not use stored-credentials profile '$ATC_NOTARY_PROFILE'. Unlock the default keychain or store credentials with 'xcrun notarytool store-credentials $ATC_NOTARY_PROFILE', then rerun."
 }
 
 validate_github_auth() {
