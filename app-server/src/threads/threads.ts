@@ -1,4 +1,4 @@
-import { Context, Duration, Effect, Exit, Layer, Option, Scope, Stream } from "effect"
+import { Context, Duration, Effect, Exit, Layer, Option, Scope, Semaphore, Stream } from "effect"
 import { AgentRegistry } from "../agents/agentRegistry.ts"
 import type {
   AgentActivity,
@@ -78,6 +78,20 @@ export type Thread = typeof ThreadSchema.Type
 //   - archived threads are never pinned: pin refuses archived records, and
 //     archive clears the pin in the same repository write so no client can
 //     observe or restore an archived pin.
+//   - archive suspends the thread's runtime (ATC-157): the live linked TUI
+//     terminal is killed (the terminals confirmed-kill rules) and
+//     adapter-owned session resources are released before archivedAt is
+//     written, so an archived thread consumes no zmx session while the
+//     provider conversation survives for an exact resume after unarchive.
+//     Re-archive converges: a lingering live terminal (legacy rows from
+//     before archive killed terminals) is killed on repeat; archive
+//     refuses mid-turn (`unknown` is never guessed to be busy).
+//   - archive, delete, and a launching openTerminal serialize per thread
+//     behind a lazily created per-id semaphore: archive/delete queue
+//     behind an in-flight open and then act on the resulting terminal, so
+//     a concurrent open can never leave an archived thread with a live
+//     terminal. Open-vs-open keeps its fail-fast conflict, and the
+//     idempotent open return never queues.
 //   - delete kills the live linked TUI terminal first (the terminals
 //     confirmed-kill rules), releases adapter-owned session resources,
 //     then removes the row; ended linked terminals stay as unlinked
@@ -110,8 +124,12 @@ export class Threads extends Context.Service<
       id: string,
       patch: { readonly name?: string | undefined },
     ) => Effect.Effect<Thread, ThreadNotFound>
-    /** Idempotent; refused while the agent session is actively working. */
-    readonly archive: (id: string) => Effect.Effect<Thread, ThreadNotFound | ThreadBusy>
+    /** Kill the live linked terminal and release adapter runtime resources,
+     * then set archivedAt (idempotent and convergent — see the header);
+     * refused while the agent session is actively working. */
+    readonly archive: (
+      id: string,
+    ) => Effect.Effect<Thread, ThreadNotFound | ThreadBusy | ZmxUnavailable>
     /** Idempotent. */
     readonly unarchive: (id: string) => Effect.Effect<Thread, ThreadNotFound>
     /** Idempotent; archived threads cannot be pinned. */
@@ -168,6 +186,20 @@ export const layerWith = (options: ThreadsOptions) =>
       const observed = new Map<string, Observation>()
       /** Threads with an openTerminal in flight — the one-open guard. */
       const opening = new Set<string>()
+      /**
+       * Per-thread lifecycle serialization (the header's serialization
+       * bullet). Entries are dropped when the thread row is deleted; a
+       * waiter still queued on a dropped semaphore just finds the row gone.
+       */
+      const lifecycleLocks = new Map<string, Semaphore.Semaphore>()
+      const withLifecycleLock =
+        (id: string) =>
+        <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+          Effect.suspend(() => {
+            const lock = lifecycleLocks.get(id) ?? Semaphore.makeUnsafe(1)
+            lifecycleLocks.set(id, lock)
+            return lock.withPermit(effect)
+          })
 
       const adapterFor = (record: ThreadRecord): AgentAdapter | undefined =>
         isAgentId(record.agentId) ? registry.adapterFor(record.agentId) : undefined
@@ -523,7 +555,12 @@ export const layerWith = (options: ThreadsOptions) =>
           return terminal
         })
 
-      const openTerminal: Threads["Service"]["openTerminal"] = (id) =>
+      /**
+       * The launching path, run under the thread's lifecycle lock. Every
+       * pre-lock check is repeated here: a queued-ahead archive, delete, or
+       * open may have changed the world while this caller waited.
+       */
+      const openUnderLock = (id: string): ReturnType<Threads["Service"]["openTerminal"]> =>
         Effect.gen(function* () {
           const record = yield* repository.require(id)
           if (record.archivedAt !== undefined) {
@@ -584,37 +621,66 @@ export const layerWith = (options: ThreadsOptions) =>
           )
         })
 
-      const del: Threads["Service"]["delete"] = (id) =>
+      const openTerminal: Threads["Service"]["openTerminal"] = (id) =>
         Effect.gen(function* () {
+          // Fast paths stay ahead of the lifecycle lock: the idempotent
+          // return must not wait behind an in-flight open's identity await,
+          // and open-vs-open keeps its fail-fast conflict instead of
+          // queueing a second launch.
           const record = yield* repository.require(id)
+          if (record.archivedAt !== undefined) {
+            return yield* Effect.fail(new ThreadArchived({ threadId: id }))
+          }
           const linked = yield* linkedFor(record)
           if (linked !== undefined) {
-            // Confirmed-kill rules live in Terminals.delete; a terminal that
-            // vanished since the lookup is already the goal state.
-            yield* terminals
-              .delete(linked.id)
-              .pipe(Effect.catchTag("TerminalNotFound", () => Effect.void))
+            if (!opening.has(id)) yield* ensureObserved(record)
+            return linked
           }
-          const adapter = adapterFor(record)
-          if (adapter !== undefined && record.providerSessionId !== undefined) {
-            yield* adapter.releaseSession({
-              providerSessionId: record.providerSessionId,
-              providerMetadata: record.providerMetadata,
-            })
+          if (opening.has(id)) {
+            return yield* Effect.fail(
+              new ProviderSessionConflict({
+                threadId: id,
+                reason: "an open of this thread's terminal is already in progress",
+              }),
+            )
           }
-          yield* unobserve(id)
-          // Ended linked terminals survive as unlinked tombstones (FK SET
-          // NULL) — their client-visible threadId changes with the delete,
-          // so each publishes alongside the thread's own event.
-          const orphaned = (yield* terminals.list(record.projectId)).filter(
-            (terminal) => terminal.threadId === id,
-          )
-          yield* repository.delete(id)
-          yield* events.publish({ resource: "thread", id, change: "deleted" })
-          yield* Effect.forEach(orphaned, (terminal) =>
-            events.publish({ resource: "terminal", id: terminal.id, change: "updated" }),
-          )
+          return yield* withLifecycleLock(id)(openUnderLock(id))
         })
+
+      const del: Threads["Service"]["delete"] = (id) =>
+        withLifecycleLock(id)(
+          Effect.gen(function* () {
+            const record = yield* repository.require(id)
+            const linked = yield* linkedFor(record)
+            if (linked !== undefined) {
+              // Confirmed-kill rules live in Terminals.delete; a terminal
+              // that vanished since the lookup is already the goal state.
+              yield* terminals
+                .delete(linked.id)
+                .pipe(Effect.catchTag("TerminalNotFound", () => Effect.void))
+            }
+            const adapter = adapterFor(record)
+            if (adapter !== undefined && record.providerSessionId !== undefined) {
+              yield* adapter.releaseSession({
+                providerSessionId: record.providerSessionId,
+                providerMetadata: record.providerMetadata,
+              })
+            }
+            yield* unobserve(id)
+            // Ended linked terminals survive as unlinked tombstones (FK SET
+            // NULL) — their client-visible threadId changes with the delete,
+            // so each publishes alongside the thread's own event.
+            const orphaned = (yield* terminals.list(record.projectId)).filter(
+              (terminal) => terminal.threadId === id,
+            )
+            yield* repository.delete(id)
+            lifecycleLocks.delete(id)
+            yield* events.publish({ resource: "thread", id, change: "deleted" })
+            yield* Effect.forEach(orphaned, (terminal) =>
+              events.publish({ resource: "terminal", id: terminal.id, change: "updated" }),
+            )
+          }),
+        )
 
       return {
         list: (listOptions) =>
@@ -669,19 +735,49 @@ export const layerWith = (options: ThreadsOptions) =>
                 Effect.flatMap(assembleAlone),
               ),
         archive: (id) =>
-          Effect.gen(function* () {
-            const record = yield* repository.require(id)
-            const linked = yield* linkedFor(record)
-            // Busy covers needs_input too: a turn parked on an approval is
-            // still mid-turn.
-            if (isBusy(yield* resolveActivity(record, linked?.id))) {
-              return yield* Effect.fail(new ThreadBusy({ threadId: id }))
-            }
-            if (record.archivedAt !== undefined) return yield* assemble(record, linked)
-            const updated = yield* repository.setArchived(id, true)
-            yield* events.publish({ resource: "thread", id, change: "updated" })
-            return yield* assemble(updated, linked)
-          }),
+          withLifecycleLock(id)(
+            Effect.gen(function* () {
+              const record = yield* repository.require(id)
+              const linked = yield* linkedFor(record)
+              // Repeat archive with nothing live left is a pure no-op; with
+              // a lingering live terminal (a legacy row) it falls through to
+              // the kill below and converges.
+              if (record.archivedAt !== undefined && linked === undefined) {
+                return yield* assemble(record, undefined)
+              }
+              // Busy covers needs_input too: a turn parked on an approval is
+              // still mid-turn.
+              if (isBusy(yield* resolveActivity(record, linked?.id))) {
+                return yield* Effect.fail(new ThreadBusy({ threadId: id }))
+              }
+              if (linked !== undefined) {
+                // Confirmed-kill rules live in Terminals.delete: a kill that
+                // cannot verify death fails ZmxUnavailable and the thread
+                // stays active; a terminal that vanished since the lookup is
+                // already the goal state.
+                yield* terminals
+                  .delete(linked.id)
+                  .pipe(Effect.catchTag("TerminalNotFound", () => Effect.void))
+              }
+              // Suspend the runtime only after terminal death is confirmed:
+              // release adapter-owned session resources (Claude revokes its
+              // hook plumbing; the next tuiLaunch recreates it) and stop
+              // observation. The provider conversation itself is untouched,
+              // so unarchive + open resumes it exactly.
+              const adapter = adapterFor(record)
+              if (adapter !== undefined && record.providerSessionId !== undefined) {
+                yield* adapter.releaseSession({
+                  providerSessionId: record.providerSessionId,
+                  providerMetadata: record.providerMetadata,
+                })
+              }
+              yield* unobserve(id)
+              if (record.archivedAt !== undefined) return yield* assemble(record, undefined)
+              const updated = yield* repository.setArchived(id, true)
+              yield* events.publish({ resource: "thread", id, change: "updated" })
+              return yield* assemble(updated, undefined)
+            }),
+          ),
         unarchive: (id) =>
           Effect.gen(function* () {
             const record = yield* repository.require(id)

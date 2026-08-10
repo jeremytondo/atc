@@ -750,12 +750,12 @@ export class V1 extends HttpApiGroup.make("v1")
     HttpApiEndpoint.post("archiveThread", "/threads/:threadId/archive", {
       params: threadIdParam,
       success: Thread,
-      error: [ThreadNotFound, ThreadBusy],
+      error: [ThreadNotFound, ThreadBusy, ZmxUnavailable],
     })
       .annotate(OpenApi.Identifier, "archiveThread")
       .annotate(
         OpenApi.Description,
-        "Archive the thread (idempotent). Refused while the agent session is actively working.",
+        "Archive the thread (idempotent and convergent): its live linked terminal is killed first, so an archived thread consumes no multiplexer session; the provider conversation survives for a later exact resume via unarchive + open. Refused while the agent session is actively working, and refused (retryably) when terminal death cannot be verified.",
       ),
     HttpApiEndpoint.post("unarchiveThread", "/threads/:threadId/unarchive", {
       params: threadIdParam,

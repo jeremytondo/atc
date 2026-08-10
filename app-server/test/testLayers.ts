@@ -246,6 +246,17 @@ export const makeFakeZmxSandbox = (vars: Record<string, string> = {}) => {
   return { base, stateDir, wrapper }
 }
 
+/** Poll (real clock) until `predicate` accepts the effect's value; bounded. */
+export const eventually = <A, E>(effect: Effect.Effect<A, E>, predicate: (value: A) => boolean) =>
+  Effect.gen(function* () {
+    for (let attempt = 0; ; attempt++) {
+      const value = yield* effect
+      if (predicate(value)) return value
+      assert.isBelow(attempt, 300, `condition never held; last: ${JSON.stringify(value)}`)
+      yield* Effect.sleep("10 millis")
+    }
+  })
+
 /** Collect a byte stream into a text sink in the background (scoped). */
 export const collectText = (output: Stream.Stream<Uint8Array, unknown>) =>
   Effect.gen(function* () {
