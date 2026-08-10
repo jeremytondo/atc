@@ -5,6 +5,7 @@ import type {
   AgentConnection,
   AgentEvent,
   AgentRequestKind,
+  AgentSessionEvent,
   AgentTurn,
   AgentTurnOutcome,
 } from "../../src/agents/agentAdapter.ts"
@@ -53,6 +54,19 @@ export interface FakeAgentAdapter {
   readonly setIdentityHangs: (hangs: boolean) => void
   /** Push one activity value to every observer of `providerSessionId`. */
   readonly emitActivity: (providerSessionId: string, activity: AgentActivity) => void
+  /** Push one userPrompt event to every observer of `providerSessionId`. */
+  readonly emitUserPrompt: (providerSessionId: string, text: string) => void
+  /** generateTitle calls observed, in order. */
+  readonly titleRequests: Array<{ cwd: string; prompt: string }>
+  /** generateTitle outcomes (the raw title or the failure), in order —
+   * the deterministic completion signal for race tests. */
+  readonly titleOutcomes: Array<{ title?: string; error?: string }>
+  /** Script what generateTitle returns (default "Fake generated title"). */
+  readonly setTitle: (title: string) => void
+  /** While set, generateTitle fails with AgentProtocolError(reason). */
+  readonly setTitleFails: (reason: string | null) => void
+  /** While set, generateTitle waits on a gate; unsetting releases waiters. */
+  readonly setTitleHangs: (hangs: boolean) => void
   /** Live observeSession subscriptions for `providerSessionId`. */
   readonly observerCount: (providerSessionId: string) => number
   /** Script what checkSession reports for `providerSessionId`. */
@@ -83,11 +97,16 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
   const sessions = new Map<string, FakeAgentSession>()
   // One live connection per session — the single-writer rule.
   const connections = new Map<string, LiveConnection>()
-  const observers = new Map<string, Set<Queue.Queue<AgentActivity, Cause.Done>>>()
+  const observers = new Map<string, Set<Queue.Queue<AgentSessionEvent, Cause.Done>>>()
   const checkActivity = new Map<string, AgentActivity>()
   const prunedSessions = new Set<string>()
   const prepared: FakeAgentAdapter["prepared"] = []
   const released: FakeAgentAdapter["released"] = []
+  const titleRequests: FakeAgentAdapter["titleRequests"] = []
+  const titleOutcomes: FakeAgentAdapter["titleOutcomes"] = []
+  let scriptedTitle = "Fake generated title"
+  let titleFailsReason: string | null = null
+  let titleGate: Deferred.Deferred<void> | null = null
   let identityGate: Deferred.Deferred<void> | null = null
   let unavailableReason: string | null = null
   let nextSessionId = 1
@@ -313,7 +332,7 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
     observeSession: (options) =>
       Effect.gen(function* () {
         yield* requireAvailable
-        const queue = yield* Queue.make<AgentActivity, Cause.Done>()
+        const queue = yield* Queue.make<AgentSessionEvent, Cause.Done>()
         const set = observers.get(options.providerSessionId) ?? new Set()
         set.add(queue)
         observers.set(options.providerSessionId, set)
@@ -325,6 +344,21 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
           }),
         )
         return Stream.fromQueue(queue)
+      }),
+    generateTitle: (options) =>
+      Effect.gen(function* () {
+        yield* requireAvailable
+        titleRequests.push({ cwd: options.cwd, prompt: options.prompt })
+        const gate = titleGate
+        if (gate !== null) yield* Deferred.await(gate)
+        if (titleFailsReason !== null) {
+          titleOutcomes.push({ error: titleFailsReason })
+          return yield* Effect.fail(
+            new AgentProtocolError({ provider: "codex", reason: titleFailsReason }),
+          )
+        }
+        titleOutcomes.push({ title: scriptedTitle })
+        return scriptedTitle
       }),
     checkSession: (options) =>
       requireAvailable.pipe(
@@ -377,8 +411,29 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
     },
     emitActivity: (providerSessionId, activity) => {
       for (const queue of observers.get(providerSessionId) ?? []) {
-        Queue.offerUnsafe(queue, activity)
+        Queue.offerUnsafe(queue, { type: "activity", activity })
       }
+    },
+    emitUserPrompt: (providerSessionId, text) => {
+      for (const queue of observers.get(providerSessionId) ?? []) {
+        Queue.offerUnsafe(queue, { type: "userPrompt", text })
+      }
+    },
+    titleRequests,
+    titleOutcomes,
+    setTitle: (title) => {
+      scriptedTitle = title
+    },
+    setTitleFails: (reason) => {
+      titleFailsReason = reason
+    },
+    setTitleHangs: (hangs) => {
+      if (hangs) {
+        titleGate = Deferred.makeUnsafe<void>()
+        return
+      }
+      if (titleGate !== null) Deferred.doneUnsafe(titleGate, Effect.void)
+      titleGate = null
     },
     observerCount: (providerSessionId) => observers.get(providerSessionId)?.size ?? 0,
     setCheckActivity: (providerSessionId, activity) => {

@@ -46,6 +46,9 @@ export interface SpawnSpec {
   readonly env?: Record<string, string>
   /** Merge `env` on top of the parent environment instead of replacing it. */
   readonly extendEnv?: boolean
+  /** With `extendEnv`, parent variables to drop before merging — the
+   * nested-session marker scrub for child agent processes. */
+  readonly unsetEnv?: ReadonlyArray<string>
   readonly cwd?: string
   /** Grace period before SIGKILL when the child ignores SIGTERM at cleanup. */
   readonly forceKillAfter?: Duration.Input
@@ -200,6 +203,20 @@ export const waitForProcessExit = (
 const truncate = (line: string): string =>
   line.length > MAX_CAPTURED_LINE_LENGTH ? `${line.slice(0, MAX_CAPTURED_LINE_LENGTH)}…` : line
 
+/** The one place child environments are composed (and the one sanctioned
+ * process.env read for them): explicit env, optionally over the parent
+ * environment minus `unsetEnv`. */
+const childEnv = (spec: SpawnSpec): Record<string, string> => {
+  const explicit = spec.env ?? {}
+  if (spec.extendEnv !== true) return explicit
+  const env: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) env[key] = value
+  }
+  for (const name of spec.unsetEnv ?? []) delete env[name]
+  return { ...env, ...explicit }
+}
+
 /** The one place a SubprocessError is built from an arbitrary cause. */
 const subprocessError =
   (executable: string, operation: SubprocessError["operation"]) =>
@@ -220,8 +237,8 @@ const spawn = Effect.fnUntraced(function* (
     .spawn(
       ChildProcess.make(spec.executable, [...(spec.args ?? [])], {
         ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
-        env: spec.env ?? {},
-        extendEnv: spec.extendEnv ?? false,
+        env: childEnv(spec),
+        extendEnv: false,
         stdin: { stream: Stream.fromQueue(stdin) },
         killSignal: "SIGTERM",
         forceKillAfter: spec.forceKillAfter ?? "2 seconds",
@@ -334,7 +351,7 @@ const spawnPty = Effect.fnUntraced(function* (spec: PtySpawnSpec) {
       try: () =>
         Bun.spawn([spec.executable, ...(spec.args ?? [])], {
           ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
-          env: spec.extendEnv === true ? { ...process.env, ...spec.env } : (spec.env ?? {}),
+          env: childEnv(spec),
           terminal: {
             cols: spec.cols ?? DEFAULT_PTY_COLS,
             rows: spec.rows ?? DEFAULT_PTY_ROWS,

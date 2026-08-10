@@ -495,7 +495,11 @@ describe("CodexAdapter TUI session plumbing", () => {
               })
               const sink: Array<string> = []
               yield* stream.pipe(
-                Stream.runForEach((value) => Effect.sync(() => sink.push(value))),
+                Stream.runForEach((event) =>
+                  Effect.sync(() =>
+                    sink.push(event.type === "activity" ? event.activity : `prompt:${event.text}`),
+                  ),
+                ),
                 Effect.ignore,
                 Effect.forkScoped,
               )
@@ -507,6 +511,237 @@ describe("CodexAdapter TUI session plumbing", () => {
               yield* waitForActivity(sink, "idle")
             }),
           ),
+        )
+      }),
+    30_000,
+  )
+
+  it.live(
+    "observeSession emits the session's first user prompt exactly once",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox()
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              // Arm the shared connection, then drive the thread externally
+              // (the TUI stand-in): item/* notifications never reach this
+              // passive socket, so the prompt must come from the
+              // demand-driven thread/read on the busy transition.
+              assert.strictEqual(
+                yield* adapter.checkSession({ providerSessionId: "none" }),
+                "unknown",
+              )
+              const identity = JSON.parse(
+                fs.readFileSync(path.join(sandbox.stateDir, "codex-app-server.json"), "utf8"),
+              ) as { port: number }
+              const external = yield* openExternal(`ws://127.0.0.1:${identity.port}`)
+              const threadId = yield* startExternalThread(external, 1, sandbox.cwd)
+              const stream = yield* adapter.observeSession({
+                providerSessionId: threadId,
+                providerMetadata: undefined,
+              })
+              const sink: Array<string> = []
+              yield* stream.pipe(
+                Stream.runForEach((event) =>
+                  Effect.sync(() =>
+                    sink.push(event.type === "activity" ? event.activity : `prompt:${event.text}`),
+                  ),
+                ),
+                Effect.ignore,
+                Effect.forkScoped,
+              )
+              yield* externalRequest(external, 2, "turn/start", {
+                threadId,
+                input: [{ type: "text", text: "please add dark mode" }],
+              })
+              yield* waitForActivity(sink, "prompt:please add dark mode")
+              yield* waitForActivity(sink, "idle")
+              // A second turn's busy transition re-reads nothing: the first
+              // prompt was already emitted, exactly once.
+              yield* externalRequest(external, 3, "turn/start", {
+                threadId,
+                input: [{ type: "text", text: "second message" }],
+              })
+              yield* Effect.gen(function* () {
+                for (
+                  let attempt = 0;
+                  sink.filter((entry) => entry === "idle").length < 2;
+                  attempt++
+                ) {
+                  assert.isBelow(attempt, 200, `second turn never settled: ${sink.join(",")}`)
+                  yield* Effect.sleep("25 millis")
+                }
+              })
+              assert.deepStrictEqual(
+                sink.filter((entry) => entry.startsWith("prompt:")),
+                ["prompt:please add dark mode"],
+              )
+            }),
+          ),
+        )
+      }),
+    30_000,
+  )
+
+  it.live(
+    "generateTitle runs an ephemeral codex exec and returns its last message",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox()
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.gen(function* () {
+            const title = yield* adapter.generateTitle({
+              cwd: sandbox.cwd,
+              prompt: "please add dark mode",
+            })
+            // The exec fixture replies with the last stdin line — the
+            // verbatim user prompt at the shared template's tail.
+            assert.strictEqual(title, "fake title: please add dark mode")
+            // The safety-relevant invocation shape is pinned: ephemeral,
+            // read-only sandbox, low reasoning, prompt via stdin (never
+            // argv), nested-session markers scrubbed by the seam.
+            const recorded = JSON.parse(
+              fs.readFileSync(path.join(sandbox.base, "exec-record.json"), "utf8"),
+            ) as { argv: Array<string>; markers: Array<string> }
+            assert.include(recorded.argv, "--ephemeral")
+            assert.include(recorded.argv, "--skip-git-repo-check")
+            assert.include(recorded.argv.join(" "), "-s read-only")
+            assert.include(recorded.argv.join(" "), "--model gpt-5.6-luna")
+            assert.include(recorded.argv.join(" "), 'model_reasoning_effort="low"')
+            assert.include(recorded.argv, "-")
+            assert.isFalse(recorded.argv.some((arg) => arg.includes("dark mode")))
+            assert.deepStrictEqual(recorded.markers, [])
+            // The temporary output file is cleaned up with the scope.
+            const leftovers = fs
+              .readdirSync(sandbox.stateDir)
+              .filter((entry) => entry.startsWith("codex-title-"))
+            assert.deepStrictEqual(leftovers, [])
+          }),
+        )
+      }),
+    30_000,
+  )
+
+  it.live(
+    "the activity feed never waits on the prompt read",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox({ FAKE_CODEX_READ_DELAY_MS: "3000" })
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              assert.strictEqual(
+                yield* adapter.checkSession({ providerSessionId: "none" }),
+                "unknown",
+              )
+              const identity = JSON.parse(
+                fs.readFileSync(path.join(sandbox.stateDir, "codex-app-server.json"), "utf8"),
+              ) as { port: number }
+              const external = yield* openExternal(`ws://127.0.0.1:${identity.port}`)
+              const threadId = yield* startExternalThread(external, 1, sandbox.cwd)
+              const stream = yield* adapter.observeSession({
+                providerSessionId: threadId,
+                providerMetadata: undefined,
+              })
+              const sink: Array<string> = []
+              yield* stream.pipe(
+                Stream.runForEach((event) =>
+                  Effect.sync(() =>
+                    sink.push(event.type === "activity" ? event.activity : `prompt:${event.text}`),
+                  ),
+                ),
+                Effect.ignore,
+                Effect.forkScoped,
+              )
+              yield* externalRequest(external, 2, "turn/start", {
+                threadId,
+                input: [{ type: "text", text: "slow read" }],
+              })
+              // The whole turn's activity lands while the prompt read is
+              // still parked behind the fixture's delay — the feed (and the
+              // confirmed-marker write it drives) never waits on the RPC.
+              yield* waitForActivity(sink, "working")
+              yield* waitForActivity(sink, "idle")
+              assert.isTrue(
+                sink.every((entry) => !entry.startsWith("prompt:")),
+                `prompt arrived before the delayed read resolved: ${sink.join(",")}`,
+              )
+              // The prompt still arrives once the read completes.
+              yield* waitForActivity(sink, "prompt:slow read")
+            }),
+          ),
+        )
+      }),
+    30_000,
+  )
+
+  it.live(
+    "an unflushed preview is retried in-fiber, landing mid-turn",
+    () =>
+      Effect.gen(function* () {
+        // The real rollout flush lags turn start (probed ~1.4s); the whole
+        // turn here finishes before the preview is readable, so only the
+        // discovery loop's own backoff — never a later activity
+        // transition — can deliver the prompt.
+        const sandbox = makeCodexSandbox({ FAKE_CODEX_PREVIEW_DELAY_MS: "1500" })
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              assert.strictEqual(
+                yield* adapter.checkSession({ providerSessionId: "none" }),
+                "unknown",
+              )
+              const identity = JSON.parse(
+                fs.readFileSync(path.join(sandbox.stateDir, "codex-app-server.json"), "utf8"),
+              ) as { port: number }
+              const external = yield* openExternal(`ws://127.0.0.1:${identity.port}`)
+              const threadId = yield* startExternalThread(external, 1, sandbox.cwd)
+              const stream = yield* adapter.observeSession({
+                providerSessionId: threadId,
+                providerMetadata: undefined,
+              })
+              const sink: Array<string> = []
+              yield* stream.pipe(
+                Stream.runForEach((event) =>
+                  Effect.sync(() =>
+                    sink.push(event.type === "activity" ? event.activity : `prompt:${event.text}`),
+                  ),
+                ),
+                Effect.ignore,
+                Effect.forkScoped,
+              )
+              yield* externalRequest(external, 2, "turn/start", {
+                threadId,
+                input: [{ type: "text", text: "late preview" }],
+              })
+              yield* waitForActivity(sink, "idle")
+              yield* waitForActivity(sink, "prompt:late preview")
+              // No transition after idle exists to re-arm discovery — the
+              // in-fiber retry alone delivered the prompt.
+              assert.deepStrictEqual(
+                sink.filter((entry) => !entry.startsWith("prompt:")),
+                ["working", "idle"],
+              )
+            }),
+          ),
+        )
+      }),
+    30_000,
+  )
+
+  it.live(
+    "a failing codex exec is a typed protocol error, never a crash",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox({ FAKE_CODEX_EXEC_EXIT: "3" })
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.gen(function* () {
+            const failure = yield* Effect.flip(
+              adapter.generateTitle({ cwd: sandbox.cwd, prompt: "doomed" }),
+            )
+            assert.strictEqual(failure._tag, "AgentProtocolError")
+          }),
         )
       }),
     30_000,
@@ -707,7 +942,11 @@ describe("CodexAdapter descendant aggregation", () => {
               })
               const sink: Array<string> = []
               yield* stream.pipe(
-                Stream.runForEach((activity) => Effect.sync(() => sink.push(activity))),
+                Stream.runForEach((event) =>
+                  Effect.sync(() =>
+                    sink.push(event.type === "activity" ? event.activity : `prompt:${event.text}`),
+                  ),
+                ),
                 Effect.forkScoped,
               )
               // An external writer (TUI stand-in) runs the spawning turn.
@@ -722,8 +961,8 @@ describe("CodexAdapter descendant aggregation", () => {
               )
               const waitFor = (wanted: string) =>
                 Effect.gen(function* () {
-                  for (let attempt = 0; sink[sink.length - 1] !== wanted; attempt++) {
-                    assert.isBelow(attempt, 200, `never settled on ${wanted}: ${sink.join(",")}`)
+                  for (let attempt = 0; !sink.includes(wanted); attempt++) {
+                    assert.isBelow(attempt, 200, `never saw ${wanted}: ${sink.join(",")}`)
                     yield* Effect.sleep("25 millis")
                   }
                 })
@@ -856,7 +1095,13 @@ describe("CodexAdapter descendant aggregation", () => {
                 })
                 const sink: Array<string> = []
                 yield* stream.pipe(
-                  Stream.runForEach((activity) => Effect.sync(() => sink.push(activity))),
+                  Stream.runForEach((event) =>
+                    Effect.sync(() =>
+                      sink.push(
+                        event.type === "activity" ? event.activity : `prompt:${event.text}`,
+                      ),
+                    ),
+                  ),
                   Effect.forkScoped,
                 )
                 yield* Effect.scoped(

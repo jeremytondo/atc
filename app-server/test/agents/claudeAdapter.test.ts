@@ -3,6 +3,7 @@ import { Effect, Layer, Stream } from "effect"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import type { AgentSessionEvent } from "../../src/agents/agentAdapter.ts"
 import * as ClaudeAdapter from "../../src/agents/claudeAdapter.ts"
 import * as ClaudeHooks from "../../src/agents/claudeHooks.ts"
 import { claudeAdapterLayer, collectAgentEvents, waitForAgentEvent } from "./agentTestKit.ts"
@@ -514,12 +515,17 @@ describe("ClaudeAdapter TUI session plumbing", () => {
       }),
     ).pipe(Layer.provide(ClaudeHooks.layer))
 
-  /** Collect an activity stream into a sink in the background (scoped). */
-  const collectActivity = (stream: Stream.Stream<string>) =>
+  /** Collect an observation stream into a string sink (scoped): activity
+   * values verbatim, prompts as `prompt:<text>`. */
+  const collectActivity = (stream: Stream.Stream<AgentSessionEvent>) =>
     Effect.gen(function* () {
       const sink: Array<string> = []
       yield* stream.pipe(
-        Stream.runForEach((activity) => Effect.sync(() => sink.push(activity))),
+        Stream.runForEach((event) =>
+          Effect.sync(() =>
+            sink.push(event.type === "activity" ? event.activity : `prompt:${event.text}`),
+          ),
+        ),
         Effect.ignore,
         Effect.forkScoped,
       )
@@ -746,6 +752,114 @@ describe("ClaudeAdapter TUI session plumbing", () => {
           claudeAdapterLayer({}, "/bin/echo", { stateDir: dir }, spyHooksLayer(minted)),
         ),
       )
+    }),
+  )
+
+  it.live("observeSession streams root user prompts and ignores subagent ones", () =>
+    Effect.gen(function* () {
+      const dir = stateDir()
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter.ClaudeAdapter
+        const hooks = yield* ClaudeHooks.ClaudeHooks
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const secret = "c".repeat(64)
+            const stream = yield* adapter.observeSession({
+              providerSessionId: "prompt-session",
+              providerMetadata: JSON.stringify({ hookSecret: secret }),
+            })
+            const sink = yield* collectActivity(stream)
+            yield* hooks.deliver(secret, {
+              session_id: "prompt-session",
+              hook_event_name: "UserPromptSubmit",
+              prompt: "add a login page",
+            })
+            // A subagent's UserPromptSubmit is dispatch, not the user (it
+            // still registers agent-1 as live background work, so the
+            // SubagentStop below lets the root Stop land idle).
+            yield* hooks.deliver(secret, {
+              session_id: "prompt-session",
+              hook_event_name: "UserPromptSubmit",
+              prompt: "synthetic subagent dispatch",
+              agent_id: "agent-1",
+            })
+            yield* hooks.deliver(secret, {
+              session_id: "prompt-session",
+              hook_event_name: "SubagentStop",
+              agent_id: "agent-1",
+            })
+            yield* hooks.deliver(secret, {
+              session_id: "prompt-session",
+              hook_event_name: "Stop",
+            })
+            yield* waitForActivity(sink, "idle")
+            assert.deepStrictEqual(
+              sink.filter((entry) => entry.startsWith("prompt:")),
+              ["prompt:add a login page"],
+            )
+          }),
+        )
+      }).pipe(Effect.provide(claudeAdapterLayer({}, "/bin/echo", { stateDir: dir })))
+    }),
+  )
+})
+
+describe("ClaudeAdapter generateTitle", () => {
+  it.live("runs one bounded, tool-less, unpersisted haiku one-shot", () =>
+    Effect.gen(function* () {
+      const cwd = workDir()
+      const fake = makeFakeClaudeQuery()
+      let captured: Record<string, unknown> | undefined
+      const layer = claudeAdapterLayer({
+        queryFn: (args) => {
+          captured = args.options as unknown as Record<string, unknown>
+          return fake.queryFn(args)
+        },
+      })
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter.ClaudeAdapter
+        const raw = yield* adapter.generateTitle({ cwd, prompt: "add dark mode" })
+        // The fake echoes its input, which is the shared template carrying
+        // the verbatim prompt — the raw reply comes back unsanitized.
+        assert.isTrue(raw.startsWith("fake: You write concise titles"), raw)
+        assert.include(raw, "add dark mode")
+        assert.strictEqual(captured?.["maxTurns"], 1)
+        assert.strictEqual(captured?.["persistSession"], false)
+        assert.strictEqual(captured?.["model"], "haiku")
+        assert.deepStrictEqual(captured?.["tools"], [])
+        assert.strictEqual(captured?.["cwd"], cwd)
+      }).pipe(Effect.provide(layer))
+    }),
+  )
+
+  it.live("a failed turn is a typed protocol error, never a crash", () =>
+    Effect.gen(function* () {
+      const { layer } = adapterStack()
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter.ClaudeAdapter
+        const failure = yield* Effect.flip(
+          adapter.generateTitle({ cwd: workDir(), prompt: "FAILTURN" }),
+        )
+        assert.strictEqual(failure._tag, "AgentProtocolError")
+      }).pipe(Effect.provide(layer))
+    }),
+  )
+
+  it.live("a synchronously throwing query is a typed protocol error too", () =>
+    Effect.gen(function* () {
+      const layer = claudeAdapterLayer({
+        queryFn: () => {
+          throw new Error("sync setup boom")
+        },
+      })
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter.ClaudeAdapter
+        const failure = yield* Effect.flip(adapter.generateTitle({ cwd: workDir(), prompt: "x" }))
+        assert.strictEqual(failure._tag, "AgentProtocolError")
+        if (failure._tag === "AgentProtocolError") {
+          assert.include(failure.reason, "sync setup boom")
+        }
+      }).pipe(Effect.provide(layer))
     }),
   )
 })

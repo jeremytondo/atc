@@ -1,7 +1,11 @@
 import { assert, describe, it } from "@effect/vitest"
 import { Effect, Stream } from "effect"
 import type { AgentEvent } from "../../src/agents/agentAdapter.ts"
-import { aggregateActivity } from "../../src/agents/agentAdapter.ts"
+import {
+  aggregateActivity,
+  sanitizeTitle,
+  titleInstruction,
+} from "../../src/agents/agentAdapter.ts"
 import { makeFakeAgentAdapter } from "./fakeAgentAdapter.ts"
 
 // Seam-semantics tests over the fake adapter: the observable rules every
@@ -44,6 +48,55 @@ describe("aggregateActivity", () => {
     assert.strictEqual(aggregateActivity("idle", ["unknown"]), "unknown")
     assert.strictEqual(aggregateActivity("unknown", []), "unknown")
     assert.strictEqual(aggregateActivity("unknown", ["idle"]), "unknown")
+  })
+})
+
+describe("sanitizeTitle", () => {
+  it("enforces the output hygiene rules in code, not in the prompt", () => {
+    // First non-empty line only, whitespace collapsed.
+    assert.strictEqual(sanitizeTitle("\n\n  Fix   login\tflow  \nsecond line"), "Fix login flow")
+    // Wrapping quotes (straight and smart, repeated) stripped.
+    assert.strictEqual(sanitizeTitle('"Add dark mode"'), "Add dark mode")
+    assert.strictEqual(sanitizeTitle("'“Add dark mode”'"), "Add dark mode")
+    // Trailing punctuation dropped.
+    assert.strictEqual(sanitizeTitle("Add dark mode."), "Add dark mode")
+    assert.strictEqual(sanitizeTitle("Add dark mode!?…"), "Add dark mode")
+    // ~50-char cap lands on a word boundary.
+    const long = sanitizeTitle(
+      "Refactor the authentication middleware pipeline for multi-tenant installs",
+    )
+    assert.isTrue(long !== null && long.length <= 50, `too long: ${long}`)
+    assert.strictEqual(long, "Refactor the authentication middleware pipeline")
+    // Nothing usable → null, never an empty title.
+    assert.isNull(sanitizeTitle(""))
+    assert.isNull(sanitizeTitle("  \n\t\n"))
+    assert.isNull(sanitizeTitle('"."'))
+  })
+})
+
+describe("titleInstruction", () => {
+  it("requests the closed activity-prefix taxonomy", () => {
+    const instruction = titleInstruction("add a login page")
+    assert.include(
+      instruction,
+      "Use sentence case, not title case: capitalize only the first word and proper nouns.",
+    )
+    assert.include(instruction, "Build: create, implement, change, or fix something.")
+    assert.include(instruction, "Review: review or critique existing code or work.")
+    assert.include(instruction, "Grill: explicitly grill or stress-test a plan or design.")
+    assert.include(instruction, "Explore: brainstorm, research, compare, or understand options.")
+    assert.include(
+      instruction,
+      "Investigate: diagnose a suspected bug or problem without asking for a fix.",
+    )
+    assert.include(instruction, "If no category clearly matches, omit the prefix.")
+  })
+
+  it("carries a capped prompt", () => {
+    const instruction = titleInstruction("add a login page")
+    assert.include(instruction, "add a login page")
+    const capped = titleInstruction("x".repeat(10_000))
+    assert.isBelow(capped.length, 5_000)
   })
 })
 
