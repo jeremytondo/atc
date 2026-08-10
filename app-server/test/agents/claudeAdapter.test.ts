@@ -284,6 +284,125 @@ describe("ClaudeAdapter", () => {
     }),
   )
 
+  // ATC-158: the feed carries the session TREE's aggregate. The scripted
+  // payloads replay the recorded background-subagent evidence
+  // (fixtures/claude-background-hook-payloads.json shapes).
+  it.live("background work keeps the aggregate busy after the root stops", () =>
+    Effect.gen(function* () {
+      const cwd = workDir()
+      const { fake, layer } = adapterStack({ sessionId: "session-bg" })
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter.ClaudeAdapter
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const { connection, turn } = yield* adapter.createSession({ cwd, input: "spawn" })
+            const sink = yield* collectAgentEvents(connection.events)
+            yield* waitForAgentEvent(
+              sink,
+              (event) => event.type === "turnCompleted" && event.turnId === turn.turnId,
+            )
+            // The recorded shape: the root's Stop carries a live background
+            // subagent in its level snapshot — the aggregate stays working.
+            yield* Effect.promise(() =>
+              fake.fireHook("Stop", {
+                background_tasks: [
+                  { id: "bg1", type: "subagent", status: "running", description: "worker" },
+                ],
+                session_crons: [],
+              }),
+            )
+            assert.strictEqual(yield* connection.activity, "working")
+            // A descendant waiting on permission surfaces needs_input...
+            yield* Effect.promise(() => fake.fireHook("PermissionRequest", { agent_id: "bg1" }))
+            assert.strictEqual(yield* connection.activity, "needs_input")
+            // ...and clears it when it proceeds.
+            yield* Effect.promise(() =>
+              fake.fireHook("PostToolUse", { agent_id: "bg1", tool_name: "Bash" }),
+            )
+            assert.strictEqual(yield* connection.activity, "working")
+            // SubagentStop's snapshot still contains the stopping agent
+            // (probed): subtracting it lands the last-child idle.
+            yield* Effect.promise(() =>
+              fake.fireHook("SubagentStop", {
+                agent_id: "bg1",
+                background_tasks: [{ id: "bg1", type: "subagent", status: "running" }],
+                session_crons: [],
+              }),
+            )
+            assert.strictEqual(yield* connection.activity, "idle")
+            yield* waitForAgentEvent(
+              sink,
+              (event) => event.type === "activity" && event.activity === "idle",
+            )
+          }),
+        )
+      }).pipe(Effect.provide(layer))
+    }),
+  )
+
+  it.live("a success result never clobbers live background evidence", () =>
+    Effect.gen(function* () {
+      const cwd = workDir()
+      const { fake, layer } = adapterStack({ sessionId: "session-bg2" })
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter.ClaudeAdapter
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const { connection, turn } = yield* adapter.createSession({ cwd, input: "hello" })
+            const sink = yield* collectAgentEvents(connection.events)
+            yield* waitForAgentEvent(
+              sink,
+              (event) => event.type === "turnCompleted" && event.turnId === turn.turnId,
+            )
+            yield* Effect.promise(() => fake.fireHook("SubagentStart", { agent_id: "bg2" }))
+            assert.strictEqual(yield* connection.activity, "working")
+            // A whole further turn completes (Stop without a snapshot,
+            // result success, state idle): the background evidence holds.
+            const second = yield* connection.startTurn("again")
+            yield* waitForAgentEvent(
+              sink,
+              (event) => event.type === "turnCompleted" && event.turnId === second.turnId,
+            )
+            assert.strictEqual(yield* connection.activity, "working")
+            yield* Effect.promise(() => fake.fireHook("SubagentStop", { agent_id: "bg2" }))
+            assert.strictEqual(yield* connection.activity, "idle")
+          }),
+        )
+      }).pipe(Effect.provide(layer))
+    }),
+  )
+
+  it.live("a pending session cron holds the aggregate busy until it is gone", () =>
+    Effect.gen(function* () {
+      const cwd = workDir()
+      const { fake, layer } = adapterStack({ sessionId: "session-cron" })
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter.ClaudeAdapter
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const { connection, turn } = yield* adapter.createSession({ cwd, input: "hello" })
+            const sink = yield* collectAgentEvents(connection.events)
+            yield* waitForAgentEvent(
+              sink,
+              (event) => event.type === "turnCompleted" && event.turnId === turn.turnId,
+            )
+            yield* Effect.promise(() =>
+              fake.fireHook("Stop", {
+                background_tasks: [],
+                session_crons: [{ id: "c1", schedule: "* * * * *", recurring: true, prompt: "x" }],
+              }),
+            )
+            assert.strictEqual(yield* connection.activity, "working")
+            yield* Effect.promise(() =>
+              fake.fireHook("Stop", { background_tasks: [], session_crons: [] }),
+            )
+            assert.strictEqual(yield* connection.activity, "idle")
+          }),
+        )
+      }).pipe(Effect.provide(layer))
+    }),
+  )
+
   it.live("AskUserQuestion surfaces as a question, not an approval", () =>
     Effect.gen(function* () {
       const cwd = workDir()

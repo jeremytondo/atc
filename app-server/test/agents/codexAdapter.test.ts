@@ -570,3 +570,218 @@ describe("CodexAdapter TUI session plumbing", () => {
     30_000,
   )
 })
+
+// ATC-158: descendant (subagent) threads fold into their root's aggregate.
+// The fixture mirrors the probed real behavior: a subAgentActivity item on
+// the parent, child thread/status/changed broadcasts, no thread/started,
+// no thread/list entry, and loaded/list + thread/read for reconciliation.
+describe("CodexAdapter descendant aggregation", () => {
+  const openExternal = (url: string) =>
+    Effect.acquireRelease(
+      Effect.callback<WebSocket>((resume) => {
+        const socket = new WebSocket(url)
+        socket.onopen = () => resume(Effect.succeed(socket))
+      }),
+      (socket) => Effect.sync(() => socket.close()),
+    )
+
+  const externalRequest = (socket: WebSocket, id: number, method: string, params: unknown) =>
+    Effect.callback<Record<string, unknown>>((resume) => {
+      const listener = (event: MessageEvent) => {
+        const message = JSON.parse(String(event.data)) as { id?: number; result?: unknown }
+        if (message.id === id) {
+          socket.removeEventListener("message", listener)
+          resume(Effect.succeed((message.result ?? {}) as Record<string, unknown>))
+        }
+      }
+      socket.addEventListener("message", listener)
+      socket.send(JSON.stringify({ id, method, params }))
+    })
+
+  const fixtureUrl = (sandbox: { readonly stateDir: string }) => {
+    const identity = JSON.parse(
+      fs.readFileSync(path.join(sandbox.stateDir, "codex-app-server.json"), "utf8"),
+    ) as { port: number }
+    return `ws://127.0.0.1:${identity.port}`
+  }
+
+  const finishChild = (sandbox: { readonly stateDir: string }, childId: string) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const socket = yield* openExternal(fixtureUrl(sandbox))
+        yield* externalRequest(socket, 900, "test/child/finish", { threadId: childId })
+      }),
+    )
+
+  it.live(
+    "an idle parent with a working descendant stays working; the last child lands idle",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox()
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const { connection, turn } = yield* adapter.createSession({
+                cwd: sandbox.cwd,
+                input: "SPAWN one worker",
+              })
+              const sink = yield* collectAgentEvents(connection.events)
+              yield* waitForAgentEvent(
+                sink,
+                (event) =>
+                  event.type === "turnCompleted" &&
+                  event.turnId === turn.turnId &&
+                  event.outcome === "completed",
+              )
+              // The parent's own status went idle with the turn, but the
+              // descendant is still active: the aggregate stays working.
+              assert.strictEqual(yield* connection.activity, "working")
+              yield* finishChild(sandbox, `${connection.providerSessionId}-child-1`)
+              // The child finishing flips the aggregate to idle even though
+              // the parent was already idle — the last-child transition.
+              yield* waitForAgentEvent(
+                sink,
+                (event) => event.type === "activity" && event.activity === "idle",
+              )
+              assert.strictEqual(yield* connection.activity, "idle")
+            }),
+          ),
+        )
+      }),
+    30_000,
+  )
+
+  it.live(
+    "a descendant waiting on approval surfaces the aggregate needs_input",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox()
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const { connection, turn } = yield* adapter.createSession({
+                cwd: sandbox.cwd,
+                input: "SPAWN NEEDSINPUT worker",
+              })
+              const sink = yield* collectAgentEvents(connection.events)
+              yield* waitForAgentEvent(
+                sink,
+                (event) => event.type === "turnCompleted" && event.turnId === turn.turnId,
+              )
+              assert.strictEqual(yield* connection.activity, "needs_input")
+              yield* finishChild(sandbox, `${connection.providerSessionId}-child-1`)
+              yield* waitForAgentEvent(
+                sink,
+                (event) => event.type === "activity" && event.activity === "idle",
+              )
+            }),
+          ),
+        )
+      }),
+    30_000,
+  )
+
+  it.live(
+    "observed (TUI-driven) roots aggregate descendant activity too",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox()
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              // Force the shared connection (and fixture) up.
+              yield* adapter.checkSession({ providerSessionId: "missing" })
+              const url = fixtureUrl(sandbox)
+              const rootId = yield* Effect.scoped(
+                Effect.gen(function* () {
+                  const socket = yield* openExternal(url)
+                  const started = yield* externalRequest(socket, 1, "thread/start", {
+                    cwd: sandbox.cwd,
+                  })
+                  return (started["thread"] as { id: string }).id
+                }),
+              )
+              const stream = yield* adapter.observeSession({
+                providerSessionId: rootId,
+                providerMetadata: undefined,
+              })
+              const sink: Array<string> = []
+              yield* stream.pipe(
+                Stream.runForEach((activity) => Effect.sync(() => sink.push(activity))),
+                Effect.forkScoped,
+              )
+              // An external writer (TUI stand-in) runs the spawning turn.
+              yield* Effect.scoped(
+                Effect.gen(function* () {
+                  const socket = yield* openExternal(url)
+                  yield* externalRequest(socket, 2, "turn/start", {
+                    threadId: rootId,
+                    input: [{ type: "text", text: "SPAWN from tui" }],
+                  })
+                }),
+              )
+              const waitFor = (wanted: string) =>
+                Effect.gen(function* () {
+                  for (let attempt = 0; sink[sink.length - 1] !== wanted; attempt++) {
+                    assert.isBelow(attempt, 200, `never settled on ${wanted}: ${sink.join(",")}`)
+                    yield* Effect.sleep("25 millis")
+                  }
+                })
+              // The parent's turn completes but the child holds it working.
+              yield* waitFor("working")
+              yield* finishChild(sandbox, `${rootId}-child-1`)
+              yield* waitFor("idle")
+            }),
+          ),
+        )
+      }),
+    30_000,
+  )
+
+  it.live(
+    "checkSession reconciles descendants it never saw broadcast (reconnect)",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox()
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.gen(function* () {
+            yield* adapter.checkSession({ providerSessionId: "missing" })
+            const url = fixtureUrl(sandbox)
+            const spawn = (input: string) =>
+              Effect.scoped(
+                Effect.gen(function* () {
+                  const socket = yield* openExternal(url)
+                  const started = yield* externalRequest(socket, 1, "thread/start", {
+                    cwd: sandbox.cwd,
+                  })
+                  const rootId = (started["thread"] as { id: string }).id
+                  yield* externalRequest(socket, 2, "turn/start", {
+                    threadId: rootId,
+                    input: [{ type: "text", text: input }],
+                  })
+                  return rootId
+                }),
+              )
+            // SILENT: the fixture spawns the descendant without broadcasts,
+            // so only the demand-driven walk can discover it.
+            const workingRoot = yield* spawn("SPAWN SILENT worker")
+            assert.strictEqual(
+              yield* adapter.checkSession({ providerSessionId: workingRoot }),
+              "working",
+            )
+            const waitingRoot = yield* spawn("SPAWN SILENT NEEDSINPUT worker")
+            assert.strictEqual(
+              yield* adapter.checkSession({ providerSessionId: waitingRoot }),
+              "needs_input",
+            )
+            yield* finishChild(sandbox, `${workingRoot}-child-1`)
+            assert.strictEqual(
+              yield* adapter.checkSession({ providerSessionId: workingRoot }),
+              "idle",
+            )
+          }),
+        )
+      }),
+    30_000,
+  )
+})
