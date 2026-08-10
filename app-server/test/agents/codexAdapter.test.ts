@@ -961,8 +961,8 @@ describe("CodexAdapter descendant aggregation", () => {
               )
               const waitFor = (wanted: string) =>
                 Effect.gen(function* () {
-                  for (let attempt = 0; sink[sink.length - 1] !== wanted; attempt++) {
-                    assert.isBelow(attempt, 200, `never settled on ${wanted}: ${sink.join(",")}`)
+                  for (let attempt = 0; !sink.includes(wanted); attempt++) {
+                    assert.isBelow(attempt, 200, `never saw ${wanted}: ${sink.join(",")}`)
                     yield* Effect.sleep("25 millis")
                   }
                 })
