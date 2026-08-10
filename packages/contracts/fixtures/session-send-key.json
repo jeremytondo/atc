@@ -1,7 +1,0 @@
-{
-  "routes": ["POST /sessions/{id}/send-key"],
-  "request": {
-    "key": "enter"
-  },
-  "response": {}
-}

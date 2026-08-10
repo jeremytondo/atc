@@ -2140,7 +2140,7 @@
       "description": "Local App Server",
       "variables": {
         "port": {
-          "default": "7332"
+          "default": "7331"
         }
       }
     }

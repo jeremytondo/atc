@@ -70,7 +70,7 @@ const drainEventsBeforeStop = Layer.effectDiscard(
   }),
 )
 
-/** IPv6 literals need brackets to form a valid URL host (`[::1]:7332`). */
+/** IPv6 literals need brackets to form a valid URL host (`[::1]:7331`). */
 export const hostForUrl = (host: string): string => (host.includes(":") ? `[${host}]` : host)
 
 // The resolved listen address, logged once the listener is up: with `bind`

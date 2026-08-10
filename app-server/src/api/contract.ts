@@ -13,7 +13,7 @@ import {
 // identifiers, descriptions) live in AGENTS.md "OpenAPI Contract".
 
 /** Default TCP port of a locally running App Server. */
-export const DEFAULT_PORT = 7332
+export const DEFAULT_PORT = 7331
 
 export const HealthResponse = Schema.Struct({
   status: Schema.Literal("ok"),

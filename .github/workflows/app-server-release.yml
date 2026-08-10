@@ -1,8 +1,8 @@
 # Manual-dispatch release pipeline for the App Server executable (ATC-127).
 #
 # channel=test    build + validate + upload a snapshot workflow artifact
-# channel=stable  additionally tag (vX.Y.Z, continuing the existing series)
-#                 and publish a GitHub Release with tarballs + checksums
+# channel=stable  additionally tag (vX.Y.Z, bumped from the highest existing
+#                 v tag) and publish a GitHub Release with tarballs + checksums
 #
 # Darwin targets build on macOS so Bun's ad-hoc code signature is applied
 # (and verified) natively; Linux targets cross-compile on ubuntu. Three of

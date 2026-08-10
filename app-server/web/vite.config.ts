@@ -8,8 +8,8 @@ export default defineConfig({
   plugins: [sveltekit()],
   server: {
     proxy: {
-      "/api": "http://127.0.0.1:7332",
-      "/openapi.json": "http://127.0.0.1:7332",
+      "/api": "http://127.0.0.1:7331",
+      "/openapi.json": "http://127.0.0.1:7331",
     },
   },
 })

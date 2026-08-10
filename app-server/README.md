@@ -1,14 +1,17 @@
 # ATC App Server
 
-The TypeScript implementation of the ATC server and `atc` CLI, built on
-[Effect](https://effect.website) and [Bun](https://bun.sh).
+The ATC server and `atc` CLI, built on [Effect](https://effect.website) and
+[Bun](https://bun.sh).
+
+Installing a release needs no toolchain — see [Install](../README.md#install)
+at the repo root. Everything below is for working on the server itself.
 
 Bun is pinned in [`mise.toml`](mise.toml) and installed automatically by
 [mise](https://mise.jdx.dev). All workflows are mise tasks:
 
 ```sh
 mise run install       # install dependencies from the committed bun.lock
-mise run dev           # run `atc serve` in the foreground (http://127.0.0.1:7332)
+mise run dev           # run `atc serve` in the foreground (http://127.0.0.1:7331)
 mise run test          # run the vitest suite on the Bun runtime
 mise run fmt           # format with Prettier
 mise run fmt:check     # fail if formatting is needed
@@ -45,6 +48,12 @@ The config file may set `port`, `bind`, `logLevel` (case-insensitive),
 `dataDir`, `zmxExecutable`, `codexExecutable`, and `claudeExecutable`; unknown
 keys are rejected. `atc serve --port`/`--bind` override the configured values
 for that server only.
+
+Upgrading from the retired Go server: its data is not migrated and nothing
+deletes it automatically. Remove the leftovers by hand if you had one —
+`~/.local/state/atc/atc.db`, `~/.config/atc/server/`, and the socket
+directory (`$XDG_RUNTIME_DIR/atc`, or `$TMPDIR/atc` on macOS — do not remove
+`~/.local/state/atc/` wholesale; the App Server keeps its log there).
 
 atc bundles no third-party binaries — install them yourself. Terminals
 require [zmx](https://github.com/neurosnap/zmx); the agent integrations use
@@ -121,9 +130,12 @@ WebSockets.
 ## Admin UI
 
 A running server serves a small read-only console at its base URL
-(`http://127.0.0.1:7332/`): a health/build overview at `/`, and the full API
+(`http://127.0.0.1:7331/`): a health/build overview at `/`, and the full API
 reference (Scalar over `openapi.json`) at `/docs`. It is an admin surface for
-observing the server and reading the docs, not an API client.
+observing the server and reading the docs, not an API client. Like every
+route it sits behind the trust guard, and a browser cannot attach the bearer
+header — so the console is effectively loopback-only; over a non-loopback
+bind it answers 403.
 
 The UI is a prerendered SvelteKit app in [`web/`](web). Its build output
 (`web/build/`) and the embed manifest that compiles it into the executable are

@@ -1,6 +1,0 @@
-{
-  "routes": [
-    "DELETE /sessions/{id}"
-  ],
-  "response": {}
-}
