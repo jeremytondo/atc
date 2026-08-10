@@ -556,9 +556,10 @@ export const layerWith = (options: ThreadsOptions) =>
         })
 
       /**
-       * The launching path, run under the thread's lifecycle lock. Every
-       * pre-lock check is repeated here: a queued-ahead archive, delete, or
-       * open may have changed the world while this caller waited.
+       * The launching path, run under the thread's lifecycle lock with the
+       * caller already holding the thread's `opening` claim. The record and
+       * linked-terminal checks are repeated here: a queued-ahead archive or
+       * delete may have changed the world while this caller waited.
        */
       const openUnderLock = (id: string): ReturnType<Threads["Service"]["openTerminal"]> =>
         Effect.gen(function* () {
@@ -575,24 +576,11 @@ export const layerWith = (options: ThreadsOptions) =>
               }),
             )
           }
-          // Idempotent: one live linked TUI terminal per thread, returned
-          // as-is (two TUIs into one conversation is the documented
-          // concurrency hazard). Mid-open the row may still name the
-          // superseded session — same rule as `assemble`.
+          // Defense in depth: nothing else can have linked a live terminal
+          // while this caller held the claim, but returning one beats
+          // double-launching if that ever changes.
           const linked = yield* linkedFor(record)
-          if (linked !== undefined) {
-            if (!opening.has(id)) yield* ensureObserved(record)
-            return linked
-          }
-          if (opening.has(id)) {
-            return yield* Effect.fail(
-              new ProviderSessionConflict({
-                threadId: id,
-                reason: "an open of this thread's terminal is already in progress",
-              }),
-            )
-          }
-          opening.add(id)
+          if (linked !== undefined) return linked
           return yield* (
             record.providerSessionId !== undefined && record.confirmedAt !== undefined
               ? reopen(record, adapter)
@@ -617,7 +605,6 @@ export const layerWith = (options: ThreadsOptions) =>
             // The open changed the thread (linked terminal, and possibly
             // provider identity); the idempotent return above changed nothing.
             Effect.tap(() => events.publish({ resource: "thread", id, change: "updated" })),
-            Effect.ensuring(Effect.sync(() => opening.delete(id))),
           )
         })
 
@@ -644,7 +631,14 @@ export const layerWith = (options: ThreadsOptions) =>
               }),
             )
           }
-          return yield* withLifecycleLock(id)(openUnderLock(id))
+          // The claim lands HERE, synchronously with the check above and
+          // before enqueueing: a simultaneous second open must fail fast at
+          // that check rather than silently queue behind this launch for
+          // the full identity await. The claim spans the lock wait too.
+          opening.add(id)
+          return yield* withLifecycleLock(id)(openUnderLock(id)).pipe(
+            Effect.ensuring(Effect.sync(() => opening.delete(id))),
+          )
         })
 
       const del: Threads["Service"]["delete"] = (id) =>

@@ -23,9 +23,12 @@ const kit = makeTestServiceLayers()
 const TestLayer = apiTestLayer(kit)
 
 // A dedicated kit whose identity never resolves until released — for the
-// archive-queues-behind-open path, where the open must still hold the
-// thread's lifecycle lock when archive arrives.
-const holdKit = makeTestServiceLayers()
+// queues-behind-open paths, where the open must still hold the thread's
+// lifecycle lock when archive/delete arrives. The tight TUI-liveness watch
+// is the discriminator: an implementation that killed the terminal mid-open
+// instead of queueing would trip watchForEarlyDeath and fail the open
+// fiber, so a successful Fiber.join on the open proves the wait happened.
+const holdKit = makeTestServiceLayers(":memory:", { launchWatchInterval: "25 millis" })
 const HoldLayer = apiTestLayer(holdKit)
 
 const scratch = mkdtempSync(join(tmpdir(), "atc-thread-archive-"))
@@ -205,7 +208,9 @@ describe("threads.archive", () => {
 
       // The open wins the queue, then archive acts on the resulting
       // terminal — last write wins, and the archived-implies-no-live-
-      // terminal invariant holds.
+      // terminal invariant holds. The join succeeding is itself an
+      // assertion (see the kit comment): a kill that jumped the queue
+      // would have failed the open via the liveness watch.
       holdKit.fakeAgents.codex.setIdentityHangs(false)
       const opened = yield* Fiber.join(openFiber)
       const archived = yield* Fiber.join(archiveFiber)
@@ -219,6 +224,48 @@ describe("threads.archive", () => {
       assert.isUndefined(read.linkedTerminalId)
 
       yield* client.v1.deleteThread({ params: { threadId: thread.id } })
+    }).pipe(Effect.provide(HoldLayer)),
+  )
+
+  it.live("delete queues behind an in-flight open, then reaps the fresh terminal", () =>
+    Effect.gen(function* () {
+      const { client, thread } = yield* setup
+      holdKit.fakeAgents.codex.setIdentityHangs(true)
+      const openFiber = yield* client.v1
+        .openThreadTerminal({ params: { threadId: thread.id } })
+        .pipe(Effect.forkChild)
+      yield* eventually(
+        Effect.sync(() => holdKit.fake.sessions.size),
+        (size) => size === 1,
+      )
+
+      // Delete arrives while the open still holds the lifecycle lock: it
+      // queues (the row is still readable), and once the open completes it
+      // reaps the fresh terminal, releases the adopted session, and removes
+      // the row — the same last-write-wins rule as archive.
+      const deleteFiber = yield* client.v1
+        .deleteThread({ params: { threadId: thread.id } })
+        .pipe(Effect.forkChild)
+      const pending = yield* client.v1.getThread({ params: { threadId: thread.id } })
+      assert.strictEqual(pending.id, thread.id)
+
+      holdKit.fakeAgents.codex.setIdentityHangs(false)
+      const opened = yield* Fiber.join(openFiber)
+      yield* Fiber.join(deleteFiber)
+      assert.isFalse(holdKit.fake.sessions.has(sessionNameForTerminalId(opened.id)))
+      const goneTerminal = yield* Effect.flip(
+        client.v1.getTerminal({ params: { terminalId: opened.id } }),
+      )
+      assert.strictEqual(goneTerminal._tag, "TerminalNotFound")
+      const goneThread = yield* Effect.flip(
+        client.v1.getThread({ params: { threadId: thread.id } }),
+      )
+      assert.strictEqual(goneThread._tag, "ThreadNotFound")
+      const fresh = holdKit.fakeAgents.codex.prepared.at(-1)?.providerSessionId ?? ""
+      assert.isTrue(
+        holdKit.fakeAgents.codex.released.some((r) => r.providerSessionId === fresh),
+        "the adopted session was released by the queued delete",
+      )
     }).pipe(Effect.provide(HoldLayer)),
   )
 
