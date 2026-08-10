@@ -77,6 +77,8 @@ export class AppConfig extends Context.Service<
     readonly logLevel: LogLevel.LogLevel
     /** Config file path that was consulted (it may not exist). */
     readonly configFile: string
+    /** The server host's home directory ($HOME, or the OS account database). */
+    readonly home: string
     /** Directory holding durable data (the SQLite database). */
     readonly dataDir: string
     /** Directory holding server state (the log file). */
@@ -313,6 +315,7 @@ export const load = (
       context,
       logLevel: settings.logLevel,
       configFile,
+      home: nonEmpty(env["HOME"]) ?? os.homedir(),
       dataDir,
       stateDir,
       dbFile: path.join(dataDir, "atc.db"),

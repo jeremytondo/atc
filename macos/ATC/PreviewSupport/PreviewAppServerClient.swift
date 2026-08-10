@@ -225,6 +225,19 @@ nonisolated struct PreviewAppServerClient: APIProtocol {
         ))))
     }
 
+    func listDirectory(
+        _ input: Operations.ListDirectory.Input
+    ) async throws -> Operations.ListDirectory.Output {
+        let path = input.query.path ?? "/Users/dev"
+        return .ok(.init(body: .json(.init(
+            path: path,
+            parent: path == "/" ? nil : URL(filePath: path).deletingLastPathComponent().path(percentEncoded: false),
+            entries: ["Documents", "Downloads", "Projects"].map {
+                .init(name: $0, path: path == "/" ? "/\($0)" : "\(path)/\($0)")
+            }
+        ))))
+    }
+
     // MARK: - Projects
 
     func listProjects(_ input: Operations.ListProjects.Input) async throws -> Operations.ListProjects.Output {

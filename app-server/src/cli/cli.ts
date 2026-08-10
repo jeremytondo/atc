@@ -1,5 +1,5 @@
 import { BunHttpClient } from "@effect/platform-bun"
-import { Console, Effect, FileSystem, Runtime, Schema } from "effect"
+import { Console, Effect, FileSystem, Option, Runtime, Schema } from "effect"
 import { Argument, Command, Flag } from "effect/unstable/cli"
 import { HttpClient } from "effect/unstable/http"
 import * as path from "node:path"
@@ -207,7 +207,18 @@ const fsCheck = clientCommand(
   (client, args) => client.v1.checkDirectory({ query: { path: path.resolve(args.path) } }),
 )
 
+const fsList = clientCommand(
+  "fs list",
+  "List a directory's subdirectories (defaults to the server's home directory)",
+  { path: Argument.optional(Argument.string("path")) },
+  (client, args) =>
+    client.v1.listDirectory({
+      // The contract uses absent keys (not undefined/null) for omitted fields.
+      query: Option.isSome(args.path) ? { path: path.resolve(args.path.value) } : {},
+    }),
+)
+
 export const fs = Command.make("fs").pipe(
   Command.withDescription("Read-only filesystem operations on the server host"),
-  Command.withSubcommands([fsCheck]),
+  Command.withSubcommands([fsCheck, fsList]),
 )

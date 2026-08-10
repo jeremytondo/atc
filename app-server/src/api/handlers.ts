@@ -53,6 +53,7 @@ export const V1Handlers = HttpApiBuilder.group(
         )
         .handle("deleteProject", ({ params }) => projects.delete(params.projectId))
         .handle("checkDirectory", ({ query }) => directories.check(query.path))
+        .handle("listDirectory", ({ query }) => directories.list(query.path))
         .handle("listTerminals", ({ query }) => terminals.list(query.projectId))
         .handle("createTerminal", ({ payload }) => terminals.create(payload))
         .handle("getTerminal", ({ params }) => terminals.get(params.terminalId))

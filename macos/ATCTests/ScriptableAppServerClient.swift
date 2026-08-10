@@ -29,6 +29,7 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         var shouldFail = false
         var delay: Duration?
         var directoryCheck: Components.Schemas.FsCheckResponse?
+        var directoryListings: [String?: Components.Schemas.FsListResponse] = [:]
         var createdThreadRequests: [Components.Schemas.CreateThreadRequest] = []
         var createdTerminalRequests: [Components.Schemas.CreateTerminalRequest] = []
         var listProjectsCount = 0
@@ -117,6 +118,14 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     var directoryCheck: Components.Schemas.FsCheckResponse? {
         get { lock.withLock { state.directoryCheck } }
         set { lock.withLock { state.directoryCheck = newValue } }
+    }
+
+    /// Listings served by `listDirectory`, keyed by the requested path
+    /// (`nil` = the home-directory request). A request for an unseeded path
+    /// throws, standing in for the server's DirectoryUnavailable.
+    var directoryListings: [String?: Components.Schemas.FsListResponse] {
+        get { lock.withLock { state.directoryListings } }
+        set { lock.withLock { state.directoryListings = newValue } }
     }
 
     // MARK: - Captured requests and call counts
@@ -510,6 +519,15 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         let response = directoryCheck
             ?? Components.Schemas.FsCheckResponse(path: path, state: .available, checkedAt: .now)
         return .ok(.init(body: .json(response)))
+    }
+
+    func listDirectory(_ input: Operations.ListDirectory.Input) async throws
+        -> Operations.ListDirectory.Output {
+        try await gate()
+        guard let listing = directoryListings[input.query.path] else {
+            throw StubUnimplemented("listDirectory \(input.query.path ?? "<home>")")
+        }
+        return .ok(.init(body: .json(listing)))
     }
 
     // MARK: - Unimplemented

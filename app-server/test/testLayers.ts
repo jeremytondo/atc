@@ -65,6 +65,7 @@ export const testAppConfig = (overrides: Partial<AppConfig["Service"]>): Layer.L
     context: {},
     logLevel: "Info",
     configFile: "/dev/null",
+    home: os.homedir(),
     dataDir: "/tmp",
     stateDir: "/tmp",
     dbFile: "/tmp/atc.db",
@@ -91,6 +92,7 @@ export const makeTestServiceLayers = (
   dbFile = ":memory:",
   threadsOptions: Threads.ThreadsOptions = {},
   eventsOptions: Events.EventsOptions = {},
+  configOverrides: Partial<AppConfig["Service"]> = {},
 ): {
   readonly fake: FakeTerminalAdapter
   readonly fakeAgents: { readonly codex: FakeAgentAdapter; readonly claude: FakeAgentAdapter }
@@ -120,7 +122,12 @@ export const makeTestServiceLayers = (
     TerminalRepository.layer,
     ThreadRepository.layer,
   ).pipe(Layer.provide(Persistence.layerFile(dbFile)))
-  const services = Layer.mergeAll(base, Directories.layer, fake.layer, ClaudeHooks.layer)
+  const services = Layer.mergeAll(
+    base,
+    Directories.layer.pipe(Layer.provide(testAppConfig(configOverrides))),
+    fake.layer,
+    ClaudeHooks.layer,
+  )
   const eventsLayer = Events.layerWith(eventsOptions)
   const terminals = Terminals.layer.pipe(Layer.provide([services, eventsLayer]))
   const registry = AgentRegistry.layer.pipe(

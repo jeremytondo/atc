@@ -123,6 +123,36 @@ export const FsCheckResponse = Schema.Struct({
   description: "Result of a directory health check. Never persisted.",
 })
 
+export const FsListEntry = Schema.Struct({
+  name: Schema.String.annotate({ description: "Directory name within the listed directory." }),
+  path: Schema.String.annotate({
+    description: "Absolute path of the subdirectory (not symlink-resolved).",
+  }),
+}).annotate({
+  identifier: "FsListEntry",
+  description: "One subdirectory of a listed directory.",
+})
+
+export const FsListResponse = Schema.Struct({
+  path: Schema.String.annotate({
+    description: "Canonical (symlink-resolved) absolute path of the listed directory.",
+  }),
+  // Absent at the filesystem root (not null — see UpdateProjectRequest).
+  parent: Schema.optionalKey(
+    Schema.String.annotate({
+      description: "Parent directory of `path`; absent at the filesystem root.",
+    }),
+  ),
+  entries: Schema.Array(FsListEntry).annotate({
+    description:
+      "Subdirectories only — non-recursive, dotfolders excluded, symlinks included when they " +
+      "resolve to directories, sorted case-insensitively by name.",
+  }),
+}).annotate({
+  identifier: "FsListResponse",
+  description: "A directory listing for the server-backed folder browser. Never persisted.",
+})
+
 export const TerminalStatus = Schema.Literals(["live", "ended"]).annotate({
   identifier: "TerminalStatus",
   description:
@@ -851,6 +881,25 @@ export class V1 extends HttpApiGroup.make("v1")
       .annotate(
         OpenApi.Description,
         "Demand-driven directory health check with a bounded timeout. Takes a server-host absolute path; the result is never persisted.",
+      ),
+    HttpApiEndpoint.get("listDirectory", "/fs/list", {
+      query: {
+        path: Schema.optionalKey(
+          AbsolutePath.annotate({
+            description: "Directory to list; omitted lists the server's home directory.",
+          }),
+        ),
+      },
+      success: FsListResponse,
+      error: [DirectoryUnavailable, DirectoryCheckTimedOut],
+    })
+      .annotate(OpenApi.Identifier, "listDirectory")
+      .annotate(
+        OpenApi.Description,
+        "List a directory's subdirectories for the server-backed folder browser: non-recursive, " +
+          "dotfolders excluded, symlinks included when they resolve to directories, sorted " +
+          "case-insensitively. Omitting `path` lists the server's home directory. Same bounded " +
+          "timeout and tagged errors as the health check; nothing is persisted.",
       ),
   )
   // .prefix only applies to endpoints added above it — add new endpoints
