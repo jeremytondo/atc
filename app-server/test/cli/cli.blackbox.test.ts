@@ -297,6 +297,24 @@ describe("atc project / atc fs (black box)", () => {
     expect(missing.exitCode).toBe(0)
     expect((JSON.parse(missing.stdout) as { state: string }).state).toBe("missing")
   }, 30_000)
+
+  test("fs list resolves relative paths client-side and lists subdirectories", async () => {
+    // The CLI resolves "." against its own cwd (appServerRoot) before the
+    // API sees it; the server then canonicalizes and lists it.
+    const listed = await cli(["fs", "list", "."])
+    expect(listed.exitCode).toBe(0)
+    const listing = JSON.parse(listed.stdout) as {
+      path: string
+      entries: ReadonlyArray<{ name: string }>
+    }
+    expect(listing.path.startsWith("/")).toBe(true)
+    expect(listing.entries.map((entry) => entry.name)).toContain("src")
+
+    const missing = await cli(["fs", "list", join(scratch, "does-not-exist")])
+    expect(missing.exitCode).toBe(1)
+    expect(missing.stdout).toBe("")
+    expect(missing.stderr).toContain("atc fs list:")
+  }, 30_000)
 })
 
 describe("atc thread (black box)", () => {

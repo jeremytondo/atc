@@ -1264,6 +1264,57 @@
         },
         "description": "Demand-driven directory health check with a bounded timeout. Takes a server-host absolute path; the result is never persisted."
       }
+    },
+    "/api/v1/fs/list": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "listDirectory",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "pattern": "^\\/",
+              "description": "Directory to list; omitted lists the server's home directory."
+            },
+            "required": false
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "A directory listing for the server-backed folder browser. Never persisted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FsListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The directory does not exist, is not a directory, or cannot be read/traversed. | The directory check did not complete within its bounded timeout. Retryable — a timeout is not proof the path is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/DirectoryUnavailableJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DirectoryCheckTimedOutJsonEncoding"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "List a directory's subdirectories for the server-backed folder browser: non-recursive, dotfolders excluded, symlinks included when they resolve to directories, sorted case-insensitively. Omitting `path` lists the server's home directory. Same bounded timeout and tagged errors as the health check; nothing is persisted."
+      }
     }
   },
   "components": {
@@ -2090,6 +2141,51 @@
         ],
         "additionalProperties": false,
         "description": "Result of a directory health check. Never persisted."
+      },
+      "FsListEntry": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Directory name within the listed directory."
+          },
+          "path": {
+            "type": "string",
+            "description": "Absolute path of the subdirectory (not symlink-resolved)."
+          }
+        },
+        "required": [
+          "name",
+          "path"
+        ],
+        "additionalProperties": false,
+        "description": "One subdirectory of a listed directory."
+      },
+      "FsListResponse": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Canonical (symlink-resolved) absolute path of the listed directory."
+          },
+          "parent": {
+            "type": "string",
+            "description": "Parent directory of `path`; absent at the filesystem root."
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FsListEntry"
+            },
+            "description": "Subdirectories only — non-recursive, dotfolders excluded, symlinks included when they resolve to directories, sorted case-insensitively by name."
+          }
+        },
+        "required": [
+          "path",
+          "entries"
+        ],
+        "additionalProperties": false,
+        "description": "A directory listing for the server-backed folder browser. Never persisted."
       },
       "ResourceChangedEvent": {
         "type": "object",

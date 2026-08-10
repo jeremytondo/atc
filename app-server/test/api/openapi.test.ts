@@ -159,6 +159,7 @@ describe("openapi document vs runtime", () => {
       "/api/v1/agents/{agentId}",
       "/api/v1/events",
       "/api/v1/fs/check",
+      "/api/v1/fs/list",
     ])
     // The WebSocket attach endpoint is contract-declared but excluded from
     // the document — REST clients cannot represent an upgrade.
@@ -534,6 +535,36 @@ describe("openapi document vs runtime", () => {
       // reason is optional (absent when conclusive) — and deliberately not a
       // nullable required field, which the pinned Swift generator would drop.
       assert.sameMembers([...schema.required], ["path", "state", "checkedAt"])
+    }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
+  )
+
+  it.effect("GET /api/v1/fs/list returns the documented payload", () =>
+    Effect.gen(function* () {
+      const response = yield* (yield* rawClient).get("http://127.0.0.1/api/v1/fs/list?path=/")
+      assert.strictEqual(response.status, 200)
+      const body = (yield* response.json) as Record<string, unknown>
+      assert.strictEqual(body["path"], "/")
+      assert.isArray(body["entries"])
+
+      const ref = operation("/api/v1/fs/list").responses["200"]!.content["application/json"]!.schema
+      assert.deepStrictEqual(ref, { $ref: "#/components/schemas/FsListResponse" })
+      const schema = componentSchema("FsListResponse")
+      assert.sameMembers(Object.keys(schema.properties), ["path", "parent", "entries"])
+      // parent is optional (absent at the root) — and deliberately not a
+      // nullable required field, which the pinned Swift generator would drop.
+      assert.sameMembers([...schema.required], ["path", "entries"])
+
+      const entry = componentSchema("FsListEntry")
+      assert.sameMembers(Object.keys(entry.properties), ["name", "path"])
+      assert.sameMembers([...entry.required], ["name", "path"])
+
+      // An unusable path is the tagged 422, same as canonicalize.
+      const missing = yield* (yield* rawClient).get(
+        "http://127.0.0.1/api/v1/fs/list?path=/definitely/not/here",
+      )
+      assert.strictEqual(missing.status, 422)
+      const failure = (yield* missing.json) as Record<string, unknown>
+      assert.strictEqual(failure["_tag"], "DirectoryUnavailable")
     }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
   )
 })

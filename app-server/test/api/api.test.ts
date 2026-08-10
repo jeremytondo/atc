@@ -1,27 +1,52 @@
 import { assert, describe, it } from "@effect/vitest"
-import { BunHttpServer } from "@effect/platform-bun"
-import { Effect, Fiber, Layer, Queue, Stream } from "effect"
+import { Effect, Fiber, Queue, Stream } from "effect"
 import { HttpApiTest } from "effect/unstable/httpapi"
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { realpathSync } from "node:fs"
 import { afterAll } from "vitest"
-import { Api } from "../../src/api/contract.ts"
-import { V1Handlers } from "../../src/api/handlers.ts"
+import { Api, DirectoryUnavailable } from "../../src/api/contract.ts"
 import * as Events from "../../src/events/events.ts"
-import { TestBuildInfoLayer, testBuildInfo } from "../testBuildInfo.ts"
-import { TestRepositoryLayers } from "../testLayers.ts"
+import { testBuildInfo } from "../testBuildInfo.ts"
+import { apiTestLayer, makeTestServiceLayers } from "../testLayers.ts"
+
+// Real directories for validation coverage. macOS tmpdir is itself behind a
+// symlink, so expectations always go through realpathSync.
+const scratch = mkdtempSync(join(tmpdir(), "atc-api-test-"))
+afterAll(() => rmSync(scratch, { recursive: true, force: true }))
+
+const realDir = realpathSync(scratch)
+const linkedDir = join(scratch, "linked")
+symlinkSync(realDir, linkedDir)
+const filePath = join(scratch, "a-file")
+writeFileSync(filePath, "not a directory")
+mkdirSync(join(scratch, "second"))
+
+// A browse-able subtree for /fs/list: mixed-case directories, a dotfolder, a
+// file, and symlinks that do and do not resolve to directories.
+const browseDir = join(scratch, "browse")
+mkdirSync(browseDir)
+mkdirSync(join(browseDir, "Beta"))
+mkdirSync(join(browseDir, "alpha"))
+mkdirSync(join(browseDir, "Éclair"))
+mkdirSync(join(browseDir, ".hidden"))
+writeFileSync(join(browseDir, "a-file"), "not a directory")
+symlinkSync(join(browseDir, "Beta"), join(browseDir, "beta-link"))
+symlinkSync(join(browseDir, "gone"), join(browseDir, "broken-link"))
+symlinkSync(join(browseDir, "a-file"), join(browseDir, "file-link"))
+
+// The "server home" the omitted-path listing resolves to — a scratch fixture,
+// never the developer's (or CI runner's) real home directory.
+const homeDir = join(scratch, "home")
+mkdirSync(homeDir)
+mkdirSync(join(homeDir, "sub"))
 
 // In-process contract tests: the same encode/route/decode pipeline as the real
-// server, but no listener. TestRepositoryLayers is merged in as well (one
+// server, but no listener. The kit's services are merged in as well (one
 // memoized instance) so tests can reach the same domain services the handlers
 // use — the events test drives the Events service directly.
-const TestLayer = Layer.mergeAll(
-  V1Handlers.pipe(Layer.provide([TestBuildInfoLayer, TestRepositoryLayers])),
-  TestRepositoryLayers,
-  BunHttpServer.layerHttpServices,
-)
+const TestLayer = apiTestLayer(makeTestServiceLayers(":memory:", {}, {}, { home: homeDir }))
 
 describe("/api/v1", () => {
   it.effect("health returns ok", () =>
@@ -45,18 +70,6 @@ describe("/api/v1", () => {
     }).pipe(Effect.provide(TestLayer)),
   )
 })
-
-// Real directories for validation coverage. macOS tmpdir is itself behind a
-// symlink, so expectations always go through realpathSync.
-const scratch = mkdtempSync(join(tmpdir(), "atc-api-test-"))
-afterAll(() => rmSync(scratch, { recursive: true, force: true }))
-
-const realDir = realpathSync(scratch)
-const linkedDir = join(scratch, "linked")
-symlinkSync(realDir, linkedDir)
-const filePath = join(scratch, "a-file")
-writeFileSync(filePath, "not a directory")
-mkdirSync(join(scratch, "second"))
 
 describe("/api/v1/projects", () => {
   it.effect("creates, lists, gets, updates, and deletes a project", () =>
@@ -279,6 +292,58 @@ describe("/api/v1/fs/check", () => {
         query: { path: join(filePath, "sub") },
       })
       assert.strictEqual(throughFile.state, "not_directory")
+    }).pipe(Effect.provide(TestLayer)),
+  )
+})
+
+describe("/api/v1/fs/list", () => {
+  it.effect("lists subdirectories only, sorted, dotfolders and files excluded", () =>
+    Effect.gen(function* () {
+      const client = yield* HttpApiTest.groups(Api, ["v1"])
+
+      // The listed path canonicalizes through the symlink; entries keep
+      // their name-paths under the canonical directory.
+      const listing = yield* client.v1.listDirectory({ query: { path: join(linkedDir, "browse") } })
+      assert.strictEqual(listing.path, join(realDir, "browse"))
+      assert.strictEqual(listing.parent, realDir)
+      assert.deepStrictEqual(listing.entries, [
+        { name: "alpha", path: join(realDir, "browse", "alpha") },
+        { name: "Beta", path: join(realDir, "browse", "Beta") },
+        { name: "beta-link", path: join(realDir, "browse", "beta-link") },
+        { name: "Éclair", path: join(realDir, "browse", "Éclair") },
+      ])
+    }).pipe(Effect.provide(TestLayer)),
+  )
+
+  it.effect("fails closed on unusable paths with the tagged states", () =>
+    Effect.gen(function* () {
+      const client = yield* HttpApiTest.groups(Api, ["v1"])
+
+      const missing = yield* Effect.flip(
+        client.v1.listDirectory({ query: { path: join(realDir, "nope") } }),
+      )
+      assert.strictEqual(missing._tag, "DirectoryUnavailable")
+      assert.strictEqual((missing as DirectoryUnavailable).state, "missing")
+
+      const notDirectory = yield* Effect.flip(
+        client.v1.listDirectory({ query: { path: filePath } }),
+      )
+      assert.strictEqual(notDirectory._tag, "DirectoryUnavailable")
+      assert.strictEqual((notDirectory as DirectoryUnavailable).state, "not_directory")
+    }).pipe(Effect.provide(TestLayer)),
+  )
+
+  it.effect("omitted path lists the configured home directory; the root has no parent", () =>
+    Effect.gen(function* () {
+      const client = yield* HttpApiTest.groups(Api, ["v1"])
+
+      const home = yield* client.v1.listDirectory({ query: {} })
+      assert.strictEqual(home.path, join(realDir, "home"))
+      assert.deepStrictEqual(home.entries, [{ name: "sub", path: join(realDir, "home", "sub") }])
+
+      const root = yield* client.v1.listDirectory({ query: { path: "/" } })
+      assert.strictEqual(root.path, "/")
+      assert.isUndefined(root.parent)
     }).pipe(Effect.provide(TestLayer)),
   )
 })
