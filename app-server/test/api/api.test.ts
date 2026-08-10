@@ -8,6 +8,7 @@ import { realpathSync } from "node:fs"
 import { afterAll } from "vitest"
 import { Api, DirectoryUnavailable } from "../../src/api/contract.ts"
 import * as Events from "../../src/events/events.ts"
+import { sessionNameForTerminalId } from "../../src/terminals/terminalAdapter.ts"
 import { testBuildInfo } from "../testBuildInfo.ts"
 import { apiTestLayer, makeTestServiceLayers } from "../testLayers.ts"
 
@@ -46,7 +47,8 @@ mkdirSync(join(homeDir, "sub"))
 // server, but no listener. The kit's services are merged in as well (one
 // memoized instance) so tests can reach the same domain services the handlers
 // use — the events test drives the Events service directly.
-const TestLayer = apiTestLayer(makeTestServiceLayers(":memory:", {}, {}, { home: homeDir }))
+const kit = makeTestServiceLayers(":memory:", {}, {}, { home: homeDir })
+const TestLayer = apiTestLayer(kit)
 
 describe("/api/v1", () => {
   it.effect("health returns ok", () =>
@@ -171,25 +173,93 @@ describe("/api/v1/projects", () => {
     }).pipe(Effect.provide(TestLayer)),
   )
 
-  it.effect("restricts project deletion while terminals exist, tombstones included", () =>
+  it.effect("project deletion cascades to owned terminals, tombstones included", () =>
+    Effect.gen(function* () {
+      const client = yield* HttpApiTest.groups(Api, ["v1"])
+      const events = yield* Events.Events
+      const project = yield* client.v1.createProject({
+        payload: { name: "Cascade", defaultWorkingDirectory: realDir },
+      })
+      const live = yield* client.v1.createTerminal({ payload: { projectId: project.id } })
+      const ended = yield* client.v1.createTerminal({ payload: { projectId: project.id } })
+      // Kill the second session out-of-band and reconcile it into an ended
+      // tombstone — the residue the old 409 guard forced users to hunt down.
+      kit.fake.sessions.delete(sessionNameForTerminalId(ended.id))
+      const listed = yield* client.v1.listTerminals({ query: { projectId: project.id } })
+      assert.deepStrictEqual(listed.map((terminal) => terminal.status).toSorted(), [
+        "ended",
+        "live",
+      ])
+
+      const received = yield* Queue.make<Events.ResourceChangedEvent>()
+      const feed = yield* events.subscribe()
+      const subscriber = yield* Effect.forkChild(
+        Stream.runForEach(feed, (event) =>
+          typeof event === "string" ? Effect.void : Queue.offer(received, event),
+        ),
+      )
+
+      yield* client.v1.deleteProject({ params: { projectId: project.id } })
+
+      // Everything is gone — tombstone included — and the live session was
+      // reaped through the normal terminal-delete path.
+      assert.deepStrictEqual(
+        yield* client.v1.listTerminals({ query: { projectId: project.id } }),
+        [],
+      )
+      assert.isFalse(kit.fake.sessions.has(sessionNameForTerminalId(live.id)))
+      const missing = yield* Effect.flip(
+        client.v1.getProject({ params: { projectId: project.id } }),
+      )
+      assert.strictEqual(missing._tag, "ProjectNotFound")
+
+      // Each child publishes its own deleted event before the project's
+      // (newest-first cascade order).
+      assert.deepStrictEqual(
+        [yield* Queue.take(received), yield* Queue.take(received), yield* Queue.take(received)],
+        [
+          { resource: "terminal", id: ended.id, change: "deleted" },
+          { resource: "terminal", id: live.id, change: "deleted" },
+          { resource: "project", id: project.id, change: "deleted" },
+        ],
+      )
+      yield* Fiber.interrupt(subscriber)
+    }).pipe(Effect.provide(TestLayer)),
+  )
+
+  it.effect("a zmx outage mid-cascade surfaces retryably; a retry finishes the job", () =>
     Effect.gen(function* () {
       const client = yield* HttpApiTest.groups(Api, ["v1"])
       const project = yield* client.v1.createProject({
-        payload: { name: "Guarded", defaultWorkingDirectory: realDir },
+        payload: { name: "Retryable", defaultWorkingDirectory: realDir },
       })
-      const terminal = yield* client.v1.createTerminal({
-        payload: { projectId: project.id },
+      const thread = yield* client.v1.createThread({
+        payload: { projectId: project.id, agentId: "codex" },
       })
-      const restricted = yield* Effect.flip(
+      yield* client.v1.createTerminal({ payload: { projectId: project.id } })
+
+      kit.fake.setUnavailable(true)
+      const failure = yield* Effect.flip(
         client.v1.deleteProject({ params: { projectId: project.id } }),
       )
-      assert.strictEqual(restricted._tag, "ProjectHasTerminals")
-      if (restricted._tag === "ProjectHasTerminals") {
-        assert.strictEqual(restricted.terminalCount, 1)
-      }
-      // Deleting the terminal (record and session) releases the project.
-      yield* client.v1.deleteTerminal({ params: { terminalId: terminal.id } })
+      assert.strictEqual(failure._tag, "ZmxUnavailable")
+      // Partial completion: the thread (no zmx involvement) is already gone,
+      // the terminal and the project survive for the retry.
+      const threadGone = yield* Effect.flip(
+        client.v1.getThread({ params: { threadId: thread.id } }),
+      )
+      assert.strictEqual(threadGone._tag, "ThreadNotFound")
+      assert.strictEqual(
+        (yield* client.v1.getProject({ params: { projectId: project.id } })).id,
+        project.id,
+      )
+
+      kit.fake.setUnavailable(false)
       yield* client.v1.deleteProject({ params: { projectId: project.id } })
+      const missing = yield* Effect.flip(
+        client.v1.getProject({ params: { projectId: project.id } }),
+      )
+      assert.strictEqual(missing._tag, "ProjectNotFound")
     }).pipe(Effect.provide(TestLayer)),
   )
 

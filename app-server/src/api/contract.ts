@@ -477,42 +477,6 @@ export class TerminalLaunchFailed extends Schema.TaggedErrorClass<TerminalLaunch
   }
 }
 
-/** Project deletion is restricted while it still owns terminals. */
-export class ProjectHasTerminals extends Schema.TaggedErrorClass<ProjectHasTerminals>()(
-  "ProjectHasTerminals",
-  { projectId: Schema.String, terminalCount: Schema.Int, message: errorMessage },
-  {
-    identifier: "ProjectHasTerminals",
-    description: "The project still owns terminals (live or ended); delete them first.",
-    httpApiStatus: 409,
-  },
-) {
-  constructor(props: { readonly projectId: string; readonly terminalCount: number }) {
-    super({
-      ...props,
-      message: `project ${props.projectId} still owns ${props.terminalCount} terminal(s); delete them first`,
-    })
-  }
-}
-
-/** Project deletion is restricted while it still owns threads. */
-export class ProjectHasThreads extends Schema.TaggedErrorClass<ProjectHasThreads>()(
-  "ProjectHasThreads",
-  { projectId: Schema.String, threadCount: Schema.Int, message: errorMessage },
-  {
-    identifier: "ProjectHasThreads",
-    description: "The project still owns threads (active or archived); delete them first.",
-    httpApiStatus: 409,
-  },
-) {
-  constructor(props: { readonly projectId: string; readonly threadCount: number }) {
-    super({
-      ...props,
-      message: `project ${props.projectId} still owns ${props.threadCount} thread(s); delete them first`,
-    })
-  }
-}
-
 /** Unknown agent registry slug. */
 export class AgentNotFound extends Schema.TaggedErrorClass<AgentNotFound>()(
   "AgentNotFound",
@@ -656,12 +620,12 @@ export class V1 extends HttpApiGroup.make("v1")
       ),
     HttpApiEndpoint.delete("deleteProject", "/projects/:projectId", {
       params: projectIdParam,
-      error: [ProjectNotFound, ProjectHasTerminals, ProjectHasThreads],
+      error: [ProjectNotFound, ZmxUnavailable],
     })
       .annotate(OpenApi.Identifier, "deleteProject")
       .annotate(
         OpenApi.Description,
-        "Delete the project record. Restricted while the project still owns terminals or threads; never touches the filesystem or any directory.",
+        "Delete the project and everything it owns: every thread (archived included) and every terminal (ended tombstones included) is deleted through the normal delete flows, then the project record. Never touches the filesystem or any directory. A mid-cascade failure leaves already-deleted children deleted; retrying finishes the job.",
       ),
     HttpApiEndpoint.get("listTerminals", "/terminals", {
       query: {

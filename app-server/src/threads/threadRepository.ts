@@ -104,8 +104,6 @@ export class ThreadRepository extends Context.Service<
     /** Set or clear the archive marker; callers hold the record (see rename). */
     readonly setArchived: (id: string, archived: boolean) => Effect.Effect<ThreadRecord>
     readonly delete: (id: string) => Effect.Effect<void>
-    /** Every record (archived included) — the project-deletion guard. */
-    readonly countForProject: (projectId: string) => Effect.Effect<number>
   }
 >()("app-server/ThreadRepository") {}
 
@@ -230,13 +228,6 @@ export const layer = Layer.effect(ThreadRepository)(
       execute: (id) => sql`DELETE FROM threads WHERE id = ${id}`,
     })
 
-    const countRows = SqlSchema.findAll({
-      Request: Schema.String,
-      Result: Schema.Struct({ n: Schema.Int }),
-      execute: (projectId) =>
-        sql`SELECT COUNT(*) AS n FROM threads WHERE project_id = ${projectId}`,
-    })
-
     const firstRecord = (rows: ReadonlyArray<typeof ThreadRow.Type>) =>
       Option.fromNullishOr(rows[0]).pipe(Option.map(toRecord))
 
@@ -323,11 +314,6 @@ export const layer = Layer.effect(ThreadRepository)(
           return setArchivedRows({ id, archived_at: archived ? now : null, updated_at: now })
         }).pipe(Effect.orDie, Effect.flatMap(requireFirst("setArchived"))),
       delete: (id) => deleteRows(id).pipe(Effect.orDie),
-      countForProject: (projectId) =>
-        countRows(projectId).pipe(
-          Effect.map((rows) => rows[0]?.n ?? 0),
-          Effect.orDie,
-        ),
     }
   }),
 )

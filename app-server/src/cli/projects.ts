@@ -55,14 +55,14 @@ const projectUpdate = Cli.clientCommand(
 
 const projectDelete = Cli.clientCommand(
   "project delete",
-  "Delete a project record (never touches the filesystem)",
+  "Delete a project and every thread and terminal it owns (never touches the filesystem)",
   { projectId: projectIdArgument, yes: Cli.yesFlag },
   (client, { projectId, yes }) =>
     yes
       ? client.v1.deleteProject({ params: { projectId } })
       : Effect.fail(
           new Error(
-            "refusing to delete without --yes (deletes the project record only, never the directory)",
+            "refusing to delete without --yes (also deletes the project's threads and terminals, never the directory)",
           ),
         ),
 )

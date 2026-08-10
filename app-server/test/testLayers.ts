@@ -138,6 +138,9 @@ export const makeTestServiceLayers = (
       Subprocess.layer.pipe(Layer.provide(BunServices.layer)),
     ]),
   )
+  const threads = Threads.layerWith(threadsOptions).pipe(
+    Layer.provide([services, terminals, registry, eventsLayer]),
+  )
   return {
     fake,
     fakeAgents,
@@ -148,10 +151,8 @@ export const makeTestServiceLayers = (
       registry,
       eventsLayer,
       TestAuthTokenLayer,
-      Threads.layerWith(threadsOptions).pipe(
-        Layer.provide([services, terminals, registry, eventsLayer]),
-      ),
-      Projects.layer.pipe(Layer.provide([services, eventsLayer])),
+      threads,
+      Projects.layer.pipe(Layer.provide([services, terminals, threads, eventsLayer])),
     ),
   }
 }
