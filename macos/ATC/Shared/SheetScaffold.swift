@@ -1,8 +1,9 @@
 import SwiftUI
 
 /// Standard chrome for form sheets: a Label title header, grouped Form
-/// content, and a trailing button row in the HIG arrangement — Cancel
-/// adjacent-left of the primary action, both trailing.
+/// content by default (see `wrapsContentInForm`), and a trailing button row
+/// in the HIG arrangement — Cancel adjacent-left of the primary action, both
+/// trailing.
 struct SheetScaffold<Content: View>: View {
     let title: String
     let systemImage: String
@@ -10,6 +11,9 @@ struct SheetScaffold<Content: View>: View {
     let primaryLabel: String
     var isBusy = false
     var canSubmit = true
+    /// Grouped-Form content is the default; list-style sheets (the folder
+    /// browser) pass false and lay out their own content edge-to-edge.
+    var wrapsContentInForm = true
     var onCancel: () -> Void
     var onSubmit: () -> Void
     @ViewBuilder var content: () -> Content
@@ -21,8 +25,12 @@ struct SheetScaffold<Content: View>: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(Spacing.md)
             Divider()
-            Form(content: content)
-                .formStyle(.grouped)
+            if wrapsContentInForm {
+                Form(content: content)
+                    .formStyle(.grouped)
+            } else {
+                content()
+            }
             Divider()
             HStack {
                 Spacer()

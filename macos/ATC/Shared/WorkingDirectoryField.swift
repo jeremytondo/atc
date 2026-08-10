@@ -4,11 +4,10 @@
 // value settles and publishes the outcome; sheets gate submission on
 // `DirectoryCheckState.isAvailable` rather than inspecting paths themselves.
 //
-// Browse opens a local NSOpenPanel, which only matches the server's
-// filesystem for a loopback Connection — validation, never the panel, is what
-// makes a path trustworthy.
+// Browse opens the server-backed DirectoryPickerSheet (`GET /fs/list`), so
+// the browsed filesystem is the server's on every Connection — but
+// validation, never the picker, is what makes a path trustworthy.
 
-import AppKit
 import ATCAppServerAPI
 import SwiftUI
 
@@ -36,6 +35,7 @@ struct WorkingDirectoryField: View {
     /// when the typed path is unchanged.
     let connectionID: UUID?
     @Binding var state: DirectoryCheckState
+    @State private var isBrowsing = false
 
     private struct CheckKey: Equatable {
         let path: String
@@ -47,7 +47,8 @@ struct WorkingDirectoryField: View {
             HStack(spacing: Spacing.sm) {
                 TextField(label, text: $path, prompt: Text("/path/on/the/server"))
                     .autocorrectionDisabled()
-                Button("Browse…") { browse() }
+                Button("Browse…") { isBrowsing = true }
+                    .disabled(client == nil)
             }
             if let message = statusMessage {
                 Label(message.text, systemImage: message.systemImage)
@@ -57,6 +58,22 @@ struct WorkingDirectoryField: View {
             }
         }
         .task(id: CheckKey(path: path, connectionID: connectionID)) { await check() }
+        // A picker browsing one server must not survive into another (or no)
+        // Connection; without this, losing the client mid-browse would leave
+        // an empty, undismissable sheet.
+        .onChange(of: connectionID) { isBrowsing = false }
+        .sheet(isPresented: $isBrowsing) {
+            if let client {
+                DirectoryPickerSheet(
+                    client: client,
+                    // Start where the user already is when the typed path is
+                    // known-good; otherwise the server home.
+                    initialPath: state.isAvailable
+                        ? path.trimmingCharacters(in: .whitespaces) : nil,
+                    onChoose: { path = $0 }
+                )
+            }
+        }
     }
 
     private func check() async {
@@ -87,20 +104,6 @@ struct WorkingDirectoryField: View {
         } catch {
             state = .failed(error.localizedDescription)
         }
-    }
-
-    private func browse() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Choose"
-        let trimmed = path.trimmingCharacters(in: .whitespaces)
-        if trimmed.hasPrefix("/") {
-            panel.directoryURL = URL(filePath: trimmed)
-        }
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        path = url.path(percentEncoded: false)
     }
 
     private var statusMessage: (text: String, systemImage: String, color: Color)? {
