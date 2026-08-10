@@ -196,23 +196,27 @@ describe("/api/v1/threads", () => {
     }).pipe(Effect.provide(TestLayer)),
   )
 
-  it.effect("project deletion is restricted while threads exist, archived included", () =>
+  it.effect("project deletion cascades to owned threads, archived included", () =>
     Effect.gen(function* () {
       const { client, makeProject } = yield* testClient
       const project = yield* makeProject
-      const thread = yield* client.v1.createThread({
+      const active = yield* client.v1.createThread({
         payload: { projectId: project.id, agentId: "codex" },
       })
-      yield* client.v1.archiveThread({ params: { threadId: thread.id } })
-      const restricted = yield* Effect.flip(
-        client.v1.deleteProject({ params: { projectId: project.id } }),
-      )
-      assert.strictEqual(restricted._tag, "ProjectHasThreads")
-      if (restricted._tag === "ProjectHasThreads") {
-        assert.strictEqual(restricted.threadCount, 1)
-      }
-      yield* client.v1.deleteThread({ params: { threadId: thread.id } })
+      const archived = yield* client.v1.createThread({
+        payload: { projectId: project.id, agentId: "codex" },
+      })
+      yield* client.v1.archiveThread({ params: { threadId: archived.id } })
+
       yield* client.v1.deleteProject({ params: { projectId: project.id } })
+      for (const threadId of [active.id, archived.id]) {
+        const gone = yield* Effect.flip(client.v1.getThread({ params: { threadId } }))
+        assert.strictEqual(gone._tag, "ThreadNotFound")
+      }
+      const missing = yield* Effect.flip(
+        client.v1.getProject({ params: { projectId: project.id } }),
+      )
+      assert.strictEqual(missing._tag, "ProjectNotFound")
     }).pipe(Effect.provide(TestLayer)),
   )
 

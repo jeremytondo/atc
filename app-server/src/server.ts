@@ -123,7 +123,10 @@ export const layer = (options: { readonly port: number; readonly hostname?: stri
 export const production = (options: { readonly port: number; readonly hostname?: string }) =>
   layer(options).pipe(
     Layer.provide(AuthToken.layer),
-    Layer.provide([Projects.layer, Threads.layer]),
+    // Projects sits above Threads (its delete cascades through them), which
+    // sits above Terminals — each provide feeds everything composed so far.
+    Layer.provide(Projects.layer),
+    Layer.provide(Threads.layer),
     Layer.provide([Terminals.layer, AgentRegistry.layer]),
     // Below Terminals (the deepest publisher) so one memoized Events instance
     // serves every domain service, the handlers, and the shutdown drain.

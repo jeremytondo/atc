@@ -16,8 +16,8 @@ _Avoid_: Account
 **Project**:
 A server-owned record for one codebase, carrying the default working directory
 for new Threads and Terminals. atc displays Projects through their Connection
-but does not own the record. A Project can be deleted only once it owns no
-Threads or Terminals; deletion never changes filesystem state.
+but does not own the record. Deleting a Project deletes every Thread and
+Terminal it owns; deletion never changes filesystem state.
 _Avoid_: Local project, app project, Workspace
 
 **Thread**:

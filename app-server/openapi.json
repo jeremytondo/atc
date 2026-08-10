@@ -260,25 +260,18 @@
               }
             }
           },
-          "409": {
-            "description": "The project still owns terminals (live or ended); delete them first. | The project still owns threads (active or archived); delete them first.",
+          "503": {
+            "description": "The zmx multiplexer cannot be consulted right now. Retryable; stored terminal state is untouched.",
             "content": {
               "application/json": {
                 "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/ProjectHasTerminalsJsonEncoding"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ProjectHasThreadsJsonEncoding"
-                    }
-                  ]
+                  "$ref": "#/components/schemas/ZmxUnavailableJsonEncoding"
                 }
               }
             }
           }
         },
-        "description": "Delete the project record. Restricted while the project still owns terminals or threads; never touches the filesystem or any directory."
+        "description": "Delete the project and everything it owns: every thread (archived included) and every terminal (ended tombstones included) is deleted through the normal delete flows, then the project record. Never touches the filesystem or any directory. A mid-cascade failure leaves already-deleted children deleted; retrying finishes the job."
       }
     },
     "/api/v1/terminals": {
@@ -1529,20 +1522,17 @@
         "additionalProperties": false,
         "description": "Partial update; affects future Threads and Terminals only."
       },
-      "ProjectHasTerminalsJsonEncoding": {
+      "ZmxUnavailableJsonEncoding": {
         "type": "object",
         "properties": {
           "_tag": {
             "type": "string",
             "enum": [
-              "ProjectHasTerminals"
+              "ZmxUnavailable"
             ]
           },
-          "projectId": {
+          "reason": {
             "type": "string"
-          },
-          "terminalCount": {
-            "type": "integer"
           },
           "message": {
             "type": "string",
@@ -1551,36 +1541,7 @@
         },
         "required": [
           "_tag",
-          "projectId",
-          "terminalCount",
-          "message"
-        ],
-        "additionalProperties": false
-      },
-      "ProjectHasThreadsJsonEncoding": {
-        "type": "object",
-        "properties": {
-          "_tag": {
-            "type": "string",
-            "enum": [
-              "ProjectHasThreads"
-            ]
-          },
-          "projectId": {
-            "type": "string"
-          },
-          "threadCount": {
-            "type": "integer"
-          },
-          "message": {
-            "type": "string",
-            "description": "Human-readable diagnostic derived from the structured fields."
-          }
-        },
-        "required": [
-          "_tag",
-          "projectId",
-          "threadCount",
+          "reason",
           "message"
         ],
         "additionalProperties": false
@@ -1699,30 +1660,6 @@
             "type": "string",
             "enum": [
               "TerminalLaunchFailed"
-            ]
-          },
-          "reason": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string",
-            "description": "Human-readable diagnostic derived from the structured fields."
-          }
-        },
-        "required": [
-          "_tag",
-          "reason",
-          "message"
-        ],
-        "additionalProperties": false
-      },
-      "ZmxUnavailableJsonEncoding": {
-        "type": "object",
-        "properties": {
-          "_tag": {
-            "type": "string",
-            "enum": [
-              "ZmxUnavailable"
             ]
           },
           "reason": {

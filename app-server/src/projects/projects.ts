@@ -1,23 +1,26 @@
 import { Context, Effect, Layer, Option } from "effect"
-import { ProjectHasTerminals, ProjectHasThreads, ProjectNotFound } from "../api/contract.ts"
+import { ProjectNotFound } from "../api/contract.ts"
 import type {
   CreateProjectRequest,
   DirectoryCheckTimedOut,
   DirectoryUnavailable,
   UpdateProjectRequest,
+  ZmxUnavailable,
 } from "../api/contract.ts"
 import { Events } from "../events/events.ts"
 import { Directories } from "../platform/directories.ts"
 import { ProjectRepository } from "./projectRepository.ts"
 import type { Project } from "./projectRepository.ts"
+import { Terminals } from "../terminals/terminals.ts"
 import { TerminalRepository } from "../terminals/terminalRepository.ts"
+import { Threads } from "../threads/threads.ts"
 import { ThreadRepository } from "../threads/threadRepository.ts"
 
 // The Projects domain service: the rules above the repository —
 // canonicalize-on-create/update (identity is the symlink-resolved canonical
-// path, validated before anything is stored) and the
-// delete-restricted-while-terminals-exist guard. Handlers delegate here so
-// every surface gets the same rules.
+// path, validated before anything is stored) and the delete cascade to every
+// owned thread and terminal. Handlers delegate here so every surface gets
+// the same rules.
 
 export class Projects extends Context.Service<
   Projects,
@@ -33,10 +36,8 @@ export class Projects extends Context.Service<
       id: string,
       patch: typeof UpdateProjectRequest.Type,
     ) => Effect.Effect<Project, ProjectNotFound | DirectoryUnavailable | DirectoryCheckTimedOut>
-    /** Delete the record; restricted while the project owns terminals or threads. */
-    readonly delete: (
-      id: string,
-    ) => Effect.Effect<void, ProjectNotFound | ProjectHasTerminals | ProjectHasThreads>
+    /** Delete the project, cascading to every owned thread and terminal. */
+    readonly delete: (id: string) => Effect.Effect<void, ProjectNotFound | ZmxUnavailable>
   }
 >()("app-server/Projects") {}
 
@@ -44,7 +45,9 @@ export const layer = Layer.effect(Projects)(
   Effect.gen(function* () {
     const repository = yield* ProjectRepository
     const directories = yield* Directories
+    const terminals = yield* Terminals
     const terminalRepository = yield* TerminalRepository
+    const threads = yield* Threads
     const threadRepository = yield* ThreadRepository
     const events = yield* Events
 
@@ -85,18 +88,33 @@ export const layer = Layer.effect(Projects)(
         }),
       delete: (id) =>
         Effect.gen(function* () {
-          // RESTRICT while terminals exist (tombstones included): the
-          // simplest correct rule for a single-user app. Not transactional
-          // with the delete below — a concurrently created terminal falls
-          // back to the migration's FK RESTRICT (a defect, not a 409).
-          const terminalCount = yield* terminalRepository.countForProject(id)
-          if (terminalCount > 0) {
-            return yield* Effect.fail(new ProjectHasTerminals({ projectId: id, terminalCount }))
-          }
-          const threadCount = yield* threadRepository.countForProject(id)
-          if (threadCount > 0) {
-            return yield* Effect.fail(new ProjectHasThreads({ projectId: id, threadCount }))
-          }
+          // Sequential, best-effort cascade: threads first (a thread delete
+          // kills its live linked terminal and releases provider state; its
+          // ended linked tombstones survive unlinked), then every remaining
+          // terminal — `starting` rows and `ended` tombstones included. A
+          // ZmxUnavailable mid-cascade surfaces to the caller with children
+          // already deleted staying deleted; retrying the project delete
+          // finishes the job. Not transactional — child deletes do external
+          // I/O (zmx kill, hook-file removal) — so a child created
+          // concurrently mid-cascade falls back to the migration's FK
+          // RESTRICT (a defect, not a modeled failure).
+          const ownedThreads = yield* threadRepository.list(id)
+          yield* Effect.forEach(
+            ownedThreads,
+            (thread) =>
+              // A child that vanished since its listing is the goal state.
+              threads.delete(thread.id).pipe(Effect.catchTag("ThreadNotFound", () => Effect.void)),
+            { discard: true },
+          )
+          const ownedTerminals = yield* terminalRepository.list(id)
+          yield* Effect.forEach(
+            ownedTerminals,
+            (terminal) =>
+              terminals
+                .delete(terminal.id)
+                .pipe(Effect.catchTag("TerminalNotFound", () => Effect.void)),
+            { discard: true },
+          )
           const deleted = yield* repository.delete(id)
           if (!deleted) {
             return yield* Effect.fail(new ProjectNotFound({ projectId: id }))

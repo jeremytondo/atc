@@ -218,7 +218,11 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
             guard model.projects.contains(where: { $0.id == id }) else {
                 return .notFound(.init(body: .json(projectNotFound(id))))
             }
+            // Deletion cascades server-side (ATC-154): owned threads and
+            // terminals go with the project.
             model.projects.removeAll { $0.id == id }
+            model.threads.removeAll { $0.projectId == id }
+            model.terminals.removeAll { $0.projectId == id }
             return .noContent(.init())
         }
     }

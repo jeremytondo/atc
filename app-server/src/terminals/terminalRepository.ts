@@ -78,8 +78,6 @@ export class TerminalRepository extends Context.Service<
     /** Update the display label; callers hold the record (see markLive). */
     readonly rename: (id: string, name: string) => Effect.Effect<TerminalRecord>
     readonly delete: (id: string) => Effect.Effect<void>
-    /** Every record (tombstones included) — the project-deletion guard. */
-    readonly countForProject: (projectId: string) => Effect.Effect<number>
   }
 >()("app-server/TerminalRepository") {}
 
@@ -147,13 +145,6 @@ export const layer = Layer.effect(TerminalRepository)(
       execute: (id) => sql`DELETE FROM terminals WHERE id = ${id}`,
     })
 
-    const countRows = SqlSchema.findAll({
-      Request: Schema.String,
-      Result: Schema.Struct({ n: Schema.Int }),
-      execute: (projectId) =>
-        sql`SELECT COUNT(*) AS n FROM terminals WHERE project_id = ${projectId}`,
-    })
-
     const firstRecord = (rows: ReadonlyArray<typeof TerminalRow.Type>) =>
       Option.fromNullishOr(rows[0]).pipe(Option.map(toRecord))
 
@@ -217,11 +208,6 @@ export const layer = Layer.effect(TerminalRepository)(
           Effect.flatMap(requireFirst("rename")),
         ),
       delete: (id) => deleteRows(id).pipe(Effect.orDie),
-      countForProject: (projectId) =>
-        countRows(projectId).pipe(
-          Effect.map((rows) => rows[0]?.n ?? 0),
-          Effect.orDie,
-        ),
     }
   }),
 )
