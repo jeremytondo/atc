@@ -647,6 +647,47 @@ describe("ClaudeAdapter TUI session plumbing", () => {
     }),
   )
 
+  it.live("a relaunch after releaseSession recreates the hook plumbing", () =>
+    Effect.gen(function* () {
+      const cwd = workDir()
+      const dir = stateDir()
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter.ClaudeAdapter
+        const hooks = yield* ClaudeHooks.ClaudeHooks
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const prepared = yield* adapter.prepareTuiSession({ cwd })
+            const identity = yield* prepared.identity
+            // Archive-time release removes the files and revokes the secret;
+            // the resume relaunch must rebuild both from the persisted
+            // metadata alone (the archive → unarchive → open round trip).
+            yield* adapter.releaseSession({
+              providerSessionId: identity.providerSessionId,
+              providerMetadata: identity.providerMetadata,
+            })
+            const relaunch = yield* adapter.tuiLaunch({
+              providerSessionId: identity.providerSessionId,
+              cwd,
+              providerMetadata: identity.providerMetadata,
+            })
+            const settingsFile = relaunch.launchSpec.command[4] ?? ""
+            assert.strictEqual((fs.statSync(settingsFile).mode & 0o777).toString(8), "600")
+            // The metadata-carried secret is re-adopted, so the relaunched
+            // TUI's hooks deliver again.
+            const metadata = JSON.parse(identity.providerMetadata ?? "{}") as {
+              hookSecret?: string
+            }
+            const status = yield* hooks.deliver(metadata.hookSecret ?? "", {
+              session_id: identity.providerSessionId,
+              hook_event_name: "Stop",
+            })
+            assert.strictEqual(status, 204)
+          }),
+        )
+      }).pipe(Effect.provide(claudeAdapterLayer({}, "/bin/echo", { stateDir: dir })))
+    }),
+  )
+
   it.live("a failed prepare revokes the freshly minted secret", () =>
     Effect.gen(function* () {
       const cwd = workDir()

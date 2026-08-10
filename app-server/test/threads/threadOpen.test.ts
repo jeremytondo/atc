@@ -8,7 +8,7 @@ import { afterAll } from "vitest"
 import { Api } from "../../src/api/contract.ts"
 import { sessionNameForTerminalId } from "../../src/terminals/terminalAdapter.ts"
 import { ThreadRepository } from "../../src/threads/threadRepository.ts"
-import { apiTestLayer, makeTestServiceLayers } from "../testLayers.ts"
+import { apiTestLayer, eventually, makeTestServiceLayers } from "../testLayers.ts"
 
 // The terminal-first workflow (ATC-124 / ATC-141) against the uniform seam
 // contract only — these tests are the proof that threads/ needs no provider
@@ -39,17 +39,6 @@ const WatchLayer = apiTestLayer(watchKit)
 const scratch = mkdtempSync(join(tmpdir(), "atc-thread-open-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))
 const realDir = realpathSync(scratch)
-
-/** Poll (real clock) until `predicate` accepts the effect's value; bounded. */
-const eventually = <A, E>(effect: Effect.Effect<A, E>, predicate: (value: A) => boolean) =>
-  Effect.gen(function* () {
-    for (let attempt = 0; ; attempt++) {
-      const value = yield* effect
-      if (predicate(value)) return value
-      assert.isBelow(attempt, 300, `condition never held; last: ${JSON.stringify(value)}`)
-      yield* Effect.sleep("10 millis")
-    }
-  })
 
 const setup = Effect.gen(function* () {
   const client = yield* HttpApiTest.groups(Api, ["v1"])
@@ -277,6 +266,7 @@ describe("threads.openTerminal", () => {
   it.live("identity resolving after a mid-open delete releases the fresh session", () =>
     Effect.gen(function* () {
       const { client, thread } = yield* setup
+      const threadRepository = yield* ThreadRepository
       holdKit.fakeAgents.codex.setIdentityHangs(true)
       const fiber = yield* client.v1
         .openThreadTerminal({ params: { threadId: thread.id } })
@@ -287,11 +277,14 @@ describe("threads.openTerminal", () => {
       )
       const fresh = holdKit.fakeAgents.codex.prepared.at(-1)?.providerSessionId ?? ""
 
-      // The thread is deleted while identity is still pending; when the
-      // identity then resolves, adoption finds no row — the ownership
-      // bracket must release the fresh session's adapter resources, because
-      // no thread row will ever own (or release) them.
-      yield* client.v1.deleteThread({ params: { threadId: thread.id } })
+      // The row vanishes while identity is still pending. Threads.delete
+      // itself now queues behind the in-flight open (ATC-157), so this
+      // models the residual ATC-139 window (a repository-level cascade or
+      // defect) directly at the repository: when the identity then
+      // resolves, adoption finds no row — the ownership bracket must
+      // release the fresh session's adapter resources, because no thread
+      // row will ever own (or release) them.
+      yield* threadRepository.delete(thread.id)
       holdKit.fakeAgents.codex.setIdentityHangs(false)
       const exit = yield* Fiber.await(fiber)
       assert.strictEqual(exit._tag, "Failure")

@@ -799,9 +799,19 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The zmx multiplexer cannot be consulted right now. Retryable; stored terminal state is untouched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ZmxUnavailableJsonEncoding"
+                }
+              }
+            }
           }
         },
-        "description": "Archive the thread (idempotent). Refused while the agent session is actively working."
+        "description": "Archive the thread (idempotent and convergent): its live linked terminal is killed first, so an archived thread consumes no multiplexer session; the provider conversation survives for a later exact resume via unarchive + open. Refused while the agent session is actively working, and refused (retryably) when terminal death cannot be verified."
       }
     },
     "/api/v1/threads/{threadId}/unarchive": {
