@@ -55,11 +55,12 @@ struct DashboardView: View {
                 }
             }
         } message: {
-            // Counts are the client's view; the catch-all phrase covers
-            // archived and ended residue the stores don't surface.
+            // Counts are the visible (active/standalone) ones; the catch-all
+            // phrase covers archived and ended residue the stores don't
+            // surface, so it must read as an addition, not a subset.
             Text("""
             Also deletes its \(countLabel(deletingProject?.activeThreadCount ?? 0, "thread")) and \
-            \(countLabel(deletingProject?.standaloneTerminalCount ?? 0, "terminal")), including \
+            \(countLabel(deletingProject?.standaloneTerminalCount ?? 0, "terminal")), plus \
             any archived or ended ones. The project directory is never touched.
             """)
         }

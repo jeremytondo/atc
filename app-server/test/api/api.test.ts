@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest"
-import { Effect, Fiber, Queue, Stream } from "effect"
+import { Effect, Fiber, Option, Queue, Stream } from "effect"
 import { HttpApiTest } from "effect/unstable/httpapi"
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -9,6 +9,7 @@ import { afterAll } from "vitest"
 import { Api, DirectoryUnavailable } from "../../src/api/contract.ts"
 import * as Events from "../../src/events/events.ts"
 import { sessionNameForTerminalId } from "../../src/terminals/terminalAdapter.ts"
+import { TerminalRepository } from "../../src/terminals/terminalRepository.ts"
 import { testBuildInfo } from "../testBuildInfo.ts"
 import { apiTestLayer, makeTestServiceLayers } from "../testLayers.ts"
 
@@ -183,8 +184,15 @@ describe("/api/v1/projects", () => {
       const live = yield* client.v1.createTerminal({ payload: { projectId: project.id } })
       const ended = yield* client.v1.createTerminal({ payload: { projectId: project.id } })
       // Kill the second session out-of-band and reconcile it into an ended
-      // tombstone — the residue the old 409 guard forced users to hunt down.
+      // tombstone, and seed a crash-residue `starting` row directly — the
+      // residue kinds the old 409 guard forced users to hunt down (the
+      // starting row is invisible, so users could not even do that).
       kit.fake.sessions.delete(sessionNameForTerminalId(ended.id))
+      const terminalRepository = yield* TerminalRepository
+      const starting = yield* terminalRepository.create({
+        projectId: project.id,
+        initialWorkingDirectory: realDir,
+      })
       const listed = yield* client.v1.listTerminals({ query: { projectId: project.id } })
       assert.deepStrictEqual(listed.map((terminal) => terminal.status).toSorted(), [
         "ended",
@@ -208,6 +216,7 @@ describe("/api/v1/projects", () => {
         [],
       )
       assert.isFalse(kit.fake.sessions.has(sessionNameForTerminalId(live.id)))
+      assert.isTrue(Option.isNone(yield* terminalRepository.get(starting.id)))
       const missing = yield* Effect.flip(
         client.v1.getProject({ params: { projectId: project.id } }),
       )
@@ -216,8 +225,14 @@ describe("/api/v1/projects", () => {
       // Each child publishes its own deleted event before the project's
       // (newest-first cascade order).
       assert.deepStrictEqual(
-        [yield* Queue.take(received), yield* Queue.take(received), yield* Queue.take(received)],
         [
+          yield* Queue.take(received),
+          yield* Queue.take(received),
+          yield* Queue.take(received),
+          yield* Queue.take(received),
+        ],
+        [
+          { resource: "terminal", id: starting.id, change: "deleted" },
           { resource: "terminal", id: ended.id, change: "deleted" },
           { resource: "terminal", id: live.id, change: "deleted" },
           { resource: "project", id: project.id, change: "deleted" },

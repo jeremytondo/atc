@@ -54,6 +54,18 @@ struct ProjectsStoreTests {
         #expect(store.projects.map(\.id) == ["prj_a"])
     }
 
+    @Test("delete surfaces a modeled failure's payload message, changing nothing")
+    func deleteSurfacesModeledMessage() async {
+        let (store, _) = await loadedStore()
+        do {
+            try await store.delete(id: "prj_missing")
+            Issue.record("delete of a missing project should throw")
+        } catch {
+            #expect(error.localizedDescription == "No project prj_missing")
+        }
+        #expect(store.projects.map(\.id) == ["prj_b", "prj_a"])
+    }
+
     @Test("a failed refresh keeps the last-loaded list and records the error")
     func failedRefreshPreservesData() async {
         let (store, client) = await loadedStore()

@@ -45,7 +45,8 @@ export type Terminal = typeof TerminalSchema.Type
 //     by startup recovery after a crash). Request-time reconciliation never
 //     touches them, which is why the startup pass and the request-time pass
 //     can never be one function: resolving `starting` rows is only safe
-//     while no create can be in flight.
+//     while no create can be in flight. The one operation that accepts them
+//     is delete, so the project-deletion cascade can reap crash residue.
 //   - Orphan cleanup: sessions in ATC's private socket dir that no stored
 //     terminal claims are provably ours and killed (best-effort) at startup.
 
@@ -297,7 +298,12 @@ export const layer = Layer.effect(Terminals)(
 
     const del: Terminals["Service"]["delete"] = (id) =>
       Effect.gen(function* () {
-        const record = yield* requireRecord(id)
+        // Deliberately not requireRecord: delete accepts `starting` rows so
+        // the project-deletion cascade can reap crash residue a startup left
+        // unresolved. Only the in-flight create holds a starting id
+        // otherwise (they are invisible everywhere else), and a create
+        // racing a project cascade is already the FK RESTRICT defect stance.
+        const record = yield* repository.require(id)
         // Kill requiring certainty: a kill that cannot verify death is
         // reported retryably rather than deleting a record whose session
         // may still be alive.
