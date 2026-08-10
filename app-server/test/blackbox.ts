@@ -41,9 +41,16 @@ export const makeShortSocketDir = (): string => trackTempDir(mkdtempSync("/tmp/a
  * terminal socket directory lives under it and must fit the unix
  * socket-path budget. Read the location back from the returned env when a
  * test needs to inspect state files.
+ *
+ * Every inherited ATC_* variable is stripped: environment beats config in
+ * AppConfig precedence, and test runs launched from inside an ATC terminal
+ * session inherit ATC_ENDPOINT (and friends) pointing at the developer's
+ * real server — without scrubbing, blackbox CLI calls would create projects
+ * and threads there instead of on the isolated test server. Tests state
+ * their ATC_* configuration explicitly via `extra`.
  */
 export const isolatedEnv = (dir: string, extra: Record<string, string> = {}) => ({
-  ...process.env,
+  ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("ATC_"))),
   XDG_CONFIG_HOME: `${dir}/config`,
   XDG_DATA_HOME: `${dir}/data`,
   XDG_STATE_HOME: trackTempDir(mkdtempSync("/tmp/atc-st-")),
