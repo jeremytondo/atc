@@ -35,7 +35,7 @@ struct DashboardView: View {
         }
         .renameAlert("Rename Project", item: $renamingProject, draft: $renameDraft) { card, name in
             if let store = appModel.runtime(id: card.ref.connectionID)?.projects {
-                appModel.run(on: card.ref.connectionID, reporting: $actionError) {
+                appModel.run(on: card.ref.connectionID, reporting: { actionError = $0 }) {
                     try await store.rename(id: card.project.id, name: name)
                 }
             }
@@ -47,7 +47,7 @@ struct DashboardView: View {
             Button("Delete Project", role: .destructive) {
                 if let card = deletingProject,
                    let store = appModel.runtime(id: card.ref.connectionID)?.projects {
-                    appModel.run(on: card.ref.connectionID, reporting: $actionError) {
+                    appModel.run(on: card.ref.connectionID, reporting: { actionError = $0 }) {
                         try await store.delete(id: card.project.id)
                     }
                 }

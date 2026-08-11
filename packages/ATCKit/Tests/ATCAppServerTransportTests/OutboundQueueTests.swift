@@ -146,17 +146,6 @@ private func patternedData(count: Int) -> Data {
     Data((0..<count).map { UInt8(truncatingIfNeeded: $0) })
 }
 
-private func waitUntil(
-    attempts: Int = 2_000,
-    _ condition: () -> Bool
-) async -> Bool {
-    for _ in 0..<attempts {
-        if condition() { return true }
-        try? await Task.sleep(for: .milliseconds(1))
-    }
-    return condition()
-}
-
 nonisolated private final class ProducerProbe: @unchecked Sendable {
     private let lock = NSLock()
     private var storedStarted = false

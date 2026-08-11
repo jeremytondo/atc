@@ -22,10 +22,17 @@ struct NewThreadSheet: View {
     @Environment(WindowState.self) private var windowState
     let context: NewThreadContext
 
+    private static let agentShortcutKeys: Set<KeyEquivalent> = Set(
+        (1...9).map { KeyEquivalent(Character("\($0)")) }
+    )
+
     @AppStorage("newThreadLastAgentId") private var lastAgentRaw = ""
 
     @State private var query = ""
     @State private var selectedProject: ProjectRef?
+    /// The row the results list is parked on. Separate from
+    /// `selectedProject` because SwiftUI writes the scrolled-to row into it.
+    @State private var scrolledProject: ProjectRef?
     @State private var agentID: AgentID = .codex
     @State private var workingDirectory = ""
     @State private var directoryState: DirectoryCheckState = .idle
@@ -62,9 +69,28 @@ struct NewThreadSheet: View {
             }
         }
         .frame(width: 560, height: 500)
-        .background(hiddenShortcutButtons)
+        .defaultFocus($searchIsFocused, true)
+        // ⌘1…⌘9 select Agents, handled on the sheet rather than on the Agent
+        // buttons so an unavailable Agent's shortcut still answers with
+        // feedback instead of being swallowed by a disabled control.
+        .onKeyPress(keys: Self.agentShortcutKeys, phases: .down) { press in
+            // Mask to the device-independent modifiers: `press.modifiers`
+            // also carries capsLock/numericPad, which must not defeat ⌘1–9.
+            guard press.modifiers.intersection([.command, .shift, .option, .control]) == .command,
+                  let digit = press.key.character.wholeNumberValue,
+                  digit - 1 < agents.count
+            else { return .ignored }
+            select(agents[digit - 1])
+            return .handled
+        }
+        // Both cases: `press.key` preserves Shift, so a real ⇧⌘G arrives as "G".
+        .onKeyPress(keys: ["g", "G"], phases: .down) { press in
+            guard press.modifiers.intersection([.command, .shift, .option, .control]) == [.command, .shift]
+            else { return .ignored }
+            directoryIsFocused = true
+            return .handled
+        }
         .task {
-            searchIsFocused = true
             agentID = NewThreadLauncherModel.initialAgent(
                 lastUsedRawValue: lastAgentRaw,
                 agents: agents
@@ -117,22 +143,18 @@ struct NewThreadSheet: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 2) {
-                        ForEach(rows) { row in
-                            resultRow(row)
-                                .id(row.id)
-                        }
-                    }
-                    .padding(Spacing.xs)
-                }
-                .onChange(of: selectedProject) {
-                    if let selectedProject {
-                        proxy.scrollTo(selectedProject, anchor: .center)
+            ScrollView {
+                LazyVStack(spacing: 2) {
+                    ForEach(rows) { row in
+                        resultRow(row)
+                            .id(row.id)
                     }
                 }
+                .scrollTargetLayout()
+                .padding(Spacing.xs)
             }
+            .scrollPosition(id: $scrolledProject, anchor: .center)
+            .onChange(of: selectedProject) { scrolledProject = selectedProject }
         }
     }
 
@@ -256,23 +278,6 @@ struct NewThreadSheet: View {
         .opacity(agent.available ? 1 : 0.5)
         .accessibilityLabel(agentAccessibilityLabel(agent, index: index))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
-    }
-
-    /// The ⌘-digit selectors live on hidden always-enabled buttons so an
-    /// unavailable Agent's shortcut can still answer with feedback — a
-    /// disabled visible button would swallow it silently.
-    private var hiddenShortcutButtons: some View {
-        VStack {
-            ForEach(Array(agents.prefix(9).enumerated()), id: \.element.id) { index, agent in
-                Button("") { select(agent) }
-                    .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
-            }
-            Button("") { directoryIsFocused = true }
-                .keyboardShortcut("g", modifiers: [.command, .shift])
-        }
-        .frame(width: 0, height: 0)
-        .opacity(0)
-        .accessibilityHidden(true)
     }
 
     private func shortcutLabel(at index: Int) -> String? {

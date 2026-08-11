@@ -32,6 +32,9 @@ struct NavigatorList<Content: View>: View {
             LazyVStack(spacing: 0) {
                 content
             }
+            // Lets a caller's `.scrollPosition(id:)` address the rows, which
+            // is what replaces `List`'s scroll-to-selection here.
+            .scrollTargetLayout()
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, NavigatorMetrics.horizontalPadding)
         }

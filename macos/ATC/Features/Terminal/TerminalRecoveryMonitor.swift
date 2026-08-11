@@ -11,11 +11,8 @@ final class TerminalRecoveryMonitor {
     private let notificationCenter: NotificationCenter?
     private let wakeNotification: Notification.Name
     private let pathMonitor: NWPathMonitor?
-    private let pathQueue = DispatchQueue(label: "ElevenIdeas.atc.terminal-path")
-    // Read from the nonisolated `deinit` to release the observer. Only
-    // mutated on the main actor while the monitor is alive, and deinit runs
-    // strictly after the last reference is gone, so this cannot race.
-    private nonisolated(unsafe) var wakeObserver: (any NSObjectProtocol)?
+    private var wakeTask: Task<Void, Never>?
+    private var pathTask: Task<Void, Never>?
     private var previousPathWasSatisfied: Bool?
     private var started = false
 
@@ -33,42 +30,49 @@ final class TerminalRecoveryMonitor {
         TerminalRecoveryMonitor(notificationCenter: nil, pathMonitor: nil)
     }
 
+    // Production's one monitor lives for the app, but test and preview
+    // AppModels abandon theirs without `stop()` — and the path task holds
+    // the NWPathMonitor, which keeps evaluating paths until cancelled.
+    deinit {
+        wakeTask?.cancel()
+        pathTask?.cancel()
+        pathMonitor?.cancel()
+    }
+
     func start() {
         guard !started else { return }
         started = true
 
         if let notificationCenter {
-            wakeObserver = notificationCenter.addObserver(
-                forName: wakeNotification,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    self?.onRecovery?()
+            let notifications = notificationCenter.notifications(named: wakeNotification)
+            wakeTask = Task { [weak self] in
+                for await _ in notifications {
+                    guard let self else { return }
+                    self.onRecovery?()
                 }
             }
         }
 
+        // Iterating the monitor starts it; `stop()` cancels both the task and
+        // the monitor so the sequence ends.
         if let pathMonitor {
-            pathMonitor.pathUpdateHandler = { [weak self] path in
-                let isSatisfied = path.status == .satisfied
-                Task { @MainActor [weak self] in
-                    self?.recordNetworkPath(isSatisfied: isSatisfied)
+            pathTask = Task { [weak self] in
+                for await path in pathMonitor {
+                    guard let self else { return }
+                    self.recordNetworkPath(isSatisfied: path.status == .satisfied)
                 }
             }
-            pathMonitor.start(queue: pathQueue)
         }
     }
 
     func stop() {
         guard started else { return }
         started = false
-        pathMonitor?.pathUpdateHandler = nil
+        wakeTask?.cancel()
+        wakeTask = nil
+        pathTask?.cancel()
+        pathTask = nil
         pathMonitor?.cancel()
-        if let wakeObserver, let notificationCenter {
-            notificationCenter.removeObserver(wakeObserver)
-        }
-        wakeObserver = nil
     }
 
     /// Internal so transition behavior can be tested without depending on
@@ -77,13 +81,5 @@ final class TerminalRecoveryMonitor {
         defer { previousPathWasSatisfied = isSatisfied }
         guard previousPathWasSatisfied == false, isSatisfied else { return }
         onRecovery?()
-    }
-
-    deinit {
-        pathMonitor?.pathUpdateHandler = nil
-        pathMonitor?.cancel()
-        if let wakeObserver, let notificationCenter {
-            notificationCenter.removeObserver(wakeObserver)
-        }
     }
 }

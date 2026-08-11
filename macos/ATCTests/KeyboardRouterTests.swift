@@ -251,11 +251,9 @@ struct KeyboardRouterTests {
         let router = WindowKeyboardRouter(keymap: try keymap()) { _ in .available }
         router.showUnavailable(reason: "Unavailable now")
         #expect(router.flash == RouterFlash(message: "Unavailable now"))
-        // Awaiting releases the main actor so the router's clearing task can
+        // Settling releases the main actor so the router's clearing task can
         // run; a run-loop pump would hold the actor and dead-lock the clear.
-        for _ in 0..<100 where router.flash != nil {
-            try await Task.sleep(for: .milliseconds(50))
-        }
+        await settle(until: { router.flash == nil })
         #expect(router.flash == nil)
     }
 }

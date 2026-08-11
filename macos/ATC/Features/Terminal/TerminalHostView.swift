@@ -33,16 +33,14 @@ struct TerminalHostView: NSViewRepresentable {
 /// Owns exactly one Ghostty view hierarchy. Scoping the first-responder lookup
 /// to this container prevents one retained terminal from focusing another.
 final class TerminalContainerView: NSView {
-    private static let focusRetryDelay = 0.01
+    private static let focusRetryDelay = Duration.milliseconds(10)
     private static let focusRetryLimit = 100
 
     private let hostingView: NSHostingView<TerminalSurfaceView>
     private var wasVisible = false
     private var lastFocusRequest: UInt?
-    private var focusRetryTimer: Timer?
-    private var focusResignTimer: Timer?
-    private var focusAttempt = 0
-    private var wantsFocus = false
+    private var focusTask: Task<Void, Never>?
+    private var focusResignTask: Task<Void, Never>?
     private var controllerID: ObjectIdentifier
     private var acceptsPointerInput = false
 
@@ -91,14 +89,15 @@ final class TerminalContainerView: NSView {
         alphaValue = isVisible ? 1 : 0
 
         if !isVisible {
-            cancelPendingFocus()
+            focusTask?.cancel()
+            focusTask = nil
             // Only the visible→hidden transition can leave this terminal as
             // the stale first responder; steady-state hidden updates would
-            // just schedule no-op timers.
+            // just schedule no-op work.
             if becameHidden { scheduleTerminalFocusResignation() }
         } else if shouldFocus {
-            focusResignTimer?.invalidate()
-            focusResignTimer = nil
+            focusResignTask?.cancel()
+            focusResignTask = nil
             // Visibility and focus are intentionally ordered in the same
             // AppKit update. The transparent retained views remain mounted,
             // so switching back never waits for SwiftUI to rebuild Ghostty.
@@ -111,88 +110,49 @@ final class TerminalContainerView: NSView {
         return super.hitTest(point)
     }
 
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        if wantsFocus { schedulePendingFocus() }
-    }
-
-    private func requestTerminalFocus() {
-        wantsFocus = true
-        focusAttempt = 0
-        schedulePendingFocus()
-    }
-
-    private func cancelPendingFocus() {
-        wantsFocus = false
-        focusRetryTimer?.invalidate()
-        focusRetryTimer = nil
-    }
-
-    private func schedulePendingFocus() {
-        guard wantsFocus else { return }
-        focusRetryTimer?.invalidate()
-        let timer = Timer(timeInterval: Self.focusRetryDelay, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.applyPendingFocus()
-            }
-        }
-        focusRetryTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
-    }
-
-    private func applyPendingFocus() {
-        guard wantsFocus else { return }
-        hostingView.layoutSubtreeIfNeeded()
-
-        guard let window, let terminalView = terminalInputView() else {
-            retryPendingFocus()
-            return
-        }
-
-        if window.firstResponder === terminalView || window.makeFirstResponder(terminalView) {
-            wantsFocus = false
-            focusRetryTimer = nil
-        } else {
-            retryPendingFocus()
-        }
-    }
-
     /// SwiftUI can materialize the hosted AppKit terminal a few run-loop
-    /// turns after this representable becomes visible. Keep the request
-    /// alive until that concrete input view exists, with a bounded retry so
-    /// a broken hierarchy cannot schedule work indefinitely.
-    private func retryPendingFocus() {
-        focusAttempt += 1
-        guard focusAttempt < Self.focusRetryLimit else {
-            wantsFocus = false
-            focusRetryTimer = nil
+    /// turns after this representable becomes visible. Keep retrying until
+    /// that concrete input view exists, bounded so a broken hierarchy cannot
+    /// retry indefinitely.
+    private func requestTerminalFocus() {
+        focusTask?.cancel()
+        focusTask = Task { [weak self] in
+            for _ in 0..<Self.focusRetryLimit {
+                try? await Task.sleep(for: Self.focusRetryDelay)
+                guard !Task.isCancelled, let self else { return }
+                if self.takeFocus() { return }
+            }
             logger.error(
                 "Abandoned terminal focus transfer after \(Self.focusRetryLimit) attempts; the surface never produced an input view"
             )
-            return
         }
-        schedulePendingFocus()
+    }
+
+    /// True once this container's terminal input view exists and holds first
+    /// responder.
+    private func takeFocus() -> Bool {
+        hostingView.layoutSubtreeIfNeeded()
+        guard let window, let terminalView = terminalInputView() else { return false }
+        return window.firstResponder === terminalView || window.makeFirstResponder(terminalView)
     }
 
     func tearDown() {
-        cancelPendingFocus()
+        focusTask?.cancel()
+        focusTask = nil
         scheduleTerminalFocusResignation()
     }
 
     private func scheduleTerminalFocusResignation() {
-        focusResignTimer?.invalidate()
+        focusResignTask?.cancel()
+        focusResignTask = nil
         guard let window, let terminalView = terminalInputView() else { return }
-        let timer = Timer(timeInterval: Self.focusRetryDelay, repeats: false) {
-            [weak window, weak terminalView] _ in
-            MainActor.assumeIsolated {
-                guard let window, let terminalView,
-                      window.firstResponder === terminalView
-                else { return }
-                window.makeFirstResponder(nil)
-            }
+        focusResignTask = Task { [weak window, weak terminalView] in
+            try? await Task.sleep(for: Self.focusRetryDelay)
+            guard !Task.isCancelled, let window, let terminalView,
+                  window.firstResponder === terminalView
+            else { return }
+            window.makeFirstResponder(nil)
         }
-        focusResignTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
     }
 
     /// This hosting hierarchy contains exactly one Ghostty surface. Matching
