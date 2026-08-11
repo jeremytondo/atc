@@ -61,11 +61,13 @@ enum SidebarShortcuts {
         return Array(terminals.prefix(slotCount))
     }
 
-    static func threadBadgeLabel(_ number: Int) -> String {
+    // Nonisolated: pure formatting, usable from nonisolated closure contexts
+    // such as `Optional.map` without an isolation diagnostic.
+    nonisolated static func threadBadgeLabel(_ number: Int) -> String {
         KeyStroke(key: "\(number)", modifiers: [.command]).displayDescription
     }
 
-    static func terminalBadgeLabel(_ number: Int) -> String {
+    nonisolated static func terminalBadgeLabel(_ number: Int) -> String {
         KeyStroke(key: "\(number)", modifiers: [.command, .option]).displayDescription
     }
 

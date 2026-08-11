@@ -103,6 +103,18 @@ struct KeyboardMonitorHost: NSViewRepresentable {
             }
 
             let center = NotificationCenter.default
+            // Becoming key reseeds from the live hardware state: flags
+            // changed while another window was key (⌘Tab back with ⌘ still
+            // down) never produced a flagsChanged event here.
+            observers.append(center.addObserver(
+                forName: NSWindow.didBecomeKeyNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.router.heldModifiers = KeyStroke.Modifiers(NSEvent.modifierFlags)
+                }
+            })
             observers.append(center.addObserver(
                 forName: NSWindow.didResignKeyNotification,
                 object: window,

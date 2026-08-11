@@ -238,6 +238,12 @@ struct KeyboardRouterTests {
             object: NSApp
         )
         #expect(router.heldModifiers == [])
+
+        // Becoming key reseeds from the live hardware state — no modifiers
+        // are physically held in a test run, so a stale value clears.
+        router.heldModifiers = [.command]
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        #expect(router.heldModifiers == KeyStroke.Modifiers(NSEvent.modifierFlags))
     }
 
     @Test("external unavailable feedback uses the router flash lifecycle")

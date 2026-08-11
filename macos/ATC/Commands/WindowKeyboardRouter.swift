@@ -17,8 +17,8 @@ final class WindowKeyboardRouter {
     private(set) var flash: RouterFlash?
     /// Modifiers physically held right now, as the flags-changed monitor
     /// reports them; drives the sidebar's ⌘/⌥⌘ shortcut badges. The monitor
-    /// host resets this on window resign so ⌘Tab-ing away never leaves
-    /// badges stuck on.
+    /// host resets this on window resign (⌘Tab-ing away never leaves badges
+    /// stuck on) and reseeds it from the hardware state on become-key.
     var heldModifiers: KeyStroke.Modifiers = []
     var keymap: ResolvedKeymap {
         didSet {
