@@ -248,7 +248,16 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
       let nextTurn = 1
 
       const emit = (session: LiveSession, event: AgentEvent): void => {
-        Queue.offerUnsafe(session.queue, event)
+        // Bounded queue: a consumer that stopped draining loses the stream,
+        // not the process (the events.ts subscriber policy). Overflow FAILS
+        // the stream rather than ending it — a clean end would read as a
+        // completed turn to the consumer, not a truncated one.
+        if (!Queue.offerUnsafe(session.queue, event)) {
+          Queue.failCauseUnsafe(
+            session.queue,
+            Cause.fail(protocolError("session event stream overflowed; reopen and resync")),
+          )
+        }
       }
 
       const setActivity = (session: LiveSession, activity: AgentActivity): void => {
@@ -475,7 +484,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
           ]),
         )
 
-      const versionCheck = makeVersionGate(
+      const versionCheck = yield* makeVersionGate(
         subprocess,
         "claude",
         config.claudeExecutable,
@@ -558,7 +567,11 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
           const executable = yield* resolveProviderExecutable("claude", config.claudeExecutable)
           yield* versionCheck
           const input = makeInputQueue()
-          const queue = yield* Queue.make<AgentEvent, AgentProtocolError | Cause.Done>()
+          // Bounded (overflow ends the stream — see emit); a session that
+          // buffers 256 undrained events has lost its consumer.
+          const queue = yield* Queue.make<AgentEvent, AgentProtocolError | Cause.Done>({
+            capacity: 256,
+          })
           const initGate = yield* Deferred.make<void, GateError>()
           const session: LiveSession = {
             expectedSessionId: options.resume ?? null,
@@ -700,6 +713,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
 
       const adapter: AgentAdapter = {
         provider: "claude",
+        observationOutlivesTui: false,
         createSession: (options) =>
           Effect.gen(function* () {
             const session = yield* openSession({ cwd: options.cwd })
@@ -799,12 +813,16 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
             // validating only because the thread's metadata carries it.
             const known = metadataSecret(options.providerMetadata)
             if (known !== null) yield* hooks.adoptSecret(options.providerSessionId, known)
-            const queue = yield* Queue.make<AgentSessionEvent, Cause.Done>()
+            // Bounded (overflow ends the feed — see the subscriber below);
+            // dropping hook events silently would lose confirm/auto-name
+            // evidence, while an ended feed makes the consumer re-observe.
+            const queue = yield* Queue.make<AgentSessionEvent, Cause.Done>({ capacity: 32 })
             // Registered before the subscription so it runs after it on
             // scope close: unsubscribe first, then end the queue.
             yield* Effect.addFinalizer(() => Effect.sync(() => Queue.endUnsafe(queue)))
             yield* hooks.subscribe((sessionId, event) => {
-              if (sessionId === options.providerSessionId) Queue.offerUnsafe(queue, event)
+              if (sessionId !== options.providerSessionId) return
+              if (!Queue.offerUnsafe(queue, event)) Queue.endUnsafe(queue)
             })
             return Stream.fromQueue(queue)
           }),

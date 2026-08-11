@@ -248,7 +248,11 @@ export const layer = Layer.effect(CodexAdapter)(
     const emitAggregate = (rootId: string): void => {
       const aggregate = aggregateFor(rootId)
       for (const queue of observers.get(rootId) ?? []) {
-        Queue.offerUnsafe(queue, aggregate)
+        // Overflow ends the observation: dropping intermediate transitions
+        // would be silent evidence loss (the first busy drives the confirm
+        // marker), while an ended feed makes the consumer re-observe and
+        // re-derive.
+        if (!Queue.offerUnsafe(queue, aggregate)) Queue.endUnsafe(queue)
       }
       const session = sessions.get(rootId)
       if (session !== undefined && aggregate !== session.activity) {
@@ -310,7 +314,16 @@ export const layer = Layer.effect(CodexAdapter)(
     }
 
     const emit = (session: LiveSession, event: AgentEvent): void => {
-      Queue.offerUnsafe(session.queue, event)
+      // Bounded queue: a consumer that stopped draining loses the stream,
+      // not the process (the events.ts subscriber policy). Overflow FAILS
+      // the stream rather than ending it — a clean end would read as a
+      // completed turn to the consumer, not a truncated one.
+      if (!Queue.offerUnsafe(session.queue, event)) {
+        Queue.failCauseUnsafe(
+          session.queue,
+          Cause.fail(protocolError("session event stream overflowed; reopen and resync")),
+        )
+      }
     }
 
     const teardown = (state: ClientState, reason: string): void => {
@@ -337,7 +350,9 @@ export const layer = Layer.effect(CodexAdapter)(
         // it: tell them honestly rather than letting the last busy state
         // sit stale while the provider moves on unheard (ATC-158).
         for (const set of observers.values()) {
-          for (const queue of set) Queue.offerUnsafe(queue, "unknown")
+          for (const queue of set) {
+            if (!Queue.offerUnsafe(queue, "unknown")) Queue.endUnsafe(queue)
+          }
         }
         // An armed capture fails closed with the connection: the caller
         // abandons the launch and retries rather than adopting anything
@@ -533,7 +548,7 @@ export const layer = Layer.effect(CodexAdapter)(
       )
 
     // Record + warn version drift, once, on first use (never blocks).
-    const versionCheck = makeVersionGate(
+    const versionCheck = yield* makeVersionGate(
       subprocess,
       "codex",
       config.codexExecutable,
@@ -561,30 +576,56 @@ export const layer = Layer.effect(CodexAdapter)(
         }),
       )
 
+    const connect = Effect.gen(function* () {
+      yield* versionCheck
+      const info = yield* codexServer.ensure()
+      const state = yield* openSocket(info.url)
+      // A failed or interrupted handshake must close this socket: a
+      // half-open connection would double-deliver broadcasts and, on its
+      // eventual death, could not be told apart from the live one.
+      yield* request(state, "initialize", {
+        clientInfo: { name: "atc", title: "ATC App Server", version: build.version },
+        capabilities: null,
+      }).pipe(
+        Effect.mapError(rpcToProtocol),
+        Effect.onExit((exit) =>
+          Effect.sync(() => {
+            if (exit._tag === "Failure") teardown(state, "the handshake failed")
+          }),
+        ),
+      )
+      state.socket.send(JSON.stringify({ method: "initialized", params: {} }))
+      current = state
+      return state
+    })
+
+    // The connection attempt's outcome is memoized for a short window so a
+    // dead Codex costs ONE probe (with its full connect timeouts) per window
+    // instead of one per caller — a thread-list fan-out otherwise serializes
+    // every record behind those timeouts (ATC-167 H4). The memo also records
+    // interruption (cachedWithTTL caches whatever exit the driver produced),
+    // so an interrupted driver invalidates on the way out rather than making
+    // later callers replay its interrupt. cachedConnect may only be entered
+    // under connectLock: without it, an invalidate racing a just-released
+    // cache waiter would replay a cleared exit. The window also briefly
+    // shadows codexServer's own crash-restart watcher — a retry schedule
+    // against getClient shorter than the window would spin on the memo.
+    const [cachedConnect, invalidateConnect] = yield* Effect.cachedInvalidateWithTTL(
+      connect,
+      "5 seconds",
+    )
+    const attemptConnect = Effect.onInterrupt(cachedConnect, () => invalidateConnect)
+
     /** The shared connection: reuse, or ensure the server and handshake. */
     const getClient = connectLock.withPermits(1)(
       Effect.gen(function* () {
         if (current !== null && current.alive) return current
-        yield* versionCheck
-        const info = yield* codexServer.ensure()
-        const state = yield* openSocket(info.url)
-        // A failed or interrupted handshake must close this socket: a
-        // half-open connection would double-deliver broadcasts and, on its
-        // eventual death, could not be told apart from the live one.
-        yield* request(state, "initialize", {
-          clientInfo: { name: "atc", title: "ATC App Server", version: build.version },
-          capabilities: null,
-        }).pipe(
-          Effect.mapError(rpcToProtocol),
-          Effect.onExit((exit) =>
-            Effect.sync(() => {
-              if (exit._tag === "Failure") teardown(state, "the handshake failed")
-            }),
-          ),
-        )
-        state.socket.send(JSON.stringify({ method: "initialized", params: {} }))
-        current = state
-        return state
+        const state = yield* attemptConnect
+        if (state.alive) return state
+        // A memoized success can predate a teardown; never hand out a dead
+        // connection — drop the memo and probe fresh.
+        yield* invalidateConnect
+        return yield* attemptConnect
       }),
     )
 
@@ -608,7 +649,11 @@ export const layer = Layer.effect(CodexAdapter)(
       initialStatus: unknown,
     ) =>
       Effect.gen(function* () {
-        const queue = yield* Queue.make<AgentEvent, AgentProtocolError | Cause.Done>()
+        // Bounded (overflow ends the stream — see emit); a session that
+        // buffers 256 undrained events has lost its consumer.
+        const queue = yield* Queue.make<AgentEvent, AgentProtocolError | Cause.Done>({
+          capacity: 256,
+        })
         // Seeded from the provider's own thread status — never a guess —
         // folded with any descendants already tracked for this root.
         ownStatus.set(threadId, statusToActivity(initialStatus))
@@ -854,6 +899,7 @@ export const layer = Layer.effect(CodexAdapter)(
 
     const adapter: AgentAdapter = {
       provider: "codex",
+      observationOutlivesTui: true,
       createSession: (options) =>
         Effect.gen(function* () {
           // thread/start broadcasts thread/started to every socket — ours
@@ -1026,7 +1072,9 @@ export const layer = Layer.effect(CodexAdapter)(
         Effect.gen(function* () {
           // Ensure the shared connection exists — it is the evidence source.
           yield* getClientRetryable
-          const queue = yield* Queue.make<AgentActivity, Cause.Done>()
+          // Bounded (overflow ends the feed — see emitAggregate); a
+          // 16-deep undrained backlog means the observer is gone.
+          const queue = yield* Queue.make<AgentActivity, Cause.Done>({ capacity: 16 })
           const set = observers.get(options.providerSessionId) ?? new Set()
           set.add(queue)
           observers.set(options.providerSessionId, set)
@@ -1055,7 +1103,9 @@ export const layer = Layer.effect(CodexAdapter)(
           // attempt for good (logged at debug). The feed never lies — it
           // just goes without prompt evidence.
           const scope = yield* Effect.scope
-          const promptQueue = yield* Queue.make<AgentSessionEvent, Cause.Done>()
+          // Bounded like the activity queues; prompts arrive one per turn
+          // start, so 16 undrained means the observation is dead anyway.
+          const promptQueue = yield* Queue.make<AgentSessionEvent, Cause.Done>({ capacity: 16 })
           yield* Effect.addFinalizer(() => Effect.sync(() => Queue.endUnsafe(promptQueue)))
           let promptPhase: "pending" | "reading" | "done" = "pending"
           const readPreview = Effect.gen(function* () {
@@ -1077,7 +1127,9 @@ export const layer = Layer.effect(CodexAdapter)(
               const text = yield* readPreview
               if (text !== null) {
                 promptPhase = "done"
-                Queue.offerUnsafe(promptQueue, { type: "userPrompt", text })
+                if (!Queue.offerUnsafe(promptQueue, { type: "userPrompt", text })) {
+                  Queue.endUnsafe(promptQueue)
+                }
                 return
               }
             }

@@ -112,7 +112,11 @@ export const makeTestServiceLayers = (
   const fake = makeFakeAdapter()
   const fakeAgents = {
     codex: makeFakeAgentAdapter(),
-    claude: makeFakeAgentAdapter(),
+    claude: makeFakeAgentAdapter({
+      // Hooks-shaped: its observation feed dies silently with the TUI, so
+      // stale-busy re-derivation stays reachable through this fake.
+      observationOutlivesTui: false,
+    }),
   }
   const base = Layer.mergeAll(
     ProjectRepository.layer,

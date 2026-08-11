@@ -1,4 +1,4 @@
-import { Effect, Schema, Stream } from "effect"
+import { Duration, Effect, Schema, Semaphore, Stream } from "effect"
 import type { Scope } from "effect"
 import { existsSync, realpathSync } from "node:fs"
 import type { AgentId } from "../api/contract.ts"
@@ -256,6 +256,14 @@ export interface PreparedTuiSession {
  */
 export interface AgentAdapter {
   readonly provider: AgentProvider
+  /**
+   * Whether observeSession's feed stays authoritative once no TUI drives
+   * the session: a shared provider server (Codex) keeps streaming evidence
+   * after the TUI dies, so a busy state under a live observation is
+   * current; a hooks feed (Claude) dies silently with the TUI, so a busy
+   * state must re-derive through checkSession instead.
+   */
+  readonly observationOutlivesTui: boolean
   /**
    * Create a new provider session in `cwd` and start its first turn. The
    * provider's echoed working directory is verified like resume's — a
@@ -575,38 +583,47 @@ export const readInstalledVersion = (
 
 /**
  * The shared version-drift rule (record + warn, never block), memoized to
- * one check per adapter: resolve the configured executable, read the
- * installed version via `--version`, and log one actionable warning when
- * it is below the floor the adapter was validated against. Any failure to
- * determine the version is itself just a warning.
+ * one single-flight check per adapter: resolve the configured executable,
+ * read the installed version via `--version`, and log one actionable
+ * warning when it is below the floor the adapter was validated against.
+ * Warn-only: a missing executable never fails the gate — every call site
+ * resolves or spawns the executable itself and reports the actionable
+ * diagnostic there — and a memoized failure would pin "unavailable" past a
+ * mid-session install. NOT plain Effect.cached: the cache memoizes whatever
+ * exit its driving fiber produces, interruption included, so a dropped
+ * request driving the first check would poison every later caller for the
+ * process. Instead the memo is invalidated when its driver is interrupted,
+ * and the semaphore keeps callers out of the cache's waiter path (a waiter
+ * racing an invalidate would replay a cleared exit).
  */
 export const makeVersionGate = (
   subprocess: Subprocess["Service"],
   provider: AgentProvider,
   configured: string,
   testedVersion: string,
-): Effect.Effect<void, AgentUnavailable> => {
-  let checked = false
-  return Effect.gen(function* () {
-    if (checked) return
-    checked = true
-    const executable = yield* resolveProviderExecutable(provider, configured)
-    const installed = yield* readInstalledVersion(subprocess, executable)
-    if (installed === null) {
-      return yield* Effect.logWarning(
-        `could not determine the installed ${provider} version (tested against ${testedVersion})`,
-      )
-    }
-    // Components are small; packing keeps the comparison one expression.
-    const pack = (version: string) =>
-      version
-        .split(".")
-        .map(Number)
-        .reduce((total, part) => total * 1_000 + part, 0)
-    if (pack(installed) < pack(testedVersion)) {
-      yield* Effect.logWarning(
-        `installed ${provider} ${installed} is older than the tested ${testedVersion}; proceeding, but upgrade it if provider behavior misbehaves`,
-      )
-    }
+): Effect.Effect<Effect.Effect<void>> =>
+  Effect.gen(function* () {
+    const lock = yield* Semaphore.make(1)
+    const check = Effect.gen(function* () {
+      const executable = yield* resolveProviderExecutable(provider, configured)
+      const installed = yield* readInstalledVersion(subprocess, executable)
+      if (installed === null) {
+        return yield* Effect.logWarning(
+          `could not determine the installed ${provider} version (tested against ${testedVersion})`,
+        )
+      }
+      // Components are small; packing keeps the comparison one expression.
+      const pack = (version: string) =>
+        version
+          .split(".")
+          .map(Number)
+          .reduce((total, part) => total * 1_000 + part, 0)
+      if (pack(installed) < pack(testedVersion)) {
+        yield* Effect.logWarning(
+          `installed ${provider} ${installed} is older than the tested ${testedVersion}; proceeding, but upgrade it if provider behavior misbehaves`,
+        )
+      }
+    }).pipe(Effect.catchTag("AgentUnavailable", () => Effect.void))
+    const [cached, invalidate] = yield* Effect.cachedInvalidateWithTTL(check, Duration.infinity)
+    return lock.withPermits(1)(Effect.onInterrupt(cached, () => invalidate))
   })
-}

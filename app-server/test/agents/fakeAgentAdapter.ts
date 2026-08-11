@@ -69,8 +69,19 @@ export interface FakeAgentAdapter {
   readonly setTitleHangs: (hangs: boolean) => void
   /** Live observeSession subscriptions for `providerSessionId`. */
   readonly observerCount: (providerSessionId: string) => number
+  /** End every live observation feed for `providerSessionId` — models an
+   * evidence source dying out from under its subscribers. */
+  readonly endObservations: (providerSessionId: string) => void
   /** Script what checkSession reports for `providerSessionId`. */
   readonly setCheckActivity: (providerSessionId: string, activity: AgentActivity | null) => void
+  /** checkSession calls (providerSessionIds), in order. */
+  readonly checkCalls: Array<string>
+  /** While set, checkSession waits on a gate; unsetting releases waiters. */
+  readonly setCheckHangs: (hangs: boolean) => void
+  /** High-water mark of concurrent checkSession calls. */
+  readonly maxConcurrentChecks: () => number
+  /** Zero the checkSession log and concurrency high-water mark. */
+  readonly resetCheckStats: () => void
   /** Mark a session as pruned provider-side: tuiLaunch's existence probe
    * fails AgentResumeFailed (the Codex reopen-probe behavior). */
   readonly setSessionPruned: (providerSessionId: string, pruned: boolean) => void
@@ -78,6 +89,11 @@ export interface FakeAgentAdapter {
   readonly prepared: Array<{ providerSessionId: string; cwd: string }>
   /** releaseSession calls, in order. */
   readonly released: Array<{ providerSessionId: string; providerMetadata: string | undefined }>
+}
+
+export interface FakeAgentAdapterOptions {
+  /** Adapter's observation-authority shape (default true — codex-like). */
+  readonly observationOutlivesTui?: boolean
 }
 
 interface LiveConnection {
@@ -88,7 +104,7 @@ interface LiveConnection {
   readonly openRequests: Set<string>
 }
 
-export const makeFakeAgentAdapter = (): FakeAgentAdapter => {
+export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): FakeAgentAdapter => {
   const sessions = new Map<string, FakeAgentSession>()
   // One live connection per session — the single-writer rule.
   const connections = new Map<string, LiveConnection>()
@@ -103,6 +119,10 @@ export const makeFakeAgentAdapter = (): FakeAgentAdapter => {
   let titleFailsReason: string | null = null
   let titleGate: Deferred.Deferred<void> | null = null
   let identityGate: Deferred.Deferred<void> | null = null
+  let checkGate: Deferred.Deferred<void> | null = null
+  const checkCalls: FakeAgentAdapter["checkCalls"] = []
+  let inFlightChecks = 0
+  let maxInFlightChecks = 0
   let unavailableReason: string | null = null
   let nextSessionId = 1
   let nextTurnId = 1
@@ -231,6 +251,7 @@ export const makeFakeAgentAdapter = (): FakeAgentAdapter => {
 
   const adapter: AgentAdapter = {
     provider: "codex",
+    observationOutlivesTui: options.observationOutlivesTui ?? true,
     createSession: (options) =>
       Effect.gen(function* () {
         yield* requireAvailable
@@ -351,9 +372,20 @@ export const makeFakeAgentAdapter = (): FakeAgentAdapter => {
         return scriptedTitle
       }),
     checkSession: (options) =>
-      requireAvailable.pipe(
-        Effect.map(() => checkActivity.get(options.providerSessionId) ?? "unknown"),
-      ),
+      Effect.gen(function* () {
+        checkCalls.push(options.providerSessionId)
+        inFlightChecks++
+        maxInFlightChecks = Math.max(maxInFlightChecks, inFlightChecks)
+        const gate = checkGate
+        yield* Effect.ensuring(
+          gate !== null ? Deferred.await(gate) : Effect.void,
+          Effect.sync(() => {
+            inFlightChecks--
+          }),
+        )
+        yield* requireAvailable
+        return checkActivity.get(options.providerSessionId) ?? "unknown"
+      }),
     releaseSession: (options) =>
       Effect.sync(() => {
         released.push({
@@ -426,9 +458,27 @@ export const makeFakeAgentAdapter = (): FakeAgentAdapter => {
       titleGate = null
     },
     observerCount: (providerSessionId) => observers.get(providerSessionId)?.size ?? 0,
+    endObservations: (providerSessionId) => {
+      for (const queue of observers.get(providerSessionId) ?? []) Queue.endUnsafe(queue)
+      observers.delete(providerSessionId)
+    },
     setCheckActivity: (providerSessionId, activity) => {
       if (activity === null) checkActivity.delete(providerSessionId)
       else checkActivity.set(providerSessionId, activity)
+    },
+    checkCalls,
+    setCheckHangs: (hangs) => {
+      if (hangs) {
+        checkGate = Deferred.makeUnsafe<void>()
+        return
+      }
+      if (checkGate !== null) Deferred.doneUnsafe(checkGate, Effect.void)
+      checkGate = null
+    },
+    maxConcurrentChecks: () => maxInFlightChecks,
+    resetCheckStats: () => {
+      checkCalls.length = 0
+      maxInFlightChecks = 0
     },
     setSessionPruned: (providerSessionId, pruned) => {
       if (pruned) prunedSessions.add(providerSessionId)
