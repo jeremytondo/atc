@@ -15,7 +15,9 @@ import {
   Effect,
   FileSystem,
   Layer,
+  Option,
   Queue,
+  Schema,
   Stream,
 } from "effect"
 import type {
@@ -108,6 +110,13 @@ export interface ClaudeAdapterOptions {
   readonly initTimeout?: Duration.Input
 }
 
+// The thread's opaque providerMetadata, as this adapter mints it. Decoded
+// tolerantly: unknown or malformed metadata is "no secret", never an error.
+const ProviderMetadata = Schema.fromJsonString(
+  Schema.Struct({ hookSecret: Schema.optional(Schema.String) }),
+)
+const decodeProviderMetadata = Schema.decodeUnknownOption(ProviderMetadata)
+
 const {
   unavailable,
   protocolError,
@@ -179,38 +188,6 @@ const userMessage = (text: string): SDKUserMessage => ({
   message: { role: "user", content: text },
   parent_tool_use_id: null,
 })
-
-/** An async input queue the held query() drains; push feeds it more turns. */
-const makeInputQueue = () => {
-  const pending: Array<SDKUserMessage> = []
-  let wake: (() => void) | null = null
-  let closed = false
-  const push = (message: SDKUserMessage): void => {
-    pending.push(message)
-    wake?.()
-  }
-  const close = (): void => {
-    closed = true
-    wake?.()
-  }
-  async function* stream(): AsyncGenerator<SDKUserMessage> {
-    while (true) {
-      const next = pending.shift()
-      if (next !== undefined) {
-        yield next
-        continue
-      }
-      if (closed) return
-      await new Promise<void>((resolve) => {
-        wake = () => {
-          wake = null
-          resolve()
-        }
-      })
-    }
-  }
-  return { push, close, stream }
-}
 
 type GateError = AgentResumeFailed | AgentIdentityMismatch | AgentProtocolError
 
@@ -471,6 +448,14 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
         CLAUDE_TESTED_VERSION,
       )
 
+      // The launch preamble every operation shares: resolve the executable
+      // (its failure IS the actionable diagnostic) and run the drift gate.
+      const resolvedExecutable = Effect.gen(function* () {
+        const executable = yield* resolveProviderExecutable("claude", config.claudeExecutable)
+        yield* versionCheck
+        return executable
+      })
+
       const hookFilePaths = (providerSessionId: string) => ({
         headerFile: path.join(config.stateDir, `claude-hooks-${providerSessionId}.header`),
         settingsFile: path.join(config.stateDir, `claude-hooks-${providerSessionId}.json`),
@@ -486,12 +471,12 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
       /** The persisted hook secret, if the thread's opaque metadata has one. */
       const metadataSecret = (metadata: string | undefined): string | null => {
         if (metadata === undefined) return null
-        try {
-          const parsed = JSON.parse(metadata) as { hookSecret?: unknown }
-          return typeof parsed.hookSecret === "string" ? parsed.hookSecret : null
-        } catch {
-          return null
-        }
+        return decodeProviderMetadata(metadata).pipe(
+          Option.match({
+            onNone: () => null,
+            onSome: (parsed) => parsed.hookSecret ?? null,
+          }),
+        )
       }
 
       /**
@@ -540,10 +525,15 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
 
       const openSession = (options: { readonly cwd: string; readonly resume?: string }) =>
         Effect.gen(function* () {
-          const executable = yield* resolveProviderExecutable("claude", config.claudeExecutable)
-          yield* versionCheck
-          const input = makeInputQueue()
-          // Bounded (overflow ends the stream — see emit); a session that
+          const executable = yield* resolvedExecutable
+          // The held query() drains this queue as its async input iterable;
+          // push feeds it more turns, end is EOF. The iterable drives its
+          // pulls on a detached fiber reclaimed only when the queue ends —
+          // closeSession's closeInput (which every exit path reaches via
+          // the acquireRelease below) is what keeps it from parking on an
+          // empty queue forever.
+          const inputQueue = yield* Queue.make<SDKUserMessage, Cause.Done>()
+          // Bounded (overflow fails the stream — see emit); a session that
           // buffers 256 undrained events has lost its consumer.
           const queue = yield* Queue.make<AgentEvent, AgentProtocolError | Cause.Done>({
             capacity: 256,
@@ -555,8 +545,12 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
             queue,
             abort: new AbortController(),
             tracker: ClaudeHooks.makeActivityTracker(),
-            pushInput: (text) => input.push(userMessage(text)),
-            closeInput: input.close,
+            pushInput: (text) => {
+              Queue.offerUnsafe(inputQueue, userMessage(text))
+            },
+            closeInput: () => {
+              Queue.endUnsafe(inputQueue)
+            },
             initGate,
             interrupt: () => Promise.resolve(),
             sessionId: null,
@@ -566,17 +560,29 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
             closed: false,
             over: false,
           }
-          if (options.resume !== undefined) {
-            if (sessions.has(options.resume)) {
-              return yield* Effect.fail(writerConnected(options.resume))
-            }
-            sessions.set(options.resume, session)
+          // Registered before queryFn can fail (an uncleaned registry entry
+          // would lock the session id out of resume for the process's life),
+          // with the single-writer check INSIDE the same sync acquire so no
+          // interleaving can split check from claim, and the close finalizer
+          // armed atomically with it (acquireRelease — ATC-167 M4).
+          const claim = yield* Effect.acquireRelease(
+            Effect.sync(() => {
+              if (options.resume !== undefined) {
+                if (sessions.has(options.resume)) return { conflict: options.resume }
+                sessions.set(options.resume, session)
+              }
+              return "claimed" as const
+            }),
+            (outcome) =>
+              Effect.sync(() => {
+                if (outcome === "claimed") closeSession(session)
+              }),
+          )
+          if (claim !== "claimed") {
+            return yield* Effect.fail(writerConnected(claim.conflict))
           }
-          // Registered before queryFn can fail: an uncleaned registry entry
-          // would lock the session id out of resume for the process's life.
-          yield* Effect.addFinalizer(() => Effect.sync(() => closeSession(session)))
           const handle = queryFn({
-            prompt: input.stream(),
+            prompt: yield* Stream.toAsyncIterableEffect(Stream.fromQueue(inputQueue)),
             options: {
               abortController: session.abort,
               cwd: options.cwd,
@@ -707,8 +713,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
           }),
         tuiLaunch: (options) =>
           Effect.gen(function* () {
-            const executable = yield* resolveProviderExecutable("claude", config.claudeExecutable)
-            yield* versionCheck
+            const executable = yield* resolvedExecutable
             const { secret, settingsFile } = yield* ensureHookPlumbing(
               options.providerSessionId,
               options.providerMetadata,
@@ -731,8 +736,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
           }),
         prepareTuiSession: (options) =>
           Effect.gen(function* () {
-            const executable = yield* resolveProviderExecutable("claude", config.claudeExecutable)
-            yield* versionCheck
+            const executable = yield* resolvedExecutable
             // Pre-assignment (probed 2026-08-05): `--session-id` creates
             // exactly the minted id, and a duplicate launch fails closed —
             // so identity resolves immediately and the first hook payload
@@ -798,22 +802,21 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
         generateTitle: (options) =>
           Effect.scoped(
             Effect.gen(function* () {
-              const executable = yield* resolveProviderExecutable("claude", config.claudeExecutable)
-              yield* versionCheck
+              const executable = yield* resolvedExecutable
               // The smoke-test one-shot shape (smoke.ts claudeRoundTrip):
               // one turn, no tools, nothing persisted — plus a haiku-class
               // model, since a title needs speed, not depth.
               const abort = new AbortController()
               yield* Effect.addFinalizer(() => Effect.sync(() => abort.abort()))
-              const input = makeInputQueue()
-              input.push(userMessage(titleInstruction(options.prompt)))
-              input.close()
+              const prompt = yield* Stream.toAsyncIterableEffect(
+                Stream.make(userMessage(titleInstruction(options.prompt))),
+              )
               // Wrapped so a synchronous SDK setup throw is the promised
               // typed error, not a defect.
               const handle = yield* Effect.try({
                 try: () =>
                   queryFn({
-                    prompt: input.stream(),
+                    prompt,
                     options: {
                       abortController: abort,
                       cwd: options.cwd,

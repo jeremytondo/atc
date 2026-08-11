@@ -275,10 +275,10 @@ export const layer = Layer.effect(ClaudeHooks)(
           trackers.delete(providerSessionId)
         }),
       subscribe: (listener: HookListener) =>
-        Effect.gen(function* () {
-          listeners.add(listener)
-          yield* Effect.addFinalizer(() => Effect.sync(() => listeners.delete(listener)))
-        }),
+        Effect.acquireRelease(
+          Effect.sync(() => listeners.add(listener)),
+          () => Effect.sync(() => listeners.delete(listener)),
+        ).pipe(Effect.asVoid),
       deliver: (secret: string, payload: unknown) =>
         Effect.gen(function* () {
           const providerSessionId = secrets.get(secret)

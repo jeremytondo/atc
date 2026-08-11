@@ -131,6 +131,9 @@ const currentPlatform =
         `atc service: unsupported platform ${process.platform} (launchd on macOS, systemd user units on Linux)`,
       )
 
+// The one sanctioned direct PATH read in the CLI: unit files embed the
+// PATH the installer's shell saw — it is the future service process's
+// environment, not settled ATC configuration.
 const installerPath = () => process.env["PATH"] ?? "/usr/local/bin:/usr/bin:/bin"
 
 /** One thin supervisor call; failure carries the tool's stderr. Stdout is
@@ -223,12 +226,14 @@ const launchdBootstrap = (subprocess: Subprocess["Service"], command: string, un
     yield* run(subprocess, command, "launchctl", ["bootstrap", fallback, unitFile])
   })
 
-const unitFileFor = (platform: Platform): string =>
+const unitFileFor = (platform: Platform, home: string): string =>
   platform === "darwin"
-    ? launchAgentPath(homedir())
+    ? launchAgentPath(home)
     : systemdUnitPath({
+        // XDG_CONFIG_HOME is systemd's own convention (see systemdUnitPath's
+        // header) — a sanctioned direct read; home is settled configuration.
         XDG_CONFIG_HOME: process.env["XDG_CONFIG_HOME"],
-        HOME: process.env["HOME"],
+        HOME: home,
       })
 
 /** Success only when the served address answers health within the deadline. */
@@ -261,7 +266,7 @@ const install = Command.make("install", {}, () =>
     const subprocess = yield* Subprocess
     const args = programArguments(build.commit === "dev")
     const serviceLog = `${config.stateDir}/service.log`
-    const unitFile = unitFileFor(platform)
+    const unitFile = unitFileFor(platform, config.home)
     // Re-running install over our own service is the update path (the unit
     // points at the stable installed binary, so a reinstall restarts onto
     // it). Only an UNMANAGED responder is a conflict: it would make the
@@ -312,9 +317,10 @@ const install = Command.make("install", {}, () =>
 const uninstall = Command.make("uninstall", {}, () =>
   Effect.gen(function* () {
     const platform = yield* currentPlatform
+    const config = yield* AppConfig
     const fs = yield* FileSystem.FileSystem
     const subprocess = yield* Subprocess
-    const unitFile = unitFileFor(platform)
+    const unitFile = unitFileFor(platform, config.home)
     if (platform === "darwin") {
       yield* launchdUnload(subprocess)
     } else {
@@ -337,7 +343,7 @@ const start = Command.make("start", {}, () =>
     const config = yield* AppConfig
     const fs = yield* FileSystem.FileSystem
     const subprocess = yield* Subprocess
-    const unitFile = unitFileFor(platform)
+    const unitFile = unitFileFor(platform, config.home)
     if (!(yield* fs.exists(unitFile).pipe(Effect.orElseSucceed(() => false)))) {
       return yield* Cli.failReported(
         `atc service start: ${unitFile} does not exist; run \`atc service install\` first`,
@@ -393,7 +399,7 @@ const status = Command.make("status", {}, () =>
     const config = yield* AppConfig
     const fs = yield* FileSystem.FileSystem
     const subprocess = yield* Subprocess
-    const unitFile = unitFileFor(platform)
+    const unitFile = unitFileFor(platform, config.home)
     if (!(yield* fs.exists(unitFile).pipe(Effect.orElseSucceed(() => false)))) {
       return yield* Cli.failReported(`atc service status: not installed (no ${unitFile})`)
     }

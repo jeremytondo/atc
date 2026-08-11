@@ -116,11 +116,13 @@ export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeC
       }
       initOnce()
       state("running")
+      // Marked BEFORE the awaited hook fire: an interrupt() arriving while
+      // the hook callback runs must already see the hanging turn, or it
+      // records "(no hanging turn)" and never ends the query.
+      const hangs = text.includes("HANG")
+      if (hangs) hanging = text
       await fireHook("UserPromptSubmit")
-      if (text.includes("HANG")) {
-        hanging = text
-        return
-      }
+      if (hangs) return
       if (text.includes("PERMISSION") || text.includes("ASK")) {
         const toolName = text.includes("ASK") ? "AskUserQuestion" : "Bash"
         state("requires_action")
