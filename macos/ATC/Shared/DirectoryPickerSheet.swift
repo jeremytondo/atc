@@ -1,4 +1,4 @@
-// Server-backed folder browser (ATC-151): Browse… always lists the server's
+// Server-backed folder browser (ATC-151): Choose… always lists the server's
 // filesystem through `GET /fs/list` on the selected Connection — loopback or
 // remote, one code path. Directories only, dotfolders excluded server-side;
 // the text field stays the escape hatch for hidden paths. Read-only: no New

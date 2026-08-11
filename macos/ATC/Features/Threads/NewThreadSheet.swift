@@ -26,6 +26,15 @@ struct NewThreadSheet: View {
         (1...9).map { KeyEquivalent(Character("\($0)")) }
     )
 
+    /// The results list shows exactly this many rows; more scroll within it.
+    private static let visibleRowCount = 6
+    private static let rowHeight: CGFloat = 32
+    private static let rowSpacing: CGFloat = 2
+    private static let resultsHeight: CGFloat =
+        rowHeight * CGFloat(visibleRowCount)
+        + rowSpacing * CGFloat(visibleRowCount - 1)
+        + Spacing.xs * 2
+
     @AppStorage("newThreadLastAgentId") private var lastAgentRaw = ""
 
     @State private var query = ""
@@ -57,18 +66,20 @@ struct NewThreadSheet: View {
             isBusy: isSubmitting,
             canSubmit: canSubmit,
             wrapsContentInForm: false,
+            showsHeader: false,
             onCancel: { windowState.newThreadContext = nil },
             onSubmit: { Task { await submit() } }
         ) {
             VStack(spacing: 0) {
                 searchField(rows: rows)
-                Divider()
+                resultsHeader
                 resultsList(rows: rows)
+                    .frame(height: Self.resultsHeight)
                 Divider()
                 configurationRows
             }
         }
-        .frame(width: 560, height: 500)
+        .frame(width: 560)
         .defaultFocus($searchIsFocused, true)
         // ⌘1…⌘9 select Agents, handled on the sheet rather than on the Agent
         // buttons so an unavailable Agent's shortcut still answers with
@@ -132,7 +143,31 @@ struct NewThreadSheet: View {
         }
         .font(.title3)
         .padding(.horizontal, Spacing.md)
-        .padding(.vertical, Spacing.md)
+        .padding(.vertical, Spacing.sm + 2)
+        .background(
+            Surface.chip,
+            in: RoundedRectangle(cornerRadius: Radius.chip, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: Radius.chip, style: .continuous)
+                .stroke(Surface.chipBorder, lineWidth: 1)
+        }
+        .padding(.horizontal, Spacing.md)
+        .padding(.top, Spacing.md)
+        .padding(.bottom, Spacing.sm)
+    }
+
+    /// The list is alphabetical (context Project first), so the header says
+    /// what it shows rather than borrowing the mock's "Recent".
+    private var resultsHeader: some View {
+        Text(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Projects" : "Results")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Spacing.lg)
+            .padding(.top, Spacing.xs)
+            .accessibilityAddTraits(.isHeader)
     }
 
     @ViewBuilder
@@ -144,7 +179,7 @@ struct NewThreadSheet: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollView {
-                LazyVStack(spacing: 2) {
+                LazyVStack(spacing: Self.rowSpacing) {
                     ForEach(rows) { row in
                         resultRow(row)
                             .id(row.id)
@@ -161,25 +196,33 @@ struct NewThreadSheet: View {
     private func resultRow(_ row: NewThreadLauncherModel.Row) -> some View {
         let isSelected = selectedProject == row.id
         return HStack(spacing: Spacing.sm) {
+            StatusDot(reachability: appModel.reachability(of: row.id.connectionID))
             HighlightedText.title(row.option.project.name, ranges: row.nameRanges)
-                .font(.callout)
+                .font(.callout.weight(.medium))
+                .foregroundStyle(isSelected ? Color.white : Color.primary)
                 .lineLimit(1)
-            Spacer(minLength: Spacing.md)
-            Text(row.option.connectionName)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .layoutPriority(1)
             Text(row.option.project.defaultWorkingDirectory)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(isSelected ? Color.white.opacity(0.75) : Color.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .frame(maxWidth: 200, alignment: .trailing)
+            Spacer(minLength: Spacing.sm)
+            Text(row.option.connectionName)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(isSelected ? Color.white : Color.secondary)
+                .padding(.horizontal, Spacing.sm)
+                .padding(.vertical, 2)
+                .background(
+                    isSelected ? AnyShapeStyle(.white.opacity(0.2)) : AnyShapeStyle(Surface.raised),
+                    in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                )
         }
         .padding(.horizontal, Spacing.md)
-        .padding(.vertical, 7)
+        .frame(height: Self.rowHeight)
         .background {
             RoundedRectangle(cornerRadius: Radius.control)
-                .fill(isSelected ? Color.accentColor.opacity(0.65) : .clear)
+                .fill(isSelected ? Color.accentColor : .clear)
         }
         .contentShape(Rectangle())
         .onTapGesture { selectProject(row.id, in: [row]) }
@@ -263,12 +306,12 @@ struct NewThreadSheet: View {
             .padding(.vertical, Spacing.xs)
             .background {
                 RoundedRectangle(cornerRadius: Radius.control)
-                    .fill(isSelected ? Color.accentColor.opacity(0.35) : Color.primary.opacity(0.06))
+                    .fill(isSelected ? Color.accentColor.opacity(0.35) : Surface.chip)
             }
             .overlay {
                 RoundedRectangle(cornerRadius: Radius.control)
                     .stroke(
-                        isSelected ? Color.accentColor : Color.primary.opacity(0.12),
+                        isSelected ? Color.accentColor : Surface.chipBorder,
                         lineWidth: 1
                     )
             }

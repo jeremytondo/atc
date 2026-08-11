@@ -7,7 +7,7 @@
 // `.checking` before the debounce, so a gate can never submit on a verdict
 // that belongs to an earlier value.
 //
-// Browse opens the server-backed DirectoryPickerSheet (`GET /fs/list`), so
+// Choose… opens the server-backed DirectoryPickerSheet (`GET /fs/list`), so
 // the browsed filesystem is the server's on every Connection — but
 // validation, never the picker, is what makes a path trustworthy.
 
@@ -52,7 +52,7 @@ struct WorkingDirectoryField: View {
         VStack(alignment: .leading, spacing: Spacing.xs) {
             HStack(spacing: Spacing.sm) {
                 textField
-                Button("Browse…") { isBrowsing = true }
+                Button("Choose…") { isBrowsing = true }
                     .disabled(client == nil)
             }
             if let message = statusMessage {
