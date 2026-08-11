@@ -434,7 +434,7 @@ describe("ClaudeAdapter", () => {
     }),
   )
 
-  it.live("tuiLaunch registers a webhook secret and builds the hooks settings", () =>
+  it.live("tuiLaunch enables Remote Control and builds the hook plumbing", () =>
     Effect.gen(function* () {
       const { layer } = adapterStack()
       yield* Effect.gen(function* () {
@@ -449,11 +449,16 @@ describe("ClaudeAdapter", () => {
         // A launch that minted the secret hands the metadata back so the
         // caller can persist it.
         assert.isString(launch.providerMetadata)
-        assert.strictEqual(spec.command[0], "/bin/echo")
-        assert.deepStrictEqual(spec.command.slice(1, 3), ["--resume", "session-t"])
-        assert.strictEqual(spec.command[3], "--settings")
         // The settings live in a 0600 file, never in argv.
         const settingsFile = spec.command[4] ?? ""
+        assert.deepStrictEqual(spec.command, [
+          "/bin/echo",
+          "--resume",
+          "session-t",
+          "--settings",
+          settingsFile,
+          "--remote-control",
+        ])
         assert.strictEqual((fs.statSync(settingsFile).mode & 0o777).toString(8), "600")
         const settings = JSON.parse(fs.readFileSync(settingsFile, "utf8")) as {
           hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>
@@ -540,7 +545,7 @@ describe("ClaudeAdapter TUI session plumbing", () => {
       }
     })
 
-  it.live("prepareTuiSession pre-assigns identity and writes the hook plumbing", () =>
+  it.live("prepareTuiSession pre-assigns identity and enables Remote Control", () =>
     Effect.gen(function* () {
       const cwd = workDir()
       const dir = stateDir()
@@ -557,11 +562,15 @@ describe("ClaudeAdapter TUI session plumbing", () => {
               /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
             )
             assert.strictEqual(identity.cwd, cwd)
-            assert.deepStrictEqual(prepared.launchSpec.command.slice(1, 3), [
+            const settingsFile = prepared.launchSpec.command[4]!
+            assert.deepStrictEqual(prepared.launchSpec.command, [
+              "/bin/echo",
               "--session-id",
               identity.providerSessionId,
+              "--settings",
+              settingsFile,
+              "--remote-control",
             ])
-            const settingsFile = prepared.launchSpec.command[4]!
             assert.isTrue(fs.existsSync(settingsFile))
             // The metadata carries the secret; the registration accepts it.
             const metadata = JSON.parse(identity.providerMetadata ?? "{}") as {

@@ -126,6 +126,29 @@ const claudeEnvironment = (): Record<string, string> => {
   return env
 }
 
+/**
+ * Every Claude TUI opts into Remote Control as part of the same interactive
+ * driver. An ineligible account still gets the normal TUI with Claude's own
+ * failure notification, so remote availability never becomes a launch gate.
+ *
+ * `--remote-control` takes an optional session name, so it must stay the
+ * last token in argv — anything appended after it would be swallowed as
+ * the name.
+ */
+const claudeTuiCommand = (
+  executable: string,
+  sessionFlag: "--resume" | "--session-id",
+  providerSessionId: string,
+  settingsFile: string,
+): ReadonlyArray<string> => [
+  executable,
+  sessionFlag,
+  providerSessionId,
+  "--settings",
+  settingsFile,
+  "--remote-control",
+]
+
 /** The hook vocabulary delivered in-process while ATC drives (and via the
  * webhook while a TUI drives — same normalization, claudeHooks.ts). The
  * subagent/task lifecycle events carry the background evidence the
@@ -703,19 +726,19 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
         tuiLaunch: (options) =>
           Effect.gen(function* () {
             const executable = yield* resolveProviderExecutable("claude", config.claudeExecutable)
+            yield* versionCheck
             const { secret, settingsFile } = yield* ensureHookPlumbing(
               options.providerSessionId,
               options.providerMetadata,
             )
             return {
               launchSpec: {
-                command: [
+                command: claudeTuiCommand(
                   executable,
                   "--resume",
                   options.providerSessionId,
-                  "--settings",
                   settingsFile,
-                ],
+                ),
                 env: {},
               },
               // Always handed back: when the caller had no metadata this
@@ -752,13 +775,12 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
             )
             return {
               launchSpec: {
-                command: [
+                command: claudeTuiCommand(
                   executable,
                   "--session-id",
                   providerSessionId,
-                  "--settings",
                   settingsFile,
-                ],
+                ),
                 env: {},
               },
               identity: Effect.sync(() => {
