@@ -7,10 +7,12 @@ import {
   FileSystem,
   Layer,
   Queue,
+  Schedule,
   Schema,
   Semaphore,
   Stream,
 } from "effect"
+import { pollUntil } from "../platform/poll.ts"
 import * as path from "node:path"
 import type {
   AgentActivity,
@@ -191,6 +193,116 @@ interface ClientState {
   nextId: number
   alive: boolean
 }
+
+// --- Closure-free RPC plumbing (ATC-167 M13): everything below talks to a
+// ClientState it is handed, never to layer state, so it lives outside the
+// layer body. ---
+
+const request = (
+  state: ClientState,
+  method: string,
+  params: Record<string, unknown>,
+): Effect.Effect<unknown, RpcError | AgentProtocolError> =>
+  Effect.callback<unknown, RpcError | AgentProtocolError>((resume) => {
+    if (!state.alive) {
+      resume(Effect.fail(protocolError("the app-server connection is closed")))
+      return
+    }
+    const id = state.nextId++
+    state.pending.set(id, {
+      succeed: (result) => resume(Effect.succeed(result)),
+      fail: (error) => resume(Effect.fail(error)),
+    })
+    state.socket.send(JSON.stringify({ id, method, params }))
+    return Effect.sync(() => state.pending.delete(id))
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: REQUEST_TIMEOUT,
+      orElse: () => Effect.fail(protocolError(`${method} timed out`)),
+    }),
+  )
+
+/** Every non-resume call site: an RPC error is a protocol failure. */
+const rpcToProtocol = (error: RpcError | AgentProtocolError): AgentProtocolError =>
+  error._tag === "RpcError" ? protocolError(error.text) : error
+
+const decodeReply = <S extends Schema.Top>(schema: S, reply: unknown) =>
+  Schema.decodeUnknownEffect(schema)(reply).pipe(
+    Effect.mapError((error) => protocolError(`unexpected reply shape: ${error.message}`)),
+  )
+
+/** The passive seam's error mapping: an RPC failure is "unavailable". */
+const rpcToUnavailable = (error: RpcError | AgentProtocolError): AgentUnavailable =>
+  unavailable(error._tag === "RpcError" ? error.text : error.reason)
+
+/** `decodeReply` for the passive seam, naming the method in the diagnostic. */
+const decodeUnavailable =
+  <S extends Schema.Top>(schema: S, method: string) =>
+  (reply: unknown): Effect.Effect<S["Type"], AgentUnavailable, S["DecodingServices"]> =>
+    Schema.decodeUnknownEffect(schema)(reply).pipe(
+      Effect.mapError((error) => unavailable(`unexpected ${method} reply: ${error.message}`)),
+    )
+
+/**
+ * Drive one paginated codex RPC to completion (the {data, nextCursor} page
+ * shape): `find` inspects each page and may finish early with a value; a
+ * complete walk (cursor exhausted) yields `complete()`; a repeated cursor
+ * or the page cap yields "unknown" — a provider that cannot make
+ * pagination progress, or a pathologically long population.
+ */
+const walkPaginated = <Page extends { readonly nextCursor?: string | null | undefined }, Found, Done, E>(options: {
+  readonly page: (cursor: string | undefined) => Effect.Effect<Page, E>
+  readonly find: (page: Page) => Found | undefined
+  readonly complete: () => Done
+}): Effect.Effect<Found | Done | "unknown", E> =>
+  Effect.gen(function* () {
+    let cursor: string | undefined
+    for (let page = 0; page < 100; page++) {
+      const decoded = yield* options.page(cursor)
+      const found = options.find(decoded)
+      if (found !== undefined) return found
+      const next = decoded.nextCursor
+      if (typeof next !== "string") return options.complete()
+      if (next === cursor) return "unknown" as const
+      cursor = next
+    }
+    return "unknown" as const
+  })
+
+/**
+ * Walk one paginated thread/list population (thread/list returns only
+ * non-archived threads unless `archived: true` — the populations are
+ * disjoint): the found entry, `"absent"` when a complete walk omits the
+ * id, or `"unknown"` when the walk could not be completed.
+ */
+const walkThreadList = (state: ClientState, threadId: string, archived: boolean) =>
+  walkPaginated({
+    page: (cursor) =>
+      request(state, "thread/list", cursor === undefined ? { archived } : { archived, cursor }).pipe(
+        Effect.mapError(rpcToUnavailable),
+        Effect.flatMap(decodeUnavailable(ThreadListReply, "thread/list")),
+      ),
+    find: (page) => page.data.find((t) => t.id === threadId),
+    complete: () => "absent" as const,
+  })
+
+/**
+ * Find one thread across BOTH thread/list populations — a session
+ * archived through another Codex surface still exists and must not be
+ * reported as deleted. `"absent"` only when complete walks of both the
+ * non-archived and archived lists omit the id; `"unknown"` when either
+ * walk was inconclusive. Callers must not treat `"unknown"` as absence.
+ */
+const findThread = (state: ClientState, threadId: string) =>
+  Effect.gen(function* () {
+    const live = yield* walkThreadList(state, threadId, false)
+    if (typeof live !== "string") return live
+    const archived = yield* walkThreadList(state, threadId, true)
+    if (typeof archived !== "string") return archived
+    return live === "absent" && archived === "absent"
+      ? ("absent" as const)
+      : ("unknown" as const)
+  })
 
 export const layer = Layer.effect(CodexAdapter)(
   Effect.gen(function* () {
@@ -523,39 +635,6 @@ export const layer = Layer.effect(CodexAdapter)(
         handleNotification({ method: message.method, params: message.params })
     }
 
-    const request = (
-      state: ClientState,
-      method: string,
-      params: Record<string, unknown>,
-    ): Effect.Effect<unknown, RpcError | AgentProtocolError> =>
-      Effect.callback<unknown, RpcError | AgentProtocolError>((resume) => {
-        if (!state.alive) {
-          resume(Effect.fail(protocolError("the app-server connection is closed")))
-          return
-        }
-        const id = state.nextId++
-        state.pending.set(id, {
-          succeed: (result) => resume(Effect.succeed(result)),
-          fail: (error) => resume(Effect.fail(error)),
-        })
-        state.socket.send(JSON.stringify({ id, method, params }))
-        return Effect.sync(() => state.pending.delete(id))
-      }).pipe(
-        Effect.timeoutOrElse({
-          duration: REQUEST_TIMEOUT,
-          orElse: () => Effect.fail(protocolError(`${method} timed out`)),
-        }),
-      )
-
-    /** Every non-resume call site: an RPC error is a protocol failure. */
-    const rpcToProtocol = (error: RpcError | AgentProtocolError): AgentProtocolError =>
-      error._tag === "RpcError" ? protocolError(error.text) : error
-
-    const decodeReply = <S extends Schema.Top>(schema: S, reply: unknown) =>
-      Schema.decodeUnknownEffect(schema)(reply).pipe(
-        Effect.mapError((error) => protocolError(`unexpected reply shape: ${error.message}`)),
-      )
-
     // Record + warn version drift, once, on first use (never blocks).
     const versionCheck = yield* makeVersionGate(
       subprocess,
@@ -663,9 +742,6 @@ export const layer = Layer.effect(CodexAdapter)(
         const queue = yield* Queue.make<AgentEvent, AgentProtocolError | Cause.Done>({
           capacity: 256,
         })
-        // Seeded from the provider's own thread status — never a guess —
-        // folded with any descendants already tracked for this root.
-        ownStatus.set(threadId, statusToActivity(initialStatus))
         const session: LiveSession = {
           threadId,
           queue,
@@ -674,8 +750,6 @@ export const layer = Layer.effect(CodexAdapter)(
           ownTurn: null,
           failed: false,
         }
-        session.activity = aggregateFor(threadId)
-        sessions.set(threadId, session)
         const unregister = (): void => {
           if (sessions.get(threadId) !== session) return
           sessions.delete(threadId)
@@ -691,7 +765,18 @@ export const layer = Layer.effect(CodexAdapter)(
             )
           }
         }
-        yield* Effect.addFinalizer(() => Effect.sync(unregister))
+        // Registry publication and its finalizer land atomically
+        // (acquireRelease — ATC-167 M4). Seeded from the provider's own
+        // thread status — never a guess — folded with any descendants
+        // already tracked for this root.
+        yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            ownStatus.set(threadId, statusToActivity(initialStatus))
+            session.activity = aggregateFor(threadId)
+            sessions.set(threadId, session)
+          }),
+          () => Effect.sync(unregister),
+        )
 
         // A dead transport is the retryable AgentUnavailable; only a
         // caller-closed connection is a conflict.
@@ -757,61 +842,6 @@ export const layer = Layer.effect(CodexAdapter)(
       })
 
     /**
-     * Walk one paginated thread/list population (thread/list returns only
-     * non-archived threads unless `archived: true` — the populations are
-     * disjoint): the found entry, `"absent"` when a complete walk
-     * (nextCursor exhausted) omits the id, or `"unknown"` when the walk
-     * could not be completed — a repeated cursor or the page cap, either a
-     * provider that cannot make pagination progress or a pathologically
-     * long list.
-     */
-    const walkThreadList = (state: ClientState, threadId: string, archived: boolean) =>
-      Effect.gen(function* () {
-        let cursor: string | undefined
-        for (let page = 0; page < 100; page++) {
-          const reply = yield* request(
-            state,
-            "thread/list",
-            cursor === undefined ? { archived } : { archived, cursor },
-          ).pipe(
-            Effect.mapError((error) =>
-              unavailable(error._tag === "RpcError" ? error.text : error.reason),
-            ),
-          )
-          const decoded = yield* Schema.decodeUnknownEffect(ThreadListReply)(reply).pipe(
-            Effect.mapError((error) =>
-              unavailable(`unexpected thread/list reply: ${error.message}`),
-            ),
-          )
-          const thread = decoded.data.find((t) => t.id === threadId)
-          if (thread !== undefined) return thread
-          const next = decoded.nextCursor
-          if (typeof next !== "string") return "absent" as const
-          if (next === cursor) return "unknown" as const
-          cursor = next
-        }
-        return "unknown" as const
-      })
-
-    /**
-     * Find one thread across BOTH thread/list populations — a session
-     * archived through another Codex surface still exists and must not be
-     * reported as deleted. `"absent"` only when complete walks of both the
-     * non-archived and archived lists omit the id; `"unknown"` when either
-     * walk was inconclusive. Callers must not treat `"unknown"` as absence.
-     */
-    const findThread = (state: ClientState, threadId: string) =>
-      Effect.gen(function* () {
-        const live = yield* walkThreadList(state, threadId, false)
-        if (typeof live !== "string") return live
-        const archived = yield* walkThreadList(state, threadId, true)
-        if (typeof archived !== "string") return archived
-        return live === "absent" && archived === "absent"
-          ? ("absent" as const)
-          : ("unknown" as const)
-      })
-
-    /**
      * Rebuild the root's descendant graph from the provider (ATC-158):
      * walk thread/loaded/list, thread/read every loaded id, and chain
      * parent links back to the root, REPLACING the root's tracked
@@ -829,29 +859,20 @@ export const layer = Layer.effect(CodexAdapter)(
     ): Effect.Effect<"reconciled" | "unknown", AgentUnavailable> =>
       Effect.gen(function* () {
         const loaded: Array<string> = []
-        let cursor: string | undefined
-        for (let page = 0; ; page++) {
-          if (page >= 100) return "unknown" as const
-          const reply = yield* request(
-            state,
-            "thread/loaded/list",
-            cursor === undefined ? {} : { cursor },
-          ).pipe(
-            Effect.mapError((error) =>
-              unavailable(error._tag === "RpcError" ? error.text : error.reason),
+        const walk = yield* walkPaginated({
+          page: (cursor) =>
+            request(state, "thread/loaded/list", cursor === undefined ? {} : { cursor }).pipe(
+              Effect.mapError(rpcToUnavailable),
+              Effect.flatMap(decodeUnavailable(LoadedListReply, "thread/loaded/list")),
             ),
-          )
-          const decoded = yield* Schema.decodeUnknownEffect(LoadedListReply)(reply).pipe(
-            Effect.mapError((error) =>
-              unavailable(`unexpected thread/loaded/list reply: ${error.message}`),
-            ),
-          )
-          loaded.push(...decoded.data)
-          const next = decoded.nextCursor
-          if (typeof next !== "string") break
-          if (next === cursor) return "unknown" as const
-          cursor = next
-        }
+          // Accumulating find: every page feeds `loaded`, none finishes early.
+          find: (page) => {
+            loaded.push(...page.data)
+            return undefined
+          },
+          complete: () => "complete" as const,
+        })
+        if (walk !== "complete") return "unknown" as const
         // Cost bound: the loaded set is normally a handful of sessions on
         // the local in-memory server; a pathological population makes the
         // walk inconclusive rather than open-ended.
@@ -859,15 +880,9 @@ export const layer = Layer.effect(CodexAdapter)(
         const info = new Map<string, { parent: string | null; activity: AgentActivity }>()
         for (const id of loaded) {
           if (id === rootId) continue
-          const reply = yield* request(state, "thread/read", { threadId: id }).pipe(
-            Effect.mapError((error) =>
-              unavailable(error._tag === "RpcError" ? error.text : error.reason),
-            ),
-          )
-          const decoded = yield* Schema.decodeUnknownEffect(ThreadReadReply)(reply).pipe(
-            Effect.mapError((error) =>
-              unavailable(`unexpected thread/read reply: ${error.message}`),
-            ),
+          const decoded = yield* request(state, "thread/read", { threadId: id }).pipe(
+            Effect.mapError(rpcToUnavailable),
+            Effect.flatMap(decodeUnavailable(ThreadReadReply, "thread/read")),
           )
           info.set(id, {
             parent:
@@ -1058,18 +1073,24 @@ export const layer = Layer.effect(CodexAdapter)(
           // Bounded (overflow ends the feed — see emitAggregate); a
           // 16-deep undrained backlog means the observer is gone.
           const queue = yield* Queue.make<AgentActivity, Cause.Done>({ capacity: 16 })
-          const set = observers.get(options.providerSessionId) ?? new Set()
-          set.add(queue)
-          observers.set(options.providerSessionId, set)
-          yield* Effect.addFinalizer(() =>
+          // Observer registration and its finalizer land atomically
+          // (acquireRelease — ATC-167 M4).
+          yield* Effect.acquireRelease(
             Effect.sync(() => {
-              set.delete(queue)
-              if (set.size === 0) {
-                observers.delete(options.providerSessionId)
-                pruneRoot(options.providerSessionId)
-              }
-              Queue.endUnsafe(queue)
+              const set = observers.get(options.providerSessionId) ?? new Set()
+              set.add(queue)
+              observers.set(options.providerSessionId, set)
+              return set
             }),
+            (set) =>
+              Effect.sync(() => {
+                set.delete(queue)
+                if (set.size === 0) {
+                  observers.delete(options.providerSessionId)
+                  pruneRoot(options.providerSessionId)
+                }
+                Queue.endUnsafe(queue)
+              }),
           )
           // User-prompt evidence is demand-driven (ATC-155 probe: item/*
           // notifications never fan out to this passive socket): the first
@@ -1088,8 +1109,10 @@ export const layer = Layer.effect(CodexAdapter)(
           const scope = yield* Effect.scope
           // Bounded like the activity queues; prompts arrive one per turn
           // start, so 16 undrained means the observation is dead anyway.
-          const promptQueue = yield* Queue.make<AgentSessionEvent, Cause.Done>({ capacity: 16 })
-          yield* Effect.addFinalizer(() => Effect.sync(() => Queue.endUnsafe(promptQueue)))
+          const promptQueue = yield* Effect.acquireRelease(
+            Queue.make<AgentSessionEvent, Cause.Done>({ capacity: 16 }),
+            (queue) => Effect.sync(() => Queue.endUnsafe(queue)),
+          )
           let promptPhase: "pending" | "reading" | "done" = "pending"
           const readPreview = Effect.gen(function* () {
             const state = yield* getClientRetryable
@@ -1100,24 +1123,25 @@ export const layer = Layer.effect(CodexAdapter)(
             const preview = (decoded.thread.preview ?? "").trim()
             return preview === "" ? null : preview
           })
-          const discoverPrompt = Effect.gen(function* () {
-            let delay = PROMPT_READ_BACKOFF_MS
-            for (let attempt = 0; attempt < PROMPT_READ_ATTEMPTS; attempt++) {
-              if (attempt > 0) {
-                yield* Effect.sleep(Duration.millis(delay))
-                delay = Math.min(delay * 2, PROMPT_READ_BACKOFF_CAP_MS)
-              }
-              const text = yield* readPreview
-              if (text !== null) {
+          const discoverPrompt = pollUntil(readPreview, {
+            until: (text) => text !== null,
+            schedule: Schedule.min([
+              Schedule.exponential(Duration.millis(PROMPT_READ_BACKOFF_MS)),
+              Schedule.spaced(Duration.millis(PROMPT_READ_BACKOFF_CAP_MS)),
+            ]).pipe(Schedule.upTo({ times: PROMPT_READ_ATTEMPTS - 1 })),
+          }).pipe(
+            Effect.flatMap((text) =>
+              Effect.sync(() => {
+                if (text === null) {
+                  promptPhase = "pending"
+                  return
+                }
                 promptPhase = "done"
                 if (!Queue.offerUnsafe(promptQueue, { type: "userPrompt", text })) {
                   Queue.endUnsafe(promptQueue)
                 }
-                return
-              }
-            }
-            promptPhase = "pending"
-          }).pipe(
+              }),
+            ),
             Effect.catch((error) =>
               Effect.gen(function* () {
                 promptPhase = "done"

@@ -1,4 +1,4 @@
-import { Context, Duration, Effect, Exit, Layer, Option, Scope, Semaphore, Stream } from "effect"
+import { Context, Duration, Effect, Exit, Layer, Option, Schedule, Scope, Semaphore, Stream } from "effect"
 import { AgentRegistry } from "../agents/agentRegistry.ts"
 import type {
   AgentActivity,
@@ -475,27 +475,38 @@ export const layerWith = (options: ThreadsOptions) =>
       const watchForEarlyDeath = (
         record: ThreadRecord,
         terminalId: string,
-      ): Effect.Effect<never, ProviderUnavailable> =>
-        Effect.gen(function* () {
-          let delay = Duration.toMillis(Duration.fromInputUnsafe(launchWatchInterval))
-          for (;;) {
-            yield* Effect.sleep(Duration.millis(delay))
-            delay = Math.min(delay * 2, 5_000)
-            const current = yield* terminals
-              .get(terminalId)
-              .pipe(Effect.catchTag("TerminalNotFound", () => Effect.succeed(undefined)))
-            if (current === undefined || current.status === "ended") {
-              return yield* Effect.fail(
-                new ProviderUnavailable({
-                  agentId: record.agentId,
-                  reason:
-                    `the ${record.agentId} TUI exited before its session was established; ` +
-                    `run it manually in the thread's directory to see why (a missing provider login is the usual cause)`,
-                }),
-              )
-            }
+      ): Effect.Effect<never, ProviderUnavailable> => {
+        const requireAlive = Effect.gen(function* () {
+          const current = yield* terminals
+            .get(terminalId)
+            .pipe(Effect.catchTag("TerminalNotFound", () => Effect.succeed(undefined)))
+          if (current === undefined || current.status === "ended") {
+            return yield* Effect.fail(
+              new ProviderUnavailable({
+                agentId: record.agentId,
+                reason:
+                  `the ${record.agentId} TUI exited before its session was established; ` +
+                  `run it manually in the thread's directory to see why (a missing provider login is the usual cause)`,
+              }),
+            )
           }
         })
+        // The deliberate initial delay, then checks backing off from twice
+        // that interval to a 5-second ceiling — the loop only ever exits by
+        // failing (the launch wait races it against identity resolution).
+        return Effect.sleep(launchWatchInterval).pipe(
+          Effect.andThen(requireAlive),
+          Effect.repeat({
+            schedule: Schedule.min([
+              Schedule.exponential(
+                Duration.times(Duration.fromInputUnsafe(launchWatchInterval), 2),
+              ),
+              Schedule.spaced("5 seconds"),
+            ]),
+          }),
+          Effect.andThen(Effect.never),
+        )
+      }
 
       /** Launch a TUI terminal for the thread from an adapter launch spec,
        * with the nested-session markers scrubbed uniformly. */

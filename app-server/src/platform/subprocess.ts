@@ -6,10 +6,12 @@ import {
   Effect,
   Layer,
   Queue,
+  Schedule,
   Schema,
   Scope,
   Stream,
 } from "effect"
+import { pollUntil } from "./poll.ts"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { spawn as nodeSpawn } from "node:child_process"
 
@@ -192,13 +194,15 @@ export const waitForProcessExit = (
   pid: number,
   options?: { readonly attempts?: number; readonly interval?: Duration.Input },
 ): Effect.Effect<boolean> =>
-  Effect.gen(function* () {
-    const attempts = options?.attempts ?? 40
-    for (let attempt = 0; attempt < attempts && isProcessAlive(pid); attempt++) {
-      yield* Effect.sleep(options?.interval ?? "50 millis")
-    }
-    return !isProcessAlive(pid)
-  })
+  pollUntil(
+    Effect.sync(() => !isProcessAlive(pid)),
+    {
+      until: (gone) => gone,
+      schedule: Schedule.spaced(options?.interval ?? "50 millis").pipe(
+        Schedule.upTo({ times: options?.attempts ?? 40 }),
+      ),
+    },
+  )
 
 const truncate = (line: string): string =>
   line.length > MAX_CAPTURED_LINE_LENGTH ? `${line.slice(0, MAX_CAPTURED_LINE_LENGTH)}…` : line

@@ -1,5 +1,6 @@
 import { BunHttpClient } from "@effect/platform-bun"
-import { Console, Effect, FileSystem, Option, Runtime, Schema } from "effect"
+import { Console, Effect, FileSystem, Option, Runtime, Schedule, Schema } from "effect"
+import * as Poll from "../platform/poll.ts"
 import { Argument, Command, Flag } from "effect/unstable/cli"
 import { HttpClient } from "effect/unstable/http"
 import * as path from "node:path"
@@ -90,13 +91,11 @@ export const pollUntil = (
   intervalMillis: number,
   check: Effect.Effect<boolean>,
 ) =>
-  Effect.gen(function* () {
-    const attempts = Math.ceil(deadlineMillis / intervalMillis)
-    for (let attempt = 0; attempt < attempts; attempt++) {
-      if (yield* check) return true
-      yield* Effect.sleep(intervalMillis)
-    }
-    return yield* check
+  Poll.pollUntil(check, {
+    until: (settled) => settled,
+    schedule: Schedule.spaced(intervalMillis).pipe(
+      Schedule.upTo({ times: Math.ceil(deadlineMillis / intervalMillis) }),
+    ),
   })
 
 // Base-URL resolution seam for client commands: ATC_ENDPOINT (set in the

@@ -14,11 +14,17 @@ import { AppConfig } from "./config.ts"
 // (deliberately not write: testing writability at registration is worse than
 // surfacing a write failure at first use). Identity is the symlink-resolved
 // canonical absolute path; nothing else is stored.
+// The individual calls stay on node:fs/promises deliberately: the platform
+// FileSystem service can express neither the traversal (X_OK) access check
+// nor d_type-carrying directory reads (losing d_type would cost a stat per
+// entry). The pipeline around them is Effect, so the bounded timeout
+// interrupts between steps and cancels the stat fan-out instead of
+// abandoning it.
 
 /** Bounded time for any filesystem probe; fail closed beyond it. */
 export const CHECK_TIMEOUT_MILLIS = 2000
 
-/** Concurrent `stat` calls per listing; bounds the work a timeout abandons. */
+/** Concurrent `stat` calls per listing; bounds the fan-out a listing runs. */
 export const STAT_CONCURRENCY = 16
 
 export type DirectoryCheckResult = {
@@ -65,35 +71,6 @@ export class Directories extends Context.Service<
   }
 >()("app-server/Directories") {}
 
-type Probe =
-  | { readonly ok: true; readonly canonical: string }
-  | { readonly ok: false; readonly state: DirectoryUnavailable["state"] }
-
-// One filesystem probe: canonicalize, require a directory, require
-// read+traversal. Node errno codes map onto the tagged states.
-const probe = (path: string): Promise<Probe> =>
-  (async () => {
-    let canonical: string
-    try {
-      canonical = await fs.realpath(path)
-    } catch (error) {
-      return { ok: false as const, state: stateFromErrno(error) }
-    }
-    let isDirectory: boolean
-    try {
-      isDirectory = (await fs.stat(canonical)).isDirectory()
-    } catch {
-      return { ok: false as const, state: "inaccessible" }
-    }
-    if (!isDirectory) return { ok: false as const, state: "not_directory" }
-    try {
-      await fs.access(canonical, constants.R_OK | constants.X_OK)
-    } catch {
-      return { ok: false as const, state: "inaccessible" }
-    }
-    return { ok: true as const, canonical }
-  })()
-
 const errno = (error: unknown): string | undefined =>
   error instanceof Error && "code" in error ? String(error.code) : undefined
 
@@ -105,34 +82,54 @@ const stateFromErrno = (error: unknown): DirectoryUnavailable["state"] =>
       ? "not_directory"
       : "inaccessible"
 
+const unavailable = (path: string, state: DirectoryUnavailable["state"]) =>
+  new DirectoryUnavailable({ path, state })
+
+// One filesystem probe: canonicalize, require a directory, require
+// read+traversal. Node errno codes map onto the tagged states.
+const probe = (
+  path: string,
+): Effect.Effect<string, DirectoryUnavailable> =>
+  Effect.gen(function* () {
+    const canonical = yield* Effect.tryPromise({
+      try: () => fs.realpath(path),
+      catch: (error) => unavailable(path, stateFromErrno(error)),
+    })
+    const stat = yield* Effect.tryPromise({
+      try: () => fs.stat(canonical),
+      catch: () => unavailable(path, "inaccessible"),
+    })
+    if (!stat.isDirectory()) return yield* Effect.fail(unavailable(path, "not_directory"))
+    yield* Effect.tryPromise({
+      try: () => fs.access(canonical, constants.R_OK | constants.X_OK),
+      catch: () => unavailable(path, "inaccessible"),
+    })
+    return canonical
+  })
+
 /** Run a filesystem probe under the bounded timeout; fail closed beyond it. */
-const bounded = <T>(path: string, run: () => Promise<T>) =>
-  Effect.promise(run).pipe(
+const bounded = <A, E>(
+  path: string,
+  effect: Effect.Effect<A, E>,
+): Effect.Effect<A, E | DirectoryCheckTimedOut> =>
+  effect.pipe(
     Effect.timeoutOrElse({
       duration: CHECK_TIMEOUT_MILLIS,
       orElse: () => Effect.fail(new DirectoryCheckTimedOut({ path })),
     }),
   )
 
-type ListProbe =
-  | { readonly ok: true; readonly listing: DirectoryListing }
-  | { readonly ok: false; readonly state: DirectoryUnavailable["state"] }
-
 // Probe the directory, then read its subdirectories. Entry paths are joined,
 // not resolved: a symlink entry keeps its name-path, and descending into it
 // canonicalizes naturally on the next list.
-const listProbe = (path: string): Promise<ListProbe> =>
-  (async () => {
-    const probed = await probe(path)
-    if (!probed.ok) return probed
-    const canonical = probed.canonical
-    let dirents
-    try {
-      dirents = await fs.readdir(canonical, { withFileTypes: true })
-    } catch (error) {
+const listProbe = (path: string): Effect.Effect<DirectoryListing, DirectoryUnavailable> =>
+  Effect.gen(function* () {
+    const canonical = yield* probe(path)
+    const dirents = yield* Effect.tryPromise({
+      try: () => fs.readdir(canonical, { withFileTypes: true }),
       // The directory can vanish between probe and readdir.
-      return { ok: false as const, state: stateFromErrno(error) }
-    }
+      catch: (error) => unavailable(path, stateFromErrno(error)),
+    })
     const entries: Array<{ name: string; path: string }> = []
     const unclassified: Array<{ name: string; path: string }> = []
     for (const dirent of dirents) {
@@ -157,63 +154,53 @@ const listProbe = (path: string): Promise<ListProbe> =>
       }
       unclassified.push({ name: dirent.name, path: entryPath })
     }
-    // Stat the unclassified entries through a small worker pool: d_type-less
-    // filesystems report whole directories this way, and the bounded timeout
-    // abandons rather than cancels these promises — so the pool, not the
-    // timeout, is what keeps a huge directory from piling up thousands of
-    // in-flight stats per request.
-    const classified: Array<{ name: string; path: string } | null> = new Array(unclassified.length)
-    let nextIndex = 0
-    const statWorker = async () => {
-      while (true) {
-        const index = nextIndex++
-        const entry = unclassified[index]
-        if (entry === undefined) return
-        try {
-          classified[index] = (await fs.stat(entry.path)).isDirectory() ? entry : null
-        } catch {
+    // Stat the unclassified entries with bounded concurrency: d_type-less
+    // filesystems report whole directories this way. The fan-out is a real
+    // Effect pool, so the bounded timeout interrupts it — no new stats start
+    // after the deadline, instead of thousands piling up abandoned.
+    const classified = yield* Effect.forEach(
+      unclassified,
+      (entry) =>
+        Effect.tryPromise({ try: () => fs.stat(entry.path), catch: () => null }).pipe(
+          Effect.map((stat) => (stat.isDirectory() ? entry : null)),
           // Broken or unreadable symlink, or a vanished entry: skip it.
-          classified[index] = null
-        }
-      }
-    }
-    await Promise.all(
-      Array.from({ length: Math.min(STAT_CONCURRENCY, unclassified.length) }, statWorker),
+          Effect.orElseSucceed(() => null),
+        ),
+      { concurrency: STAT_CONCURRENCY },
     )
     entries.push(...classified.filter((entry) => entry !== null))
     // Pinned collation, so the advertised case-insensitive order does not
     // drift with the server's locale.
     entries.sort((a, b) => a.name.localeCompare(b.name, "en"))
     return {
-      ok: true as const,
-      listing: {
-        path: canonical,
-        ...(canonical === "/" ? {} : { parent: dirname(canonical) }),
-        entries,
-      },
+      path: canonical,
+      ...(canonical === "/" ? {} : { parent: dirname(canonical) }),
+      entries,
     }
-  })()
+  })
 
 export const layer = Layer.effect(Directories)(
   Effect.gen(function* () {
     const config = yield* AppConfig
     return {
-      canonicalize: (path) =>
-        bounded(path, () => probe(path)).pipe(
-          Effect.flatMap((result) =>
-            result.ok
-              ? Effect.succeed(result.canonical)
-              : Effect.fail(new DirectoryUnavailable({ path, state: result.state })),
-          ),
-        ),
+      canonicalize: (path) => bounded(path, probe(path)),
       check: (path) =>
-        bounded(path, () => probe(path)).pipe(
-          Effect.map((result): DirectoryCheckResult => ({
-            path: result.ok ? result.canonical : path,
-            state: result.ok ? "available" : result.state,
-            checkedAt: new Date().toISOString(),
-          })),
-          Effect.catch(() =>
+        bounded(path, probe(path)).pipe(
+          Effect.map(
+            (canonical): DirectoryCheckResult => ({
+              path: canonical,
+              state: "available",
+              checkedAt: new Date().toISOString(),
+            }),
+          ),
+          Effect.catchTag("DirectoryUnavailable", (error) =>
+            Effect.succeed<DirectoryCheckResult>({
+              path,
+              state: error.state,
+              checkedAt: new Date().toISOString(),
+            }),
+          ),
+          Effect.catchTag("DirectoryCheckTimedOut", () =>
             Effect.succeed<DirectoryCheckResult>({
               path,
               state: "unknown",
@@ -224,13 +211,7 @@ export const layer = Layer.effect(Directories)(
         ),
       list: (path) => {
         const target = path ?? config.home
-        return bounded(target, () => listProbe(target)).pipe(
-          Effect.flatMap((result) =>
-            result.ok
-              ? Effect.succeed(result.listing)
-              : Effect.fail(new DirectoryUnavailable({ path: target, state: result.state })),
-          ),
-        )
+        return bounded(target, listProbe(target))
       },
     } satisfies Directories["Service"]
   }),
