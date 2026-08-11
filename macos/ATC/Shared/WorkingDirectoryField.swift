@@ -35,6 +35,9 @@ struct WorkingDirectoryField: View {
     /// when the typed path is unchanged.
     let connectionID: UUID?
     @Binding var state: DirectoryCheckState
+    /// When provided, the text field binds its focus here so hosts can move
+    /// focus programmatically (the New Thread launcher's Shift-⌘-G).
+    var isFocused: FocusState<Bool>.Binding?
     @State private var isBrowsing = false
 
     private struct CheckKey: Equatable {
@@ -45,8 +48,7 @@ struct WorkingDirectoryField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.xs) {
             HStack(spacing: Spacing.sm) {
-                TextField(label, text: $path, prompt: Text("/path/on/the/server"))
-                    .autocorrectionDisabled()
+                textField
                 Button("Browse…") { isBrowsing = true }
                     .disabled(client == nil)
             }
@@ -73,6 +75,17 @@ struct WorkingDirectoryField: View {
                     onChoose: { path = $0 }
                 )
             }
+        }
+    }
+
+    @ViewBuilder
+    private var textField: some View {
+        let field = TextField(label, text: $path, prompt: Text("/path/on/the/server"))
+            .autocorrectionDisabled()
+        if let isFocused {
+            field.focused(isFocused)
+        } else {
+            field
         }
     }
 
