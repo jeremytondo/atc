@@ -24,78 +24,57 @@ struct ThreadCard: View {
 
     var body: some View {
         let thread = item.thread
-        VStack(alignment: .leading, spacing: Spacing.xs) {
-            // Top row: Project name as compact context; the trailing area
-            // shows the Connection at rest and the actions on hover/focus.
-            HStack(alignment: .center, spacing: Spacing.sm) {
-                Text(item.projectLabel)
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(1)
-                Spacer(minLength: Spacing.sm)
-                // Same slot as the hover chips and the connection status, so
-                // the card never resizes; the held-modifier badge wins.
-                if let shortcutLabel {
-                    ShortcutBadge(label: shortcutLabel)
-                } else if isHovering || isFocused {
-                    HStack(spacing: Spacing.xs) {
-                        cardAction(
-                            systemImage: thread.isPinned ? "pin.slash" : "pin",
-                            help: thread.isPinned ? "Unpin" : "Pin",
-                            isEnabled: canMutate && !isBusy,
-                            action: onTogglePin
-                        )
-                        cardAction(
-                            systemImage: "archivebox",
-                            help: "Archive",
-                            // The server refuses archiving a working thread;
-                            // the control is disabled rather than surfacing
-                            // that as an error the user did not ask for.
-                            isEnabled: canMutate && !isBusy
-                                && thread.activityState != .working,
-                            action: onArchive
-                        )
-                    }
-                } else {
-                    HStack(spacing: Spacing.xs) {
-                        Text(item.connectionName)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                        StatusDot(reachability: reachability, size: .inline)
-                    }
-                    // Match the action chips' height so the card does not
-                    // resize under the pointer.
-                    .frame(height: NavigatorMetrics.actionSize)
-                }
-            }
-
-            // The dominant element.
-            Text(thread.displayName)
-                .font(.body.weight(.medium))
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
-
-            // Bottom metadata row: working directory when it differs from
-            // the Project default; activity state and Agent trailing.
-            HStack(alignment: .center, spacing: Spacing.sm) {
-                if let directory = item.distinctWorkingDirectory {
-                    Text(directory)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.tertiary)
+        // One Button for the whole card: it carries the click and the
+        // accessibility action. Return is handled on the composite below — a
+        // nested .plain Button is not activated by the focused container.
+        // The hover chips are Buttons themselves, so they sit in an overlay
+        // rather than nested in this label.
+        Button {
+            focusedThread = item.ref
+            onOpen()
+        } label: {
+            VStack(alignment: .leading, spacing: Spacing.xs) {
+                // Top row: Project name as compact context; the trailing area
+                // shows the Connection at rest and the actions on hover/focus.
+                HStack(alignment: .center, spacing: Spacing.sm) {
+                    Text(item.projectLabel)
+                        .font(.caption.weight(.semibold))
                         .lineLimit(1)
-                        .truncationMode(.head)
+                    Spacer(minLength: Spacing.sm)
+                    trailingSlot
                 }
-                Spacer(minLength: Spacing.sm)
-                if let status = thread.activityState.statusLabel {
-                    Text(status)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(thread.activityState.statusColor)
+
+                // The dominant element.
+                Text(thread.displayName)
+                    .font(.body.weight(.medium))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+
+                // Bottom metadata row: working directory when it differs from
+                // the Project default; activity state and Agent trailing.
+                HStack(alignment: .center, spacing: Spacing.sm) {
+                    if let directory = item.distinctWorkingDirectory {
+                        Text(directory)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                    }
+                    Spacer(minLength: Spacing.sm)
+                    if let status = thread.activityState.statusLabel {
+                        Text(status)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(thread.activityState.statusColor)
+                    }
+                    agentBadge
                 }
-                agentBadge
             }
+            .padding(Spacing.md)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
-        .padding(Spacing.md)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .background {
             RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
                 .fill(backgroundStyle)
@@ -104,16 +83,12 @@ struct ThreadCard: View {
             RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
                 .strokeBorder(borderColor, lineWidth: 1)
         }
+        .overlay(alignment: .topTrailing) { hoverActions }
         .opacity(isBusy ? Dimming.unavailable : 1)
-        .contentShape(Rectangle())
         .onHover { isHovering = $0 }
         .focusable()
         .focusEffectDisabled()
         .focused($focusedThread, equals: item.ref)
-        .onTapGesture {
-            focusedThread = item.ref
-            onOpen()
-        }
         .onKeyPress(.return) {
             onOpen()
             return .handled
@@ -130,10 +105,59 @@ struct ThreadCard: View {
             Button("Archive", systemImage: "archivebox", action: onArchive)
                 .disabled(!canMutate || isBusy || thread.activityState == .working)
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
-        .accessibilityAction(named: "Open", onOpen)
         .navigatorListRow(top: Spacing.xs, bottom: Spacing.xs)
+    }
+
+    /// The card's trailing slot: the held-modifier badge, the Connection at
+    /// rest, or the space the hover actions take over. Everything here is the
+    /// same height, so the card never resizes under the pointer.
+    @ViewBuilder
+    private var trailingSlot: some View {
+        if let shortcutLabel {
+            ShortcutBadge(label: shortcutLabel)
+        } else if isHovering || isFocused {
+            Color.clear
+                .frame(
+                    width: NavigatorMetrics.actionSize * 2 + Spacing.xs,
+                    height: NavigatorMetrics.actionSize
+                )
+        } else {
+            HStack(spacing: Spacing.xs) {
+                Text(item.connectionName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                StatusDot(reachability: reachability, size: .inline)
+            }
+            .frame(height: NavigatorMetrics.actionSize)
+        }
+    }
+
+    /// Pin and Archive, over the slot `trailingSlot` reserves for them. The
+    /// held-modifier badge wins that slot.
+    @ViewBuilder
+    private var hoverActions: some View {
+        if shortcutLabel == nil, isHovering || isFocused {
+            HStack(spacing: Spacing.xs) {
+                cardAction(
+                    systemImage: item.thread.isPinned ? "pin.slash" : "pin",
+                    help: item.thread.isPinned ? "Unpin" : "Pin",
+                    isEnabled: canMutate && !isBusy,
+                    action: onTogglePin
+                )
+                cardAction(
+                    systemImage: "archivebox",
+                    help: "Archive",
+                    // The server refuses archiving a working thread; the
+                    // control is disabled rather than surfacing that as an
+                    // error the user did not ask for.
+                    isEnabled: canMutate && !isBusy
+                        && item.thread.activityState != .working,
+                    action: onArchive
+                )
+            }
+            .padding(Spacing.md)
+        }
     }
 
     /// The Agent icon in a small rounded-square badge, lower-trailing per

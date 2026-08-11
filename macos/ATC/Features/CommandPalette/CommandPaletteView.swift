@@ -2,6 +2,9 @@ import AppKit
 import SwiftUI
 
 struct CommandPaletteView: View {
+    /// The palette shrinks to fit its rows up to this height, then scrolls.
+    private static let maxListHeight: CGFloat = 200
+
     @Environment(AppModel.self) private var appModel
     @Environment(WindowState.self) private var windowState
     @Environment(ConfigurationStore.self) private var configStore
@@ -10,6 +13,13 @@ struct CommandPaletteView: View {
     @State private var query = ""
     @State private var selectedID: PaletteResultID?
     @State private var hoveredID: PaletteResultID?
+    /// The row the list is parked on. Separate from `selectedID` because
+    /// SwiftUI writes the scrolled-to row back into it.
+    @State private var scrolledID: PaletteResultID?
+    /// Measured row content, so the list fits the user's text size rather
+    /// than a pixel estimate. Starts at the cap: a zero-height scroll view
+    /// would materialize no rows to measure.
+    @State private var listSize = CGSize(width: 0, height: CommandPaletteView.maxListHeight)
     @State private var responderRestoration = PaletteResponderRestoration()
     @FocusState private var queryIsFocused: Bool
 
@@ -125,40 +135,20 @@ struct CommandPaletteView: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, minHeight: 44)
         } else {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 2) {
-                        ForEach(rows) { result in
-                            resultRow(result, context: context)
-                                .id(result.id)
-                        }
-                    }
-                    .padding(5)
-                }
-                .frame(height: min(200, rows.reduce(CGFloat(10)) {
-                    $0 + estimatedRowHeight(for: $1)
-                }))
-                .onChange(of: selectedID) {
-                    if let selectedID {
-                        proxy.scrollTo(selectedID, anchor: .center)
+            ScrollView {
+                LazyVStack(spacing: 2) {
+                    ForEach(rows) { result in
+                        resultRow(result, context: context)
+                            .id(result.id)
                     }
                 }
+                .scrollTargetLayout()
+                .padding(5)
+                .onGeometryChange(for: CGSize.self) { $0.size } action: { listSize = $0 }
             }
-        }
-    }
-
-    /// Shrink-to-fit estimates only: navigation rows carry a context caption
-    /// and unavailable rows an inline reason line, so a short list is not
-    /// initially clipped. The 200 pt cap and the scroll view absorb any
-    /// estimate error on longer lists.
-    private func estimatedRowHeight(for result: PaletteResult) -> CGFloat {
-        switch result {
-        case .command(let row):
-            row.availability.isAvailable ? 42 : 56
-        case .thread(let row):
-            row.availability.isAvailable ? 56 : 70
-        case .terminal:
-            56
+            .frame(height: min(Self.maxListHeight, listSize.height))
+            .scrollPosition(id: $scrolledID, anchor: .center)
+            .onChange(of: selectedID) { scrolledID = selectedID }
         }
     }
 

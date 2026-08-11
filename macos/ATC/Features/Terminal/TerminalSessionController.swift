@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import OSLog
+import Synchronization
 import ATCAppServerTransport
 import GhosttyTerminal
 
@@ -490,27 +491,30 @@ typealias TerminalAttachFactory = (URL, [String: String]) -> TerminalAttachHandl
 
 /// Lock-guarded handle to the current connection so Ghostty's background
 /// callbacks can enqueue synchronously across reconnects.
-private nonisolated final class ConnectionRef: @unchecked Sendable {
-    private let lock = NSLock()
-    private var connection: TerminalAttachHandle?
-    private var viewport: (cols: UInt16, rows: UInt16)?
+private nonisolated final class ConnectionRef: Sendable {
+    private struct State {
+        var connection: TerminalAttachHandle?
+        var viewport: (cols: UInt16, rows: UInt16)?
+    }
+
+    private let state = Mutex(State())
 
     var lastViewport: (cols: UInt16, rows: UInt16)? {
-        lock.withLock { viewport }
+        state.withLock { $0.viewport }
     }
 
     func set(_ connection: TerminalAttachHandle?) {
-        lock.withLock { self.connection = connection }
+        state.withLock { $0.connection = connection }
     }
 
     func enqueue(_ data: Data) {
-        lock.withLock { connection }?.enqueue(data)
+        state.withLock { $0.connection }?.enqueue(data)
     }
 
     func enqueueResize(cols: UInt16, rows: UInt16) {
-        let connection = lock.withLock {
-            viewport = (cols, rows)
-            return self.connection
+        let connection = state.withLock { state in
+            state.viewport = (cols, rows)
+            return state.connection
         }
         connection?.enqueueResize(cols: cols, rows: rows)
     }

@@ -27,6 +27,9 @@ struct NavigatorSidebar: View {
     @State private var deletingTerminal: TerminalRef?
     @State private var inFlightThreads: Set<ThreadRef> = []
     @State private var actionError: String?
+    /// The row the scroll view is parked on. SwiftUI keeps it current as the
+    /// user scrolls; writing to it reveals a row selected from elsewhere.
+    @State private var scrolledRow: NavigatorScrollID?
     @FocusState private var focusedThread: ThreadRef?
 
     var body: some View {
@@ -54,12 +57,20 @@ struct NavigatorSidebar: View {
             }
         }
         .navigationSplitViewColumnWidth(min: 240, ideal: 300)
+        .scrollPosition(id: $scrolledRow, anchor: .center)
+        // The command palette and ⌘1–9 select rows the user cannot see; this
+        // custom list has no `List` scroll-to-selection to inherit. Keyed on
+        // the reveal token, not the selection, so sidebar clicks (reveal:
+        // false) never re-center a row already under the pointer.
+        .onChange(of: windowState.sidebarRevealToken) {
+            scrolledRow = scrollTarget(for: windowState.selectedContent, in: model)
+        }
         .renameAlert("Rename Thread", item: $renamingThread, draft: $renameDraft) { item, name in
             mutateThread(item.ref) { try await $0.rename(id: item.ref.threadID, name: name) }
         }
         .renameAlert("Rename Terminal", item: $renamingTerminal, draft: $renameDraft) { ref, name in
             if let store = appModel.runtime(id: ref.connectionID)?.terminals {
-                appModel.run(on: ref.connectionID, reporting: $actionError) {
+                appModel.run(on: ref.connectionID, reporting: { actionError = $0 }) {
                     try await store.rename(id: ref.terminalID, name: name)
                 }
             }
@@ -86,7 +97,7 @@ struct NavigatorSidebar: View {
             Button("Delete Terminal", role: .destructive) {
                 if let ref = deletingTerminal,
                    let store = appModel.runtime(id: ref.connectionID)?.terminals {
-                    appModel.run(on: ref.connectionID, reporting: $actionError) {
+                    appModel.run(on: ref.connectionID, reporting: { actionError = $0 }) {
                         try await store.delete(id: ref.terminalID)
                     }
                 }
@@ -198,7 +209,7 @@ struct NavigatorSidebar: View {
                 canMutate: appModel.canMutate(connectionID: item.ref.connectionID),
                 shortcutLabel: slotNumbers[item.ref].map(SidebarShortcuts.threadBadgeLabel),
                 focusedThread: $focusedThread,
-                onOpen: { Task { await windowState.openThread(item.ref, in: appModel) } },
+                onOpen: { Task { await windowState.openThread(item.ref, in: appModel, reveal: false) } },
                 onRename: {
                     renameDraft = item.thread.name ?? ""
                     renamingThread = item
@@ -216,6 +227,9 @@ struct NavigatorSidebar: View {
                     mutateThread(item.ref) { try await $0.archive(id: item.ref.threadID) }
                 }
             )
+            // Keeps the section-scoped identity (see ThreadListModel) while
+            // making the row addressable by the scroll position.
+            .id(NavigatorScrollID.thread(item.id))
         }
         moreControl(total: items.count, isExpanded: isExpanded)
     }
@@ -301,7 +315,7 @@ struct NavigatorSidebar: View {
         let ref = TerminalRef(connectionID: connectionID, terminalID: terminal.id)
         return NavigatorRow(
             isSelected: windowState.selectedContent == .terminal(ref),
-            action: { windowState.selectTerminal(ref, in: appModel) }
+            action: { windowState.selectTerminal(ref, in: appModel, reveal: false) }
         ) { _ in
             HStack(spacing: Spacing.sm) {
                 Image(systemName: "terminal")
@@ -334,6 +348,7 @@ struct NavigatorSidebar: View {
             }
             .disabled(!appModel.canMutate(connectionID: connectionID))
         }
+        .id(NavigatorScrollID.terminal(ref))
     }
 
     // MARK: - Shared row chrome
@@ -395,7 +410,7 @@ struct NavigatorSidebar: View {
     private func restore(_ item: ThreadListItem) {
         mutateThread(item.ref) { store in
             try await store.unarchive(id: item.ref.threadID)
-            await windowState.openThread(item.ref, in: appModel)
+            await windowState.openThread(item.ref, in: appModel, reveal: false)
         }
     }
 
@@ -422,6 +437,27 @@ struct NavigatorSidebar: View {
     }
 
     // MARK: - Derived state
+
+    /// Where the scroll view should park for the current selection. A row
+    /// can be absent — filtered out, beyond a collapsed section's row limit,
+    /// or in a collapsed section — and then nothing scrolls; expanding
+    /// sections to force a reveal would be the sidebar overriding the
+    /// user's layout.
+    private func scrollTarget(
+        for selection: MainContentSelection,
+        in model: ThreadListModel
+    ) -> NavigatorScrollID? {
+        switch selection {
+        case .dashboard:
+            nil
+        case .thread(let ref):
+            (model.pinned + model.recent + model.archived)
+                .first { $0.ref == ref }
+                .map { .thread($0.id) }
+        case .terminal(let ref):
+            .terminal(ref)
+        }
+    }
 
     private var canCreateAnywhere: Bool {
         appModel.runtimes.contains { appModel.canMutate(connectionID: $0.id) }
@@ -497,4 +533,11 @@ struct NavigatorSidebar: View {
             ($0.element, $0.offset + 1)
         })
     }
+}
+
+/// Scroll identity for the rows a selection can land on, so one scroll
+/// position binding addresses threads and terminals alike.
+private enum NavigatorScrollID: Hashable {
+    case thread(ThreadListItem.ID)
+    case terminal(TerminalRef)
 }

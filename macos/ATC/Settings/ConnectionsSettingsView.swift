@@ -117,7 +117,8 @@ struct ConnectionsSettingsView: View {
 
 /// Draft editor for one Connection. Holds local `@State` copies seeded from the
 /// selected record (or empty for a new draft); nothing reaches the store until
-/// Save. Recreated per target via `.id(target)`, so seeding happens in `.task`.
+/// Save. Recreated per target via `.id(target)`, so one seed on appearance is
+/// enough.
 private struct ConnectionEditorView: View {
     @Environment(AppModel.self) private var appModel
     let target: ConnectionEditorTarget
@@ -219,7 +220,7 @@ private struct ConnectionEditorView: View {
             }
             .padding(Spacing.md)
         }
-        .task(id: target) { seed() }
+        .onAppear { seed() }
         .onChange(of: name) { invalidateTest() }
         .onChange(of: urlString) { invalidateTest() }
         .onChange(of: token) { invalidateTest() }

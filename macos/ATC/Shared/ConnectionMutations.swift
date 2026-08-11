@@ -6,18 +6,18 @@ import SwiftUI
 extension AppModel {
     func run(
         on connectionID: UUID,
-        reporting actionError: Binding<String?>,
+        reporting reportError: @escaping @MainActor (String) -> Void,
         _ operation: @escaping () async throws -> Void
     ) {
         Task {
             guard canMutate(connectionID: connectionID) else {
-                actionError.wrappedValue = "The connection is unavailable."
+                reportError("The connection is unavailable.")
                 return
             }
             do {
                 try await operation()
             } catch {
-                actionError.wrappedValue = error.localizedDescription
+                reportError(error.localizedDescription)
             }
         }
     }
