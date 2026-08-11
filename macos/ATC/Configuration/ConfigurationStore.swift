@@ -36,7 +36,18 @@ final class ConfigurationStore {
         self.configuration = Self.defaultConfiguration(generation: 0)
     }
 
+    private var hasLoadedAtLaunch = false
+
     func loadAtLaunch() {
+        load(isLaunch: true)
+    }
+
+    /// The window root's launch hook: the first window loads the config
+    /// file off the first frame; later windows (and re-appearing roots)
+    /// change nothing.
+    func loadAtLaunchIfNeeded() {
+        guard !hasLoadedAtLaunch else { return }
+        hasLoadedAtLaunch = true
         load(isLaunch: true)
     }
 

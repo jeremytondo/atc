@@ -289,7 +289,7 @@ struct WindowStateTests {
         #expect(test.model.terminals[terminalRef] != nil)
     }
 
-    @Test("a thread with no server-side terminal drops its mapping once nothing is retained")
+    @Test("a thread whose server-side terminal vanishes drops its mapping")
     func dropsMappingWhenNothingRetained() async throws {
         let client = ScriptableAppServerClient()
         let test = try await loadedModel(client)
@@ -306,11 +306,11 @@ struct WindowStateTests {
             return updated
         }
         await test.runtime.refresh()
-        // Still retained for its final frame while the controller lives.
-        state.reconcile(in: test.model)
-        #expect(state.threadTerminals[ref] == terminalRef)
-
-        test.model.disconnectTerminal(ref: terminalRef)
+        // The model observes its own snapshot now (ATC-168 M2): lifecycle
+        // reconciliation drops the vanished row's controller without any
+        // window involvement, and the window reconcile then drops the
+        // mapping (nothing retained).
+        await settle(until: { test.model.terminals[terminalRef] == nil })
         state.reconcile(in: test.model)
         #expect(state.threadTerminals[ref] == nil)
     }

@@ -21,11 +21,20 @@ struct ShellHostingSmokeTest {
     }
 
     private func rootView(_ appModel: AppModel, _ windowState: WindowState) -> some View {
-        RootView(configStore: ConfigurationStore(
+        // Mirror WindowRootView's per-window wiring: RootView's descendants
+        // (sidebar, palette, feedback overlay) read the window's router
+        // from the environment.
+        let configStore = ConfigurationStore(
             configURL: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-        ))
-        .environment(appModel)
-        .environment(windowState)
+        )
+        return RootView(configStore: configStore)
+            .environment(appModel)
+            .environment(windowState)
+            .environment(WindowKeyboardRouter.forWindow(
+                appModel: appModel,
+                windowState: windowState,
+                configStore: configStore
+            ))
     }
 
     @Test("the root view hosts the Dashboard with seeded data without crashing")

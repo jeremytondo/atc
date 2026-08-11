@@ -13,13 +13,7 @@ struct RootView: View {
     let configStore: ConfigurationStore
 
     var body: some View {
-        KeyboardRoutingContainer(
-            appModel: appModel,
-            windowState: windowState,
-            configStore: configStore
-        ) {
-            rootContent
-        }
+        rootContent
     }
 
     private var rootContent: some View {
@@ -73,10 +67,6 @@ struct RootView: View {
             windowState.requestTerminalFocus()
         }) { ref in
             NewTerminalSheet(projectRef: ref)
-        }
-        .onChange(of: appModel.windowNavigationSnapshot(), initial: true) {
-            appModel.reconcileTerminalLifecycle()
-            windowState.reconcile(in: appModel)
         }
     }
 

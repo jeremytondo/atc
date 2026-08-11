@@ -2,15 +2,21 @@ import SwiftUI
 
 struct AppCommands: Commands {
     let appModel: AppModel
-    let windowState: WindowState
     let configStore: ConfigurationStore
 
-    private var context: CommandContext {
-        CommandContext(
-            appModel: appModel,
-            windowState: windowState,
-            configStore: configStore
-        )
+    /// The key window's state, via the platform's answer to "menu commands
+    /// act on the focused window" — nil with no window key, which disables
+    /// every windowed command below.
+    @FocusedValue(WindowState.self) private var windowState
+
+    private var context: CommandContext? {
+        windowState.map { windowState in
+            CommandContext(
+                appModel: appModel,
+                windowState: windowState,
+                configStore: configStore
+            )
+        }
     }
 
     var body: some Commands {
@@ -42,10 +48,11 @@ struct AppCommands: Commands {
     @ViewBuilder
     private func commandButton(_ id: CommandID) -> some View {
         let descriptor = CommandRegistry.descriptor(for: id)
+        let context = context
         let button = Button(descriptor.title) {
-            CommandRegistry.execute(id, context: context)
+            if let context { CommandRegistry.execute(id, context: context) }
         }
-        .disabled(!descriptor.availability(context).isAvailable)
+        .disabled(context.map { !descriptor.availability($0).isAvailable } ?? true)
 
         if let shortcut = configStore.configuration.keymap.menuShortcuts[id]?.menuShortcut {
             button.keyboardShortcut(shortcut.key, modifiers: shortcut.modifiers)
