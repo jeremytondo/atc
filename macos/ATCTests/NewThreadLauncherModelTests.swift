@@ -33,9 +33,7 @@ struct NewThreadLauncherModelTests {
         Agent(
             id: id,
             available: available,
-            reason: reason,
-            testedVersion: "",
-            tuiObservation: .hooks
+            reason: reason
         )
     }
 

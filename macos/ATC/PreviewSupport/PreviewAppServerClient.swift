@@ -178,16 +178,12 @@ nonisolated struct PreviewAppServerClient: APIProtocol {
             Agent(
                 id: .codex,
                 available: true,
-                detectedVersion: "0.52.0",
-                testedVersion: "0.52.0",
-                tuiObservation: .sharedServer
+                detectedVersion: "0.52.0"
             ),
             Agent(
                 id: .claudeCode,
                 available: false,
-                reason: "Install the Claude Code CLI",
-                testedVersion: "2.1.0",
-                tuiObservation: .hooks
+                reason: "Install the Claude Code CLI"
             ),
         ]
     }
