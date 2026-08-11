@@ -38,18 +38,31 @@ final class ProjectsStore {
 
     @discardableResult
     func create(name: String, defaultWorkingDirectory: String) async throws -> Project {
-        let project = try await client
+        let project: Project
+        switch try await client
             .createProject(body: .json(.init(name: name, defaultWorkingDirectory: defaultWorkingDirectory)))
-            .ok.body.json
+        {
+        case .ok(let ok): project = try ok.body.json
+        case .unprocessableContent(let failure):
+            let payload = try failure.body.json
+            throw ServerError(anyOf: payload.value1, payload.value2)
+        case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
+        }
         merge(project)
         return project
     }
 
     @discardableResult
     func rename(id: String, name: String) async throws -> Project {
-        let project = try await client
-            .updateProject(path: .init(projectId: id), body: .json(.init(name: name)))
-            .ok.body.json
+        let project: Project
+        switch try await client.updateProject(path: .init(projectId: id), body: .json(.init(name: name))) {
+        case .ok(let ok): project = try ok.body.json
+        case .notFound(let failure): throw ServerError(try failure.body.json)
+        case .unprocessableContent(let failure):
+            let payload = try failure.body.json
+            throw ServerError(anyOf: payload.value1, payload.value2)
+        case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
+        }
         merge(project)
         return project
     }

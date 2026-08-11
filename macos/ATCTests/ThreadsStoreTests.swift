@@ -179,6 +179,27 @@ struct ThreadsStoreTests {
         #expect(store.hasLoadedOnce)
     }
 
+    @Test("a modeled failure surfaces the server's message, not a status dump")
+    func openTerminalSurfacesServerMessage() async throws {
+        let (store, client) = await loadedStore()
+        client.openThreadTerminalFailure = .init(
+            _tag: .providerUnavailable,
+            agentId: "codex",
+            reason: "install the Codex CLI or set codexExecutable",
+            message: "install the Codex CLI or set codexExecutable"
+        )
+        do {
+            _ = try await store.openTerminal(threadID: "thr1")
+            Issue.record("openTerminal should have thrown")
+        } catch {
+            // The whole point of the unwrap seam: the alert text IS the
+            // server's actionable guidance.
+            #expect(
+                error.localizedDescription == "install the Codex CLI or set codexExecutable"
+            )
+        }
+    }
+
     @Test("openTerminal is idempotent: a live linked terminal is returned as-is")
     func openTerminalIsIdempotent() async throws {
         let (store, client) = await loadedStore()

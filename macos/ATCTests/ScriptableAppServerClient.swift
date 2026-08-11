@@ -31,6 +31,9 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         var directoryCheck: Components.Schemas.FsCheckResponse?
         var directoryListings: [String?: Components.Schemas.FsListResponse] = [:]
         var directoryListingFailure: Components.Schemas.DirectoryUnavailableJsonEncoding?
+        /// While set, openThreadTerminal fails 503 with this payload — the
+        /// install-or-configure message the unwrap seam must surface.
+        var openThreadTerminalFailure: Components.Schemas.ProviderUnavailableJsonEncoding?
         var createdThreadRequests: [Components.Schemas.CreateThreadRequest] = []
         var createdTerminalRequests: [Components.Schemas.CreateTerminalRequest] = []
         var listProjectsCount = 0
@@ -134,6 +137,11 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     var directoryListingFailure: Components.Schemas.DirectoryUnavailableJsonEncoding? {
         get { lock.withLock { state.directoryListingFailure } }
         set { lock.withLock { state.directoryListingFailure = newValue } }
+    }
+
+    var openThreadTerminalFailure: Components.Schemas.ProviderUnavailableJsonEncoding? {
+        get { lock.withLock { state.openThreadTerminalFailure } }
+        set { lock.withLock { state.openThreadTerminalFailure = newValue } }
     }
 
     // MARK: - Captured requests and call counts
@@ -469,6 +477,9 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     func openThreadTerminal(_ input: Operations.OpenThreadTerminal.Input) async throws
         -> Operations.OpenThreadTerminal.Output {
         try await gate()
+        if let failure = openThreadTerminalFailure {
+            return .serviceUnavailable(.init(body: .json(.init(value1: failure))))
+        }
         let id = input.path.threadId
         return mutate { model -> Operations.OpenThreadTerminal.Output in
             model.openThreadTerminalCount += 1
