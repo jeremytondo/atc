@@ -138,3 +138,29 @@ final class WindowKeyboardRouter {
         }
     }
 }
+
+extension WindowKeyboardRouter {
+    /// The one construction path for a window's router: keymap, command
+    /// context, palette suspension, and sidebar jumps wired together
+    /// (called once per window by the scene root).
+    static func forWindow(
+        appModel: AppModel,
+        windowState: WindowState,
+        configStore: ConfigurationStore
+    ) -> WindowKeyboardRouter {
+        let context = CommandContext(
+            appModel: appModel,
+            windowState: windowState,
+            configStore: configStore
+        )
+        let router = WindowKeyboardRouter(
+            keymap: configStore.configuration.keymap,
+            context: context
+        )
+        router.isSuspended = { windowState.commandPalettePresentation != nil }
+        router.performJump = { jump in
+            SidebarShortcuts.perform(jump, appModel: appModel, windowState: windowState)
+        }
+        return router
+    }
+}

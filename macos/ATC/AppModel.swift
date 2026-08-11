@@ -59,6 +59,24 @@ final class AppModel {
     private let terminalRecoveryMonitor: TerminalRecoveryMonitor
     private let eventStreamFactory: ConnectionRuntime.EventStreamFactory?
 
+    /// The default (real Keychain-backed) construction path defers loading
+    /// and runtime building to `start()` so launch never blocks the first
+    /// frame on file or Keychain I/O (ATC-168 M4); an injected store is the
+    /// test seam and is already loaded, so init builds runtimes directly.
+    @ObservationIgnored private var needsDeferredStart = false
+    /// False until the deferred launch load resolves (or immediately on the
+    /// injected-store path): empty-state UI must not flash while the real
+    /// Connection list is still hydrating.
+    private(set) var hasStarted = false
+    /// Window states registered for model-driven reconciliation (weak: a
+    /// closed window's state must deallocate).
+    @ObservationIgnored private var windowReconcilers: [WeakWindowState] = []
+    @ObservationIgnored private var lastNavigationSnapshot: WindowNavigationSnapshot?
+
+    private struct WeakWindowState {
+        weak var value: WindowState?
+    }
+
     init(
         connections: ConnectionsStore? = nil,
         clientFactory: ((ConnectionRecord, URL) -> any APIProtocol)? = nil,
@@ -68,7 +86,13 @@ final class AppModel {
         attachmentBudget: Int = 12
     ) {
         self.attachmentBudget = attachmentBudget
-        self.connections = connections ?? ConnectionsStore()
+        if let connections {
+            self.connections = connections
+            hasStarted = true
+        } else {
+            self.connections = ConnectionsStore(loadingDeferred: true)
+            needsDeferredStart = true
+        }
         self.clientFactory = clientFactory ?? { record, url in
             ATCAppServerAPI.makeClient(
                 baseURL: url,
@@ -89,15 +113,69 @@ final class AppModel {
         }
         self.terminalRecoveryMonitor = terminalRecoveryMonitor ?? TerminalRecoveryMonitor()
         self.eventStreamFactory = eventStreamFactory
-        for record in self.connections.connections {
-            if let runtime = makeRuntime(record) {
-                runtimes.append(runtime)
+        if !needsDeferredStart {
+            for record in self.connections.connections {
+                if let runtime = makeRuntime(record) {
+                    runtimes.append(runtime)
+                }
             }
         }
         self.terminalRecoveryMonitor.onRecovery = { [weak self] in
             self?.recoverTerminalsAfterInterruption()
         }
         self.terminalRecoveryMonitor.start()
+        observeNavigationChanges()
+    }
+
+    /// The launch path's second half (see `needsDeferredStart`): loads the
+    /// persisted Connection list (Keychain hydration included) and builds
+    /// the runtimes. Idempotent; called from the window root's task AND the
+    /// Settings scene's, so reaching Settings before any window cannot
+    /// observe (and then persist over) an unloaded list.
+    func start() {
+        guard needsDeferredStart else { return }
+        needsDeferredStart = false
+        connections.loadNow()
+        for record in connections.connections {
+            if let runtime = makeRuntime(record) {
+                runtimes.append(runtime)
+            }
+        }
+        hasStarted = true
+    }
+
+    // MARK: - Window reconciliation (ATC-168 M2)
+
+    /// Reconciliation is a model concern: the model observes its own
+    /// navigation snapshot and reconciles terminal lifecycle plus every
+    /// registered window — instead of each window root observing every
+    /// store array and re-evaluating its whole view tree per SSE refresh.
+    /// Sound only while every observed store is MainActor-isolated: the
+    /// window between the tracked read and re-arm has no interleaving.
+    private func observeNavigationChanges() {
+        let snapshot = withObservationTracking {
+            windowNavigationSnapshot()
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.observeNavigationChanges()
+            }
+        }
+        guard snapshot != lastNavigationSnapshot else { return }
+        lastNavigationSnapshot = snapshot
+        reconcileTerminalLifecycle()
+        for entry in windowReconcilers {
+            entry.value?.reconcile(in: self)
+        }
+    }
+
+    func registerWindow(_ windowState: WindowState) {
+        windowReconcilers.removeAll { $0.value == nil || $0.value === windowState }
+        windowReconcilers.append(.init(value: windowState))
+        windowState.reconcile(in: self)
+    }
+
+    func unregisterWindow(_ windowState: WindowState) {
+        windowReconcilers.removeAll { $0.value === windowState || $0.value == nil }
     }
 
     // MARK: - Runtime access
@@ -126,6 +204,9 @@ final class AppModel {
         runtime(id: ref.connectionID)?.terminals.terminal(id: ref.terminalID)
     }
 
+    /// Projects are deliberately absent: a project deletion cascades
+    /// server-side into thread/terminal deletions, which this snapshot
+    /// does observe — reconciliation rides that cascade.
     func windowNavigationSnapshot() -> WindowNavigationSnapshot {
         WindowNavigationSnapshot(connections: runtimes.map { runtime in
             WindowNavigationSnapshot.Connection(

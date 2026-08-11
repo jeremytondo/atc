@@ -165,6 +165,25 @@ struct ConnectionsStoreTests {
         #expect(reloaded.connections[0].token == "t1")
     }
 
+    @Test("deferred loading hydrates nothing until loadNow, then everything")
+    func deferredLoading() throws {
+        let (defaults, suite) = makeDefaults()
+        defer { cleanup(defaults, suite) }
+        let credentials = InMemoryCredentialStore()
+        let seeded = ConnectionsStore(defaults: defaults, credentials: credentials)
+        try seeded.add(name: "First", urlString: "host-a:7331", token: "t1")
+
+        // The launch path (ATC-168 M4): construction touches neither
+        // UserDefaults nor the credential store; loadNow() does both.
+        let deferred = ConnectionsStore(
+            loadingDeferred: true, defaults: defaults, credentials: credentials
+        )
+        #expect(deferred.connections.isEmpty)
+        deferred.loadNow()
+        #expect(deferred.connections.map(\.name) == ["First"])
+        #expect(deferred.connections[0].token == "t1")
+    }
+
     @Test("empty name is rejected on add and update")
     func rejectsEmptyName() throws {
         let (defaults, suite) = makeDefaults()

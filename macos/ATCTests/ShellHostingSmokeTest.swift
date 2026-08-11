@@ -21,9 +21,23 @@ struct ShellHostingSmokeTest {
     }
 
     private func rootView(_ appModel: AppModel, _ windowState: WindowState) -> some View {
-        RootView(configStore: ConfigurationStore(
+        // Mirror WindowRootView's per-window wiring, container included, so
+        // this suite still hosts the real boot tree: the key monitor host,
+        // both overlays, and the keymap onChange.
+        let configStore = ConfigurationStore(
             configURL: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
-        ))
+        )
+        return KeyboardRoutingContainer(
+            router: WindowKeyboardRouter.forWindow(
+                appModel: appModel,
+                windowState: windowState,
+                configStore: configStore
+            ),
+            windowState: windowState,
+            configStore: configStore
+        ) {
+            RootView()
+        }
         .environment(appModel)
         .environment(windowState)
     }

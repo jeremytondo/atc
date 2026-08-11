@@ -29,7 +29,7 @@ struct DashboardView: View {
             .frame(maxWidth: .infinity, alignment: .top)
         }
         .overlay {
-            if appModel.runtimes.isEmpty {
+            if appModel.hasStarted, appModel.runtimes.isEmpty {
                 noConnectionsState
             } else if model.totalProjectCount == 0 && allProjectsLoaded {
                 noProjectsState

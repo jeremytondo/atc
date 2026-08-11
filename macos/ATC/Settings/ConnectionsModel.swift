@@ -146,9 +146,23 @@ final class ConnectionsStore {
         static let legacyToken = "apiToken"
     }
 
-    init(defaults: UserDefaults = .standard, credentials: any CredentialStore = KeychainCredentialStore()) {
+    /// `loadingDeferred` is the launch path (ATC-168 M4): UserDefaults
+    /// decode and per-record Keychain hydration wait for `loadNow()`,
+    /// called off the first frame. Every other caller loads on init.
+    init(
+        loadingDeferred: Bool = false,
+        defaults: UserDefaults = .standard,
+        credentials: any CredentialStore = KeychainCredentialStore()
+    ) {
         self.defaults = defaults
         self.credentials = credentials
+        if !loadingDeferred { loadNow() }
+    }
+
+    /// Load the persisted list, hydrating tokens from the credential store.
+    /// Idempotent enough for the launch path: re-running replaces the list
+    /// from the same persisted source.
+    func loadNow() {
         let hadPlaintextTokens = load()
         migrateLegacyIfNeeded()
         // One-time migration per record: any token found in the persisted

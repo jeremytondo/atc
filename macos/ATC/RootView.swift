@@ -8,18 +8,9 @@ import SwiftUI
 struct RootView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(WindowState.self) private var windowState
-    /// The one store ATCApp creates and loads; previews and hosting tests
-    /// pass an unloaded throwaway explicitly.
-    let configStore: ConfigurationStore
 
     var body: some View {
-        KeyboardRoutingContainer(
-            appModel: appModel,
-            windowState: windowState,
-            configStore: configStore
-        ) {
-            rootContent
-        }
+        rootContent
     }
 
     private var rootContent: some View {
@@ -73,10 +64,6 @@ struct RootView: View {
             windowState.requestTerminalFocus()
         }) { ref in
             NewTerminalSheet(projectRef: ref)
-        }
-        .onChange(of: appModel.windowNavigationSnapshot(), initial: true) {
-            appModel.reconcileTerminalLifecycle()
-            windowState.reconcile(in: appModel)
         }
     }
 
@@ -169,8 +156,16 @@ struct RootView: View {
 }
 
 #Preview {
-    RootView(configStore: ConfigurationStore())
-        .environment(AppModel.preview())
-        .environment(WindowState())
+    let appModel = AppModel.preview()
+    let windowState = WindowState()
+    let configStore = ConfigurationStore()
+    RootView()
+        .environment(appModel)
+        .environment(windowState)
+        .environment(WindowKeyboardRouter.forWindow(
+            appModel: appModel,
+            windowState: windowState,
+            configStore: configStore
+        ))
         .preferredColorScheme(.dark)
 }

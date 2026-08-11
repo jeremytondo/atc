@@ -187,37 +187,23 @@ struct KeyboardMonitorHost: NSViewRepresentable {
 }
 
 struct KeyboardRoutingContainer<Content: View>: View {
-    let appModel: AppModel
+    /// Built once by the per-window root (WindowRootView) — this container
+    /// stores inputs only, so window-root body passes allocate nothing.
+    let router: WindowKeyboardRouter
     let windowState: WindowState
     let configStore: ConfigurationStore
     @ViewBuilder let content: Content
 
-    @State private var router: WindowKeyboardRouter
-
     init(
-        appModel: AppModel,
+        router: WindowKeyboardRouter,
         windowState: WindowState,
         configStore: ConfigurationStore,
         @ViewBuilder content: () -> Content
     ) {
-        self.appModel = appModel
+        self.router = router
         self.windowState = windowState
         self.configStore = configStore
         self.content = content()
-        let context = CommandContext(
-            appModel: appModel,
-            windowState: windowState,
-            configStore: configStore
-        )
-        let router = WindowKeyboardRouter(
-            keymap: configStore.configuration.keymap,
-            context: context
-        )
-        router.isSuspended = { windowState.commandPalettePresentation != nil }
-        router.performJump = { jump in
-            SidebarShortcuts.perform(jump, appModel: appModel, windowState: windowState)
-        }
-        _router = State(initialValue: router)
     }
 
     var body: some View {
