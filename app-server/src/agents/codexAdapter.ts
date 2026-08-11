@@ -13,7 +13,7 @@ import {
   Semaphore,
   Stream,
 } from "effect"
-import { pollUntil } from "../platform/poll.ts"
+import * as Poll from "../platform/poll.ts"
 import * as path from "node:path"
 import type {
   AgentActivity,
@@ -285,10 +285,11 @@ const decodeUnavailable =
 
 /**
  * Drive one paginated codex RPC to completion (the {data, nextCursor} page
- * shape): `find` inspects each page and may finish early with a value; a
- * complete walk (cursor exhausted) yields `complete()`; a repeated cursor
- * or the page cap yields "unknown" — a provider that cannot make
- * pagination progress, or a pathologically long population.
+ * shape): `onPage` sees every page and may finish the walk early by
+ * returning a value; a complete walk (cursor exhausted) yields
+ * `complete()`; a repeated cursor or the page cap yields "unknown" — a
+ * provider that cannot make pagination progress, or a pathologically long
+ * population.
  */
 const walkPaginated = <
   Page extends { readonly nextCursor?: string | null | undefined },
@@ -297,14 +298,14 @@ const walkPaginated = <
   E,
 >(options: {
   readonly page: (cursor: string | undefined) => Effect.Effect<Page, E>
-  readonly find: (page: Page) => Found | undefined
+  readonly onPage: (page: Page) => Found | undefined
   readonly complete: () => Done
 }): Effect.Effect<Found | Done | "unknown", E> =>
   Effect.gen(function* () {
     let cursor: string | undefined
     for (let page = 0; page < 100; page++) {
       const decoded = yield* options.page(cursor)
-      const found = options.find(decoded)
+      const found = options.onPage(decoded)
       if (found !== undefined) return found
       const next = decoded.nextCursor
       if (typeof next !== "string") return options.complete()
@@ -331,7 +332,7 @@ const walkThreadList = (state: ClientState, threadId: string, archived: boolean)
         Effect.mapError(rpcToUnavailable),
         Effect.flatMap(decodeUnavailable(ThreadListReply, "thread/list")),
       ),
-    find: (page) => page.data.find((t) => t.id === threadId),
+    onPage: (page) => page.data.find((t) => t.id === threadId),
     complete: () => "absent" as const,
   })
 
@@ -905,8 +906,7 @@ export const layer = Layer.effect(CodexAdapter)(
               Effect.mapError(rpcToUnavailable),
               Effect.flatMap(decodeUnavailable(LoadedListReply, "thread/loaded/list")),
             ),
-          // Accumulating find: every page feeds `loaded`, none finishes early.
-          find: (page) => {
+          onPage: (page) => {
             loaded.push(...page.data)
             return undefined
           },
@@ -1163,7 +1163,7 @@ export const layer = Layer.effect(CodexAdapter)(
             const preview = (decoded.thread.preview ?? "").trim()
             return preview === "" ? null : preview
           })
-          const discoverPrompt = pollUntil(readPreview, {
+          const discoverPrompt = Poll.pollUntil(readPreview, {
             until: (text) => text !== null,
             schedule: Schedule.min([
               Schedule.exponential(Duration.millis(PROMPT_READ_BACKOFF_MS)),

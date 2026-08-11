@@ -505,16 +505,21 @@ export const layerWith = (options: ThreadsOptions) =>
         // The deliberate initial delay, then checks backing off from twice
         // that interval to a 5-second ceiling — the loop only ever exits by
         // failing (the launch wait races it against identity resolution).
+        // The repeat wraps ONLY the check: wrapping the initial sleep too
+        // would add it to every scheduled delay.
         return Effect.sleep(launchWatchInterval).pipe(
-          Effect.andThen(requireAlive),
-          Effect.repeat({
-            schedule: Schedule.min([
-              Schedule.exponential(
-                Duration.times(Duration.fromInputUnsafe(launchWatchInterval), 2),
-              ),
-              Schedule.spaced("5 seconds"),
-            ]),
-          }),
+          Effect.andThen(
+            requireAlive.pipe(
+              Effect.repeat({
+                schedule: Schedule.min([
+                  Schedule.exponential(
+                    Duration.times(Duration.fromInputUnsafe(launchWatchInterval), 2),
+                  ),
+                  Schedule.spaced("5 seconds"),
+                ]),
+              }),
+            ),
+          ),
           Effect.andThen(Effect.never),
         )
       }

@@ -1,5 +1,5 @@
 import { Effect, FileSystem, Layer, Schedule, Schema, Stream } from "effect"
-import { pollUntil } from "../platform/poll.ts"
+import * as Poll from "../platform/poll.ts"
 import type { Duration } from "effect"
 import * as path from "node:path"
 import { AppConfig, CONTEXT_VARIABLES } from "../platform/config.ts"
@@ -209,7 +209,7 @@ export const layerWith = (options: ZmxOptions) =>
        * it without another `zmx list`), or undefined if none was accepted.
        */
       const pollInventory = (predicate: (sessions: ReadonlyArray<SessionInfo>) => boolean) =>
-        pollUntil(listSessions(), {
+        Poll.pollUntil(listSessions(), {
           until: predicate,
           schedule: Schedule.spaced(pollInterval).pipe(Schedule.upTo({ times: verifyPasses - 1 })),
         }).pipe(Effect.map((sessions) => (predicate(sessions) ? sessions : undefined)))

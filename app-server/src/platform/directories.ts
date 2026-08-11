@@ -18,8 +18,8 @@ import { AppConfig } from "./config.ts"
 // FileSystem service can express neither the traversal (X_OK) access check
 // nor d_type-carrying directory reads (losing d_type would cost a stat per
 // entry). The pipeline around them is Effect, so the bounded timeout
-// interrupts between steps and cancels the stat fan-out instead of
-// abandoning it.
+// interrupts between steps — queued work never starts after the deadline
+// (an already-in-flight OS call still completes harmlessly).
 
 /** Bounded time for any filesystem probe; fail closed beyond it. */
 export const CHECK_TIMEOUT_MILLIS = 2000
@@ -153,9 +153,8 @@ const listProbe = (path: string): Effect.Effect<DirectoryListing, DirectoryUnava
       unclassified.push({ name: dirent.name, path: entryPath })
     }
     // Stat the unclassified entries with bounded concurrency: d_type-less
-    // filesystems report whole directories this way. The fan-out is a real
-    // Effect pool, so the bounded timeout interrupts it — no new stats start
-    // after the deadline, instead of thousands piling up abandoned.
+    // filesystems report whole directories this way (see the header for the
+    // interruption behavior).
     const classified = yield* Effect.forEach(
       unclassified,
       (entry) =>

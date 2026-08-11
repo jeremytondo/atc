@@ -11,7 +11,7 @@ import {
   Scope,
   Stream,
 } from "effect"
-import { pollUntil } from "./poll.ts"
+import * as Poll from "./poll.ts"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { spawn as nodeSpawn } from "node:child_process"
 
@@ -194,7 +194,7 @@ export const waitForProcessExit = (
   pid: number,
   options?: { readonly attempts?: number; readonly interval?: Duration.Input },
 ): Effect.Effect<boolean> =>
-  pollUntil(
+  Poll.pollUntil(
     Effect.sync(() => !isProcessAlive(pid)),
     {
       until: (gone) => gone,

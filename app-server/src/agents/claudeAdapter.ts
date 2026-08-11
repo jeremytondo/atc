@@ -527,7 +527,11 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
         Effect.gen(function* () {
           const executable = yield* resolvedExecutable
           // The held query() drains this queue as its async input iterable;
-          // push feeds it more turns, end is EOF.
+          // push feeds it more turns, end is EOF. The iterable drives its
+          // pulls on a detached fiber reclaimed only when the queue ends —
+          // closeSession's closeInput (which every exit path reaches via
+          // the acquireRelease below) is what keeps it from parking on an
+          // empty queue forever.
           const inputQueue = yield* Queue.make<SDKUserMessage, Cause.Done>()
           // Bounded (overflow fails the stream — see emit); a session that
           // buffers 256 undrained events has lost its consumer.
