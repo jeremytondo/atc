@@ -61,8 +61,8 @@ enum SidebarShortcuts {
         return Array(terminals.prefix(slotCount))
     }
 
-    // Nonisolated: pure formatting, usable from nonisolated closure contexts
-    // such as `Optional.map` without an isolation diagnostic.
+    // Nonisolated: pure formatting (KeyStroke is a nonisolated type), usable
+    // from nonisolated closure contexts such as `Optional.map`.
     nonisolated static func threadBadgeLabel(_ number: Int) -> String {
         KeyStroke(key: "\(number)", modifiers: [.command]).displayDescription
     }
