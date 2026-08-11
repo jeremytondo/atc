@@ -1136,4 +1136,29 @@ describe("CodexAdapter descendant aggregation", () => {
       }),
     30_000,
   )
+
+  it.live("a failed connection attempt is memoized: one probe serves the whole window", () =>
+    Effect.gen(function* () {
+      const sandbox = makeCodexSandbox()
+      // Break the wrapper: every spawn logs itself then dies immediately,
+      // so each real probe fails fast and leaves a visible mark.
+      const spawnLog = path.join(sandbox.base, "spawns.log")
+      fs.writeFileSync(sandbox.wrapper, `#!/bin/sh\necho probe >> "${spawnLog}"\nexit 1\n`)
+      const probes = () =>
+        fs.existsSync(spawnLog) ? fs.readFileSync(spawnLog, "utf8").trim().split("\n").length : 0
+      yield* withAdapter(sandbox, (adapter) =>
+        Effect.gen(function* () {
+          const first = yield* Effect.flip(adapter.checkSession({ providerSessionId: "t" }))
+          assert.strictEqual(first._tag, "AgentUnavailable")
+          const paid = probes()
+          assert.isAtLeast(paid, 1, "the first call must really probe")
+          // Within the memo window the failure is replayed, not re-probed —
+          // a dead Codex costs one probe per window, not one per caller.
+          const second = yield* Effect.flip(adapter.checkSession({ providerSessionId: "t" }))
+          assert.strictEqual(second._tag, "AgentUnavailable")
+          assert.strictEqual(probes(), paid)
+        }),
+      )
+    }),
+  )
 })

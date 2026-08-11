@@ -465,7 +465,7 @@ describe("threads.openTerminal", () => {
     }),
   )
 
-  it.live("a busy state with no live driver re-derives from the adapter on read", () =>
+  it.live("a live shared-server observation stays authoritative after its terminal dies", () =>
     Effect.gen(function* () {
       const { client, thread } = yield* setup
       const repository = yield* ThreadRepository
@@ -477,16 +477,138 @@ describe("threads.openTerminal", () => {
         (t) => t.activityState === "working",
       )
 
-      // The driver dies out from under ATC: stale `working` must re-derive
-      // from the adapter's reconciliation check, not persist as a lie.
+      // The TUI terminal dies but the shared-server feed is still live: the
+      // busy state is current evidence, so reads must NOT burn a provider
+      // reconciliation walk (the scripted "idle" would betray one).
       kit.fake.sessions.delete(sessionNameForTerminalId(terminal.id))
       kit.fakeAgents.codex.setCheckActivity(sessionId, "idle")
       const read = yield* client.v1.getThread({ params: { threadId: thread.id } })
       assert.isUndefined(read.linkedTerminalId)
-      assert.strictEqual(read.activityState, "idle")
+      assert.strictEqual(read.activityState, "working")
+      assert.notInclude(kit.fakeAgents.codex.checkCalls, sessionId)
 
       kit.fakeAgents.codex.setCheckActivity(sessionId, null)
       yield* client.v1.deleteThread({ params: { threadId: thread.id } })
+    }).pipe(Effect.provide(TestLayer)),
+  )
+
+  it.live("a busy state with no live observation re-derives from the adapter on read", () =>
+    Effect.gen(function* () {
+      const { client, thread } = yield* setup
+      const repository = yield* ThreadRepository
+      const terminal = yield* client.v1.openThreadTerminal({ params: { threadId: thread.id } })
+      const sessionId = Option.getOrThrow(yield* repository.get(thread.id)).providerSessionId ?? ""
+      kit.fakeAgents.codex.emitActivity(sessionId, "working")
+      yield* eventually(
+        client.v1.getThread({ params: { threadId: thread.id } }),
+        (t) => t.activityState === "working",
+      )
+
+      // The driver AND its evidence source die out from under ATC: stale
+      // `working` must re-derive from the adapter's reconciliation check,
+      // not persist as a lie.
+      kit.fake.sessions.delete(sessionNameForTerminalId(terminal.id))
+      kit.fakeAgents.codex.endObservations(sessionId)
+      kit.fakeAgents.codex.setCheckActivity(sessionId, "idle")
+      yield* eventually(
+        client.v1.getThread({ params: { threadId: thread.id } }),
+        (t) => t.linkedTerminalId === undefined && t.activityState === "idle",
+      )
+
+      kit.fakeAgents.codex.setCheckActivity(sessionId, null)
+      yield* client.v1.deleteThread({ params: { threadId: thread.id } })
+    }).pipe(Effect.provide(TestLayer)),
+  )
+
+  it.live("a hooks-shaped observation never shields a busy state from re-derivation", () =>
+    Effect.gen(function* () {
+      const { client, project } = yield* setup
+      const repository = yield* ThreadRepository
+      const thread = yield* client.v1.createThread({
+        payload: { projectId: project.id, agentId: "claude-code" },
+      })
+      const terminal = yield* client.v1.openThreadTerminal({ params: { threadId: thread.id } })
+      const sessionId = Option.getOrThrow(yield* repository.get(thread.id)).providerSessionId ?? ""
+      kit.fakeAgents.claude.emitActivity(sessionId, "working")
+      yield* eventually(
+        client.v1.getThread({ params: { threadId: thread.id } }),
+        (t) => t.activityState === "working",
+      )
+
+      // The hooks feed dies silently with the TUI — its subscription is
+      // still registered, but it is no evidence. A busy snapshot must
+      // re-derive through checkSession, never ride the dead feed.
+      kit.fake.sessions.delete(sessionNameForTerminalId(terminal.id))
+      kit.fakeAgents.claude.setCheckActivity(sessionId, "idle")
+      const read = yield* client.v1.getThread({ params: { threadId: thread.id } })
+      assert.strictEqual(read.activityState, "idle")
+      assert.include(kit.fakeAgents.claude.checkCalls, sessionId)
+
+      kit.fakeAgents.claude.setCheckActivity(sessionId, null)
+      yield* client.v1.deleteThread({ params: { threadId: thread.id } })
+    }).pipe(Effect.provide(TestLayer)),
+  )
+
+  it.live("a page of stale-busy threads fans out bounded, never serialized (dead provider)", () =>
+    Effect.gen(function* () {
+      const client = yield* HttpApiTest.groups(Api, ["v1"])
+      const repository = yield* ThreadRepository
+      const fake = kit.fakeAgents.codex
+      const project = yield* client.v1.createProject({
+        payload: { name: "FanOut", defaultWorkingDirectory: realDir },
+      })
+
+      // Ten threads, each left stale-busy with no live observation: the
+      // shape a dead provider leaves behind, where every read must consult
+      // checkSession (kept scripted busy so each listing re-derives).
+      const sessionIds: Array<string> = []
+      for (let i = 0; i < 10; i++) {
+        const thread = yield* client.v1.createThread({
+          payload: { projectId: project.id, agentId: "codex" },
+        })
+        const terminal = yield* client.v1.openThreadTerminal({ params: { threadId: thread.id } })
+        const sessionId =
+          Option.getOrThrow(yield* repository.get(thread.id)).providerSessionId ?? ""
+        sessionIds.push(sessionId)
+        fake.emitActivity(sessionId, "working")
+        yield* eventually(
+          client.v1.getThread({ params: { threadId: thread.id } }),
+          (t) => t.activityState === "working",
+        )
+        kit.fake.sessions.delete(sessionNameForTerminalId(terminal.id))
+        fake.endObservations(sessionId)
+        fake.setCheckActivity(sessionId, "working")
+        // Settle the observation claim release: once the read consults
+        // checkSession, re-derivation (not the dead feed) owns this thread.
+        yield* eventually(
+          client.v1
+            .getThread({ params: { threadId: thread.id } })
+            .pipe(Effect.map(() => fake.checkCalls.includes(sessionId))),
+          (consulted) => consulted,
+        )
+      }
+
+      // One listing over the page: every record re-derives concurrently,
+      // capped at 8 in flight — neither serialized (minutes against a dead
+      // provider) nor a stampede.
+      const before = fake.checkCalls.length
+      fake.setCheckHangs(true)
+      const listing = yield* Effect.forkChild(
+        client.v1.listThreads({ query: { projectId: project.id } }),
+      )
+      yield* eventually(
+        Effect.sync(() => fake.maxConcurrentChecks()),
+        (max) => max === 8,
+      )
+      fake.setCheckHangs(false)
+      const listed = yield* Fiber.join(listing)
+      assert.strictEqual(listed.length, 10)
+      assert.isTrue(listed.every((t) => t.activityState === "working"))
+      assert.strictEqual(fake.checkCalls.length - before, 10)
+      assert.strictEqual(fake.maxConcurrentChecks(), 8)
+
+      for (const sessionId of sessionIds) fake.setCheckActivity(sessionId, null)
+      yield* client.v1.deleteProject({ params: { projectId: project.id } })
     }).pipe(Effect.provide(TestLayer)),
   )
 })

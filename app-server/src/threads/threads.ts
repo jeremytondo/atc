@@ -363,6 +363,19 @@ export const layerWith = (options: ThreadsOptions) =>
           const live = liveActivity.get(record.id) ?? "unknown"
           if (!isBusy(live) || linked !== undefined) return live
           const adapter = adapterFor(record)
+          // A live observation whose feed outlives the TUI (shared-server
+          // providers) is already authoritative — it drives liveActivity —
+          // so a busy snapshot under it is current, not a dead turn to
+          // re-derive. Hooks-fed observations die silently with the TUI,
+          // so their busy states must still re-derive below (for Codex the
+          // re-derivation costs paginated provider walks; skipping it here
+          // is what keeps the listing hot path off the provider).
+          if (
+            adapter?.observationOutlivesTui === true &&
+            observed.get(record.id)?.providerSessionId === record.providerSessionId
+          ) {
+            return live
+          }
           const providerSessionId = record.providerSessionId
           const checked =
             adapter === undefined
@@ -756,8 +769,13 @@ export const layerWith = (options: ThreadsOptions) =>
                 linked.set(terminal.threadId, terminal)
               }
             }
-            return yield* Effect.forEach(wanted, (record) =>
-              assemble(record, linked.get(record.id)),
+            // Bounded fan-out: assembly can hit the provider (resolveActivity
+            // re-derivation), so a page of stale-busy records must neither
+            // serialize behind each other nor stampede the adapter.
+            return yield* Effect.forEach(
+              wanted,
+              (record) => assemble(record, linked.get(record.id)),
+              { concurrency: 8 },
             )
           }),
         get: (id) => repository.require(id).pipe(Effect.flatMap(assembleAlone)),

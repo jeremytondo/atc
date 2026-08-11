@@ -257,6 +257,14 @@ export interface PreparedTuiSession {
 export interface AgentAdapter {
   readonly provider: AgentProvider
   /**
+   * Whether observeSession's feed stays authoritative once no TUI drives
+   * the session: a shared provider server (Codex) keeps streaming evidence
+   * after the TUI dies, so a busy state under a live observation is
+   * current; a hooks feed (Claude) dies silently with the TUI, so a busy
+   * state must re-derive through checkSession instead.
+   */
+  readonly observationOutlivesTui: boolean
+  /**
    * Create a new provider session in `cwd` and start its first turn. The
    * provider's echoed working directory is verified like resume's — a
    * disagreeing echo is `AgentIdentityMismatch`, never adopted.
@@ -575,38 +583,45 @@ export const readInstalledVersion = (
 
 /**
  * The shared version-drift rule (record + warn, never block), memoized to
- * one check per adapter: resolve the configured executable, read the
- * installed version via `--version`, and log one actionable warning when
- * it is below the floor the adapter was validated against. Any failure to
- * determine the version is itself just a warning.
+ * one single-flight check per adapter: resolve the configured executable,
+ * read the installed version via `--version`, and log one actionable
+ * warning when it is below the floor the adapter was validated against.
+ * Warn-only: a missing executable never fails the gate — every call site
+ * resolves or spawns the executable itself and reports the actionable
+ * diagnostic there — and Effect.cached would otherwise pin that failure
+ * past a mid-session install. Uninterruptible because Effect.cached
+ * memoizes interruption too: a dropped request driving the first check
+ * must not become the cached outcome (the check is bounded — the version
+ * read times out at 5 seconds).
  */
 export const makeVersionGate = (
   subprocess: Subprocess["Service"],
   provider: AgentProvider,
   configured: string,
   testedVersion: string,
-): Effect.Effect<void, AgentUnavailable> => {
-  let checked = false
-  return Effect.gen(function* () {
-    if (checked) return
-    checked = true
-    const executable = yield* resolveProviderExecutable(provider, configured)
-    const installed = yield* readInstalledVersion(subprocess, executable)
-    if (installed === null) {
-      return yield* Effect.logWarning(
-        `could not determine the installed ${provider} version (tested against ${testedVersion})`,
-      )
-    }
-    // Components are small; packing keeps the comparison one expression.
-    const pack = (version: string) =>
-      version
-        .split(".")
-        .map(Number)
-        .reduce((total, part) => total * 1_000 + part, 0)
-    if (pack(installed) < pack(testedVersion)) {
-      yield* Effect.logWarning(
-        `installed ${provider} ${installed} is older than the tested ${testedVersion}; proceeding, but upgrade it if provider behavior misbehaves`,
-      )
-    }
-  })
-}
+): Effect.Effect<Effect.Effect<void>> =>
+  Effect.cached(
+    Effect.gen(function* () {
+      const executable = yield* resolveProviderExecutable(provider, configured)
+      const installed = yield* readInstalledVersion(subprocess, executable)
+      if (installed === null) {
+        return yield* Effect.logWarning(
+          `could not determine the installed ${provider} version (tested against ${testedVersion})`,
+        )
+      }
+      // Components are small; packing keeps the comparison one expression.
+      const pack = (version: string) =>
+        version
+          .split(".")
+          .map(Number)
+          .reduce((total, part) => total * 1_000 + part, 0)
+      if (pack(installed) < pack(testedVersion)) {
+        yield* Effect.logWarning(
+          `installed ${provider} ${installed} is older than the tested ${testedVersion}; proceeding, but upgrade it if provider behavior misbehaves`,
+        )
+      }
+    }).pipe(
+      Effect.catchTag("AgentUnavailable", () => Effect.void),
+      Effect.uninterruptible,
+    ),
+  )
