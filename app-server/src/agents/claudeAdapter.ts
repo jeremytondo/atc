@@ -130,6 +130,10 @@ const claudeEnvironment = (): Record<string, string> => {
  * Every Claude TUI opts into Remote Control as part of the same interactive
  * driver. An ineligible account still gets the normal TUI with Claude's own
  * failure notification, so remote availability never becomes a launch gate.
+ *
+ * `--remote-control` takes an optional session name, so it must stay the
+ * last token in argv — anything appended after it would be swallowed as
+ * the name.
  */
 const claudeTuiCommand = (
   executable: string,
@@ -722,6 +726,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
         tuiLaunch: (options) =>
           Effect.gen(function* () {
             const executable = yield* resolveProviderExecutable("claude", config.claudeExecutable)
+            yield* versionCheck
             const { secret, settingsFile } = yield* ensureHookPlumbing(
               options.providerSessionId,
               options.providerMetadata,
