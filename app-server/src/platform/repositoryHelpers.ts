@@ -1,11 +1,8 @@
 import { Effect, Option } from "effect"
 
-// Shared result-shaping for the repositories (ATC-167 M9): the row→record
-// plumbing that was copied verbatim across all three. SQL stays inside each
-// repository — these helpers never see a query. Database failures are
-// defects, not domain errors: the API surfaces them as 500s and the CLI's
-// one-line contract reports them; nothing can handle them (each repository
-// applies Effect.orDie at its own boundary).
+// Shared result-shaping for the repositories: the row→record plumbing that
+// was copied verbatim across all three. SQL stays inside each repository —
+// these helpers never see a query.
 
 /** Row→record result helpers for one repository. */
 export const rowHelpers = <Row, Rec>(entity: string, toRecord: (row: Row) => Rec) => ({

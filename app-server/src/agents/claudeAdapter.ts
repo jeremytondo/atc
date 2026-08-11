@@ -21,16 +21,16 @@ import {
 import type {
   AgentActivity,
   AgentAdapter,
+  AgentConflict,
   AgentConnection,
   AgentEvent,
   AgentIdentityMismatch,
   AgentProtocolError,
   AgentSessionEvent,
+  AgentUnavailable,
 } from "./agentAdapter.ts"
 import {
-  AgentConflict,
   AgentResumeFailed,
-  AgentUnavailable,
   emitAgentEvent,
   makeVersionGate,
   NESTED_SESSION_ENV_VARIABLES,

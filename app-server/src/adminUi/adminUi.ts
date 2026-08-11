@@ -55,8 +55,8 @@ const listBuildDir = async (): Promise<Array<readonly [string, string]>> => {
     }
   } catch {
     // No build output (fresh checkout of a broken state, or web/build was
-    // deleted). Serve 404s rather than memoizing a rejection into a
-    // permanent 500; the warning below points at the fix.
+    // deleted). Serve 404s rather than failing the route layer; the warning
+    // at layer build points at the fix.
   }
   return files
 }

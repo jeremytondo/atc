@@ -58,7 +58,7 @@ export class Events extends Context.Service<
      * moment the stream opens observes the reconciled state and misses
      * nothing.
      */
-    readonly subscribe: <E>(options?: {
+    readonly subscribe: <E = never>(options?: {
       readonly reconcile?: Effect.Effect<unknown, E> | undefined
     }) => Effect.Effect<Stream.Stream<ResourceChangedEvent | Heartbeat>, E>
     /** Currently registered subscribers. Exists for tests and diagnostics. */

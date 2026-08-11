@@ -82,8 +82,8 @@ export class TerminalRepository extends Context.Service<
   }
 >()("app-server/TerminalRepository") {}
 
-// Database-failure policy (defects, orDie at this boundary): see
-// platform/repositoryHelpers.ts.
+// Database failures are defects, not domain errors: the API surfaces them as
+// 500s and the one-line CLI contract reports them; nothing can handle them.
 export const layer = Layer.effect(TerminalRepository)(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient

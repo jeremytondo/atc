@@ -256,8 +256,9 @@ export const layerWith = (options: ZmxOptions) =>
           // client; the session daemon persists. Exec-style commands come
           // from a Schema-typed argv — never a shell string.
           // Per-session overlay on the base fragment; an undefined value
-          // removes the key from the inherited environment (TUI terminals
-          // scrub nested-session markers this way).
+          // removes the key from the *inherited* environment (TUI terminals
+          // scrub nested-session markers this way) — the pinned base keys
+          // above always win.
           const overlay = Object.entries(options.env ?? {})
           const sessionEnv = {
             env: {

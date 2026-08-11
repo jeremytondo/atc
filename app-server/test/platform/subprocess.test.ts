@@ -35,22 +35,23 @@ describe("Subprocess", () => {
       // scrub fragment included) relies on: parent copied, unsetEnv keys
       // dropped, explicit env layered over — so an explicit key survives
       // its own presence in unsetEnv.
+      process.env["ATC_SUBPROCESS_TEST_KEPT"] = "inherited"
       process.env["ATC_SUBPROCESS_TEST_INHERITED"] = "from-parent"
       process.env["ATC_SUBPROCESS_TEST_SCRUBBED"] = "must-not-leak"
       try {
         const child = yield* subprocess.spawn({
-          executable: process.execPath,
-          args: ["test/fixtures/print-env.ts"],
-          cwd: appServerRoot,
+          ...fixture("print-env"),
           env: { ATC_SUBPROCESS_TEST_SCRUBBED: "explicit-wins" },
           extendEnv: true,
           unsetEnv: ["ATC_SUBPROCESS_TEST_SCRUBBED", "ATC_SUBPROCESS_TEST_INHERITED"],
         })
         const lines = yield* Stream.runCollect(child.stdoutLines)
         assert.strictEqual(yield* child.exitCode, 0)
+        assert.include(lines, "ATC_SUBPROCESS_TEST_KEPT=inherited")
         assert.include(lines, "ATC_SUBPROCESS_TEST_SCRUBBED=explicit-wins")
         assert.notInclude(lines, "ATC_SUBPROCESS_TEST_INHERITED=from-parent")
       } finally {
+        delete process.env["ATC_SUBPROCESS_TEST_KEPT"]
         delete process.env["ATC_SUBPROCESS_TEST_INHERITED"]
         delete process.env["ATC_SUBPROCESS_TEST_SCRUBBED"]
       }

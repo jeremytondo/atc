@@ -579,6 +579,8 @@ const threadIdParam = { threadId: Schema.String }
 
 export class V1 extends HttpApiGroup.make("v1")
   .add(
+    // Operation ids (OpenApi.Identifier) are pinned and public API: renaming
+    // one is a breaking change for every generated client.
     HttpApiEndpoint.get("health", "/health", { success: HealthResponse })
       .annotate(OpenApi.Identifier, "getHealth")
       .annotate(OpenApi.Description, "Liveness probe: confirms the server is accepting requests."),

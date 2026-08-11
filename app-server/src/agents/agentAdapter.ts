@@ -457,7 +457,7 @@ export const providerErrors = (provider: AgentProvider) => {
 }
 
 /** Bound on one title one-shot (ATC-155); a hung child/query is cut here. */
-export const TITLE_TIMEOUT = "90 seconds"
+const TITLE_TIMEOUT = "90 seconds"
 
 /** The shared title-generation bound, failing with the provider's protocol error. */
 export const withTitleTimeout =
@@ -479,7 +479,10 @@ export const withTitleTimeout =
  * Deliver one event onto a session's writer feed. Overflow (a bounded
  * queue whose consumer stopped draining) FAILS the stream rather than
  * ending it — a clean end would read as a completed turn to the consumer,
- * not a truncated one (the events.ts subscriber policy, adapted).
+ * not a truncated one (the events.ts subscriber policy, adapted). The
+ * overflow branch arms once the session queues carry capacities (the
+ * ATC-172 reliability change bounds them); on unbounded queues it is
+ * reachable only for an already-ended queue, where failCauseUnsafe no-ops.
  */
 export const emitAgentEvent = (
   queue: Queue.Queue<AgentEvent, AgentProtocolError | Cause.Done>,

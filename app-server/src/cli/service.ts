@@ -170,18 +170,19 @@ const runIgnoring = (
 
 // gui first (normal console login), user as the ssh/headless fallback: the
 // gui domain does not exist without an Aqua session.
-const launchdDomains = (): ReadonlyArray<string> => {
-  // launchd exists only where getuid does (macOS); reaching this without
-  // one is a bug, not a runtime condition.
+// launchd exists only where getuid does (macOS); reaching this without one
+// is a bug, so it dies rather than modeling a failure nothing can handle.
+const launchdDomains: Effect.Effect<ReadonlyArray<string>> = Effect.suspend(() => {
   const uid = process.getuid?.()
-  if (uid === undefined) throw new Error("launchd domains require a POSIX uid")
-  return [`gui/${uid}`, `user/${uid}`]
-}
+  return uid === undefined
+    ? Effect.die(new Error("launchd domains require a POSIX uid"))
+    : Effect.succeed([`gui/${uid}`, `user/${uid}`])
+})
 
 /** The domain the agent is currently loaded in, or undefined. */
 const launchdLoadedDomain = (subprocess: Subprocess["Service"]) =>
   Effect.gen(function* () {
-    for (const domain of launchdDomains()) {
+    for (const domain of yield* launchdDomains) {
       if (
         (yield* runIgnoring(subprocess, "launchctl", ["print", `${domain}/${serviceName}`])) === 0
       ) {
@@ -198,7 +199,7 @@ const launchdLoaded = (subprocess: Subprocess["Service"]) =>
  * bootstrapping again while the old instance is still winding down fails. */
 const launchdUnload = (subprocess: Subprocess["Service"]) =>
   Effect.gen(function* () {
-    for (const domain of launchdDomains()) {
+    for (const domain of yield* launchdDomains) {
       yield* runIgnoring(subprocess, "launchctl", ["bootout", `${domain}/${serviceName}`])
     }
     yield* Cli.pollUntil(
@@ -211,14 +212,14 @@ const launchdUnload = (subprocess: Subprocess["Service"]) =>
 /** Bootstrap into the first domain that accepts it; report the last failure. */
 const launchdBootstrap = (subprocess: Subprocess["Service"], command: string, unitFile: string) =>
   Effect.gen(function* () {
-    const domains = launchdDomains()
+    const domains = yield* launchdDomains
     for (const domain of domains.slice(0, -1)) {
       if ((yield* runIgnoring(subprocess, "launchctl", ["bootstrap", domain, unitFile])) === 0) {
         return
       }
     }
     const fallback = domains.at(-1)
-    if (fallback === undefined) return
+    if (fallback === undefined) return yield* Effect.die(new Error("no launchd domains"))
     yield* run(subprocess, command, "launchctl", ["bootstrap", fallback, unitFile])
   })
 

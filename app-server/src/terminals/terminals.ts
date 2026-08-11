@@ -126,11 +126,6 @@ export const layer = Layer.effect(Terminals)(
       .pipe(Effect.map((sessions) => new Set(sessions.map((s) => s.name))))
 
     /**
-     * The one tombstoning step both reconciliation passes share: mark every
-     * live row whose session a complete inventory omits as ended (one batch
-     * statement) and return the records with the tombstones applied.
-     */
-    /**
      * The one publisher for terminal lifecycle transitions: a transition on
      * a thread's TUI terminal also changes that thread's derived fields
      * (linkedTerminalId, activity re-derivation), so the thread's `updated`
@@ -149,6 +144,11 @@ export const layer = Layer.effect(Terminals)(
         }
       })
 
+    /**
+     * The one tombstoning step both reconciliation passes share: mark every
+     * live row whose session a complete inventory omits as ended (one batch
+     * statement) and return the records with the tombstones applied.
+     */
     const tombstoneAbsent = (
       records: ReadonlyArray<TerminalRecord>,
       present: ReadonlySet<string>,
@@ -211,7 +211,7 @@ export const layer = Layer.effect(Terminals)(
             // failed launch leaves no record.
             if (reachable.has(sessionName)) {
               yield* repository.markLive(record.id)
-              yield* events.publish({ resource: "terminal", id: record.id, change: "created" })
+              yield* publishTerminalChange(record, "created")
               claimed.add(sessionName)
             } else if (present.has(sessionName)) {
               claimed.add(sessionName)
