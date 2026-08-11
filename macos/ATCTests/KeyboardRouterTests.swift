@@ -1,3 +1,4 @@
+import AppKit
 import Testing
 @testable import ATC
 
@@ -155,6 +156,88 @@ struct KeyboardRouterTests {
         isSuspended = false
         #expect(router.handle(refresh, isRepeat: false))
         #expect(executions == [.refresh])
+    }
+
+    @Test("exact ⌘digit and ⌥⌘digit dispatch sidebar jumps and consume")
+    func sidebarJumpDispatch() throws {
+        var jumps: [SidebarJump] = []
+        let router = WindowKeyboardRouter(keymap: try keymap()) { _ in .available }
+        router.performJump = { jumps.append($0) }
+
+        #expect(router.handle(KeyStroke(key: "1", modifiers: [.command]), isRepeat: false))
+        #expect(router.handle(KeyStroke(key: "3", modifiers: [.command, .option]), isRepeat: false))
+        #expect(jumps == [.thread(slot: 0), .terminal(slot: 2)])
+
+        // Repeats are consumed without dispatching again.
+        #expect(router.handle(KeyStroke(key: "1", modifiers: [.command]), isRepeat: true))
+        #expect(jumps.count == 2)
+    }
+
+    @Test("non-exact modifier combos are not jumps")
+    func sidebarJumpExactModifiers() throws {
+        var jumps: [SidebarJump] = []
+        let router = WindowKeyboardRouter(keymap: try keymap()) { _ in .available }
+        router.performJump = { jumps.append($0) }
+
+        #expect(!router.handle(KeyStroke(key: "1", modifiers: [.command, .shift]), isRepeat: false))
+        #expect(!router.handle(KeyStroke(key: "1", modifiers: [.option]), isRepeat: false))
+        #expect(!router.handle(KeyStroke(key: "1", modifiers: []), isRepeat: false))
+        #expect(jumps.isEmpty)
+    }
+
+    @Test("suspension forwards jump shortcuts")
+    func sidebarJumpSuspension() throws {
+        var jumps: [SidebarJump] = []
+        let router = WindowKeyboardRouter(keymap: try keymap()) { _ in .available }
+        router.performJump = { jumps.append($0) }
+        router.isSuspended = { true }
+
+        #expect(!router.handle(KeyStroke(key: "1", modifiers: [.command]), isRepeat: false))
+        #expect(jumps.isEmpty)
+    }
+
+    @Test("a pending sequence keeps sequence semantics for ⌘digit")
+    func sidebarJumpDuringPendingSequence() throws {
+        var jumps: [SidebarJump] = []
+        let router = WindowKeyboardRouter(keymap: try keymap()) { _ in .available }
+        router.performJump = { jumps.append($0) }
+
+        #expect(router.handle(try stroke("cmd+k"), isRepeat: false))
+        #expect(router.handle(KeyStroke(key: "1", modifiers: [.command]), isRepeat: false))
+        #expect(jumps.isEmpty)
+        #expect(router.flash == RouterFlash(message: "No matching command"))
+        #expect(router.pendingNode == nil)
+    }
+
+    @Test("window resign and app deactivation clear held modifiers")
+    func heldModifiersResetOnResign() throws {
+        _ = NSApplication.shared
+        let router = WindowKeyboardRouter(keymap: try keymap()) { _ in .available }
+        let coordinator = KeyboardMonitorHost.Coordinator(
+            router: router,
+            onDeactivate: {},
+            focusFallback: {}
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: true
+        )
+        window.isReleasedWhenClosed = false
+        defer { coordinator.stop() }
+        coordinator.install(for: window)
+
+        router.heldModifiers = [.command]
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+        #expect(router.heldModifiers == [])
+
+        router.heldModifiers = [.command, .option]
+        NotificationCenter.default.post(
+            name: NSApplication.didResignActiveNotification,
+            object: NSApp
+        )
+        #expect(router.heldModifiers == [])
     }
 
     @Test("external unavailable feedback uses the router flash lifecycle")

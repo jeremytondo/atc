@@ -15,6 +15,11 @@ final class WindowKeyboardRouter {
 
     private(set) var state: State = .idle
     private(set) var flash: RouterFlash?
+    /// Modifiers physically held right now, as the flags-changed monitor
+    /// reports them; drives the sidebar's ⌘/⌥⌘ shortcut badges. The monitor
+    /// host resets this on window resign so ⌘Tab-ing away never leaves
+    /// badges stuck on.
+    var heldModifiers: KeyStroke.Modifiers = []
     var keymap: ResolvedKeymap {
         didSet {
             if oldValue.generation != keymap.generation {
@@ -28,6 +33,9 @@ final class WindowKeyboardRouter {
     /// stashes it before clearing window focus so the palette can restore it
     /// on dismissal; AnyObject keeps AppKit out of this file.
     @ObservationIgnored weak var responderBeforeSuspension: AnyObject?
+    /// Sidebar jump dispatch, injected by the routing container so this file
+    /// stays free of navigation concerns.
+    @ObservationIgnored var performJump: @MainActor (SidebarJump) -> Void = { _ in }
     @ObservationIgnored private let executeCommand: @MainActor (CommandID) -> CommandAvailability
     @ObservationIgnored private var flashTask: Task<Void, Never>?
     @ObservationIgnored private var flashToken = 0
@@ -55,6 +63,16 @@ final class WindowKeyboardRouter {
         guard !isSuspended() else { return false }
         switch state {
         case .idle:
+            // ⌘1–9 / ⌥⌘1–9 are hardcoded, reserved ahead of the keymap (the
+            // resolver refuses user bindings on them), and always consumed:
+            // a digit without a target does nothing rather than falling
+            // through to the focused terminal. A pending sequence keeps
+            // sequence semantics instead, like every other direct binding.
+            if let jump = SidebarShortcuts.jump(for: stroke) {
+                clearFlash()
+                if !isRepeat { performJump(jump) }
+                return true
+            }
             guard let node = keymap.root[stroke] else { return false }
             if isRepeat { return true }
             return handle(node)

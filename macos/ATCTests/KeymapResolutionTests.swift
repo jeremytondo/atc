@@ -174,6 +174,25 @@ struct KeymapResolutionTests {
         })
     }
 
+    @Test("sidebar jump digits are reserved in both modifier sets")
+    func reservedJumpDigits() throws {
+        let thread = Keymap.resolve(user: ConfigurationLoader.parse(#"""
+        [keybindings]
+        "cmd+1" = "data.refresh"
+        """#))
+        #expect(try failure(thread).contains {
+            $0.message.contains("cmd+1") && $0.message.contains("Thread Shortcuts")
+        })
+
+        let terminal = Keymap.resolve(user: ConfigurationLoader.parse(#"""
+        [keybindings]
+        "cmd+opt+4" = "data.refresh"
+        """#))
+        #expect(try failure(terminal).contains {
+            $0.message.contains("cmd+opt+4") && $0.message.contains("Terminal Shortcuts")
+        })
+    }
+
     @Test("unknown command ids invalidate the entire candidate")
     func unknownCommand() throws {
         let result = Keymap.resolve(user: ConfigurationLoader.parse(#"""
