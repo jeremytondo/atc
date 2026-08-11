@@ -15,7 +15,9 @@ import {
   Effect,
   FileSystem,
   Layer,
+  Option,
   Queue,
+  Schema,
   Stream,
 } from "effect"
 import type {
@@ -107,6 +109,13 @@ export interface ClaudeAdapterOptions {
   /** How long create/first-turn waits for the SDK's identity evidence. */
   readonly initTimeout?: Duration.Input
 }
+
+// The thread's opaque providerMetadata, as this adapter mints it. Decoded
+// tolerantly: unknown or malformed metadata is "no secret", never an error.
+const ProviderMetadata = Schema.fromJsonString(
+  Schema.Struct({ hookSecret: Schema.optional(Schema.String) }),
+)
+const decodeProviderMetadata = Schema.decodeUnknownOption(ProviderMetadata)
 
 const {
   unavailable,
@@ -462,12 +471,12 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
       /** The persisted hook secret, if the thread's opaque metadata has one. */
       const metadataSecret = (metadata: string | undefined): string | null => {
         if (metadata === undefined) return null
-        try {
-          const parsed = JSON.parse(metadata) as { hookSecret?: unknown }
-          return typeof parsed.hookSecret === "string" ? parsed.hookSecret : null
-        } catch {
-          return null
-        }
+        return decodeProviderMetadata(metadata).pipe(
+          Option.match({
+            onNone: () => null,
+            onSome: (parsed) => parsed.hookSecret ?? null,
+          }),
+        )
       }
 
       /**

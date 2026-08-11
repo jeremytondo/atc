@@ -6,6 +6,7 @@ import {
   Effect,
   FileSystem,
   Layer,
+  Option,
   Queue,
   Schedule,
   Schema,
@@ -150,6 +151,45 @@ const ThreadPreviewReply = Schema.Struct({
   thread: Schema.Struct({ preview: Schema.optional(Schema.NullOr(Schema.String)) }),
 })
 
+// The notification shapes the adapter acts on, decoded with Option-returning
+// decoders: an unrecognized or drifted payload stays the deliberate silent
+// skip (the default branch always tolerated unknown shapes), but a
+// recognized method no longer half-parses through casts.
+const SubAgentActivityNotification = Schema.Struct({
+  threadId: Schema.String,
+  item: Schema.Struct({
+    type: Schema.Literal("subAgentActivity"),
+    agentThreadId: Schema.String,
+  }),
+})
+const StatusChangedNotification = Schema.Struct({
+  threadId: Schema.String,
+  status: Schema.optional(Schema.Unknown),
+})
+const TurnStartedNotification = Schema.Struct({
+  threadId: Schema.String,
+  turn: Schema.Struct({ id: Schema.String }),
+})
+const TurnCompletedNotification = Schema.Struct({
+  threadId: Schema.String,
+  turn: Schema.Struct({ id: Schema.String, status: Schema.optional(Schema.Unknown) }),
+})
+// thread/started, for the armed TUI capture. parentThreadId stays Unknown:
+// its *presence as a string* is the subagent-defense signal, checked at the
+// capture site.
+const ThreadStartedNotification = Schema.Struct({
+  thread: Schema.Struct({
+    id: Schema.String,
+    cwd: Schema.String,
+    parentThreadId: Schema.optional(Schema.Unknown),
+  }),
+})
+const decodeSubAgentActivity = Schema.decodeUnknownOption(SubAgentActivityNotification)
+const decodeStatusChanged = Schema.decodeUnknownOption(StatusChangedNotification)
+const decodeTurnStarted = Schema.decodeUnknownOption(TurnStartedNotification)
+const decodeTurnCompleted = Schema.decodeUnknownOption(TurnCompletedNotification)
+const decodeThreadStarted = Schema.decodeUnknownOption(ThreadStartedNotification)
+
 const statusToActivity = (status: unknown): AgentActivity => {
   if (typeof status !== "object" || status === null) return "unknown"
   const record = status as { type?: unknown; activeFlags?: unknown }
@@ -250,7 +290,12 @@ const decodeUnavailable =
  * or the page cap yields "unknown" — a provider that cannot make
  * pagination progress, or a pathologically long population.
  */
-const walkPaginated = <Page extends { readonly nextCursor?: string | null | undefined }, Found, Done, E>(options: {
+const walkPaginated = <
+  Page extends { readonly nextCursor?: string | null | undefined },
+  Found,
+  Done,
+  E,
+>(options: {
   readonly page: (cursor: string | undefined) => Effect.Effect<Page, E>
   readonly find: (page: Page) => Found | undefined
   readonly complete: () => Done
@@ -278,7 +323,11 @@ const walkPaginated = <Page extends { readonly nextCursor?: string | null | unde
 const walkThreadList = (state: ClientState, threadId: string, archived: boolean) =>
   walkPaginated({
     page: (cursor) =>
-      request(state, "thread/list", cursor === undefined ? { archived } : { archived, cursor }).pipe(
+      request(
+        state,
+        "thread/list",
+        cursor === undefined ? { archived } : { archived, cursor },
+      ).pipe(
         Effect.mapError(rpcToUnavailable),
         Effect.flatMap(decodeUnavailable(ThreadListReply, "thread/list")),
       ),
@@ -299,9 +348,7 @@ const findThread = (state: ClientState, threadId: string) =>
     if (typeof live !== "string") return live
     const archived = yield* walkThreadList(state, threadId, true)
     if (typeof archived !== "string") return archived
-    return live === "absent" && archived === "absent"
-      ? ("absent" as const)
-      : ("unknown" as const)
+    return live === "absent" && archived === "absent" ? ("absent" as const) : ("unknown" as const)
   })
 
 export const layer = Layer.effect(CodexAdapter)(
@@ -427,9 +474,9 @@ export const layer = Layer.effect(CodexAdapter)(
      */
     const captureStarted = (params: Record<string, unknown>): void => {
       if (pendingCapture === null) return
-      const thread = params["thread"] as
-        { id?: unknown; cwd?: unknown; parentThreadId?: unknown } | undefined
-      if (typeof thread?.id !== "string" || typeof thread.cwd !== "string") return
+      const decoded = decodeThreadStarted(params)
+      if (Option.isNone(decoded)) return
+      const thread = decoded.value.thread
       // A subagent thread spawning in the armed capture's cwd must never
       // be adopted as a fresh TUI's identity (ATC-158 robustness; probes
       // show descendants currently skip thread/started, this is defense).
@@ -525,17 +572,14 @@ export const layer = Layer.effect(CodexAdapter)(
     }): void => {
       const params = message.params ?? {}
       if (message.method === "thread/started") return captureStarted(params)
-      const threadId = params["threadId"]
-      if (typeof threadId !== "string") return
       // The child→root mapping arrives as a subAgentActivity item on the
       // PARENT's feed — descendants do not broadcast thread/started
       // (probed, experiments/subagent-activity).
       if (message.method === "item/started" || message.method === "item/completed") {
-        const item = params["item"] as { type?: unknown; agentThreadId?: unknown } | undefined
-        if (item?.type === "subAgentActivity" && typeof item.agentThreadId === "string") {
-          registerDescendant(threadId, item.agentThreadId)
-          emitAggregate(resolveRoot(threadId))
-        }
+        const decoded = decodeSubAgentActivity(params)
+        if (Option.isNone(decoded)) return
+        registerDescendant(decoded.value.threadId, decoded.value.item.agentThreadId)
+        emitAggregate(resolveRoot(decoded.value.threadId))
         return
       }
       // Coarse status fans out for EVERY thread on the shared server
@@ -543,48 +587,44 @@ export const layer = Layer.effect(CodexAdapter)(
       // descendant's change folds into its root's aggregate; a root's
       // change reaches its observers and (deduped) writer feed.
       if (message.method === "thread/status/changed") {
-        const activity = statusToActivity(params["status"])
+        const decoded = decodeStatusChanged(params)
+        if (Option.isNone(decoded)) return
+        const { threadId, status } = decoded.value
+        const activity = statusToActivity(status)
         ownStatus.set(threadId, activity)
         const rootId = resolveRoot(threadId)
         if (rootId !== threadId) descendants.get(rootId)?.set(threadId, activity)
         emitAggregate(rootId)
         return
       }
-      const session = sessions.get(threadId)
-      if (session === undefined) return
-      switch (message.method) {
-        case "turn/started": {
-          const turnId = (params["turn"] as { id?: unknown } | undefined)?.id
-          if (typeof turnId !== "string") return
-          session.activeTurn = turnId
-          emit(session, { type: "turnStarted", turnId })
-          return
-        }
-        case "turn/completed": {
-          const turn = params["turn"] as { id?: unknown; status?: unknown } | undefined
-          const turnId = turn?.id
-          if (typeof turnId !== "string") return
-          if (session.activeTurn === turnId) session.activeTurn = null
-          if (session.ownTurn === turnId) session.ownTurn = null
-          const status = turn?.status
-          const outcome =
-            status === "completed"
-              ? "completed"
-              : status === "interrupted"
-                ? "interrupted"
-                : "failed"
-          emit(
-            session,
-            outcome === "failed"
-              ? { type: "turnCompleted", turnId, outcome, detail: String(status) }
-              : { type: "turnCompleted", turnId, outcome },
-          )
-          return
-        }
-        default:
-          // Item deltas, token usage, MCP startup noise: not status facts.
-          return
+      if (message.method === "turn/started") {
+        const decoded = decodeTurnStarted(params)
+        if (Option.isNone(decoded)) return
+        const session = sessions.get(decoded.value.threadId)
+        if (session === undefined) return
+        session.activeTurn = decoded.value.turn.id
+        emit(session, { type: "turnStarted", turnId: decoded.value.turn.id })
+        return
       }
+      if (message.method === "turn/completed") {
+        const decoded = decodeTurnCompleted(params)
+        if (Option.isNone(decoded)) return
+        const session = sessions.get(decoded.value.threadId)
+        if (session === undefined) return
+        const { id: turnId, status } = decoded.value.turn
+        if (session.activeTurn === turnId) session.activeTurn = null
+        if (session.ownTurn === turnId) session.ownTurn = null
+        const outcome =
+          status === "completed" ? "completed" : status === "interrupted" ? "interrupted" : "failed"
+        emit(
+          session,
+          outcome === "failed"
+            ? { type: "turnCompleted", turnId, outcome, detail: String(status) }
+            : { type: "turnCompleted", turnId, outcome },
+        )
+        return
+      }
+      // Item deltas, token usage, MCP startup noise: not status facts.
     }
 
     const dispatch = (state: ClientState, raw: string): void => {

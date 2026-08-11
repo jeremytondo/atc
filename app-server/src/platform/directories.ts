@@ -87,9 +87,7 @@ const unavailable = (path: string, state: DirectoryUnavailable["state"]) =>
 
 // One filesystem probe: canonicalize, require a directory, require
 // read+traversal. Node errno codes map onto the tagged states.
-const probe = (
-  path: string,
-): Effect.Effect<string, DirectoryUnavailable> =>
+const probe = (path: string): Effect.Effect<string, DirectoryUnavailable> =>
   Effect.gen(function* () {
     const canonical = yield* Effect.tryPromise({
       try: () => fs.realpath(path),
@@ -186,13 +184,11 @@ export const layer = Layer.effect(Directories)(
       canonicalize: (path) => bounded(path, probe(path)),
       check: (path) =>
         bounded(path, probe(path)).pipe(
-          Effect.map(
-            (canonical): DirectoryCheckResult => ({
-              path: canonical,
-              state: "available",
-              checkedAt: new Date().toISOString(),
-            }),
-          ),
+          Effect.map((canonical): DirectoryCheckResult => ({
+            path: canonical,
+            state: "available",
+            checkedAt: new Date().toISOString(),
+          })),
           Effect.catchTag("DirectoryUnavailable", (error) =>
             Effect.succeed<DirectoryCheckResult>({
               path,

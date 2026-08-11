@@ -1,4 +1,15 @@
-import { Context, Duration, Effect, Exit, Layer, Option, Schedule, Scope, Semaphore, Stream } from "effect"
+import {
+  Context,
+  Duration,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  Schedule,
+  Scope,
+  Semaphore,
+  Stream,
+} from "effect"
 import { AgentRegistry } from "../agents/agentRegistry.ts"
 import type {
   AgentActivity,

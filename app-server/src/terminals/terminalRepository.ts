@@ -29,7 +29,9 @@ const TerminalRow = Schema.Struct({
   project_id: Schema.String,
   thread_id: Schema.NullOr(Schema.String),
   name: Schema.NullOr(Schema.String),
-  command: Schema.NullOr(Schema.String),
+  // The one JSON column: decoded/encoded through the schema, so a
+  // corrupt value fails the row decode instead of half-parsing.
+  command: Schema.NullOr(Schema.fromJsonString(Schema.Array(Schema.String))),
   initial_working_directory: Schema.String,
   status: Schema.Literals(["starting", "live", "ended"]),
   created_at: Schema.String,
@@ -42,7 +44,7 @@ const toRecord = (row: typeof TerminalRow.Type): TerminalRecord => ({
   projectId: row.project_id,
   ...(row.thread_id !== null ? { threadId: row.thread_id } : {}),
   ...(row.name !== null ? { name: row.name } : {}),
-  ...(row.command !== null ? { command: JSON.parse(row.command) as Array<string> } : {}),
+  ...(row.command !== null ? { command: row.command } : {}),
   initialWorkingDirectory: row.initial_working_directory,
   status: row.status,
   createdAt: row.created_at,
@@ -162,7 +164,7 @@ export const layer = Layer.effect(TerminalRepository)(
             project_id: input.projectId,
             thread_id: input.threadId ?? null,
             name: input.name ?? null,
-            command: input.command !== undefined ? JSON.stringify(input.command) : null,
+            command: input.command !== undefined ? [...input.command] : null,
             initial_working_directory: input.initialWorkingDirectory,
             status: "starting",
             created_at: now,

@@ -211,9 +211,7 @@ export const layerWith = (options: ZmxOptions) =>
       const pollInventory = (predicate: (sessions: ReadonlyArray<SessionInfo>) => boolean) =>
         pollUntil(listSessions(), {
           until: predicate,
-          schedule: Schedule.spaced(pollInterval).pipe(
-            Schedule.upTo({ times: verifyPasses - 1 }),
-          ),
+          schedule: Schedule.spaced(pollInterval).pipe(Schedule.upTo({ times: verifyPasses - 1 })),
         }).pipe(Effect.map((sessions) => (predicate(sessions) ? sessions : undefined)))
 
       const liveSession = (name: string) => (sessions: ReadonlyArray<SessionInfo>) =>
