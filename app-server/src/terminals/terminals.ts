@@ -64,7 +64,10 @@ export class Terminals extends Context.Service<
   Terminals,
   {
     /** Reconciled listing; an unavailable inventory returns stored state. */
-    readonly list: (projectId?: string) => Effect.Effect<ReadonlyArray<Terminal>>
+    readonly list: (options?: {
+      readonly projectId?: string | undefined
+      readonly threadId?: string | undefined
+    }) => Effect.Effect<ReadonlyArray<Terminal>>
     /** Reconciled read. */
     readonly get: (id: string) => Effect.Effect<Terminal, TerminalNotFound>
     /**
@@ -324,14 +327,15 @@ export const layer = Layer.effect(Terminals)(
       })
 
     return {
-      list: (projectId) =>
+      list: (options) =>
         reconciledRecords.pipe(
           Effect.map((records) =>
             records
               .filter(
                 (record) =>
                   record.status !== "starting" &&
-                  (projectId === undefined || record.projectId === projectId),
+                  (options?.projectId === undefined || record.projectId === options.projectId) &&
+                  (options?.threadId === undefined || record.threadId === options.threadId),
               )
               .map(toTerminal),
           ),

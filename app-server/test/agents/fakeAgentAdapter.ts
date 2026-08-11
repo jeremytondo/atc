@@ -80,11 +80,6 @@ export interface FakeAgentAdapter {
   readonly released: Array<{ providerSessionId: string; providerMetadata: string | undefined }>
 }
 
-export interface FakeAgentAdapterOptions {
-  /** Capability report overrides, so registry tests can tell fakes apart. */
-  readonly capabilities?: Partial<AgentAdapter["capabilities"]>
-}
-
 interface LiveConnection {
   readonly events: Queue.Queue<AgentEvent, Cause.Done>
   activity: AgentActivity
@@ -93,7 +88,7 @@ interface LiveConnection {
   readonly openRequests: Set<string>
 }
 
-export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): FakeAgentAdapter => {
+export const makeFakeAgentAdapter = (): FakeAgentAdapter => {
   const sessions = new Map<string, FakeAgentSession>()
   // One live connection per session — the single-writer rule.
   const connections = new Map<string, LiveConnection>()
@@ -236,11 +231,6 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
 
   const adapter: AgentAdapter = {
     provider: "codex",
-    capabilities: {
-      testedVersion: "0.0.0-fake",
-      tuiObservation: "shared-server",
-      ...options.capabilities,
-    },
     createSession: (options) =>
       Effect.gen(function* () {
         yield* requireAvailable

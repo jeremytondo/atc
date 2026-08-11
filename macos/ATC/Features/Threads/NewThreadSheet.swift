@@ -332,7 +332,7 @@ struct NewThreadSheet: View {
         let detected = selectedRuntime?.agents.agents ?? []
         guard detected.isEmpty else { return detected }
         return AgentID.allCases.map {
-            Agent(id: $0, available: true, testedVersion: "", tuiObservation: .hooks)
+            Agent(id: $0, available: true)
         }
     }
 

@@ -54,7 +54,9 @@ export const V1Handlers = HttpApiBuilder.group(
         .handle("deleteProject", ({ params }) => projects.delete(params.projectId))
         .handle("checkDirectory", ({ query }) => directories.check(query.path))
         .handle("listDirectory", ({ query }) => directories.list(query.path))
-        .handle("listTerminals", ({ query }) => terminals.list(query.projectId))
+        .handle("listTerminals", ({ query }) =>
+          terminals.list({ projectId: query.projectId, threadId: query.threadId }),
+        )
         .handle("createTerminal", ({ payload }) => terminals.create(payload))
         .handle("getTerminal", ({ params }) => terminals.get(params.terminalId))
         .handle("updateTerminal", ({ params, payload }) =>
@@ -62,7 +64,11 @@ export const V1Handlers = HttpApiBuilder.group(
         )
         .handle("deleteTerminal", ({ params }) => terminals.delete(params.terminalId))
         .handle("listThreads", ({ query }) =>
-          threads.list({ projectId: query.projectId, archived: query.archived === "true" }),
+          threads.list({
+            projectId: query.projectId,
+            archived:
+              query.archived === "true" ? "archived" : query.archived === "all" ? "all" : "active",
+          }),
         )
         .handle("createThread", ({ payload }) => threads.create(payload))
         .handle("getThread", ({ params }) => threads.get(params.threadId))

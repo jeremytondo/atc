@@ -695,9 +695,7 @@ enum Fixtures {
             id: id,
             available: available,
             reason: available ? nil : "Not installed",
-            detectedVersion: available ? "1.0.0" : nil,
-            testedVersion: "1.0.0",
-            tuiObservation: id == .codex ? .sharedServer : .hooks
+            detectedVersion: available ? "1.0.0" : nil
         )
     }
 

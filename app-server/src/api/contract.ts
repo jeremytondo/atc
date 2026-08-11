@@ -11,6 +11,10 @@ import {
 // checked-in OpenAPI document (openapi.ts), and typed clients all derive from
 // this module. Authoring conventions (pinned operation ids, schema
 // identifiers, descriptions) live in AGENTS.md "OpenAPI Contract".
+//
+// No listing endpoint paginates, deliberately: a single-user server's
+// collections stay small enough to return whole, and every client consumes
+// full lists. Revisit only when a real client needs paging.
 
 /** Default TCP port of a locally running App Server. */
 export const DEFAULT_PORT = 7331
@@ -249,17 +253,10 @@ export const Agent = Schema.Struct({
       description: "Installed CLI version, when it could be determined.",
     }),
   ),
-  testedVersion: Schema.String.annotate({
-    description: "Version the adapter was validated against (drift warns, never blocks).",
-  }),
-  tuiObservation: Schema.Literals(["shared-server", "hooks"]).annotate({
-    description:
-      "How live activity is observed while a TUI drives a session: full event fan-out from the shared provider server, or coarser provider hook callbacks.",
-  }),
 }).annotate({
   identifier: "Agent",
   description:
-    "A built-in agent provider: availability and capability report, detected on demand and never persisted.",
+    "A built-in agent provider: availability report, detected on demand and never persisted.",
 })
 
 export const AgentList = Schema.Array(Agent).annotate({
@@ -632,6 +629,11 @@ export class V1 extends HttpApiGroup.make("v1")
         projectId: Schema.optionalKey(
           Schema.String.annotate({ description: "Restrict the listing to one project." }),
         ),
+        threadId: Schema.optionalKey(
+          Schema.String.annotate({
+            description: "Restrict the listing to one thread's terminals.",
+          }),
+        ),
       },
       success: TerminalList,
     })
@@ -710,8 +712,10 @@ export class V1 extends HttpApiGroup.make("v1")
           Schema.String.annotate({ description: "Restrict the listing to one project." }),
         ),
         archived: Schema.optionalKey(
-          Schema.Literals(["true", "false"]).annotate({
-            description: '"true" lists archived threads only; the default lists active threads.',
+          Schema.Literals(["true", "false", "all"]).annotate({
+            description:
+              '"true" lists archived threads only, "all" lists active and archived together; ' +
+              'omitted (or "false") lists active threads only.',
           }),
         ),
       },
@@ -814,7 +818,7 @@ export class V1 extends HttpApiGroup.make("v1")
       .annotate(OpenApi.Identifier, "listAgents")
       .annotate(
         OpenApi.Description,
-        "List the built-in agents with availability and capabilities, detected on demand.",
+        "List the built-in agents with availability, detected on demand.",
       ),
     HttpApiEndpoint.get("getAgent", "/agents/:agentId", {
       params: { agentId: Schema.String },
@@ -827,6 +831,10 @@ export class V1 extends HttpApiGroup.make("v1")
       success: HttpApiSchema.StreamSse({ data: ResourceChangedEvent }),
     })
       .annotate(OpenApi.Identifier, "subscribeEvents")
+      // The generated 200 for this endpoint documents StreamSse's decoded
+      // frame envelope, not the data-only bytes the server actually emits —
+      // openapi.ts (withDataOnlySseResponse) replaces it with the wire-true
+      // shape, and openapi.test.ts pins that documented shape to the bytes.
       .annotate(
         OpenApi.Description,
         "Subscribe to live resource-change events (SSE). The stream is ephemeral — no replay. " +
@@ -844,7 +852,10 @@ export class V1 extends HttpApiGroup.make("v1")
       .annotate(OpenApi.Identifier, "checkDirectory")
       .annotate(
         OpenApi.Description,
-        "Demand-driven directory health check with a bounded timeout. Takes a server-host absolute path; the result is never persisted.",
+        "Demand-driven directory health check with a bounded timeout. Takes a server-host absolute path; the result is never persisted. " +
+          'A timed-out check is deliberately a 200 with state "unknown" and reason "timeout" — the check is a report, so an inconclusive ' +
+          "result is still a successful report — while /fs/list models the same timeout as a 422 error, because a listing cannot be " +
+          "partially delivered.",
       ),
     HttpApiEndpoint.get("listDirectory", "/fs/list", {
       query: {
@@ -885,5 +896,44 @@ export class Api extends HttpApi.make("atc")
           variables: { port: { default: `${DEFAULT_PORT}` } },
         },
       ],
+      // The server gates every non-loopback request on a bearer token
+      // (localTrust.ts); loopback requests need no credentials. The empty
+      // requirement documents that anonymous (loopback) access is valid, so
+      // generated clients treat the token as optional but know how to send
+      // it. The generator stamps `security: []` on every operation, and an
+      // operation-level array overrides the document default (OpenAPI 3.1),
+      // so those empty arrays must go for the default to mean anything.
+      transform: (spec) => ({
+        ...spec,
+        security: [{}, { bearerAuth: [] }],
+        components: {
+          ...spec["components"],
+          securitySchemes: {
+            ...spec["components"]["securitySchemes"],
+            bearerAuth: {
+              type: "http",
+              scheme: "bearer",
+              description:
+                "Required for every non-loopback request; loopback requests are trusted without credentials.",
+            },
+          },
+        },
+        paths: Object.fromEntries(
+          Object.entries(spec["paths"] as Record<string, Record<string, unknown>>).map(
+            ([path, operations]) => [
+              path,
+              Object.fromEntries(
+                Object.entries(operations).map(([method, operation]) => {
+                  const { security, ...rest } = operation as { security?: ReadonlyArray<unknown> }
+                  return [
+                    method,
+                    security === undefined || security.length === 0 ? rest : { ...rest, security },
+                  ]
+                }),
+              ),
+            ],
+          ),
+        ),
+      }),
     }),
   ) {}

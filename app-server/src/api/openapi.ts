@@ -73,8 +73,55 @@ const withSsePayloadComponents = (document: ReturnType<typeof OpenApi.fromApi>) 
   } as ReturnType<typeof OpenApi.fromApi>
 }
 
+/**
+ * Replace the generated `/events` 200 with the shape that actually crosses
+ * the wire. The generator documents StreamSse's decoded frame envelope
+ * ({id, event, data}, all required), but the server emits data-only frames
+ * (`data: <json>`) plus `: connected` / `: heartbeat` comment lines — a
+ * strict decoder generated from the envelope would reject every real frame.
+ * The replacement declares the per-frame data payload (the JSON-encoded
+ * ResourceChangedEvent string) and states the full framing protocol in the
+ * response description; openapi.test.ts pins this documented shape to the
+ * emitted bytes. The guard fails generation loudly if the endpoint moves.
+ */
+const withDataOnlySseResponse = (document: ReturnType<typeof OpenApi.fromApi>) => {
+  const paths = document.paths as Record<string, { get?: { responses?: Record<string, unknown> } }>
+  const operation = paths["/api/v1/events"]?.get
+  if (operation?.responses?.["200"] === undefined) {
+    throw new Error("no GET /api/v1/events 200 response to replace; did the endpoint move?")
+  }
+  const response = {
+    description:
+      "A data-only SSE byte stream. Each event is a single `data:` line whose payload is a " +
+      "JSON-encoded ResourceChangedEvent (see that component schema); frames never carry `id:` " +
+      "or `event:` lines. Comment lines are protocol control, ignored by conforming SSE " +
+      "parsers: the stream opens with `: connected` (the resync handshake) and a `: heartbeat` " +
+      "follows roughly every 25 seconds. Example:\n\n" +
+      "```\n" +
+      ": connected\n\n" +
+      ": heartbeat\n\n" +
+      'data: {"resource":"thread","id":"0198aaf1","change":"updated"}\n' +
+      "```",
+    content: {
+      "text/event-stream": {
+        schema: { $ref: "#/components/schemas/ResourceChangedEventJsonEncoding" },
+      },
+    },
+  }
+  return {
+    ...document,
+    paths: {
+      ...paths,
+      "/api/v1/events": {
+        ...paths["/api/v1/events"],
+        get: { ...operation, responses: { ...operation.responses, "200": response } },
+      },
+    },
+  } as unknown as ReturnType<typeof OpenApi.fromApi>
+}
+
 export const openApiDocument = hoistSingleAllOf(
-  withSsePayloadComponents(OpenApi.fromApi(Api)),
+  withDataOnlySseResponse(withSsePayloadComponents(OpenApi.fromApi(Api))),
 ) as ReturnType<typeof OpenApi.fromApi>
 
 /**

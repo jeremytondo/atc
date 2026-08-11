@@ -1,32 +1,9 @@
 import { assert, describe, it } from "@effect/vitest"
 import { Context, Effect, Exit, Layer, Scope } from "effect"
-import { HttpServer } from "effect/unstable/http"
 import * as Events from "../src/events/events.ts"
 import * as Server from "../src/server.ts"
 import { TestBuildInfoLayer } from "./testBuildInfo.ts"
-import { makeTestServiceLayers, TestRepositoryLayers } from "./testLayers.ts"
-
-/**
- * Build a server layer in its own closable scope — closable mid-test, and
- * the finalizer guarantees the listener dies even when an assertion fails
- * first. Returns the built context and the resolved loopback base URL.
- */
-const startServer = <R, E>(layer: Layer.Layer<R | HttpServer.HttpServer, E>) =>
-  Effect.gen(function* () {
-    const scope = yield* Scope.make()
-    yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
-    const context = yield* Layer.build(layer).pipe(Effect.provideService(Scope.Scope, scope))
-    const address = Context.get(context, HttpServer.HttpServer).address
-    if (address._tag !== "TcpAddress") {
-      return yield* Effect.die(`expected a TCP address, got ${address._tag}`)
-    }
-    return {
-      scope,
-      context,
-      hostname: address.hostname,
-      base: `http://127.0.0.1:${address.port}`,
-    }
-  })
+import { makeTestServiceLayers, startServer, TestRepositoryLayers } from "./testLayers.ts"
 
 describe("server layer", () => {
   // it.live: this test does real socket I/O, and the platform's shutdown
