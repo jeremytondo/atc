@@ -83,6 +83,27 @@ struct TerminalReconnectTests {
         #expect(live.callCount == 1)
     }
 
+    @Test("a dead-verified terminal never auto-recovers")
+    func deadVerifiedTerminalStaysEnded() async {
+        let harness = AttachHarness()
+        let delays = RetryDelayRecorder()
+        let live = CheckLiveStub(result: false)
+        let controller = makeController(harness: harness, delays: delays, live: live)
+        defer { controller.disconnect() }
+
+        harness.send(.ended(.retryable("socket closed")), attempt: 0, finish: true)
+        await settle(until: { controller.phase == .ended(.terminalEnded) })
+
+        // The drift this pins: a verification-driven end must disarm
+        // recovery like every other end path — a wake signal must never
+        // reopen a socket to a terminal the server already said is gone.
+        controller.recoverAfterInterruption()
+        await drainPendingTasks()
+        #expect(harness.attemptCount == 1)
+        #expect(controller.phase == .ended(.terminalEnded))
+        #expect(delays.delays.isEmpty)
+    }
+
     @Test("a retryable close whose server read says live reconnects on backoff")
     func retryableWithLiveTerminalReconnects() async {
         let harness = AttachHarness()

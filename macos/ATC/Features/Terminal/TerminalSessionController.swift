@@ -231,7 +231,9 @@ final class TerminalSessionController: Identifiable {
     /// The drain task deliberately survives it: buffered output keeps
     /// flowing to the retained surface (an ended terminal keeps its final
     /// frame; a reconnect's replay reset cancels the drain in
-    /// prepareSurfaceForReplayIfNeeded when it swaps the surface).
+    /// prepareSurfaceForReplayIfNeeded when it swaps the surface). On the
+    /// detach path the controller is dropped immediately — the drain's
+    /// weak self capture is what bounds it there; the two are a pair.
     private func releaseConnection() {
         let connection = connection
         self.connection = nil

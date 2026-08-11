@@ -180,7 +180,7 @@ struct ThreadsStoreTests {
     }
 
     @Test("a modeled failure surfaces the server's message, not a status dump")
-    func openTerminalSurfacesServerMessage() async throws {
+    func openTerminalSurfacesServerMessage() async {
         let (store, client) = await loadedStore()
         client.openThreadTerminalFailure = .init(
             _tag: .providerUnavailable,

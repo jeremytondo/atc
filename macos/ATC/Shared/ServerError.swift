@@ -18,9 +18,12 @@ struct ServerError: LocalizedError {
 }
 
 /// Every documented failure schema carries the server's human-readable
-/// `message` — the one field this seam needs. Conformances below cover the
-/// contract's full error vocabulary; a new tagged error added to the
-/// contract joins the list or fails to compile at its first unwrap site.
+/// `message` — the one field this seam needs. Conformances are added on
+/// demand: a schema without one fails to compile at its first unwrap site.
+/// (A NEW branch appended to an existing anyOf status is the blind spot —
+/// the variadic initializer below cannot see a `valueN` a call site forgot
+/// to pass, so contract changes to anyOf statuses need their unwrap sites
+/// re-checked by hand.)
 protocol ServerErrorPayload {
     var message: String { get }
 }
@@ -31,7 +34,6 @@ extension Components.Schemas.DirectoryCheckTimedOutJsonEncoding: ServerErrorPayl
 extension Components.Schemas.TerminalNotFoundJsonEncoding: ServerErrorPayload {}
 extension Components.Schemas.ZmxUnavailableJsonEncoding: ServerErrorPayload {}
 extension Components.Schemas.TerminalLaunchFailedJsonEncoding: ServerErrorPayload {}
-extension Components.Schemas.AgentNotFoundJsonEncoding: ServerErrorPayload {}
 extension Components.Schemas.ThreadNotFoundJsonEncoding: ServerErrorPayload {}
 extension Components.Schemas.ThreadArchivedJsonEncoding: ServerErrorPayload {}
 extension Components.Schemas.ThreadBusyJsonEncoding: ServerErrorPayload {}
@@ -47,7 +49,8 @@ extension ServerError {
     /// Wrap an anyOf failure payload (a status documented with several
     /// tagged errors): the first populated branch's message. The generated
     /// decoder guarantees at least one branch is populated.
-    init(anyOf branches: (any ServerErrorPayload)?...) {
+    init(anyOf first: (any ServerErrorPayload)?, _ rest: (any ServerErrorPayload)?...) {
+        let branches = [first] + rest
         self.init(message: branches.compactMap { $0?.message }.first ?? "Unknown server error.")
     }
 }

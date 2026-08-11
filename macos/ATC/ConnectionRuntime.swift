@@ -108,7 +108,10 @@ final class ConnectionRuntime: Identifiable {
         // that never open, so it can't report that failure. Stored so
         // stop() during launch cancels it — a probe outliving its runtime
         // would settle reachability on a dead one.
-        firstContactTask = Task { [weak self] in await self?.refresh() }
+        firstContactTask = Task { [weak self] in
+            await self?.refresh()
+            self?.firstContactTask = nil
+        }
         let stream = eventStreamFactory(baseURL, transportHeaders)
         eventTask = Task { [weak self] in
             for await event in stream {
@@ -146,8 +149,8 @@ final class ConnectionRuntime: Identifiable {
         async let terminalsDone: Void = terminals.refresh()
         async let agentsDone: Void = agents.refresh()
         _ = await (projectsDone, threadsDone, terminalsDone, agentsDone)
-        // A refresh whose task was cancelled mid-flight (stop() during
-        // launch) must not settle reachability on a stopped runtime.
+        // Cancelled mid-flight = stop() ran (see start()); don't settle a
+        // stopped runtime.
         guard !Task.isCancelled else { return }
         settleReachability()
     }

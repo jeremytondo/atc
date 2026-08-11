@@ -74,12 +74,9 @@ final class ProjectsStore {
         switch try await client.deleteProject(path: .init(projectId: id)) {
         case .noContent:
             break
-        case .notFound(let failure):
-            throw ServerError(message: try failure.body.json.message)
-        case .serviceUnavailable(let failure):
-            throw ServerError(message: try failure.body.json.message)
-        case .undocumented(statusCode: let status, _):
-            throw ServerError.undocumented(status: status)
+        case .notFound(let failure): throw ServerError(try failure.body.json)
+        case .serviceUnavailable(let failure): throw ServerError(try failure.body.json)
+        case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
         }
         refreshState.invalidateInFlight()
         projects.removeAll { $0.id == id }
