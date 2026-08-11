@@ -25,7 +25,7 @@ struct ConfigurationStoreTests {
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let store = ConfigurationStore(configURL: fixture.config)
 
-        store.loadAtLaunch()
+        store.loadAtLaunchIfNeeded()
 
         #expect(store.configuration.keymap.generation == 1)
         #expect(store.notice == nil)
@@ -46,7 +46,7 @@ struct ConfigurationStoreTests {
         """#, to: fixture.config)
         let store = ConfigurationStore(configURL: fixture.config)
 
-        store.loadAtLaunch()
+        store.loadAtLaunchIfNeeded()
 
         #expect(store.configuration.keymap.generation == 1)
         #expect(store.configuration.keymap.menuShortcuts[.toggleSidebar]
@@ -65,7 +65,7 @@ struct ConfigurationStoreTests {
         """#, to: fixture.config)
         let store = ConfigurationStore(configURL: fixture.config)
 
-        store.loadAtLaunch()
+        store.loadAtLaunchIfNeeded()
 
         #expect(store.configuration.keymap.generation == 0)
         #expect(store.configuration.keymap.menuShortcuts[.toggleSidebar]
@@ -80,7 +80,7 @@ struct ConfigurationStoreTests {
         let fixture = try fixture()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let store = ConfigurationStore(configURL: fixture.config)
-        store.loadAtLaunch()
+        store.loadAtLaunchIfNeeded()
         try write(#"""
         [keyboard]
         mystery = true
@@ -112,7 +112,7 @@ struct ConfigurationStoreTests {
         "ctrl+r" = "data.refresh"
         """#, to: fixture.config)
         let store = ConfigurationStore(configURL: fixture.config)
-        store.loadAtLaunch()
+        store.loadAtLaunchIfNeeded()
         let previousGeneration = store.configuration.keymap.generation
         let previousShortcut = store.configuration.keymap.menuShortcuts[.refresh]
 
@@ -149,7 +149,7 @@ struct ConfigurationStoreTests {
         "ctrl+b" = "view.toggle-sidebar"
         """#, to: fixture.config)
         let store = ConfigurationStore(configURL: fixture.config)
-        store.loadAtLaunch()
+        store.loadAtLaunchIfNeeded()
         try FileManager.default.removeItem(at: fixture.config)
 
         store.reload()
@@ -176,7 +176,7 @@ struct ConfigurationStoreTests {
             configURL: fixture.config,
             onTerminalPreferencesApplied: { applied.append($0) }
         )
-        store.loadAtLaunch()
+        store.loadAtLaunchIfNeeded()
         let previous = store.configuration
 
         try write(#"""
@@ -212,7 +212,7 @@ struct ConfigurationStoreTests {
             onTerminalPreferencesApplied: { applied.append($0) }
         )
 
-        store.loadAtLaunch()
+        store.loadAtLaunchIfNeeded()
         try write(#"""
         [terminal]
         padding_x = 8
@@ -238,7 +238,7 @@ struct ConfigurationStoreTests {
             configURL: fixture.config,
             onTerminalPreferencesApplied: { applied.append($0) }
         )
-        store.loadAtLaunch()
+        store.loadAtLaunchIfNeeded()
 
         #expect(applied == [TerminalPreferences()])
         #expect(store.notice?.message.contains("using defaults") == true)

@@ -21,6 +21,10 @@ struct ATCApp: App {
             SettingsView()
                 .environment(appModel)
                 .preferredColorScheme(.dark)
+                // Settings can be reached before any window's task ran
+                // (restoration edges); an unloaded Connection list must
+                // never be observable — a save would persist over it.
+                .task { appModel.start() }
         }
     }
 }
@@ -55,14 +59,14 @@ private struct WindowRootView: View {
             windowState: windowState,
             configStore: configStore
         ) {
-            RootView(configStore: configStore)
+            RootView()
         }
         .environment(windowState)
         .focusedSceneValue(windowState)
         .task {
             configStore.loadAtLaunchIfNeeded()
             appModel.registerWindow(windowState)
-            await appModel.start()
+            appModel.start()
         }
         .onDisappear {
             appModel.unregisterWindow(windowState)

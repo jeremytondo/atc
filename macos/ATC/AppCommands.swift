@@ -19,6 +19,20 @@ struct AppCommands: Commands {
         }
     }
 
+    /// Context for commands that act on the app, not a window (refresh,
+    /// configuration reload/reveal): they stay available with no key window
+    /// — from Settings, or with every window closed. The throwaway
+    /// WindowState only satisfies the context's shape; app-scoped commands
+    /// never read it.
+    private var appScopedContext: CommandContext {
+        context
+            ?? CommandContext(
+                appModel: appModel,
+                windowState: WindowState(),
+                configStore: configStore
+            )
+    }
+
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             commandButton(.newThread)
@@ -32,7 +46,7 @@ struct AppCommands: Commands {
         CommandGroup(after: .sidebar) {
             commandButton(.toggleSidebar)
             commandButton(.showDashboard)
-            commandButton(.refresh)
+            commandButton(.refresh, appScoped: true)
             commandButton(.toggleCommandPalette)
             commandButton(.searchThreads)
             commandButton(.searchTerminals)
@@ -40,15 +54,15 @@ struct AppCommands: Commands {
         }
 
         CommandGroup(after: .appSettings) {
-            commandButton(.reloadConfiguration)
-            commandButton(.revealConfiguration)
+            commandButton(.reloadConfiguration, appScoped: true)
+            commandButton(.revealConfiguration, appScoped: true)
         }
     }
 
     @ViewBuilder
-    private func commandButton(_ id: CommandID) -> some View {
+    private func commandButton(_ id: CommandID, appScoped: Bool = false) -> some View {
         let descriptor = CommandRegistry.descriptor(for: id)
-        let context = context
+        let context = appScoped ? appScopedContext : context
         let button = Button(descriptor.title) {
             if let context { CommandRegistry.execute(id, context: context) }
         }

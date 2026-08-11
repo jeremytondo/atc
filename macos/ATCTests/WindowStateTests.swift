@@ -289,6 +289,31 @@ struct WindowStateTests {
         #expect(test.model.terminals[terminalRef] != nil)
     }
 
+    @Test("an unlinked-but-live terminal keeps its mapping while retained")
+    func keepsMappingWhileRetained() async throws {
+        let client = ScriptableAppServerClient()
+        let test = try await loadedModel(client)
+        let state = WindowState()
+        let ref = test.threadRef("thr1")
+        await state.openThread(ref, in: test.model)
+        let terminalRef = try #require(state.threadTerminals[ref])
+
+        // The thread lets go of its terminal but the terminal row stays
+        // live: lifecycle reconciliation keeps the controller, and the
+        // window keeps the mapping — the retained final frame.
+        client.threads = client.threads.map { thread in
+            guard thread.id == "thr1" else { return thread }
+            var updated = thread
+            updated.linkedTerminalId = nil
+            return updated
+        }
+        await test.runtime.refresh()
+        await settle(until: { test.model.thread(for: ref)?.linkedTerminalId == nil })
+        state.reconcile(in: test.model)
+        #expect(state.threadTerminals[ref] == terminalRef)
+        #expect(test.model.terminals[terminalRef] != nil)
+    }
+
     @Test("a thread whose server-side terminal vanishes drops its mapping")
     func dropsMappingWhenNothingRetained() async throws {
         let client = ScriptableAppServerClient()

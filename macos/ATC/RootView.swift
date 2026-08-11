@@ -8,9 +8,6 @@ import SwiftUI
 struct RootView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(WindowState.self) private var windowState
-    /// The one store ATCApp creates and loads; previews and hosting tests
-    /// pass an unloaded throwaway explicitly.
-    let configStore: ConfigurationStore
 
     var body: some View {
         rootContent
@@ -159,8 +156,16 @@ struct RootView: View {
 }
 
 #Preview {
-    RootView(configStore: ConfigurationStore())
-        .environment(AppModel.preview())
-        .environment(WindowState())
+    let appModel = AppModel.preview()
+    let windowState = WindowState()
+    let configStore = ConfigurationStore()
+    RootView()
+        .environment(appModel)
+        .environment(windowState)
+        .environment(WindowKeyboardRouter.forWindow(
+            appModel: appModel,
+            windowState: windowState,
+            configStore: configStore
+        ))
         .preferredColorScheme(.dark)
 }

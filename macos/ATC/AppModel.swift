@@ -64,6 +64,10 @@ final class AppModel {
     /// frame on file or Keychain I/O (ATC-168 M4); an injected store is the
     /// test seam and is already loaded, so init builds runtimes directly.
     @ObservationIgnored private var needsDeferredStart = false
+    /// False until the deferred launch load resolves (or immediately on the
+    /// injected-store path): empty-state UI must not flash while the real
+    /// Connection list is still hydrating.
+    private(set) var hasStarted = false
     /// Window states registered for model-driven reconciliation (weak: a
     /// closed window's state must deallocate).
     @ObservationIgnored private var windowReconcilers: [WeakWindowState] = []
@@ -84,6 +88,7 @@ final class AppModel {
         self.attachmentBudget = attachmentBudget
         if let connections {
             self.connections = connections
+            hasStarted = true
         } else {
             self.connections = ConnectionsStore(loadingDeferred: true)
             needsDeferredStart = true
@@ -124,8 +129,10 @@ final class AppModel {
 
     /// The launch path's second half (see `needsDeferredStart`): loads the
     /// persisted Connection list (Keychain hydration included) and builds
-    /// the runtimes. Idempotent; called from the window root's task.
-    func start() async {
+    /// the runtimes. Idempotent; called from the window root's task AND the
+    /// Settings scene's, so reaching Settings before any window cannot
+    /// observe (and then persist over) an unloaded list.
+    func start() {
         guard needsDeferredStart else { return }
         needsDeferredStart = false
         connections.loadNow()
@@ -134,6 +141,7 @@ final class AppModel {
                 runtimes.append(runtime)
             }
         }
+        hasStarted = true
     }
 
     // MARK: - Window reconciliation (ATC-168 M2)
@@ -142,6 +150,8 @@ final class AppModel {
     /// navigation snapshot and reconciles terminal lifecycle plus every
     /// registered window — instead of each window root observing every
     /// store array and re-evaluating its whole view tree per SSE refresh.
+    /// Sound only while every observed store is MainActor-isolated: the
+    /// window between the tracked read and re-arm has no interleaving.
     private func observeNavigationChanges() {
         let snapshot = withObservationTracking {
             windowNavigationSnapshot()
@@ -159,7 +169,7 @@ final class AppModel {
     }
 
     func registerWindow(_ windowState: WindowState) {
-        windowReconcilers.removeAll { $0.value == nil }
+        windowReconcilers.removeAll { $0.value == nil || $0.value === windowState }
         windowReconcilers.append(.init(value: windowState))
         windowState.reconcile(in: self)
     }
@@ -194,6 +204,9 @@ final class AppModel {
         runtime(id: ref.connectionID)?.terminals.terminal(id: ref.terminalID)
     }
 
+    /// Projects are deliberately absent: a project deletion cascades
+    /// server-side into thread/terminal deletions, which this snapshot
+    /// does observe — reconciliation rides that cascade.
     func windowNavigationSnapshot() -> WindowNavigationSnapshot {
         WindowNavigationSnapshot(connections: runtimes.map { runtime in
             WindowNavigationSnapshot.Connection(

@@ -21,20 +21,25 @@ struct ShellHostingSmokeTest {
     }
 
     private func rootView(_ appModel: AppModel, _ windowState: WindowState) -> some View {
-        // Mirror WindowRootView's per-window wiring: RootView's descendants
-        // (sidebar, palette, feedback overlay) read the window's router
-        // from the environment.
+        // Mirror WindowRootView's per-window wiring, container included, so
+        // this suite still hosts the real boot tree: the key monitor host,
+        // both overlays, and the keymap onChange.
         let configStore = ConfigurationStore(
             configURL: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         )
-        return RootView(configStore: configStore)
-            .environment(appModel)
-            .environment(windowState)
-            .environment(WindowKeyboardRouter.forWindow(
+        return KeyboardRoutingContainer(
+            router: WindowKeyboardRouter.forWindow(
                 appModel: appModel,
                 windowState: windowState,
                 configStore: configStore
-            ))
+            ),
+            windowState: windowState,
+            configStore: configStore
+        ) {
+            RootView()
+        }
+        .environment(appModel)
+        .environment(windowState)
     }
 
     @Test("the root view hosts the Dashboard with seeded data without crashing")

@@ -146,16 +146,14 @@ final class ConnectionsStore {
         static let legacyToken = "apiToken"
     }
 
-    init(defaults: UserDefaults = .standard, credentials: any CredentialStore = KeychainCredentialStore()) {
-        self.defaults = defaults
-        self.credentials = credentials
-        loadNow()
-    }
-
-    /// Construction without the load: the launch path defers UserDefaults
-    /// decode and per-record Keychain hydration to `loadNow()`, called off
-    /// the first frame (ATC-168 M4).
-    init(loadingDeferred: Bool, defaults: UserDefaults = .standard, credentials: any CredentialStore = KeychainCredentialStore()) {
+    /// `loadingDeferred` is the launch path (ATC-168 M4): UserDefaults
+    /// decode and per-record Keychain hydration wait for `loadNow()`,
+    /// called off the first frame. Every other caller loads on init.
+    init(
+        loadingDeferred: Bool = false,
+        defaults: UserDefaults = .standard,
+        credentials: any CredentialStore = KeychainCredentialStore()
+    ) {
         self.defaults = defaults
         self.credentials = credentials
         if !loadingDeferred { loadNow() }
