@@ -13,7 +13,8 @@ import {
   Stream,
 } from "effect"
 import * as path from "node:path"
-import { AgentUnavailable, resolveProviderExecutable } from "./agentAdapter.ts"
+import { providerErrors, resolveProviderExecutable } from "./agentAdapter.ts"
+import type { AgentUnavailable } from "./agentAdapter.ts"
 import { AppConfig } from "../platform/config.ts"
 import * as Subprocess from "../platform/subprocess.ts"
 
@@ -84,7 +85,7 @@ export class CodexServer extends Context.Service<
   }
 >()("app-server/CodexServer") {}
 
-const unavailable = (reason: string) => new AgentUnavailable({ provider: "codex", reason })
+const { unavailable } = providerErrors("codex")
 
 /** Readiness-gate failure that must stop the retry loop: the pid is gone. */
 class ServerExited extends Schema.TaggedErrorClass<ServerExited>()("ServerExited", {

@@ -2,8 +2,7 @@ import { Effect, FileSystem, Layer, Schema, Stream } from "effect"
 import type { Duration } from "effect"
 import * as path from "node:path"
 import { AppConfig, CONTEXT_VARIABLES } from "../platform/config.ts"
-import { resolveExecutable as resolveExecutablePath, Subprocess } from "../platform/subprocess.ts"
-import type { SubprocessError } from "../platform/subprocess.ts"
+import * as Subprocess from "../platform/subprocess.ts"
 import { ZmxUnavailable } from "../api/contract.ts"
 import {
   LONGEST_SESSION_NAME,
@@ -86,31 +85,25 @@ export const parseSessionList = (stdout: ReadonlyArray<string>): Array<SessionIn
 }
 
 /**
- * The environment for every zmx child: the parent environment with the
- * mandatory scrubs applied, ATC's private socket directory pinned, and this
- * server's ATC_ENDPOINT injected so agents inside launched sessions can
- * reach the API (ATC-131 context propagation — no secrets, just the URL).
- * Every inherited ATC_* context variable is scrubbed first: a server running
- * inside another ATC session would otherwise leak that session's ids into
- * every terminal it launches, and stale context is worse than none.
+ * The SpawnSpec env fragment for every zmx child — composed by Subprocess,
+ * the one place child environments are built: the parent environment with
+ * the mandatory scrubs applied, ATC's private socket directory pinned, and
+ * this server's ATC_ENDPOINT injected so agents inside launched sessions
+ * can reach the API (ATC-131 context propagation — no secrets, just the
+ * URL). Every inherited ATC_* context variable is scrubbed: a server
+ * running inside another ATC session would otherwise leak that session's
+ * ids into every terminal it launches, and stale context is worse than
+ * none.
  */
-export const zmxChildEnv = (
-  socketDir: string,
-  endpoint: string,
-  parent: Record<string, string | undefined> = process.env,
-): Record<string, string> => {
-  const env: Record<string, string> = {}
-  for (const [key, value] of Object.entries(parent)) {
-    if (value !== undefined) env[key] = value
-  }
-  delete env["ZMX_SESSION"]
-  delete env["ZMX_SESSION_PREFIX"]
-  for (const name of CONTEXT_VARIABLES) delete env[name]
-  env["ZMX_DIR"] = socketDir
-  env["TERM"] = SESSION_TERM_TYPE
-  env["ATC_ENDPOINT"] = endpoint
-  return env
-}
+export const zmxSpawnEnv = (socketDir: string, endpoint: string) => ({
+  env: {
+    ZMX_DIR: socketDir,
+    TERM: SESSION_TERM_TYPE,
+    ATC_ENDPOINT: endpoint,
+  },
+  extendEnv: true,
+  unsetEnv: ["ZMX_SESSION", "ZMX_SESSION_PREFIX", ...CONTEXT_VARIABLES],
+})
 
 /** Printable diagnostic from raw terminal output: control bytes stripped. */
 const printableTail = (tail: string): string =>
@@ -122,7 +115,7 @@ export const layerWith = (options: ZmxOptions) =>
       const pollInterval = options.pollInterval ?? "250 millis"
       const verifyPasses = options.verifyPasses ?? 20
       const config = yield* AppConfig
-      const subprocess = yield* Subprocess
+      const subprocess = yield* Subprocess.Subprocess
       const fs = yield* FileSystem.FileSystem
 
       const socketDir = config.terminalSocketDir
@@ -144,15 +137,15 @@ export const layerWith = (options: ZmxOptions) =>
       yield* fs.makeDirectory(socketDir, { recursive: true, mode: 0o700 })
       yield* fs.chmod(socketDir, 0o700)
 
-      const childEnv = zmxChildEnv(socketDir, `http://127.0.0.1:${config.port}`)
+      const spawnEnv = zmxSpawnEnv(socketDir, `http://127.0.0.1:${config.port}`)
 
       // Explicit resolution, never implicit (the shared resolveExecutable
       // rule), memoized on success — a resolved install does not move mid-run.
       let resolvedExecutable: string | undefined
-      const resolveExecutable = Effect.suspend(() => {
+      const resolveZmxExecutable = Effect.suspend(() => {
         if (resolvedExecutable !== undefined) return Effect.succeed(resolvedExecutable)
         const configured = config.zmxExecutable
-        const resolved = resolveExecutablePath(configured)
+        const resolved = Subprocess.resolveExecutable(configured)
         if (resolved !== null) {
           resolvedExecutable = resolved
           return Effect.succeed(resolved)
@@ -166,7 +159,7 @@ export const layerWith = (options: ZmxOptions) =>
         )
       })
 
-      const unavailable = (error: SubprocessError): ZmxUnavailable =>
+      const unavailable = (error: Subprocess.SubprocessError): ZmxUnavailable =>
         new ZmxUnavailable({
           reason: `cannot run zmx (${error.operation}): ${error.message}`,
         })
@@ -174,8 +167,8 @@ export const layerWith = (options: ZmxOptions) =>
       /** Run a run-to-completion zmx command, capturing stdout + exit code. */
       const runZmx = (args: ReadonlyArray<string>) =>
         Effect.gen(function* () {
-          const executable = yield* resolveExecutable
-          const child = yield* subprocess.spawn({ executable, args, env: childEnv })
+          const executable = yield* resolveZmxExecutable
+          const child = yield* subprocess.spawn({ executable, args, ...spawnEnv })
           yield* child.endInput
           const stdout = yield* Stream.runCollect(child.stdoutLines)
           const exitCode = yield* child.exitCode
@@ -229,7 +222,7 @@ export const layerWith = (options: ZmxOptions) =>
 
       const createSession: TerminalAdapter["Service"]["createSession"] = (options) =>
         Effect.gen(function* () {
-          const executable = yield* resolveExecutable
+          const executable = yield* resolveZmxExecutable
           const fail = (reason: string) =>
             Effect.fail(
               new SessionOperationFailed({
@@ -262,12 +255,20 @@ export const layerWith = (options: ZmxOptions) =>
           // session is in the inventory the scope closes, detaching the
           // client; the session daemon persists. Exec-style commands come
           // from a Schema-typed argv — never a shell string.
-          // Per-session overlay on the base child env; undefined removes a
-          // key (TUI terminals scrub nested-session markers this way).
-          const sessionEnv = { ...childEnv }
-          for (const [key, value] of Object.entries(options.env ?? {})) {
-            if (value === undefined) delete sessionEnv[key]
-            else sessionEnv[key] = value
+          // Per-session overlay on the base fragment; an undefined value
+          // removes the key from the inherited environment (TUI terminals
+          // scrub nested-session markers this way).
+          const overlay = Object.entries(options.env ?? {})
+          const sessionEnv = {
+            env: {
+              ...spawnEnv.env,
+              ...Object.fromEntries(overlay.filter(([, value]) => value !== undefined)),
+            },
+            extendEnv: true,
+            unsetEnv: [
+              ...spawnEnv.unsetEnv,
+              ...overlay.filter(([, value]) => value === undefined).map(([key]) => key),
+            ],
           }
           const client = yield* Effect.gen(function* () {
             const child = yield* subprocess
@@ -275,7 +276,7 @@ export const layerWith = (options: ZmxOptions) =>
                 executable,
                 args: ["attach", options.name, ...(options.command ?? [])],
                 cwd: options.cwd,
-                env: sessionEnv,
+                ...sessionEnv,
                 // The tail is the launch-failure diagnostic below.
                 captureOutputTail: true,
               })
@@ -339,12 +340,12 @@ export const layerWith = (options: ZmxOptions) =>
               }),
             )
           }
-          const executable = yield* resolveExecutable
+          const executable = yield* resolveZmxExecutable
           const child = yield* subprocess
             .spawnPty({
               executable,
               args: ["attach", name],
-              env: childEnv,
+              ...spawnEnv,
               cols: size.cols,
               rows: size.rows,
             })

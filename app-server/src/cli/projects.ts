@@ -1,4 +1,3 @@
-import { Effect, Option } from "effect"
 import { Argument, Command, Flag } from "effect/unstable/cli"
 import * as path from "node:path"
 import * as Cli from "./cli.ts"
@@ -45,10 +44,8 @@ const projectUpdate = Cli.clientCommand(
       params: { projectId },
       // The contract uses absent keys (not undefined/null) for omitted fields.
       payload: {
-        ...(Option.isSome(name) ? { name: name.value } : {}),
-        ...(Option.isSome(directory)
-          ? { defaultWorkingDirectory: path.resolve(directory.value) }
-          : {}),
+        ...Cli.optionalKey("name", name),
+        ...Cli.optionalKey("defaultWorkingDirectory", directory, path.resolve),
       },
     }),
 )
@@ -58,13 +55,11 @@ const projectDelete = Cli.clientCommand(
   "Delete a project and every thread and terminal it owns (never touches the filesystem)",
   { projectId: projectIdArgument, yes: Cli.yesFlag },
   (client, { projectId, yes }) =>
-    yes
-      ? client.v1.deleteProject({ params: { projectId } })
-      : Effect.fail(
-          new Error(
-            "refusing to delete without --yes (also deletes the project's threads and terminals, never the directory)",
-          ),
-        ),
+    Cli.requireYes(
+      yes,
+      "also deletes the project's threads and terminals, never the directory",
+      client.v1.deleteProject({ params: { projectId } }),
+    ),
 )
 
 export const project = Command.make("project").pipe(

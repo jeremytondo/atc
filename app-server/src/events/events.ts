@@ -49,9 +49,18 @@ export class Events extends Context.Service<
     /**
      * Register a subscriber (eagerly — see the header) and return its live
      * stream of events interleaved with heartbeat ticks, which ends on lag
-     * or on close().
+     * or on close(). `reconcile` (the "a client showed up" refresh) runs
+     * BEFORE registration — this ordering is the rule, not the caller's
+     * choice: a queue registered first would sit in the subscriber set
+     * until overflow if the fallible reconcile failed — or the request died
+     * during it — before the stream's cleanup was armed. Registration still
+     * precedes the first delivered event, so a client that resyncs the
+     * moment the stream opens observes the reconciled state and misses
+     * nothing.
      */
-    readonly subscribe: () => Effect.Effect<Stream.Stream<ResourceChangedEvent | Heartbeat>>
+    readonly subscribe: <E>(options?: {
+      readonly reconcile?: Effect.Effect<unknown, E> | undefined
+    }) => Effect.Effect<Stream.Stream<ResourceChangedEvent | Heartbeat>, E>
     /** Currently registered subscribers. Exists for tests and diagnostics. */
     readonly subscriberCount: () => Effect.Effect<number>
     /** End every subscriber stream, current and future. Idempotent. */
@@ -107,8 +116,9 @@ export const layerWith = (options: EventsOptions) =>
 
       return {
         publish: (event) => Effect.sync(() => offer(event)),
-        subscribe: () =>
+        subscribe: (options) =>
           Effect.gen(function* () {
+            if (options?.reconcile !== undefined) yield* options.reconcile
             const queue = yield* Queue.make<ResourceChangedEvent | Heartbeat, Cause.Done>({
               capacity,
             })

@@ -1,4 +1,4 @@
-import { Effect, Option } from "effect"
+import { Effect } from "effect"
 import { Argument, Command, Flag } from "effect/unstable/cli"
 import * as path from "node:path"
 import { AGENT_IDS } from "../api/contract.ts"
@@ -12,13 +12,11 @@ import { attachAndReport } from "./terminals.ts"
 
 const threadIdArgument = Argument.string("thread-id")
 
-const projectFlag = Flag.string("project").pipe(Flag.withDescription("Project id"))
-
 const threadList = Cli.clientCommand(
   "thread list",
   "List threads (archived threads only with --archived)",
   {
-    project: Flag.optional(projectFlag),
+    project: Flag.optional(Cli.projectFlag),
     archived: Flag.boolean("archived").pipe(
       Flag.withDescription("List archived threads instead of active ones"),
     ),
@@ -26,7 +24,7 @@ const threadList = Cli.clientCommand(
   (client, { project, archived }) =>
     client.v1.listThreads({
       query: {
-        ...(Option.isSome(project) ? { projectId: project.value } : {}),
+        ...Cli.optionalKey("projectId", project),
         ...(archived ? { archived: "true" as const } : {}),
       },
     }),
@@ -43,7 +41,7 @@ const threadCreate = Cli.clientCommand(
   "thread create",
   "Create a thread (local record only; the agent session starts on first use)",
   {
-    project: projectFlag,
+    project: Cli.projectFlag,
     agent: Flag.choice("agent", AGENT_IDS).pipe(
       Flag.withDescription("Agent to converse with (codex or claude-code)"),
     ),
@@ -57,8 +55,8 @@ const threadCreate = Cli.clientCommand(
       payload: {
         projectId: project,
         agentId: agent,
-        ...(Option.isSome(name) ? { name: name.value } : {}),
-        ...(Option.isSome(directory) ? { workingDirectory: path.resolve(directory.value) } : {}),
+        ...Cli.optionalKey("name", name),
+        ...Cli.optionalKey("workingDirectory", directory, path.resolve),
       },
     }),
 )
@@ -105,9 +103,11 @@ const threadDelete = Cli.clientCommand(
   "Delete a thread: kill its live linked terminal, remove the record (provider history is untouched)",
   { threadId: threadIdArgument, yes: Cli.yesFlag },
   (client, { threadId, yes }) =>
-    yes
-      ? client.v1.deleteThread({ params: { threadId } })
-      : Effect.fail(new Error("refusing to delete without --yes (kills the thread's terminal)")),
+    Cli.requireYes(
+      yes,
+      "kills the thread's terminal",
+      client.v1.deleteThread({ params: { threadId } }),
+    ),
 )
 
 export const thread = Command.make("thread").pipe(

@@ -1,5 +1,6 @@
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import { SqlClient, SqlSchema } from "effect/unstable/sql"
+import { requireFound, rowHelpers } from "../platform/repositoryHelpers.ts"
 import { ThreadNotFound } from "../api/contract.ts"
 import type { AgentId } from "../api/contract.ts"
 
@@ -117,8 +118,8 @@ export class ThreadRepository extends Context.Service<
   }
 >()("app-server/ThreadRepository") {}
 
-// Database failures are defects, not domain errors: the API surfaces them as
-// 500s and the one-line CLI contract reports them; nothing can handle them.
+// Database-failure policy (defects, orDie at this boundary): see
+// platform/repositoryHelpers.ts.
 export const layer = Layer.effect(ThreadRepository)(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient
@@ -248,14 +249,7 @@ export const layer = Layer.effect(ThreadRepository)(
       execute: (id) => sql`DELETE FROM threads WHERE id = ${id}`,
     })
 
-    const firstRecord = (rows: ReadonlyArray<typeof ThreadRow.Type>) =>
-      Option.fromNullishOr(rows[0]).pipe(Option.map(toRecord))
-
-    /** For updates whose caller holds the record: a vanished row is a bug. */
-    const requireFirst = (what: string) => (rows: ReadonlyArray<typeof ThreadRow.Type>) =>
-      rows[0] !== undefined
-        ? Effect.succeed(toRecord(rows[0]))
-        : Effect.die(new Error(`${what}: thread row vanished mid-update`))
+    const { firstRecord, requireFirst } = rowHelpers("thread", toRecord)
 
     const get = (id: string) => getRows(id).pipe(Effect.map(firstRecord), Effect.orDie)
 
@@ -288,15 +282,7 @@ export const layer = Layer.effect(ThreadRepository)(
           Effect.orDie,
         ),
       get,
-      require: (id) =>
-        get(id).pipe(
-          Effect.flatMap(
-            Option.match({
-              onNone: () => Effect.fail(new ThreadNotFound({ threadId: id })),
-              onSome: Effect.succeed,
-            }),
-          ),
-        ),
+      require: (id) => get(id).pipe(requireFound(() => new ThreadNotFound({ threadId: id }))),
       rename: (id, name) =>
         Effect.suspend(() => renameRows({ id, name, updated_at: new Date().toISOString() })).pipe(
           Effect.orDie,

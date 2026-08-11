@@ -13,7 +13,7 @@ import type {
 } from "../agents/agentAdapter.ts"
 import { NESTED_SESSION_ENV_VARIABLES, sanitizeTitle } from "../agents/agentAdapter.ts"
 import {
-  AGENT_IDS,
+  isAgentId,
   ProviderSessionConflict,
   ProviderUnavailable,
   Thread as ThreadSchema,
@@ -22,7 +22,6 @@ import {
   ThreadNotFound,
 } from "../api/contract.ts"
 import type {
-  AgentId,
   CreateThreadRequest,
   DirectoryCheckTimedOut,
   DirectoryUnavailable,
@@ -162,9 +161,6 @@ export class Threads extends Context.Service<
     >
   }
 >()("app-server/Threads") {}
-
-const isAgentId = (id: string): id is typeof AgentId.Type =>
-  (AGENT_IDS as ReadonlyArray<string>).includes(id)
 
 export const layerWith = (options: ThreadsOptions) =>
   Layer.effect(Threads)(

@@ -171,7 +171,10 @@ const runIgnoring = (
 // gui first (normal console login), user as the ssh/headless fallback: the
 // gui domain does not exist without an Aqua session.
 const launchdDomains = (): ReadonlyArray<string> => {
-  const uid = process.getuid!()
+  // launchd exists only where getuid does (macOS); reaching this without
+  // one is a bug, not a runtime condition.
+  const uid = process.getuid?.()
+  if (uid === undefined) throw new Error("launchd domains require a POSIX uid")
   return [`gui/${uid}`, `user/${uid}`]
 }
 
@@ -214,11 +217,9 @@ const launchdBootstrap = (subprocess: Subprocess["Service"], command: string, un
         return
       }
     }
-    yield* run(subprocess, command, "launchctl", [
-      "bootstrap",
-      domains[domains.length - 1]!,
-      unitFile,
-    ])
+    const fallback = domains.at(-1)
+    if (fallback === undefined) return
+    yield* run(subprocess, command, "launchctl", ["bootstrap", fallback, unitFile])
   })
 
 const unitFileFor = (platform: Platform): string =>

@@ -1,6 +1,7 @@
 import { assert } from "@effect/vitest"
 import { BunHttpServer, BunServices } from "@effect/platform-bun"
 import { Context, Effect, Exit, Layer, Scope, Stream } from "effect"
+import type { Duration } from "effect"
 import { HttpServer } from "effect/unstable/http"
 import * as fs from "node:fs"
 import * as os from "node:os"
@@ -270,13 +271,18 @@ export const startServer = <R, E>(layer: Layer.Layer<R | HttpServer.HttpServer, 
   })
 
 /** Poll (real clock) until `predicate` accepts the effect's value; bounded. */
-export const eventually = <A, E>(effect: Effect.Effect<A, E>, predicate: (value: A) => boolean) =>
+export const eventually = <A, E>(
+  effect: Effect.Effect<A, E>,
+  predicate: (value: A) => boolean,
+  options?: { readonly attempts?: number; readonly interval?: Duration.Input },
+) =>
   Effect.gen(function* () {
+    const attempts = options?.attempts ?? 300
     for (let attempt = 0; ; attempt++) {
       const value = yield* effect
       if (predicate(value)) return value
-      assert.isBelow(attempt, 300, `condition never held; last: ${JSON.stringify(value)}`)
-      yield* Effect.sleep("10 millis")
+      assert.isBelow(attempt, attempts, `condition never held; last: ${JSON.stringify(value)}`)
+      yield* Effect.sleep(options?.interval ?? "10 millis")
     }
   })
 
@@ -299,9 +305,8 @@ export const collectText = (output: Stream.Stream<Uint8Array, unknown>) =>
 
 /** Poll until `pattern` shows up in the sink; assertion-bounded. */
 export const waitForText = (sink: { text: string }, pattern: string) =>
-  Effect.gen(function* () {
-    for (let attempt = 0; !sink.text.includes(pattern); attempt++) {
-      assert.isBelow(attempt, 100, `never saw ${JSON.stringify(pattern)} in ${sink.text}`)
-      yield* Effect.sleep("50 millis")
-    }
-  })
+  eventually(
+    Effect.sync(() => sink.text),
+    (text) => text.includes(pattern),
+    { attempts: 100, interval: "50 millis" },
+  )

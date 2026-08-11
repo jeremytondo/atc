@@ -203,18 +203,27 @@ export const waitForProcessExit = (
 const truncate = (line: string): string =>
   line.length > MAX_CAPTURED_LINE_LENGTH ? `${line.slice(0, MAX_CAPTURED_LINE_LENGTH)}…` : line
 
-/** The one place child environments are composed (and the one sanctioned
- * process.env read for them): explicit env, optionally over the parent
- * environment minus `unsetEnv`. */
-const childEnv = (spec: SpawnSpec): Record<string, string> => {
-  const explicit = spec.env ?? {}
-  if (spec.extendEnv !== true) return explicit
+/**
+ * A copy of the parent environment minus `unset` — the one sanctioned
+ * process.env read for child environments. Exported for the two children
+ * ATC does not spawn itself (the Agent SDK's own child, the smoke probe),
+ * which need the same inherited-credentials copy without a SpawnSpec.
+ */
+export const inheritedEnv = (unset: ReadonlyArray<string> = []): Record<string, string> => {
   const env: Record<string, string> = {}
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined) env[key] = value
   }
-  for (const name of spec.unsetEnv ?? []) delete env[name]
-  return { ...env, ...explicit }
+  for (const name of unset) delete env[name]
+  return env
+}
+
+/** The one place child environments are composed: explicit env, optionally
+ * over the parent environment minus `unsetEnv`. */
+const childEnv = (spec: SpawnSpec): Record<string, string> => {
+  const explicit = spec.env ?? {}
+  if (spec.extendEnv !== true) return explicit
+  return { ...inheritedEnv(spec.unsetEnv), ...explicit }
 }
 
 /** The one place a SubprocessError is built from an arbitrary cause. */

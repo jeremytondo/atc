@@ -1,4 +1,4 @@
-import { Console, Effect, Option } from "effect"
+import { Console, Effect } from "effect"
 import { Argument, Command, Flag } from "effect/unstable/cli"
 import * as path from "node:path"
 import type * as Client from "../api/client.ts"
@@ -11,15 +11,13 @@ import * as Cli from "./cli.ts"
 
 const terminalIdArgument = Argument.string("terminal-id")
 
-const projectFlag = Flag.string("project").pipe(Flag.withDescription("Project id"))
-
 const terminalList = Cli.clientCommand(
   "terminal list",
   "List terminals (reconciled against the zmx inventory)",
-  { project: Flag.optional(projectFlag) },
+  { project: Flag.optional(Cli.projectFlag) },
   (client, { project }) =>
     client.v1.listTerminals({
-      query: Option.isSome(project) ? { projectId: project.value } : {},
+      query: Cli.optionalKey("projectId", project),
     }),
 )
 
@@ -34,7 +32,7 @@ const terminalCreate = Cli.clientCommand(
   "terminal create",
   "Create a terminal and start its zmx session (an interactive shell, or the given command argv)",
   {
-    project: projectFlag,
+    project: Cli.projectFlag,
     name: Flag.optional(Cli.nameFlag("Display label")),
     directory: Flag.optional(
       Cli.directoryFlag("Working directory (may be relative; defaults to the project's default)"),
@@ -48,8 +46,8 @@ const terminalCreate = Cli.clientCommand(
     client.v1.createTerminal({
       payload: {
         projectId: project,
-        ...(Option.isSome(name) ? { name: name.value } : {}),
-        ...(Option.isSome(directory) ? { workingDirectory: path.resolve(directory.value) } : {}),
+        ...Cli.optionalKey("name", name),
+        ...Cli.optionalKey("workingDirectory", directory, path.resolve),
         ...(command.length > 0 ? { command } : {}),
       },
     }),
@@ -68,9 +66,11 @@ const terminalDelete = Cli.clientCommand(
   "Delete a terminal: kill its zmx session, verify absence, remove the record",
   { terminalId: terminalIdArgument, yes: Cli.yesFlag },
   (client, { terminalId, yes }) =>
-    yes
-      ? client.v1.deleteTerminal({ params: { terminalId } })
-      : Effect.fail(new Error("refusing to delete without --yes (kills the running session)")),
+    Cli.requireYes(
+      yes,
+      "kills the running session",
+      client.v1.deleteTerminal({ params: { terminalId } }),
+    ),
 )
 
 /**

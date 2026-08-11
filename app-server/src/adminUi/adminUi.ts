@@ -61,45 +61,55 @@ const listBuildDir = async (): Promise<Array<readonly [string, string]>> => {
   return files
 }
 
-// Built once per process: the content is fixed for the process lifetime in
-// both modes (embedded files in a compiled binary, the committed build on a
-// source run).
-let assetsMemo: Promise<ReadonlyMap<string, Asset>> | undefined
-const loadAssets = () =>
-  (assetsMemo ??=
-    buildInfo.commit === "dev"
-      ? listBuildDir().then(toAssetMap)
-      : import("./manifest.generated.ts").then((manifest) => toAssetMap(manifest.assets)))
+const loadAssets = (): Promise<ReadonlyMap<string, Asset>> =>
+  buildInfo.commit === "dev"
+    ? listBuildDir().then(toAssetMap)
+    : import("./manifest.generated.ts").then((manifest) => toAssetMap(manifest.assets))
 
-let warnedEmpty = false
-
-export const route = HttpRouter.add(
-  "GET",
-  "*",
+// The asset map is built once at layer build — the content is fixed for the
+// process lifetime in both modes (embedded files in a compiled binary, the
+// committed build on a source run) — and each asset's bytes are read once,
+// on first request, then served from memory.
+export const route = HttpRouter.use((router) =>
   Effect.gen(function* () {
-    const request = yield* HttpServerRequest.HttpServerRequest
     const assets = yield* Effect.promise(loadAssets)
-    if (assets.size === 0 && !warnedEmpty) {
-      warnedEmpty = true
+    if (assets.size === 0) {
       yield* Effect.logWarning("admin UI assets missing — run `mise run web:build`")
     }
-    const rawPath = new URL(request.url, "http://localhost").pathname
-    const pathname = yield* Effect.try(() => decodeURIComponent(rawPath)).pipe(
-      Effect.orElseSucceed(() => rawPath),
+    const loaded = new Map<string, { readonly bytes: Uint8Array; readonly contentType: string }>()
+    yield* router.add(
+      "GET",
+      "*",
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest
+        const rawPath = new URL(request.url, "http://localhost").pathname
+        const pathname = yield* Effect.try(() => decodeURIComponent(rawPath)).pipe(
+          Effect.orElseSucceed(() => rawPath),
+        )
+        const asset = assets.get(pathname)
+        if (asset === undefined) {
+          // "/docs/" -> "/docs": the prerendered pages use relative asset
+          // URLs, which only resolve from the canonical (slash-less) path.
+          const trimmed = pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : ""
+          if (assets.has(trimmed)) return HttpServerResponse.redirect(trimmed, { status: 308 })
+          return HttpServerResponse.empty({ status: 404 })
+        }
+        const entry =
+          loaded.get(pathname) ??
+          (yield* Effect.promise(async () => {
+            const file = Bun.file(asset.filePath)
+            const read = {
+              bytes: await file.bytes(),
+              contentType: file.type === "" ? "application/octet-stream" : file.type,
+            }
+            loaded.set(pathname, read)
+            return read
+          }))
+        return HttpServerResponse.uint8Array(entry.bytes, {
+          contentType: entry.contentType,
+          headers: { "cache-control": asset.cacheControl },
+        })
+      }),
     )
-    const asset = assets.get(pathname)
-    if (asset === undefined) {
-      // "/docs/" -> "/docs": the prerendered pages use relative asset URLs,
-      // which only resolve from the canonical (slash-less) path.
-      const trimmed = pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : ""
-      if (assets.has(trimmed)) return HttpServerResponse.redirect(trimmed, { status: 308 })
-      return HttpServerResponse.empty({ status: 404 })
-    }
-    const file = Bun.file(asset.filePath)
-    const bytes = yield* Effect.promise(() => file.bytes())
-    return HttpServerResponse.uint8Array(bytes, {
-      contentType: file.type === "" ? "application/octet-stream" : file.type,
-      headers: { "cache-control": asset.cacheControl },
-    })
   }),
 )

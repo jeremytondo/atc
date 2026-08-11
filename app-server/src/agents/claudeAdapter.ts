@@ -23,19 +23,22 @@ import type {
   AgentAdapter,
   AgentConnection,
   AgentEvent,
+  AgentIdentityMismatch,
+  AgentProtocolError,
   AgentSessionEvent,
 } from "./agentAdapter.ts"
 import {
   AgentConflict,
-  AgentIdentityMismatch,
-  AgentProtocolError,
   AgentResumeFailed,
   AgentUnavailable,
+  emitAgentEvent,
   makeVersionGate,
   NESTED_SESSION_ENV_VARIABLES,
+  providerErrors,
   resolveProviderExecutable,
   samePath,
   titleInstruction,
+  withTitleTimeout,
 } from "./agentAdapter.ts"
 import * as path from "node:path"
 import * as ClaudeHooks from "./claudeHooks.ts"
@@ -87,10 +90,7 @@ import * as Subprocess from "../platform/subprocess.ts"
 //     subscriber; consumers stay above the seam.
 
 /** The Claude Code version this adapter was validated against. */
-export const CLAUDE_TESTED_VERSION = "2.1.221"
-
-/** Bound on one title one-shot (ATC-155); a hung child is aborted with it. */
-const TITLE_TIMEOUT = "90 seconds"
+const CLAUDE_TESTED_VERSION = "2.1.221"
 
 export class ClaudeAdapter extends Context.Service<ClaudeAdapter, AgentAdapter>()(
   "app-server/ClaudeAdapter",
@@ -108,8 +108,15 @@ export interface ClaudeAdapterOptions {
   readonly initTimeout?: Duration.Input
 }
 
-const protocolError = (reason: string) => new AgentProtocolError({ provider: "claude", reason })
-const conflict = (reason: string) => new AgentConflict({ provider: "claude", reason })
+const {
+  unavailable,
+  protocolError,
+  identityMismatch,
+  connectionClosed,
+  turnStillActive,
+  staleTurn,
+  writerConnected,
+} = providerErrors("claude")
 
 /**
  * Environment for the SDK child: the user's environment (credentials) plus
@@ -117,12 +124,8 @@ const conflict = (reason: string) => new AgentConflict({ provider: "claude", rea
  * (agentAdapter.ts) a dev-mode ATC would otherwise pass down.
  */
 const claudeEnvironment = (): Record<string, string> => {
-  const env: Record<string, string> = {}
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined) env[key] = value
-  }
+  const env = Subprocess.inheritedEnv(NESTED_SESSION_ENV_VARIABLES)
   env["CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS"] = "1"
-  for (const name of NESTED_SESSION_ENV_VARIABLES) delete env[name]
   return env
 }
 
@@ -247,18 +250,8 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
       const sessions = new Map<string, LiveSession>()
       let nextTurn = 1
 
-      const emit = (session: LiveSession, event: AgentEvent): void => {
-        // Bounded queue: a consumer that stopped draining loses the stream,
-        // not the process (the events.ts subscriber policy). Overflow FAILS
-        // the stream rather than ending it — a clean end would read as a
-        // completed turn to the consumer, not a truncated one.
-        if (!Queue.offerUnsafe(session.queue, event)) {
-          Queue.failCauseUnsafe(
-            session.queue,
-            Cause.fail(protocolError("session event stream overflowed; reopen and resync")),
-          )
-        }
-      }
+      const emit = (session: LiveSession, event: AgentEvent): void =>
+        emitAgentEvent(session.queue, event, protocolError)
 
       const setActivity = (session: LiveSession, activity: AgentActivity): void => {
         if (session.closed || session.activity === activity) return
@@ -302,24 +295,11 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
           ) {
             return failGate(
               session,
-              new AgentIdentityMismatch({
-                provider: "claude",
-                field: "sessionId",
-                expected: session.expectedSessionId,
-                actual: message.session_id,
-              }),
+              identityMismatch("sessionId", session.expectedSessionId, message.session_id),
             )
           }
           if (!samePath(message.cwd, session.cwd)) {
-            return failGate(
-              session,
-              new AgentIdentityMismatch({
-                provider: "claude",
-                field: "cwd",
-                expected: session.cwd,
-                actual: message.cwd,
-              }),
-            )
+            return failGate(session, identityMismatch("cwd", session.cwd, message.cwd))
           }
           session.sessionId = message.session_id
           if (!sessions.has(message.session_id)) sessions.set(message.session_id, session)
@@ -541,12 +521,8 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
           yield* fs.makeDirectory(config.stateDir, { recursive: true }).pipe(
             Effect.andThen(write(headerFile, `${ClaudeHooks.SECRET_HEADER}: ${secret}`)),
             Effect.andThen(write(settingsFile, JSON.stringify({ hooks: hookConfig }))),
-            Effect.mapError(
-              (error) =>
-                new AgentUnavailable({
-                  provider: "claude",
-                  reason: `could not write the hook settings files: ${error.message}`,
-                }),
+            Effect.mapError((error) =>
+              unavailable(`could not write the hook settings files: ${error.message}`),
             ),
             // A failed (or interrupted) write sequence must not strand the
             // allocation it sits inside: drop any partial file, and revoke
@@ -592,9 +568,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
           }
           if (options.resume !== undefined) {
             if (sessions.has(options.resume)) {
-              return yield* Effect.fail(
-                conflict(`a writer is already connected to ${options.resume}`),
-              )
+              return yield* Effect.fail(writerConnected(options.resume))
             }
             sessions.set(options.resume, session)
           }
@@ -645,14 +619,9 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
         const requireOpen = Effect.suspend(
           (): Effect.Effect<void, AgentConflict | AgentUnavailable> =>
             session.over
-              ? Effect.fail(
-                  new AgentUnavailable({
-                    provider: "claude",
-                    reason: "the session ended; resume it for a fresh connection",
-                  }),
-                )
+              ? Effect.fail(unavailable("the session ended; resume it for a fresh connection"))
               : session.closed
-                ? Effect.fail(conflict("the connection is closed"))
+                ? Effect.fail(connectionClosed())
                 : Effect.void,
         )
         return {
@@ -666,7 +635,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
             Effect.gen(function* () {
               yield* requireOpen
               if (session.activeTurn !== null) {
-                return yield* Effect.fail(conflict(`turn ${session.activeTurn} is still active`))
+                return yield* Effect.fail(turnStillActive(session.activeTurn))
               }
               const turnId = `claude-turn-${nextTurn++}`
               session.activeTurn = turnId
@@ -692,7 +661,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
             Effect.gen(function* () {
               yield* requireOpen
               if (session.activeTurn !== turn.turnId) {
-                return yield* Effect.fail(conflict(`turn ${turn.turnId} is not the active turn`))
+                return yield* Effect.fail(staleTurn(turn.turnId))
               }
               session.interruptRequested = true
               yield* Effect.tryPromise({
@@ -883,17 +852,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
                   protocolError(
                     `title generation failed: ${error instanceof Error ? error.message : String(error)}`,
                   ),
-              }).pipe(
-                Effect.timeoutOrElse({
-                  duration: TITLE_TIMEOUT,
-                  orElse: () =>
-                    Effect.fail(
-                      protocolError(
-                        `title generation produced no result within ${Duration.format(Duration.fromInputUnsafe(TITLE_TIMEOUT))}`,
-                      ),
-                    ),
-                }),
-              )
+              }).pipe(withTitleTimeout(protocolError))
             }),
           ),
         // Claude offers no cheap truthful liveness query for a session it

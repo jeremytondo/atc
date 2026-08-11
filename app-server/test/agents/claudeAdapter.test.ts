@@ -7,6 +7,7 @@ import type { AgentSessionEvent } from "../../src/agents/agentAdapter.ts"
 import * as ClaudeAdapter from "../../src/agents/claudeAdapter.ts"
 import * as ClaudeHooks from "../../src/agents/claudeHooks.ts"
 import { claudeAdapterLayer, collectAgentEvents, waitForAgentEvent } from "./agentTestKit.ts"
+import { eventually } from "../testLayers.ts"
 import { trackTempDir } from "../blackbox.ts"
 import { makeFakeClaudeQuery } from "./fakeClaudeQuery.ts"
 import type { FakeClaudeQueryOptions } from "./fakeClaudeQuery.ts"
@@ -538,12 +539,11 @@ describe("ClaudeAdapter TUI session plumbing", () => {
     })
 
   const waitForActivity = (sink: Array<string>, wanted: string) =>
-    Effect.gen(function* () {
-      for (let attempt = 0; !sink.includes(wanted); attempt++) {
-        assert.isBelow(attempt, 200, `never saw ${wanted} in ${JSON.stringify(sink)}`)
-        yield* Effect.sleep("10 millis")
-      }
-    })
+    eventually(
+      Effect.sync(() => sink),
+      (entries) => entries.includes(wanted),
+      { attempts: 200 },
+    )
 
   it.live("prepareTuiSession pre-assigns identity and enables Remote Control", () =>
     Effect.gen(function* () {

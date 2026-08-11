@@ -19,8 +19,9 @@ const API_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const
 const methodArgument = Argument.string("method").pipe(
   Argument.mapTryCatch(
     (raw) => {
-      const method = raw.toUpperCase() as (typeof API_METHODS)[number]
-      if (!API_METHODS.includes(method)) throw new Error()
+      const upper = raw.toUpperCase()
+      const method = API_METHODS.find((candidate) => candidate === upper)
+      if (method === undefined) throw new Error()
       return method
     },
     () => `method must be one of ${API_METHODS.join(", ")} (case-insensitive)`,

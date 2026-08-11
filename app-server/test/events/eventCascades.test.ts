@@ -1,4 +1,4 @@
-import { assert, describe, it } from "@effect/vitest"
+import { describe, it } from "@effect/vitest"
 import { Effect, Option, Stream } from "effect"
 import { HttpApiTest } from "effect/unstable/httpapi"
 import { mkdtempSync, realpathSync, rmSync } from "node:fs"
@@ -10,7 +10,7 @@ import * as Events from "../../src/events/events.ts"
 import type { ResourceChangedEvent } from "../../src/events/events.ts"
 import { sessionNameForTerminalId } from "../../src/terminals/terminalAdapter.ts"
 import { ThreadRepository } from "../../src/threads/threadRepository.ts"
-import { apiTestLayer, makeTestServiceLayers } from "../testLayers.ts"
+import { eventually, apiTestLayer, makeTestServiceLayers } from "../testLayers.ts"
 
 // Cascade-publish regression tests (ATC-142): the mutations whose events are
 // EASY to lose silently, because the changed resource is not the one the
@@ -38,18 +38,16 @@ const collect = Effect.gen(function* () {
   return sink
 })
 
-/** Poll (real clock, bounded) until `predicate` holds on the sink. */
-const eventually = (sink: Array<ResourceChangedEvent>, predicate: () => boolean) =>
-  Effect.gen(function* () {
-    for (let attempt = 0; !predicate(); attempt++) {
-      assert.isBelow(attempt, 300, `condition never held; saw ${JSON.stringify(sink)}`)
-      yield* Effect.sleep("10 millis")
-    }
-  })
+/** testLayers' `eventually` over a sink snapshot (the sink prints on failure). */
+const eventuallyHolds = (sink: Array<ResourceChangedEvent>, predicate: () => boolean) =>
+  eventually(
+    Effect.sync(() => ({ sink, holds: predicate() })),
+    (snapshot) => snapshot.holds,
+  )
 
 /** `eventually` for the common case: one expected event in the sink. */
 const waitForEvent = (sink: Array<ResourceChangedEvent>, expected: ResourceChangedEvent) =>
-  eventually(sink, () =>
+  eventuallyHolds(sink, () =>
     sink.some(
       (event) =>
         event.resource === expected.resource &&
@@ -123,7 +121,7 @@ describe("cascade event publishes", () => {
       const afterFirst = updates()
       kit.fakeAgents.codex.emitActivity(sessionId, "working")
       kit.fakeAgents.codex.emitActivity(sessionId, "idle")
-      yield* eventually(sink, () => updates() === afterFirst + 1)
+      yield* eventuallyHolds(sink, () => updates() === afterFirst + 1)
       yield* client.v1.deleteThread({ params: { threadId: thread.id } })
     }).pipe(Effect.scoped, Effect.provide(TestLayer)),
   )

@@ -9,8 +9,8 @@ import {
 
 // The public HTTP contract. The server implementation (handlers.ts), the
 // checked-in OpenAPI document (openapi.ts), and typed clients all derive from
-// this module. Authoring conventions (pinned operation ids, schema
-// identifiers, descriptions) live in AGENTS.md "OpenAPI Contract".
+// this module. The authoring conventions are stated inline where they bite
+// (pinned operation ids, optionalKey over optional, create returning 200).
 //
 // No listing endpoint paginates, deliberately: a single-user server's
 // collections stay small enough to return whole, and every client consumes
@@ -236,6 +236,10 @@ export const AgentId = Schema.Literals(AGENT_IDS).annotate({
   identifier: "AgentId",
   description: "Built-in agent registry slug.",
 })
+
+/** Whether `id` names a built-in agent (narrows to the registry slug union). */
+export const isAgentId = (id: string): id is typeof AgentId.Type =>
+  (AGENT_IDS as ReadonlyArray<string>).includes(id)
 
 export const Agent = Schema.Struct({
   id: AgentId,

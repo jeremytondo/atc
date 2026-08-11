@@ -28,6 +28,35 @@ const expectDead = (pid: number) =>
   })
 
 describe("Subprocess", () => {
+  it.live("composes the child env: explicit over parent-minus-unsetEnv", () =>
+    Effect.gen(function* () {
+      const subprocess = yield* Subprocess.Subprocess
+      // The composition rule every extendEnv caller (the zmx adapter's
+      // scrub fragment included) relies on: parent copied, unsetEnv keys
+      // dropped, explicit env layered over — so an explicit key survives
+      // its own presence in unsetEnv.
+      process.env["ATC_SUBPROCESS_TEST_INHERITED"] = "from-parent"
+      process.env["ATC_SUBPROCESS_TEST_SCRUBBED"] = "must-not-leak"
+      try {
+        const child = yield* subprocess.spawn({
+          executable: process.execPath,
+          args: ["test/fixtures/print-env.ts"],
+          cwd: appServerRoot,
+          env: { ATC_SUBPROCESS_TEST_SCRUBBED: "explicit-wins" },
+          extendEnv: true,
+          unsetEnv: ["ATC_SUBPROCESS_TEST_SCRUBBED", "ATC_SUBPROCESS_TEST_INHERITED"],
+        })
+        const lines = yield* Stream.runCollect(child.stdoutLines)
+        assert.strictEqual(yield* child.exitCode, 0)
+        assert.include(lines, "ATC_SUBPROCESS_TEST_SCRUBBED=explicit-wins")
+        assert.notInclude(lines, "ATC_SUBPROCESS_TEST_INHERITED=from-parent")
+      } finally {
+        delete process.env["ATC_SUBPROCESS_TEST_INHERITED"]
+        delete process.env["ATC_SUBPROCESS_TEST_SCRUBBED"]
+      }
+    }).pipe(Effect.scoped, Effect.provide(TestLayer)),
+  )
+
   it.live("captures stdout lines and observes a clean exit", () =>
     Effect.gen(function* () {
       const subprocess = yield* Subprocess.Subprocess
