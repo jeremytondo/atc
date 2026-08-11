@@ -52,6 +52,7 @@ struct KeyboardMonitorHost: NSViewRepresentable {
         var focusFallback: () -> Void
         private(set) weak var hostWindow: NSWindow?
         private var monitor: Any?
+        private var flagsMonitor: Any?
         private var observers: [NSObjectProtocol] = []
 
         init(
@@ -91,7 +92,29 @@ struct KeyboardMonitorHost: NSViewRepresentable {
                 return handled ? nil : event
             }
 
+            // Held-modifier state for the sidebar's ⌘/⌥⌘ jump badges. Never
+            // consumed; only the key window's monitor records, so a
+            // background window's badges cannot light up.
+            flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) {
+                [weak self, weak window] event in
+                guard let self, let window, window.isKeyWindow else { return event }
+                self.router.heldModifiers = KeyStroke.Modifiers(event.modifierFlags)
+                return event
+            }
+
             let center = NotificationCenter.default
+            // Becoming key reseeds from the live hardware state: flags
+            // changed while another window was key (⌘Tab back with ⌘ still
+            // down) never produced a flagsChanged event here.
+            observers.append(center.addObserver(
+                forName: NSWindow.didBecomeKeyNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.router.heldModifiers = KeyStroke.Modifiers(NSEvent.modifierFlags)
+                }
+            })
             observers.append(center.addObserver(
                 forName: NSWindow.didResignKeyNotification,
                 object: window,
@@ -99,6 +122,7 @@ struct KeyboardMonitorHost: NSViewRepresentable {
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
                     self?.router.cancel()
+                    self?.router.heldModifiers = []
                     self?.onDeactivate()
                     self?.restoreOrphanedResponder()
                 }
@@ -110,6 +134,7 @@ struct KeyboardMonitorHost: NSViewRepresentable {
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
                     self?.router.cancel()
+                    self?.router.heldModifiers = []
                     self?.onDeactivate()
                     self?.restoreOrphanedResponder()
                 }
@@ -138,16 +163,22 @@ struct KeyboardMonitorHost: NSViewRepresentable {
                 NSEvent.removeMonitor(monitor)
                 self.monitor = nil
             }
+            if let flagsMonitor {
+                NSEvent.removeMonitor(flagsMonitor)
+                self.flagsMonitor = nil
+            }
             for observer in observers {
                 NotificationCenter.default.removeObserver(observer)
             }
             observers.removeAll()
             hostWindow = nil
             router.cancel()
+            router.heldModifiers = []
         }
 
         deinit {
             if let monitor { NSEvent.removeMonitor(monitor) }
+            if let flagsMonitor { NSEvent.removeMonitor(flagsMonitor) }
             for observer in observers {
                 NotificationCenter.default.removeObserver(observer)
             }
@@ -183,6 +214,9 @@ struct KeyboardRoutingContainer<Content: View>: View {
             context: context
         )
         router.isSuspended = { windowState.commandPalettePresentation != nil }
+        router.performJump = { jump in
+            SidebarShortcuts.perform(jump, appModel: appModel, windowState: windowState)
+        }
         _router = State(initialValue: router)
     }
 
@@ -214,14 +248,22 @@ struct KeyboardRoutingContainer<Content: View>: View {
     }
 }
 
+extension KeyStroke.Modifiers {
+    /// The four routable modifiers from an event's flags. Caps Lock and Fn
+    /// are deliberately dropped so they never break an exact match.
+    init(_ flags: NSEvent.ModifierFlags) {
+        self = []
+        let device = flags.intersection(.deviceIndependentFlagsMask)
+        if device.contains(.command) { insert(.command) }
+        if device.contains(.control) { insert(.control) }
+        if device.contains(.option) { insert(.option) }
+        if device.contains(.shift) { insert(.shift) }
+    }
+}
+
 extension KeyStroke {
     static func normalize(event: NSEvent) -> KeyStroke? {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        var modifiers: Modifiers = []
-        if flags.contains(.command) { modifiers.insert(.command) }
-        if flags.contains(.control) { modifiers.insert(.control) }
-        if flags.contains(.option) { modifiers.insert(.option) }
-        if flags.contains(.shift) { modifiers.insert(.shift) }
+        let modifiers = Modifiers(event.modifierFlags)
 
         // Escape normalizes to the bare stroke regardless of held modifiers
         // so a pending sequence always cancels silently.

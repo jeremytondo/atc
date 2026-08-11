@@ -16,11 +16,9 @@ import ATCAppServerAPI
 import SwiftUI
 
 struct NavigatorSidebar: View {
-    /// Rows shown before the inline More control takes over.
-    private static let initialRowLimit = 5
-
     @Environment(AppModel.self) private var appModel
     @Environment(WindowState.self) private var windowState
+    @Environment(WindowKeyboardRouter.self) private var router
 
     @State private var renamingThread: ThreadListItem?
     @State private var renamingTerminal: TerminalRef?
@@ -37,16 +35,21 @@ struct NavigatorSidebar: View {
             inputs: appModel.runtimes.map(ThreadListModel.ConnectionInput.init(runtime:)),
             filter: windowState.threadFilter
         )
+        let threadSlots = threadSlotNumbers(model)
         NavigatorList {
             headerRow
 
             if !model.pinned.isEmpty {
-                threadCards(model.pinned, isExpanded: $windowState.isPinnedExpanded)
+                threadCards(
+                    model.pinned,
+                    isExpanded: $windowState.isPinnedExpanded,
+                    slotNumbers: threadSlots
+                )
                 sectionDivider
             }
 
             filterRow(model)
-            threadListSection(model)
+            threadListSection(model, slotNumbers: threadSlots)
 
             if let project = windowState.activeProject {
                 sectionDivider
@@ -158,7 +161,10 @@ struct NavigatorSidebar: View {
     // MARK: - Thread list
 
     @ViewBuilder
-    private func threadListSection(_ model: ThreadListModel) -> some View {
+    private func threadListSection(
+        _ model: ThreadListModel,
+        slotNumbers: [ThreadRef: Int]
+    ) -> some View {
         @Bindable var windowState = windowState
         if case .archived = windowState.threadFilter {
             if model.archived.isEmpty {
@@ -172,12 +178,20 @@ struct NavigatorSidebar: View {
         } else if model.recent.isEmpty {
             emptyLabel("No Threads")
         } else {
-            threadCards(model.recent, isExpanded: $windowState.isRecentExpanded)
+            threadCards(
+                model.recent,
+                isExpanded: $windowState.isRecentExpanded,
+                slotNumbers: slotNumbers
+            )
         }
     }
 
     @ViewBuilder
-    private func threadCards(_ items: [ThreadListItem], isExpanded: Binding<Bool>) -> some View {
+    private func threadCards(
+        _ items: [ThreadListItem],
+        isExpanded: Binding<Bool>,
+        slotNumbers: [ThreadRef: Int]
+    ) -> some View {
         ForEach(limited(items, expanded: isExpanded.wrappedValue)) { item in
             ThreadCard(
                 item: item,
@@ -185,6 +199,7 @@ struct NavigatorSidebar: View {
                 isSelected: windowState.isThreadHighlighted(item.ref),
                 isBusy: inFlightThreads.contains(item.ref),
                 canMutate: appModel.canMutate(connectionID: item.ref.connectionID),
+                shortcutLabel: slotNumbers[item.ref].map(SidebarShortcuts.threadBadgeLabel),
                 focusedThread: $focusedThread,
                 onOpen: { Task { await windowState.openThread(item.ref, in: appModel) } },
                 onRename: {
@@ -265,14 +280,27 @@ struct NavigatorSidebar: View {
             if terminals.isEmpty {
                 emptyLabel("No Terminals")
             } else {
-                ForEach(terminals, id: \.id) { terminal in
-                    terminalRow(terminal, connectionID: project.connectionID)
+                let numbered = areTerminalBadgesVisible
+                    ? SidebarShortcuts.terminalTargets(terminals, isSectionExpanded: true).count
+                    : 0
+                ForEach(Array(terminals.enumerated()), id: \.element.id) { index, terminal in
+                    terminalRow(
+                        terminal,
+                        connectionID: project.connectionID,
+                        shortcutLabel: index < numbered
+                            ? SidebarShortcuts.terminalBadgeLabel(index + 1)
+                            : nil
+                    )
                 }
             }
         }
     }
 
-    private func terminalRow(_ terminal: Terminal, connectionID: UUID) -> some View {
+    private func terminalRow(
+        _ terminal: Terminal,
+        connectionID: UUID,
+        shortcutLabel: String?
+    ) -> some View {
         let ref = TerminalRef(connectionID: connectionID, terminalID: terminal.id)
         return NavigatorRow(
             isSelected: windowState.selectedContent == .terminal(ref),
@@ -288,6 +316,10 @@ struct NavigatorSidebar: View {
                     Text("Ended")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
+                }
+                if let shortcutLabel {
+                    Spacer(minLength: Spacing.sm)
+                    ShortcutBadge(label: shortcutLabel)
                 }
             }
         } actions: {
@@ -326,14 +358,14 @@ struct NavigatorSidebar: View {
 
     @ViewBuilder
     private func moreControl(total: Int, isExpanded: Binding<Bool>) -> some View {
-        if total > Self.initialRowLimit {
+        if total > SidebarShortcuts.initialRowLimit {
             Button {
                 isExpanded.wrappedValue.toggle()
             } label: {
                 HStack(spacing: Spacing.xs) {
                     Text(isExpanded.wrappedValue
                         ? "Hide"
-                        : "\(total - Self.initialRowLimit) more")
+                        : "\(total - SidebarShortcuts.initialRowLimit) more")
                     Image(systemName: isExpanded.wrappedValue ? "chevron.up" : "chevron.down")
                         .font(.caption2)
                 }
@@ -439,7 +471,52 @@ struct NavigatorSidebar: View {
     }
 
     private func limited<T>(_ items: [T], expanded: Bool) -> [T] {
-        expanded ? items : Array(items.prefix(Self.initialRowLimit))
+        SidebarShortcuts.limited(items, expanded: expanded)
+    }
+
+    // MARK: - Jump shortcut badges
+
+    /// Exact modifier match only: ⌘ alone lights thread badges, ⌥⌘ lights
+    /// terminal badges, any other combination shows neither. The palette
+    /// suspends dispatch, so it suppresses the badges too.
+    private var areThreadBadgesVisible: Bool {
+        router.heldModifiers == [.command]
+            && windowState.commandPalettePresentation == nil
+    }
+
+    private var areTerminalBadgesVisible: Bool {
+        router.heldModifiers == [.command, .option]
+            && windowState.commandPalettePresentation == nil
+    }
+
+    private func threadSlotNumbers(_ model: ThreadListModel) -> [ThreadRef: Int] {
+        guard areThreadBadgesVisible else { return [:] }
+        let targets = SidebarShortcuts.threadTargets(
+            model: model,
+            isPinnedExpanded: windowState.isPinnedExpanded,
+            isRecentExpanded: windowState.isRecentExpanded
+        )
+        return Dictionary(uniqueKeysWithValues: targets.enumerated().map {
+            ($0.element, $0.offset + 1)
+        })
+    }
+}
+
+/// The ⌘N / ⌥⌘N chip shown while the exact modifier combo is held. Matches
+/// the card action chips' height so swapping it in never resizes a row.
+private struct ShortcutBadge: View {
+    let label: String
+
+    var body: some View {
+        Text(label)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, Spacing.xs)
+            .frame(height: NavigatorMetrics.actionSize)
+            .background(
+                Color.white.opacity(0.07),
+                in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+            )
     }
 }
 
@@ -452,6 +529,8 @@ private struct ThreadCard: View {
     let isSelected: Bool
     let isBusy: Bool
     let canMutate: Bool
+    /// Non-nil while exact ⌘ is held and this card holds a numbered slot.
+    let shortcutLabel: String?
     @FocusState.Binding var focusedThread: ThreadRef?
     let onOpen: () -> Void
     let onRename: () -> Void
@@ -472,7 +551,11 @@ private struct ThreadCard: View {
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
                 Spacer(minLength: Spacing.sm)
-                if isHovering || isFocused {
+                // Same slot as the hover chips and the connection status, so
+                // the card never resizes; the held-modifier badge wins.
+                if let shortcutLabel {
+                    ShortcutBadge(label: shortcutLabel)
+                } else if isHovering || isFocused {
                     HStack(spacing: Spacing.xs) {
                         cardAction(
                             systemImage: thread.isPinned ? "pin.slash" : "pin",

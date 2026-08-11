@@ -1,6 +1,8 @@
 import Foundation
 
-struct KeyStroke: Hashable, Sendable, CustomStringConvertible {
+// Nonisolated: pure value logic (parsing and formatting) with no UI ties,
+// callable from any isolation despite the target's MainActor default.
+nonisolated struct KeyStroke: Hashable, Sendable, CustomStringConvertible {
     struct Modifiers: OptionSet, Hashable, Sendable {
         let rawValue: UInt8
 
@@ -122,12 +124,12 @@ struct KeyStroke: Hashable, Sendable, CustomStringConvertible {
 
 typealias KeySequence = [KeyStroke]
 
-struct TriggerError: Error, Equatable, CustomStringConvertible {
+nonisolated struct TriggerError: Error, Equatable, CustomStringConvertible {
     let message: String
     var description: String { message }
 }
 
-enum ParsedKeySequence: Equatable {
+nonisolated enum ParsedKeySequence: Equatable {
     case direct(KeyStroke)
     case leader(continuation: KeyStroke)
 

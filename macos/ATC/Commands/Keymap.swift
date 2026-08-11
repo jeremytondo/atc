@@ -199,7 +199,7 @@ enum Keymap {
     }
 
     private static let protectedTriggers: [KeyStroke: String] = {
-        let values: [(String, String)] = [
+        var values: [(String, String)] = [
             ("cmd+q", "Quit"), ("cmd+h", "Hide atc"),
             ("cmd+opt+h", "Hide Others"), ("cmd+,", "Settings"),
             ("cmd+w", "Close Window"), ("cmd+shift+w", "Close All Windows"),
@@ -207,6 +207,12 @@ enum Keymap {
             ("cmd+x", "Cut"), ("cmd+c", "Copy"), ("cmd+v", "Paste"),
             ("cmd+a", "Select All"), ("cmd+m", "Minimize"),
         ]
+        // The hardcoded sidebar jump shortcuts: not keymap commands, so a
+        // user binding would collide silently unless reserved here.
+        for digit in 1...9 {
+            values.append(("cmd+\(digit)", "Thread Shortcuts"))
+            values.append(("cmd+opt+\(digit)", "Terminal Shortcuts"))
+        }
         return Dictionary(uniqueKeysWithValues: values.map { (requiredStroke($0.0), $0.1) })
     }()
 
