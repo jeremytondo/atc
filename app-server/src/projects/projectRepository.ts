@@ -1,5 +1,6 @@
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import { SqlClient, SqlSchema } from "effect/unstable/sql"
+import { requireFound, rowHelpers } from "../platform/repositoryHelpers.ts"
 import { ProjectNotFound } from "../api/contract.ts"
 import type { Project as ProjectSchema } from "../api/contract.ts"
 
@@ -98,10 +99,9 @@ export const layer = Layer.effect(ProjectRepository)(
       execute: (id) => sql`DELETE FROM projects WHERE id = ${id} RETURNING id`,
     })
 
-    const firstProject = (rows: ReadonlyArray<typeof ProjectRow.Type>) =>
-      Option.fromNullishOr(rows[0]).pipe(Option.map(toProject))
+    const { firstRecord } = rowHelpers("project", toProject)
 
-    const get = (id: string) => getRows(id).pipe(Effect.map(firstProject), Effect.orDie)
+    const get = (id: string) => getRows(id).pipe(Effect.map(firstRecord), Effect.orDie)
 
     return {
       list: () =>
@@ -121,15 +121,7 @@ export const layer = Layer.effect(ProjectRepository)(
         return insertRow(row).pipe(Effect.as(toProject(row)), Effect.orDie)
       },
       get,
-      require: (id) =>
-        get(id).pipe(
-          Effect.flatMap(
-            Option.match({
-              onNone: () => Effect.fail(new ProjectNotFound({ projectId: id })),
-              onSome: Effect.succeed,
-            }),
-          ),
-        ),
+      require: (id) => get(id).pipe(requireFound(() => new ProjectNotFound({ projectId: id }))),
       update: (id, patch) =>
         // An empty patch changes nothing — including updatedAt.
         patch.name === undefined && patch.defaultWorkingDirectory === undefined
@@ -139,7 +131,7 @@ export const layer = Layer.effect(ProjectRepository)(
               name: patch.name ?? null,
               default_working_directory: patch.defaultWorkingDirectory ?? null,
               updated_at: new Date().toISOString(),
-            }).pipe(Effect.map(firstProject), Effect.orDie),
+            }).pipe(Effect.map(firstRecord), Effect.orDie),
       delete: (id) =>
         deleteRows(id).pipe(
           Effect.map((rows) => rows.length > 0),

@@ -1,5 +1,6 @@
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import { SqlClient, SqlSchema } from "effect/unstable/sql"
+import { requireFound, rowHelpers } from "../platform/repositoryHelpers.ts"
 import { TerminalNotFound } from "../api/contract.ts"
 
 // The Terminals repository (ATC-130): the only module that speaks SQL for
@@ -145,14 +146,7 @@ export const layer = Layer.effect(TerminalRepository)(
       execute: (id) => sql`DELETE FROM terminals WHERE id = ${id}`,
     })
 
-    const firstRecord = (rows: ReadonlyArray<typeof TerminalRow.Type>) =>
-      Option.fromNullishOr(rows[0]).pipe(Option.map(toRecord))
-
-    /** For updates whose caller holds the record: a vanished row is a bug. */
-    const requireFirst = (what: string) => (rows: ReadonlyArray<typeof TerminalRow.Type>) =>
-      rows[0] !== undefined
-        ? Effect.succeed(toRecord(rows[0]))
-        : Effect.die(new Error(`${what}: terminal row vanished mid-update`))
+    const { firstRecord, requireFirst } = rowHelpers("terminal", toRecord)
 
     const get = (id: string) => getRows(id).pipe(Effect.map(firstRecord), Effect.orDie)
 
@@ -183,15 +177,7 @@ export const layer = Layer.effect(TerminalRepository)(
           Effect.orDie,
         ),
       get,
-      require: (id) =>
-        get(id).pipe(
-          Effect.flatMap(
-            Option.match({
-              onNone: () => Effect.fail(new TerminalNotFound({ terminalId: id })),
-              onSome: Effect.succeed,
-            }),
-          ),
-        ),
+      require: (id) => get(id).pipe(requireFound(() => new TerminalNotFound({ terminalId: id }))),
       markLive: (id) =>
         Effect.suspend(() => markLiveRows({ id, updated_at: new Date().toISOString() })).pipe(
           Effect.orDie,

@@ -126,6 +126,25 @@ export const layer = Layer.effect(Terminals)(
       .pipe(Effect.map((sessions) => new Set(sessions.map((s) => s.name))))
 
     /**
+     * The one publisher for terminal lifecycle transitions: a transition on
+     * a thread's TUI terminal also changes that thread's derived fields
+     * (linkedTerminalId, activity re-derivation), so the thread's `updated`
+     * always publishes alongside — a mutation that forgot the pair would
+     * leave clients holding a stale linkedTerminalId. (Rename is the one
+     * mutation that publishes solo: a label touches no derived field.)
+     */
+    const publishTerminalChange = (
+      record: { readonly id: string; readonly threadId?: string | undefined },
+      change: "created" | "updated" | "deleted",
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        yield* events.publish({ resource: "terminal", id: record.id, change })
+        if (record.threadId !== undefined) {
+          yield* events.publish({ resource: "thread", id: record.threadId, change: "updated" })
+        }
+      })
+
+    /**
      * The one tombstoning step both reconciliation passes share: mark every
      * live row whose session a complete inventory omits as ended (one batch
      * statement) and return the records with the tombstones applied.
@@ -141,15 +160,7 @@ export const layer = Layer.effect(Terminals)(
         if (deadRecords.length === 0) return records
         const dead = new Set(deadRecords.map((r) => r.id))
         const endedAt = yield* repository.markEnded([...dead])
-        yield* Effect.forEach(deadRecords, (record) =>
-          events.publish({ resource: "terminal", id: record.id, change: "updated" }),
-        )
-        // A dead TUI terminal also changes its thread's derived fields
-        // (linkedTerminalId, activity re-derivation), so the thread
-        // publishes alongside — the event names no thread otherwise.
-        yield* Effect.forEach(new Set(deadRecords.flatMap((r) => r.threadId ?? [])), (id) =>
-          events.publish({ resource: "thread", id, change: "updated" }),
-        )
+        yield* Effect.forEach(deadRecords, (record) => publishTerminalChange(record, "updated"))
         return records.map((record) =>
           dead.has(record.id)
             ? { ...record, status: "ended" as const, endedAt, updatedAt: endedAt }
@@ -200,7 +211,7 @@ export const layer = Layer.effect(Terminals)(
             // failed launch leaves no record.
             if (reachable.has(sessionName)) {
               yield* repository.markLive(record.id)
-              yield* events.publish({ resource: "terminal", id: record.id, change: "created" })
+              yield* publishTerminalChange(record, "created")
               claimed.add(sessionName)
             } else if (present.has(sessionName)) {
               claimed.add(sessionName)
@@ -289,13 +300,10 @@ export const layer = Layer.effect(Terminals)(
             Effect.andThen(repository.markLive(record.id)),
             Effect.onExit((exit) => (exit._tag === "Failure" ? cleanup : Effect.void)),
           )
-        yield* events.publish({ resource: "terminal", id: live.id, change: "created" })
-        // A live terminal created into a thread immediately changes that
-        // thread's derived linkedTerminalId; openTerminal's own event lands
-        // only after the identity wait, far too late for this transition.
-        if (input.threadId !== undefined) {
-          yield* events.publish({ resource: "thread", id: input.threadId, change: "updated" })
-        }
+        // The paired thread event matters here especially: openTerminal's
+        // own event lands only after the identity wait, far too late for
+        // the linkedTerminalId transition.
+        yield* publishTerminalChange(live, "created")
         return toTerminal(live)
       })
 
@@ -318,12 +326,7 @@ export const layer = Layer.effect(Terminals)(
             ),
           )
         yield* repository.delete(id)
-        yield* events.publish({ resource: "terminal", id, change: "deleted" })
-        // Deleting a thread's TUI terminal changes that thread's derived
-        // linkedTerminalId (see tombstoneAbsent).
-        if (record.threadId !== undefined) {
-          yield* events.publish({ resource: "thread", id: record.threadId, change: "updated" })
-        }
+        yield* publishTerminalChange(record, "deleted")
       })
 
     return {
@@ -371,14 +374,7 @@ export const layer = Layer.effect(Terminals)(
           const record = yield* repository.get(id)
           yield* repository.markEnded([id])
           if (Option.isSome(record) && record.value.status === "live") {
-            yield* events.publish({ resource: "terminal", id, change: "updated" })
-            if (record.value.threadId !== undefined) {
-              yield* events.publish({
-                resource: "thread",
-                id: record.value.threadId,
-                change: "updated",
-              })
-            }
+            yield* publishTerminalChange(record.value, "updated")
           }
           return true
         }),

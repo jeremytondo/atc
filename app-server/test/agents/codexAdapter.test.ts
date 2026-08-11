@@ -4,6 +4,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import * as CodexAdapter from "../../src/agents/codexAdapter.ts"
 import * as CodexServer from "../../src/agents/codexServer.ts"
+import { eventually } from "../testLayers.ts"
 import {
   codexAdapterLayer,
   collectAgentEvents,
@@ -409,12 +410,11 @@ describe("CodexAdapter TUI session plumbing", () => {
     )
 
   const waitForActivity = (sink: Array<string>, wanted: string) =>
-    Effect.gen(function* () {
-      for (let attempt = 0; !sink.includes(wanted); attempt++) {
-        assert.isBelow(attempt, 200, `never saw ${wanted} in ${JSON.stringify(sink)}`)
-        yield* Effect.sleep("25 millis")
-      }
-    })
+    eventually(
+      Effect.sync(() => sink),
+      (entries) => entries.includes(wanted),
+      { attempts: 200, interval: "25 millis" },
+    )
 
   it.live(
     "prepareTuiSession captures the fresh TUI's thread/started identity",
@@ -563,16 +563,11 @@ describe("CodexAdapter TUI session plumbing", () => {
                 threadId,
                 input: [{ type: "text", text: "second message" }],
               })
-              yield* Effect.gen(function* () {
-                for (
-                  let attempt = 0;
-                  sink.filter((entry) => entry === "idle").length < 2;
-                  attempt++
-                ) {
-                  assert.isBelow(attempt, 200, `second turn never settled: ${sink.join(",")}`)
-                  yield* Effect.sleep("25 millis")
-                }
-              })
+              yield* eventually(
+                Effect.sync(() => sink),
+                (entries) => entries.filter((entry) => entry === "idle").length >= 2,
+                { attempts: 200, interval: "25 millis" },
+              )
               assert.deepStrictEqual(
                 sink.filter((entry) => entry.startsWith("prompt:")),
                 ["prompt:please add dark mode"],
@@ -960,12 +955,11 @@ describe("CodexAdapter descendant aggregation", () => {
                 }),
               )
               const waitFor = (wanted: string) =>
-                Effect.gen(function* () {
-                  for (let attempt = 0; !sink.includes(wanted); attempt++) {
-                    assert.isBelow(attempt, 200, `never saw ${wanted}: ${sink.join(",")}`)
-                    yield* Effect.sleep("25 millis")
-                  }
-                })
+                eventually(
+                  Effect.sync(() => sink),
+                  (entries) => entries.includes(wanted),
+                  { attempts: 200, interval: "25 millis" },
+                )
               // The parent's turn completes but the child holds it working.
               yield* waitFor("working")
               yield* finishChild(sandbox, `${rootId}-child-1`)
@@ -1113,21 +1107,19 @@ describe("CodexAdapter descendant aggregation", () => {
                     })
                   }),
                 )
-                yield* Effect.gen(function* () {
-                  for (let attempt = 0; !sink.includes("working"); attempt++) {
-                    assert.isBelow(attempt, 200, `never saw working: ${sink.join(",")}`)
-                    yield* Effect.sleep("25 millis")
-                  }
-                })
+                yield* eventually(
+                  Effect.sync(() => sink),
+                  (entries) => entries.includes("working"),
+                  { attempts: 200, interval: "25 millis" },
+                )
                 // The evidence source dies with the socket: the observer
                 // must hear `unknown`, never sit on the stale busy state.
                 yield* Effect.orDie(codexServer.stop())
-                yield* Effect.gen(function* () {
-                  for (let attempt = 0; !sink.includes("unknown"); attempt++) {
-                    assert.isBelow(attempt, 200, `never saw unknown: ${sink.join(",")}`)
-                    yield* Effect.sleep("25 millis")
-                  }
-                })
+                yield* eventually(
+                  Effect.sync(() => sink),
+                  (entries) => entries.includes("unknown"),
+                  { attempts: 200, interval: "25 millis" },
+                )
               }),
             ),
             Effect.orDie(codexServer.stop()),

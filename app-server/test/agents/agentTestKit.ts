@@ -1,4 +1,3 @@
-import { assert } from "@effect/vitest"
 import { BunServices } from "@effect/platform-bun"
 import { Duration, Effect, Layer, Stream } from "effect"
 import * as fs from "node:fs"
@@ -12,7 +11,7 @@ import * as CodexAdapter from "../../src/agents/codexAdapter.ts"
 import * as CodexServer from "../../src/agents/codexServer.ts"
 import * as Subprocess from "../../src/platform/subprocess.ts"
 import { trackTempDir } from "../blackbox.ts"
-import { testAppConfig } from "../testLayers.ts"
+import { eventually, testAppConfig } from "../testLayers.ts"
 import { TestBuildInfoLayer } from "../testBuildInfo.ts"
 
 // Shared scaffolding for agent-provider tests (ATC-123): the fake-codex
@@ -118,10 +117,8 @@ export const waitForAgentEvent = (
   predicate: (event: AgentEvent) => boolean,
   options?: { readonly attempts?: number; readonly interval?: Duration.Input },
 ) =>
-  Effect.gen(function* () {
-    const attempts = options?.attempts ?? 200
-    for (let attempt = 0; !sink.some(predicate); attempt++) {
-      assert.isBelow(attempt, attempts, `never saw expected event in ${JSON.stringify(sink)}`)
-      yield* Effect.sleep(options?.interval ?? "25 millis")
-    }
-  })
+  eventually(
+    Effect.sync(() => sink),
+    (events) => events.some(predicate),
+    { attempts: options?.attempts ?? 200, interval: options?.interval ?? "25 millis" },
+  )

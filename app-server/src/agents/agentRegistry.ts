@@ -1,5 +1,5 @@
 import { Context, Effect, Layer } from "effect"
-import { AGENT_IDS, AgentNotFound } from "../api/contract.ts"
+import { AGENT_IDS, AgentNotFound, isAgentId } from "../api/contract.ts"
 import type { Agent as AgentSchema, AgentId } from "../api/contract.ts"
 import { AppConfig } from "../platform/config.ts"
 import * as Subprocess from "../platform/subprocess.ts"
@@ -65,9 +65,6 @@ export const layer = Layer.effect(AgentRegistry)(
         ),
       )
     }
-
-    const isAgentId = (id: string): id is typeof AgentId.Type =>
-      (AGENT_IDS as ReadonlyArray<string>).includes(id)
 
     return {
       list: () => Effect.forEach(AGENT_IDS, describe),

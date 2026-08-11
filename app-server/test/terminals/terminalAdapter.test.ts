@@ -69,27 +69,24 @@ describe("parseSessionList", () => {
   })
 })
 
-describe("zmxChildEnv", () => {
+describe("zmxSpawnEnv", () => {
   it("scrubs the nested-client traps and stale ATC_* context; pins ZMX_DIR, TERM, ATC_ENDPOINT", () => {
-    const env = Zmx.zmxChildEnv("/sockets", "http://127.0.0.1:7332", {
-      PATH: "/usr/bin",
-      HOME: "/home/u",
-      ZMX_SESSION: "evil",
-      ZMX_SESSION_PREFIX: "pre-",
-      // A server running inside another ATC session inherits that session's
-      // context; none of it may leak into sessions this server launches.
-      ATC_ENDPOINT: "http://127.0.0.1:9999",
-      ATC_PROJECT_ID: "stale-project",
-      ATC_TERMINAL_ID: "stale-terminal",
-      EMPTY: undefined,
-    })
-    assert.deepStrictEqual(env, {
-      PATH: "/usr/bin",
-      HOME: "/home/u",
+    const spec = Zmx.zmxSpawnEnv("/sockets", "http://127.0.0.1:7332")
+    assert.deepStrictEqual(spec.env, {
       ZMX_DIR: "/sockets",
       TERM: "xterm-256color",
       ATC_ENDPOINT: "http://127.0.0.1:7332",
     })
+    assert.isTrue(spec.extendEnv)
+    // A server running inside another ATC session inherits that session's
+    // context; none of it may leak into sessions this server launches. The
+    // pinned ATC_ENDPOINT survives the scrub because explicit env is
+    // composed OVER the parent copy (see subprocess.test.ts, which pins
+    // that composition rule at its owner).
+    assert.includeMembers(
+      [...spec.unsetEnv],
+      ["ZMX_SESSION", "ZMX_SESSION_PREFIX", "ATC_ENDPOINT", "ATC_PROJECT_ID", "ATC_TERMINAL_ID"],
+    )
   })
 })
 

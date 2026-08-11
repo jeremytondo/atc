@@ -91,15 +91,9 @@ export const V1Handlers = HttpApiBuilder.group(
         // is exactly what the typed StreamSse pipeline produces.
         .handleRaw("subscribeEvents", () =>
           Effect.gen(function* () {
-            // Reconcile (the "a client showed up" refresh) BEFORE
-            // registering: a queue registered first would sit in the
-            // subscriber set until overflow if the fallible reconcile
-            // failed — or the request died during it — before the stream's
-            // cleanup was armed. Registration still precedes the first
-            // response byte, so a client that resyncs the moment it sees
-            // the comment observes the reconciled state and misses nothing.
-            yield* terminals.list()
-            const feed = yield* events.subscribe()
+            // The reconcile-before-register ordering lives in subscribe();
+            // the handler only names the refresh a new client deserves.
+            const feed = yield* events.subscribe({ reconcile: terminals.list() })
             // Heartbeat ticks become SSE comments: ignored by conforming
             // parsers, but they keep idle-timeout-prone transports alive and
             // surface dead sockets to the server via the failing write.

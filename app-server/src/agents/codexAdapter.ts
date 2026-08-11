@@ -15,23 +15,26 @@ import * as path from "node:path"
 import type {
   AgentActivity,
   AgentAdapter,
+  AgentConflict,
   AgentConnection,
   AgentEvent,
+  AgentIdentityMismatch,
+  AgentProtocolError,
   AgentSessionEvent,
+  AgentUnavailable,
   EstablishedIdentity,
 } from "./agentAdapter.ts"
 import {
-  AgentConflict,
-  AgentIdentityMismatch,
-  AgentProtocolError,
   AgentResumeFailed,
-  AgentUnavailable,
   aggregateActivity,
+  emitAgentEvent,
   makeVersionGate,
   NESTED_SESSION_ENV_VARIABLES,
+  providerErrors,
   resolveProviderExecutable,
   samePath,
   titleInstruction,
+  withTitleTimeout,
 } from "./agentAdapter.ts"
 import * as BuildInfo from "../platform/buildInfo.ts"
 import * as CodexServer from "./codexServer.ts"
@@ -64,12 +67,9 @@ import * as Subprocess from "../platform/subprocess.ts"
 //     on teardown, root unobserve/unregister, and release.
 
 /** The codex-cli version this adapter was validated against (record + warn). */
-export const CODEX_TESTED_VERSION = "0.146.0"
+const CODEX_TESTED_VERSION = "0.146.0"
 
 const REQUEST_TIMEOUT = "30 seconds"
-
-/** Bound on one `codex exec` title one-shot (ATC-155). */
-const TITLE_TIMEOUT = "90 seconds"
 
 /** The title one-shot's pinned model (ATC-155): a title needs the cheap
  * high-volume tier (~25× cheaper than the default coding models), never
@@ -88,9 +88,16 @@ export class CodexAdapter extends Context.Service<CodexAdapter, AgentAdapter>()(
   "app-server/CodexAdapter",
 ) {}
 
-const unavailable = (reason: string) => new AgentUnavailable({ provider: "codex", reason })
-const protocolError = (reason: string) => new AgentProtocolError({ provider: "codex", reason })
-const conflict = (reason: string) => new AgentConflict({ provider: "codex", reason })
+const {
+  unavailable,
+  protocolError,
+  conflict,
+  identityMismatch,
+  connectionClosed,
+  turnStillActive,
+  staleTurn,
+  writerConnected,
+} = providerErrors("codex")
 
 /** A JSON-RPC error response — mapped per call site (resume vs the rest). */
 class RpcError extends Schema.TaggedErrorClass<RpcError>()("RpcError", {
@@ -180,7 +187,6 @@ interface PendingReply {
 
 interface ClientState {
   readonly socket: WebSocket
-  readonly url: string
   readonly pending: Map<number, PendingReply>
   nextId: number
   alive: boolean
@@ -274,6 +280,18 @@ export const layer = Layer.effect(CodexAdapter)(
       }
       ownStatus.delete(rootId)
     }
+    // Raw frames arrive on a sync WebSocket callback with no fiber to log
+    // from, so the header's "raw events are logged at debug level" runs
+    // through this bridge: a sliding queue (bursts may drop old frames —
+    // acceptable for diagnostics) drained by one scoped logger fiber.
+    const rawFrames = yield* Queue.make<string>({ capacity: 256, strategy: "sliding" })
+    yield* Stream.fromQueue(rawFrames).pipe(
+      Stream.runForEach((raw) =>
+        Effect.logDebug("codex app-server frame").pipe(Effect.annotateLogs({ raw })),
+      ),
+      Effect.forkScoped,
+    )
+
     const connectLock = yield* Semaphore.make(1)
     const resumeLock = yield* Semaphore.make(1)
     // Serializes TUI launch → thread/started capture (prepareTuiSession).
@@ -313,18 +331,8 @@ export const layer = Layer.effect(CodexAdapter)(
       )
     }
 
-    const emit = (session: LiveSession, event: AgentEvent): void => {
-      // Bounded queue: a consumer that stopped draining loses the stream,
-      // not the process (the events.ts subscriber policy). Overflow FAILS
-      // the stream rather than ending it — a clean end would read as a
-      // completed turn to the consumer, not a truncated one.
-      if (!Queue.offerUnsafe(session.queue, event)) {
-        Queue.failCauseUnsafe(
-          session.queue,
-          Cause.fail(protocolError("session event stream overflowed; reopen and resync")),
-        )
-      }
-    }
+    const emit = (session: LiveSession, event: AgentEvent): void =>
+      emitAgentEvent(session.queue, event, protocolError)
 
     const teardown = (state: ClientState, reason: string): void => {
       if (!state.alive) return
@@ -468,6 +476,7 @@ export const layer = Layer.effect(CodexAdapter)(
     }
 
     const dispatch = (state: ClientState, raw: string): void => {
+      Queue.offerUnsafe(rawFrames, raw)
       let message: {
         id?: number | string
         method?: string
@@ -558,7 +567,7 @@ export const layer = Layer.effect(CodexAdapter)(
     const openSocket = (url: string): Effect.Effect<ClientState, AgentUnavailable> =>
       Effect.callback<ClientState, AgentUnavailable>((resume) => {
         const socket = new WebSocket(url)
-        const state: ClientState = { socket, url, pending: new Map(), nextId: 1, alive: true }
+        const state: ClientState = { socket, pending: new Map(), nextId: 1, alive: true }
         socket.onopen = () => resume(Effect.succeed(state))
         socket.onerror = () => {
           teardown(state, "connection failed")
@@ -689,15 +698,10 @@ export const layer = Layer.effect(CodexAdapter)(
         const requireLive = Effect.suspend(
           (): Effect.Effect<void, AgentConflict | AgentUnavailable> =>
             session.failed || !state.alive
-              ? Effect.fail(
-                  new AgentUnavailable({
-                    provider: "codex",
-                    reason: "the app-server connection was lost; resume the session",
-                  }),
-                )
+              ? Effect.fail(unavailable("the app-server connection was lost; resume the session"))
               : sessions.get(threadId) === session
                 ? Effect.void
-                : Effect.fail(conflict("the connection is closed")),
+                : Effect.fail(connectionClosed()),
         )
 
         const connection: AgentConnection = {
@@ -709,7 +713,7 @@ export const layer = Layer.effect(CodexAdapter)(
             Effect.gen(function* () {
               yield* requireLive
               if (session.activeTurn !== null) {
-                return yield* Effect.fail(conflict(`turn ${session.activeTurn} is still active`))
+                return yield* Effect.fail(turnStillActive(session.activeTurn))
               }
               // Reserve the slot before suspending on the RPC, or two
               // concurrent startTurn calls would both pass the check.
@@ -738,7 +742,7 @@ export const layer = Layer.effect(CodexAdapter)(
             Effect.gen(function* () {
               yield* requireLive
               if (session.activeTurn !== turn.turnId) {
-                return yield* Effect.fail(conflict(`turn ${turn.turnId} is not the active turn`))
+                return yield* Effect.fail(staleTurn(turn.turnId))
               }
               // A provider-side rejection means the target went stale in
               // flight — the same conflict as losing the local race.
@@ -916,14 +920,7 @@ export const layer = Layer.effect(CodexAdapter)(
               }).pipe(Effect.mapError(rpcToProtocol))
               const decoded = yield* decodeReply(ThreadReply, reply)
               if (!samePath(decoded.thread.cwd, options.cwd)) {
-                return yield* Effect.fail(
-                  new AgentIdentityMismatch({
-                    provider: "codex",
-                    field: "cwd",
-                    expected: options.cwd,
-                    actual: decoded.thread.cwd,
-                  }),
-                )
+                return yield* Effect.fail(identityMismatch("cwd", options.cwd, decoded.thread.cwd))
               }
               return yield* registerSession(
                 state,
@@ -950,9 +947,7 @@ export const layer = Layer.effect(CodexAdapter)(
           Effect.gen(function* () {
             const state = yield* getClient
             if (sessions.has(options.providerSessionId)) {
-              return yield* Effect.fail(
-                conflict(`a writer is already connected to ${options.providerSessionId}`),
-              )
+              return yield* Effect.fail(writerConnected(options.providerSessionId))
             }
             const reply = yield* request(state, "thread/resume", {
               threadId: options.providerSessionId,
@@ -971,23 +966,11 @@ export const layer = Layer.effect(CodexAdapter)(
             const decoded = yield* decodeReply(ThreadReply, reply)
             if (decoded.thread.id !== options.providerSessionId) {
               return yield* Effect.fail(
-                new AgentIdentityMismatch({
-                  provider: "codex",
-                  field: "sessionId",
-                  expected: options.providerSessionId,
-                  actual: decoded.thread.id,
-                }),
+                identityMismatch("sessionId", options.providerSessionId, decoded.thread.id),
               )
             }
             if (!samePath(decoded.thread.cwd, options.cwd)) {
-              return yield* Effect.fail(
-                new AgentIdentityMismatch({
-                  provider: "codex",
-                  field: "cwd",
-                  expected: options.cwd,
-                  actual: decoded.thread.cwd,
-                }),
-              )
+              return yield* Effect.fail(identityMismatch("cwd", options.cwd, decoded.thread.cwd))
             }
             const { connection } = yield* registerSession(
               state,
@@ -1241,17 +1224,7 @@ export const layer = Layer.effect(CodexAdapter)(
                     protocolError(`could not read the title output: ${error.message}`),
                   ),
                 )
-            }).pipe(
-              Effect.timeoutOrElse({
-                duration: TITLE_TIMEOUT,
-                orElse: () =>
-                  Effect.fail(
-                    protocolError(
-                      `title generation produced no result within ${Duration.format(Duration.fromInputUnsafe(TITLE_TIMEOUT))}`,
-                    ),
-                  ),
-              }),
-            )
+            }).pipe(withTitleTimeout(protocolError))
           }),
         ),
       checkSession: (options) =>

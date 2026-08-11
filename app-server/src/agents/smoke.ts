@@ -268,10 +268,7 @@ const claudeRoundTrip = async (
 ): Promise<{ readonly sessionId: string; readonly text: string }> => {
   // Controlled but complete environment: the child needs HOME and any
   // credential configuration the user has; nothing is added or dropped.
-  const env: Record<string, string> = {}
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined) env[key] = value
-  }
+  const env = Subprocess.inheritedEnv()
   const stream = query({
     prompt: "Reply with exactly: ATC-SMOKE-OK",
     options: {

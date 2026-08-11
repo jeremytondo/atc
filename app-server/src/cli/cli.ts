@@ -161,7 +161,7 @@ export const clientCommand = <Params extends Command.Command.Config, A>(
     params: Command.Command.Config.Infer<Params>,
   ) => Effect.Effect<A, unknown>,
 ) =>
-  Command.make(diagnosticName.split(" ").at(-1)!, params, (parsed) =>
+  Command.make(diagnosticName.split(" ").at(-1) ?? diagnosticName, params, (parsed) =>
     withClient(diagnosticName, (client) =>
       Effect.gen(function* () {
         const result = yield* call(client, parsed)
@@ -185,6 +185,39 @@ export const nameFlag = (description: string) =>
 export const yesFlag = Flag.boolean("yes").pipe(
   Flag.withDescription("Confirm the deletion (required; the CLI never prompts)"),
 )
+
+/** Gate a destructive call behind --yes, naming the consequence refused. */
+export const requireYes = <A, E>(
+  yes: boolean,
+  consequence: string,
+  call: Effect.Effect<A, E>,
+): Effect.Effect<A, E | Error> =>
+  yes ? call : Effect.fail(new Error(`refusing to delete without --yes (${consequence})`))
+
+export const projectFlag = Flag.string("project").pipe(Flag.withDescription("Project id"))
+
+/**
+ * Spread helper for the contract's absent-key convention: `{key: value}`
+ * when the option is set (optionally mapped), `{}` otherwise.
+ */
+export function optionalKey<K extends string, A>(
+  key: K,
+  option: Option.Option<A>,
+): Partial<Record<K, A>>
+export function optionalKey<K extends string, A, B>(
+  key: K,
+  option: Option.Option<A>,
+  map: (value: A) => B,
+): Partial<Record<K, B>>
+export function optionalKey<K extends string, A, B>(
+  key: K,
+  option: Option.Option<A>,
+  map?: (value: A) => B,
+): Partial<Record<K, A | B>> {
+  return Option.isSome(option)
+    ? ({ [key]: map === undefined ? option.value : map(option.value) } as Record<K, A | B>)
+    : {}
+}
 
 export const health = clientCommand(
   "health",
@@ -214,7 +247,7 @@ const fsList = clientCommand(
   (client, args) =>
     client.v1.listDirectory({
       // The contract uses absent keys (not undefined/null) for omitted fields.
-      query: Option.isSome(args.path) ? { path: path.resolve(args.path.value) } : {},
+      query: optionalKey("path", args.path, path.resolve),
     }),
 )
 

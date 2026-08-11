@@ -203,10 +203,7 @@ export type HookListener = (providerSessionId: string, event: AgentSessionEvent)
  * a payload carrying `agent_id` fired inside a subagent — its prompt is
  * synthetic dispatch, never the user's message (ATC-155).
  */
-export const userPromptOf = (
-  eventName: string,
-  payload: Record<string, unknown>,
-): string | null => {
+const userPromptOf = (eventName: string, payload: Record<string, unknown>): string | null => {
   if (eventName !== "UserPromptSubmit") return null
   if (typeof payload["agent_id"] === "string") return null
   const prompt = payload["prompt"]

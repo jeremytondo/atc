@@ -1,4 +1,4 @@
-import { Duration, Effect, Schema, Semaphore, Stream } from "effect"
+import { Cause, Duration, Effect, Queue, Schema, Semaphore, Stream } from "effect"
 import type { Scope } from "effect"
 import { existsSync, realpathSync } from "node:fs"
 import type { AgentId } from "../api/contract.ts"
@@ -431,6 +431,69 @@ export class AgentConflict extends Schema.TaggedErrorClass<AgentConflict>()("Age
 }) {
   override get message(): string {
     return `${this.provider} conflict: ${this.reason}`
+  }
+}
+
+/**
+ * The per-provider error constructors and shared conflict-message rules
+ * every adapter otherwise re-declares (ATC-167 M12). The message builders
+ * are the seam's vocabulary: identical situations must read identically
+ * across providers.
+ */
+export const providerErrors = (provider: AgentProvider) => {
+  const conflict = (reason: string) => new AgentConflict({ provider, reason })
+  return {
+    unavailable: (reason: string) => new AgentUnavailable({ provider, reason }),
+    protocolError: (reason: string) => new AgentProtocolError({ provider, reason }),
+    conflict,
+    identityMismatch: (field: "sessionId" | "cwd", expected: string, actual: string) =>
+      new AgentIdentityMismatch({ provider, field, expected, actual }),
+    connectionClosed: () => conflict("the connection is closed"),
+    turnStillActive: (turnId: string) => conflict(`turn ${turnId} is still active`),
+    staleTurn: (turnId: string) => conflict(`turn ${turnId} is not the active turn`),
+    writerConnected: (providerSessionId: string) =>
+      conflict(`a writer is already connected to ${providerSessionId}`),
+  }
+}
+
+/** Bound on one title one-shot (ATC-155); a hung child/query is cut here. */
+const TITLE_TIMEOUT = "90 seconds"
+
+/** The shared title-generation bound, failing with the provider's protocol error. */
+export const withTitleTimeout =
+  (protocolError: (reason: string) => AgentProtocolError) =>
+  <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E | AgentProtocolError, R> =>
+    self.pipe(
+      Effect.timeoutOrElse({
+        duration: TITLE_TIMEOUT,
+        orElse: () =>
+          Effect.fail(
+            protocolError(
+              `title generation produced no result within ${Duration.format(Duration.fromInputUnsafe(TITLE_TIMEOUT))}`,
+            ),
+          ),
+      }),
+    )
+
+/**
+ * Deliver one event onto a session's writer feed. Overflow (a bounded
+ * queue whose consumer stopped draining) FAILS the stream rather than
+ * ending it — a clean end would read as a completed turn to the consumer,
+ * not a truncated one (the events.ts subscriber policy, adapted). The
+ * overflow branch arms once the session queues carry capacities (the
+ * ATC-172 reliability change bounds them); on unbounded queues it is
+ * reachable only for an already-ended queue, where failCauseUnsafe no-ops.
+ */
+export const emitAgentEvent = (
+  queue: Queue.Queue<AgentEvent, AgentProtocolError | Cause.Done>,
+  event: AgentEvent,
+  protocolError: (reason: string) => AgentProtocolError,
+): void => {
+  if (!Queue.offerUnsafe(queue, event)) {
+    Queue.failCauseUnsafe(
+      queue,
+      Cause.fail(protocolError("session event stream overflowed; reopen and resync")),
+    )
   }
 }
 
