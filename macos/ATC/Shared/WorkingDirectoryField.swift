@@ -3,6 +3,9 @@
 // usable, so the field re-checks through `checkDirectory` whenever the typed
 // value settles and publishes the outcome; sheets gate submission on
 // `DirectoryCheckState.isAvailable` rather than inspecting paths themselves.
+// Any edit to the path or connection drops the previous verdict to
+// `.checking` before the debounce, so a gate can never submit on a verdict
+// that belongs to an earlier value.
 //
 // Browse opens the server-backed DirectoryPickerSheet (`GET /fs/list`), so
 // the browsed filesystem is the server's on every Connection — but
@@ -103,6 +106,10 @@ struct WorkingDirectoryField: View {
             state = .failed("Select a connection first.")
             return
         }
+        // Any change to (path, server) invalidates the previous verdict
+        // right away — gates must never submit on a verdict for a value
+        // that is no longer the one in the field.
+        state = .checking
         // Settle the keystroke burst before spending a server round trip;
         // `.task(id:)` cancels this on the next edit.
         do {
@@ -110,7 +117,6 @@ struct WorkingDirectoryField: View {
         } catch {
             return
         }
-        state = .checking
         do {
             let response = try await client.checkDirectory(query: .init(path: trimmed)).ok.body.json
             state = .checked(response.state, response.reason)

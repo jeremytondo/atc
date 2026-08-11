@@ -48,6 +48,11 @@ final class RefreshState {
             lastError = nil
             hasLoadedOnce = true
         } catch {
+            // A cancelled refresh is not a server failure: recording it
+            // would poison the shared store (a sheet's `.task(id:)` moving
+            // between connections cancels the refresh it started, and the
+            // connection it left would settle as unreachable).
+            guard !(error is CancellationError), !Task.isCancelled else { return }
             guard current == generation else { return }
             lastError = error.localizedDescription
             hasLoadedOnce = true
