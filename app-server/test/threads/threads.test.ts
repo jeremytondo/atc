@@ -139,6 +139,10 @@ describe("/api/v1/threads", () => {
         yield* client.v1.listThreads({ query: { projectId: project.id, archived: "all" } }),
         [canonical, archived],
       )
+      assert.deepStrictEqual(
+        yield* client.v1.listThreads({ query: { projectId: project.id, archived: "false" } }),
+        [canonical],
+      )
       const restored = yield* client.v1.unarchiveThread({ params: { threadId: created.id } })
       assert.isUndefined(restored.archivedAt)
       assert.isUndefined(restored.pinnedAt)
@@ -281,13 +285,20 @@ describe("/api/v1/threads", () => {
       yield* repository.markEnded([ended.id])
 
       // The threadId listing filter scopes to the thread's terminals —
-      // tombstones included — without a client-side pass.
+      // tombstones included — without a client-side pass, and it ANDs with
+      // projectId rather than widening it.
       assert.deepStrictEqual(
         (yield* client.v1.listTerminals({ query: { threadId: thread.id } })).map((t) => t.id),
         [ended.id, record.id],
       )
       assert.deepStrictEqual(
         yield* client.v1.listTerminals({ query: { threadId: "not-a-thread" } }),
+        [],
+      )
+      assert.deepStrictEqual(
+        yield* client.v1.listTerminals({
+          query: { projectId: "someone-else", threadId: thread.id },
+        }),
         [],
       )
 

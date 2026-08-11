@@ -13,8 +13,8 @@ import { makeTestServiceLayers, testAppConfig } from "../testLayers.ts"
 import { makeFakeAgentAdapter } from "./fakeAgentAdapter.ts"
 
 // The read-only agents registry through the public contract (ATC-140):
-// demand-driven detection over the fake adapters, capability report from
-// the seam, unknown slugs 404. Nothing is persisted anywhere.
+// demand-driven availability detection over the fake adapters, unknown
+// slugs 404. Nothing is persisted anywhere.
 
 const kit = makeTestServiceLayers()
 const TestLayer = Layer.mergeAll(
@@ -24,7 +24,7 @@ const TestLayer = Layer.mergeAll(
 )
 
 describe("/api/v1/agents", () => {
-  it.effect("lists both built-in agents with each adapter's own capability report", () =>
+  it.effect("lists both built-in agents with availability", () =>
     Effect.gen(function* () {
       const client = yield* HttpApiTest.groups(Api, ["v1"])
       const agents = yield* client.v1.listAgents()

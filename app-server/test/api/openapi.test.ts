@@ -1,12 +1,11 @@
 import { assert, describe, it } from "@effect/vitest"
 import { BunHttpServer } from "@effect/platform-bun"
-import { Context, Effect, Exit, Layer, Option, Scope } from "effect"
+import { Context, Effect, Layer, Option } from "effect"
 import {
   HttpBody,
   HttpClient,
   HttpClientRequest,
   HttpRouter,
-  HttpServer,
   HttpServerRequest,
   HttpServerResponse,
 } from "effect/unstable/http"
@@ -17,7 +16,7 @@ import { openApiDocument, openApiJson } from "../../src/api/openapi.ts"
 import * as Server from "../../src/server.ts"
 import { appServerRoot } from "../blackbox.ts"
 import { TestBuildInfoLayer, testBuildInfo } from "../testBuildInfo.ts"
-import { TestAuthTokenLayer, TestRepositoryLayers } from "../testLayers.ts"
+import { startServer, TestAuthTokenLayer, TestRepositoryLayers } from "../testLayers.ts"
 
 // Contract-generation tests: the document must be deterministic, match the
 // checked-in artifact, cover every contract operation, and agree with what
@@ -85,11 +84,20 @@ describe("openapi document", () => {
     const document = openApiDocument as unknown as {
       security: ReadonlyArray<Record<string, unknown>>
       components: { securitySchemes: Record<string, { type: string; scheme: string }> }
+      paths: Record<string, Record<string, { security?: unknown }>>
     }
     assert.deepStrictEqual(document.security, [{}, { bearerAuth: [] }])
     const scheme = document.components.securitySchemes["bearerAuth"]!
     assert.strictEqual(scheme.type, "http")
     assert.strictEqual(scheme.scheme, "bearer")
+    // An operation-level `security` array overrides the document default
+    // (OpenAPI 3.1), so no operation may carry one — the generator's empty
+    // stamps would silently declare every operation credential-free.
+    for (const [path, operations] of Object.entries(document.paths)) {
+      for (const [method, operation] of Object.entries(operations)) {
+        assert.notProperty(operation, "security", `${method.toUpperCase()} ${path}`)
+      }
+    }
   })
 
   it("documents every contract operation exactly once, with pinned camelCase ids", () => {
@@ -507,8 +515,8 @@ describe("openapi document vs runtime", () => {
   )
 
   // it.live: real socket I/O — the point is pinning the *documented* frame
-  // shape to the exact bytes a real subscriber receives (H3): data-only
-  // frames plus comment lines, never the id/event envelope fields.
+  // shape to the exact bytes a real subscriber receives: data-only frames
+  // plus comment lines, never the id/event envelope fields.
   it.live("GET /api/v1/events: the documented data-only SSE shape matches the emitted bytes", () =>
     Effect.gen(function* () {
       // The document declares each frame's payload as the JSON-encoded
@@ -538,14 +546,9 @@ describe("openapi document vs runtime", () => {
       // Now the bytes: a real subscriber sees the documented opening
       // comment, then a bare `data:` frame whose JSON carries exactly the
       // documented payload fields — no `id:` or `event:` lines.
-      const scope = yield* Scope.make()
-      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
-      const context = yield* Layer.build(
+      const { base } = yield* startServer(
         Server.layer({ port: 0 }).pipe(Layer.provide([TestBuildInfoLayer, TestRepositoryLayers])),
-      ).pipe(Effect.provideService(Scope.Scope, scope))
-      const address = Context.get(context, HttpServer.HttpServer).address
-      assert.strictEqual(address._tag, "TcpAddress")
-      const base = `http://127.0.0.1:${(address as { port: number }).port}`
+      )
 
       const response = yield* Effect.promise(() =>
         fetch(`${base}/api/v1/events`, { headers: { accept: "text/event-stream" } }),

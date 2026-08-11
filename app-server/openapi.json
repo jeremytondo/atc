@@ -12,7 +12,6 @@
         ],
         "operationId": "getHealth",
         "parameters": [],
-        "security": [],
         "responses": {
           "200": {
             "description": "Result of the liveness probe.",
@@ -35,7 +34,6 @@
         ],
         "operationId": "getVersion",
         "parameters": [],
-        "security": [],
         "responses": {
           "200": {
             "description": "Build and contract version information for the running server.",
@@ -58,7 +56,6 @@
         ],
         "operationId": "listProjects",
         "parameters": [],
-        "security": [],
         "responses": {
           "200": {
             "description": "All projects, newest first.",
@@ -79,7 +76,6 @@
         ],
         "operationId": "createProject",
         "parameters": [],
-        "security": [],
         "responses": {
           "200": {
             "description": "A Project: the user-facing container organizing a body of work.",
@@ -138,7 +134,6 @@
             "required": true
           }
         ],
-        "security": [],
         "responses": {
           "200": {
             "description": "A Project: the user-facing container organizing a body of work.",
@@ -178,7 +173,6 @@
             "required": true
           }
         ],
-        "security": [],
         "responses": {
           "200": {
             "description": "A Project: the user-facing container organizing a body of work.",
@@ -245,7 +239,6 @@
             "required": true
           }
         ],
-        "security": [],
         "responses": {
           "204": {
             "description": "<No Content>"
@@ -300,7 +293,6 @@
             "required": false
           }
         ],
-        "security": [],
         "responses": {
           "200": {
             "description": "Terminals, newest first.",
@@ -321,7 +313,6 @@
         ],
         "operationId": "createTerminal",
         "parameters": [],
-        "security": [],
         "responses": {
           "200": {
             "description": "A durable, project-scoped terminal backed by a zmx session.",
@@ -403,7 +394,6 @@
             "required": true
           }
         ],
-        "security": [],
         "responses": {
           "200": {
             "description": "A durable, project-scoped terminal backed by a zmx session.",
@@ -443,7 +433,6 @@
             "required": true
           }
         ],
-        "security": [],
         "responses": {
           "200": {
             "description": "A durable, project-scoped terminal backed by a zmx session.",
@@ -493,7 +482,6 @@
             "required": true
           }
         ],
-        "security": [],
         "responses": {
           "204": {
             "description": "<No Content>"
@@ -553,7 +541,6 @@
             "required": false
           }
         ],
-        "security": [],
         "responses": {
           "200": {
             "description": "Threads, newest first.",
@@ -574,7 +561,6 @@
         ],
         "operationId": "createThread",
         "parameters": [],
-        "security": [],
         "responses": {
           "200": {
             "description": "A durable Thread: the primary unit of agent work. Its ATC identity is separate from provider identity, and it never requires a Terminal.",
@@ -643,7 +629,6 @@
             "required": true
           }
         ],
-        "security": [],
         "responses": {
           "200": {
             "description": "A durable Thread: the primary unit of agent work. Its ATC identity is separate from provider identity, and it never requires a Terminal.",
@@ -683,7 +668,6 @@
             "required": true
           }
         ],
-        "security": [],
         "responses": {
           "200": {
             "description": "A durable Thread: the primary unit of agent work. Its ATC identity is separate from provider identity, and it never requires a Terminal.",
@@ -733,7 +717,6 @@
             "required": true
           }
         ],
-        "security": [],
         "responses": {
           "204": {
             "description": "<No Content>"
@@ -778,7 +761,6 @@
             "required": true
           }
         ],
-        "security": [],
         "responses": {
           "200": {
             "description": "A durable Thread: the primary unit of agent work. Its ATC identity is separate from provider identity, and it never requires a Terminal.",
@@ -840,7 +822,6 @@
             "required": true
           }
         ],
-        "security": [],
         "responses": {
           "200": {
             "description": "A durable Thread: the primary unit of agent work. Its ATC identity is separate from provider identity, and it never requires a Terminal.",
@@ -882,7 +863,6 @@
             "required": true
           }
         ],
-        "security": [],
         "responses": {
           "200": {
             "description": "A durable Thread: the primary unit of agent work. Its ATC identity is separate from provider identity, and it never requires a Terminal.",
@@ -934,7 +914,6 @@
             "required": true
           }
         ],
-        "security": [],
         "responses": {
           "200": {
             "description": "A durable Thread: the primary unit of agent work. Its ATC identity is separate from provider identity, and it never requires a Terminal.",
@@ -976,7 +955,6 @@
             "required": true
           }
         ],
-        "security": [],
         "responses": {
           "200": {
             "description": "A durable, project-scoped terminal backed by a zmx session.",
@@ -1063,7 +1041,6 @@
         ],
         "operationId": "listAgents",
         "parameters": [],
-        "security": [],
         "responses": {
           "200": {
             "description": "The built-in agent registry.",
@@ -1076,7 +1053,7 @@
             }
           }
         },
-        "description": "List the built-in agents with availability and capabilities, detected on demand."
+        "description": "List the built-in agents with availability, detected on demand."
       }
     },
     "/api/v1/agents/{agentId}": {
@@ -1095,10 +1072,9 @@
             "required": true
           }
         ],
-        "security": [],
         "responses": {
           "200": {
-            "description": "A built-in agent provider: availability and capability report, detected on demand and never persisted.",
+            "description": "A built-in agent provider: availability report, detected on demand and never persisted.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1128,7 +1104,6 @@
         ],
         "operationId": "subscribeEvents",
         "parameters": [],
-        "security": [],
         "responses": {
           "200": {
             "description": "A data-only SSE byte stream. Each event is a single `data:` line whose payload is a JSON-encoded ResourceChangedEvent (see that component schema); frames never carry `id:` or `event:` lines. Comment lines are protocol control, ignored by conforming SSE parsers: the stream opens with `: connected` (the resync handshake) and a `: heartbeat` follows roughly every 25 seconds. Example:\n\n```\n: connected\n\n: heartbeat\n\ndata: {\"resource\":\"thread\",\"id\":\"0198aaf1\",\"change\":\"updated\"}\n```",
@@ -1162,7 +1137,6 @@
             "required": true
           }
         ],
-        "security": [],
         "responses": {
           "200": {
             "description": "Result of a directory health check. Never persisted.",
@@ -1196,7 +1170,6 @@
             "required": false
           }
         ],
-        "security": [],
         "responses": {
           "200": {
             "description": "A directory listing for the server-backed folder browser. Never persisted.",
@@ -1909,7 +1882,7 @@
           "available"
         ],
         "additionalProperties": false,
-        "description": "A built-in agent provider: availability and capability report, detected on demand and never persisted."
+        "description": "A built-in agent provider: availability report, detected on demand and never persisted."
       },
       "AgentList": {
         "type": "array",

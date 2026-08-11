@@ -133,12 +133,6 @@ export interface AgentTurn {
   readonly turnId: string
 }
 
-/** What an adapter supports, for callers that must not guess. */
-export interface AgentCapabilities {
-  /** Provider version the adapter was validated against (drift warns, never blocks). */
-  readonly testedVersion: string
-}
-
 /**
  * How to launch the provider's TUI attached to an existing session. The
  * caller owns the actual launch (a Terminal session); the adapter owns argv
@@ -262,7 +256,6 @@ export interface PreparedTuiSession {
  */
 export interface AgentAdapter {
   readonly provider: AgentProvider
-  readonly capabilities: AgentCapabilities
   /**
    * Create a new provider session in `cwd` and start its first turn. The
    * provider's echoed working directory is verified like resume's — a

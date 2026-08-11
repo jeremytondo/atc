@@ -700,7 +700,6 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
 
       const adapter: AgentAdapter = {
         provider: "claude",
-        capabilities: { testedVersion: CLAUDE_TESTED_VERSION },
         createSession: (options) =>
           Effect.gen(function* () {
             const session = yield* openSession({ cwd: options.cwd })

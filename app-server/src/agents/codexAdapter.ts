@@ -854,7 +854,6 @@ export const layer = Layer.effect(CodexAdapter)(
 
     const adapter: AgentAdapter = {
       provider: "codex",
-      capabilities: { testedVersion: CODEX_TESTED_VERSION },
       createSession: (options) =>
         Effect.gen(function* () {
           // thread/start broadcasts thread/started to every socket — ours

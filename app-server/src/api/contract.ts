@@ -11,6 +11,10 @@ import {
 // checked-in OpenAPI document (openapi.ts), and typed clients all derive from
 // this module. Authoring conventions (pinned operation ids, schema
 // identifiers, descriptions) live in AGENTS.md "OpenAPI Contract".
+//
+// No listing endpoint paginates, deliberately: a single-user server's
+// collections stay small enough to return whole, and every client consumes
+// full lists. Revisit only when a real client needs paging.
 
 /** Default TCP port of a locally running App Server. */
 export const DEFAULT_PORT = 7331
@@ -252,7 +256,7 @@ export const Agent = Schema.Struct({
 }).annotate({
   identifier: "Agent",
   description:
-    "A built-in agent provider: availability and capability report, detected on demand and never persisted.",
+    "A built-in agent provider: availability report, detected on demand and never persisted.",
 })
 
 export const AgentList = Schema.Array(Agent).annotate({
@@ -620,9 +624,6 @@ export class V1 extends HttpApiGroup.make("v1")
         OpenApi.Description,
         "Delete the project and everything it owns: every thread (archived included) and every terminal (ended tombstones included) is deleted through the normal delete flows, then the project record. Never touches the filesystem or any directory. A mid-cascade failure leaves already-deleted children deleted; retrying finishes the job.",
       ),
-    // No listing endpoint paginates, deliberately: a single-user server's
-    // collections stay small enough to return whole, and every client
-    // consumes full lists. Revisit only when a real client needs paging.
     HttpApiEndpoint.get("listTerminals", "/terminals", {
       query: {
         projectId: Schema.optionalKey(
@@ -817,7 +818,7 @@ export class V1 extends HttpApiGroup.make("v1")
       .annotate(OpenApi.Identifier, "listAgents")
       .annotate(
         OpenApi.Description,
-        "List the built-in agents with availability and capabilities, detected on demand.",
+        "List the built-in agents with availability, detected on demand.",
       ),
     HttpApiEndpoint.get("getAgent", "/agents/:agentId", {
       params: { agentId: Schema.String },
@@ -898,13 +899,17 @@ export class Api extends HttpApi.make("atc")
       // The server gates every non-loopback request on a bearer token
       // (localTrust.ts); loopback requests need no credentials. The empty
       // requirement documents that anonymous (loopback) access is valid, so
-      // generated clients treat the token as optional but know how to send it.
+      // generated clients treat the token as optional but know how to send
+      // it. The generator stamps `security: []` on every operation, and an
+      // operation-level array overrides the document default (OpenAPI 3.1),
+      // so those empty arrays must go for the default to mean anything.
       transform: (spec) => ({
         ...spec,
         security: [{}, { bearerAuth: [] }],
         components: {
-          ...(spec["components"] as Record<string, unknown>),
+          ...spec["components"],
           securitySchemes: {
+            ...spec["components"]["securitySchemes"],
             bearerAuth: {
               type: "http",
               scheme: "bearer",
@@ -913,6 +918,22 @@ export class Api extends HttpApi.make("atc")
             },
           },
         },
+        paths: Object.fromEntries(
+          Object.entries(spec["paths"] as Record<string, Record<string, unknown>>).map(
+            ([path, operations]) => [
+              path,
+              Object.fromEntries(
+                Object.entries(operations).map(([method, operation]) => {
+                  const { security, ...rest } = operation as { security?: ReadonlyArray<unknown> }
+                  return [
+                    method,
+                    security === undefined || security.length === 0 ? rest : { ...rest, security },
+                  ]
+                }),
+              ),
+            ],
+          ),
+        ),
       }),
     }),
   ) {}

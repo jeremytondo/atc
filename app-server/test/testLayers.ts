@@ -1,6 +1,7 @@
 import { assert } from "@effect/vitest"
 import { BunHttpServer, BunServices } from "@effect/platform-bun"
-import { Effect, Layer, Stream } from "effect"
+import { Context, Effect, Exit, Layer, Scope, Stream } from "effect"
+import { HttpServer } from "effect/unstable/http"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -109,13 +110,9 @@ export const makeTestServiceLayers = (
   >
 } => {
   const fake = makeFakeAdapter()
-  // Distinct tested versions keep the two fake adapters distinguishable in
-  // logs and future assertions (capabilities no longer cross the wire).
   const fakeAgents = {
     codex: makeFakeAgentAdapter(),
-    claude: makeFakeAgentAdapter({
-      capabilities: { testedVersion: "0.0.0-fake-claude" },
-    }),
+    claude: makeFakeAgentAdapter(),
   }
   const base = Layer.mergeAll(
     ProjectRepository.layer,
@@ -245,6 +242,28 @@ export const makeFakeZmxSandbox = (vars: Record<string, string> = {}) => {
   fs.chmodSync(wrapper, 0o755)
   return { base, stateDir, wrapper }
 }
+
+/**
+ * Build a server layer in its own closable scope — closable mid-test, and
+ * the finalizer guarantees the listener dies even when an assertion fails
+ * first. Returns the built context and the resolved loopback base URL.
+ */
+export const startServer = <R, E>(layer: Layer.Layer<R | HttpServer.HttpServer, E>) =>
+  Effect.gen(function* () {
+    const scope = yield* Scope.make()
+    yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+    const context = yield* Layer.build(layer).pipe(Effect.provideService(Scope.Scope, scope))
+    const address = Context.get(context, HttpServer.HttpServer).address
+    if (address._tag !== "TcpAddress") {
+      return yield* Effect.die(`expected a TCP address, got ${address._tag}`)
+    }
+    return {
+      scope,
+      context,
+      hostname: address.hostname,
+      base: `http://127.0.0.1:${address.port}`,
+    }
+  })
 
 /** Poll (real clock) until `predicate` accepts the effect's value; bounded. */
 export const eventually = <A, E>(effect: Effect.Effect<A, E>, predicate: (value: A) => boolean) =>
