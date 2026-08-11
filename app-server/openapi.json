@@ -289,6 +289,15 @@
               "description": "Restrict the listing to one project."
             },
             "required": false
+          },
+          {
+            "name": "threadId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "description": "Restrict the listing to one thread's terminals."
+            },
+            "required": false
           }
         ],
         "security": [],
@@ -536,9 +545,10 @@
               "type": "string",
               "enum": [
                 "true",
-                "false"
+                "false",
+                "all"
               ],
-              "description": "\"true\" lists archived threads only; the default lists active threads."
+              "description": "\"true\" lists archived threads only, \"all\" lists active and archived together; omitted (or \"false\") lists active threads only."
             },
             "required": false
           }
@@ -1121,111 +1131,11 @@
         "security": [],
         "responses": {
           "200": {
-            "description": "Success",
+            "description": "A data-only SSE byte stream. Each event is a single `data:` line whose payload is a JSON-encoded ResourceChangedEvent (see that component schema); frames never carry `id:` or `event:` lines. Comment lines are protocol control, ignored by conforming SSE parsers: the stream opens with `: connected` (the resync handshake) and a `: heartbeat` follows roughly every 25 seconds. Example:\n\n```\n: connected\n\n: heartbeat\n\ndata: {\"resource\":\"thread\",\"id\":\"0198aaf1\",\"change\":\"updated\"}\n```",
             "content": {
               "text/event-stream": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "id": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "event": {
-                      "type": "string"
-                    },
-                    "data": {
-                      "$ref": "#/components/schemas/ResourceChangedEventJsonEncoding"
-                    }
-                  },
-                  "required": [
-                    "id",
-                    "event",
-                    "data"
-                  ],
-                  "additionalProperties": false
-                },
-                "x-effect-stream": {
-                  "encoding": "sse",
-                  "causeSchema": {
-                    "type": "array",
-                    "items": {
-                      "anyOf": [
-                        {
-                          "type": "object",
-                          "properties": {
-                            "_tag": {
-                              "type": "string",
-                              "enum": [
-                                "Fail"
-                              ]
-                            },
-                            "error": {
-                              "not": {}
-                            }
-                          },
-                          "required": [
-                            "_tag",
-                            "error"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "_tag": {
-                              "type": "string",
-                              "enum": [
-                                "Die"
-                              ]
-                            },
-                            "defect": {}
-                          },
-                          "required": [
-                            "_tag",
-                            "defect"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "_tag": {
-                              "type": "string",
-                              "enum": [
-                                "Interrupt"
-                              ]
-                            },
-                            "fiberId": {
-                              "anyOf": [
-                                {
-                                  "type": "number"
-                                },
-                                {
-                                  "type": "null"
-                                }
-                              ]
-                            }
-                          },
-                          "required": [
-                            "_tag",
-                            "fiberId"
-                          ],
-                          "additionalProperties": false
-                        }
-                      ]
-                    }
-                  },
-                  "errorSchema": {
-                    "not": {}
-                  },
-                  "failureEvent": "effect/httpapi/stream/failure"
+                  "$ref": "#/components/schemas/ResourceChangedEventJsonEncoding"
                 }
               }
             }
@@ -1265,7 +1175,7 @@
             }
           }
         },
-        "description": "Demand-driven directory health check with a bounded timeout. Takes a server-host absolute path; the result is never persisted."
+        "description": "Demand-driven directory health check with a bounded timeout. Takes a server-host absolute path; the result is never persisted. A timed-out check is deliberately a 200 with state \"unknown\" and reason \"timeout\" — the check is a report, so an inconclusive result is still a successful report — while /fs/list models the same timeout as a 422 error, because a listing cannot be partially delivered."
       }
     },
     "/api/v1/fs/list": {
@@ -1992,25 +1902,11 @@
           "detectedVersion": {
             "type": "string",
             "description": "Installed CLI version, when it could be determined."
-          },
-          "testedVersion": {
-            "type": "string",
-            "description": "Version the adapter was validated against (drift warns, never blocks)."
-          },
-          "tuiObservation": {
-            "type": "string",
-            "enum": [
-              "shared-server",
-              "hooks"
-            ],
-            "description": "How live activity is observed while a TUI drives a session: full event fan-out from the shared provider server, or coarser provider hook callbacks."
           }
         },
         "required": [
           "id",
-          "available",
-          "testedVersion",
-          "tuiObservation"
+          "available"
         ],
         "additionalProperties": false,
         "description": "A built-in agent provider: availability and capability report, detected on demand and never persisted."
@@ -2169,9 +2065,20 @@
         "description": "Thin invalidation event: names what changed, never carries resource state. Clients coalesce events and refetch through the corresponding GETs, which stay the single source of truth."
       }
     },
-    "securitySchemes": {}
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Required for every non-loopback request; loopback requests are trusted without credentials."
+      }
+    }
   },
-  "security": [],
+  "security": [
+    {},
+    {
+      "bearerAuth": []
+    }
+  ],
   "tags": [
     {
       "name": "v1"

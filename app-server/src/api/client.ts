@@ -1,4 +1,5 @@
 import type { Effect } from "effect"
+import { HttpClient, HttpClientRequest } from "effect/unstable/http"
 import { HttpApiClient } from "effect/unstable/httpapi"
 import { Api } from "./contract.ts"
 
@@ -10,8 +11,20 @@ import { Api } from "./contract.ts"
 /**
  * Build a client for the App Server at `baseUrl`. Requires an `HttpClient`
  * (e.g. `BunHttpClient.layer`) in the environment.
+ *
+ * `token` is the bearer token non-loopback servers require (the documented
+ * `bearerAuth` scheme); loopback servers ignore it.
  */
-export const make = (options: { readonly baseUrl: string | URL }) =>
-  HttpApiClient.make(Api, { baseUrl: options.baseUrl })
+export const make = (options: {
+  readonly baseUrl: string | URL
+  readonly token?: string | undefined
+}) =>
+  HttpApiClient.make(Api, {
+    baseUrl: options.baseUrl,
+    transformClient:
+      options.token === undefined
+        ? undefined
+        : HttpClient.mapRequest(HttpClientRequest.bearerToken(options.token)),
+  })
 
 export type AppServerClient = Effect.Success<ReturnType<typeof make>>

@@ -137,12 +137,6 @@ export interface AgentTurn {
 export interface AgentCapabilities {
   /** Provider version the adapter was validated against (drift warns, never blocks). */
   readonly testedVersion: string
-  /**
-   * How live activity is observed while a TUI drives the session:
-   * `shared-server` = full event fan-out from the multiplexed provider
-   * server; `hooks` = provider hook callbacks (coarser).
-   */
-  readonly tuiObservation: "shared-server" | "hooks"
 }
 
 /**

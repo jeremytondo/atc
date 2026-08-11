@@ -238,7 +238,6 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
     provider: "codex",
     capabilities: {
       testedVersion: "0.0.0-fake",
-      tuiObservation: "shared-server",
       ...options.capabilities,
     },
     createSession: (options) =>

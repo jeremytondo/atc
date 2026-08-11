@@ -49,24 +49,19 @@ export const layer = Layer.effect(AgentRegistry)(
     }
 
     const describe = (id: typeof AgentId.Type): Effect.Effect<Agent> => {
-      const { adapter, executable } = entries[id]
-      const base = {
-        id,
-        testedVersion: adapter.capabilities.testedVersion,
-        tuiObservation: adapter.capabilities.tuiObservation,
-      }
+      const { executable } = entries[id]
       return resolveProviderExecutable(PROVIDER_FOR_AGENT[id], executable).pipe(
         Effect.flatMap((executable) =>
           readInstalledVersion(subprocess, executable).pipe(
             Effect.map((detected) => ({
-              ...base,
+              id,
               available: true,
               ...(detected !== null ? { detectedVersion: detected } : {}),
             })),
           ),
         ),
         Effect.catchTag("AgentUnavailable", (error) =>
-          Effect.succeed({ ...base, available: false, reason: error.reason }),
+          Effect.succeed({ id, available: false, reason: error.reason }),
         ),
       )
     }

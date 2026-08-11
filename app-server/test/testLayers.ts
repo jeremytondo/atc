@@ -109,12 +109,12 @@ export const makeTestServiceLayers = (
   >
 } => {
   const fake = makeFakeAdapter()
-  // Distinct capability reports so a swapped slug→adapter mapping cannot
-  // pass the registry tests.
+  // Distinct tested versions keep the two fake adapters distinguishable in
+  // logs and future assertions (capabilities no longer cross the wire).
   const fakeAgents = {
     codex: makeFakeAgentAdapter(),
     claude: makeFakeAgentAdapter({
-      capabilities: { testedVersion: "0.0.0-fake-claude", tuiObservation: "hooks" },
+      capabilities: { testedVersion: "0.0.0-fake-claude" },
     }),
   }
   const base = Layer.mergeAll(

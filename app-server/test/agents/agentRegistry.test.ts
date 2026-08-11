@@ -28,17 +28,9 @@ describe("/api/v1/agents", () => {
     Effect.gen(function* () {
       const client = yield* HttpApiTest.groups(Api, ["v1"])
       const agents = yield* client.v1.listAgents()
-      // Per-slug capabilities: a swapped slug→adapter mapping fails here.
       assert.deepStrictEqual(
-        agents.map(({ id, testedVersion, tuiObservation }) => ({
-          id,
-          testedVersion,
-          tuiObservation,
-        })),
-        [
-          { id: "codex", testedVersion: "0.0.0-fake", tuiObservation: "shared-server" },
-          { id: "claude-code", testedVersion: "0.0.0-fake-claude", tuiObservation: "hooks" },
-        ],
+        agents.map(({ id }) => id),
+        ["codex", "claude-code"],
       )
       // /bin/echo resolves, so both are available.
       for (const agent of agents) {

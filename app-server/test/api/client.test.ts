@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest"
 import { BunHttpClient, BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
+import { HttpClient, HttpClientResponse } from "effect/unstable/http"
 import * as Client from "../../src/api/client.ts"
 import * as Server from "../../src/server.ts"
 import { freePort } from "../blackbox.ts"
@@ -27,6 +28,23 @@ describe("contract-derived client", () => {
         assert.deepStrictEqual(yield* client.v1.health(), { status: "ok" })
       }),
     ).pipe(Effect.provide([BunHttpClient.layer, BunServices.layer])),
+  )
+
+  it.effect("attaches the bearer token to every request", () =>
+    Effect.gen(function* () {
+      // No listener needed: capture the outgoing request at the HttpClient
+      // seam and assert the documented bearerAuth header is attached.
+      let authorization: string | undefined
+      const capture = HttpClient.make((request) => {
+        authorization = request.headers["authorization"]
+        return Effect.succeed(HttpClientResponse.fromWeb(request, Response.json({ status: "ok" })))
+      })
+      const client = yield* Client.make({ baseUrl: "http://127.0.0.1", token: "secret" }).pipe(
+        Effect.provideService(HttpClient.HttpClient, capture),
+      )
+      assert.deepStrictEqual(yield* client.v1.health(), { status: "ok" })
+      assert.strictEqual(authorization, "Bearer secret")
+    }),
   )
 
   it.effect("calls version against a real server", () =>

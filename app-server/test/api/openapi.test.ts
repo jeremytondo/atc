@@ -1,11 +1,12 @@
 import { assert, describe, it } from "@effect/vitest"
 import { BunHttpServer } from "@effect/platform-bun"
-import { Context, Effect, Layer, Option } from "effect"
+import { Context, Effect, Exit, Layer, Option, Scope } from "effect"
 import {
   HttpBody,
   HttpClient,
   HttpClientRequest,
   HttpRouter,
+  HttpServer,
   HttpServerRequest,
   HttpServerResponse,
 } from "effect/unstable/http"
@@ -74,6 +75,21 @@ describe("openapi document", () => {
       openApiJson,
       "openapi.json is stale — run `mise run openapi` and commit the result",
     )
+  })
+
+  it("documents the optional bearer security scheme", () => {
+    // The server gates every non-loopback request on a bearer token
+    // (localTrust.ts). The empty requirement documents that anonymous
+    // (loopback) access is valid, so generated clients treat the token as
+    // optional but know how to send it.
+    const document = openApiDocument as unknown as {
+      security: ReadonlyArray<Record<string, unknown>>
+      components: { securitySchemes: Record<string, { type: string; scheme: string }> }
+    }
+    assert.deepStrictEqual(document.security, [{}, { bearerAuth: [] }])
+    const scheme = document.components.securitySchemes["bearerAuth"]!
+    assert.strictEqual(scheme.type, "http")
+    assert.strictEqual(scheme.scheme, "bearer")
   })
 
   it("documents every contract operation exactly once, with pinned camelCase ids", () => {
@@ -490,33 +506,78 @@ describe("openapi document vs runtime", () => {
     }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
   )
 
-  it.effect("GET /api/v1/events serves the documented SSE stream", () =>
+  // it.live: real socket I/O — the point is pinning the *documented* frame
+  // shape to the exact bytes a real subscriber receives (H3): data-only
+  // frames plus comment lines, never the id/event envelope fields.
+  it.live("GET /api/v1/events: the documented data-only SSE shape matches the emitted bytes", () =>
     Effect.gen(function* () {
-      const response = yield* (yield* rawClient).get("http://127.0.0.1/api/v1/events")
-      assert.strictEqual(response.status, 200)
-      assert.match(response.headers["content-type"] ?? "", /^text\/event-stream/)
-
-      // The documented payload is the SSE envelope whose data line carries a
-      // JSON-encoded ResourceChangedEvent...
+      // The document declares each frame's payload as the JSON-encoded
+      // ResourceChangedEvent string...
       const content = operation("/api/v1/events").responses["200"]!.content["text/event-stream"]!
-      const envelope = content.schema as unknown as {
-        properties: { data: { $ref?: string } }
-      }
-      assert.deepStrictEqual(envelope.properties.data, {
+      assert.deepStrictEqual(content.schema as unknown, {
         $ref: "#/components/schemas/ResourceChangedEventJsonEncoding",
       })
       assert.deepStrictEqual(componentSchema("ResourceChangedEventJsonEncoding") as unknown, {
         type: "string",
         contentMediaType: "application/json",
       })
-
+      // ...the comment protocol is documented where clients will read it...
+      const description = (
+        operation("/api/v1/events").responses["200"]! as unknown as { description: string }
+      ).description
+      for (const token of [": connected", ": heartbeat", "`data:`"]) {
+        assert.include(description, token)
+      }
       // ...and the plain payload schema is emitted as an ordinary component
       // (openapi.ts), so generated clients get a real model type to decode
-      // that JSON into. Delivery itself is covered in api.test.ts.
+      // that JSON into.
       const payload = componentSchema("ResourceChangedEvent")
       assert.sameMembers(Object.keys(payload.properties), ["resource", "id", "change"])
       assert.sameMembers([...payload.required], ["resource", "id", "change"])
-    }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
+
+      // Now the bytes: a real subscriber sees the documented opening
+      // comment, then a bare `data:` frame whose JSON carries exactly the
+      // documented payload fields — no `id:` or `event:` lines.
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const context = yield* Layer.build(
+        Server.layer({ port: 0 }).pipe(Layer.provide([TestBuildInfoLayer, TestRepositoryLayers])),
+      ).pipe(Effect.provideService(Scope.Scope, scope))
+      const address = Context.get(context, HttpServer.HttpServer).address
+      assert.strictEqual(address._tag, "TcpAddress")
+      const base = `http://127.0.0.1:${(address as { port: number }).port}`
+
+      const response = yield* Effect.promise(() =>
+        fetch(`${base}/api/v1/events`, { headers: { accept: "text/event-stream" } }),
+      )
+      assert.match(response.headers.get("content-type") ?? "", /^text\/event-stream/)
+      const reader = response.body!.getReader()
+      const opening = yield* Effect.promise(() => reader.read())
+      assert.strictEqual(new TextDecoder().decode(opening.value), ": connected\n\n")
+
+      const created = yield* Effect.promise(() =>
+        fetch(`${base}/api/v1/projects`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "SseShape", defaultWorkingDirectory: "/tmp" }),
+        }).then((r) => r.json() as Promise<{ id: string }>),
+      )
+      const decoder = new TextDecoder()
+      let raw = ""
+      for (let attempt = 0; !raw.includes("\n\n"); attempt++) {
+        assert.isBelow(attempt, 10, `no frame arrived; saw ${JSON.stringify(raw)}`)
+        const chunk = yield* Effect.promise(() => reader.read())
+        assert.isFalse(chunk.done, "the stream ended before delivering the event")
+        raw += decoder.decode(chunk.value, { stream: true })
+      }
+      const frame = raw.slice(0, raw.indexOf("\n\n"))
+      const lines = frame.split("\n")
+      assert.strictEqual(lines.length, 1, `expected a single data line, got ${frame}`)
+      assert.match(lines[0]!, /^data: /, "the frame must be data-only")
+      const event = JSON.parse(lines[0]!.slice("data: ".length)) as Record<string, unknown>
+      assert.sameMembers(Object.keys(event), ["resource", "id", "change"])
+      assert.deepStrictEqual(event, { resource: "project", id: created.id, change: "created" })
+    }),
   )
 
   it.effect("GET /api/v1/fs/check returns the documented payload", () =>

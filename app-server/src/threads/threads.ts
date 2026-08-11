@@ -116,10 +116,10 @@ export interface ThreadsOptions {
 export class Threads extends Context.Service<
   Threads,
   {
-    /** Listing, newest first; archived threads only on request. */
+    /** Listing, newest first; active-only unless a wider archive scope is asked for. */
     readonly list: (options?: {
       readonly projectId?: string | undefined
-      readonly archived?: boolean | undefined
+      readonly archived?: "active" | "archived" | "all" | undefined
     }) => Effect.Effect<ReadonlyArray<Thread>>
     readonly get: (id: string) => Effect.Effect<Thread, ThreadNotFound>
     /** Write the durable record; no provider call (see the header). */
@@ -408,7 +408,7 @@ export const layerWith = (options: ThreadsOptions) =>
        */
       const linkedFor = (record: ThreadRecord): Effect.Effect<Terminal | undefined> =>
         terminals
-          .list(record.projectId)
+          .list({ projectId: record.projectId })
           .pipe(
             Effect.map((list) => list.find((t) => t.threadId === record.id && t.status === "live")),
           )
@@ -719,7 +719,7 @@ export const layerWith = (options: ThreadsOptions) =>
             // Ended linked terminals survive as unlinked tombstones (FK SET
             // NULL) — their client-visible threadId changes with the delete,
             // so each publishes alongside the thread's own event.
-            const orphaned = (yield* terminals.list(record.projectId)).filter(
+            const orphaned = (yield* terminals.list({ projectId: record.projectId })).filter(
               (terminal) => terminal.threadId === id,
             )
             yield* repository.delete(id)
@@ -735,15 +735,18 @@ export const layerWith = (options: ThreadsOptions) =>
         list: (listOptions) =>
           Effect.gen(function* () {
             const records = yield* repository.list(listOptions?.projectId)
-            const wanted = records.filter((record) =>
-              listOptions?.archived === true
-                ? record.archivedAt !== undefined
-                : record.archivedAt === undefined,
+            const scope = listOptions?.archived ?? "active"
+            const wanted = records.filter(
+              (record) =>
+                scope === "all" ||
+                (scope === "archived"
+                  ? record.archivedAt !== undefined
+                  : record.archivedAt === undefined),
             )
             if (wanted.length === 0) return []
             // One reconciled inventory pass for the whole page.
             const linked = new Map<string, Terminal>()
-            for (const terminal of yield* terminals.list(listOptions?.projectId)) {
+            for (const terminal of yield* terminals.list({ projectId: listOptions?.projectId })) {
               // Newest first, first write wins — the same pick linkedFor makes.
               if (
                 terminal.threadId !== undefined &&
