@@ -30,6 +30,15 @@ final class TerminalRecoveryMonitor {
         TerminalRecoveryMonitor(notificationCenter: nil, pathMonitor: nil)
     }
 
+    // Production's one monitor lives for the app, but test and preview
+    // AppModels abandon theirs without `stop()` — and the path task holds
+    // the NWPathMonitor, which keeps evaluating paths until cancelled.
+    deinit {
+        wakeTask?.cancel()
+        pathTask?.cancel()
+        pathMonitor?.cancel()
+    }
+
     func start() {
         guard !started else { return }
         started = true

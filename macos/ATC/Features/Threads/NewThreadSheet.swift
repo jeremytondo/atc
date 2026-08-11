@@ -74,15 +74,19 @@ struct NewThreadSheet: View {
         // buttons so an unavailable Agent's shortcut still answers with
         // feedback instead of being swallowed by a disabled control.
         .onKeyPress(keys: Self.agentShortcutKeys, phases: .down) { press in
-            guard press.modifiers == .command,
+            // Mask to the device-independent modifiers: `press.modifiers`
+            // also carries capsLock/numericPad, which must not defeat ⌘1–9.
+            guard press.modifiers.intersection([.command, .shift, .option, .control]) == .command,
                   let digit = press.key.character.wholeNumberValue,
                   digit - 1 < agents.count
             else { return .ignored }
             select(agents[digit - 1])
             return .handled
         }
-        .onKeyPress(keys: ["g"], phases: .down) { press in
-            guard press.modifiers == [.command, .shift] else { return .ignored }
+        // Both cases: `press.key` preserves Shift, so a real ⇧⌘G arrives as "G".
+        .onKeyPress(keys: ["g", "G"], phases: .down) { press in
+            guard press.modifiers.intersection([.command, .shift, .option, .control]) == [.command, .shift]
+            else { return .ignored }
             directoryIsFocused = true
             return .handled
         }

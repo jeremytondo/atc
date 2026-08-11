@@ -19,7 +19,7 @@ struct CommandPaletteView: View {
     /// Measured row content, so the list fits the user's text size rather
     /// than a pixel estimate. Starts at the cap: a zero-height scroll view
     /// would materialize no rows to measure.
-    @State private var listSize = CGSize(width: 0, height: CommandPaletteView.maxListHeight)
+    @State private var listHeight = CommandPaletteView.maxListHeight
     @State private var responderRestoration = PaletteResponderRestoration()
     @FocusState private var queryIsFocused: Bool
 
@@ -144,9 +144,9 @@ struct CommandPaletteView: View {
                 }
                 .scrollTargetLayout()
                 .padding(5)
-                .onGeometryChange(for: CGSize.self) { $0.size } action: { listSize = $0 }
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0 }
             }
-            .frame(height: min(Self.maxListHeight, listSize.height))
+            .frame(height: min(Self.maxListHeight, listHeight))
             .scrollPosition(id: $scrolledID, anchor: .center)
             .onChange(of: selectedID) { scrolledID = selectedID }
         }

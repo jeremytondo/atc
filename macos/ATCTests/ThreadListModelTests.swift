@@ -96,6 +96,7 @@ struct ThreadListModelTests {
                     threads: [
                         Fixtures.thread(id: "pin_new", pinnedAt: Fixtures.date(200), createdAt: Fixtures.date(1)),
                         Fixtures.thread(id: "pin_old", pinnedAt: Fixtures.date(100), createdAt: Fixtures.date(2)),
+                        Fixtures.thread(id: "pin_mid", pinnedAt: Fixtures.date(150), createdAt: Fixtures.date(3)),
                         Fixtures.thread(id: "old", createdAt: Fixtures.date(10)),
                         Fixtures.thread(id: "new", createdAt: Fixtures.date(20)),
                     ],
@@ -107,7 +108,7 @@ struct ThreadListModelTests {
             ],
             filter: .all
         )
-        #expect(model.pinned.map(\.ref.threadID) == ["pin_old", "pin_new"])
+        #expect(model.pinned.map(\.ref.threadID) == ["pin_old", "pin_mid", "pin_new"])
         #expect(model.recent.map(\.ref.threadID) == ["new", "old"])
         #expect(model.archived.map(\.ref.threadID) == ["arch_new", "arch_old"])
     }

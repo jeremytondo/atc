@@ -46,6 +46,11 @@ struct NewThreadContext: Identifiable, Hashable {
 @Observable
 final class WindowState {
     private(set) var selectedContent: MainContentSelection = .dashboard
+    /// Bumped when a selection made outside the sidebar (palette, ⌘1–9,
+    /// content-area links) should scroll the sidebar to its row. Sidebar
+    /// clicks pass `reveal: false`, so clicking a visible row never yanks
+    /// it out from under the pointer.
+    private(set) var sidebarRevealToken = 0
     /// Launch-local Project context, established by opening or creating a
     /// Thread. Navigating to Dashboard does not clear it.
     private(set) var activeProject: ProjectRef?
@@ -125,11 +130,12 @@ final class WindowState {
     /// immediately (the content area shows the connecting state), then
     /// idempotently open the TUI terminal and attach. Establishes the
     /// thread's Project as the launch-local context.
-    func openThread(_ ref: ThreadRef, in appModel: AppModel) async {
+    func openThread(_ ref: ThreadRef, in appModel: AppModel, reveal: Bool = true) async {
         guard let thread = appModel.thread(for: ref) else { return }
         guard !thread.isArchived else { return }
 
         selectedContent = .thread(ref)
+        if reveal { sidebarRevealToken += 1 }
         returnThread = ref
         activeProject = ProjectRef(connectionID: ref.connectionID, projectID: thread.projectId)
         threadOpenErrors[ref] = nil
@@ -149,9 +155,10 @@ final class WindowState {
 
     /// Selects a standalone Terminal. Live terminals attach; an ended one
     /// renders as a tombstone.
-    func selectTerminal(_ ref: TerminalRef, in appModel: AppModel) {
+    func selectTerminal(_ ref: TerminalRef, in appModel: AppModel, reveal: Bool = true) {
         guard let terminal = appModel.terminal(for: ref) else { return }
         selectedContent = .terminal(ref)
+        if reveal { sidebarRevealToken += 1 }
         if terminal.isLive {
             appModel.attachIfNeeded(
                 to: terminal,

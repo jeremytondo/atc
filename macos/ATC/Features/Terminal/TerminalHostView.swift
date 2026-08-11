@@ -144,6 +144,7 @@ final class TerminalContainerView: NSView {
 
     private func scheduleTerminalFocusResignation() {
         focusResignTask?.cancel()
+        focusResignTask = nil
         guard let window, let terminalView = terminalInputView() else { return }
         focusResignTask = Task { [weak window, weak terminalView] in
             try? await Task.sleep(for: Self.focusRetryDelay)
