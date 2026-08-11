@@ -201,7 +201,7 @@ final class TerminalSessionController: Identifiable {
 
     /// Detach: WS close = zmx detach; the terminal keeps running server-side.
     func disconnect() {
-        stop(phase: .ended(.closedByClient))
+        end(.closedByClient, notify: false)
     }
 
     /// A reconciled read proved the terminal ended while this controller was
@@ -209,32 +209,43 @@ final class TerminalSessionController: Identifiable {
     /// the ended state, keeping the surface's final frame.
     func confirmEnded() {
         guard phase != .ended(.terminalEnded) else { return }
-        stop(phase: .ended(.terminalEnded))
+        end(.terminalEnded, notify: false)
     }
 
-    private func stop(phase endPhase: Phase) {
+    /// The one authoritative end sequence: recovery off, retry state
+    /// cleared, the connection released, the final phase published. Every
+    /// path that ends the session — client detach, server end, rejected
+    /// upgrade, dead-terminal verification — funnels here, so no branch can
+    /// drift (a dead-verified terminal left recovery-armed was exactly such
+    /// a drift).
+    private func end(_ reason: AttachEndReason, notify: Bool) {
         automaticRecoveryEnabled = false
         retryAttempt = 0
         cancelRetry()
+        releaseConnection()
+        phase = .ended(reason)
+        if notify { onTerminalEnded?() }
+    }
+
+    /// Shared connection teardown for the enders and the reconnect swap.
+    /// The drain task deliberately survives it: buffered output keeps
+    /// flowing to the retained surface (an ended terminal keeps its final
+    /// frame; a reconnect's replay reset cancels the drain in
+    /// prepareSurfaceForReplayIfNeeded when it swaps the surface). On the
+    /// detach path the controller is dropped immediately — the drain's
+    /// weak self capture is what bounds it there; the two are a pair.
+    private func releaseConnection() {
         let connection = connection
         self.connection = nil
         connectionRef.set(nil)
         eventTask?.cancel()
         eventTask = nil
-        drainTask?.cancel()
-        drainTask = nil
-        phase = endPhase
         Task { await connection?.close() }
     }
 
     private func beginReconnect() {
         cancelRetry()
-        let connection = connection
-        self.connection = nil
-        connectionRef.set(nil)
-        eventTask?.cancel()
-        eventTask = nil
-        Task { await connection?.close() }
+        releaseConnection()
         connect(isReconnect: true)
     }
 
@@ -304,16 +315,9 @@ final class TerminalSessionController: Identifiable {
             case .terminalEnded, .rejected:
                 // Authoritative (or a pre-upgrade rejection that a refetch
                 // must explain): stop and let stores reconcile.
-                automaticRecoveryEnabled = false
-                retryAttempt = 0
-                cancelRetry()
-                phase = .ended(reason)
-                onTerminalEnded?()
+                end(reason, notify: true)
             case .closedByClient:
-                automaticRecoveryEnabled = false
-                retryAttempt = 0
-                cancelRetry()
-                phase = .ended(reason)
+                end(reason, notify: false)
             }
         }
     }
@@ -331,10 +335,7 @@ final class TerminalSessionController: Identifiable {
                   self.automaticRecoveryEnabled
             else { return }
             if live == false {
-                self.retryAttempt = 0
-                self.cancelRetry()
-                self.phase = .ended(.terminalEnded)
-                self.onTerminalEnded?()
+                self.end(.terminalEnded, notify: true)
                 return
             }
             if !self.scheduleAutomaticReconnect() {
@@ -419,11 +420,14 @@ final class TerminalSessionController: Identifiable {
     private func startDrainIfNeeded() {
         guard drainTask == nil else { return }
         let terminalSession = terminalSession
-        drainTask = Task {
+        // [weak self] like every sibling task: a dropped controller must
+        // deallocate, not live up to 5 seconds writing to an invisible
+        // surface.
+        drainTask = Task { [weak self] in
             // Wait (bounded) for the surface to come up; readViewportText()
             // is nil until Ghostty attaches the surface.
             var attempts = 0
-            while !surfaceIsReady, attempts < 100 {
+            while self?.surfaceIsReady == false, attempts < 100 {
                 guard !Task.isCancelled else { return }
                 if terminalSession.readViewportText() != nil { break }
                 attempts += 1
@@ -435,7 +439,7 @@ final class TerminalSessionController: Identifiable {
             }
             // Proceed either way — receive() safely drops without a surface,
             // and marking ready stops unbounded buffering.
-            guard !Task.isCancelled else { return }
+            guard let self, !Task.isCancelled else { return }
             surfaceIsReady = true
             // Drain by index: repeated removeFirst() is quadratic on a large
             // replay, and the buffer must stay non-empty while draining so

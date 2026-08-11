@@ -68,59 +68,113 @@ final class ThreadsStore {
 
     @discardableResult
     func create(_ request: Components.Schemas.CreateThreadRequest) async throws -> ATCThread {
-        let thread = try await client.createThread(body: .json(request)).ok.body.json
+        let thread: ATCThread
+        switch try await client.createThread(body: .json(request)) {
+        case .ok(let ok): thread = try ok.body.json
+        case .notFound(let failure): throw ServerError(try failure.body.json)
+        case .unprocessableContent(let failure):
+            let payload = try failure.body.json
+            throw ServerError(anyOf: payload.value1, payload.value2)
+        case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
+        }
         merge(thread)
         return thread
     }
 
     @discardableResult
     func rename(id: String, name: String) async throws -> ATCThread {
-        let thread = try await client
-            .updateThread(path: .init(threadId: id), body: .json(.init(name: name)))
-            .ok.body.json
+        let thread: ATCThread
+        switch try await client.updateThread(path: .init(threadId: id), body: .json(.init(name: name))) {
+        case .ok(let ok): thread = try ok.body.json
+        case .notFound(let failure): throw ServerError(try failure.body.json)
+        case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
+        }
         merge(thread)
         return thread
     }
 
     @discardableResult
     func pin(id: String) async throws -> ATCThread {
-        let thread = try await client.pinThread(path: .init(threadId: id)).ok.body.json
+        let thread: ATCThread
+        switch try await client.pinThread(path: .init(threadId: id)) {
+        case .ok(let ok): thread = try ok.body.json
+        case .notFound(let failure): throw ServerError(try failure.body.json)
+        case .conflict(let failure): throw ServerError(try failure.body.json)
+        case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
+        }
         merge(thread)
         return thread
     }
 
     @discardableResult
     func unpin(id: String) async throws -> ATCThread {
-        let thread = try await client.unpinThread(path: .init(threadId: id)).ok.body.json
+        let thread: ATCThread
+        switch try await client.unpinThread(path: .init(threadId: id)) {
+        case .ok(let ok): thread = try ok.body.json
+        case .notFound(let failure): throw ServerError(try failure.body.json)
+        case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
+        }
         merge(thread)
         return thread
     }
 
     @discardableResult
     func archive(id: String) async throws -> ATCThread {
-        let thread = try await client.archiveThread(path: .init(threadId: id)).ok.body.json
+        let thread: ATCThread
+        switch try await client.archiveThread(path: .init(threadId: id)) {
+        case .ok(let ok): thread = try ok.body.json
+        case .notFound(let failure): throw ServerError(try failure.body.json)
+        case .conflict(let failure): throw ServerError(try failure.body.json)
+        case .serviceUnavailable(let failure): throw ServerError(try failure.body.json)
+        case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
+        }
         merge(thread)
         return thread
     }
 
     @discardableResult
     func unarchive(id: String) async throws -> ATCThread {
-        let thread = try await client.unarchiveThread(path: .init(threadId: id)).ok.body.json
+        let thread: ATCThread
+        switch try await client.unarchiveThread(path: .init(threadId: id)) {
+        case .ok(let ok): thread = try ok.body.json
+        case .notFound(let failure): throw ServerError(try failure.body.json)
+        case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
+        }
         merge(thread)
         return thread
     }
 
     func delete(id: String) async throws {
-        _ = try await client.deleteThread(path: .init(threadId: id)).noContent
+        switch try await client.deleteThread(path: .init(threadId: id)) {
+        case .noContent: break
+        case .notFound(let failure): throw ServerError(try failure.body.json)
+        case .serviceUnavailable(let failure): throw ServerError(try failure.body.json)
+        case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
+        }
         refreshState.invalidateInFlight()
         threads.removeAll { $0.id == id }
         archivedThreads.removeAll { $0.id == id }
     }
 
     /// Idempotent open of the thread's TUI terminal: a live linked terminal
-    /// is returned as-is, otherwise the provider TUI is (re)launched.
+    /// is returned as-is, otherwise the provider TUI is (re)launched. The
+    /// failure messages here are the install-or-configure guidance the
+    /// server exists to provide — never collapse them into a status dump.
     func openTerminal(threadID: String) async throws -> Terminal {
-        try await client.openThreadTerminal(path: .init(threadId: threadID)).ok.body.json
+        switch try await client.openThreadTerminal(path: .init(threadId: threadID)) {
+        case .ok(let ok): return try ok.body.json
+        case .notFound(let failure): throw ServerError(try failure.body.json)
+        case .conflict(let failure):
+            let payload = try failure.body.json
+            throw ServerError(anyOf: payload.value1, payload.value2)
+        case .unprocessableContent(let failure):
+            let payload = try failure.body.json
+            throw ServerError(anyOf: payload.value1, payload.value2, payload.value3)
+        case .serviceUnavailable(let failure):
+            let payload = try failure.body.json
+            throw ServerError(anyOf: payload.value1, payload.value2)
+        case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
+        }
     }
 
     /// Places a server-returned thread into whichever list its archive state

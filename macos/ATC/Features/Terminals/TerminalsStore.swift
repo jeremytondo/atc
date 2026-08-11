@@ -63,22 +63,39 @@ final class TerminalsStore {
 
     @discardableResult
     func create(_ request: Components.Schemas.CreateTerminalRequest) async throws -> Terminal {
-        let terminal = try await client.createTerminal(body: .json(request)).ok.body.json
+        let terminal: Terminal
+        switch try await client.createTerminal(body: .json(request)) {
+        case .ok(let ok): terminal = try ok.body.json
+        case .notFound(let failure): throw ServerError(try failure.body.json)
+        case .unprocessableContent(let failure):
+            let payload = try failure.body.json
+            throw ServerError(anyOf: payload.value1, payload.value2, payload.value3)
+        case .serviceUnavailable(let failure): throw ServerError(try failure.body.json)
+        case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
+        }
         merge(terminal)
         return terminal
     }
 
     @discardableResult
     func rename(id: String, name: String) async throws -> Terminal {
-        let terminal = try await client
-            .updateTerminal(path: .init(terminalId: id), body: .json(.init(name: name)))
-            .ok.body.json
+        let terminal: Terminal
+        switch try await client.updateTerminal(path: .init(terminalId: id), body: .json(.init(name: name))) {
+        case .ok(let ok): terminal = try ok.body.json
+        case .notFound(let failure): throw ServerError(try failure.body.json)
+        case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
+        }
         merge(terminal)
         return terminal
     }
 
     func delete(id: String) async throws {
-        _ = try await client.deleteTerminal(path: .init(terminalId: id)).noContent
+        switch try await client.deleteTerminal(path: .init(terminalId: id)) {
+        case .noContent: break
+        case .notFound(let failure): throw ServerError(try failure.body.json)
+        case .serviceUnavailable(let failure): throw ServerError(try failure.body.json)
+        case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
+        }
         refreshState.invalidateInFlight()
         terminals.removeAll { $0.id == id }
     }
