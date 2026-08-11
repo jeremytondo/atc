@@ -66,7 +66,7 @@ enum NewThreadLauncherModel {
         by offset: Int,
         in rows: [Row]
     ) -> ProjectRef? {
-        wrappedSelection(from: current, by: offset, in: rows)
+        SelectionMovement.wrapped(from: current, by: offset, in: rows)
     }
 
     /// Keep the current agent while the registry offers it as available;

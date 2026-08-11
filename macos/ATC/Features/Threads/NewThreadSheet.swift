@@ -139,7 +139,7 @@ struct NewThreadSheet: View {
     private func resultRow(_ row: NewThreadLauncherModel.Row) -> some View {
         let isSelected = selectedProject == row.id
         return HStack(spacing: Spacing.sm) {
-            highlightedTitle(row.option.project.name, ranges: row.nameRanges)
+            HighlightedText.title(row.option.project.name, ranges: row.nameRanges)
                 .font(.callout)
                 .lineLimit(1)
             Spacer(minLength: Spacing.md)

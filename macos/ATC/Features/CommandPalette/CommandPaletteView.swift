@@ -198,7 +198,7 @@ struct CommandPaletteView: View {
         switch result {
         case .command(let row):
             VStack(alignment: .leading, spacing: 2) {
-                highlightedTitle(row.title, ranges: row.matchedRanges)
+                HighlightedText.title(row.title, ranges: row.matchedRanges)
                     .font(.callout)
                 unavailableReason(row.availability)
             }
@@ -236,7 +236,7 @@ struct CommandPaletteView: View {
         title: String,
         ranges: [Range<String.Index>]
     ) -> Text {
-        let name = highlightedTitle(title, ranges: ranges)
+        let name = HighlightedText.title(title, ranges: ranges)
         guard title != type else { return name }
         return Text("\(type): ").foregroundStyle(.secondary) + name
     }
@@ -375,7 +375,7 @@ struct CommandPaletteView: View {
         // An empty list keeps whatever is selected; only `resetSelection`
         // clears it.
         guard !rows.isEmpty else { return .handled }
-        selectedID = wrappedSelection(from: selectedID, by: offset, in: rows)
+        selectedID = SelectionMovement.wrapped(from: selectedID, by: offset, in: rows)
         return .handled
     }
 }

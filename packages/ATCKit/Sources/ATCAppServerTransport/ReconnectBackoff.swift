@@ -1,12 +1,15 @@
-// The reconnect schedule both streaming transports use — the attach socket
-// and the SSE resource stream. It is a pure function of the attempt number,
-// so callers keep their own counter and their own rule for resetting it
-// (both reset only once a connection has proven stable; a server that greets
-// and immediately drops must not defeat the escalation).
+// The shared reconnect schedule: the SSE resource stream uses it here, and
+// the app-level attach RetryPolicy delegates to it. It is a pure function of
+// the attempt number, so callers keep their own counter, their own starting
+// index (attempt 0 = base for the attach path; the SSE stream counts its
+// first retry as attempt 1 — both pre-existing schedules, preserved), and
+// their own rule for resetting (only once a connection has proven stable; a
+// server that greets and immediately drops must not defeat the escalation).
 //
 // Arithmetic is in whole milliseconds: the doubling is capped at every step,
 // jitter is applied to the capped value, and the result is capped again so a
-// positive jitter never exceeds the advertised maximum.
+// positive jitter never exceeds the advertised maximum. Sub-millisecond
+// configuration rounds to zero — configure in milliseconds or coarser.
 
 import Foundation
 

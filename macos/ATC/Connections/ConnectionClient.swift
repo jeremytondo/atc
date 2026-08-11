@@ -1,7 +1,7 @@
-// Client construction for a Connection. The empty-token rule lives here and
-// nowhere else: a stored `token` of "" means the Connection has no bearer
-// token, and sending an empty bearer header instead would be a different
-// (and wrong) request.
+// Client construction for a Connection, plus the probe behind Settings'
+// "Test Connection". The empty-token rule lives here and nowhere else: a
+// stored `token` of "" means the Connection has no bearer token, and sending
+// an empty bearer header instead would be a different (and wrong) request.
 
 import ATCAppServerAPI
 import Foundation

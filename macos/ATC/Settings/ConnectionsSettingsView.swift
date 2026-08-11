@@ -12,7 +12,8 @@ enum ConnectionEditorTarget: Hashable {
 /// right. Nothing touches `ConnectionsStore` until the editor's Save.
 struct ConnectionsSettingsView: View {
     @Environment(AppModel.self) private var appModel
-    /// Injectable so tests can drive the editor's test-result states.
+    /// The probe seam the editor's Test Connection drives; .live in
+    /// production, replaceable when editor tests arrive.
     var probe = ConnectionProbe.live
 
     @State private var target: ConnectionEditorTarget?

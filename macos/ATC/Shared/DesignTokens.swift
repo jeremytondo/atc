@@ -40,7 +40,8 @@ enum Radius {
     static let control: CGFloat = 6
     static let chip: CGFloat = 8
     static let card: CGFloat = 12
-    /// Floating panels over the app (the Command Palette).
+    /// The command palette's floating panel (other overlays keep their
+    /// own radii deliberately).
     static let panel: CGFloat = 11
 }
 

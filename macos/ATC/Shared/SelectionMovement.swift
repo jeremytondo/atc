@@ -4,18 +4,21 @@
 
 import SwiftUI
 
-/// Wrap-around movement over a row list: wraps at both ends, and a selection
-/// that is not in the current rows enters from the end the motion came from.
-func wrappedSelection<Row: Identifiable>(
-    from current: Row.ID?,
-    by offset: Int,
-    in rows: [Row]
-) -> Row.ID? {
-    guard !rows.isEmpty else { return nil }
-    guard let current, let index = rows.firstIndex(where: { $0.id == current }) else {
-        return offset > 0 ? rows.first?.id : rows.last?.id
+enum SelectionMovement {
+    /// Wrap-around movement over a row list: wraps at both ends, and a
+    /// selection that is not in the current rows enters from the end the
+    /// motion came from.
+    static func wrapped<Row: Identifiable>(
+        from current: Row.ID?,
+        by offset: Int,
+        in rows: [Row]
+    ) -> Row.ID? {
+        guard !rows.isEmpty else { return nil }
+        guard let current, let index = rows.firstIndex(where: { $0.id == current }) else {
+            return offset > 0 ? rows.first?.id : rows.last?.id
+        }
+        return rows[(index + offset + rows.count) % rows.count].id
     }
-    return rows[(index + offset + rows.count) % rows.count].id
 }
 
 extension View {

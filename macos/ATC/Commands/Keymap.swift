@@ -208,9 +208,12 @@ enum Keymap {
             ("cmd+a", "Select All"), ("cmd+m", "Minimize"),
         ]
         // The sidebar jump scheme owns its own triggers; splice them in
-        // rather than restating the ⌘1–9 / ⌥⌘1–9 layout here.
-        return Dictionary(uniqueKeysWithValues: values.map { (requiredStroke($0.0), $0.1) })
-            .merging(SidebarShortcuts.reservedTriggers) { _, reserved in reserved }
+        // rather than restating the ⌘1–9 / ⌥⌘1–9 layout here. Built with
+        // uniqueKeysWithValues so a future collision traps at launch.
+        return Dictionary(
+            uniqueKeysWithValues: values.map { (requiredStroke($0.0), $0.1) }
+                + SidebarShortcuts.reservedTriggers.map { ($0.key, $0.value) }
+        )
     }()
 
     private static func requiredStroke(_ text: String) -> KeyStroke {
