@@ -102,16 +102,7 @@ struct NewThreadSheet: View {
                 .autocorrectionDisabled()
                 .focused($searchIsFocused)
                 .accessibilityLabel("Project search")
-                .onKeyPress(.downArrow) { moveSelection(1, in: rows) }
-                .onKeyPress(.upArrow) { moveSelection(-1, in: rows) }
-                .onKeyPress(keys: ["n"], phases: .down) { press in
-                    guard press.modifiers == .control else { return .ignored }
-                    return moveSelection(1, in: rows)
-                }
-                .onKeyPress(keys: ["p"], phases: .down) { press in
-                    guard press.modifiers == .control else { return .ignored }
-                    return moveSelection(-1, in: rows)
-                }
+                .onSelectionMoveKeys { moveSelection($0, in: rows) }
         }
         .font(.title3)
         .padding(.horizontal, Spacing.md)
@@ -148,7 +139,7 @@ struct NewThreadSheet: View {
     private func resultRow(_ row: NewThreadLauncherModel.Row) -> some View {
         let isSelected = selectedProject == row.id
         return HStack(spacing: Spacing.sm) {
-            highlightedTitle(row.option.project.name, ranges: row.nameRanges)
+            HighlightedText.title(row.option.project.name, ranges: row.nameRanges)
                 .font(.callout)
                 .lineLimit(1)
             Spacer(minLength: Spacing.md)
@@ -165,7 +156,7 @@ struct NewThreadSheet: View {
         .padding(.horizontal, Spacing.md)
         .padding(.vertical, 7)
         .background {
-            RoundedRectangle(cornerRadius: 6)
+            RoundedRectangle(cornerRadius: Radius.control)
                 .fill(isSelected ? Color.accentColor.opacity(0.65) : .clear)
         }
         .contentShape(Rectangle())
@@ -177,20 +168,6 @@ struct NewThreadSheet: View {
         )
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityAction { selectProject(row.id, in: [row]) }
-    }
-
-    private func highlightedTitle(
-        _ title: String,
-        ranges: [Range<String.Index>]
-    ) -> Text {
-        var text = Text("")
-        var cursor = title.startIndex
-        for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) {
-            text = text + Text(String(title[cursor..<range.lowerBound]))
-            text = text + Text(String(title[range])).bold()
-            cursor = range.upperBound
-        }
-        return text + Text(String(title[cursor...]))
     }
 
     // MARK: - Agent and directory rows
@@ -263,11 +240,11 @@ struct NewThreadSheet: View {
             .padding(.horizontal, Spacing.sm)
             .padding(.vertical, Spacing.xs)
             .background {
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: Radius.control)
                     .fill(isSelected ? Color.accentColor.opacity(0.35) : Color.primary.opacity(0.06))
             }
             .overlay {
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: Radius.control)
                     .stroke(
                         isSelected ? Color.accentColor : Color.primary.opacity(0.12),
                         lineWidth: 1
@@ -316,10 +293,7 @@ struct NewThreadSheet: View {
     // MARK: - Derived state
 
     private var projectOptions: [ProjectOption] {
-        ThreadListModel(
-            inputs: appModel.runtimes.map(ThreadListModel.ConnectionInput.init(runtime:)),
-            filter: .all
-        ).projects
+        appModel.threadList(filter: .all).projects
     }
 
     private var selectedRuntime: ConnectionRuntime? {

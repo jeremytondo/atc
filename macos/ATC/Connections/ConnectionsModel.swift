@@ -104,6 +104,17 @@ enum ConnectionURL {
         return origin.host
     }
 
+    /// Derives a display name from a host: the first host label, capitalized
+    /// (`workstation.tail1f9a09.ts.net` → `Workstation`). IP addresses are kept
+    /// whole (`127.0.0.1` → `127.0.0.1`).
+    static func derivedName(fromHost host: String) -> String {
+        let isIPv4 = host.allSatisfy { $0.isNumber || $0 == "." }
+        let isIPv6 = host.contains(":")
+        if isIPv4 || isIPv6 { return host }
+        let firstLabel = host.split(separator: ".").first.map(String.init) ?? host
+        return firstLabel.capitalized
+    }
+
     /// Whether `candidate` (a raw or normalized URL) duplicates any of
     /// `records` — same lowercased host and same effective port, scheme
     /// ignored. `excludingID`, when set, is skipped (a record never conflicts
@@ -279,22 +290,11 @@ final class ConnectionsStore {
               let origin = ConnectionURL.parse(legacy) else { return }
         let token = defaults.string(forKey: Keys.legacyToken) ?? ""
         let record = ConnectionRecord(
-            name: Self.derivedName(fromHost: origin.host),
+            name: ConnectionURL.derivedName(fromHost: origin.host),
             urlString: origin.urlString,
             token: token
         )
         connections.append(record)
         persist()
-    }
-
-    /// Derives a display name from a host: the first host label, capitalized
-    /// (`workstation.tail1f9a09.ts.net` → `Workstation`). IP addresses are kept
-    /// whole (`127.0.0.1` → `127.0.0.1`).
-    static func derivedName(fromHost host: String) -> String {
-        let isIPv4 = host.allSatisfy { $0.isNumber || $0 == "." }
-        let isIPv6 = host.contains(":")
-        if isIPv4 || isIPv6 { return host }
-        let firstLabel = host.split(separator: ".").first.map(String.init) ?? host
-        return firstLabel.capitalized
     }
 }

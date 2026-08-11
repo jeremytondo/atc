@@ -15,9 +15,7 @@ struct DashboardView: View {
     @State private var actionError: String?
 
     var body: some View {
-        let model = DashboardModel(
-            inputs: appModel.runtimes.map(DashboardModel.ConnectionInput.init(runtime:))
-        )
+        let model = appModel.dashboard
         ScrollView {
             LazyVStack(alignment: .leading, spacing: Spacing.xxl) {
                 ForEach(model.sections) { section in
@@ -231,9 +229,15 @@ struct DashboardView: View {
     }
 }
 
+// Previews are compiled into Release builds too; the fixtures they use
+// are not.
+#if DEBUG
+
 #Preview {
     DashboardView()
         .environment(AppModel.preview())
         .environment(WindowState())
         .preferredColorScheme(.dark)
 }
+
+#endif

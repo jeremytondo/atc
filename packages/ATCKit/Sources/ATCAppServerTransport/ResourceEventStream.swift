@@ -71,7 +71,11 @@ public enum ResourceEventStream {
     ) -> AsyncStream<Event> {
         AsyncStream { continuation in
             let task = Task {
-                var delay = configuration.reconnectBaseDelay
+                let backoff = ReconnectBackoff(
+                    baseDelay: configuration.reconnectBaseDelay,
+                    maximumDelay: configuration.reconnectMaxDelay
+                )
+                var attempt = 0
                 while !Task.isCancelled {
                     let clock = ContinuousClock()
                     let opened = clock.now
@@ -88,12 +92,10 @@ public enum ResourceEventStream {
                     }
                     // Only a connection that lived a while proves the server
                     // healthy; a greet-then-drop cycle keeps escalating.
-                    if sawConnected && clock.now - opened >= configuration.reconnectMaxDelay {
-                        delay = configuration.reconnectBaseDelay
-                    } else {
-                        delay = min(delay * 2, configuration.reconnectMaxDelay)
-                    }
-                    try? await Task.sleep(for: delay)
+                    let wasStable = sawConnected
+                        && clock.now - opened >= configuration.reconnectMaxDelay
+                    attempt = wasStable ? 0 : attempt + 1
+                    try? await Task.sleep(for: backoff.delay(forAttempt: attempt))
                 }
                 continuation.finish()
             }

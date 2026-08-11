@@ -71,7 +71,7 @@ struct CommandSequenceHintView: View {
                 .font(.callout.monospaced().weight(.semibold))
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: Radius.control))
             Text(descriptor.title)
                 .font(.callout)
             if case .unavailable(let reason) = availability {

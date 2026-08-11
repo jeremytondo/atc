@@ -109,7 +109,10 @@ struct RootView: View {
         HStack(spacing: Spacing.md) {
             if let ref = selectedThread,
                appModel.thread(for: ref)?.activityState == .needsInput {
-                Label("Needs input", systemImage: "exclamationmark.bubble.fill")
+                Label(
+                    ThreadActivityState.needsInput.detailLabel,
+                    systemImage: "exclamationmark.bubble.fill"
+                )
                     .font(.callout.weight(.medium))
                     .foregroundStyle(Color.accentColor)
                     .help("The agent is waiting for your input")
@@ -155,6 +158,10 @@ struct RootView: View {
     }
 }
 
+// Previews are compiled into Release builds too; the fixtures they use
+// are not.
+#if DEBUG
+
 #Preview {
     let appModel = AppModel.preview()
     let windowState = WindowState()
@@ -169,3 +176,5 @@ struct RootView: View {
         ))
         .preferredColorScheme(.dark)
 }
+
+#endif

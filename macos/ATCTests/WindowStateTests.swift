@@ -128,13 +128,13 @@ struct WindowStateTests {
         let test = try await loadedModel()
         let state = WindowState()
 
-        state.presentNewThread(in: test.model)
+        state.presentNewThread()
         #expect(try #require(state.newThreadContext).projectRef == nil)
         #expect(state.isSheetPresented)
         state.newThreadContext = nil
 
         await state.openThread(test.threadRef("thr1"), in: test.model)
-        state.presentNewThread(in: test.model)
+        state.presentNewThread()
         #expect(try #require(state.newThreadContext).projectRef == test.projectRef("prj"))
         state.newThreadContext = nil
 
@@ -142,7 +142,7 @@ struct WindowStateTests {
         // different Project.
         let pinned = ProjectRef(connectionID: test.connectionID, projectID: "other")
         state.threadFilter = .project(pinned)
-        state.presentNewThread(in: test.model)
+        state.presentNewThread()
         #expect(try #require(state.newThreadContext).projectRef == pinned)
     }
 

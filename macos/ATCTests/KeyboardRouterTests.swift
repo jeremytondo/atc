@@ -225,8 +225,8 @@ struct KeyboardRouterTests {
             defer: true
         )
         window.isReleasedWhenClosed = false
-        defer { coordinator.stop() }
-        coordinator.install(for: window)
+        defer { coordinator.detach() }
+        coordinator.attach(to: window)
 
         router.heldModifiers = [.command]
         NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)

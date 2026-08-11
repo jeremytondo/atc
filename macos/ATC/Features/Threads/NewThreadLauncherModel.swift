@@ -59,18 +59,14 @@ enum NewThreadLauncherModel {
         return nameMatches + secondaryMatches
     }
 
-    /// Arrow / Ctrl-N / Ctrl-P movement: wraps at both ends; a selection not
-    /// in the current rows enters from the end the motion came from.
+    /// Arrow / Ctrl-N / Ctrl-P movement, on the pickers' shared wrap-around
+    /// rule.
     static func movedSelection(
         from current: ProjectRef?,
         by offset: Int,
         in rows: [Row]
     ) -> ProjectRef? {
-        guard !rows.isEmpty else { return nil }
-        guard let current, let index = rows.firstIndex(where: { $0.id == current }) else {
-            return offset > 0 ? rows.first?.id : rows.last?.id
-        }
-        return rows[(index + offset + rows.count) % rows.count].id
+        SelectionMovement.wrapped(from: current, by: offset, in: rows)
     }
 
     /// Keep the current agent while the registry offers it as available;

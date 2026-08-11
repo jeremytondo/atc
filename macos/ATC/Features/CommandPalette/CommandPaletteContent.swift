@@ -117,10 +117,7 @@ enum CommandPaletteContent {
         context: CommandContext,
         keyword: PaletteTypeKeyword?
     ) -> [ThreadResult] {
-        let model = ThreadListModel(
-            inputs: context.appModel.runtimes.map(ThreadListModel.ConnectionInput.init(runtime:)),
-            filter: .all
-        )
+        let model = context.appModel.threadList(filter: .all)
         let expands = keyword == .threads
         return (model.pinned + model.recent).compactMap { item in
             let titleMatch = QueryMatcher.match(query, in: item.thread.displayName)
@@ -201,23 +198,36 @@ enum CommandPaletteContent {
         ) }
     }
 
+    /// Navigation rows order by title, then Connection, then the row's own
+    /// server id — the only part that differs between threads and terminals.
+    private static func navigationComesFirst(
+        title lhsTitle: String,
+        connectionID lhsConnection: UUID,
+        id lhsID: String,
+        thanTitle rhsTitle: String,
+        connectionID rhsConnection: UUID,
+        id rhsID: String
+    ) -> Bool {
+        let lhs = lhsTitle.lowercased()
+        let rhs = rhsTitle.lowercased()
+        if lhs != rhs { return lhs < rhs }
+        let lhsConnectionID = lhsConnection.uuidString
+        let rhsConnectionID = rhsConnection.uuidString
+        if lhsConnectionID != rhsConnectionID { return lhsConnectionID < rhsConnectionID }
+        return lhsID < rhsID
+    }
+
     private static func threadComesFirst(_ lhs: ThreadResult, _ rhs: ThreadResult) -> Bool {
-        let lhsTitle = lhs.title.lowercased()
-        let rhsTitle = rhs.title.lowercased()
-        if lhsTitle != rhsTitle { return lhsTitle < rhsTitle }
-        let lhsConnection = lhs.ref.connectionID.uuidString
-        let rhsConnection = rhs.ref.connectionID.uuidString
-        if lhsConnection != rhsConnection { return lhsConnection < rhsConnection }
-        return lhs.ref.threadID < rhs.ref.threadID
+        navigationComesFirst(
+            title: lhs.title, connectionID: lhs.ref.connectionID, id: lhs.ref.threadID,
+            thanTitle: rhs.title, connectionID: rhs.ref.connectionID, id: rhs.ref.threadID
+        )
     }
 
     private static func terminalComesFirst(_ lhs: TerminalResult, _ rhs: TerminalResult) -> Bool {
-        let lhsTitle = lhs.title.lowercased()
-        let rhsTitle = rhs.title.lowercased()
-        if lhsTitle != rhsTitle { return lhsTitle < rhsTitle }
-        let lhsConnection = lhs.ref.connectionID.uuidString
-        let rhsConnection = rhs.ref.connectionID.uuidString
-        if lhsConnection != rhsConnection { return lhsConnection < rhsConnection }
-        return lhs.ref.terminalID < rhs.ref.terminalID
+        navigationComesFirst(
+            title: lhs.title, connectionID: lhs.ref.connectionID, id: lhs.ref.terminalID,
+            thanTitle: rhs.title, connectionID: rhs.ref.connectionID, id: rhs.ref.terminalID
+        )
     }
 }

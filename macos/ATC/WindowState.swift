@@ -184,7 +184,7 @@ final class WindowState {
 
     /// New Thread pre-selects the launch-local context Project when the
     /// filter isn't pinning a different one.
-    func presentNewThread(in appModel: AppModel) {
+    func presentNewThread() {
         if case .project(let ref) = threadFilter {
             newThreadContext = NewThreadContext(projectRef: ref)
             return

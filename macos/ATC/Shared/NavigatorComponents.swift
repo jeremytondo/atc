@@ -312,11 +312,11 @@ extension View {
     func navigatorChipSurface() -> some View {
         background {
             RoundedRectangle(cornerRadius: Radius.chip, style: .continuous)
-                .fill(Color.white.opacity(0.06))
+                .fill(Surface.chip)
         }
         .overlay {
             RoundedRectangle(cornerRadius: Radius.chip, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.12))
+                .strokeBorder(Surface.chipBorder)
         }
     }
 }
