@@ -351,8 +351,11 @@ export const layerWith = (options: ThreadsOptions) =>
 
       /**
        * The activity snapshot for one read. A busy state whose driver (the
-       * live linked terminal) is gone is stale: re-derive it from the
-       * adapter's reconciliation check instead of reporting a dead turn.
+       * live linked terminal) is gone is presumed stale and re-derived
+       * from the adapter's reconciliation check — unless a live observation
+       * whose feed outlives the TUI still covers the session (the
+       * shared-server short-circuit below), in which case the feed is the
+       * evidence and no re-derivation is owed.
        */
       const resolveActivity = (
         record: ThreadRecord,

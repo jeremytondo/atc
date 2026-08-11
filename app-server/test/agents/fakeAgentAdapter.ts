@@ -80,6 +80,8 @@ export interface FakeAgentAdapter {
   readonly setCheckHangs: (hangs: boolean) => void
   /** High-water mark of concurrent checkSession calls. */
   readonly maxConcurrentChecks: () => number
+  /** Zero the checkSession log and concurrency high-water mark. */
+  readonly resetCheckStats: () => void
   /** Mark a session as pruned provider-side: tuiLaunch's existence probe
    * fails AgentResumeFailed (the Codex reopen-probe behavior). */
   readonly setSessionPruned: (providerSessionId: string, pruned: boolean) => void
@@ -474,6 +476,10 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
       checkGate = null
     },
     maxConcurrentChecks: () => maxInFlightChecks,
+    resetCheckStats: () => {
+      checkCalls.length = 0
+      maxInFlightChecks = 0
+    },
     setSessionPruned: (providerSessionId, pruned) => {
       if (pruned) prunedSessions.add(providerSessionId)
       else prunedSessions.delete(providerSessionId)

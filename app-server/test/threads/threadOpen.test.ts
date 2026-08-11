@@ -591,6 +591,7 @@ describe("threads.openTerminal", () => {
       // One listing over the page: every record re-derives concurrently,
       // capped at 8 in flight — neither serialized (minutes against a dead
       // provider) nor a stampede.
+      fake.resetCheckStats()
       const before = fake.checkCalls.length
       fake.setCheckHangs(true)
       const listing = yield* Effect.forkChild(

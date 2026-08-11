@@ -1,4 +1,4 @@
-import { Effect, Schema, Stream } from "effect"
+import { Duration, Effect, Schema, Semaphore, Stream } from "effect"
 import type { Scope } from "effect"
 import { existsSync, realpathSync } from "node:fs"
 import type { AgentId } from "../api/contract.ts"
@@ -588,11 +588,13 @@ export const readInstalledVersion = (
  * warning when it is below the floor the adapter was validated against.
  * Warn-only: a missing executable never fails the gate — every call site
  * resolves or spawns the executable itself and reports the actionable
- * diagnostic there — and Effect.cached would otherwise pin that failure
- * past a mid-session install. Uninterruptible because Effect.cached
- * memoizes interruption too: a dropped request driving the first check
- * must not become the cached outcome (the check is bounded — the version
- * read times out at 5 seconds).
+ * diagnostic there — and a memoized failure would pin "unavailable" past a
+ * mid-session install. NOT plain Effect.cached: the cache memoizes whatever
+ * exit its driving fiber produces, interruption included, so a dropped
+ * request driving the first check would poison every later caller for the
+ * process. Instead the memo is invalidated when its driver is interrupted,
+ * and the semaphore keeps callers out of the cache's waiter path (a waiter
+ * racing an invalidate would replay a cleared exit).
  */
 export const makeVersionGate = (
   subprocess: Subprocess["Service"],
@@ -600,8 +602,9 @@ export const makeVersionGate = (
   configured: string,
   testedVersion: string,
 ): Effect.Effect<Effect.Effect<void>> =>
-  Effect.cached(
-    Effect.gen(function* () {
+  Effect.gen(function* () {
+    const lock = yield* Semaphore.make(1)
+    const check = Effect.gen(function* () {
       const executable = yield* resolveProviderExecutable(provider, configured)
       const installed = yield* readInstalledVersion(subprocess, executable)
       if (installed === null) {
@@ -620,8 +623,7 @@ export const makeVersionGate = (
           `installed ${provider} ${installed} is older than the tested ${testedVersion}; proceeding, but upgrade it if provider behavior misbehaves`,
         )
       }
-    }).pipe(
-      Effect.catchTag("AgentUnavailable", () => Effect.void),
-      Effect.uninterruptible,
-    ),
-  )
+    }).pipe(Effect.catchTag("AgentUnavailable", () => Effect.void))
+    const [cached, invalidate] = yield* Effect.cachedInvalidateWithTTL(check, Duration.infinity)
+    return lock.withPermits(1)(Effect.onInterrupt(cached, () => invalidate))
+  })

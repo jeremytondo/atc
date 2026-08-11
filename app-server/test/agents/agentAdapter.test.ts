@@ -1,11 +1,13 @@
 import { assert, describe, it } from "@effect/vitest"
-import { Effect, Stream } from "effect"
+import { Deferred, Effect, Fiber, Stream } from "effect"
 import type { AgentEvent } from "../../src/agents/agentAdapter.ts"
 import {
   aggregateActivity,
+  makeVersionGate,
   sanitizeTitle,
   titleInstruction,
 } from "../../src/agents/agentAdapter.ts"
+import type { Subprocess } from "../../src/platform/subprocess.ts"
 import { makeFakeAgentAdapter } from "./fakeAgentAdapter.ts"
 
 // Seam-semantics tests over the fake adapter: the observable rules every
@@ -229,5 +231,88 @@ describe("AgentAdapter seam semantics (fake adapter)", () => {
       const failure = yield* Effect.flip(fake.adapter.createSession({ cwd: "/work", input: "hi" }))
       assert.strictEqual(failure._tag, "AgentUnavailable")
     }).pipe(Effect.scoped),
+  )
+})
+
+/**
+ * A scripted Subprocess whose spawns are counted and optionally held on a
+ * gate, so the gate tests control exactly when the version read completes.
+ */
+const gatedSubprocess = () => {
+  let spawns = 0
+  let gate: Deferred.Deferred<void> | null = null
+  const service: Subprocess["Service"] = {
+    spawn: () =>
+      Effect.gen(function* () {
+        spawns++
+        const held = gate
+        if (held !== null) yield* Deferred.await(held)
+        return {
+          pid: 1,
+          stdoutLines: Stream.make("codex-cli 9.9.9"),
+          stderrTail: Effect.succeed([]),
+          writeLine: () => Effect.void,
+          endInput: Effect.void,
+          exitCode: Effect.succeed(0),
+        }
+      }),
+    spawnPty: () => Effect.die("unused"),
+    spawnDetached: () => Effect.die("unused"),
+  }
+  return {
+    service,
+    spawns: () => spawns,
+    hold: () => {
+      gate = Deferred.makeUnsafe<void>()
+    },
+    release: () => {
+      if (gate !== null) Deferred.doneUnsafe(gate, Effect.void)
+      gate = null
+    },
+  }
+}
+
+const untilSpawns = (fake: { spawns: () => number }, count: number) =>
+  Effect.gen(function* () {
+    for (let attempt = 0; fake.spawns() < count; attempt++) {
+      assert.isBelow(attempt, 100, `never reached ${count} spawns (at ${fake.spawns()})`)
+      yield* Effect.yieldNow
+    }
+  })
+
+describe("makeVersionGate", () => {
+  it.effect("single-flight: concurrent callers share one version read, memoized after", () =>
+    Effect.gen(function* () {
+      const fake = gatedSubprocess()
+      const gate = yield* makeVersionGate(fake.service, "codex", "/bin/echo", "1.0.0")
+      fake.hold()
+      const first = yield* Effect.forkChild(gate)
+      const second = yield* Effect.forkChild(gate)
+      yield* untilSpawns(fake, 1)
+      fake.release()
+      yield* Fiber.join(first)
+      yield* Fiber.join(second)
+      assert.strictEqual(fake.spawns(), 1)
+      // A later caller replays the memo without re-reading.
+      yield* gate
+      assert.strictEqual(fake.spawns(), 1)
+    }),
+  )
+
+  it.effect("an interrupted first caller never poisons the gate", () =>
+    Effect.gen(function* () {
+      const fake = gatedSubprocess()
+      const gate = yield* makeVersionGate(fake.service, "codex", "/bin/echo", "1.0.0")
+      fake.hold()
+      const first = yield* Effect.forkChild(gate)
+      yield* untilSpawns(fake, 1)
+      // The driver's interruption must be invalidated on the way out, not
+      // memoized — a poisoned memo would replay the interrupt to every
+      // later caller for the life of the process.
+      yield* Fiber.interrupt(first)
+      fake.release()
+      yield* gate
+      assert.strictEqual(fake.spawns(), 2)
+    }),
   )
 })

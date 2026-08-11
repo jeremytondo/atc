@@ -249,9 +249,15 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
 
       const emit = (session: LiveSession, event: AgentEvent): void => {
         // Bounded queue: a consumer that stopped draining loses the stream,
-        // not the process — the ended queue tells it to reopen and resync
-        // (the same policy the SSE fan-out applies in events.ts).
-        if (!Queue.offerUnsafe(session.queue, event)) Queue.endUnsafe(session.queue)
+        // not the process (the events.ts subscriber policy). Overflow FAILS
+        // the stream rather than ending it — a clean end would read as a
+        // completed turn to the consumer, not a truncated one.
+        if (!Queue.offerUnsafe(session.queue, event)) {
+          Queue.failCauseUnsafe(
+            session.queue,
+            Cause.fail(protocolError("session event stream overflowed; reopen and resync")),
+          )
+        }
       }
 
       const setActivity = (session: LiveSession, activity: AgentActivity): void => {
@@ -807,17 +813,16 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
             // validating only because the thread's metadata carries it.
             const known = metadataSecret(options.providerMetadata)
             if (known !== null) yield* hooks.adoptSecret(options.providerSessionId, known)
-            // Sliding: hook evidence is coarse and newest-wins; a slow
-            // consumer drops stale events instead of buffering unbounded.
-            const queue = yield* Queue.make<AgentSessionEvent, Cause.Done>({
-              capacity: 32,
-              strategy: "sliding",
-            })
+            // Bounded (overflow ends the feed — see the subscriber below);
+            // dropping hook events silently would lose confirm/auto-name
+            // evidence, while an ended feed makes the consumer re-observe.
+            const queue = yield* Queue.make<AgentSessionEvent, Cause.Done>({ capacity: 32 })
             // Registered before the subscription so it runs after it on
             // scope close: unsubscribe first, then end the queue.
             yield* Effect.addFinalizer(() => Effect.sync(() => Queue.endUnsafe(queue)))
             yield* hooks.subscribe((sessionId, event) => {
-              if (sessionId === options.providerSessionId) Queue.offerUnsafe(queue, event)
+              if (sessionId !== options.providerSessionId) return
+              if (!Queue.offerUnsafe(queue, event)) Queue.endUnsafe(queue)
             })
             return Stream.fromQueue(queue)
           }),
