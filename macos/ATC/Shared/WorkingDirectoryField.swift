@@ -3,6 +3,9 @@
 // usable, so the field re-checks through `checkDirectory` whenever the typed
 // value settles and publishes the outcome; sheets gate submission on
 // `DirectoryCheckState.isAvailable` rather than inspecting paths themselves.
+// Any edit to the path or connection drops the previous verdict to
+// `.checking` before the debounce, so a gate can never submit on a verdict
+// that belongs to an earlier value.
 //
 // Browse opens the server-backed DirectoryPickerSheet (`GET /fs/list`), so
 // the browsed filesystem is the server's on every Connection — but
@@ -35,6 +38,9 @@ struct WorkingDirectoryField: View {
     /// when the typed path is unchanged.
     let connectionID: UUID?
     @Binding var state: DirectoryCheckState
+    /// When provided, the text field binds its focus here so hosts can move
+    /// focus programmatically (the New Thread launcher's Shift-⌘-G).
+    var isFocused: FocusState<Bool>.Binding?
     @State private var isBrowsing = false
 
     private struct CheckKey: Equatable {
@@ -45,8 +51,7 @@ struct WorkingDirectoryField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.xs) {
             HStack(spacing: Spacing.sm) {
-                TextField(label, text: $path, prompt: Text("/path/on/the/server"))
-                    .autocorrectionDisabled()
+                textField
                 Button("Browse…") { isBrowsing = true }
                     .disabled(client == nil)
             }
@@ -76,6 +81,17 @@ struct WorkingDirectoryField: View {
         }
     }
 
+    @ViewBuilder
+    private var textField: some View {
+        let field = TextField(label, text: $path, prompt: Text("/path/on/the/server"))
+            .autocorrectionDisabled()
+        if let isFocused {
+            field.focused(isFocused)
+        } else {
+            field
+        }
+    }
+
     private func check() async {
         let trimmed = path.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else {
@@ -90,6 +106,10 @@ struct WorkingDirectoryField: View {
             state = .failed("Select a connection first.")
             return
         }
+        // Any change to (path, server) invalidates the previous verdict
+        // right away — gates must never submit on a verdict for a value
+        // that is no longer the one in the field.
+        state = .checking
         // Settle the keystroke burst before spending a server round trip;
         // `.task(id:)` cancels this on the next edit.
         do {
@@ -97,7 +117,6 @@ struct WorkingDirectoryField: View {
         } catch {
             return
         }
-        state = .checking
         do {
             let response = try await client.checkDirectory(query: .init(path: trimmed)).ok.body.json
             state = .checked(response.state, response.reason)
