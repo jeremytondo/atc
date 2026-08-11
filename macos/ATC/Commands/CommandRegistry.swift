@@ -17,27 +17,10 @@ enum CommandAvailability: Equatable {
     }
 }
 
-enum CommandCategory: CaseIterable, Sendable {
-    case general
-    case projects
-    case threadsAndTerminals
-    case view
-
-    var title: String {
-        switch self {
-        case .general: "General"
-        case .projects: "Projects"
-        case .threadsAndTerminals: "Threads & Terminals"
-        case .view: "View"
-        }
-    }
-}
-
 @MainActor
 struct CommandDescriptor {
     let id: CommandID
     let title: String
-    let category: CommandCategory
     var isPaletteEligible = true
     let availability: (CommandContext) -> CommandAvailability
     let perform: (CommandContext) -> Void
@@ -48,6 +31,7 @@ enum CommandRegistry {
     private static let connectionUnavailable = "Requires a reachable Connection"
     private static let projectContextUnavailable = "Requires an open Project"
     private static let dialogUnavailable = "Not available while a dialog is open"
+    private static let paletteOpenUnavailable = "Not available while the Command Palette is open"
 
     static var allDescriptors: [CommandDescriptor] {
         CommandID.allCases.map(descriptor(for:))
@@ -59,7 +43,6 @@ enum CommandRegistry {
             CommandDescriptor(
                 id: id,
                 title: "Toggle Sidebar",
-                category: .view,
                 availability: { _ in .available },
                 perform: { $0.windowState.toggleSidebar() }
             )
@@ -67,7 +50,6 @@ enum CommandRegistry {
             CommandDescriptor(
                 id: id,
                 title: "Toggle Command Palette",
-                category: .view,
                 isPaletteEligible: false,
                 availability: {
                     $0.windowState.isSheetPresented
@@ -83,7 +65,6 @@ enum CommandRegistry {
             CommandDescriptor(
                 id: id,
                 title: "Search Threads…",
-                category: .view,
                 isPaletteEligible: false,
                 availability: scopedPaletteAvailability,
                 perform: { $0.windowState.commandPalettePresentation = .threads }
@@ -92,7 +73,6 @@ enum CommandRegistry {
             CommandDescriptor(
                 id: id,
                 title: "Search Terminals…",
-                category: .view,
                 isPaletteEligible: false,
                 availability: scopedPaletteAvailability,
                 perform: { $0.windowState.commandPalettePresentation = .terminals }
@@ -101,7 +81,6 @@ enum CommandRegistry {
             CommandDescriptor(
                 id: id,
                 title: "Show Dashboard",
-                category: .view,
                 availability: { _ in .available },
                 perform: { $0.windowState.showDashboard() }
             )
@@ -109,15 +88,13 @@ enum CommandRegistry {
             CommandDescriptor(
                 id: id,
                 title: "New Thread",
-                category: .threadsAndTerminals,
                 availability: anyConnectionAvailability,
-                perform: { $0.windowState.presentNewThread(in: $0.appModel) }
+                perform: { $0.windowState.presentNewThread() }
             )
         case .newTerminal:
             CommandDescriptor(
                 id: id,
                 title: "New Terminal",
-                category: .threadsAndTerminals,
                 availability: { context in
                     // A standalone terminal always belongs to a Project, and
                     // the only Project the window knows is its launch-local
@@ -135,7 +112,6 @@ enum CommandRegistry {
             CommandDescriptor(
                 id: id,
                 title: "New Project…",
-                category: .projects,
                 availability: anyConnectionAvailability,
                 perform: { $0.windowState.isCreateProjectPresented = true }
             )
@@ -143,7 +119,6 @@ enum CommandRegistry {
             CommandDescriptor(
                 id: id,
                 title: "Refresh",
-                category: .general,
                 availability: { _ in .available },
                 perform: { context in Task { await context.appModel.refreshAll() } }
             )
@@ -151,7 +126,6 @@ enum CommandRegistry {
             CommandDescriptor(
                 id: id,
                 title: "Reload Configuration",
-                category: .general,
                 availability: { _ in .available },
                 perform: { $0.configStore.reload() }
             )
@@ -159,7 +133,6 @@ enum CommandRegistry {
             CommandDescriptor(
                 id: id,
                 title: "Reveal Configuration",
-                category: .general,
                 availability: { _ in .available },
                 perform: { context in
                     let fileURL = context.configStore.configURL
@@ -200,7 +173,7 @@ enum CommandRegistry {
             return .unavailable(reason: dialogUnavailable)
         }
         if context.windowState.commandPalettePresentation != nil {
-            return .unavailable(reason: "Not available while the Command Palette is open")
+            return .unavailable(reason: paletteOpenUnavailable)
         }
         return .available
     }

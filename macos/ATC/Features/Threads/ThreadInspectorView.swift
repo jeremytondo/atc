@@ -22,7 +22,7 @@ struct ThreadInspectorView: View {
                         .font(.callout.monospaced())
                         .textSelection(.enabled)
                 }
-                LabeledContent("Activity", value: Self.activityLabel(thread.activityState))
+                LabeledContent("Activity", value: thread.activityState.detailLabel)
             }
             Section {
                 LabeledContent("Created", value: thread.createdAt.formatted(date: .abbreviated, time: .shortened))
@@ -35,14 +35,5 @@ struct ThreadInspectorView: View {
             }
         }
         .formStyle(.grouped)
-    }
-
-    private static func activityLabel(_ state: ThreadActivityState) -> String {
-        switch state {
-        case .idle: "Idle"
-        case .working: "Working"
-        case .needsInput: "Needs input"
-        case .unknown: "Unknown"
-        }
     }
 }

@@ -1,52 +1,27 @@
 import AppKit
 import SwiftUI
 
-struct KeyboardMonitorHost: NSViewRepresentable {
+struct KeyboardMonitorHost: View {
     let router: WindowKeyboardRouter
     let onDeactivate: () -> Void
     let focusFallback: () -> Void
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(
-            router: router,
-            onDeactivate: onDeactivate,
-            focusFallback: focusFallback
-        )
-    }
-
-    func makeNSView(context: Context) -> HostView {
-        let view = HostView()
-        view.onWindowChange = { [weak coordinator = context.coordinator] window in
-            coordinator?.install(for: window)
-        }
-        return view
-    }
-
-    func updateNSView(_ nsView: HostView, context: Context) {
-        context.coordinator.router = router
-        context.coordinator.onDeactivate = onDeactivate
-        context.coordinator.focusFallback = focusFallback
-        if nsView.window !== context.coordinator.hostWindow {
-            context.coordinator.install(for: nsView.window)
-        }
-    }
-
-    static func dismantleNSView(_ nsView: HostView, coordinator: Coordinator) {
-        nsView.onWindowChange = nil
-        coordinator.stop()
-    }
-
-    final class HostView: NSView {
-        var onWindowChange: ((NSWindow?) -> Void)?
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            onWindowChange?(window)
+    var body: some View {
+        WindowAccessor {
+            Coordinator(
+                router: router,
+                onDeactivate: onDeactivate,
+                focusFallback: focusFallback
+            )
+        } update: { coordinator in
+            coordinator.router = router
+            coordinator.onDeactivate = onDeactivate
+            coordinator.focusFallback = focusFallback
         }
     }
 
     @MainActor
-    final class Coordinator {
+    final class Coordinator: WindowAttachment {
         var router: WindowKeyboardRouter
         var onDeactivate: () -> Void
         var focusFallback: () -> Void
@@ -65,9 +40,9 @@ struct KeyboardMonitorHost: NSViewRepresentable {
             self.focusFallback = focusFallback
         }
 
-        func install(for window: NSWindow?) {
+        func attach(to window: NSWindow?) {
             guard window !== hostWindow || monitor == nil else { return }
-            stop()
+            detach()
             guard let window else { return }
             hostWindow = window
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
@@ -158,7 +133,7 @@ struct KeyboardMonitorHost: NSViewRepresentable {
             focusFallback()
         }
 
-        func stop() {
+        func detach() {
             if let monitor {
                 NSEvent.removeMonitor(monitor)
                 self.monitor = nil

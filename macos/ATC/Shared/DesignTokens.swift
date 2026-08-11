@@ -34,12 +34,28 @@ enum Spacing {
     static let xxl: CGFloat = 32
 }
 
-/// Corner radii: small controls, chip controls, and cards. Text pills use
-/// `Capsule`.
+/// Corner radii: small controls, chip controls, cards, and floating panels.
+/// Text pills use `Capsule`.
 enum Radius {
     static let control: CGFloat = 6
     static let chip: CGFloat = 8
     static let card: CGFloat = 12
+    /// Floating panels over the app (the Command Palette).
+    static let panel: CGFloat = 11
+}
+
+/// The neutral overlay surfaces on the dark canvas. Every raised element —
+/// chip, badge, card — is white at a fixed opacity, so the scale lives here
+/// rather than in each view.
+enum Surface {
+    /// Bordered chip controls at rest, and their border.
+    static let chip = Color.white.opacity(0.06)
+    static let chipBorder = Color.white.opacity(0.12)
+    /// Badges, card action chips, and a card under the pointer.
+    static let raised = Color.white.opacity(0.07)
+    /// A card at rest, and its border.
+    static let card = Color.white.opacity(0.035)
+    static let cardBorder = Color.white.opacity(0.08)
 }
 
 /// Opacity applied to unavailable content.

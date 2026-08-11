@@ -11,6 +11,9 @@ import ATCAppServerTransport
 import Foundation
 import OpenAPIRuntime
 
+// Fixtures only: previews and tests. Never compiled into a Release build.
+#if DEBUG
+
 extension AppModel {
     /// Preview/test fixture: an ephemeral Connection store (unique
     /// UserDefaults suite, nothing persisted to `.standard`) holding one
@@ -427,3 +430,5 @@ nonisolated struct PreviewAppServerClient: APIProtocol {
 struct PreviewUnavailable: LocalizedError {
     var errorDescription: String? { "Not available in previews." }
 }
+
+#endif

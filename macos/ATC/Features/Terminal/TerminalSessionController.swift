@@ -42,19 +42,14 @@ final class TerminalSessionController: Identifiable {
             maximumAttempts: 10
         )
 
-        /// Exponential delay with symmetric jitter. The final value is
-        /// capped too, so a positive jitter never exceeds the advertised
-        /// maximum.
+        /// Exponential delay with symmetric jitter, on the transports' shared
+        /// schedule; the attempt budget above is this policy's own addition.
         func delay(forAttempt attempt: Int, jitterUnit: Double) -> Duration {
-            var nominal = baseDelayMilliseconds
-            for _ in 0..<max(0, attempt) {
-                nominal = min(maximumDelayMilliseconds, nominal * 2)
-            }
-
-            let unit = min(1, max(0, jitterUnit))
-            let factor = (1 - jitterFraction) + (2 * jitterFraction * unit)
-            let jittered = Int64((Double(nominal) * factor).rounded())
-            return .milliseconds(min(maximumDelayMilliseconds, max(0, jittered)))
+            ReconnectBackoff(
+                baseDelay: .milliseconds(baseDelayMilliseconds),
+                maximumDelay: .milliseconds(maximumDelayMilliseconds),
+                jitterFraction: jitterFraction
+            ).delay(forAttempt: attempt, jitterUnit: jitterUnit)
         }
     }
 

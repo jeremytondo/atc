@@ -91,20 +91,11 @@ struct CommandPaletteView: View {
                 .textFieldStyle(.plain)
                 .font(.title3)
                 .padding(.horizontal, 14)
-                .padding(.vertical, 12)
+                .padding(.vertical, Spacing.md)
                 .focused($queryIsFocused)
                 .accessibilityLabel("Palette search")
                 .onSubmit { activateSelection(in: rows, context: context) }
-                .onKeyPress(.downArrow) { moveSelection(1, through: rows) }
-                .onKeyPress(.upArrow) { moveSelection(-1, through: rows) }
-                .onKeyPress(keys: ["n"], phases: .down) { press in
-                    guard press.modifiers == .control else { return .ignored }
-                    return moveSelection(1, through: rows)
-                }
-                .onKeyPress(keys: ["p"], phases: .down) { press in
-                    guard press.modifiers == .control else { return .ignored }
-                    return moveSelection(-1, through: rows)
-                }
+                .onSelectionMoveKeys { moveSelection($0, through: rows) }
                 .onKeyPress(.escape) {
                     dismissPalette()
                     return .handled
@@ -114,9 +105,9 @@ struct CommandPaletteView: View {
 
             resultList(rows: rows, context: context, presentation: presentation)
         }
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 11))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Radius.panel))
         .overlay {
-            RoundedRectangle(cornerRadius: 11)
+            RoundedRectangle(cornerRadius: Radius.panel)
                 .stroke(Color(nsColor: .separatorColor).opacity(0.7), lineWidth: 0.5)
         }
         .shadow(color: .black.opacity(0.28), radius: 18, y: 7)
@@ -186,7 +177,7 @@ struct CommandPaletteView: View {
         .foregroundStyle(isAvailable ? .primary : .secondary)
         .opacity(isAvailable ? 1 : 0.6)
         .background {
-            RoundedRectangle(cornerRadius: 6)
+            RoundedRectangle(cornerRadius: Radius.control)
                 .fill(isSelected ? Color.accentColor.opacity(0.65) :
                     isHovered ? Color.primary.opacity(0.08) : .clear)
         }
@@ -211,7 +202,7 @@ struct CommandPaletteView: View {
                     .font(.callout)
                 unavailableReason(row.availability)
             }
-            Spacer(minLength: 12)
+            Spacer(minLength: Spacing.md)
             if let shortcut = row.shortcut {
                 trailingLabel(shortcut.displayDescription)
             }
@@ -224,7 +215,7 @@ struct CommandPaletteView: View {
                     .foregroundStyle(.secondary)
                 unavailableReason(row.availability)
             }
-            Spacer(minLength: 12)
+            Spacer(minLength: Spacing.md)
         case .terminal(let row):
             VStack(alignment: .leading, spacing: 2) {
                 typedTitle("Terminal", title: row.title, ranges: row.matchedRanges)
@@ -233,7 +224,7 @@ struct CommandPaletteView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Spacer(minLength: 12)
+            Spacer(minLength: Spacing.md)
         }
     }
 
@@ -263,20 +254,6 @@ struct CommandPaletteView: View {
         Text(label)
             .font(.caption.monospaced().weight(.medium))
             .foregroundStyle(.secondary)
-    }
-
-    private func highlightedTitle(
-        _ title: String,
-        ranges: [Range<String.Index>]
-    ) -> Text {
-        var text = Text("")
-        var cursor = title.startIndex
-        for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) {
-            text = text + Text(String(title[cursor..<range.lowerBound]))
-            text = text + Text(String(title[range])).bold()
-            cursor = range.upperBound
-        }
-        return text + Text(String(title[cursor...]))
     }
 
     private func accessibilityLabel(for result: PaletteResult) -> String {
@@ -395,14 +372,10 @@ struct CommandPaletteView: View {
         _ offset: Int,
         through rows: [PaletteResult]
     ) -> KeyPress.Result {
+        // An empty list keeps whatever is selected; only `resetSelection`
+        // clears it.
         guard !rows.isEmpty else { return .handled }
-        guard let selectedID,
-              let index = rows.firstIndex(where: { $0.id == selectedID })
-        else {
-            self.selectedID = offset > 0 ? rows.first?.id : rows.last?.id
-            return .handled
-        }
-        self.selectedID = rows[(index + offset + rows.count) % rows.count].id
+        selectedID = wrappedSelection(from: selectedID, by: offset, in: rows)
         return .handled
     }
 }
@@ -411,55 +384,30 @@ private final class PaletteResponderRestoration {
     var shouldRestoreCapturedResponder = true
 }
 
-private struct PaletteWindowAccessor: NSViewRepresentable {
+private struct PaletteWindowAccessor: View {
     let takeCapturedResponder: @MainActor () -> NSResponder?
     let onAttach: @MainActor () -> Void
     let shouldRestoreCapturedResponder: @MainActor () -> Bool
     let fallback: @MainActor () -> Void
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(
-            takeCapturedResponder: takeCapturedResponder,
-            onAttach: onAttach,
-            shouldRestoreCapturedResponder: shouldRestoreCapturedResponder,
-            fallback: fallback
-        )
-    }
-
-    func makeNSView(context: Context) -> HostView {
-        let view = HostView()
-        view.onWindowChange = { [weak coordinator = context.coordinator] window in
-            coordinator?.attach(to: window)
-        }
-        return view
-    }
-
-    func updateNSView(_ nsView: HostView, context: Context) {
-        context.coordinator.takeCapturedResponder = takeCapturedResponder
-        context.coordinator.onAttach = onAttach
-        context.coordinator.shouldRestoreCapturedResponder = shouldRestoreCapturedResponder
-        context.coordinator.fallback = fallback
-        if nsView.window !== context.coordinator.hostWindow {
-            context.coordinator.attach(to: nsView.window)
-        }
-    }
-
-    static func dismantleNSView(_ nsView: HostView, coordinator: Coordinator) {
-        nsView.onWindowChange = nil
-        coordinator.restore()
-    }
-
-    final class HostView: NSView {
-        var onWindowChange: ((NSWindow?) -> Void)?
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            onWindowChange?(window)
+    var body: some View {
+        WindowAccessor {
+            FocusCapture(
+                takeCapturedResponder: takeCapturedResponder,
+                onAttach: onAttach,
+                shouldRestoreCapturedResponder: shouldRestoreCapturedResponder,
+                fallback: fallback
+            )
+        } update: { capture in
+            capture.takeCapturedResponder = takeCapturedResponder
+            capture.onAttach = onAttach
+            capture.shouldRestoreCapturedResponder = shouldRestoreCapturedResponder
+            capture.fallback = fallback
         }
     }
 
     @MainActor
-    final class Coordinator {
+    final class FocusCapture: WindowAttachment {
         var takeCapturedResponder: @MainActor () -> NSResponder?
         var onAttach: @MainActor () -> Void
         var shouldRestoreCapturedResponder: @MainActor () -> Bool
@@ -490,7 +438,7 @@ private struct PaletteWindowAccessor: NSViewRepresentable {
             Task { @MainActor [weak self] in self?.onAttach() }
         }
 
-        func restore() {
+        func detach() {
             guard let window = hostWindow else { return }
             if shouldRestoreCapturedResponder(),
                let view = previousResponder as? NSView,

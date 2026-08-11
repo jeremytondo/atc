@@ -102,11 +102,6 @@ final class TerminalsStore {
 
     func merge(_ terminal: Terminal) {
         refreshState.invalidateInFlight()
-        if let index = terminals.firstIndex(where: { $0.id == terminal.id }) {
-            terminals[index] = terminal
-        } else {
-            let index = terminals.firstIndex { $0.createdAt < terminal.createdAt }
-            terminals.insert(terminal, at: index ?? terminals.endIndex)
-        }
+        terminals.upsertNewestFirst(terminal)
     }
 }

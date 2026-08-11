@@ -56,6 +56,18 @@ extension ThreadActivityState {
         }
     }
 
+    /// The inspector's and toolbar's longer phrasing for the same states.
+    /// Deliberately worded differently from `statusLabel`: a card is scanned,
+    /// a detail row is read.
+    var detailLabel: String {
+        switch self {
+        case .working: "Working"
+        case .needsInput: "Needs input"
+        case .idle: "Idle"
+        case .unknown: "Unknown"
+        }
+    }
+
     var statusColor: Color {
         switch self {
         case .working: .green

@@ -94,10 +94,7 @@ final class AppModel {
             needsDeferredStart = true
         }
         self.clientFactory = clientFactory ?? { record, url in
-            ATCAppServerAPI.makeClient(
-                baseURL: url,
-                bearerToken: record.token.isEmpty ? nil : record.token
-            )
+            ConnectionClient.make(baseURL: url, token: record.token)
         }
         self.terminalControllerFactory = terminalControllerFactory ?? { terminalID, runtime in
             TerminalSessionController(
@@ -202,6 +199,22 @@ final class AppModel {
 
     func terminal(for ref: TerminalRef) -> Terminal? {
         runtime(id: ref.connectionID)?.terminals.terminal(id: ref.terminalID)
+    }
+
+    // MARK: - Projections
+
+    /// The cross-Connection thread/project projection, built from every
+    /// runtime. Surfaces ask for it rather than assembling the inputs
+    /// themselves, so one place decides what a projection sees.
+    func threadList(filter: ThreadFilter) -> ThreadListModel {
+        ThreadListModel(
+            inputs: runtimes.map(ThreadListModel.ConnectionInput.init(runtime:)),
+            filter: filter
+        )
+    }
+
+    var dashboard: DashboardModel {
+        DashboardModel(inputs: runtimes.map(DashboardModel.ConnectionInput.init(runtime:)))
     }
 
     /// Projects are deliberately absent: a project deletion cascades

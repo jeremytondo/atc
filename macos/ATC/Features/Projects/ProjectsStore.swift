@@ -84,11 +84,6 @@ final class ProjectsStore {
 
     private func merge(_ project: Project) {
         refreshState.invalidateInFlight()
-        if let index = projects.firstIndex(where: { $0.id == project.id }) {
-            projects[index] = project
-        } else {
-            let index = projects.firstIndex { $0.createdAt < project.createdAt }
-            projects.insert(project, at: index ?? projects.endIndex)
-        }
+        projects.upsertNewestFirst(project)
     }
 }

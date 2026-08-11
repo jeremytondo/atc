@@ -25,6 +25,18 @@ enum SidebarShortcuts {
     /// ⌘1…⌘9 — there is no ⌘0 and nothing past nine.
     static let slotCount = 9
 
+    /// The triggers this scheme owns, named as the keymap resolver reports
+    /// them. These are not keymap commands, so a user binding would collide
+    /// silently unless the resolver reserves them from here.
+    nonisolated static let reservedTriggers: [KeyStroke: String] = {
+        var triggers: [KeyStroke: String] = [:]
+        for slot in 1...slotCount {
+            triggers[KeyStroke(key: "\(slot)", modifiers: [.command])] = "Thread Shortcuts"
+            triggers[KeyStroke(key: "\(slot)", modifiers: [.command, .option])] = "Terminal Shortcuts"
+        }
+        return triggers
+    }()
+
     /// The jump a stroke maps to, on an exact modifier match only: ⌘ alone
     /// targets threads, ⌥⌘ targets terminals, anything else is no jump.
     static func jump(for stroke: KeyStroke) -> SidebarJump? {
@@ -75,10 +87,7 @@ enum SidebarShortcuts {
     static func perform(_ jump: SidebarJump, appModel: AppModel, windowState: WindowState) {
         switch jump {
         case .thread(let slot):
-            let model = ThreadListModel(
-                inputs: appModel.runtimes.map(ThreadListModel.ConnectionInput.init(runtime:)),
-                filter: windowState.threadFilter
-            )
+            let model = appModel.threadList(filter: windowState.threadFilter)
             let targets = threadTargets(
                 model: model,
                 isPinnedExpanded: windowState.isPinnedExpanded,

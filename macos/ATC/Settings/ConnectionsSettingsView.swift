@@ -1,5 +1,4 @@
 import SwiftUI
-import ATCAppServerAPI
 
 /// What the editor pane is currently editing: an existing record by ID, or a
 /// brand-new draft that isn't in the store until Save.
@@ -13,6 +12,8 @@ enum ConnectionEditorTarget: Hashable {
 /// right. Nothing touches `ConnectionsStore` until the editor's Save.
 struct ConnectionsSettingsView: View {
     @Environment(AppModel.self) private var appModel
+    /// Injectable so tests can drive the editor's test-result states.
+    var probe = ConnectionProbe.live
 
     @State private var target: ConnectionEditorTarget?
     @State private var confirmDelete = false
@@ -90,7 +91,7 @@ struct ConnectionsSettingsView: View {
     @ViewBuilder
     private var detail: some View {
         if let target {
-            ConnectionEditorView(target: target) { savedID in
+            ConnectionEditorView(target: target, probe: probe) { savedID in
                 self.target = .existing(savedID)
             }
             // Reseed drafts cleanly whenever the target changes.
@@ -119,6 +120,7 @@ struct ConnectionsSettingsView: View {
 private struct ConnectionEditorView: View {
     @Environment(AppModel.self) private var appModel
     let target: ConnectionEditorTarget
+    let probe: ConnectionProbe
     /// Called after a successful Save with the record's ID so the parent can
     /// keep it selected (a new draft becomes an existing selection).
     var onSaved: (UUID) -> Void
@@ -292,15 +294,10 @@ private struct ConnectionEditorView: View {
         let draftToken = token
         testState = .testing
         Task {
-            let client = ATCAppServerAPI.makeClient(
-                baseURL: url,
-                bearerToken: draftToken.isEmpty ? nil : draftToken
-            )
             do {
-                _ = try await client.getHealth().ok.body.json
-                let version = try await client.getVersion().ok.body.json
+                let version = try await probe.version(url, draftToken)
                 guard generation == testGeneration else { return }
-                testState = .success("Connected — atc \(version.version)")
+                testState = .success("Connected — atc \(version)")
             } catch {
                 guard generation == testGeneration else { return }
                 testState = .failure(error.localizedDescription)
@@ -322,6 +319,10 @@ private struct ConnectionEditorView: View {
     }
 }
 
+// Previews are compiled into Release builds too; the fixtures they use
+// are not.
+#if DEBUG
+
 #Preview("Connections — populated") {
     ConnectionsSettingsView()
         .environment(AppModel.preview())
@@ -339,3 +340,5 @@ private struct ConnectionEditorView: View {
         .frame(width: 700, height: 450)
         .preferredColorScheme(.dark)
 }
+
+#endif

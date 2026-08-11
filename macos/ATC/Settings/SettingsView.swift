@@ -15,8 +15,14 @@ struct SettingsView: View {
     }
 }
 
+// Previews are compiled into Release builds too; the fixtures they use
+// are not.
+#if DEBUG
+
 #Preview("Settings") {
     SettingsView()
         .environment(AppModel.preview())
         .preferredColorScheme(.dark)
 }
+
+#endif
