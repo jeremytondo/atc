@@ -26,6 +26,22 @@ struct NewThreadSheet: View {
         (1...9).map { KeyEquivalent(Character("\($0)")) }
     )
 
+    /// The sheet's one horizontal rhythm. Every container — search field,
+    /// result row, configuration grid — sits `gutter` in from the sheet edge,
+    /// and its own content sits `Spacing.md` inside that, so the search icon,
+    /// the rows' status dots, and the section header all share a left edge and
+    /// a selected row is exactly as wide as the search field above it.
+    private static let gutter = Spacing.md
+
+    /// The results list shows exactly this many rows; more scroll within it.
+    private static let visibleRowCount = 6
+    private static let rowHeight: CGFloat = 32
+    private static let rowSpacing: CGFloat = 2
+    private static let resultsHeight: CGFloat =
+        rowHeight * CGFloat(visibleRowCount)
+        + rowSpacing * CGFloat(visibleRowCount - 1)
+        + Spacing.xs * 2
+
     @AppStorage("newThreadLastAgentId") private var lastAgentRaw = ""
 
     @State private var query = ""
@@ -57,18 +73,20 @@ struct NewThreadSheet: View {
             isBusy: isSubmitting,
             canSubmit: canSubmit,
             wrapsContentInForm: false,
+            showsHeader: false,
             onCancel: { windowState.newThreadContext = nil },
             onSubmit: { Task { await submit() } }
         ) {
             VStack(spacing: 0) {
                 searchField(rows: rows)
-                Divider()
+                resultsHeader
                 resultsList(rows: rows)
+                    .frame(height: Self.resultsHeight)
                 Divider()
                 configurationRows
             }
         }
-        .frame(width: 560, height: 500)
+        .frame(width: 560)
         .defaultFocus($searchIsFocused, true)
         // ⌘1…⌘9 select Agents, handled on the sheet rather than on the Agent
         // buttons so an unavailable Agent's shortcut still answers with
@@ -132,7 +150,31 @@ struct NewThreadSheet: View {
         }
         .font(.title3)
         .padding(.horizontal, Spacing.md)
-        .padding(.vertical, Spacing.md)
+        .padding(.vertical, Spacing.sm + 2)
+        .background(
+            Surface.chip,
+            in: RoundedRectangle(cornerRadius: Radius.chip, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: Radius.chip, style: .continuous)
+                .stroke(Surface.chipBorder, lineWidth: 1)
+        }
+        .padding(.horizontal, Self.gutter)
+        .padding(.top, Spacing.md)
+        .padding(.bottom, Spacing.sm)
+    }
+
+    /// The list is alphabetical (context Project first), so the header says
+    /// what it shows rather than borrowing the mock's "Recent".
+    private var resultsHeader: some View {
+        Text(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Projects" : "Results")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Self.gutter + Spacing.md)
+            .padding(.bottom, Spacing.xs)
+            .accessibilityAddTraits(.isHeader)
     }
 
     @ViewBuilder
@@ -144,14 +186,15 @@ struct NewThreadSheet: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollView {
-                LazyVStack(spacing: 2) {
+                LazyVStack(spacing: Self.rowSpacing) {
                     ForEach(rows) { row in
                         resultRow(row)
                             .id(row.id)
                     }
                 }
                 .scrollTargetLayout()
-                .padding(Spacing.xs)
+                .padding(.horizontal, Self.gutter)
+                .padding(.vertical, Spacing.xs)
             }
             .scrollPosition(id: $scrolledProject, anchor: .center)
             .onChange(of: selectedProject) { scrolledProject = selectedProject }
@@ -161,25 +204,33 @@ struct NewThreadSheet: View {
     private func resultRow(_ row: NewThreadLauncherModel.Row) -> some View {
         let isSelected = selectedProject == row.id
         return HStack(spacing: Spacing.sm) {
+            StatusDot(reachability: appModel.reachability(of: row.id.connectionID))
             HighlightedText.title(row.option.project.name, ranges: row.nameRanges)
-                .font(.callout)
+                .font(.callout.weight(.medium))
+                .foregroundStyle(isSelected ? Color.white : Color.primary)
                 .lineLimit(1)
-            Spacer(minLength: Spacing.md)
-            Text(row.option.connectionName)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .layoutPriority(1)
             Text(row.option.project.defaultWorkingDirectory)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(isSelected ? Color.white.opacity(0.75) : Color.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .frame(maxWidth: 200, alignment: .trailing)
+            Spacer(minLength: Spacing.sm)
+            Text(row.option.connectionName)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(isSelected ? Color.white : Color.secondary)
+                .padding(.horizontal, Spacing.sm)
+                .padding(.vertical, 2)
+                .background(
+                    isSelected ? AnyShapeStyle(.white.opacity(0.2)) : AnyShapeStyle(Surface.raised),
+                    in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                )
         }
         .padding(.horizontal, Spacing.md)
-        .padding(.vertical, 7)
+        .frame(height: Self.rowHeight)
         .background {
-            RoundedRectangle(cornerRadius: Radius.control)
-                .fill(isSelected ? Color.accentColor.opacity(0.65) : .clear)
+            RoundedRectangle(cornerRadius: Radius.chip, style: .continuous)
+                .fill(isSelected ? Color.accentColor : .clear)
         }
         .contentShape(Rectangle())
         .onTapGesture { selectProject(row.id, in: [row]) }
@@ -196,7 +247,11 @@ struct NewThreadSheet: View {
 
     private var configurationRows: some View {
         VStack(alignment: .leading, spacing: Spacing.md) {
-            Grid(alignment: .topLeading, horizontalSpacing: Spacing.md, verticalSpacing: Spacing.md) {
+            Grid(
+                alignment: .leadingFirstTextBaseline,
+                horizontalSpacing: Spacing.md,
+                verticalSpacing: Spacing.lg
+            ) {
                 GridRow {
                     rowLabel("Agent")
                     VStack(alignment: .leading, spacing: Spacing.xs) {
@@ -234,15 +289,17 @@ struct NewThreadSheet: View {
                     .font(.callout)
             }
         }
-        .padding(Spacing.md)
+        .padding(.horizontal, Self.gutter)
+        .padding(.vertical, Spacing.lg)
     }
 
-    /// Fixed-width row labels keep the Agent and Directory cells aligned.
+    /// Fixed-width row labels keep the Agent and Directory cells aligned, and
+    /// trail toward the controls the way a macOS form's labels do. The Grid's
+    /// baseline alignment does the vertical work, so no nudging here.
     private func rowLabel(_ text: String) -> some View {
         Text(text)
             .foregroundStyle(.secondary)
-            .frame(width: 70, alignment: .leading)
-            .padding(.top, Spacing.xs)
+            .frame(width: 70, alignment: .trailing)
     }
 
     private func agentButton(_ agent: Agent, index: Int) -> some View {
@@ -250,32 +307,33 @@ struct NewThreadSheet: View {
         return Button {
             select(agent)
         } label: {
-            HStack(spacing: Spacing.xs) {
-                Image(systemName: agent.id.systemImage)
-                Text(agent.id.displayName)
+            HStack(spacing: Spacing.sm) {
+                // Label rather than a hand-spaced icon + Text: the system's
+                // own icon-to-title gap is what makes these read as one chip.
+                Label(agent.id.displayName, systemImage: agent.id.systemImage)
                 if let shortcut = shortcutLabel(at: index) {
                     Text(shortcut)
                         .font(.caption.monospaced().weight(.medium))
                         .foregroundStyle(isSelected ? .primary : .secondary)
                 }
             }
-            .padding(.horizontal, Spacing.sm)
-            .padding(.vertical, Spacing.xs)
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, Spacing.sm)
             .background {
-                RoundedRectangle(cornerRadius: Radius.control)
-                    .fill(isSelected ? Color.accentColor.opacity(0.35) : Color.primary.opacity(0.06))
+                RoundedRectangle(cornerRadius: Radius.chip, style: .continuous)
+                    .fill(isSelected ? Color.accentColor.opacity(0.35) : Surface.chip)
             }
             .overlay {
-                RoundedRectangle(cornerRadius: Radius.control)
+                RoundedRectangle(cornerRadius: Radius.chip, style: .continuous)
                     .stroke(
-                        isSelected ? Color.accentColor : Color.primary.opacity(0.12),
+                        isSelected ? Color.accentColor : Surface.chipBorder,
                         lineWidth: 1
                     )
             }
         }
         .buttonStyle(.plain)
         .disabled(!agent.available)
-        .opacity(agent.available ? 1 : 0.5)
+        .opacity(agent.available ? 1 : Dimming.unavailable)
         .accessibilityLabel(agentAccessibilityLabel(agent, index: index))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }

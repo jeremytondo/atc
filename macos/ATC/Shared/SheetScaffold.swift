@@ -14,17 +14,22 @@ struct SheetScaffold<Content: View>: View {
     /// Grouped-Form content is the default; list-style sheets (the folder
     /// browser) pass false and lay out their own content edge-to-edge.
     var wrapsContentInForm = true
+    /// Search-first launchers hide the title header — their search field is
+    /// the visual anchor and the title would just push it down.
+    var showsHeader = true
     var onCancel: () -> Void
     var onSubmit: () -> Void
     @ViewBuilder var content: () -> Content
 
     var body: some View {
         VStack(spacing: 0) {
-            Label(title, systemImage: systemImage)
-                .font(.headline)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(Spacing.md)
-            Divider()
+            if showsHeader {
+                Label(title, systemImage: systemImage)
+                    .font(.headline)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(Spacing.md)
+                Divider()
+            }
             if wrapsContentInForm {
                 Form(content: content)
                     .formStyle(.grouped)
