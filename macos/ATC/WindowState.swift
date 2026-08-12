@@ -335,6 +335,10 @@ final class WindowState {
         Task {
             await appModel.markThreadViewed(ref)
             markingViewed.remove(ref)
+            // A finish that landed during the request re-armed unread while
+            // the dedup guard was refusing a second stamp — re-check so the
+            // displayed thread never sticks on "Done".
+            markSelectedThreadViewedIfNeeded(in: appModel)
         }
     }
 

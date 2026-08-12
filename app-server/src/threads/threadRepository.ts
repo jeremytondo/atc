@@ -125,8 +125,12 @@ export class ThreadRepository extends Context.Service<
      * re-stamps.
      */
     readonly markFinished: (id: string) => Effect.Effect<void>
-    /** Stamp the viewed marker; callers hold the record (see rename). */
-    readonly markViewed: (id: string) => Effect.Effect<ThreadRecord>
+    /**
+     * Stamp the viewed marker. None when the row vanished — clients stamp
+     * automatically on every view, so a view racing a delete is an
+     * expected condition (a typed 404), not a bug.
+     */
+    readonly markViewed: (id: string) => Effect.Effect<Option.Option<ThreadRecord>>
     /** Set or clear the pin marker; callers hold the record (see rename). */
     readonly setPinned: (id: string, pinned: boolean) => Effect.Effect<ThreadRecord>
     /** Set or clear the archive marker; callers hold the record (see rename). */
@@ -361,7 +365,7 @@ export const layer = Layer.effect(ThreadRepository)(
       markViewed: (id) =>
         Effect.suspend(() => markViewedRows({ id, viewed_at: new Date().toISOString() })).pipe(
           Effect.orDie,
-          Effect.flatMap(requireFirst("markViewed")),
+          Effect.map(firstRecord),
         ),
       setPinned: (id, pinned) =>
         Effect.suspend(() => {

@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest"
 import { BunHttpServer } from "@effect/platform-bun"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Option } from "effect"
 import { HttpApiTest } from "effect/unstable/httpapi"
 import { mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -186,6 +186,11 @@ describe("/api/v1/threads", () => {
         assert.strictEqual(error._tag, "ThreadNotFound")
         assert.strictEqual(error.threadId, "missing")
       }
+      // The viewed stamp racing a delete past the service's require is the
+      // expected condition the repository models as None (mapped to the 404
+      // above), never a defect.
+      const repository = yield* ThreadRepository
+      assert.isTrue(Option.isNone(yield* repository.markViewed("missing")))
     }).pipe(Effect.provide(TestLayer)),
   )
 
