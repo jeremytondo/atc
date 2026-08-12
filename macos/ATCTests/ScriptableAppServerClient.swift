@@ -67,14 +67,16 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
             workingDirectory: String
         ) -> Terminal {
             let now = tick()
+            let id = nextID("trm")
             return Terminal(
-                id: nextID("trm"),
+                id: id,
                 projectId: projectId,
                 threadId: threadId,
                 name: name,
                 command: command,
                 initialWorkingDirectory: workingDirectory,
                 status: .live,
+                sessionName: String(format: "atc-%032x", idCounter),
                 createdAt: now,
                 updatedAt: now
             )
@@ -709,6 +711,7 @@ enum Fixtures {
         command: [String]? = nil,
         workingDirectory: String = "/home/dev/app",
         status: TerminalStatus = .live,
+        sessionName: String = "atc-00000000000000000000000000000000",
         createdAt: Date = epoch
     ) -> Terminal {
         Terminal(
@@ -719,6 +722,7 @@ enum Fixtures {
             command: command,
             initialWorkingDirectory: workingDirectory,
             status: status,
+            sessionName: sessionName,
             createdAt: createdAt,
             updatedAt: createdAt,
             endedAt: status == .ended ? createdAt : nil

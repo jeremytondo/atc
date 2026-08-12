@@ -1522,6 +1522,10 @@
           "status": {
             "$ref": "#/components/schemas/TerminalStatus"
           },
+          "sessionName": {
+            "type": "string",
+            "description": "Server-derived zmx session name backing this terminal (exists as a live session only while status is live). Clients display it and never re-derive it."
+          },
           "createdAt": {
             "type": "string",
             "description": "Creation time.",
@@ -1543,6 +1547,7 @@
           "projectId",
           "initialWorkingDirectory",
           "status",
+          "sessionName",
           "createdAt",
           "updatedAt"
         ],

@@ -158,6 +158,7 @@ nonisolated struct PreviewAppServerClient: APIProtocol {
                 threadId: "0192f4b0-0000-7000-8000-000000000001",
                 initialWorkingDirectory: Self.atelier.defaultWorkingDirectory,
                 status: .live,
+                sessionName: "atc-0192f4c0000070008000000000000001",
                 createdAt: Date(timeIntervalSinceNow: -220_000),
                 updatedAt: Date(timeIntervalSinceNow: -30)
             ),
@@ -167,6 +168,7 @@ nonisolated struct PreviewAppServerClient: APIProtocol {
                 name: "Server logs",
                 initialWorkingDirectory: Self.atelier.defaultWorkingDirectory,
                 status: .live,
+                sessionName: "atc-0192f4c0000070008000000000000002",
                 createdAt: Date(timeIntervalSinceNow: -5_000),
                 updatedAt: Date(timeIntervalSinceNow: -60)
             ),
@@ -176,6 +178,7 @@ nonisolated struct PreviewAppServerClient: APIProtocol {
                 command: ["lazygit"],
                 initialWorkingDirectory: Self.atelier.defaultWorkingDirectory,
                 status: .ended,
+                sessionName: "atc-0192f4c0000070008000000000000003",
                 createdAt: Date(timeIntervalSinceNow: -900),
                 updatedAt: Date(timeIntervalSinceNow: -600),
                 endedAt: Date(timeIntervalSinceNow: -600)
@@ -292,13 +295,15 @@ nonisolated struct PreviewAppServerClient: APIProtocol {
     func createTerminal(_ input: Operations.CreateTerminal.Input) async throws -> Operations.CreateTerminal.Output {
         guard case .json(let request) = input.body else { throw PreviewUnavailable() }
         let project = try require(projects.first { $0.id == request.projectId })
+        let id = Self.newID()
         return .ok(.init(body: .json(Terminal(
-            id: Self.newID(),
+            id: id,
             projectId: project.id,
             name: request.name,
             command: request.command,
             initialWorkingDirectory: request.workingDirectory ?? project.defaultWorkingDirectory,
             status: .live,
+            sessionName: "atc-\(id.replacingOccurrences(of: "-", with: ""))",
             createdAt: Date(),
             updatedAt: Date()
         ))))
@@ -401,12 +406,14 @@ nonisolated struct PreviewAppServerClient: APIProtocol {
            let terminal = terminals.first(where: { $0.id == linked }) {
             return .ok(.init(body: .json(terminal)))
         }
+        let id = Self.newID()
         return .ok(.init(body: .json(Terminal(
-            id: Self.newID(),
+            id: id,
             projectId: thread.projectId,
             threadId: thread.id,
             initialWorkingDirectory: thread.workingDirectory,
             status: .live,
+            sessionName: "atc-\(id.replacingOccurrences(of: "-", with: ""))",
             createdAt: Date(),
             updatedAt: Date()
         ))))

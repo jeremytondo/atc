@@ -188,6 +188,10 @@ export const Terminal = Schema.Struct({
     description: "Canonical directory the terminal was launched in (immutable).",
   }),
   status: TerminalStatus,
+  sessionName: Schema.String.annotate({
+    description:
+      "Server-derived zmx session name backing this terminal (exists as a live session only while status is live). Clients display it and never re-derive it.",
+  }),
   createdAt: timestamp("Creation time."),
   updatedAt: timestamp("Last update time."),
   endedAt: Schema.optionalKey(

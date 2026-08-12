@@ -58,6 +58,7 @@ export type Terminal = typeof TerminalSchema.Type
 const toTerminal = (record: TerminalRecord): Terminal => ({
   ...record,
   status: record.status === "ended" ? "ended" : "live",
+  sessionName: sessionNameForTerminalId(record.id),
 })
 
 export class Terminals extends Context.Service<
