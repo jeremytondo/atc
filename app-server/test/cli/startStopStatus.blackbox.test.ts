@@ -38,6 +38,7 @@ afterAll(() => {
 
 const sandbox = makeFakeZmxSandbox()
 const env = isolatedEnv(scratch, { ATC_ZMX_EXECUTABLE: sandbox.wrapper })
+const logFile = join(env.XDG_STATE_HOME, "atc", "atc.log")
 const pidFile = join(env.XDG_STATE_HOME, "atc", "atc.pid")
 const cli = (...args: Array<string>) =>
   runCli([process.execPath, "src/main.ts"], args, appServerRoot, env)
@@ -82,6 +83,15 @@ describe("atc start / stop / status (black box)", () => {
     const running = await cli("status")
     expect(running.exitCode).toBe(0)
     expect(running.stdout).toContain(`running (pid ${record.pid})`)
+    expect(running.stdout).toContain(`  web ui    http://127.0.0.1:${port}/`)
+    expect(running.stdout).toContain(
+      `  api       http://127.0.0.1:${port}/api/v1 (openapi: http://127.0.0.1:${port}/openapi.json)`,
+    )
+    expect(running.stdout).toContain(
+      "  auth      loopback clients only; no token needed (bind 127.0.0.1)",
+    )
+    expect(running.stdout).toContain(`  log       ${logFile}`)
+    expect(running.stdout).toContain(`  pid-file  ${pidFile}`)
 
     const stopped = await cli("stop")
     expect(stopped.exitCode).toBe(0)

@@ -267,5 +267,18 @@ export const status = Command.make("status", {}, () =>
       )
     }
     yield* Console.log(`running (pid ${record.pid}) on ${url}`)
+    // The ui/api lines are for pasting into a browser or client, so wildcard
+    // binds report the loopback address that actually connects; the first
+    // line keeps reporting the bind itself.
+    const reachableUrl = `http://${Server.hostForUrl(probeHost)}:${record.port}`
+    yield* Console.log(`  web ui    ${reachableUrl}/`)
+    yield* Console.log(`  api       ${reachableUrl}/api/v1 (openapi: ${reachableUrl}/openapi.json)`)
+    yield* Console.log(
+      Cli.probeNeedsToken(record.bind)
+        ? `  auth      open on ${record.bind}; non-loopback clients need the bearer token (${config.tokenFile})`
+        : `  auth      loopback clients only; no token needed (bind ${record.bind})`,
+    )
+    yield* Console.log(`  log       ${config.logFile}`)
+    yield* Console.log(`  pid-file  ${config.pidFile}`)
   }).pipe(Cli.withSettledConfig("atc status")),
 ).pipe(Command.withDescription("Report background App Server status"))
