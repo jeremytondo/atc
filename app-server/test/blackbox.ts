@@ -100,8 +100,11 @@ export const runCli = async (
 }
 
 // Bind-then-release to pick a port for the child. Racy in principle (another
-// process could grab it in between), but --port 0 is deliberately rejected by
-// validation, so this is the practical option; stderr is surfaced on failure.
+// process could grab it in between — Linux hands the just-released port to
+// the next bind(0) LIFO, so concurrent spawns make the race real, not
+// theoretical), but --port 0 is deliberately rejected by validation, so this
+// is the practical option. Spawns that must survive the race go through
+// `spawnServeHealthy`, which retries on a fresh pick when the child loses.
 export const freePort = async (): Promise<number> => {
   const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") })
   const port = probe.port!
@@ -141,17 +144,60 @@ export const rawStatus = (
     }).catch(reject)
   })
 
+/** The spawned server exited before answering healthy — the shape a lost
+ * freePort claim race leaves behind (`spawnServeHealthy` retries on it). */
+export class ServerExitedError extends Error {}
+
 export const waitForHealth = async (base: string, proc: Bun.Subprocess): Promise<Response> => {
   for (let attempt = 0; attempt < 100; attempt++) {
-    try {
-      return await fetch(`${base}/api/v1/health`)
-    } catch {
-      await Bun.sleep(50)
+    // A child that died can never become healthy — and another process may
+    // already answer on its port (the freePort claim race), so waiting
+    // longer would end with a stranger's response. Fail fast with the
+    // child's own diagnostic.
+    if (proc.exitCode !== null || proc.signalCode !== null) {
+      const stderr = await new Response(proc.stderr as ReadableStream).text()
+      throw new ServerExitedError(
+        `server at ${base} exited before becoming healthy; stderr:\n${stderr}`,
+      )
     }
+    try {
+      // Only OUR healthy server returns 2xx here; an interloper on a stolen
+      // port answers 404 and must read as "not up yet", never as the result.
+      const response = await fetch(`${base}/api/v1/health`)
+      if (response.ok) return response
+    } catch {
+      // Not accepting connections yet.
+    }
+    await Bun.sleep(50)
   }
   proc.kill()
   const stderr = await new Response(proc.stderr as ReadableStream).text()
   throw new Error(`server at ${base} never became healthy; stderr:\n${stderr}`)
+}
+
+/**
+ * Pick a free port, spawn a server on it via `spawn`, and wait until that
+ * child answers healthy. A child that exits instead (it lost the freePort
+ * claim race to a concurrent spawn) is respawned on a fresh pick; a child
+ * that hangs without dying is a real bug and fails immediately.
+ */
+export const spawnServeHealthy = async (
+  spawn: (port: number) => Bun.Subprocess,
+  attempts = 3,
+): Promise<{ proc: Bun.Subprocess; port: number; base: string; health: Response }> => {
+  for (let attempt = 0; ; attempt++) {
+    const port = await freePort()
+    const proc = spawn(port)
+    const base = `http://127.0.0.1:${port}`
+    try {
+      const health = await waitForHealth(base, proc)
+      return { proc, port, base, health }
+    } catch (error) {
+      proc.kill()
+      await proc.exited
+      if (!(error instanceof ServerExitedError) || attempt >= attempts - 1) throw error
+    }
+  }
 }
 
 /** POST a JSON body and return the decoded JSON response (asserting 2xx). */

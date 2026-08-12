@@ -5,12 +5,11 @@ import { afterAll, describe, expect, test } from "vitest"
 import {
   appServerRoot,
   cleanupTempDirs,
-  freePort,
   isolatedEnv,
   rawStatus,
   runCli,
   spawnServe,
-  waitForHealth,
+  spawnServeHealthy,
 } from "../blackbox.ts"
 import { makeFakeZmxSandbox } from "../testLayers.ts"
 
@@ -40,12 +39,15 @@ describe("atc serve (black box)", () => {
   test.each(["SIGTERM", "SIGINT"] as const)(
     "serves both endpoints and shuts down cleanly on %s",
     async (signal) => {
-      const port = await freePort()
-      const base = `http://127.0.0.1:${port}`
-      const env = serveEnv()
-      const proc = spawnFromSource(port, env)
+      // The env is rebuilt per spawn attempt: each serveEnv() allocates a
+      // fresh state home, and the log assertion below must read the one the
+      // surviving server actually wrote to.
+      let env!: ReturnType<typeof serveEnv>
+      const { proc, port, base, health } = await spawnServeHealthy((attemptPort) => {
+        env = serveEnv()
+        return spawnFromSource(attemptPort, env)
+      })
       try {
-        const health = await waitForHealth(base, proc)
         expect(health.status).toBe(200)
         expect(await health.json()).toEqual({ status: "ok" })
 
@@ -92,12 +94,12 @@ describe("atc serve (black box)", () => {
   // (`tailscale serve` preserves the incoming Host) and a DNS-rebinding
   // attempt present, so the token is required for it by design.
   test("generates the auth token on start and enforces rotation live", async () => {
-    const port = await freePort()
-    const env = serveEnv()
-    const proc = spawnFromSource(port, env)
+    let env!: ReturnType<typeof serveEnv>
+    const { proc, port } = await spawnServeHealthy((attemptPort) => {
+      env = serveEnv()
+      return spawnFromSource(attemptPort, env)
+    })
     try {
-      await waitForHealth(`http://127.0.0.1:${port}`, proc)
-
       const tokenFile = `${env.XDG_DATA_HOME}/atc/auth-token`
       expect(statSync(tokenFile).mode & 0o777).toBe(0o600)
       const token = readFileSync(tokenFile, "utf8").trim()
@@ -128,16 +130,44 @@ describe("atc serve (black box)", () => {
   // answers (0.0.0.0 includes it), so local clients keep working. Exercises
   // the serve.ts flag-resolution path end to end.
   test("serves over loopback when bound to 0.0.0.0 via --bind", async () => {
-    const port = await freePort()
-    const base = `http://127.0.0.1:${port}`
-    const proc = Bun.spawn(
-      [process.execPath, "src/main.ts", "serve", "--port", String(port), "--bind", "0.0.0.0"],
-      { cwd: appServerRoot, env: serveEnv(), stdout: "pipe", stderr: "pipe" },
+    const { proc, health } = await spawnServeHealthy((attemptPort) =>
+      Bun.spawn(
+        [
+          process.execPath,
+          "src/main.ts",
+          "serve",
+          "--port",
+          String(attemptPort),
+          "--bind",
+          "0.0.0.0",
+        ],
+        { cwd: appServerRoot, env: serveEnv(), stdout: "pipe", stderr: "pipe" },
+      ),
     )
     try {
-      const health = await waitForHealth(base, proc)
       expect(health.status).toBe(200)
       expect(await health.json()).toEqual({ status: "ok" })
+    } finally {
+      proc.kill()
+      await proc.exited
+    }
+  }, 30_000)
+
+  // The freePort claim race, deterministically: a first child that dies at
+  // startup (as one that lost its port does) costs a retry on a fresh pick,
+  // not the test.
+  test("spawnServeHealthy respawns when the child exits before becoming healthy", async () => {
+    let attempts = 0
+    const { proc, health } = await spawnServeHealthy((port) => {
+      attempts++
+      if (attempts === 1) {
+        return Bun.spawn(["sh", "-c", "exit 1"], { stdout: "pipe", stderr: "pipe" })
+      }
+      return spawnFromSource(port, serveEnv())
+    })
+    try {
+      expect(attempts).toBe(2)
+      expect(health.status).toBe(200)
     } finally {
       proc.kill()
       await proc.exited

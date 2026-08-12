@@ -28,11 +28,10 @@ import * as Zmx from "../src/terminals/zmxAdapter.ts"
 import { V1Handlers } from "../src/api/handlers.ts"
 import {
   appServerRoot,
-  freePort,
   isolatedEnv,
   spawnServe,
+  spawnServeHealthy,
   trackTempDir,
-  waitForHealth,
 } from "./blackbox.ts"
 import { TestBuildInfoLayer } from "./testBuildInfo.ts"
 import { makeFakeAdapter } from "./terminals/fakeTerminalAdapter.ts"
@@ -202,15 +201,19 @@ const fakeZmxFixture = fileURLToPath(new URL("fixtures/fake-zmx.ts", import.meta
  */
 export const startFakeZmxServer = async (extraEnv: Record<string, string> = {}) => {
   const sandbox = makeFakeZmxSandbox()
-  const port = await freePort()
-  const env = isolatedEnv(sandbox.base, {
-    ATC_PORT: String(port),
-    ATC_ZMX_EXECUTABLE: sandbox.wrapper,
-    ...extraEnv,
+  // The env is rebuilt per attempt: it carries the port, and each isolatedEnv
+  // call allocates a fresh state home, which must be the one the surviving
+  // server actually used.
+  let env: ReturnType<typeof isolatedEnv>
+  const { proc, port, base } = await spawnServeHealthy((attemptPort) => {
+    env = isolatedEnv(sandbox.base, {
+      ATC_PORT: String(attemptPort),
+      ATC_ZMX_EXECUTABLE: sandbox.wrapper,
+      ...extraEnv,
+    })
+    return spawnServe([process.execPath, "src/main.ts"], attemptPort, appServerRoot, env)
   })
-  const proc = spawnServe([process.execPath, "src/main.ts"], port, appServerRoot, env)
-  await waitForHealth(`http://127.0.0.1:${port}`, proc)
-  return { base: `http://127.0.0.1:${port}`, port, proc, sandbox, env }
+  return { base, port, proc, sandbox, env: env! }
 }
 
 /** Run `use` against a fake-zmx `atc serve`, always reaping the process. */

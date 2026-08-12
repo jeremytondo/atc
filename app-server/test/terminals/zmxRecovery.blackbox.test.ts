@@ -5,11 +5,11 @@ import { afterAll, describe, expect, test } from "vitest"
 import { sessionNameForTerminalId } from "../../src/terminals/terminalAdapter.ts"
 import {
   compiledBinaryPath,
-  freePort,
   isolatedEnv,
   makeTerminal,
   openSocket,
   spawnServe,
+  spawnServeHealthy,
   waitForHealth,
   waitUntil,
 } from "../blackbox.ts"
@@ -38,14 +38,19 @@ describe.skipIf(!enabled)("terminal restart recovery (compiled, real zmx)", () =
     ).toBe(true)
     expect(Bun.which("zmx"), "zmx not found on PATH").not.toBeNull()
 
-    const port = await freePort()
-    const env = isolatedEnv(scratch, { ATC_PORT: String(port) })
+    // The env is rebuilt per spawn attempt: it carries the port, and each
+    // isolatedEnv call allocates a fresh state home, which must be the one
+    // the surviving server actually used.
+    let env!: ReturnType<typeof isolatedEnv>
+    const first = await spawnServeHealthy((attemptPort) => {
+      env = isolatedEnv(scratch, { ATC_PORT: String(attemptPort) })
+      return spawnServe([compiledBinaryPath], attemptPort, scratch, env)
+    })
+    const { port, base } = first
     const socketDir = join(env.XDG_STATE_HOME, "atc", "terminals")
-    const base = `http://127.0.0.1:${port}`
 
-    let server = spawnServe([compiledBinaryPath], port, scratch, env)
+    let server = first.proc
     try {
-      await waitForHealth(base, server)
       const terminal = await makeTerminal(base)
       const sessionName = sessionNameForTerminalId(terminal["id"] ?? "")
       expect(zmxList(socketDir)).toContain(sessionName)
