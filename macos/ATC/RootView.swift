@@ -33,9 +33,12 @@ struct RootView: View {
         .toolbar(removing: .title)
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         .toolbar {
-            ToolbarItem(placement: .principal) {
+            // Plain text, not a control: hide the glass capsule the toolbar
+            // would otherwise draw behind the title.
+            ToolbarItem(placement: .navigation) {
                 contextTitle
             }
+            .sharedBackgroundVisibility(.hidden)
             // The design's exceptional-state surface: needs-input and
             // Connection-unreachable live here; healthy states show nothing.
             ToolbarItem(placement: .status) {
@@ -86,22 +89,27 @@ struct RootView: View {
                 .font(.headline)
         case .thread(let ref):
             if let thread = appModel.thread(for: ref) {
-                Label {
-                    Text("\(thread.displayName) · \(projectName(for: ref.connectionID, projectID: thread.projectId))")
-                        .font(.headline)
-                        .lineLimit(1)
-                } icon: {
-                    Image(systemName: thread.agentId.systemImage)
-                        .accessibilityLabel(thread.agentId.displayName)
-                }
+                titleText(
+                    project: projectName(for: ref.connectionID, projectID: thread.projectId),
+                    name: thread.displayName
+                )
             }
         case .terminal(let ref):
             if let terminal = appModel.terminal(for: ref) {
-                Label(terminal.displayName, systemImage: "terminal")
-                    .font(.headline)
-                    .lineLimit(1)
+                titleText(
+                    project: projectName(for: ref.connectionID, projectID: terminal.projectId),
+                    name: terminal.displayName
+                )
             }
         }
+    }
+
+    private func titleText(project: String, name: String) -> some View {
+        Text("\(Text("\(project):").fontWeight(.semibold)) \(name)")
+            .fontWeight(.regular)
+            .font(.headline)
+            .lineLimit(1)
+            .truncationMode(.tail)
     }
 
     @ViewBuilder
