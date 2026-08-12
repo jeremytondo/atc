@@ -39,10 +39,30 @@ type SessionRecord = {
   diesAt?: number
 }
 
+// Concurrent fake-zmx processes share the state directory (the server's
+// reconciliation `list` races `attach`/`kill`), so records are replaced
+// atomically — write a dot-prefixed temp file, then rename — and readers
+// treat a file that vanished mid-scan as a session that is already gone.
+const writeRecord = (record: SessionRecord) => {
+  const temp = path.join(stateDir, `.${record.name}.${process.pid}.tmp`)
+  fs.writeFileSync(temp, JSON.stringify(record))
+  fs.renameSync(temp, sessionFile(record.name))
+}
+
+const readRecord = (name: string): SessionRecord | undefined => {
+  try {
+    return JSON.parse(fs.readFileSync(sessionFile(name), "utf8")) as SessionRecord
+  } catch (error) {
+    if ((error as { code?: string }).code === "ENOENT") return undefined
+    throw error
+  }
+}
+
 const readSessions = (): Array<SessionRecord> =>
   fs
     .readdirSync(stateDir)
-    .map((entry) => JSON.parse(fs.readFileSync(sessionFile(entry), "utf8")) as SessionRecord)
+    .filter((entry) => !entry.startsWith("."))
+    .flatMap((entry) => readRecord(entry) ?? [])
     .filter((record) => {
       if (record.diesAt !== undefined && record.diesAt <= Date.now()) {
         fs.rmSync(sessionFile(record.name), { force: true })
@@ -97,19 +117,16 @@ switch (command) {
           ATC_ENDPOINT: process.env["ATC_ENDPOINT"],
         },
       }
-      fs.writeFileSync(sessionFile(name), JSON.stringify(record))
+      writeRecord(record)
     }
     if (mode === "exit") process.exit(0)
     // Attached client: echo terminal input back until detached (killed) or
     // the session dies — like zmx, a client sees EOF when its daemon goes.
     process.stdout.write("attached\n")
     const watcher = setInterval(() => {
-      try {
-        const record = JSON.parse(fs.readFileSync(sessionFile(name), "utf8")) as SessionRecord
-        if (record.diesAt !== undefined && record.diesAt <= Date.now()) process.exit(0)
-      } catch {
-        process.exit(0)
-      }
+      const record = readRecord(name)
+      if (record === undefined) process.exit(0)
+      if (record.diesAt !== undefined && record.diesAt <= Date.now()) process.exit(0)
     }, 50)
     watcher.unref?.()
     const decoder = new TextDecoder()
@@ -121,10 +138,12 @@ switch (command) {
   case "kill": {
     if (name === "") process.exit(2)
     // Like zmx: exit codes prove nothing, and death happens after return.
-    if (process.env["FAKE_ZMX_KILL_MODE"] !== "ignore" && fs.existsSync(sessionFile(name))) {
-      const record = JSON.parse(fs.readFileSync(sessionFile(name), "utf8")) as SessionRecord
-      record.diesAt = Date.now() + Number(process.env["FAKE_ZMX_KILL_MS"] ?? "0")
-      fs.writeFileSync(sessionFile(name), JSON.stringify(record))
+    if (process.env["FAKE_ZMX_KILL_MODE"] !== "ignore") {
+      const record = readRecord(name)
+      if (record !== undefined) {
+        record.diesAt = Date.now() + Number(process.env["FAKE_ZMX_KILL_MS"] ?? "0")
+        writeRecord(record)
+      }
     }
     process.exit(0)
   }
