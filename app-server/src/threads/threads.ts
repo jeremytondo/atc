@@ -233,8 +233,10 @@ export const layerWith = (options: ThreadsOptions) =>
        * Server-derived so every client renders one boolean; the raw stamps
        * stay server-only (like confirmedAt). Archived rows are never unread
        * — archive is a deliberate put-away, not something to surface. The
-       * strict `<` breaks a same-millisecond finish/view tie toward "read":
-       * an indicator that under-fires once beats one that sticks.
+       * strict `<` is exact, not a tie-break: the repository lands each
+       * stamp strictly ordered against the opposing one, so write order —
+       * never clock resolution — decides unread (a finish and a view in the
+       * same millisecond once made a later finish invisible forever).
        */
       const isUnread = (record: ThreadRecord): boolean =>
         record.archivedAt === undefined &&

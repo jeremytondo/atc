@@ -122,13 +122,15 @@ export class ThreadRepository extends Context.Service<
      * Stamp the turn-finished marker (an observed busy→idle drop). Tolerant
      * in the style of `confirm`: fed by the live status feed, which can race
      * a delete — a vanished row is a no-op. Unlike `confirm`, every finish
-     * re-stamps.
+     * re-stamps, and the stamp lands strictly after the current viewed
+     * stamp even inside one millisecond (see the marker SQL).
      */
     readonly markFinished: (id: string) => Effect.Effect<void>
     /**
-     * Stamp the viewed marker. None when the row vanished — clients stamp
-     * automatically on every view, so a view racing a delete is an
-     * expected condition (a typed 404), not a bug.
+     * Stamp the viewed marker, at or after the current finished stamp even
+     * inside one millisecond (see the marker SQL). None when the row
+     * vanished — clients stamp automatically on every view, so a view
+     * racing a delete is an expected condition (a typed 404), not a bug.
      */
     readonly markViewed: (id: string) => Effect.Effect<Option.Option<ThreadRecord>>
     /** Set or clear the pin marker; callers hold the record (see rename). */
@@ -232,12 +234,26 @@ export const layer = Layer.effect(ThreadRepository)(
       `,
     })
 
+    // The finish/viewed stamps are millisecond ISO strings, so two writes in
+    // the same millisecond would tie and `unread` (viewed < finished) would
+    // misread write order. Each writer therefore lands strictly ordered
+    // against the opposing stamp: a finish lands strictly after the current
+    // viewed stamp (bumped 1ms past it when the clock has not moved on), and
+    // a view lands at or after the current finish stamp. Write order — which
+    // the single connection serializes — decides unread, never clock
+    // resolution.
     const markFinishedRows = SqlSchema.void({
       Request: Schema.Struct({ id: Schema.String, finished_at: Schema.String }),
       execute: (patch) => sql`
         UPDATE threads SET
-          last_finished_at = ${patch.finished_at},
-          updated_at = ${patch.finished_at}
+          last_finished_at = MAX(
+            ${patch.finished_at},
+            COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', last_viewed_at, '+0.001 seconds'), '')
+          ),
+          updated_at = MAX(
+            ${patch.finished_at},
+            COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', last_viewed_at, '+0.001 seconds'), '')
+          )
         WHERE id = ${patch.id}
       `,
     })
@@ -247,8 +263,8 @@ export const layer = Layer.effect(ThreadRepository)(
       Result: ThreadRow,
       execute: (patch) => sql`
         UPDATE threads SET
-          last_viewed_at = ${patch.viewed_at},
-          updated_at = ${patch.viewed_at}
+          last_viewed_at = MAX(${patch.viewed_at}, COALESCE(last_finished_at, '')),
+          updated_at = MAX(${patch.viewed_at}, COALESCE(last_finished_at, ''))
         WHERE id = ${patch.id}
         RETURNING *
       `,
