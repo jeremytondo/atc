@@ -6,6 +6,7 @@ import SwiftUI
 struct ThreadInspectorView: View {
     let thread: ATCThread
     let projectName: String
+    let sessionName: String?
 
     var body: some View {
         Form {
@@ -21,6 +22,13 @@ struct ThreadInspectorView: View {
                     Text(thread.workingDirectory)
                         .font(.callout.monospaced())
                         .textSelection(.enabled)
+                }
+                if let sessionName {
+                    LabeledContent("zmx Session") {
+                        Text(sessionName)
+                            .font(.callout.monospaced())
+                            .textSelection(.enabled)
+                    }
                 }
                 LabeledContent("Activity", value: thread.detailLabel)
             }

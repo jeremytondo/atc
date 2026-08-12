@@ -156,9 +156,13 @@ struct RootView: View {
     @ViewBuilder
     private var inspectorContent: some View {
         if let ref = selectedThread, let thread = appModel.thread(for: ref) {
+            let terminal = thread.linkedTerminalId.flatMap { id in
+                appModel.terminal(for: TerminalRef(connectionID: ref.connectionID, terminalID: id))
+            }
             ThreadInspectorView(
                 thread: thread,
-                projectName: projectName(for: ref.connectionID, projectID: thread.projectId)
+                projectName: projectName(for: ref.connectionID, projectID: thread.projectId),
+                sessionName: terminal?.isLive == true ? terminal?.sessionName : nil
             )
             .inspectorColumnWidth(min: 260, ideal: 320)
         }

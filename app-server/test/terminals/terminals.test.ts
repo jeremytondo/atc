@@ -37,6 +37,7 @@ describe("Terminals service", () => {
         command: ["bun", "run", "dev"],
       })
       assert.strictEqual(created.status, "live")
+      assert.strictEqual(created.sessionName, sessionNameForTerminalId(created.id))
       assert.strictEqual(created.name, "build")
       assert.deepStrictEqual(created.command, ["bun", "run", "dev"])
       assert.strictEqual(created.initialWorkingDirectory, project.defaultWorkingDirectory)
