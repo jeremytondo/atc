@@ -345,7 +345,10 @@ struct TerminalReconnectTests {
             eventStreamFactory: { _, _ in ScriptedEventStream.inert() }
         )
         let runtime = try #require(model.runtime(id: record.id))
-        await runtime.refresh()
+        // Settle the runtime's first-contact probe instead of refreshing
+        // manually: only the newest in-flight refresh applies, so a manual
+        // refresh racing the probe can be discarded and return early.
+        await settle(until: { runtime.terminals.isResolved })
         let terminal = try #require(runtime.terminals.terminal(id: "trm_live"))
         model.attachIfNeeded(to: terminal, connectionID: record.id)
         let ref = TerminalRef(connectionID: record.id, terminalID: terminal.id)

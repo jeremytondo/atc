@@ -133,7 +133,7 @@ struct NavigatorActionButton: View {
 
 /// One entry in a `NavigatorDropdown` menu.
 enum NavigatorDropdownEntry {
-    case item(title: String, isSelected: Bool, action: () -> Void)
+    case item(title: String, isSelected: Bool, action: @MainActor () -> Void)
     case separator
 }
 
@@ -199,11 +199,13 @@ struct NavigatorDropdown<Label: View>: View {
     }
 
     /// NSMenuItem needs a target/selector pair; this carries the closure
-    /// and targets itself.
-    private final class ClosureMenuItem: NSMenuItem {
-        private let handler: () -> Void
+    /// and targets itself. Nonisolated to match NSMenuItem's initializers
+    /// (Swift 6 rejects isolation-narrowing overrides); the handler stays
+    /// main-actor because menu actions always fire there.
+    private nonisolated final class ClosureMenuItem: NSMenuItem {
+        private let handler: @MainActor () -> Void
 
-        init(title: String, handler: @escaping () -> Void) {
+        init(title: String, handler: @escaping @MainActor () -> Void) {
             self.handler = handler
             super.init(title: title, action: #selector(invoke), keyEquivalent: "")
             target = self
@@ -214,7 +216,7 @@ struct NavigatorDropdown<Label: View>: View {
             fatalError("not used")
         }
 
-        @objc private func invoke() {
+        @objc @MainActor private func invoke() {
             handler()
         }
     }

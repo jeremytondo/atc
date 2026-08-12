@@ -151,7 +151,10 @@ struct KeyboardMonitorHost: View {
             router.heldModifiers = []
         }
 
-        deinit {
+        // Isolated so the safety-net cleanup can touch main-actor state; the
+        // coordinator's last reference is always dropped on the main actor,
+        // so this never actually schedules a hop.
+        isolated deinit {
             if let monitor { NSEvent.removeMonitor(monitor) }
             if let flagsMonitor { NSEvent.removeMonitor(flagsMonitor) }
             for observer in observers {

@@ -142,18 +142,21 @@ struct KeyboardRouterTests {
 
     @Test("suspension forwards registered bindings until routing resumes")
     func suspension() throws {
-        var isSuspended = true
+        // Reference box: the router's isSuspended closure is implicitly
+        // Sendable (@MainActor), so it cannot capture a mutable local.
+        final class Flag { var value = true }
+        let suspended = Flag()
         var executions: [CommandID] = []
         let router = WindowKeyboardRouter(keymap: try keymap()) {
             executions.append($0)
             return .available
         }
-        router.isSuspended = { isSuspended }
+        router.isSuspended = { suspended.value }
         let refresh = try stroke("cmd+r")
 
         #expect(!router.handle(refresh, isRepeat: false))
         #expect(executions.isEmpty)
-        isSuspended = false
+        suspended.value = false
         #expect(router.handle(refresh, isRepeat: false))
         #expect(executions == [.refresh])
     }

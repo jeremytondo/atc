@@ -28,7 +28,7 @@ enum SidebarShortcuts {
     /// The triggers this scheme owns, named as the keymap resolver reports
     /// them. These are not keymap commands, so a user binding would collide
     /// silently unless the resolver reserves them from here.
-    nonisolated static let reservedTriggers: [KeyStroke: String] = {
+    static let reservedTriggers: [KeyStroke: String] = {
         var triggers: [KeyStroke: String] = [:]
         for slot in 1...slotCount {
             triggers[KeyStroke(key: "\(slot)", modifiers: [.command])] = "Thread Shortcuts"
