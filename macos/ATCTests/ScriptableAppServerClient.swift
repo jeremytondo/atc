@@ -41,6 +41,7 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         var listTerminalsCount = 0
         var listAgentsCount = 0
         var openThreadTerminalCount = 0
+        var markThreadViewedCount = 0
         /// Server-assigned timestamps advance a whole second per write, so
         /// ordering assertions never depend on wall-clock resolution. The base
         /// sits well after `Fixtures.epoch` so anything the server creates
@@ -159,6 +160,7 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     var listTerminalsCount: Int { lock.withLock { state.listTerminalsCount } }
     var listAgentsCount: Int { lock.withLock { state.listAgentsCount } }
     var openThreadTerminalCount: Int { lock.withLock { state.openThreadTerminalCount } }
+    var markThreadViewedCount: Int { lock.withLock { state.markThreadViewedCount } }
 
     // MARK: - Projects
 
@@ -353,6 +355,7 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
                 name: request.name,
                 workingDirectory: request.workingDirectory ?? project.defaultWorkingDirectory,
                 activityState: .idle,
+                unread: false,
                 createdAt: now,
                 updatedAt: now
             )
@@ -454,6 +457,25 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
                 model.threads[index].pinnedAt = now
             }
             model.threads[index].updatedAt = now
+            return .ok(.init(body: .json(model.threads[index])))
+        }
+    }
+
+    /// Idempotent per the contract: only an unread thread is written (and
+    /// timestamped); a read one comes back unchanged.
+    func markThreadViewed(_ input: Operations.MarkThreadViewed.Input) async throws
+        -> Operations.MarkThreadViewed.Output {
+        try await gate()
+        let id = input.path.threadId
+        return mutate { model -> Operations.MarkThreadViewed.Output in
+            model.markThreadViewedCount += 1
+            guard let index = model.threads.firstIndex(where: { $0.id == id }) else {
+                return .notFound(.init(body: .json(threadNotFound(id))))
+            }
+            if model.threads[index].unread {
+                model.threads[index].unread = false
+                model.threads[index].updatedAt = model.tick()
+            }
             return .ok(.init(body: .json(model.threads[index])))
         }
     }
@@ -657,6 +679,7 @@ enum Fixtures {
         name: String? = nil,
         workingDirectory: String = "/home/dev/app",
         activityState: ThreadActivityState = .idle,
+        unread: Bool = false,
         linkedTerminalId: String? = nil,
         pinnedAt: Date? = nil,
         archivedAt: Date? = nil,
@@ -669,6 +692,7 @@ enum Fixtures {
             name: name,
             workingDirectory: workingDirectory,
             activityState: activityState,
+            unread: unread,
             linkedTerminalId: linkedTerminalId,
             pinnedAt: pinnedAt,
             archivedAt: archivedAt,

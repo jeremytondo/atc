@@ -61,10 +61,10 @@ struct ThreadCard: View {
                             .truncationMode(.head)
                     }
                     Spacer(minLength: Spacing.sm)
-                    if let status = thread.activityState.statusLabel {
+                    if let status = thread.statusLabel {
                         Text(status)
                             .font(.caption.weight(.medium))
-                            .foregroundStyle(thread.activityState.statusColor)
+                            .foregroundStyle(thread.statusColor)
                     }
                     agentBadge
                 }

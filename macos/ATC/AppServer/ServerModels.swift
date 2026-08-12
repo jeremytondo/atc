@@ -41,6 +41,23 @@ extension ATCThread {
 
     var isArchived: Bool { archivedAt != nil }
     var isPinned: Bool { pinnedAt != nil }
+
+    /// An idle thread whose finish nobody viewed yet reads "Done" (ATC-160).
+    /// A display-only translation of `idle + unread` — the server vocabulary
+    /// has no completed state, and the server alone decides `unread`.
+    private var showsDone: Bool { activityState == .idle && unread }
+
+    /// Card status text; prefer these over the raw `activityState` labels so
+    /// the Done overlay applies uniformly.
+    var statusLabel: String? { showsDone ? "Done" : activityState.statusLabel }
+
+    /// The inspector's and toolbar's longer phrasing (see
+    /// `ThreadActivityState.detailLabel`).
+    var detailLabel: String { showsDone ? "Done" : activityState.detailLabel }
+
+    /// Done gets the app accent — deliberately distinct from Running green
+    /// and from Needs-you orange, so orange keeps its one meaning.
+    var statusColor: Color { showsDone ? .accentColor : activityState.statusColor }
 }
 
 extension ThreadActivityState {

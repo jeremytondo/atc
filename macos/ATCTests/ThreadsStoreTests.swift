@@ -133,6 +133,27 @@ struct ThreadsStoreTests {
         #expect(store.thread(id: "thr_archived") == nil)
     }
 
+    @Test("markViewed merges the server's cleared unread flag in place")
+    func markViewedMerges() async throws {
+        let client = ScriptableAppServerClient()
+        Fixtures.seed(client)
+        client.threads = client.threads.map { thread in
+            guard thread.id == "thr2" else { return thread }
+            var updated = thread
+            updated.unread = true
+            return updated
+        }
+        let store = ThreadsStore(client: client)
+        await store.refresh()
+        #expect(store.thread(id: "thr2")?.unread == true)
+
+        let viewed = try await store.markViewed(id: "thr2")
+        #expect(!viewed.unread)
+        #expect(store.thread(id: "thr2")?.unread == false)
+        // Merge keeps the creation ordering — viewing never reorders.
+        #expect(store.threads.map(\.id) == ["thr3", "thr2", "thr1"])
+    }
+
     @Test("create merges the new thread at the head of the active list")
     func createMerges() async throws {
         let (store, client) = await loadedStore()

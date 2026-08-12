@@ -340,6 +340,95 @@ struct WindowStateTests {
         #expect(state.threadTerminals[ref] == nil)
     }
 
+    // MARK: - Unread (ATC-160)
+
+    /// Marks one seeded thread unread server-side, as a finish would.
+    private func setUnread(_ id: String, _ unread: Bool, on client: ScriptableAppServerClient) {
+        client.threads = client.threads.map { thread in
+            guard thread.id == id else { return thread }
+            var updated = thread
+            updated.unread = unread
+            return updated
+        }
+    }
+
+    @Test("opening an unread thread stamps it viewed")
+    func openingStampsViewed() async throws {
+        let client = ScriptableAppServerClient()
+        Fixtures.seed(client)
+        setUnread("thr1", true, on: client)
+        let test = try await makeModel(client: client)
+        await test.runtime.refresh()
+        let state = WindowState()
+        let ref = test.threadRef("thr1")
+
+        await state.openThread(ref, in: test.model)
+        // The stamp merges the server's answer back into the store.
+        await settle(until: { test.model.thread(for: ref)?.unread == false })
+        #expect(client.markThreadViewedCount == 1)
+        // A read thread costs nothing: re-opening never stamps again.
+        await state.openThread(ref, in: test.model)
+        #expect(client.markThreadViewedCount == 1)
+    }
+
+    @Test("a finish landing under the displayed frontmost thread is stamped viewed")
+    func finishWhileWatchingIsViewed() async throws {
+        let client = ScriptableAppServerClient()
+        let test = try await loadedModel(client)
+        let state = WindowState()
+        state.isAppActive = { true }
+        let ref = test.threadRef("thr1")
+        await state.openThread(ref, in: test.model)
+        #expect(client.markThreadViewedCount == 0)
+
+        // The turn finishes while the user is watching: the refresh lands
+        // unread, and reconciliation stamps it before any "Done" flash.
+        setUnread("thr1", true, on: client)
+        await test.runtime.refresh()
+        state.reconcile(in: test.model)
+        await settle(until: { client.threads.first { $0.id == "thr1" }?.unread == false })
+        #expect(client.markThreadViewedCount == 1)
+    }
+
+    @Test("a finish while the app is in the background stays unread")
+    func backgroundFinishStaysUnread() async throws {
+        let client = ScriptableAppServerClient()
+        let test = try await loadedModel(client)
+        let state = WindowState()
+        state.isAppActive = { false }
+        let ref = test.threadRef("thr1")
+        await state.openThread(ref, in: test.model)
+
+        setUnread("thr1", true, on: client)
+        await test.runtime.refresh()
+        state.reconcile(in: test.model)
+        #expect(client.markThreadViewedCount == 0)
+        #expect(test.model.thread(for: ref)?.unread == true)
+
+        // Returning to the app with the result on screen counts as viewing
+        // (the RootView scenePhase hook calls exactly this).
+        state.isAppActive = { true }
+        state.markSelectedThreadViewedIfNeeded(in: test.model)
+        await settle(until: { client.threads.first { $0.id == "thr1" }?.unread == false })
+        #expect(client.markThreadViewedCount == 1)
+    }
+
+    @Test("a finish on an unselected thread is never stamped")
+    func unselectedThreadStaysUnread() async throws {
+        let client = ScriptableAppServerClient()
+        let test = try await loadedModel(client)
+        let state = WindowState()
+        state.isAppActive = { true }
+        await state.openThread(test.threadRef("thr1"), in: test.model)
+
+        setUnread("thr2", true, on: client)
+        await test.runtime.refresh()
+        state.reconcile(in: test.model)
+        state.markSelectedThreadViewedIfNeeded(in: test.model)
+        #expect(client.markThreadViewedCount == 0)
+        #expect(test.model.thread(for: test.threadRef("thr2"))?.unread == true)
+    }
+
     // MARK: - Chrome
 
     @Test("toggleSidebar flips between the full layout and detail-only")
