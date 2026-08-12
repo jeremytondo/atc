@@ -51,6 +51,19 @@ describe("admin UI", () => {
       const docs = yield* Effect.promise(() => fetch(`${base}/docs`))
       assert.strictEqual(docs.status, 200)
       assert.include(docs.headers.get("content-type"), "text/html")
+      const docsHtml = yield* Effect.promise(() => docs.text())
+      const stylesheetPaths = [...docsHtml.matchAll(/href="([^"]+\.css)"/g)].flatMap(([, path]) =>
+        path === undefined ? [] : [path],
+      )
+      assert.isNotEmpty(stylesheetPaths)
+      const stylesheets = yield* Effect.all(
+        stylesheetPaths.map((path) =>
+          Effect.promise(() =>
+            fetch(new URL(path, `${base}/docs`).href).then((response) => response.text()),
+          ),
+        ),
+      )
+      assert.include(stylesheets.join("\n"), ".scalar-app")
       const slashed = yield* Effect.promise(() => fetch(`${base}/docs/`, { redirect: "manual" }))
       assert.strictEqual(slashed.status, 308)
       assert.strictEqual(slashed.headers.get("location"), "/docs")
