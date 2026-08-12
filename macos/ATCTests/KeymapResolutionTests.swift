@@ -154,24 +154,34 @@ struct KeymapResolutionTests {
 
     @Test("protected shortcuts and leaders name the native command")
     func protectedShortcuts() throws {
-        let direct = Keymap.resolve(user: ConfigurationLoader.parse(#"""
+        let quit = Keymap.resolve(user: ConfigurationLoader.parse(#"""
+        [keyboard]
+        clear_default_keybindings = true
+        [keybindings]
+        "cmd+q" = "data.refresh"
+        """#))
+        #expect(try failure(quit).map(\.message) == [
+            "[keybindings] trigger 'cmd+q' is reserved for Quit"
+        ])
+
+        let copy = Keymap.resolve(user: ConfigurationLoader.parse(#"""
         [keyboard]
         clear_default_keybindings = true
         [keybindings]
         "cmd+c" = "data.refresh"
         """#))
-        #expect(try failure(direct).contains {
-            $0.message.contains("cmd+c") && $0.message.contains("Copy")
-        })
+        #expect(try failure(copy).map(\.message) == [
+            "[keybindings] trigger 'cmd+c' is reserved for Copy"
+        ])
 
         let leader = Keymap.resolve(user: ConfigurationLoader.parse(#"""
         [keyboard]
         clear_default_keybindings = true
         leader = "cmd+q"
         """#))
-        #expect(try failure(leader).contains {
-            $0.message.contains("cmd+q") && $0.message.contains("Quit")
-        })
+        #expect(try failure(leader).map(\.message) == [
+            "[keyboard].leader 'cmd+q' is reserved for Quit"
+        ])
     }
 
     @Test("sidebar jump digits are reserved in both modifier sets")
