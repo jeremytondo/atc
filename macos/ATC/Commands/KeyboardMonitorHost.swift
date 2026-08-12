@@ -1,6 +1,32 @@
 import AppKit
 import SwiftUI
 
+struct NativeShortcutDispatch {
+    let perform: @MainActor (AppAction, NSWindow) -> Void
+
+    static let live = NativeShortcutDispatch { action, window in
+        switch action {
+        case .terminate:
+            NSApp.terminate(nil)
+        case .closeWindow:
+            window.performClose(nil)
+        case .closeAllWindows:
+            // Only user-closable windows: performClose beeps on panels and
+            // helper windows without a close button. Key window last so
+            // focus does not hop mid-sweep.
+            let closable = NSApp.windows.filter {
+                $0 !== window && $0.isVisible && $0.styleMask.contains(.closable)
+            }
+            for otherWindow in closable {
+                otherWindow.performClose(nil)
+            }
+            if window.styleMask.contains(.closable) {
+                window.performClose(nil)
+            }
+        }
+    }
+}
+
 struct KeyboardMonitorHost: View {
     let router: WindowKeyboardRouter
     let onDeactivate: () -> Void
@@ -25,6 +51,7 @@ struct KeyboardMonitorHost: View {
         var router: WindowKeyboardRouter
         var onDeactivate: () -> Void
         var focusFallback: () -> Void
+        let nativeShortcutDispatch: NativeShortcutDispatch
         private(set) weak var hostWindow: NSWindow?
         private var monitor: Any?
         private var flagsMonitor: Any?
@@ -33,11 +60,13 @@ struct KeyboardMonitorHost: View {
         init(
             router: WindowKeyboardRouter,
             onDeactivate: @escaping () -> Void,
-            focusFallback: @escaping () -> Void
+            focusFallback: @escaping () -> Void,
+            nativeShortcutDispatch: NativeShortcutDispatch = .live
         ) {
             self.router = router
             self.onDeactivate = onDeactivate
             self.focusFallback = focusFallback
+            self.nativeShortcutDispatch = nativeShortcutDispatch
         }
 
         func attach(to window: NSWindow?) {
@@ -49,22 +78,9 @@ struct KeyboardMonitorHost: View {
                 [weak self, weak window] event in
                 guard let self, let window,
                       event.window === window,
-                      window.isKeyWindow,
-                      let stroke = KeyStroke.normalize(event: event)
+                      window.isKeyWindow
                 else { return event }
-                let wasSuspended = self.router.isSuspended()
-                let handled = self.router.handle(stroke, isRepeat: event.isARepeat)
-                // The palette opener flips suspension synchronously, but the
-                // palette's focus accessor only mounts on the next SwiftUI
-                // commit; keystrokes already queued behind the opener would
-                // land in the still-focused terminal. Clearing focus at the
-                // flip closes that gap, stashing the responder so dismissal
-                // can still restore it.
-                if handled, !wasSuspended, self.router.isSuspended() {
-                    self.router.responderBeforeSuspension = window.firstResponder
-                    window.makeFirstResponder(nil)
-                }
-                return handled ? nil : event
+                return self.handleKeyDown(event: event, in: window)
             }
 
             // Held-modifier state for the sidebar's ⌘/⌥⌘ jump badges. Never
@@ -114,6 +130,32 @@ struct KeyboardMonitorHost: View {
                     self?.restoreOrphanedResponder()
                 }
             })
+        }
+
+        // Seam below the window guards lets tests use synthesized events
+        // without installing a process-wide monitor.
+        func handleKeyDown(event: NSEvent, in window: NSWindow) -> NSEvent? {
+            guard let stroke = KeyStroke.normalize(event: event) else { return event }
+            if let action = NativeShortcuts.appAction(for: stroke) {
+                if !event.isARepeat {
+                    nativeShortcutDispatch.perform(action, window)
+                }
+                return nil
+            }
+
+            let wasSuspended = router.isSuspended()
+            let handled = router.handle(stroke, isRepeat: event.isARepeat)
+            // The palette opener flips suspension synchronously, but the
+            // palette's focus accessor only mounts on the next SwiftUI
+            // commit; keystrokes already queued behind the opener would
+            // land in the still-focused terminal. Clearing focus at the
+            // flip closes that gap, stashing the responder so dismissal
+            // can still restore it.
+            if handled, !wasSuspended, router.isSuspended() {
+                router.responderBeforeSuspension = window.firstResponder
+                window.makeFirstResponder(nil)
+            }
+            return handled ? nil : event
         }
 
         // Dismissal normally restores focus through the palette's window

@@ -198,23 +198,13 @@ enum Keymap {
         ))
     }
 
-    private static let protectedTriggers: [KeyStroke: String] = {
-        let values: [(String, String)] = [
-            ("cmd+q", "Quit"), ("cmd+h", "Hide atc"),
-            ("cmd+opt+h", "Hide Others"), ("cmd+,", "Settings"),
-            ("cmd+w", "Close Window"), ("cmd+shift+w", "Close All Windows"),
-            ("cmd+z", "Undo"), ("cmd+shift+z", "Redo"),
-            ("cmd+x", "Cut"), ("cmd+c", "Copy"), ("cmd+v", "Paste"),
-            ("cmd+a", "Select All"), ("cmd+m", "Minimize"),
-        ]
-        // The sidebar jump scheme owns its own triggers; splice them in
-        // rather than restating the ⌘1–9 / ⌥⌘1–9 layout here. Built with
-        // uniqueKeysWithValues so a future collision traps at launch.
-        return Dictionary(
-            uniqueKeysWithValues: values.map { (requiredStroke($0.0), $0.1) }
-                + SidebarShortcuts.reservedTriggers.map { ($0.key, $0.value) }
-        )
-    }()
+    // The sidebar jump scheme owns its own triggers; splice them in
+    // rather than restating the ⌘1–9 / ⌥⌘1–9 layout here. Built with
+    // uniqueKeysWithValues so a future collision traps at launch.
+    private static let protectedTriggers: [KeyStroke: String] = Dictionary(
+        uniqueKeysWithValues: NativeShortcuts.protectedTriggers.map { ($0.key, $0.value) }
+            + SidebarShortcuts.reservedTriggers.map { ($0.key, $0.value) }
+    )
 
     private static func requiredStroke(_ text: String) -> KeyStroke {
         switch KeyStroke.parse(text) {
