@@ -4,6 +4,23 @@ import Testing
 
 @Suite("Keyboard event normalization")
 struct EventNormalizationTests {
+    @Test("produced ASCII wins and unusable output falls back to ASCII")
+    func keyResolutionLayering() {
+        #expect(KeyStroke.resolveKey(produced: "т", asciiFallback: { "t" }) == "t")
+
+        var consultedFallback = false
+        let producedASCII = KeyStroke.resolveKey(produced: "t", asciiFallback: {
+            consultedFallback = true
+            return "x"
+        })
+        #expect(producedASCII == "t")
+        #expect(!consultedFallback)
+
+        #expect(KeyStroke.resolveKey(produced: "т", asciiFallback: { nil }) == nil)
+        #expect(KeyStroke.resolveKey(produced: "", asciiFallback: { "a" }) == "a")
+        #expect(KeyStroke.resolveKey(produced: "ab", asciiFallback: { "b" }) == "b")
+    }
+
     @Test("layout-resolved command, shift, and option events normalize")
     func printableEvents() throws {
         let commandB = try #require(event(
@@ -56,6 +73,18 @@ struct EventNormalizationTests {
             keyCode: 122
         ))
         #expect(KeyStroke.normalize(event: function) == nil)
+    }
+
+    @Test("a Cyrillic event uses its physical key's ASCII interpretation")
+    func cyrillicEvent() throws {
+        let commandT = try #require(event(
+            flags: .command,
+            characters: "т",
+            ignoringModifiers: "т",
+            keyCode: 17
+        ))
+        #expect(KeyStroke.normalize(event: commandT)
+            == KeyStroke(key: "t", modifiers: .command))
     }
 
     private func event(
