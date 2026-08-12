@@ -939,6 +939,47 @@
         "description": "Unpin a thread (idempotent)."
       }
     },
+    "/api/v1/threads/{threadId}/viewed": {
+      "post": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "markThreadViewed",
+        "parameters": [
+          {
+            "name": "threadId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A durable Thread: the primary unit of agent work. Its ATC identity is separate from provider identity, and it never requires a Terminal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Thread"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No thread exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadNotFoundJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "Mark the thread viewed, clearing `unread` for every client (the change is published to the event stream). Idempotent: a thread that is not unread is returned unchanged with nothing written or published, so clients may call this on every view."
+      }
+    },
     "/api/v1/threads/{threadId}/terminal": {
       "post": {
         "tags": [
@@ -1648,6 +1689,10 @@
           "activityState": {
             "$ref": "#/components/schemas/ThreadActivityState"
           },
+          "unread": {
+            "type": "boolean",
+            "description": "Server-derived: the thread finished a turn no client has viewed yet (markThreadViewed clears it). An orthogonal overlay on activityState — there is deliberately no completed activity state — and always false while archived. Clients render it directly and never re-derive it."
+          },
           "linkedTerminalId": {
             "type": "string",
             "description": "The thread's live TUI terminal, when one is open (derived; never required)."
@@ -1679,6 +1724,7 @@
           "agentId",
           "workingDirectory",
           "activityState",
+          "unread",
           "createdAt",
           "updatedAt"
         ],

@@ -22,7 +22,7 @@ struct ThreadInspectorView: View {
                         .font(.callout.monospaced())
                         .textSelection(.enabled)
                 }
-                LabeledContent("Activity", value: thread.activityState.detailLabel)
+                LabeledContent("Activity", value: thread.detailLabel)
             }
             Section {
                 LabeledContent("Created", value: thread.createdAt.formatted(date: .abbreviated, time: .shortened))

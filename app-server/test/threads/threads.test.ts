@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest"
 import { BunHttpServer } from "@effect/platform-bun"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Option } from "effect"
 import { HttpApiTest } from "effect/unstable/httpapi"
 import { mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -61,6 +61,7 @@ describe("/api/v1/threads", () => {
       assert.strictEqual(created.agentId, "codex")
       assert.strictEqual(created.workingDirectory, realDir)
       assert.strictEqual(created.activityState, "idle")
+      assert.isFalse(created.unread)
       assert.isUndefined(created.name)
       assert.isUndefined(created.linkedTerminalId)
       assert.isUndefined(created.pinnedAt)
@@ -87,6 +88,13 @@ describe("/api/v1/threads", () => {
       ])
       assert.deepStrictEqual(
         yield* client.v1.getThread({ params: { threadId: created.id } }),
+        created,
+      )
+
+      // Viewing a thread that never finished a turn is a pure no-op —
+      // nothing written, updatedAt included.
+      assert.deepStrictEqual(
+        yield* client.v1.markThreadViewed({ params: { threadId: created.id } }),
         created,
       )
 
@@ -170,6 +178,7 @@ describe("/api/v1/threads", () => {
         client.v1.unarchiveThread({ params: { threadId: "missing" } }),
         client.v1.pinThread({ params: { threadId: "missing" } }),
         client.v1.unpinThread({ params: { threadId: "missing" } }),
+        client.v1.markThreadViewed({ params: { threadId: "missing" } }),
         client.v1.deleteThread({ params: { threadId: "missing" } }),
       ]
       for (const attempt of attempts) {
@@ -177,6 +186,11 @@ describe("/api/v1/threads", () => {
         assert.strictEqual(error._tag, "ThreadNotFound")
         assert.strictEqual(error.threadId, "missing")
       }
+      // The viewed stamp racing a delete past the service's require is the
+      // expected condition the repository models as None (mapped to the 404
+      // above), never a defect.
+      const repository = yield* ThreadRepository
+      assert.isTrue(Option.isNone(yield* repository.markViewed("missing")))
     }).pipe(Effect.provide(TestLayer)),
   )
 

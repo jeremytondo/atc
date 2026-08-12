@@ -118,6 +118,21 @@ final class ThreadsStore {
         return thread
     }
 
+    /// Stamps the thread viewed, clearing `unread` on every client. The
+    /// server treats an already-read thread as a pure no-op, so callers may
+    /// stamp on every view.
+    @discardableResult
+    func markViewed(id: String) async throws -> ATCThread {
+        let thread: ATCThread
+        switch try await client.markThreadViewed(path: .init(threadId: id)) {
+        case .ok(let ok): thread = try ok.body.json
+        case .notFound(let failure): throw ServerError(try failure.body.json)
+        case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
+        }
+        merge(thread)
+        return thread
+    }
+
     @discardableResult
     func archive(id: String) async throws -> ATCThread {
         let thread: ATCThread

@@ -289,6 +289,12 @@ export const Thread = Schema.Struct({
     description: "Canonical directory the thread's agent session works in (immutable).",
   }),
   activityState: ThreadActivityState,
+  unread: Schema.Boolean.annotate({
+    description:
+      "Server-derived: the thread finished a turn no client has viewed yet (markThreadViewed clears it). " +
+      "An orthogonal overlay on activityState — there is deliberately no completed activity state — and always false while archived. " +
+      "Clients render it directly and never re-derive it.",
+  }),
   linkedTerminalId: Schema.optionalKey(
     Schema.String.annotate({
       description: "The thread's live TUI terminal, when one is open (derived; never required).",
@@ -791,6 +797,17 @@ export class V1 extends HttpApiGroup.make("v1")
     })
       .annotate(OpenApi.Identifier, "unpinThread")
       .annotate(OpenApi.Description, "Unpin a thread (idempotent)."),
+    HttpApiEndpoint.post("markThreadViewed", "/threads/:threadId/viewed", {
+      params: threadIdParam,
+      success: Thread,
+      error: ThreadNotFound,
+    })
+      .annotate(OpenApi.Identifier, "markThreadViewed")
+      .annotate(
+        OpenApi.Description,
+        "Mark the thread viewed, clearing `unread` for every client (the change is published to the event stream). " +
+          "Idempotent: a thread that is not unread is returned unchanged with nothing written or published, so clients may call this on every view.",
+      ),
     HttpApiEndpoint.delete("deleteThread", "/threads/:threadId", {
       params: threadIdParam,
       error: [ThreadNotFound, ZmxUnavailable],

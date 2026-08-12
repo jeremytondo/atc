@@ -79,6 +79,7 @@ nonisolated struct PreviewAppServerClient: APIProtocol {
                 name: "Parser rewrite",
                 workingDirectory: Self.atelier.defaultWorkingDirectory,
                 activityState: .working,
+                unread: false,
                 linkedTerminalId: "0192f4c0-0000-7000-8000-000000000001",
                 pinnedAt: Date(timeIntervalSinceNow: -200_000),
                 createdAt: Date(timeIntervalSinceNow: -220_000),
@@ -91,6 +92,7 @@ nonisolated struct PreviewAppServerClient: APIProtocol {
                 name: "Flaky test triage",
                 workingDirectory: Self.atelier.defaultWorkingDirectory,
                 activityState: .needsInput,
+                unread: false,
                 createdAt: Date(timeIntervalSinceNow: -7_200),
                 updatedAt: Date(timeIntervalSinceNow: -120)
             ),
@@ -100,6 +102,8 @@ nonisolated struct PreviewAppServerClient: APIProtocol {
                 agentId: .codex,
                 workingDirectory: "/Users/dev/Projects/atelier/packages/core",
                 activityState: .idle,
+                // The Done card: finished while nobody was looking.
+                unread: true,
                 createdAt: Date(timeIntervalSinceNow: -20_000),
                 updatedAt: Date(timeIntervalSinceNow: -19_000)
             ),
@@ -110,6 +114,7 @@ nonisolated struct PreviewAppServerClient: APIProtocol {
                 name: "Spike: streaming uploads",
                 workingDirectory: Self.blazerr.defaultWorkingDirectory,
                 activityState: .idle,
+                unread: false,
                 createdAt: Date(timeIntervalSinceNow: -90_000),
                 updatedAt: Date(timeIntervalSinceNow: -86_400)
             ),
@@ -120,6 +125,7 @@ nonisolated struct PreviewAppServerClient: APIProtocol {
                 name: "Dependency bump",
                 workingDirectory: Self.blazerr.defaultWorkingDirectory,
                 activityState: .unknown,
+                unread: false,
                 createdAt: Date(timeIntervalSinceNow: -150_000),
                 updatedAt: Date(timeIntervalSinceNow: -140_000)
             ),
@@ -135,6 +141,7 @@ nonisolated struct PreviewAppServerClient: APIProtocol {
                 name: "Abandoned migration",
                 workingDirectory: Self.atelier.defaultWorkingDirectory,
                 activityState: .unknown,
+                unread: false,
                 archivedAt: Date(timeIntervalSinceNow: -40_000),
                 createdAt: Date(timeIntervalSinceNow: -500_000),
                 updatedAt: Date(timeIntervalSinceNow: -40_000)
@@ -333,6 +340,7 @@ nonisolated struct PreviewAppServerClient: APIProtocol {
             name: request.name,
             workingDirectory: request.workingDirectory ?? project.defaultWorkingDirectory,
             activityState: .unknown,
+            unread: false,
             createdAt: Date(),
             updatedAt: Date()
         ))))
@@ -376,6 +384,12 @@ nonisolated struct PreviewAppServerClient: APIProtocol {
     func unpinThread(_ input: Operations.UnpinThread.Input) async throws -> Operations.UnpinThread.Output {
         var thread = try thread(input.path.threadId)
         thread.pinnedAt = nil
+        return .ok(.init(body: .json(thread)))
+    }
+
+    func markThreadViewed(_ input: Operations.MarkThreadViewed.Input) async throws -> Operations.MarkThreadViewed.Output {
+        var thread = try thread(input.path.threadId)
+        thread.unread = false
         return .ok(.init(body: .json(thread)))
     }
 

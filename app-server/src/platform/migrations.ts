@@ -81,4 +81,12 @@ export const migrations: Record<string, Effect.Effect<void, unknown, SqlClient.S
     const sql = yield* SqlClient.SqlClient
     yield* sql`ALTER TABLE threads ADD COLUMN pinned_at TEXT`
   }),
+  // Unread overlay (ATC-160): `last_finished_at` is stamped at the observed
+  // busy→idle activity drop, `last_viewed_at` by markThreadViewed. Both NULL
+  // on existing rows, so rollout marks nothing unread.
+  "0005_thread_unread": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`ALTER TABLE threads ADD COLUMN last_finished_at TEXT`
+    yield* sql`ALTER TABLE threads ADD COLUMN last_viewed_at TEXT`
+  }),
 }

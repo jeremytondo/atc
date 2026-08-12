@@ -13,6 +13,9 @@ struct WindowNavigationSnapshot: Equatable {
             let id: String
             let projectID: String
             let isArchived: Bool
+            /// In the snapshot so a finish landing under the displayed thread
+            /// re-runs reconciliation, which stamps it viewed (ATC-160).
+            let isUnread: Bool
         }
 
         struct TerminalRecord: Equatable {
@@ -227,7 +230,12 @@ final class AppModel {
                 threadsCurrent: runtime.threads.isResolved,
                 terminalsCurrent: runtime.terminals.isResolved,
                 threads: (runtime.threads.threads + runtime.threads.archivedThreads).map {
-                    .init(id: $0.id, projectID: $0.projectId, isArchived: $0.isArchived)
+                    .init(
+                        id: $0.id,
+                        projectID: $0.projectId,
+                        isArchived: $0.isArchived,
+                        isUnread: $0.unread
+                    )
                 },
                 terminals: runtime.terminals.terminals.map {
                     .init(id: $0.id, projectID: $0.projectId, threadID: $0.threadId, isLive: $0.isLive)
@@ -330,6 +338,14 @@ final class AppModel {
         let terminalRef = TerminalRef(connectionID: ref.connectionID, terminalID: terminal.id)
         attachIfNeeded(to: terminal, connectionID: ref.connectionID, retentionContext: retentionContext)
         return terminalRef
+    }
+
+    /// Stamps the thread viewed on the server; the merged response clears the
+    /// unread indicator everywhere (no optimistic write). Failures are
+    /// deliberately swallowed: the indicator simply stays until the next view.
+    func markThreadViewed(_ ref: ThreadRef) async {
+        guard let runtime = runtime(id: ref.connectionID) else { return }
+        _ = try? await runtime.threads.markViewed(id: ref.threadID)
     }
 
     /// Attaches a live terminal's controller, or reuses the retained one.

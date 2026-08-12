@@ -8,6 +8,7 @@ import SwiftUI
 struct RootView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(WindowState.self) private var windowState
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         rootContent
@@ -67,6 +68,13 @@ struct RootView: View {
             windowState.requestTerminalFocus()
         }) { ref in
             NewTerminalSheet(projectRef: ref)
+        }
+        // Returning to the app with a freshly finished thread on screen
+        // counts as viewing it (ATC-160) — reconciliation only sees store
+        // changes, so activation needs its own hook.
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            windowState.markSelectedThreadViewedIfNeeded(in: appModel)
         }
     }
 

@@ -1,3 +1,4 @@
+import AppKit
 import ATCAppServerAPI
 import SwiftUI
 import Observation
@@ -81,6 +82,14 @@ final class WindowState {
     /// Most recent failed open per thread, cleared on the next attempt.
     private(set) var threadOpenErrors: [ThreadRef: String] = [:]
 
+    /// Whether the app is frontmost — the seam tests override; production
+    /// asks AppKit. Viewing only counts when the user can actually see it.
+    @ObservationIgnored var isAppActive: () -> Bool = { NSApplication.shared.isActive }
+
+    /// Mark-viewed requests in flight, so a burst of reconciliations does
+    /// not re-stamp the same thread before the store merge lands.
+    @ObservationIgnored private var markingViewed: Set<ThreadRef> = []
+
     var isSheetPresented: Bool {
         isCreateProjectPresented || newThreadContext != nil || newTerminalProject != nil
     }
@@ -140,6 +149,10 @@ final class WindowState {
         activeProject = ProjectRef(connectionID: ref.connectionID, projectID: thread.projectId)
         threadOpenErrors[ref] = nil
         requestTerminalFocus()
+        // Opening is viewing (ATC-160). Guarded on the store's unread flag;
+        // a finish the store hasn't refreshed into yet is caught by
+        // reconciliation once it lands (markViewedIfDisplayed).
+        if thread.unread { markViewed(ref, in: appModel) }
 
         guard !openingThreads.contains(ref) else { return }
         openingThreads.insert(ref)
@@ -272,6 +285,7 @@ final class WindowState {
                 showDashboard()
                 return
             }
+            markViewedIfDisplayed(ref, thread: thread, in: appModel)
             reconcileThreadTerminal(ref, thread: thread, in: appModel)
         case .terminal(let ref):
             guard let runtime = appModel.runtime(id: ref.connectionID) else {
@@ -293,6 +307,38 @@ final class WindowState {
                     retentionContext: retentionContext
                 )
             }
+        }
+    }
+
+    /// App-activation hook (RootView's scenePhase): a finish that landed
+    /// while the app was backgrounded is on screen the moment the user
+    /// returns, so the displayed thread must not keep reading "Done".
+    func markSelectedThreadViewedIfNeeded(in appModel: AppModel) {
+        guard case .thread(let ref) = selectedContent,
+              let thread = appModel.thread(for: ref) else { return }
+        markViewedIfDisplayed(ref, thread: thread, in: appModel)
+    }
+
+    /// A finish that lands while its thread is already displayed in the
+    /// frontmost app was watched, not missed: stamp viewed immediately so
+    /// no "Done" flashes for a result the user saw happen (ATC-160).
+    private func markViewedIfDisplayed(_ ref: ThreadRef, thread: ATCThread, in appModel: AppModel) {
+        guard thread.unread, isAppActive() else { return }
+        markViewed(ref, in: appModel)
+    }
+
+    /// The one mark-viewed dispatch: deduplicates in-flight stamps. State
+    /// changes only through the store's merge of the server response.
+    private func markViewed(_ ref: ThreadRef, in appModel: AppModel) {
+        guard !markingViewed.contains(ref) else { return }
+        markingViewed.insert(ref)
+        Task {
+            await appModel.markThreadViewed(ref)
+            markingViewed.remove(ref)
+            // A finish that landed during the request re-armed unread while
+            // the dedup guard was refusing a second stamp — re-check so the
+            // displayed thread never sticks on "Done".
+            markSelectedThreadViewedIfNeeded(in: appModel)
         }
     }
 

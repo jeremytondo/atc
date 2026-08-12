@@ -190,6 +190,69 @@ describe("threads.openTerminal", () => {
     }).pipe(Effect.provide(TestLayer)),
   )
 
+  it.live("the busy→idle drop marks the thread unread until viewed (ATC-160)", () =>
+    Effect.gen(function* () {
+      const { client, thread } = yield* setup
+      const repository = yield* ThreadRepository
+      yield* client.v1.openThreadTerminal({ params: { threadId: thread.id } })
+      const sessionId = Option.getOrThrow(yield* repository.get(thread.id)).providerSessionId ?? ""
+
+      // Mid-turn is never unread: unread marks a finish, not activity.
+      kit.fakeAgents.codex.emitActivity(sessionId, "working")
+      yield* eventually(
+        client.v1.getThread({ params: { threadId: thread.id } }),
+        (t) => t.activityState === "working",
+      )
+      assert.isFalse((yield* client.v1.getThread({ params: { threadId: thread.id } })).unread)
+
+      // The drop stamps: the thread reads idle AND unread until viewed.
+      kit.fakeAgents.codex.emitActivity(sessionId, "idle")
+      yield* eventually(
+        client.v1.getThread({ params: { threadId: thread.id } }),
+        (t) => t.activityState === "idle" && t.unread,
+      )
+
+      // Viewing clears it everywhere; repeating is a byte-identical no-op.
+      const viewed = yield* client.v1.markThreadViewed({ params: { threadId: thread.id } })
+      assert.isFalse(viewed.unread)
+      assert.deepStrictEqual(
+        yield* client.v1.markThreadViewed({ params: { threadId: thread.id } }),
+        viewed,
+      )
+
+      // The next turn re-arms the overlay.
+      kit.fakeAgents.codex.emitActivity(sessionId, "working")
+      kit.fakeAgents.codex.emitActivity(sessionId, "idle")
+      yield* eventually(client.v1.getThread({ params: { threadId: thread.id } }), (t) => t.unread)
+
+      yield* client.v1.deleteThread({ params: { threadId: thread.id } })
+    }).pipe(Effect.provide(TestLayer)),
+  )
+
+  it.live("an archived thread is never unread; unarchive resurfaces the pending finish", () =>
+    Effect.gen(function* () {
+      const { client, thread } = yield* setup
+      const repository = yield* ThreadRepository
+      const terminal = yield* client.v1.openThreadTerminal({ params: { threadId: thread.id } })
+      const sessionId = Option.getOrThrow(yield* repository.get(thread.id)).providerSessionId ?? ""
+      kit.fakeAgents.codex.emitActivity(sessionId, "working")
+      kit.fakeAgents.codex.emitActivity(sessionId, "idle")
+      yield* eventually(client.v1.getThread({ params: { threadId: thread.id } }), (t) => t.unread)
+
+      // Archive is a deliberate put-away: the archived row reads not-unread
+      // even though the finish was never viewed…
+      kit.fake.sessions.delete(sessionNameForTerminalId(terminal.id))
+      const archived = yield* client.v1.archiveThread({ params: { threadId: thread.id } })
+      assert.isFalse(archived.unread)
+
+      // …and unarchive resurfaces it: the result is still unseen.
+      const restored = yield* client.v1.unarchiveThread({ params: { threadId: thread.id } })
+      assert.isTrue(restored.unread)
+
+      yield* client.v1.deleteThread({ params: { threadId: thread.id } })
+    }).pipe(Effect.provide(TestLayer)),
+  )
+
   it.live("an unconfirmed session re-materializes with fresh identity on the next open", () =>
     Effect.gen(function* () {
       const { client, thread } = yield* setup
@@ -514,6 +577,8 @@ describe("threads.openTerminal", () => {
         client.v1.getThread({ params: { threadId: thread.id } }),
         (t) => t.linkedTerminalId === undefined && t.activityState === "idle",
       )
+      // A finish discovered on read stamps the unread overlay too.
+      yield* eventually(client.v1.getThread({ params: { threadId: thread.id } }), (t) => t.unread)
 
       kit.fakeAgents.codex.setCheckActivity(sessionId, null)
       yield* client.v1.deleteThread({ params: { threadId: thread.id } })
