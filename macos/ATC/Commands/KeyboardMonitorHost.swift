@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import SwiftUI
 
 struct NativeShortcutDispatch {
@@ -276,12 +277,70 @@ extension KeyStroke {
         if event.keyCode == 53 {
             return .escape
         }
-        guard let characters = event.characters(byApplyingModifiers: [])
-                ?? event.charactersIgnoringModifiers,
-              characters.count == 1,
-              let scalar = characters.lowercased().unicodeScalars.first,
+        let produced = event.characters(byApplyingModifiers: [])
+            ?? event.charactersIgnoringModifiers
+        guard let key = resolveKey(
+            produced: produced,
+            asciiFallback: { asciiCharacter(for: event.keyCode) }
+        ) else { return nil }
+        return KeyStroke(key: key, modifiers: modifiers)
+    }
+
+    /// Routing is semantic-first for Latin layouts, with the physical key's
+    /// current ASCII-capable-layout meaning as a fallback for non-ASCII,
+    /// empty, or combining output. Consequently, a literal non-ASCII binding
+    /// matches its physical key's ASCII interpretation rather than the
+    /// produced character.
+    static func resolveKey(
+        produced: String?,
+        asciiFallback: () -> String?
+    ) -> String? {
+        if let produced = printableASCIIKey(produced) {
+            return produced
+        }
+        return printableASCIIKey(asciiFallback())
+    }
+
+    private static func printableASCIIKey(_ characters: String?) -> String? {
+        guard let characters,
+              characters.count == 1
+        else { return nil }
+        let lowercased = characters.lowercased()
+        guard lowercased.count == 1,
+              lowercased.unicodeScalars.count == 1,
+              let scalar = lowercased.unicodeScalars.first,
+              scalar.value < 128,
               isPrintable(scalar)
         else { return nil }
-        return KeyStroke(key: characters.lowercased(), modifiers: modifiers)
+        return lowercased
+    }
+
+    private static func asciiCharacter(for keyCode: UInt16) -> String? {
+        guard let source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let property = TISGetInputSourceProperty(
+                  source,
+                  kTISPropertyUnicodeKeyLayoutData
+              )
+        else { return nil }
+        let data = unsafeBitCast(property, to: CFData.self)
+        guard let bytes = CFDataGetBytePtr(data) else { return nil }
+        let layout = UnsafeRawPointer(bytes).assumingMemoryBound(to: UCKeyboardLayout.self)
+        var deadKeyState: UInt32 = 0
+        var characters = [UniChar](repeating: 0, count: 4)
+        var length = 0
+        let status = UCKeyTranslate(
+            layout,
+            keyCode,
+            UInt16(kUCKeyActionDown),
+            0,
+            UInt32(LMGetKbdType()),
+            OptionBits(kUCKeyTranslateNoDeadKeysMask),
+            &deadKeyState,
+            characters.count,
+            &length,
+            &characters
+        )
+        guard status == noErr, length > 0 else { return nil }
+        return String(decoding: characters.prefix(Int(length)), as: UTF16.self)
     }
 }
