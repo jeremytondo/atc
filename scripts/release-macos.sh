@@ -3,16 +3,22 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/release-dev.sh [--upload]
+Usage: scripts/release-macos.sh [--channel dev|stable] [--upload]
 
 Builds, exports, packages, notarizes, staples, and verifies a Developer ID
-DMG for atc.app. With --upload, also creates a GitHub prerelease
-and uploads the notarized DMG.
+DMG for atc.app.
+
+  --channel dev     (default) dev bundle id (ElevenIdeas.atc.dev); --upload
+                    creates a dev-<timestamp> GitHub prerelease with the DMG.
+  --channel stable  stable bundle id, marketing version from the latest
+                    vX.Y.Z tag; --upload attaches the DMG to that tag's
+                    existing GitHub release (run the stable App Server
+                    release first: mise run app-server:release:stable).
 
 Environment overrides:
   ATC_TEAM_ID         Apple Developer Team ID (default: 337D6CNU4E)
   ATC_NOTARY_PROFILE  notarytool stored-credentials profile (default: ateliercode-notary)
-  ATC_ARTIFACT_ROOT   artifact root (default: .build/release-dev)
+  ATC_ARTIFACT_ROOT   artifact root (default: .build/release-macos)
 USAGE
 }
 
@@ -30,10 +36,16 @@ require_tool() {
 }
 
 UPLOAD=0
+CHANNEL="dev"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --upload)
       UPLOAD=1
+      ;;
+    --channel)
+      [[ $# -ge 2 ]] || die "missing value for --channel"
+      CHANNEL="$2"
+      shift
       ;;
     -h|--help)
       usage
@@ -47,12 +59,16 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+case "$CHANNEL" in
+  dev|stable) ;;
+  *) die "Unknown channel: $CHANNEL (expected dev or stable)" ;;
+esac
+
 ATC_TEAM_ID="${ATC_TEAM_ID:-337D6CNU4E}"
 ATC_NOTARY_PROFILE="${ATC_NOTARY_PROFILE:-ateliercode-notary}"
-ATC_ARTIFACT_ROOT="${ATC_ARTIFACT_ROOT:-.build/release-dev}"
+ATC_ARTIFACT_ROOT="${ATC_ARTIFACT_ROOT:-.build/release-macos}"
 
 APP_NAME="atc"
-BUNDLE_ID="ElevenIdeas.atc.dev"
 PROJECT_REL="macos/atc.xcodeproj"
 SCHEME="atc"
 CONFIGURATION="Release"
@@ -63,15 +79,30 @@ PROJECT_PATH="$REPO_ROOT/$PROJECT_REL"
 EXPORT_OPTIONS_PLIST="$SCRIPT_DIR/ExportOptions.DeveloperID.plist"
 
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-TAG="dev-$TIMESTAMP"
-TITLE="atc Dev $TIMESTAMP"
+# The two channels differ only here: identity (bundle id), which tag the DMG
+# publishes to, and the marketing version stamped into the app.
+if [[ "$CHANNEL" == "stable" ]]; then
+  BUNDLE_ID="ElevenIdeas.atc"
+  TAG="$(cd "$REPO_ROOT" && git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname | tail -1)"
+  [[ -n "$TAG" ]] || die "No vX.Y.Z tag found; run the stable App Server release first (mise run app-server:release:stable)"
+  MARKETING_VERSION="${TAG#v}"
+  TITLE=""
+  DMG_BASENAME="atc-macos-arm64.dmg"
+else
+  BUNDLE_ID="ElevenIdeas.atc.dev"
+  TAG="dev-$TIMESTAMP"
+  MARKETING_VERSION=""
+  TITLE="atc Dev $TIMESTAMP"
+  DMG_BASENAME="atc-dev-$TIMESTAMP.dmg"
+fi
+
 RUN_DIR="$REPO_ROOT/$ATC_ARTIFACT_ROOT/$TIMESTAMP"
-ARCHIVE_PATH="$RUN_DIR/atc-dev.xcarchive"
+ARCHIVE_PATH="$RUN_DIR/atc-$CHANNEL.xcarchive"
 EXPORT_PATH="$RUN_DIR/export"
 DERIVED_DATA_PATH="$RUN_DIR/DerivedData"
 SOURCE_PACKAGES_PATH="$RUN_DIR/SourcePackages"
 DMG_ROOT="$RUN_DIR/dmg-root"
-DMG_PATH="$RUN_DIR/atc-dev-$TIMESTAMP.dmg"
+DMG_PATH="$RUN_DIR/$DMG_BASENAME"
 APP_PATH="$EXPORT_PATH/$APP_NAME.app"
 
 DEVELOPER_ID_IDENTITY=""
@@ -110,6 +141,9 @@ validate_github_auth() {
   if [[ "$UPLOAD" -eq 1 ]]; then
     require_tool gh
     gh auth status -h github.com >/dev/null 2>&1 || die "gh is not authenticated for github.com. Run gh auth login, then rerun with --upload."
+    if [[ "$CHANNEL" == "stable" ]]; then
+      gh release view "$TAG" >/dev/null 2>&1 || die "No GitHub release for $TAG; run the stable App Server release first (mise run app-server:release:stable)."
+    fi
   fi
 }
 
@@ -132,7 +166,7 @@ require_tool ditto
 [[ -d "$PROJECT_PATH" ]] || die "Missing Xcode project: $PROJECT_PATH"
 [[ -f "$EXPORT_OPTIONS_PLIST" ]] || die "Missing export options: $EXPORT_OPTIONS_PLIST"
 
-log "Validating signing, notarization, and upload prerequisites"
+log "Validating signing, notarization, and upload prerequisites ($CHANNEL channel)"
 find_developer_id_identity
 validate_notary_profile
 validate_github_auth
@@ -150,6 +184,9 @@ XCODE_OVERRIDES=(
   "DEVELOPMENT_TEAM=$ATC_TEAM_ID"
   "CODE_SIGN_STYLE=Automatic"
 )
+if [[ -n "$MARKETING_VERSION" ]]; then
+  XCODE_OVERRIDES+=("MARKETING_VERSION=$MARKETING_VERSION")
+fi
 
 log "Archiving $APP_NAME.app"
 xcodebuild archive \
@@ -203,13 +240,19 @@ log "Assessing DMG with Gatekeeper"
 spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG_PATH"
 
 if [[ "$UPLOAD" -eq 1 ]]; then
-  log "Creating GitHub prerelease $TAG"
-  gh release create "$TAG" "$DMG_PATH" \
-    --title "$TITLE" \
-    --notes "Developer ID notarized Apple Silicon dev build for $APP_NAME." \
-    --prerelease
+  if [[ "$CHANNEL" == "stable" ]]; then
+    log "Uploading DMG to release $TAG"
+    gh release upload "$TAG" "$DMG_PATH" --clobber
+  else
+    log "Creating GitHub prerelease $TAG"
+    gh release create "$TAG" "$DMG_PATH" \
+      --title "$TITLE" \
+      --notes "Developer ID notarized Apple Silicon dev build for $APP_NAME." \
+      --prerelease
+  fi
 fi
 
 log "Release artifact ready"
+printf 'Channel: %s\n' "$CHANNEL"
 printf 'Tag: %s\n' "$TAG"
 printf 'DMG: %s\n' "$DMG_PATH"

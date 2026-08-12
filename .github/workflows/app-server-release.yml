@@ -1,27 +1,42 @@
-# Manual-dispatch release pipeline for the App Server executable (ATC-127).
+# Release pipeline for the App Server executable (ATC-127).
 #
-# channel=test    build + validate + upload a snapshot workflow artifact
-# channel=stable  additionally tag (vX.Y.Z, bumped from the highest existing
-#                 v tag) and publish a GitHub Release with tarballs + checksums
+# Two channels, one pipeline:
+#
+#   dev     every push to main (app-server paths) — and manual dispatch —
+#           rebuilds the single rolling `dev` prerelease: the tag is force-
+#           moved, the release recreated, so exactly one dev build exists.
+#           Versions stamp as <next-patch>-dev.<UTC minute> so `atc --version`
+#           is self-describing and sorts below the next stable release.
+#   stable  manual dispatch only: tags vX.Y.Z (bumped from the highest
+#           existing v tag per release_type) and publishes a GitHub Release.
+#           `releases/latest` only ever points here — prereleases are
+#           excluded — so install.sh's stable channel needs no manifest.
 #
 # Darwin targets build on macOS so Bun's ad-hoc code signature is applied
 # (and verified) natively; Linux targets cross-compile on ubuntu. Three of
 # the four targets are validated natively with the compiled black-box suite
 # against the release-built binary — darwin-x64 is compile-only best-effort
-# (GitHub's free Intel macOS runners are retired). The tag is only pushed
+# (GitHub's free Intel macOS runners are retired). Tags are only pushed
 # after every build and validation job has passed.
 name: App Server Release
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "app-server/**"
+      - "install.sh"
+      - "mise.toml"
+      - ".github/workflows/app-server-release.yml"
   workflow_dispatch:
     inputs:
       channel:
-        description: "Build a test artifact or publish a stable GitHub release"
+        description: "Release channel: rolling dev prerelease or stable vX.Y.Z"
         type: choice
         required: true
-        default: test
+        default: dev
         options:
-          - test
+          - dev
           - stable
       release_type:
         description: "Stable release version bump"
@@ -36,7 +51,8 @@ on:
 permissions:
   contents: read
 
-# One release at a time: two stable dispatches would compute the same tag.
+# One release at a time: two stable dispatches would compute the same tag,
+# and two dev runs would race the rolling tag.
 concurrency:
   group: app-server-release
   cancel-in-progress: false
@@ -50,6 +66,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
+      channel: ${{ steps.version.outputs.channel }}
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
     steps:
@@ -57,20 +74,27 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Compute release version
+      - name: Compute channel and version
         id: version
         run: |
-          if [ "${{ inputs.channel }}" = "stable" ]; then
+          if [ "${{ github.event_name }}" = "push" ]; then
+            channel="dev"
+          else
+            channel="${{ inputs.channel }}"
+          fi
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          if [ "$channel" = "stable" ]; then
             if [ "${GITHUB_REF_NAME}" != "${{ github.event.repository.default_branch }}" ]; then
-              echo "stable releases must run from ${{ github.event.repository.default_branch }}; use channel=test for branch builds" >&2
+              echo "stable releases must run from ${{ github.event.repository.default_branch }}; use channel=dev for branch builds" >&2
               exit 1
             fi
             tag="$(scripts/next-version.sh "${{ inputs.release_type }}")"
             echo "tag=$tag" >> "$GITHUB_OUTPUT"
             echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=" >> "$GITHUB_OUTPUT"
-            echo "version=0.0.0-test.$(echo "$GITHUB_SHA" | cut -c1-7)" >> "$GITHUB_OUTPUT"
+            next="$(scripts/next-version.sh patch)"
+            echo "tag=dev" >> "$GITHUB_OUTPUT"
+            echo "version=${next#v}-dev.$(date -u +%Y%m%d%H%M)" >> "$GITHUB_OUTPUT"
           fi
 
   build-darwin:
@@ -88,7 +112,7 @@ jobs:
       - name: Build darwin targets
         run: |
           mise run install
-          bun run scripts/build.ts --version=${{ needs.plan.outputs.version }} darwin-arm64 darwin-x64
+          bun run scripts/build.ts --version=${{ needs.plan.outputs.version }} --channel=${{ needs.plan.outputs.channel }} darwin-arm64 darwin-x64
 
       # Bun applies an ad-hoc signature at compile time; verify it, and
       # re-sign in place if a Bun upgrade ever stops doing so.
@@ -136,7 +160,7 @@ jobs:
       - name: Build linux targets
         run: |
           mise run install
-          bun run scripts/build.ts --version=${{ needs.plan.outputs.version }} linux-x64 linux-arm64
+          bun run scripts/build.ts --version=${{ needs.plan.outputs.version }} --channel=${{ needs.plan.outputs.channel }} linux-x64 linux-arm64
 
       - name: Standing gates (fmt, typecheck, tests, drift)
         run: mise run check
@@ -211,16 +235,26 @@ jobs:
           rm checksums-*.txt
           ls -l
 
-      - name: Upload test release artifact
-        if: inputs.channel == 'test'
-        uses: actions/upload-artifact@v6
-        with:
-          name: atc-test-release-${{ github.run_id }}
-          path: app-server/release/*
-          if-no-files-found: error
+      # Exactly one dev release exists: the previous one is deleted, the tag
+      # force-moved to this commit, and the release recreated as a prerelease
+      # (which keeps it out of releases/latest, the stable-channel URL).
+      - name: Publish rolling dev prerelease
+        if: needs.plan.outputs.channel == 'dev'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete dev --yes || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f dev
+          git push -f origin dev
+          gh release create dev release/*.tar.gz release/checksums.txt \
+            --prerelease \
+            --title "dev (${{ needs.plan.outputs.version }})" \
+            --notes "$(printf 'Rolling dev-channel build of commit %s.\n\nInstall or update:\n\n    curl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | sh -s -- --channel dev\n\nInstalled builds update with `atc upgrade`.' "$GITHUB_SHA" "$GITHUB_REPOSITORY")"
 
       - name: Publish stable GitHub release
-        if: inputs.channel == 'stable'
+        if: needs.plan.outputs.channel == 'stable'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -231,4 +265,4 @@ jobs:
           git push origin "$tag"
           gh release create "$tag" release/*.tar.gz release/checksums.txt \
             --title "$tag" \
-            --notes "$(printf 'Install or update:\n\n    curl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | sh\n\nThen run `atc service install` to start it as a login service.' "$GITHUB_REPOSITORY")"
+            --notes "$(printf 'Install or update:\n\n    curl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | sh\n\nThen run `atc service install` to start it as a login service. Installed builds update with `atc upgrade`.' "$GITHUB_REPOSITORY")"

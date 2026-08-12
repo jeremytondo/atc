@@ -1,9 +1,11 @@
 // Compiles src/main.ts into standalone `atc` executables with Bun.
 //
-// Usage: bun run scripts/build.ts [--all] [--version=X.Y.Z] [target ...]
+// Usage: bun run scripts/build.ts [--all] [--version=X.Y.Z] [--channel=C] [target ...]
 //   default          compile for the host platform only
 //   --all            cross-compile every release target
 //   --version=X.Y.Z  stamp a release version (default: package.json version)
+//   --channel=C      stamp a release channel (stable|dev); local builds carry
+//                    none, which makes `atc upgrade` refuse to touch them
 //   target ...       compile exactly these targets (release CI builds darwin
 //                    targets on macOS so Bun's ad-hoc code signature is
 //                    applied natively)
@@ -42,12 +44,20 @@ const args = process.argv.slice(2)
 // A typo'd flag must not silently release with the package.json fallback
 // version, so anything dash-prefixed and unrecognized is fatal.
 const unknownFlags = args.filter(
-  (arg) => arg.startsWith("--") && arg !== "--all" && !arg.startsWith("--version="),
+  (arg) =>
+    arg.startsWith("--") &&
+    arg !== "--all" &&
+    !arg.startsWith("--version=") &&
+    !arg.startsWith("--channel="),
 )
 if (unknownFlags.length > 0) {
   throw new Error(`unknown flag(s): ${unknownFlags.join(", ")}`)
 }
 const version = args.find((arg) => arg.startsWith("--version="))?.slice("--version=".length)
+const channel = args.find((arg) => arg.startsWith("--channel="))?.slice("--channel=".length)
+if (channel !== undefined && channel !== "stable" && channel !== "dev") {
+  throw new Error(`unknown channel ${channel}; expected stable or dev`)
+}
 const requested = args.filter((arg) => !arg.startsWith("--"))
 const invalid = requested.filter((target) => !(TARGETS as readonly string[]).includes(target))
 if (invalid.length > 0) {
@@ -80,6 +90,7 @@ for (const target of targets) {
     `--define=ATC_BUILD_COMMIT=${JSON.stringify(commit)}`,
     `--define=ATC_BUILD_BUILT_AT=${JSON.stringify(builtAt)}`,
     ...(version === undefined ? [] : [`--define=ATC_BUILD_VERSION=${JSON.stringify(version)}`]),
+    ...(channel === undefined ? [] : [`--define=ATC_BUILD_CHANNEL=${JSON.stringify(channel)}`]),
     `--outfile=${outfile}`,
     "src/main.ts",
   ])
