@@ -19,7 +19,7 @@ curl -fsSL https://raw.githubusercontent.com/jeremytondo/atc/main/install.sh | s
 This downloads the latest stable GitHub Release for your platform, verifies
 its checksum, and installs `atc` to `~/.local/bin` (`ATC_INSTALL_DIR`
 overrides). Append `-s -- --channel dev` to ride the dev channel — a rolling
-prerelease rebuilt from every merge to `main`. Run `atc service install` to
+prerelease published on demand from `main`. Run `atc service install` to
 start it as a login service, or `atc serve` for the foreground. A running
 server serves its console at `http://127.0.0.1:7331/` and the API reference
 at `/docs`. To update, run `atc upgrade` — it reinstalls from the binary's

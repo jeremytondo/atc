@@ -116,10 +116,11 @@ clone zmx --branch 'v0.6.0' https://github.com/neurosnap/zmx.git
 """
 
 # --- Releases ---
-# One shape per surface: <surface>:release:<channel>. The App Server pipeline
-# runs in GitHub Actions (.github/workflows/app-server-release.yml) — merges
-# to main publish the rolling dev prerelease automatically, so its tasks just
-# dispatch the workflow. The macOS tasks build, notarize, and upload locally.
+# One shape per surface, one mental model: <surface>:release:<channel>, and a
+# release of either channel happens only when you run its task. The App
+# Server tasks dispatch the GitHub Actions pipeline
+# (.github/workflows/app-server-release.yml); the macOS tasks build,
+# notarize, and upload locally (signing lives on the developer Mac).
 
 [tasks."app-server:release:stable"]
 description = "Dispatch the stable App Server release (usage: mise run app-server:release:stable [patch|minor|major])"
@@ -136,7 +137,7 @@ echo "dispatched stable release ($bump bump); follow with: gh run watch"
 """
 
 [tasks."app-server:release:dev"]
-description = "Dispatch a dev-channel App Server release (merges to main publish one automatically)"
+description = "Build and publish the rolling dev-channel App Server release"
 run = [
   "gh workflow run app-server-release.yml -f channel=dev",
   "echo 'dispatched dev release; follow with: gh run watch'",

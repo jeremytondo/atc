@@ -1,16 +1,18 @@
 # Release pipeline for the App Server executable (ATC-127).
 #
-# Two channels, one pipeline:
+# Two channels, one pipeline, both manual dispatch (mise run
+# app-server:release:dev / app-server:release:stable) — dev releases are
+# on-demand, not on-merge, so both surfaces share one mental model (the
+# macOS DMG can only build on-demand: signing lives on the developer Mac):
 #
-#   dev     every push to main (app-server paths) — and manual dispatch —
-#           rebuilds the single rolling `dev` prerelease: the tag is force-
+#   dev     rebuilds the single rolling `dev` prerelease: the tag is force-
 #           moved, the release recreated, so exactly one dev build exists.
 #           Versions stamp as <next-patch>-dev.<UTC minute> so `atc --version`
 #           is self-describing and sorts below the next stable release.
-#   stable  manual dispatch only: tags vX.Y.Z (bumped from the highest
-#           existing v tag per release_type) and publishes a GitHub Release.
-#           `releases/latest` only ever points here — prereleases are
-#           excluded — so install.sh's stable channel needs no manifest.
+#   stable  tags vX.Y.Z (bumped from the highest existing v tag per
+#           release_type) and publishes a GitHub Release. `releases/latest`
+#           only ever points here — prereleases are excluded — so
+#           install.sh's stable channel needs no manifest.
 #
 # Darwin targets build on macOS so Bun's ad-hoc code signature is applied
 # (and verified) natively; Linux targets cross-compile on ubuntu. Three of
@@ -21,13 +23,6 @@
 name: App Server Release
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "app-server/**"
-      - "install.sh"
-      - "mise.toml"
-      - ".github/workflows/app-server-release.yml"
   workflow_dispatch:
     inputs:
       channel:
@@ -77,11 +72,7 @@ jobs:
       - name: Compute channel and version
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            channel="dev"
-          else
-            channel="${{ inputs.channel }}"
-          fi
+          channel="${{ inputs.channel }}"
           echo "channel=$channel" >> "$GITHUB_OUTPUT"
           if [ "$channel" = "stable" ]; then
             if [ "${GITHUB_REF_NAME}" != "${{ github.event.repository.default_branch }}" ]; then
