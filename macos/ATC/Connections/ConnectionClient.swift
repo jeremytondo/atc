@@ -6,7 +6,7 @@
 import ATCAppServerAPI
 import Foundation
 
-enum ConnectionClient {
+nonisolated enum ConnectionClient {
     static func make(baseURL: URL, token: String) -> any APIProtocol {
         ATCAppServerAPI.makeClient(
             baseURL: baseURL,
@@ -18,8 +18,8 @@ enum ConnectionClient {
 /// The Settings "Test Connection" probe: reports the server version a draft's
 /// URL and token reach. Injectable so the editor's states are testable
 /// without a server.
-struct ConnectionProbe {
-    var version: (URL, String) async throws -> String
+nonisolated struct ConnectionProbe: Sendable {
+    var version: @Sendable (URL, String) async throws -> String
 
     static let live = ConnectionProbe { url, token in
         let client = ConnectionClient.make(baseURL: url, token: token)

@@ -24,7 +24,7 @@ struct ServerError: LocalizedError {
 /// the variadic initializer below cannot see a `valueN` a call site forgot
 /// to pass, so contract changes to anyOf statuses need their unwrap sites
 /// re-checked by hand.)
-protocol ServerErrorPayload {
+nonisolated protocol ServerErrorPayload {
     var message: String { get }
 }
 
