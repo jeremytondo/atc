@@ -5,10 +5,10 @@ import { join } from "node:path"
 import { describe, expect, test } from "vitest"
 import {
   compiledBinaryPath,
-  freePort,
   isolatedEnv,
   runCli,
   spawnServe,
+  spawnServeHealthy,
   waitForHealth,
 } from "./blackbox.ts"
 
@@ -36,13 +36,18 @@ describe.skipIf(!enabled)("compiled atc artifact (opt-in: mise run test:compiled
     // compiled behavior must depend on neither the working directory nor the
     // developer's real config/data/state.
     const outsideCwd = mkdtempSync(join(tmpdir(), "atc-compiled-"))
-    const port = await freePort()
-    const env = isolatedEnv(outsideCwd, { ATC_PORT: String(port) })
-    const base = `http://127.0.0.1:${port}`
+    // The env is rebuilt per spawn attempt: it carries the port, and each
+    // isolatedEnv call allocates a fresh state home, which must be the one
+    // the surviving server actually used.
+    let env!: ReturnType<typeof isolatedEnv>
+    const first = await spawnServeHealthy((attemptPort) => {
+      env = isolatedEnv(outsideCwd, { ATC_PORT: String(attemptPort) })
+      return spawnServe([compiledBinaryPath], attemptPort, outsideCwd, env)
+    })
+    const { port, base, health } = first
     const dbFile = join(outsideCwd, "data", "atc", "atc.db")
-    let proc = spawnServe([compiledBinaryPath], port, outsideCwd, env)
+    let proc = first.proc
     try {
-      const health = await waitForHealth(base, proc)
       expect(health.status).toBe(200)
       expect(await health.json()).toEqual({ status: "ok" })
 
