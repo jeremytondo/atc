@@ -83,6 +83,8 @@ TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 # publishes to, and the marketing version stamped into the app.
 if [[ "$CHANNEL" == "stable" ]]; then
   BUNDLE_ID="ElevenIdeas.atc"
+  # Release tags are created in CI, so sync them before resolving the latest.
+  git -C "$REPO_ROOT" fetch --quiet origin 'refs/tags/v*:refs/tags/v*' 2>/dev/null || true
   TAG="$(cd "$REPO_ROOT" && git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname | tail -1)"
   [[ -n "$TAG" ]] || die "No vX.Y.Z tag found; run the stable App Server release first (mise run app-server:release:stable)"
   MARKETING_VERSION="${TAG#v}"
