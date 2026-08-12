@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/release.sh dev|stable [patch|minor|major]
+Usage: scripts/release.sh dev|stable [patch|minor|major] [--verbose]
 
 Full-product release: the App Server (built in CI) and the macOS DMG (built
 on this Mac) for the same channel, in one command.
@@ -13,6 +13,8 @@ on this Mac) for the same channel, in one command.
   stable  dispatch the App Server vX.Y.Z release, wait for CI to publish it,
           then attach the macOS DMG to that release. The bump argument
           (default: patch) picks the version increment.
+
+  --verbose  stream the full output from the local macOS release tools.
 USAGE
 }
 
@@ -22,9 +24,10 @@ die() {
 }
 
 CHANNEL="${1:-}"
-BUMP="${2:-patch}"
 case "$CHANNEL" in
-  dev|stable) ;;
+  dev|stable)
+    shift
+    ;;
   -h|--help)
     usage
     exit 0
@@ -34,13 +37,41 @@ case "$CHANNEL" in
     die "expected channel dev or stable"
     ;;
 esac
-case "$BUMP" in
-  patch|minor|major) ;;
-  *)
-    usage >&2
-    die "expected bump patch, minor, or major"
-    ;;
-esac
+
+BUMP="patch"
+BUMP_SET=0
+VERBOSE=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    patch|minor|major)
+      [[ "$BUMP_SET" -eq 0 ]] || die "the version bump may only be specified once"
+      BUMP="$1"
+      BUMP_SET=1
+      ;;
+    --verbose)
+      VERBOSE=1
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      die "unknown argument: $1"
+      ;;
+  esac
+  shift
+done
+
+run_macos_release() {
+  local task="$1"
+  if [[ "$VERBOSE" -eq 1 ]]; then
+    mise run "$task" --verbose
+    return
+  fi
+
+  mise run "$task"
+}
 
 command -v gh >/dev/null 2>&1 || die "Missing required tool: gh"
 
@@ -76,10 +107,10 @@ if [[ "$CHANNEL" == "stable" ]]; then
   # The DMG attaches to the vX.Y.Z release, so CI must publish it first.
   echo "waiting for the App Server release run to publish the new version..."
   gh run watch "$run_id" --exit-status
-  mise run macos:release:stable
+  run_macos_release macos:release:stable
 else
   # CI builds the server while this Mac builds the DMG.
-  mise run macos:release:dev
+  run_macos_release macos:release:dev
   echo "macOS dev DMG published; waiting for the App Server run to finish..."
   gh run watch "$run_id" --exit-status
 fi

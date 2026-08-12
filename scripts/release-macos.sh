@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/release-macos.sh [--channel dev|stable] [--upload]
+Usage: scripts/release-macos.sh [--channel dev|stable] [--upload] [--verbose]
 
 Builds, exports, packages, notarizes, staples, and verifies a Developer ID
 DMG for atc.app.
@@ -14,6 +14,8 @@ DMG for atc.app.
                     vX.Y.Z tag; --upload attaches the DMG to that tag's
                     existing GitHub release (run the stable App Server
                     release first: mise run app-server:release:stable).
+  --verbose         stream full command output instead of the concise release
+                    checklist. Logs are always retained with the artifacts.
 
 Environment overrides:
   ATC_TEAM_ID         Apple Developer Team ID (default: 337D6CNU4E)
@@ -37,6 +39,7 @@ require_tool() {
 
 UPLOAD=0
 CHANNEL="dev"
+VERBOSE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --upload)
@@ -46,6 +49,9 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || die "missing value for --channel"
       CHANNEL="$2"
       shift
+      ;;
+    --verbose)
+      VERBOSE=1
       ;;
     -h|--help)
       usage
@@ -106,6 +112,7 @@ SOURCE_PACKAGES_PATH="$RUN_DIR/SourcePackages"
 DMG_ROOT="$RUN_DIR/dmg-root"
 DMG_PATH="$RUN_DIR/$DMG_BASENAME"
 APP_PATH="$EXPORT_PATH/$APP_NAME.app"
+LOG_DIR="$RUN_DIR/logs"
 
 DEVELOPER_ID_IDENTITY=""
 
@@ -150,11 +157,73 @@ validate_github_auth() {
 }
 
 validate_exported_app() {
-  [[ -d "$APP_PATH" ]] || die "Expected exported app not found: $APP_PATH"
+  if [[ ! -d "$APP_PATH" ]]; then
+    printf 'Expected exported app not found: %s\n' "$APP_PATH" >&2
+    return 1
+  fi
 
   local actual_bundle_id
   actual_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Contents/Info.plist")"
-  [[ "$actual_bundle_id" == "$BUNDLE_ID" ]] || die "Expected bundle ID $BUNDLE_ID, got $actual_bundle_id"
+  if [[ "$actual_bundle_id" != "$BUNDLE_ID" ]]; then
+    printf 'Expected bundle ID %s, got %s\n' "$BUNDLE_ID" "$actual_bundle_id" >&2
+    return 1
+  fi
+}
+
+# Successful release commands keep their complete output in per-step logs.
+# Failures print that output before exiting; --verbose also streams it live.
+run_step() {
+  local label="$1"
+  local log_name="$2"
+  local log_path="$LOG_DIR/$log_name.log"
+  local status
+  shift 2
+
+  if [[ "$VERBOSE" -eq 1 ]]; then
+    log "$label"
+    if "$@" 2>&1 | tee "$log_path"; then
+      return
+    else
+      status=$?
+      printf 'error: %s failed (full log: %s)\n' "$label" "$log_path" >&2
+      return "$status"
+    fi
+  fi
+
+  printf '  %-58s' "$label"
+  if "$@" >"$log_path" 2>&1; then
+    printf '✓\n'
+    return
+  else
+    status=$?
+    printf '✗\n\n' >&2
+    printf '%s\n' "--- $label output ---" >&2
+    cat "$log_path" >&2
+    printf '%s\n' "--- end output ---" >&2
+    printf 'error: %s failed (full log: %s)\n' "$label" "$log_path" >&2
+    return "$status"
+  fi
+}
+
+create_dmg() {
+  ditto "$APP_PATH" "$DMG_ROOT/$APP_NAME.app" &&
+  ln -s /Applications "$DMG_ROOT/Applications" &&
+  hdiutil create \
+    -volname "$APP_NAME" \
+    -srcfolder "$DMG_ROOT" \
+    -ov \
+    -format UDZO \
+    "$DMG_PATH"
+}
+
+sign_dmg() {
+  codesign --force --sign "$DEVELOPER_ID_IDENTITY" "$DMG_PATH" &&
+  codesign --verify --verbose=2 "$DMG_PATH"
+}
+
+staple_dmg() {
+  xcrun stapler staple "$DMG_PATH" &&
+  xcrun stapler validate "$DMG_PATH"
 }
 
 require_tool xcodebuild
@@ -168,15 +237,23 @@ require_tool ditto
 [[ -d "$PROJECT_PATH" ]] || die "Missing Xcode project: $PROJECT_PATH"
 [[ -f "$EXPORT_OPTIONS_PLIST" ]] || die "Missing export options: $EXPORT_OPTIONS_PLIST"
 
-log "Validating signing, notarization, and upload prerequisites ($CHANNEL channel)"
+if [[ "$VERBOSE" -eq 1 ]]; then
+  log "Validating signing, notarization, and upload prerequisites ($CHANNEL channel)"
+else
+  printf '\nmacOS release (%s)\n\n' "$CHANNEL"
+  printf '  %-58s' "Validate signing, notarization, and upload prerequisites"
+fi
 find_developer_id_identity
 validate_notary_profile
 validate_github_auth
+if [[ "$VERBOSE" -eq 0 ]]; then
+  printf '✓\n'
+fi
 
-mkdir -p "$RUN_DIR" "$EXPORT_PATH" "$DERIVED_DATA_PATH" "$SOURCE_PACKAGES_PATH" "$DMG_ROOT"
+mkdir -p "$RUN_DIR" "$EXPORT_PATH" "$DERIVED_DATA_PATH" "$SOURCE_PACKAGES_PATH" "$DMG_ROOT" "$LOG_DIR"
 
-log "Generating App Server API sources for Xcode"
-"$SCRIPT_DIR/prepare-xcode-openapi.sh" "$DERIVED_DATA_PATH"
+run_step "Generate App Server API sources" "01-generate-api" \
+  "$SCRIPT_DIR/prepare-xcode-openapi.sh" "$DERIVED_DATA_PATH"
 
 XCODE_OVERRIDES=(
   "ARCHS=arm64"
@@ -190,8 +267,7 @@ if [[ -n "$MARKETING_VERSION" ]]; then
   XCODE_OVERRIDES+=("MARKETING_VERSION=$MARKETING_VERSION")
 fi
 
-log "Archiving $APP_NAME.app"
-xcodebuild archive \
+run_step "Archive $APP_NAME.app" "02-archive" xcodebuild archive \
   -project "$PROJECT_PATH" \
   -scheme "$SCHEME" \
   -configuration "$CONFIGURATION" \
@@ -203,51 +279,37 @@ xcodebuild archive \
   -skipMacroValidation \
   "${XCODE_OVERRIDES[@]}"
 
-log "Exporting Developer ID app"
-xcodebuild -exportArchive \
+run_step "Export Developer ID app" "03-export" xcodebuild -exportArchive \
   -archivePath "$ARCHIVE_PATH" \
   -exportPath "$EXPORT_PATH" \
   -exportOptionsPlist "$EXPORT_OPTIONS_PLIST" \
   -allowProvisioningUpdates
 
-validate_exported_app
+run_step "Validate exported app" "04-validate-app" validate_exported_app
 
-log "Verifying exported app signature"
-codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+run_step "Verify exported app signature" "05-verify-app" \
+  codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
-log "Creating DMG"
-ditto "$APP_PATH" "$DMG_ROOT/$APP_NAME.app"
-ln -s /Applications "$DMG_ROOT/Applications"
-hdiutil create \
-  -volname "$APP_NAME" \
-  -srcfolder "$DMG_ROOT" \
-  -ov \
-  -format UDZO \
-  "$DMG_PATH"
+run_step "Create DMG" "06-create-dmg" create_dmg
 
-log "Signing DMG"
-codesign --force --sign "$DEVELOPER_ID_IDENTITY" "$DMG_PATH"
-codesign --verify --verbose=2 "$DMG_PATH"
+run_step "Sign and verify DMG" "07-sign-dmg" sign_dmg
 
-log "Submitting DMG for notarization"
-xcrun notarytool submit "$DMG_PATH" \
+run_step "Submit DMG for notarization" "08-notarize" xcrun notarytool submit "$DMG_PATH" \
   --keychain-profile "$ATC_NOTARY_PROFILE" \
   --wait
 
-log "Stapling notarization ticket"
-xcrun stapler staple "$DMG_PATH"
-xcrun stapler validate "$DMG_PATH"
+run_step "Staple notarization ticket" "09-staple" staple_dmg
 
-log "Assessing DMG with Gatekeeper"
-spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG_PATH"
+run_step "Assess DMG with Gatekeeper" "10-gatekeeper" \
+  spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG_PATH"
 
 if [[ "$UPLOAD" -eq 1 ]]; then
   if [[ "$CHANNEL" == "stable" ]]; then
-    log "Uploading DMG to release $TAG"
-    gh release upload "$TAG" "$DMG_PATH" --clobber
+    run_step "Upload DMG to release $TAG" "11-upload" \
+      gh release upload "$TAG" "$DMG_PATH" --clobber
   else
-    log "Creating GitHub prerelease $TAG"
-    gh release create "$TAG" "$DMG_PATH" \
+    run_step "Create GitHub prerelease $TAG" "11-upload" \
+      gh release create "$TAG" "$DMG_PATH" \
       --title "$TITLE" \
       --notes "Developer ID notarized Apple Silicon dev build for $APP_NAME." \
       --prerelease
@@ -258,3 +320,4 @@ log "Release artifact ready"
 printf 'Channel: %s\n' "$CHANNEL"
 printf 'Tag: %s\n' "$TAG"
 printf 'DMG: %s\n' "$DMG_PATH"
+printf 'Logs: %s\n' "$LOG_DIR"

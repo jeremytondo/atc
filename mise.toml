@@ -124,11 +124,11 @@ clone zmx --branch 'v0.6.0' https://github.com/neurosnap/zmx.git
 # notarize, and upload locally (signing lives on the developer Mac).
 
 [tasks."release:dev"]
-description = "Full dev release: App Server in CI + macOS DMG locally, in parallel"
+description = "Full dev release: App Server in CI + macOS DMG locally, in parallel (add --verbose for full macOS logs)"
 run = "scripts/release.sh dev"
 
 [tasks."release:stable"]
-description = "Full stable release: cut vX.Y.Z in CI, then attach the macOS DMG (usage: mise run release:stable [patch|minor|major])"
+description = "Full stable release: cut vX.Y.Z in CI, then attach the macOS DMG (usage: mise run release:stable [patch|minor|major] [--verbose])"
 run = "scripts/release.sh stable"
 
 [tasks."app-server:release:stable"]
@@ -153,9 +153,9 @@ run = [
 ]
 
 [tasks."macos:release:stable"]
-description = "Build, notarize, and attach the stable macOS DMG to the latest vX.Y.Z release"
+description = "Build, notarize, and attach the stable macOS DMG to the latest vX.Y.Z release (add --verbose for full logs)"
 run = "scripts/release-macos.sh --channel stable --upload"
 
 [tasks."macos:release:dev"]
-description = "Build and publish a notarized dev DMG to GitHub Releases"
+description = "Build and publish a notarized dev DMG to GitHub Releases (add --verbose for full logs)"
 run = "scripts/release-macos.sh --channel dev --upload"
