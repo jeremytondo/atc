@@ -116,11 +116,20 @@ clone zmx --branch 'v0.6.0' https://github.com/neurosnap/zmx.git
 """
 
 # --- Releases ---
-# One shape per surface, one mental model: <surface>:release:<channel>, and a
-# release of either channel happens only when you run its task. The App
-# Server tasks dispatch the GitHub Actions pipeline
+# One mental model: release:<channel> releases the whole product;
+# <surface>:release:<channel> releases one surface. Nothing publishes on
+# merge — a release happens only when you run its task. The App Server tasks
+# dispatch the GitHub Actions pipeline
 # (.github/workflows/app-server-release.yml); the macOS tasks build,
 # notarize, and upload locally (signing lives on the developer Mac).
+
+[tasks."release:dev"]
+description = "Full dev release: App Server in CI + macOS DMG locally, in parallel"
+run = "scripts/release.sh dev"
+
+[tasks."release:stable"]
+description = "Full stable release: cut vX.Y.Z in CI, then attach the macOS DMG (usage: mise run release:stable [patch|minor|major])"
+run = "scripts/release.sh stable"
 
 [tasks."app-server:release:stable"]
 description = "Dispatch the stable App Server release (usage: mise run app-server:release:stable [patch|minor|major])"
