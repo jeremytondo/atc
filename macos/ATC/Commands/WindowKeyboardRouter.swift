@@ -39,9 +39,6 @@ final class WindowKeyboardRouter {
     @ObservationIgnored private let executeCommand: @MainActor (CommandID) -> CommandAvailability
     @ObservationIgnored private var flashTask: Task<Void, Never>?
     @ObservationIgnored private var flashToken = 0
-    @ObservationIgnored var pendingTimeout: Duration = .seconds(1.2)
-    @ObservationIgnored private(set) var pendingTimeoutTask: Task<Void, Never>?
-    @ObservationIgnored private var pendingToken = 0
 
     init(keymap: ResolvedKeymap, context: CommandContext) {
         self.keymap = keymap
@@ -95,9 +92,6 @@ final class WindowKeyboardRouter {
     }
 
     func cancel() {
-        pendingToken += 1
-        pendingTimeoutTask?.cancel()
-        pendingTimeoutTask = nil
         state = .idle
     }
 
@@ -116,26 +110,9 @@ final class WindowKeyboardRouter {
                 showFlash(reason)
             }
         case .prefix(let continuations):
-            beginPending(continuations)
+            state = .pending(node: continuations)
         }
         return true
-    }
-
-    private func beginPending(_ continuations: [KeyStroke: ResolvedKeymap.Node]) {
-        pendingToken += 1
-        let token = pendingToken
-        let timeout = pendingTimeout
-        state = .pending(node: continuations)
-        pendingTimeoutTask?.cancel()
-        pendingTimeoutTask = Task { [weak self] in
-            do {
-                try await Task.sleep(for: timeout)
-            } catch {
-                return
-            }
-            guard let self, token == self.pendingToken else { return }
-            self.cancel()
-        }
     }
 
     private func clearFlash() {

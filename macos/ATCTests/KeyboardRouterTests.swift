@@ -50,53 +50,6 @@ struct KeyboardRouterTests {
         #expect(executions == [.toggleSidebar])
     }
 
-    @Test("an inactive leader sequence times out silently and forwards the next key")
-    func leaderTimeout() async throws {
-        let router = WindowKeyboardRouter(keymap: try keymap()) { _ in .available }
-        router.pendingTimeout = .milliseconds(1)
-
-        #expect(router.handle(try stroke("cmd+k"), isRepeat: false))
-        #expect(router.pendingNode != nil)
-        let timeoutTask = try #require(router.pendingTimeoutTask)
-        await timeoutTask.value
-
-        #expect(router.pendingNode == nil)
-        #expect(router.flash == nil)
-        #expect(!router.handle(KeyStroke(key: "x", modifiers: []), isRepeat: false))
-    }
-
-    @Test("a continuation invalidates its pending timeout")
-    func continuationInvalidatesTimeout() async throws {
-        var executions: [CommandID] = []
-        let router = WindowKeyboardRouter(keymap: try keymap()) {
-            executions.append($0)
-            return .available
-        }
-
-        #expect(router.handle(try stroke("cmd+k"), isRepeat: false))
-        let timeoutTask = try #require(router.pendingTimeoutTask)
-        #expect(router.handle(KeyStroke(key: "b", modifiers: []), isRepeat: false))
-        await timeoutTask.value
-
-        #expect(router.pendingNode == nil)
-        #expect(router.pendingTimeoutTask == nil)
-        #expect(executions == [.toggleSidebar])
-    }
-
-    @Test("cancel invalidates the pending timeout")
-    func cancelInvalidatesTimeout() async throws {
-        let router = WindowKeyboardRouter(keymap: try keymap()) { _ in .available }
-
-        #expect(router.handle(try stroke("cmd+k"), isRepeat: false))
-        let timeoutTask = try #require(router.pendingTimeoutTask)
-        router.cancel()
-        await timeoutTask.value
-
-        #expect(router.pendingNode == nil)
-        #expect(router.pendingTimeoutTask == nil)
-        #expect(router.flash == nil)
-    }
-
     @Test("modified continuations are never retried against root")
     func continuationDoesNotRetryRoot() throws {
         var executions: [CommandID] = []
