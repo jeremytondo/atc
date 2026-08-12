@@ -10,6 +10,7 @@ import { service } from "./cli/service.ts"
 import { terminal } from "./cli/terminals.ts"
 import { token } from "./cli/token.ts"
 import { thread } from "./cli/threads.ts"
+import { upgrade } from "./cli/upgrade.ts"
 import { smoke } from "./agents/smoke.ts"
 import * as Subprocess from "./platform/subprocess.ts"
 
@@ -24,6 +25,7 @@ const atc = Command.make("atc").pipe(
     stop,
     status,
     service,
+    upgrade,
     api,
     context,
     capabilities,

@@ -115,6 +115,37 @@ clone opencode https://github.com/sst/opencode.git
 clone zmx --branch 'v0.6.0' https://github.com/neurosnap/zmx.git
 """
 
-[tasks."macos:release-dev"]
+# --- Releases ---
+# One shape per surface: <surface>:release:<channel>. The App Server pipeline
+# runs in GitHub Actions (.github/workflows/app-server-release.yml) — merges
+# to main publish the rolling dev prerelease automatically, so its tasks just
+# dispatch the workflow. The macOS tasks build, notarize, and upload locally.
+
+[tasks."app-server:release:stable"]
+description = "Dispatch the stable App Server release (usage: mise run app-server:release:stable [patch|minor|major])"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+bump="${1:-patch}"
+case "$bump" in
+  patch|minor|major) ;;
+  *) echo "usage: mise run app-server:release:stable [patch|minor|major]" >&2; exit 1 ;;
+esac
+gh workflow run app-server-release.yml -f channel=stable -f release_type="$bump"
+echo "dispatched stable release ($bump bump); follow with: gh run watch"
+"""
+
+[tasks."app-server:release:dev"]
+description = "Dispatch a dev-channel App Server release (merges to main publish one automatically)"
+run = [
+  "gh workflow run app-server-release.yml -f channel=dev",
+  "echo 'dispatched dev release; follow with: gh run watch'",
+]
+
+[tasks."macos:release:stable"]
+description = "Build, notarize, and attach the stable macOS DMG to the latest vX.Y.Z release"
+run = "scripts/release-macos.sh --channel stable --upload"
+
+[tasks."macos:release:dev"]
 description = "Build and publish a notarized dev DMG to GitHub Releases"
-run = "scripts/release-dev.sh --upload"
+run = "scripts/release-macos.sh --channel dev --upload"

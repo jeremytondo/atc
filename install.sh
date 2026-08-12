@@ -5,18 +5,21 @@ set -eu
 repo="${ATC_REPO:-jeremytondo/atc}"
 install_dir="${ATC_INSTALL_DIR:-$HOME/.local/bin}"
 version="${ATC_VERSION:-latest}"
+channel="${ATC_CHANNEL:-stable}"
 
 usage() {
   cat <<'EOF'
 Install atc from GitHub Releases.
 
 Usage:
-  ./install.sh [--version vX.Y.Z]
+  ./install.sh [--version vX.Y.Z] [--channel stable|dev]
 
 Environment:
   ATC_REPO         GitHub repository (default: jeremytondo/atc)
   ATC_INSTALL_DIR  Install directory (default: ~/.local/bin)
   ATC_VERSION      Release tag, or latest (default: latest)
+  ATC_CHANNEL      Channel when no version is given: stable, or dev for the
+                   rolling build published from main (default: stable)
 EOF
 }
 
@@ -34,6 +37,14 @@ while [ "$#" -gt 0 ]; do
       version="$2"
       shift 2
       ;;
+    --channel)
+      if [ "$#" -lt 2 ]; then
+        echo "missing value for --channel" >&2
+        exit 1
+      fi
+      channel="$2"
+      shift 2
+      ;;
     *)
       echo "unknown argument: $1" >&2
       usage >&2
@@ -41,6 +52,14 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+case "$channel" in
+  stable|dev) ;;
+  *)
+    echo "unknown channel: $channel (expected stable or dev)" >&2
+    exit 1
+    ;;
+esac
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -74,11 +93,15 @@ case "$arch" in
     ;;
 esac
 
+# An explicit version pins a tag; otherwise the channel picks between the
+# latest stable release and the rolling `dev` prerelease tag.
 archive="atc-${os}-${arch}.tar.gz"
-if [ "$version" = "latest" ]; then
-  download_base="https://github.com/${repo}/releases/latest/download"
-else
+if [ "$version" != "latest" ]; then
   download_base="https://github.com/${repo}/releases/download/${version}"
+elif [ "$channel" = "dev" ]; then
+  download_base="https://github.com/${repo}/releases/download/dev"
+else
+  download_base="https://github.com/${repo}/releases/latest/download"
 fi
 
 tmp="$(mktemp -d)"
@@ -123,5 +146,5 @@ case ":$PATH:" in
     echo "add ${install_dir} to PATH to run atc directly"
     ;;
 esac
-echo "run \`atc service install\` to run it as a login service — including re-running it after an update, which restarts onto the new binary — or \`atc serve\` for the foreground"
+echo "run \`atc service install\` to run it as a login service, or \`atc serve\` for the foreground; update later with \`atc upgrade\`"
 echo "a running server serves its console at its base URL (default http://127.0.0.1:7331/) and API docs at /docs"

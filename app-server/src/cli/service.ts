@@ -226,6 +226,21 @@ const launchdBootstrap = (subprocess: Subprocess["Service"], command: string, un
     yield* run(subprocess, command, "launchctl", ["bootstrap", fallback, unitFile])
   })
 
+/**
+ * The installed unit file's path, or undefined when no service is installed
+ * (or the platform has no supervisor). `atc upgrade` reads this to decide
+ * whether a reinstall must also restart the service onto the new binary.
+ */
+export const installedUnitFile = Effect.gen(function* () {
+  const platform = process.platform
+  if (platform !== "darwin" && platform !== "linux") return undefined
+  const config = yield* AppConfig
+  const fs = yield* FileSystem.FileSystem
+  const unitFile = unitFileFor(platform, config.home)
+  const exists = yield* fs.exists(unitFile).pipe(Effect.orElseSucceed(() => false))
+  return exists ? unitFile : undefined
+})
+
 const unitFileFor = (platform: Platform, home: string): string =>
   platform === "darwin"
     ? launchAgentPath(home)
