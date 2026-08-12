@@ -153,6 +153,8 @@ export class Threads extends Context.Service<
     readonly pin: (id: string) => Effect.Effect<Thread, ThreadNotFound | ThreadArchived>
     /** Idempotent. */
     readonly unpin: (id: string) => Effect.Effect<Thread, ThreadNotFound>
+    /** Stamp the viewed marker, clearing `unread`; a no-op unless unread. */
+    readonly markViewed: (id: string) => Effect.Effect<Thread, ThreadNotFound>
     /** Kill the live linked terminal and release adapter resources, then
      * remove the record. */
     readonly delete: (id: string) => Effect.Effect<void, ThreadNotFound | ZmxUnavailable>
@@ -220,6 +222,17 @@ export const layerWith = (options: ThreadsOptions) =>
 
       const isBusy = (activity: AgentActivity): boolean =>
         activity === "working" || activity === "needs_input"
+
+      /**
+       * The unread overlay (ATC-160): a finish no client has viewed yet.
+       * Server-derived so every client renders one boolean; the raw stamps
+       * stay server-only (like confirmedAt). Archived rows are never unread
+       * — archive is a deliberate put-away, not something to surface.
+       */
+      const isUnread = (record: ThreadRecord): boolean =>
+        record.archivedAt === undefined &&
+        record.lastFinishedAt !== undefined &&
+        (record.lastViewedAt === undefined || record.lastViewedAt < record.lastFinishedAt)
 
       /**
        * The auto-naming transition (ATC-155): one title one-shot through
@@ -326,6 +339,12 @@ export const layerWith = (options: ThreadsOptions) =>
                     confirmed = true
                     yield* repository.confirm(record.id)
                   }
+                  // The busy→idle drop IS the turn-finished signal (ATC-160):
+                  // stamp before publishing so the refetch the event triggers
+                  // already sees the thread unread.
+                  if (previous !== undefined && isBusy(previous) && activity === "idle") {
+                    yield* repository.markFinished(record.id)
+                  }
                   // One publish covers both the activity transition and the
                   // confirm write above (which only happens on a transition).
                   if (previous !== activity) {
@@ -394,6 +413,13 @@ export const layerWith = (options: ThreadsOptions) =>
                   .checkSession({ providerSessionId })
                   .pipe(Effect.orElseSucceed(() => "unknown" as const))
           liveActivity.set(record.id, checked)
+          // A finish discovered on read stamps too (the busy snapshot was
+          // real evidence and the check says the turn is over). This read
+          // still returns the pre-stamp record; the publish below makes
+          // every client — this one included — refetch and see it unread.
+          if (checked === "idle") {
+            yield* repository.markFinished(record.id)
+          }
           // Other subscribers must hear about the re-derived state too, not
           // just the client whose read triggered it. Loop-safe: the busy
           // snapshot is gone, so the next event-triggered read returns at
@@ -417,6 +443,7 @@ export const layerWith = (options: ThreadsOptions) =>
         ...(record.name !== undefined ? { name: record.name } : {}),
         workingDirectory: record.workingDirectory,
         activityState,
+        unread: isUnread(record),
         ...(linkedTerminalId !== undefined ? { linkedTerminalId } : {}),
         ...(record.pinnedAt !== undefined ? { pinnedAt: record.pinnedAt } : {}),
         ...(record.archivedAt !== undefined ? { archivedAt: record.archivedAt } : {}),
@@ -898,6 +925,17 @@ export const layerWith = (options: ThreadsOptions) =>
             const record = yield* repository.require(id)
             if (record.pinnedAt === undefined) return yield* assembleAlone(record)
             const updated = yield* repository.setPinned(id, false)
+            yield* events.publish({ resource: "thread", id, change: "updated" })
+            return yield* assembleAlone(updated)
+          }),
+        markViewed: (id) =>
+          Effect.gen(function* () {
+            const record = yield* repository.require(id)
+            // The no-op guard is what lets clients stamp on EVERY view:
+            // an already-read thread costs no write and — crucially — no
+            // publish, so routine opens never trigger a fleet-wide refetch.
+            if (!isUnread(record)) return yield* assembleAlone(record)
+            const updated = yield* repository.markViewed(id)
             yield* events.publish({ resource: "thread", id, change: "updated" })
             return yield* assembleAlone(updated)
           }),

@@ -77,6 +77,7 @@ export const V1Handlers = HttpApiBuilder.group(
         .handle("unarchiveThread", ({ params }) => threads.unarchive(params.threadId))
         .handle("pinThread", ({ params }) => threads.pin(params.threadId))
         .handle("unpinThread", ({ params }) => threads.unpin(params.threadId))
+        .handle("markThreadViewed", ({ params }) => threads.markViewed(params.threadId))
         .handle("deleteThread", ({ params }) => threads.delete(params.threadId))
         .handle("openThreadTerminal", ({ params }) => threads.openTerminal(params.threadId))
         .handle("listAgents", () => agents.list())

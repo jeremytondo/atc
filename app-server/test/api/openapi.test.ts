@@ -178,6 +178,7 @@ describe("openapi document vs runtime", () => {
       "/api/v1/threads/{threadId}/unarchive",
       "/api/v1/threads/{threadId}/pin",
       "/api/v1/threads/{threadId}/unpin",
+      "/api/v1/threads/{threadId}/viewed",
       "/api/v1/threads/{threadId}/terminal",
       "/api/v1/agents",
       "/api/v1/agents/{agentId}",
@@ -438,6 +439,22 @@ describe("openapi document vs runtime", () => {
       assert.notProperty(restoredBody, "archivedAt")
       assert.deepStrictEqual(
         operation(`/api/v1/threads/{threadId}/unarchive`, "post").responses["200"]!.content[
+          "application/json"
+        ]!.schema,
+        { $ref: "#/components/schemas/Thread" },
+      )
+
+      // The viewed stamp rounds-trips the Thread schema too; on a thread
+      // with no finished turn it is a pure no-op with `unread: false`.
+      const viewed = yield* client.post(
+        `http://127.0.0.1/api/v1/threads/${createdBody.id}/viewed`,
+        { body: HttpBody.empty },
+      )
+      assert.strictEqual(viewed.status, 200)
+      const viewedBody = (yield* viewed.json) as Record<string, unknown>
+      assert.strictEqual(viewedBody["unread"], false)
+      assert.deepStrictEqual(
+        operation(`/api/v1/threads/{threadId}/viewed`, "post").responses["200"]!.content[
           "application/json"
         ]!.schema,
         { $ref: "#/components/schemas/Thread" },

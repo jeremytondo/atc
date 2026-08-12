@@ -61,6 +61,7 @@ describe("/api/v1/threads", () => {
       assert.strictEqual(created.agentId, "codex")
       assert.strictEqual(created.workingDirectory, realDir)
       assert.strictEqual(created.activityState, "idle")
+      assert.isFalse(created.unread)
       assert.isUndefined(created.name)
       assert.isUndefined(created.linkedTerminalId)
       assert.isUndefined(created.pinnedAt)
@@ -87,6 +88,13 @@ describe("/api/v1/threads", () => {
       ])
       assert.deepStrictEqual(
         yield* client.v1.getThread({ params: { threadId: created.id } }),
+        created,
+      )
+
+      // Viewing a thread that never finished a turn is a pure no-op —
+      // nothing written, updatedAt included.
+      assert.deepStrictEqual(
+        yield* client.v1.markThreadViewed({ params: { threadId: created.id } }),
         created,
       )
 
@@ -170,6 +178,7 @@ describe("/api/v1/threads", () => {
         client.v1.unarchiveThread({ params: { threadId: "missing" } }),
         client.v1.pinThread({ params: { threadId: "missing" } }),
         client.v1.unpinThread({ params: { threadId: "missing" } }),
+        client.v1.markThreadViewed({ params: { threadId: "missing" } }),
         client.v1.deleteThread({ params: { threadId: "missing" } }),
       ]
       for (const attempt of attempts) {

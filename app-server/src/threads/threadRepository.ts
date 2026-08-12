@@ -26,6 +26,10 @@ export interface ThreadRecord {
   readonly confirmedAt?: string
   /** Opaque adapter-owned blob; the domain never reads inside it. */
   readonly providerMetadata?: string
+  /** Last observed busy→idle drop (the turn-finished stamp, ATC-160). */
+  readonly lastFinishedAt?: string
+  /** Last markThreadViewed stamp; unread derives from the two together. */
+  readonly lastViewedAt?: string
   readonly pinnedAt?: string
   readonly archivedAt?: string
   readonly createdAt: string
@@ -42,6 +46,8 @@ const ThreadRow = Schema.Struct({
   provider_session_id: Schema.NullOr(Schema.String),
   confirmed_at: Schema.NullOr(Schema.String),
   provider_metadata: Schema.NullOr(Schema.String),
+  last_finished_at: Schema.NullOr(Schema.String),
+  last_viewed_at: Schema.NullOr(Schema.String),
   pinned_at: Schema.NullOr(Schema.String),
   archived_at: Schema.NullOr(Schema.String),
   created_at: Schema.String,
@@ -57,6 +63,8 @@ const toRecord = (row: typeof ThreadRow.Type): ThreadRecord => ({
   ...(row.provider_session_id !== null ? { providerSessionId: row.provider_session_id } : {}),
   ...(row.confirmed_at !== null ? { confirmedAt: row.confirmed_at } : {}),
   ...(row.provider_metadata !== null ? { providerMetadata: row.provider_metadata } : {}),
+  ...(row.last_finished_at !== null ? { lastFinishedAt: row.last_finished_at } : {}),
+  ...(row.last_viewed_at !== null ? { lastViewedAt: row.last_viewed_at } : {}),
   ...(row.pinned_at !== null ? { pinnedAt: row.pinned_at } : {}),
   ...(row.archived_at !== null ? { archivedAt: row.archived_at } : {}),
   createdAt: row.created_at,
@@ -110,6 +118,15 @@ export class ThreadRepository extends Context.Service<
      * a vanished row is a no-op, and an existing marker is never rewritten.
      */
     readonly confirm: (id: string) => Effect.Effect<void>
+    /**
+     * Stamp the turn-finished marker (an observed busy→idle drop). Tolerant
+     * in the style of `confirm`: fed by the live status feed, which can race
+     * a delete — a vanished row is a no-op. Unlike `confirm`, every finish
+     * re-stamps.
+     */
+    readonly markFinished: (id: string) => Effect.Effect<void>
+    /** Stamp the viewed marker; callers hold the record (see rename). */
+    readonly markViewed: (id: string) => Effect.Effect<ThreadRecord>
     /** Set or clear the pin marker; callers hold the record (see rename). */
     readonly setPinned: (id: string, pinned: boolean) => Effect.Effect<ThreadRecord>
     /** Set or clear the archive marker; callers hold the record (see rename). */
@@ -211,6 +228,28 @@ export const layer = Layer.effect(ThreadRepository)(
       `,
     })
 
+    const markFinishedRows = SqlSchema.void({
+      Request: Schema.Struct({ id: Schema.String, finished_at: Schema.String }),
+      execute: (patch) => sql`
+        UPDATE threads SET
+          last_finished_at = ${patch.finished_at},
+          updated_at = ${patch.finished_at}
+        WHERE id = ${patch.id}
+      `,
+    })
+
+    const markViewedRows = SqlSchema.findAll({
+      Request: Schema.Struct({ id: Schema.String, viewed_at: Schema.String }),
+      Result: ThreadRow,
+      execute: (patch) => sql`
+        UPDATE threads SET
+          last_viewed_at = ${patch.viewed_at},
+          updated_at = ${patch.viewed_at}
+        WHERE id = ${patch.id}
+        RETURNING *
+      `,
+    })
+
     const setArchivedRows = SqlSchema.findAll({
       Request: Schema.Struct({
         id: Schema.String,
@@ -269,6 +308,8 @@ export const layer = Layer.effect(ThreadRepository)(
             provider_session_id: null,
             confirmed_at: null,
             provider_metadata: null,
+            last_finished_at: null,
+            last_viewed_at: null,
             pinned_at: null,
             archived_at: null,
             created_at: now,
@@ -312,6 +353,15 @@ export const layer = Layer.effect(ThreadRepository)(
       confirm: (id) =>
         Effect.suspend(() => confirmRows({ id, confirmed_at: new Date().toISOString() })).pipe(
           Effect.orDie,
+        ),
+      markFinished: (id) =>
+        Effect.suspend(() => markFinishedRows({ id, finished_at: new Date().toISOString() })).pipe(
+          Effect.orDie,
+        ),
+      markViewed: (id) =>
+        Effect.suspend(() => markViewedRows({ id, viewed_at: new Date().toISOString() })).pipe(
+          Effect.orDie,
+          Effect.flatMap(requireFirst("markViewed")),
         ),
       setPinned: (id, pinned) =>
         Effect.suspend(() => {
