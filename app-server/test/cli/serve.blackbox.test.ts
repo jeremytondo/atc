@@ -90,9 +90,9 @@ describe("atc serve (black box)", () => {
   // The remote-access trust rule (ATC-148) end to end: the real server
   // generates the credential at startup, enforces it for any non-loopback
   // Host, and honors a CLI rotation immediately — no restart. A loopback
-  // connection with a non-loopback Host is the shape both a proxied request
-  // (`tailscale serve` preserves the incoming Host) and a DNS-rebinding
-  // attempt present, so the token is required for it by design.
+  // connection with a non-loopback Host still needs the token when no
+  // integrated Tailscale exposure has been verified; that is also the shape
+  // of a DNS-rebinding attempt.
   test("generates the auth token on start and enforces rotation live", async () => {
     let env!: ReturnType<typeof serveEnv>
     const { proc, port } = await spawnServeHealthy((attemptPort) => {

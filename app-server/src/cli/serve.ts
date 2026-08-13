@@ -3,6 +3,7 @@ import { Command, Flag } from "effect/unstable/cli"
 import * as AuthToken from "../platform/authToken.ts"
 import { BuildInfo } from "../platform/buildInfo.ts"
 import { AppConfig, layer as appConfigLayer } from "../platform/config.ts"
+import { ServerInfoResponse } from "../api/contract.ts"
 import {
   isProcessAlive,
   processHasArgvToken,
@@ -38,6 +39,13 @@ export const bind = Flag.string("bind").pipe(
   ),
 )
 
+export const tailscale = Flag.boolean("tailscale").pipe(
+  Flag.optional,
+  Flag.withDescription(
+    "Expose the loopback server through supervised Tailscale Serve (overrides ATC_TAILSCALE/config.toml)",
+  ),
+)
+
 // System errors carry a syscall code (EADDRINUSE, EACCES, ...). Those are
 // environment problems and become one friendly line; a migration failure is
 // deliberately a defect that halts boot and gets the same treatment (the
@@ -49,7 +57,7 @@ const isSystemError = (defect: unknown): defect is Error & { code: string } =>
 const isMigrationError = (defect: unknown): defect is Error =>
   defect instanceof Error && (defect as { _tag?: unknown })._tag === "MigrationError"
 
-export const serve = Command.make("serve", { port, bind }, ({ port, bind }) =>
+export const serve = Command.make("serve", { port, bind, tailscale }, ({ port, bind, tailscale }) =>
   Effect.gen(function* () {
     const config = yield* AppConfig
     // The flag level of the precedence rule: flags > env > file > defaults.
@@ -60,6 +68,7 @@ export const serve = Command.make("serve", { port, bind }, ({ port, bind }) =>
       ...config,
       port: Option.getOrElse(port, () => config.port),
       bind: Option.getOrElse(bind, () => config.bind),
+      tailscale: Option.getOrElse(tailscale, () => config.tailscale),
     }
     // Compiled builds keep structured logs file-only (see logging.ts), which
     // would make a successful foreground start indistinguishable from a
@@ -121,13 +130,14 @@ const signal = (pid: number, name: "SIGTERM" | "SIGKILL") =>
     }
   })
 
-export const start = Command.make("start", { port, bind }, ({ port, bind }) =>
+export const start = Command.make("start", { port, bind, tailscale }, ({ port, bind, tailscale }) =>
   Effect.gen(function* () {
     const config = yield* AppConfig
     const effective = {
       ...config,
       port: Option.getOrElse(port, () => config.port),
       bind: Option.getOrElse(bind, () => config.bind),
+      tailscale: Option.getOrElse(tailscale, () => config.tailscale),
     }
     const fs = yield* FileSystem.FileSystem
     const subprocess = yield* Subprocess
@@ -158,7 +168,14 @@ export const start = Command.make("start", { port, bind }, ({ port, bind }) =>
     // source run is the bun runtime plus the entry script (argv[1]),
     // resolved against this same working directory.
     const build = yield* BuildInfo
-    const serveArgs = ["serve", "--port", String(effective.port), "--bind", effective.bind]
+    const serveArgs = [
+      "serve",
+      "--port",
+      String(effective.port),
+      "--bind",
+      effective.bind,
+      ...(effective.tailscale ? ["--tailscale"] : []),
+    ]
     const pid = yield* subprocess.spawnDetached(
       build.commit === "dev"
         ? { executable: process.execPath, args: [process.argv[1] ?? "src/main.ts", ...serveArgs] }
@@ -271,8 +288,27 @@ export const status = Command.make("status", {}, () =>
     // binds report the loopback address that actually connects; the first
     // line keeps reporting the bind itself.
     const reachableUrl = `http://${Server.hostForUrl(probeHost)}:${record.port}`
+    // Status keeps reporting even if this probe fails: the health check above
+    // already established the server is up, so a server-info hiccup only
+    // costs the tailscale line, never the whole report.
+    const serverInfo = yield* Effect.tryPromise(async () => {
+      const response = await fetch(`${reachableUrl}/api/v1/server-info`, {
+        signal: AbortSignal.timeout(2_000),
+        headers: token === undefined ? {} : { authorization: `Bearer ${token}` },
+      })
+      if (!response.ok) throw new Error(`server-info returned ${response.status}`)
+      return response.json()
+    }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(ServerInfoResponse)), Effect.option)
     yield* Console.log(`  web ui    ${reachableUrl}/`)
     yield* Console.log(`  api       ${reachableUrl}/api/v1 (openapi: ${reachableUrl}/openapi.json)`)
+    if (Option.isSome(serverInfo) && serverInfo.value.tailscale.state !== "disabled") {
+      const tailscale = serverInfo.value.tailscale
+      yield* Console.log(
+        tailscale.state === "running"
+          ? `  tailscale ${tailscale.url}`
+          : `  tailscale ${tailscale.state}${tailscale.reason === undefined ? "" : `: ${tailscale.reason}`}`,
+      )
+    }
     yield* Console.log(
       Cli.probeNeedsToken(record.bind)
         ? `  auth      open on ${record.bind}; non-loopback clients need the bearer token (${config.tokenFile})`

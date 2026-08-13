@@ -79,8 +79,8 @@ describe("openapi document", () => {
   it("documents the optional bearer security scheme", () => {
     // The server gates every non-loopback request on a bearer token
     // (localTrust.ts). The empty requirement documents that anonymous
-    // (loopback) access is valid, so generated clients treat the token as
-    // optional but know how to send it.
+    // (verified loopback or Tailscale) access is valid, so generated clients
+    // treat the token as optional but know how to send it.
     const document = openApiDocument as unknown as {
       security: ReadonlyArray<Record<string, unknown>>
       components: { securitySchemes: Record<string, { type: string; scheme: string }> }
@@ -167,6 +167,7 @@ describe("openapi document vs runtime", () => {
   it("these tests cover every documented path", () => {
     assert.sameMembers(Object.keys(openApiDocument.paths), [
       "/api/v1/health",
+      "/api/v1/server-info",
       "/api/v1/version",
       "/api/v1/projects",
       "/api/v1/projects/{projectId}",
@@ -202,6 +203,21 @@ describe("openapi document vs runtime", () => {
       const schema = componentSchema("HealthResponse")
       assert.sameMembers(Object.keys(schema.properties), ["status"])
       assert.sameMembers([...schema.required], ["status"])
+    }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
+  )
+
+  it.effect("GET /api/v1/server-info returns the documented payload", () =>
+    Effect.gen(function* () {
+      const response = yield* (yield* rawClient).get("http://127.0.0.1/api/v1/server-info")
+      assert.strictEqual(response.status, 200)
+      assert.deepStrictEqual(yield* response.json, { tailscale: { state: "disabled" } })
+
+      const ref =
+        operation("/api/v1/server-info").responses["200"]!.content["application/json"]!.schema
+      assert.deepStrictEqual(ref, { $ref: "#/components/schemas/ServerInfoResponse" })
+      const state = componentSchema("TailscaleState")
+      assert.sameMembers(Object.keys(state.properties), ["state", "url", "reason"])
+      assert.sameMembers([...state.required], ["state"])
     }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
   )
 

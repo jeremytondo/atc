@@ -26,6 +26,26 @@ export const HealthResponse = Schema.Struct({
   description: "Result of the liveness probe.",
 })
 
+export const TailscaleState = Schema.Struct({
+  state: Schema.Literals(["disabled", "starting", "running", "error"]),
+  url: Schema.optionalKey(
+    Schema.String.annotate({ description: "Verified tailnet URL, present only while running." }),
+  ),
+  reason: Schema.optionalKey(
+    Schema.String.annotate({ description: "Latest actionable failure, present in error state." }),
+  ),
+}).annotate({
+  identifier: "TailscaleState",
+  description: "Current state of the server-owned Tailscale Serve exposure.",
+})
+
+export const ServerInfoResponse = Schema.Struct({
+  tailscale: TailscaleState,
+}).annotate({
+  identifier: "ServerInfoResponse",
+  description: "Runtime server capabilities and exposure state.",
+})
+
 export const VersionResponse = Schema.Struct({
   version: Schema.String.annotate({ description: "App Server release version." }),
   apiVersion: Schema.Literal("v1"),
@@ -594,6 +614,9 @@ export class V1 extends HttpApiGroup.make("v1")
     HttpApiEndpoint.get("health", "/health", { success: HealthResponse })
       .annotate(OpenApi.Identifier, "getHealth")
       .annotate(OpenApi.Description, "Liveness probe: confirms the server is accepting requests."),
+    HttpApiEndpoint.get("serverInfo", "/server-info", { success: ServerInfoResponse })
+      .annotate(OpenApi.Identifier, "getServerInfo")
+      .annotate(OpenApi.Description, "Report runtime server capabilities and exposure state."),
     HttpApiEndpoint.get("version", "/version", { success: VersionResponse })
       .annotate(OpenApi.Identifier, "getVersion")
       .annotate(OpenApi.Description, "Report the server's build metadata and API version."),

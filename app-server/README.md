@@ -42,12 +42,13 @@ overrides:
 | State dir   | `~/.local/state/atc/`       | JSON log (`atc.log`), zmx sockets (`terminals/`) |
 
 Environment variables are flat `ATC_<KEY>`: `ATC_PORT`, `ATC_BIND`,
-`ATC_LOG_LEVEL`, `ATC_DATA_DIR`, `ATC_ZMX_EXECUTABLE`, `ATC_CODEX_EXECUTABLE`,
-`ATC_CLAUDE_EXECUTABLE`, and `ATC_CONFIG` (path to an alternate config file).
-The config file may set `port`, `bind`, `logLevel` (case-insensitive),
-`dataDir`, `zmxExecutable`, `codexExecutable`, and `claudeExecutable`; unknown
-keys are rejected. `atc serve --port`/`--bind` override the configured values
-for that server only.
+`ATC_TAILSCALE`, `ATC_LOG_LEVEL`, `ATC_DATA_DIR`, `ATC_ZMX_EXECUTABLE`,
+`ATC_TAILSCALE_EXECUTABLE`, `ATC_CODEX_EXECUTABLE`, `ATC_CLAUDE_EXECUTABLE`, and
+`ATC_CONFIG` (path to an alternate config file). The config file may set
+`port`, `bind`, `tailscale`, `logLevel` (case-insensitive), `dataDir`,
+`zmxExecutable`, `tailscaleExecutable`, `codexExecutable`, and
+`claudeExecutable`; unknown keys are rejected. `atc serve --port`/`--bind`/
+`--tailscale` override the configured values for that server only.
 
 Upgrading from the retired Go server: its data is not migrated and nothing
 deletes it automatically. Remove the leftovers by hand if you had one —
@@ -55,10 +56,11 @@ deletes it automatically. Remove the leftovers by hand if you had one —
 directory (`$XDG_RUNTIME_DIR/atc`, or `$TMPDIR/atc` on macOS — do not remove
 `~/.local/state/atc/` wholesale; the App Server keeps its log there).
 
-atc bundles no third-party binaries — install them yourself. Terminals
-require [zmx](https://github.com/neurosnap/zmx); the agent integrations use
-the Codex CLI and Claude Code. Each resolves from its `ATC_*_EXECUTABLE`
-variable or config key, else its bare name on PATH.
+atc bundles no third-party binaries — install them yourself. Terminals require
+[zmx](https://github.com/neurosnap/zmx), integrated tailnet exposure requires
+Tailscale, and the agent integrations use the Codex CLI and Claude Code. Each
+resolves from its `ATC_*_EXECUTABLE` variable or config key, else its bare name
+on PATH.
 
 ## CLI
 
@@ -104,38 +106,33 @@ client, so the server, the TypeScript client (`src/api/client.ts`), and the Swif
 client all derive from the same definition.
 
 One trust rule guards every route (API, SSE, the attach WebSocket): a request
-passes if it arrives on a loopback connection presenting a recognized loopback
-`Host`/`Origin`, or if it carries `Authorization: Bearer <token>` matching the
-server's token; everything else is an empty 403. Local loopback clients never
-need the token.
+passes if it is verified local or integrated-Tailscale traffic, or if it
+carries `Authorization: Bearer <token>` matching the server's token;
+everything else is an empty 403. Local loopback clients never need the token.
 
 ### Remote access
 
-The listener binds `127.0.0.1` by default. Setting `bind = "0.0.0.0"` (or
-`ATC_BIND` / `--bind`; see the `bind` note in `platform/config.ts` for why a
-single non-loopback address is the wrong choice) opens it, and the bearer
-token gates every non-loopback request. The intended posture is tailnet-only
-reachability (Tailscale) — the token is the just-in-case backstop, not an
-invitation to expose the server publicly. The token is generated on first
-server start (or by `atc token`) into a `0600` file in the data dir; `atc
-token` prints it for pasting into a client, and `atc token rotate` reissues
-it, taking effect immediately on a running server. Requests arriving through
-a local reverse proxy (`tailscale serve`) also need the token: the proxy
-preserves the incoming `Host`, which makes its requests indistinguishable
-from DNS rebinding, so only direct loopback traffic is token-free (the trust
-module header has the full reasoning). Remote browser access to the Web UI
-stays unsupported — browsers cannot attach bearer headers to SSE or
-WebSockets.
+The listener binds `127.0.0.1` by default. Set `tailscale = true`
+(`ATC_TAILSCALE` / `--tailscale`) to keep it loopback-only while ATC owns a
+foreground Tailscale Serve route on the same port. Verified tailnet requests
+are token-free, including the Web UI; tailnet reachability and Tailscale ACLs
+are the authorization boundary, and the route disappears with the server.
+
+For other remote-access arrangements, setting `bind = "0.0.0.0"` (`ATC_BIND` /
+`--bind`) opens the listener and the bearer token gates every non-loopback
+request. The token is generated on first server start (or by `atc token`) into
+a `0600` file in the data dir; `atc token` prints it and `atc token rotate`
+reissues it live. The trust module header documents both paths.
 
 ## Admin UI
 
 A running server serves a small read-only console at its base URL
 (`http://127.0.0.1:7331/`): a health/build overview at `/`, and the full API
 reference (Scalar over `openapi.json`) at `/docs`. It is an admin surface for
-observing the server and reading the docs, not an API client. Like every
-route it sits behind the trust guard, and a browser cannot attach the bearer
-header — so the console is effectively loopback-only; over a non-loopback
-bind it answers 403.
+observing the server and reading the docs, not an API client. Like every route
+it sits behind the trust guard: it is available directly on loopback and
+through a verified integrated Tailscale exposure. Other remote browser paths
+cannot attach the bearer header and answer 403.
 
 The UI is a prerendered SvelteKit app in [`web/`](web). Its build output
 (`web/build/`) and the embed manifest that compiles it into the executable are

@@ -592,6 +592,11 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         throw StubUnimplemented("getVersion")
     }
 
+    func getServerInfo(_ input: Operations.GetServerInfo.Input) async throws
+        -> Operations.GetServerInfo.Output {
+        throw StubUnimplemented("getServerInfo")
+    }
+
     /// The app reaches the event stream through `ResourceEventStream`, never
     /// the contract client; `ScriptedEventStream` is the seam tests drive.
     func subscribeEvents(_ input: Operations.SubscribeEvents.Input) async throws

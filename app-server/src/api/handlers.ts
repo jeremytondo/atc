@@ -6,6 +6,7 @@ import { AgentRegistry } from "../agents/agentRegistry.ts"
 import { Events, HEARTBEAT } from "../events/events.ts"
 import { BuildInfo } from "../platform/buildInfo.ts"
 import { Directories } from "../platform/directories.ts"
+import * as Tailscale from "../platform/tailscale.ts"
 import { Projects } from "../projects/projects.ts"
 import { attachTerminal } from "../terminals/terminalAttach.ts"
 import { Terminals } from "../terminals/terminals.ts"
@@ -23,6 +24,7 @@ export const V1Handlers = HttpApiBuilder.group(
   "v1",
   Effect.fnUntraced(function* (handlers) {
     const build = yield* BuildInfo
+    const tailscale = yield* Tailscale.Tailscale
     const projects = yield* Projects
     const directories = yield* Directories
     const terminals = yield* Terminals
@@ -37,6 +39,9 @@ export const V1Handlers = HttpApiBuilder.group(
     return (
       handlers
         .handle("health", () => Effect.succeed({ status: "ok" } as const))
+        .handle("serverInfo", () =>
+          Effect.map(tailscale.status, (status) => ({ tailscale: status })),
+        )
         .handle("version", () =>
           Effect.succeed({
             version: build.version,
