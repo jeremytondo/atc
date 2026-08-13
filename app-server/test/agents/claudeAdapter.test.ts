@@ -837,6 +837,54 @@ describe("ClaudeAdapter generateTitle", () => {
         assert.strictEqual(captured?.["model"], "haiku")
         assert.deepStrictEqual(captured?.["tools"], [])
         assert.strictEqual(captured?.["cwd"], cwd)
+        // No resolver configured: no servers, nothing pre-approved.
+        assert.deepStrictEqual(captured?.["mcpServers"], {})
+        assert.deepStrictEqual(captured?.["allowedTools"], [])
+        assert.strictEqual(captured?.["strictMcpConfig"], true)
+      }).pipe(Effect.provide(layer))
+    }),
+  )
+
+  it.live("configured resolvers become MCP servers with exactly their tools allowed", () =>
+    Effect.gen(function* () {
+      const fake = makeFakeClaudeQuery()
+      let captured: Record<string, unknown> | undefined
+      const layer = claudeAdapterLayer(
+        {
+          queryFn: (args) => {
+            captured = args.options as unknown as Record<string, unknown>
+            return fake.queryFn(args)
+          },
+        },
+        "/bin/echo",
+        {
+          titleResolvers: {
+            linear: {
+              url: "https://mcp.linear.app/mcp",
+              headers: { "X-Probe": "1" },
+              tools: ["get_issue", "get_document"],
+            },
+          },
+        },
+      )
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter.ClaudeAdapter
+        yield* adapter.generateTitle({ cwd: workDir(), prompt: "$implement ATC-186" })
+        assert.deepStrictEqual(captured?.["mcpServers"], {
+          linear: {
+            type: "http",
+            url: "https://mcp.linear.app/mcp",
+            alwaysLoad: true,
+            headers: { "X-Probe": "1" },
+          },
+        })
+        assert.deepStrictEqual(captured?.["allowedTools"], [
+          "mcp__linear__get_issue",
+          "mcp__linear__get_document",
+        ])
+        // Enough turns for one lookup plus the reply; still bounded.
+        assert.strictEqual(captured?.["maxTurns"], 4)
+        assert.strictEqual(captured?.["strictMcpConfig"], true)
       }).pipe(Effect.provide(layer))
     }),
   )

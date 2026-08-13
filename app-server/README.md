@@ -46,9 +46,21 @@ Environment variables are flat `ATC_<KEY>`: `ATC_PORT`, `ATC_BIND`,
 `ATC_TAILSCALE_EXECUTABLE`, `ATC_CODEX_EXECUTABLE`, `ATC_CLAUDE_EXECUTABLE`, and
 `ATC_CONFIG` (path to an alternate config file). The config file may set
 `port`, `bind`, `tailscale`, `logLevel` (case-insensitive), `dataDir`,
-`zmxExecutable`, `tailscaleExecutable`, `codexExecutable`, and
-`claudeExecutable`; unknown keys are rejected. `atc serve --port`/`--bind`/
+`zmxExecutable`, `tailscaleExecutable`, `codexExecutable`, `claudeExecutable`,
+and `titleResolvers`; unknown keys are rejected. `atc serve --port`/`--bind`/
 `--tailscale` override the configured values for that server only.
+
+`titleResolvers` is a config-file-only table of remote MCP servers the thread
+title generator may consult, each naming the only tools it may call, so a prompt
+that just references an issue or PR still gets a meaningful name. Key each entry
+by the name the server is already authenticated under (`claude mcp list`) —
+stored OAuth is per name, and an unauthenticated resolver is skipped silently:
+
+```toml
+[titleResolvers.linear-server]
+url = "https://mcp.linear.app/mcp"
+tools = ["get_issue"]
+```
 
 Upgrading from the retired Go server: its data is not migrated and nothing
 deletes it automatically. Remove the leftovers by hand if you had one —
