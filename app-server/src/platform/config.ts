@@ -40,6 +40,53 @@ export const CONTEXT_VARIABLES = [
 
 export type ContextVariable = (typeof CONTEXT_VARIABLES)[number]
 
+/**
+ * One MCP server the thread-title one-shot may consult to resolve an
+ * identifier the first prompt only references (ATC-186). Remote (URL)
+ * servers only — a stdio entry would boot a process per title run — and
+ * `tools` names exactly what that run may call: titling is unattended and
+ * pre-approved, so a resolver must never reach a write tool. Tool names are
+ * literal for the same reason: the adapter turns them into permission
+ * rules, where `*` or a comma would widen the grant.
+ */
+export const TitleResolver = Schema.Struct({
+  url: Schema.String.check(
+    Schema.makeFilter((url) => {
+      const protocol = URL.canParse(url) ? new URL(url).protocol : undefined
+      return protocol === "http:" || protocol === "https:"
+        ? true
+        : `"${url}" must be an http(s) MCP endpoint URL`
+    }),
+  ),
+  headers: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+  tools: Schema.Array(
+    Schema.String.check(
+      Schema.isPattern(/^[a-zA-Z0-9_-]+$/, { description: "a literal MCP tool name" }),
+    ),
+  ).check(
+    Schema.isMinLength(1, {
+      description: "at least one tool name the resolver may be called with",
+    }),
+  ),
+})
+
+export type TitleResolver = typeof TitleResolver.Type
+
+// The SDK normalizes anything outside [a-zA-Z0-9_-] in a server name to "_"
+// when it builds `mcp__<server>__<tool>`, so a name with other characters
+// would never match the rule the adapter derives from it. Checked over the
+// whole record rather than as a key schema, which would silently drop the
+// rejected entry instead of failing the boot.
+const SERVER_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
+
+const TitleResolvers = Schema.Record(Schema.String, TitleResolver).check(
+  Schema.makeFilter((servers) =>
+    Object.keys(servers)
+      .filter((name) => !SERVER_NAME.test(name))
+      .map((name) => `server name "${name}" must be letters, digits, underscores, or dashes`),
+  ),
+)
+
 /** Invalid or malformed configuration. `source` names the offending origin. */
 export class ConfigLoadError extends Schema.TaggedErrorClass<ConfigLoadError>()("ConfigLoadError", {
   source: Schema.String,
@@ -107,6 +154,13 @@ export class AppConfig extends Context.Service<
      * orphan sockets are provably ours. Debug with `ZMX_DIR=<dir> zmx list`.
      */
     readonly terminalSocketDir: string
+    /**
+     * MCP servers the thread-title one-shot may consult, keyed by server
+     * name. Empty (the default) leaves that run fully locked down, which is
+     * exactly the pre-ATC-186 behavior. Config file only: a server map has
+     * no sensible flat `ATC_*` spelling.
+     */
+    readonly titleResolvers: Readonly<Record<string, TitleResolver>>
   }
 >()("app-server/AppConfig") {}
 
@@ -140,6 +194,7 @@ const FILE_KEYS = [
   "tailscaleExecutable",
   "codexExecutable",
   "claudeExecutable",
+  "titleResolvers",
 ] as const
 
 const parseToml = (source: string, text: string) =>
@@ -296,6 +351,22 @@ export const load = (
       }
     }
 
+    // Table-valued, so it never reaches the scalar ConfigProvider above:
+    // read straight off the file table, absent meaning "no resolvers". Keys
+    // inside it fail fast like the top-level ones — a typo that silently
+    // dropped `tools` would quietly widen what the title run may call.
+    const titleResolvers = yield* Schema.decodeUnknownEffect(TitleResolvers, {
+      onExcessProperty: "error",
+    })(fileTable["titleResolvers"] ?? {}).pipe(
+      Effect.mapError(
+        (error) =>
+          new ConfigLoadError({
+            source: configFile,
+            message: `titleResolvers: ${error.message.replace(/\s*\n\s*/g, " ")}`,
+          }),
+      ),
+    )
+
     // Agent context is captured verbatim (present means non-empty). Only
     // ATC_ENDPOINT is interpreted, so only it is validated: a malformed
     // value would otherwise surface as a confusing request failure.
@@ -347,6 +418,7 @@ export const load = (
       codexExecutable: settings.codexExecutable,
       claudeExecutable: settings.claudeExecutable,
       terminalSocketDir: path.join(stateDir, "terminals"),
+      titleResolvers,
     }
   })
 

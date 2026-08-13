@@ -456,6 +456,40 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
         return executable
       })
 
+      /**
+       * The title one-shot's resolver wiring (ATC-186). Only the configured
+       * tools are pre-approved; `dontAsk` denies the rest, so a resolver
+       * that also exposes write tools cannot be talked into using them.
+       * Server names must match what the provider stores credentials under
+       * — a name it cannot authenticate is skipped as `needs-auth`. With no
+       * resolvers this is the original locked-down shape: one turn, nothing
+       * to call.
+       */
+      const resolvers = Object.entries(config.titleResolvers)
+      const titleResolverOptions = {
+        mcpServers: Object.fromEntries(
+          resolvers.map(([name, resolver]) => [
+            name,
+            {
+              type: "http" as const,
+              url: resolver.url,
+              // A deferred tool would cost a tool-search turn the one-shot
+              // does not have; loading blocks only until the server
+              // connects (SDK-capped at 5s), inside the title timeout.
+              alwaysLoad: true,
+              ...(resolver.headers !== undefined ? { headers: resolver.headers } : {}),
+            },
+          ]),
+        ),
+        allowedTools: resolvers.flatMap(([name, resolver]) =>
+          resolver.tools.map((tool) => `mcp__${name}__${tool}`),
+        ),
+        // Room for the lookup turn, the reply, and one recovery: too few
+        // turns means no title at all, while the 90s timeout below is what
+        // actually bounds the run.
+        maxTurns: resolvers.length === 0 ? 1 : 4,
+      }
+
       const hookFilePaths = (providerSessionId: string) => ({
         headerFile: path.join(config.stateDir, `claude-hooks-${providerSessionId}.header`),
         settingsFile: path.join(config.stateDir, `claude-hooks-${providerSessionId}.json`),
@@ -804,8 +838,10 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
             Effect.gen(function* () {
               const executable = yield* resolvedExecutable
               // The smoke-test one-shot shape (smoke.ts claudeRoundTrip):
-              // one turn, no tools, nothing persisted — plus a haiku-class
-              // model, since a title needs speed, not depth.
+              // no built-in tools, nothing persisted — plus a haiku-class
+              // model, since a title needs speed, not depth. Turn count and
+              // any MCP resolver come from titleResolverOptions; strict MCP
+              // keeps the project's own .mcp.json out of an unattended run.
               const abort = new AbortController()
               yield* Effect.addFinalizer(() => Effect.sync(() => abort.abort()))
               const prompt = yield* Stream.toAsyncIterableEffect(
@@ -823,12 +859,12 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
                       env: claudeEnvironment(),
                       pathToClaudeCodeExecutable: executable,
                       settingSources: [],
+                      strictMcpConfig: true,
                       permissionMode: "dontAsk",
-                      allowedTools: [],
                       tools: [],
-                      maxTurns: 1,
                       persistSession: false,
                       model: "haiku",
+                      ...titleResolverOptions,
                     },
                   }),
                 catch: (error) =>

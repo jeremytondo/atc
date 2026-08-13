@@ -537,11 +537,16 @@ export const resolveProviderExecutable = (
  * generateTitle so Claude and Codex titles read the same. The user prompt
  * is capped so a pasted wall of text cannot blow up the one-shot's cost —
  * the opening lines are what a title needs.
+ *
+ * The reference rules (ATC-186) are unconditional: whether a lookup tool
+ * exists is the provider's business (Claude's configured resolvers, Codex's
+ * own connectors), and a run with none takes the same fallback the rules
+ * demand when a lookup fails.
  */
 export const titleInstruction = (prompt: string): string =>
   [
     "You write concise titles for coding-agent conversation threads.",
-    "Reply with the title only: a single line of plain text.",
+    "Reply with the title only: a single line of plain text, with nothing before or after it.",
     "Rules:",
     "- Summarize the user's request; never answer it or restate it verbatim.",
     "- Make the descriptive part 3-8 words, specific over generic.",
@@ -554,6 +559,11 @@ export const titleInstruction = (prompt: string): string =>
     "  - Explore: brainstorm, research, compare, or understand options.",
     "  - Investigate: diagnose a suspected bug or problem without asking for a fix.",
     "- If no category clearly matches, omit the prefix.",
+    "- Keep every identifier the request names — issue id, PR number, URL — verbatim in the title; identifiers do not count toward the word budget.",
+    "- A leading $name or /name is a skill invocation: the name is the action being asked for (for example $grill means grill whatever follows).",
+    "- If your tools include one that can look up a referenced identifier, call it once — really call it, never describe calling it — and add the resource's real title. Use no other tool and never retry.",
+    "- If you have no such tool, or the lookup fails, title from the message alone: it may then say nothing about the resource beyond the identifier itself. Never guess what the identifier refers to, and never announce what you are about to do.",
+    "- Example: '$implement ATC-123' becomes 'Build - ATC-123 Restore terminal sessions' when the lookup resolves, and 'Build - ATC-123' when it does not.",
     "",
     "The user's first message:",
     prompt.length > 4_000 ? `${prompt.slice(0, 4_000)}…` : prompt,
@@ -569,16 +579,21 @@ const WRAPPING_QUOTES = [
 
 /**
  * Output hygiene for generated titles, enforced in code rather than trusted
- * to the prompt (T3Code/OpenCode precedent): first non-empty line only,
- * whitespace collapsed, wrapping quotes stripped, trailing punctuation
- * dropped, capped at ~50 characters on a word boundary. Returns null when
- * nothing usable remains — the caller gives up silently.
+ * to the prompt (T3Code/OpenCode precedent): one line only, whitespace
+ * collapsed, wrapping quotes stripped, trailing punctuation dropped, capped
+ * at ~50 characters on a word boundary. Returns null when nothing usable
+ * remains — the caller gives up silently.
+ *
+ * The line taken is the LAST non-empty one (ATC-186): a small model that
+ * ignores "the title only" narrates first and answers last — reliably so
+ * once a resolver tool is in play ("I don't have that tool… \n\n Build -
+ * ATC-186") — and the narration is never the title.
  */
 export const sanitizeTitle = (raw: string): string | null => {
   const line = raw
     .split("\n")
     .map((candidate) => candidate.trim())
-    .find((candidate) => candidate !== "")
+    .findLast((candidate) => candidate !== "")
   if (line === undefined) return null
   let title = line.replace(/\s+/g, " ").trim()
   for (let stripped = true; stripped;) {

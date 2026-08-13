@@ -55,8 +55,13 @@ describe("aggregateActivity", () => {
 
 describe("sanitizeTitle", () => {
   it("enforces the output hygiene rules in code, not in the prompt", () => {
-    // First non-empty line only, whitespace collapsed.
-    assert.strictEqual(sanitizeTitle("\n\n  Fix   login\tflow  \nsecond line"), "Fix login flow")
+    // One line only, whitespace collapsed — the last non-empty one, so a
+    // model that narrates before answering still yields its title.
+    assert.strictEqual(sanitizeTitle("\n\n  Fix   login\tflow  \n\n"), "Fix login flow")
+    assert.strictEqual(
+      sanitizeTitle("I don't have that tool.\n\nBuild - ATC-186"),
+      "Build - ATC-186",
+    )
     // Wrapping quotes (straight and smart, repeated) stripped.
     assert.strictEqual(sanitizeTitle('"Add dark mode"'), "Add dark mode")
     assert.strictEqual(sanitizeTitle("'“Add dark mode”'"), "Add dark mode")
@@ -94,11 +99,20 @@ describe("titleInstruction", () => {
     assert.include(instruction, "If no category clearly matches, omit the prefix.")
   })
 
+  it("asks for resolved references, and for prompt-only titling when it cannot", () => {
+    const instruction = titleInstruction("$implement ATC-186")
+    assert.include(instruction, "verbatim in the title")
+    assert.include(instruction, "$name or /name is a skill invocation")
+    assert.include(instruction, "really call it, never describe calling it")
+    assert.include(instruction, "title from the message alone")
+    assert.include(instruction, "Never guess what the identifier refers to")
+  })
+
   it("carries a capped prompt", () => {
     const instruction = titleInstruction("add a login page")
     assert.include(instruction, "add a login page")
     const capped = titleInstruction("x".repeat(10_000))
-    assert.isBelow(capped.length, 5_000)
+    assert.isBelow(capped.length, 6_000)
   })
 })
 
