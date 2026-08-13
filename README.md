@@ -12,18 +12,39 @@ Effect + Bun).
 
 ## Install
 
+### App Server and CLI
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/jeremytondo/atc/main/install.sh | sh
 ```
 
 This downloads the latest stable GitHub Release for your platform, verifies
 its checksum, and installs `atc` to `~/.local/bin` (`ATC_INSTALL_DIR`
-overrides). Append `-s -- --channel dev` to ride the dev channel — a rolling
-prerelease published on demand from `main`. Run `atc service install` to
-start it as a login service, or `atc serve` for the foreground. A running
-server serves its console at `http://127.0.0.1:7331/` and the API reference
-at `/docs`. To update, run `atc upgrade` — it reinstalls from the binary's
-own channel and restarts the service.
+overrides). To install the rolling dev-channel prerelease published on demand
+from `main`, pass the channel option to `sh`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jeremytondo/atc/main/install.sh | sh -s -- --channel dev
+```
+
+Start the server as a detached background process with `atc start`. It keeps
+running after the terminal closes, but does not return after a reboot. For a
+supervised process that starts at login and restarts if it exits, run
+`atc service install` instead. Use `atc serve` when you want the server in the
+foreground.
+
+A running server serves its console at `http://127.0.0.1:7331/` and the API
+reference at `/docs`. To update, run `atc upgrade` — it reinstalls from the
+binary's own channel and restarts an installed login service. A server started
+with `atc start` keeps running until you stop and start it again.
+
+### macOS App
+
+On an Apple Silicon Mac, download the
+[latest stable DMG](https://github.com/jeremytondo/atc/releases/latest/download/atc-macos-arm64.dmg),
+open it, and drag `atc` to Applications. The app is a native client for the
+App Server, so install and start the server above on the workstation that owns
+your terminal sessions.
 
 ## Development
 

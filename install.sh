@@ -146,5 +146,5 @@ case ":$PATH:" in
     echo "add ${install_dir} to PATH to run atc directly"
     ;;
 esac
-echo "run \`atc service install\` to run it as a login service, or \`atc serve\` for the foreground; update later with \`atc upgrade\`"
+echo "run \`atc start\` for the background, \`atc service install\` to start at login, or \`atc serve\` for the foreground; update later with \`atc upgrade\`"
 echo "a running server serves its console at its base URL (default http://127.0.0.1:7331/) and API docs at /docs"
