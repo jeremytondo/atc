@@ -241,7 +241,7 @@ jobs:
           git push -f origin dev
           gh release create dev release/*.tar.gz release/checksums.txt \
             --prerelease \
-            --title "dev (${{ needs.plan.outputs.version }})" \
+            --title "App Server dev (${{ needs.plan.outputs.version }})" \
             --notes "$(printf 'Rolling dev-channel build of commit %s.\n\nInstall or update:\n\n    curl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | sh -s -- --channel dev\n\nInstalled builds update with `atc upgrade`.' "$GITHUB_SHA" "$GITHUB_REPOSITORY")"
 
       - name: Publish stable GitHub release
