@@ -200,6 +200,16 @@ final class AppModel {
         windowReconcilers.removeAll { $0.value === windowState || $0.value == nil }
     }
 
+    /// Keeps `windowReconcilers` ordered by key recency, so a banner click
+    /// opens in the window the user last worked in — the one macOS raises on
+    /// activation — not whichever happened to register last.
+    func noteWindowKeyed(_ windowState: WindowState) {
+        guard windowReconcilers.contains(where: { $0.value === windowState }) else { return }
+        windowReconcilers.removeAll { $0.value === windowState || $0.value == nil }
+        windowReconcilers.append(.init(value: windowState))
+        openPendingNotificationThread()
+    }
+
     // MARK: - Runtime access
 
     func runtime(id: UUID) -> ConnectionRuntime? {
@@ -353,6 +363,12 @@ final class AppModel {
     /// window should display.
     @discardableResult
     func openThread(_ ref: ThreadRef, retentionContext: TerminalRetentionContext = .empty) async throws -> TerminalRef {
+        // Every thread open funnels through here, so any open supersedes a
+        // parked banner click: once the user navigates on their own, a click
+        // still waiting on an unreachable server must not replay later and
+        // yank their selection. (The click's own open passes harmlessly —
+        // the slot was cleared when it was honored.)
+        pendingNotificationThread = nil
         guard let runtime = runtime(id: ref.connectionID) else {
             throw AppServerUnavailable()
         }
@@ -495,8 +511,8 @@ final class AppModel {
     }
 
     /// Honors a clicked banner once a window exists and its Connection has
-    /// answered. The notifier is app-level precisely so no window-routing
-    /// rules are needed here: the most recently registered window takes it.
+    /// answered. `windowReconcilers` is ordered by key recency
+    /// (`noteWindowKeyed`), so `.last` is the window the user last worked in.
     private func openPendingNotificationThread() {
         guard let ref = pendingNotificationThread,
               let window = windowReconcilers.compactMap(\.value).last,
@@ -504,15 +520,22 @@ final class AppModel {
               runtime.threads.isResolved
         else { return }
         // A resolved store is the answer either way: open the thread, or drop
-        // a click for one that no longer exists.
+        // a click for one that no longer exists — or was archived, which
+        // `openThread` refuses, so an archived hit must not consume the click
+        // as if it had opened.
         pendingNotificationThread = nil
-        guard runtime.threads.thread(id: ref.threadID) != nil else { return }
+        guard let thread = runtime.threads.thread(id: ref.threadID), !thread.isArchived else { return }
         Task { await window.openThread(ref, in: self) }
     }
 
     private func teardown(_ runtime: ConnectionRuntime) {
         runtime.stop()
         threadNotifier.forget(connectionID: runtime.id)
+        // A parked click for this connection can never resolve; without this
+        // it would be re-checked on every reconcile forever.
+        if pendingNotificationThread?.connectionID == runtime.id {
+            pendingNotificationThread = nil
+        }
         for ref in terminals.keys where ref.connectionID == runtime.id {
             disconnectTerminal(ref: ref)
         }

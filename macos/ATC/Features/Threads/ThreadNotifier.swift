@@ -77,8 +77,9 @@ final class ThreadNotifier {
     }
 
     /// Frontmost ATC never notifies — not "not this thread", nothing at all.
-    /// Mirrors the seam at `WindowState.isAppActive`.
-    var isAppActive: () -> Bool = { NSApplication.shared.isActive }
+    /// Same seam shape as `WindowState.isAppActive`; both default to the one
+    /// shared definition.
+    var isAppActive: () -> Bool = { AppActivity.isActive() }
 
     /// The `(unread, activityState)` pair each thread showed on the last pass:
     /// the diff baseline. Both halves are kept because the triggers are
@@ -94,7 +95,6 @@ final class ThreadNotifier {
     /// withdrawn for those; `system()` starts from an empty Notification
     /// Center, which is what makes this in-memory record authoritative.
     private var delivered: [ThreadRef: Claim] = [:]
-    private var seeded: Set<UUID> = []
     /// `UNUserNotificationCenter.delegate` is a weak reference; nothing else
     /// would keep the click handler alive.
     private var clickHandler: NotificationClickHandler?
@@ -149,29 +149,36 @@ final class ThreadNotifier {
             states[ref] = nil
             takeDown(ref)
         }
-        seeded.remove(connectionID)
     }
 
     // MARK: - Private
 
     private func apply(_ connection: ConnectionInput) {
-        let isSeeding = !seeded.contains(connection.connectionID)
-        seeded.insert(connection.connectionID)
-
         var present: Set<ThreadRef> = []
         for thread in connection.threads {
             let ref = ThreadRef(connectionID: connection.connectionID, threadID: thread.id)
             present.insert(ref)
-            let state = State(unread: thread.unread, activityState: thread.activityState)
             let previous = states[ref]
+            // `unknown` is absence of evidence, not evidence of absence: the
+            // server pushes it when it loses sight of a provider (socket blip,
+            // restart), so the last known activity carries forward. Otherwise
+            // every blip would withdraw a needs-input banner and re-post it,
+            // with sound, when sight returned.
+            let activityState = thread.activityState == .unknown
+                ? previous?.activityState ?? .unknown
+                : thread.activityState
+            let state = State(unread: thread.unread, activityState: activityState)
             states[ref] = state
             // No baseline yet means this connection (or this thread) is new:
             // record it and stay quiet.
-            guard !isSeeding, let previous, previous != state else { continue }
+            guard let previous, previous != state else { continue }
             if let claim = Self.trigger(from: previous, to: state) {
                 post(claim, for: thread, ref: ref, in: connection)
-                continue
             }
+            // Unconditional: a delivered banner's claim can go stale on the
+            // very pass whose trigger was suppressed (frontmost, or the
+            // preference off). A fresh post is never stale, so after one this
+            // is a no-op.
             takeDownIfStale(ref, state: state)
         }
 
@@ -191,9 +198,13 @@ final class ThreadNotifier {
         if previous.activityState != .needsInput, state.activityState == .needsInput {
             return .needsInput
         }
-        // `unknown` activity never triggers on its own: the server cannot tell
-        // a crashed provider from a slow one. The finish it reports can.
-        if !previous.unread, state.unread { return .finished }
+        // A finish only counts once the thread is out of needs_input: `unread`
+        // can land a pass behind the needs_input transition, and replacing
+        // "Needs your input" with "Finished" would demote the actionable half
+        // (see `Claim`).
+        if !previous.unread, state.unread, state.activityState != .needsInput {
+            return .finished
+        }
         return nil
     }
 
