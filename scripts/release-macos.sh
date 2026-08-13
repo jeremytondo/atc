@@ -100,7 +100,7 @@ else
   BUNDLE_ID="ElevenIdeas.atc.dev"
   TAG="dev-$TIMESTAMP"
   MARKETING_VERSION=""
-  TITLE="atc Dev $TIMESTAMP"
+  TITLE="macOS App dev ($TIMESTAMP)"
   DMG_BASENAME="atc-dev-$TIMESTAMP.dmg"
 fi
 
