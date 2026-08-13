@@ -559,7 +559,7 @@ export const titleInstruction = (prompt: string): string =>
     "  - Explore: brainstorm, research, compare, or understand options.",
     "  - Investigate: diagnose a suspected bug or problem without asking for a fix.",
     "- If no category clearly matches, omit the prefix.",
-    "- Keep every identifier the request names — issue id, PR number, URL — verbatim in the title; identifiers do not count toward the word budget.",
+    "- Keep every identifier the request names — issue id, PR number, URL — verbatim, and put it ahead of the descriptive part; identifiers do not count toward the word budget.",
     "- A leading $name or /name is a skill invocation: the name is the action being asked for (for example $grill means grill whatever follows).",
     "- If your tools include one that can look up a referenced identifier, call it once — really call it, never describe calling it — and add the resource's real title. Use no other tool and never retry.",
     "- If you have no such tool, or the lookup fails, title from the message alone: it may then say nothing about the resource beyond the identifier itself. Never guess what the identifier refers to, and never announce what you are about to do.",
@@ -583,6 +583,11 @@ const WRAPPING_QUOTES = [
  * collapsed, wrapping quotes stripped, trailing punctuation dropped, capped
  * at ~50 characters on a word boundary. Returns null when nothing usable
  * remains — the caller gives up silently.
+ *
+ * The cap applies to the whole title, identifiers included; the instruction
+ * keeps them ahead of the descriptive part so the cut lands on prose. An
+ * identifier longer than the cap itself (a deep URL) is still truncated —
+ * a title that long would not be a title.
  *
  * The line taken is the LAST non-empty one (ATC-186): a small model that
  * ignores "the title only" narrates first and answers last — reliably so

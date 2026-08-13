@@ -101,7 +101,9 @@ describe("titleInstruction", () => {
 
   it("asks for resolved references, and for prompt-only titling when it cannot", () => {
     const instruction = titleInstruction("$implement ATC-186")
-    assert.include(instruction, "verbatim in the title")
+    // Ahead of the prose, so sanitizeTitle's length cap cuts the
+    // description rather than the identifier.
+    assert.include(instruction, "put it ahead of the descriptive part")
     assert.include(instruction, "$name or /name is a skill invocation")
     assert.include(instruction, "really call it, never describe calling it")
     assert.include(instruction, "title from the message alone")
