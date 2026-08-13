@@ -11,6 +11,10 @@ struct SettingsView: View {
                 ConnectionsSettingsView()
                     .frame(width: Self.windowSize.width, height: Self.windowSize.height)
             }
+            Tab("Notifications", systemImage: "bell") {
+                NotificationsSettingsView()
+                    .frame(width: Self.windowSize.width, height: Self.windowSize.height)
+            }
         }
     }
 }

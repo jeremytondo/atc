@@ -2,7 +2,9 @@ import SwiftUI
 
 @main
 struct ATCApp: App {
-    @State private var appModel = AppModel()
+    // Only this call site gets the system notifier, so tests and previews can
+    // never post to the real Notification Center (see `ThreadNotifier`).
+    @State private var appModel = AppModel(threadNotifier: .system())
     @State private var configurationStore = ConfigurationStore { preferences in
         TerminalSessionController.applyTerminalPreferences(preferences)
     }

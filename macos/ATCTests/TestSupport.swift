@@ -210,6 +210,7 @@ func makeModel(
     events: ScriptedEventStream? = nil,
     attach: AttachHarness = AttachHarness(),
     attachmentBudget: Int = 12,
+    threadNotifier: ThreadNotifier? = nil,
     name: String = "A",
     urlString: String = "http://a:1"
 ) async throws -> TestModel {
@@ -220,6 +221,7 @@ func makeModel(
         client: client,
         events: events,
         attach: attach,
+        threadNotifier: threadNotifier,
         attachmentBudget: attachmentBudget
     )
     // A started runtime probes immediately (first-contact reachability).
@@ -252,6 +254,7 @@ func makeEmptyAppModel(
         client: client,
         events: nil,
         attach: attach,
+        threadNotifier: nil,
         attachmentBudget: 12
     )
 }
@@ -270,6 +273,7 @@ private func makeAppModel(
     client: ScriptableAppServerClient,
     events: ScriptedEventStream?,
     attach: AttachHarness,
+    threadNotifier: ThreadNotifier?,
     attachmentBudget: Int
 ) -> AppModel {
     AppModel(
@@ -286,6 +290,7 @@ private func makeAppModel(
         // An absent factory would leave the runtime on the live SSE stream,
         // pointing the suite at a real socket.
         eventStreamFactory: { _, _ in events?.stream ?? ScriptedEventStream.inert() },
+        threadNotifier: threadNotifier,
         attachmentBudget: attachmentBudget
     )
 }
