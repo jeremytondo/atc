@@ -256,4 +256,4 @@ jobs:
           git push origin "$tag"
           gh release create "$tag" release/*.tar.gz release/checksums.txt \
             --title "$tag" \
-            --notes "$(printf 'Install or update:\n\n    curl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | sh\n\nThen run `atc service install` to start it as a login service. Installed builds update with `atc upgrade`.' "$GITHUB_REPOSITORY")"
+            --generate-notes
