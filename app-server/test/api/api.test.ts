@@ -60,6 +60,15 @@ describe("/api/v1", () => {
     }).pipe(Effect.provide(TestLayer)),
   )
 
+  it.effect("server info reports Tailscale disabled by default", () =>
+    Effect.gen(function* () {
+      const client = yield* HttpApiTest.groups(Api, ["v1"])
+      assert.deepStrictEqual(yield* client.v1.serverInfo(), {
+        tailscale: { state: "disabled" },
+      })
+    }).pipe(Effect.provide(TestLayer)),
+  )
+
   it.effect("version reports injected build metadata", () =>
     Effect.gen(function* () {
       const client = yield* HttpApiTest.groups(Api, ["v1"])

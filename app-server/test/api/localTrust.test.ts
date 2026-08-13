@@ -4,21 +4,26 @@ import { Effect, Layer } from "effect"
 import { isLoopbackAddress, isLoopbackHost, isLoopbackOrigin } from "../../src/api/localTrust.ts"
 import { openApiJson } from "../../src/api/openapi.ts"
 import * as Server from "../../src/server.ts"
+import type { TailscaleStatus } from "../../src/platform/tailscale.ts"
 import { freePort, rawStatus } from "../blackbox.ts"
 import { TestBuildInfoLayer } from "../testBuildInfo.ts"
-import { TEST_AUTH_TOKEN, TestRepositoryLayers } from "../testLayers.ts"
+import { makeTestServiceLayers, TEST_AUTH_TOKEN } from "../testLayers.ts"
 
 // Listener trust: spoofed-Host / cross-Origin requests are rejected with 403
 // while ordinary local requests pass, and non-loopback requests pass exactly
 // when they present the bearer token (ATC-148). Runs against a real loopback
 // listener because the guard sits on the HTTP layer, not in the handlers.
 
-const withServer = <A, E, R>(run: (port: number) => Effect.Effect<A, E, R>) =>
+const withServer = <A, E, R>(
+  run: (port: number) => Effect.Effect<A, E, R>,
+  tailscaleStatus: TailscaleStatus | ((port: number) => TailscaleStatus) = { state: "disabled" },
+) =>
   Effect.gen(function* () {
     const port = yield* Effect.promise(freePort)
-    yield* Layer.build(
-      Server.layer({ port }).pipe(Layer.provide([TestBuildInfoLayer, TestRepositoryLayers])),
-    )
+    const resolvedStatus =
+      typeof tailscaleStatus === "function" ? tailscaleStatus(port) : tailscaleStatus
+    const services = makeTestServiceLayers(":memory:", {}, {}, {}, resolvedStatus).layer
+    yield* Layer.build(Server.layer({ port }).pipe(Layer.provide([TestBuildInfoLayer, services])))
     return yield* run(port)
   }).pipe(Effect.scoped, Effect.provide(BunServices.layer))
 
@@ -62,7 +67,7 @@ describe("host validation", () => {
 })
 
 describe("hardened listener", () => {
-  it.effect("accepts plain local requests and browser requests from loopback origins", () =>
+  it.live("accepts plain local requests and browser requests from loopback origins", () =>
     withServer((port) =>
       Effect.promise(async () => {
         const plain = await fetch(`http://127.0.0.1:${port}/api/v1/health`)
@@ -76,7 +81,7 @@ describe("hardened listener", () => {
     ),
   )
 
-  it.effect("rejects a spoofed Host (DNS rebinding) with 403", () =>
+  it.live("rejects a spoofed Host (DNS rebinding) with 403", () =>
     withServer((port) =>
       Effect.promise(async () => {
         assert.strictEqual(await rawStatus(port, ["Host: evil.example"]), 403)
@@ -86,7 +91,7 @@ describe("hardened listener", () => {
     ),
   )
 
-  it.effect("serves the canonical OpenAPI document at /openapi.json under the same guard", () =>
+  it.live("serves the canonical OpenAPI document at /openapi.json under the same guard", () =>
     withServer((port) =>
       Effect.promise(async () => {
         const response = await fetch(`http://127.0.0.1:${port}/openapi.json`)
@@ -101,7 +106,7 @@ describe("hardened listener", () => {
     ),
   )
 
-  it.effect("rejects cross-origin browser requests (CSRF) with 403", () =>
+  it.live("rejects cross-origin browser requests (CSRF) with 403", () =>
     withServer((port) =>
       Effect.promise(async () => {
         const crossOrigin = await fetch(`http://127.0.0.1:${port}/api/v1/health`, {
@@ -121,13 +126,12 @@ describe("hardened listener", () => {
 
 describe("bearer token trust (remote access)", () => {
   // A loopback connection carrying a non-loopback Host: the shape of both a
-  // request proxied by `tailscale serve` (which preserves the incoming Host)
-  // and a DNS-rebinding attempt — indistinguishable server-side, so the
-  // token is required for it either way (see localTrust.ts).
+  // request whose Tailscale exposure is not verified and a DNS-rebinding
+  // attempt. Without the live discovered allowlist, it still needs a token.
   const remoteHost = "Host: workstation.tailnet:7332"
   const bearer = `Authorization: Bearer ${TEST_AUTH_TOKEN}`
 
-  it.effect("a non-loopback request passes exactly when it presents the token", () =>
+  it.live("a non-loopback request passes exactly when it presents the token", () =>
     withServer((port) =>
       Effect.promise(async () => {
         assert.strictEqual(await rawStatus(port, [remoteHost, bearer]), 200)
@@ -144,7 +148,7 @@ describe("bearer token trust (remote access)", () => {
     ),
   )
 
-  it.effect("the attach WebSocket path sits under the same guard", () =>
+  it.live("the attach WebSocket path sits under the same guard", () =>
     withServer((port) =>
       Effect.promise(async () => {
         const attach = "/api/v1/terminals/nonexistent/attach"
@@ -156,11 +160,70 @@ describe("bearer token trust (remote access)", () => {
     ),
   )
 
-  it.effect("loopback requests never need the token", () =>
+  it.live("loopback requests never need the token", () =>
     withServer((port) =>
       Effect.promise(async () => {
         assert.strictEqual(await rawStatus(port, [`Host: 127.0.0.1:${port}`]), 200)
       }),
     ),
+  )
+})
+
+describe("verified Tailscale Serve trust", () => {
+  const running = (port: number): TailscaleStatus => ({
+    state: "running",
+    url: `https://node.tailnet.ts.net:${port}`,
+  })
+
+  it.live("accepts the exact discovered Host and HTTPS Origin without a token", () =>
+    withServer(
+      (port) =>
+        Effect.promise(async () => {
+          const host = `Host: node.tailnet.ts.net:${port}`
+          assert.strictEqual(await rawStatus(port, [host]), 200)
+          assert.strictEqual(
+            await rawStatus(port, [host, `Origin: https://node.tailnet.ts.net:${port}`]),
+            200,
+          )
+          assert.strictEqual(
+            await rawStatus(port, [host, `Origin: http://node.tailnet.ts.net:${port}`]),
+            403,
+          )
+          assert.strictEqual(
+            await rawStatus(port, [host, `Origin: https://other.tailnet.ts.net:${port}`]),
+            403,
+          )
+        }),
+      running,
+    ),
+  )
+
+  it.live("rejects Host case, port, and name variants", () =>
+    withServer(
+      (port) =>
+        Effect.promise(async () => {
+          assert.strictEqual(await rawStatus(port, [`Host: NODE.tailnet.ts.net:${port}`]), 403)
+          assert.strictEqual(await rawStatus(port, ["Host: node.tailnet.ts.net:443"]), 403)
+          assert.strictEqual(await rawStatus(port, [`Host: other.tailnet.ts.net:${port}`]), 403)
+        }),
+      running,
+    ),
+  )
+
+  it.live("fails closed when the exposure is starting or errored", () =>
+    Effect.gen(function* () {
+      for (const status of [
+        { state: "starting" } as const,
+        { state: "error", reason: "serve unavailable" } as const,
+      ]) {
+        yield* withServer(
+          (port) =>
+            Effect.promise(async () => {
+              assert.strictEqual(await rawStatus(port, [`Host: node.tailnet.ts.net:${port}`]), 403)
+            }),
+          status,
+        )
+      }
+    }),
   )
 })

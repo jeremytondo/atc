@@ -19,6 +19,7 @@ import * as Persistence from "../src/platform/persistence.ts"
 import * as ProjectRepository from "../src/projects/projectRepository.ts"
 import * as Projects from "../src/projects/projects.ts"
 import * as Subprocess from "../src/platform/subprocess.ts"
+import * as Tailscale from "../src/platform/tailscale.ts"
 import type { TerminalAdapter } from "../src/terminals/terminalAdapter.ts"
 import * as TerminalRepository from "../src/terminals/terminalRepository.ts"
 import * as Terminals from "../src/terminals/terminals.ts"
@@ -57,11 +58,17 @@ export const TestAuthTokenLayer = Layer.succeed(AuthToken.AuthToken)({
   verify: (authorization) => Effect.succeed(authorization === `Bearer ${TEST_AUTH_TOKEN}`),
 })
 
+/** Disabled exposure is the default for all tests not exercising Tailscale. */
+export const TestTailscaleLayer = Layer.succeed(Tailscale.Tailscale)({
+  status: Effect.succeed({ state: "disabled" }),
+})
+
 /** A settled AppConfig for tests that only need a few fields overridden. */
 export const testAppConfig = (overrides: Partial<AppConfig["Service"]>): Layer.Layer<AppConfig> =>
   Layer.succeed(AppConfig)({
     port: 0,
     bind: "127.0.0.1",
+    tailscale: false,
     endpoint: undefined,
     context: {},
     logLevel: "Info",
@@ -74,6 +81,7 @@ export const testAppConfig = (overrides: Partial<AppConfig["Service"]>): Layer.L
     logFile: "/tmp/atc.log",
     pidFile: "/tmp/atc.pid",
     zmxExecutable: "zmx",
+    tailscaleExecutable: "tailscale",
     codexExecutable: "codex",
     claudeExecutable: "claude",
     terminalSocketDir: "/tmp/atc-sockets",
@@ -94,6 +102,7 @@ export const makeTestServiceLayers = (
   threadsOptions: Threads.ThreadsOptions = {},
   eventsOptions: Events.EventsOptions = {},
   configOverrides: Partial<AppConfig["Service"]> = {},
+  tailscaleStatus: Tailscale.TailscaleStatus = { state: "disabled" },
 ): {
   readonly fake: FakeTerminalAdapter
   readonly fakeAgents: { readonly codex: FakeAgentAdapter; readonly claude: FakeAgentAdapter }
@@ -105,7 +114,8 @@ export const makeTestServiceLayers = (
     | Projects.Projects
     | AgentRegistry.AgentRegistry
     | Events.Events
-    | AuthToken.AuthToken,
+    | AuthToken.AuthToken
+    | Tailscale.Tailscale,
     unknown
   >
 } => {
@@ -152,6 +162,7 @@ export const makeTestServiceLayers = (
       registry,
       eventsLayer,
       TestAuthTokenLayer,
+      Layer.succeed(Tailscale.Tailscale)({ status: Effect.succeed(tailscaleStatus) }),
       threads,
       Projects.layer.pipe(Layer.provide([services, terminals, threads, eventsLayer])),
     ),
@@ -192,6 +203,7 @@ export const zmxAdapterLayer = (options: {
   )
 
 const fakeZmxFixture = fileURLToPath(new URL("fixtures/fake-zmx.ts", import.meta.url))
+const fakeTailscaleFixture = fileURLToPath(new URL("fixtures/fake-tailscale.ts", import.meta.url))
 
 /**
  * A real `atc serve` (from source) whose zmx executable is the fake-zmx
@@ -246,6 +258,22 @@ export const makeFakeZmxSandbox = (vars: Record<string, string> = {}) => {
   fs.writeFileSync(
     wrapper,
     `#!/bin/sh\n${assignments} exec "${process.execPath}" "${fakeZmxFixture}" "$@"\n`,
+  )
+  fs.chmodSync(wrapper, 0o755)
+  return { base, stateDir, wrapper }
+}
+
+/** Per-test wrapper and mutable state directory for the fake Tailscale CLI. */
+export const makeFakeTailscaleSandbox = (vars: Record<string, string> = {}) => {
+  const base = trackTempDir(fs.mkdtempSync(path.join(os.tmpdir(), "atc-tailscale-")))
+  const stateDir = path.join(base, "state")
+  const wrapper = path.join(base, "fake-tailscale")
+  const assignments = Object.entries({ FAKE_TAILSCALE_STATE: stateDir, ...vars })
+    .map(([key, value]) => `${key}='${value}'`)
+    .join(" ")
+  fs.writeFileSync(
+    wrapper,
+    `#!/bin/sh\n${assignments} exec "${process.execPath}" "${fakeTailscaleFixture}" "$@"\n`,
   )
   fs.chmodSync(wrapper, 0o755)
   return { base, stateDir, wrapper }

@@ -27,6 +27,28 @@
         "description": "Liveness probe: confirms the server is accepting requests."
       }
     },
+    "/api/v1/server-info": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "getServerInfo",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Runtime server capabilities and exposure state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerInfoResponse"
+                }
+              }
+            }
+          }
+        },
+        "description": "Report runtime server capabilities and exposure state."
+      }
+    },
     "/api/v1/version": {
       "get": {
         "tags": [
@@ -1261,6 +1283,46 @@
         ],
         "additionalProperties": false,
         "description": "Result of the liveness probe."
+      },
+      "TailscaleState": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "disabled",
+              "starting",
+              "running",
+              "error"
+            ]
+          },
+          "url": {
+            "type": "string",
+            "description": "Verified tailnet URL, present only while running."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Latest actionable failure, present in error state."
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "additionalProperties": false,
+        "description": "Current state of the server-owned Tailscale Serve exposure."
+      },
+      "ServerInfoResponse": {
+        "type": "object",
+        "properties": {
+          "tailscale": {
+            "$ref": "#/components/schemas/TailscaleState"
+          }
+        },
+        "required": [
+          "tailscale"
+        ],
+        "additionalProperties": false,
+        "description": "Runtime server capabilities and exposure state."
       },
       "VersionResponse": {
         "type": "object",

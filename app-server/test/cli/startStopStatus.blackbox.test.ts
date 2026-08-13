@@ -10,7 +10,7 @@ import {
   runCli,
   waitUntil,
 } from "../blackbox.ts"
-import { makeFakeZmxSandbox } from "../testLayers.ts"
+import { makeFakeTailscaleSandbox, makeFakeZmxSandbox } from "../testLayers.ts"
 
 // Black-box lifecycle of the self-managed background commands: `atc start`
 // spawns a detached `atc serve` and owns the pidfile; `status` and `stop`
@@ -164,6 +164,40 @@ describe("atc start / stop / status (black box)", () => {
     expect(record.pid).not.toBe(shortLived.pid)
 
     const stopped = await cli("stop")
+    expect(stopped.exitCode).toBe(0)
+  }, 60_000)
+
+  test("start threads --tailscale through serve and status reports the verified URL", async () => {
+    const tailscaleSandbox = makeFakeTailscaleSandbox()
+    const tailscaleEnv = isolatedEnv(join(scratch, "tailscale"), {
+      ATC_ZMX_EXECUTABLE: sandbox.wrapper,
+      ATC_TAILSCALE_EXECUTABLE: tailscaleSandbox.wrapper,
+    })
+    const tailscaleCli = (...args: Array<string>) =>
+      runCli([process.execPath, "src/main.ts"], args, appServerRoot, tailscaleEnv)
+    const tailscalePidFile = join(tailscaleEnv.XDG_STATE_HOME, "atc", "atc.pid")
+    const port = await freePort()
+
+    const started = await tailscaleCli("start", "--port", String(port), "--tailscale")
+    expect(started.exitCode).toBe(0)
+    const record = JSON.parse(readFileSync(tailscalePidFile, "utf8")) as { pid: number }
+    startedPids.push(record.pid)
+
+    const expectedUrl = `https://node.tailnet.ts.net:${port}`
+    await waitUntil(async () => {
+      const response = await fetch(`http://127.0.0.1:${port}/api/v1/server-info`)
+      if (!response.ok) return false
+      const info = (await response.json()) as {
+        tailscale: { state: string; url?: string }
+      }
+      return info.tailscale.state === "running" && info.tailscale.url === expectedUrl
+    }, "the Tailscale exposure to become verified")
+
+    const status = await tailscaleCli("status")
+    expect(status.exitCode).toBe(0)
+    expect(status.stdout).toContain(`  tailscale ${expectedUrl}`)
+
+    const stopped = await tailscaleCli("stop")
     expect(stopped.exitCode).toBe(0)
   }, 60_000)
 })

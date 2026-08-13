@@ -8,8 +8,15 @@
     builtAt: string
   }
 
+  type Tailscale = {
+    state: "disabled" | "starting" | "running" | "error"
+    url?: string
+    reason?: string
+  }
+
   let health = $state<"checking" | "ok" | "unreachable">("checking")
   let version = $state<Version | null>(null)
+  let tailscale = $state<Tailscale>({ state: "disabled" })
   let error = $state<string | null>(null)
   let checkedAt = $state<Date | null>(null)
 
@@ -33,6 +40,16 @@
         if (v.ok) version = await v.json()
       } catch {
         // keep the last known build info
+      }
+    }
+    if (health === "ok") {
+      try {
+        const info = await fetch("/api/v1/server-info", {
+          signal: AbortSignal.timeout(5000),
+        })
+        if (info.ok) tailscale = (await info.json()).tailscale
+      } catch {
+        // keep the last verified exposure state
       }
     }
   }
@@ -83,6 +100,23 @@
         </div>
         <div class="row"><span class="k">Commit</span><span class="v">{version.commit}</span></div>
         <div class="row"><span class="k">Built at</span><span class="v">{version.builtAt}</span></div>
+      </div>
+    </div>
+  {/if}
+
+  {#if tailscale.state !== "disabled"}
+    <div class="card">
+      <div class="head">Tailscale</div>
+      <div class="rows">
+        <div class="row"><span class="k">State</span><span class="v">{tailscale.state}</span></div>
+        {#if tailscale.state === "running" && tailscale.url !== undefined}
+          <div class="row">
+            <span class="k">URL</span>
+            <span class="v"><a href={tailscale.url}>{tailscale.url}</a></span>
+          </div>
+        {:else if tailscale.state === "error" && tailscale.reason !== undefined}
+          <div class="row"><span class="k">Reason</span><span class="v">{tailscale.reason}</span></div>
+        {/if}
       </div>
     </div>
   {/if}

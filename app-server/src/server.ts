@@ -17,6 +17,7 @@ import * as LocalTrust from "./api/localTrust.ts"
 import * as Logging from "./platform/logging.ts"
 import { openApiJson } from "./api/openapi.ts"
 import * as Persistence from "./platform/persistence.ts"
+import * as Tailscale from "./platform/tailscale.ts"
 import * as ProjectRepository from "./projects/projectRepository.ts"
 import * as Projects from "./projects/projects.ts"
 import * as TerminalRepository from "./terminals/terminalRepository.ts"
@@ -123,6 +124,9 @@ export const layer = (options: { readonly port: number; readonly hostname?: stri
 export const production = (options: { readonly port: number; readonly hostname?: string }) =>
   layer(options).pipe(
     Layer.provide(AuthToken.layer),
+    // Keep the service in the route construction context: both the typed
+    // server-info handler and the optional trust allowlist read one instance.
+    Layer.provideMerge(Tailscale.layer),
     // Projects sits above Threads (its delete cascades through them), which
     // sits above Terminals — each provide feeds everything composed so far.
     Layer.provide(Projects.layer),

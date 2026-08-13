@@ -1,11 +1,12 @@
 import { Effect, Option } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import * as AuthToken from "../platform/authToken.ts"
+import * as Tailscale from "../platform/tailscale.ts"
 
 // The trust rule, in one sentence: a request passes if it meets the loopback
-// Host/Origin rules below OR presents the bearer token (ATC-148); everything
-// else gets the same empty 403. One global middleware, so the API, SSE, the
-// attach WebSocket upgrade, and the hook webhook are covered uniformly.
+// Host/Origin rules below, matches the currently verified Tailscale Serve
+// Host/Origin, OR presents the bearer token; everything else gets the same
+// empty 403. One global middleware covers every HTTP surface uniformly.
 //
 // Loopback trust (ATC-121): the default listener binds 127.0.0.1, and the
 // Host/Origin rules reject the one attack class that still reaches a
@@ -18,25 +19,18 @@ import * as AuthToken from "../platform/authToken.ts"
 // GETs — safe while every GET is side-effect-free and responses are
 // unreadable cross-origin; revisit if a GET ever gains a side effect.
 //
-// Token trust (ATC-148): with the `bind` setting opened beyond loopback
-// (intended posture: tailnet-only reachability), non-loopback requests pass
-// only with `Authorization: Bearer <token>` matching the persisted token
-// (platform/authToken.ts, timing-safe). Loopback stays token-free: local
-// clients ("no secrets, just the URL") are untouched. Browsers cannot attach
-// bearer headers to SSE/WebSockets, so remote browser access 403s by design.
+// Tailscale trust (ATC-184): the server stays loopback-bound while its scoped
+// foreground `tailscale serve` child is the only tailnet ingress. A proxied
+// request is token-free only while that child is verified running and its
+// exact discovered HTTPS host (including ATC's non-443 port) matches Host and
+// Origin. Tailnet reachability and ACLs are the authorization boundary. No
+// forwarded or identity header is trusted, and losing verification removes
+// the allowlist immediately.
 //
-// The token-free path is gated on the TCP PEER address, never on the `Host`
-// header alone: `Host` is client-controlled, so trusting a "loopback" Host
-// from a non-loopback peer would let any remote client send `Host: localhost`
-// and skip the token entirely. The loopback-Host requirement still applies
-// to loopback peers because a DNS-rebinding request IS a loopback peer
-// carrying the hostile name in `Host` — and a local reverse proxy
-// (`tailscale serve` preserves the incoming Host) presents exactly that same
-// shape, indistinguishable from rebinding here. Proxied requests therefore
-// authenticate with the bearer token like any other remote path; making them
-// token-free would take a configured Host allowlist, which nothing needs
-// while every remote client attaches the token anyway (remote browsers are
-// out of scope by design).
+// Token trust (ATC-148) remains the fallback for every other request when a
+// non-loopback bind is configured. Both token-free paths are gated on the TCP
+// peer being loopback: Host is client-controlled, so it is never sufficient
+// evidence by itself. Loopback stays secret-free for ordinary local clients.
 
 const LOOPBACK_NAMES = new Set(["localhost", "127.0.0.1", "[::1]"])
 
@@ -69,6 +63,16 @@ export const isLoopbackOrigin = (origin: string): boolean => {
   return (url.protocol === "http:" || url.protocol === "https:") && LOOPBACK_NAMES.has(url.hostname)
 }
 
+const isTailscaleRequest = (
+  status: Tailscale.TailscaleStatus,
+  host: string | undefined,
+  origin: string | undefined,
+): boolean => {
+  if (status.state !== "running" || !URL.canParse(status.url)) return false
+  const url = new URL(status.url)
+  return host === url.host && (origin === undefined || origin === url.origin)
+}
+
 /**
  * Global route middleware: reject requests that neither satisfy the loopback
  * `Host`/`Origin` rules nor present the bearer token with an empty 403, and
@@ -84,15 +88,23 @@ export const middleware = HttpRouter.middleware(
     >,
   ) {
     const authToken = yield* AuthToken.AuthToken
+    const tailscale = yield* Effect.serviceOption(Tailscale.Tailscale)
     const request = yield* HttpServerRequest.HttpServerRequest
     const origin = request.headers["origin"]
-    // A loopback PEER (unknown peer fails closed) whose Host/Origin also pass
-    // is the token-free local path; every other request needs the token.
-    const loopback =
-      Option.match(request.remoteAddress, { onNone: () => false, onSome: isLoopbackAddress }) &&
+    const loopbackPeer = Option.match(request.remoteAddress, {
+      onNone: () => false,
+      onSome: isLoopbackAddress,
+    })
+    const local =
+      loopbackPeer &&
       isLoopbackHost(request.headers["host"]) &&
       (origin === undefined || isLoopbackOrigin(origin))
-    if (!loopback && !(yield* authToken.verify(request.headers["authorization"]))) {
+    const tailscaleStatus = Option.isSome(tailscale)
+      ? yield* tailscale.value.status
+      : ({ state: "disabled" } as const)
+    const tailnet =
+      loopbackPeer && isTailscaleRequest(tailscaleStatus, request.headers["host"], origin)
+    if (!local && !tailnet && !(yield* authToken.verify(request.headers["authorization"]))) {
       return HttpServerResponse.empty({ status: 403 })
     }
     const span = yield* Effect.option(Effect.currentParentSpan)

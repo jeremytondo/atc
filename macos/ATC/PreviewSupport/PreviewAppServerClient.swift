@@ -209,6 +209,12 @@ nonisolated struct PreviewAppServerClient: APIProtocol {
         .ok(.init(body: .json(.init(status: .ok))))
     }
 
+    func getServerInfo(
+        _ input: Operations.GetServerInfo.Input
+    ) async throws -> Operations.GetServerInfo.Output {
+        .ok(.init(body: .json(.init(tailscale: .init(state: .disabled)))))
+    }
+
     func getVersion(_ input: Operations.GetVersion.Input) async throws -> Operations.GetVersion.Output {
         .ok(.init(body: .json(.init(
             version: "0.0.0-preview",

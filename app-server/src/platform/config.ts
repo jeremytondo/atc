@@ -64,6 +64,8 @@ export class AppConfig extends Context.Service<
      * policed — any address is accepted.
      */
     readonly bind: string
+    /** Whether ATC supervises a loopback-only Tailscale Serve exposure. */
+    readonly tailscale: boolean
     /**
      * App Server base URL from ATC_ENDPOINT (set for processes ATC
      * launches); undefined means "derive from the local port". Environment
@@ -93,6 +95,8 @@ export class AppConfig extends Context.Service<
     readonly pidFile: string
     /** zmx executable: an absolute path, or a name resolved on PATH. */
     readonly zmxExecutable: string
+    /** Tailscale executable: an absolute path, or a name resolved on PATH. */
+    readonly tailscaleExecutable: string
     /** Codex CLI executable: an absolute path, or a name resolved on PATH. */
     readonly codexExecutable: string
     /** Claude Code executable: an absolute path, or a name resolved on PATH. */
@@ -129,9 +133,11 @@ const configFilePath = (env: Env) =>
 const FILE_KEYS = [
   "port",
   "bind",
+  "tailscale",
   "logLevel",
   "dataDir",
   "zmxExecutable",
+  "tailscaleExecutable",
   "codexExecutable",
   "claudeExecutable",
 ] as const
@@ -229,8 +235,15 @@ export const load = (
     // Environment first, config file second; defaults per key. camelCase keys
     // map to CONSTANT_CASE env vars under the flat ATC_ prefix (port ->
     // ATC_PORT, logLevel -> ATC_LOG_LEVEL).
+    // `tailscale` and `tailscaleExecutable` collide in fromEnv's underscore
+    // nesting (`ATC_TAILSCALE_EXECUTABLE` otherwise becomes a child object at
+    // the boolean key). Pull the executable's exact environment spelling out
+    // before the generic constant-case mapping and apply it directly below.
+    const tailscaleExecutableEnv = nonEmpty(env["ATC_TAILSCALE_EXECUTABLE"])
+    const mappedEnv = { ...env }
+    delete mappedEnv["ATC_TAILSCALE_EXECUTABLE"]
     const provider = ConfigProvider.orElse(
-      ConfigProvider.fromEnv({ env: env as Record<string, string> }).pipe(
+      ConfigProvider.fromEnv({ env: mappedEnv as Record<string, string> }).pipe(
         ConfigProvider.nested("ATC"),
         ConfigProvider.constantCase,
       ),
@@ -240,11 +253,16 @@ export const load = (
     const settings = yield* Config.all({
       port: Config.port("port").pipe(Config.withDefault(DEFAULT_PORT)),
       bind: Config.string("bind").pipe(Config.withDefault("127.0.0.1")),
+      tailscale: Config.boolean("tailscale").pipe(Config.withDefault(false)),
       logLevel: logLevelConfig,
       dataDir: Config.string("dataDir").pipe(
         Config.withDefault(xdgDir(env, "XDG_DATA_HOME", [".local", "share"])),
       ),
       zmxExecutable: Config.string("zmxExecutable").pipe(Config.withDefault("zmx")),
+      tailscaleExecutable:
+        tailscaleExecutableEnv === undefined
+          ? Config.string("tailscaleExecutable").pipe(Config.withDefault("tailscale"))
+          : Config.succeed(tailscaleExecutableEnv),
       codexExecutable: Config.string("codexExecutable").pipe(Config.withDefault("codex")),
       claudeExecutable: Config.string("claudeExecutable").pipe(Config.withDefault("claude")),
     }).pipe(
@@ -263,6 +281,7 @@ export const load = (
     // directory — compiled behavior never may. Bare names resolve on PATH.
     const executables = [
       ["zmxExecutable", "ATC_ZMX_EXECUTABLE", settings.zmxExecutable],
+      ["tailscaleExecutable", "ATC_TAILSCALE_EXECUTABLE", settings.tailscaleExecutable],
       ["codexExecutable", "ATC_CODEX_EXECUTABLE", settings.codexExecutable],
       ["claudeExecutable", "ATC_CLAUDE_EXECUTABLE", settings.claudeExecutable],
     ] as const
@@ -311,6 +330,7 @@ export const load = (
     return {
       port: settings.port,
       bind: settings.bind,
+      tailscale: settings.tailscale,
       endpoint,
       context,
       logLevel: settings.logLevel,
@@ -323,6 +343,7 @@ export const load = (
       logFile: path.join(stateDir, "atc.log"),
       pidFile: path.join(stateDir, "atc.pid"),
       zmxExecutable: settings.zmxExecutable,
+      tailscaleExecutable: settings.tailscaleExecutable,
       codexExecutable: settings.codexExecutable,
       claudeExecutable: settings.claudeExecutable,
       terminalSocketDir: path.join(stateDir, "terminals"),

@@ -37,6 +37,7 @@ describe("configuration", () => {
       const config = yield* load({})
       assert.strictEqual(config.port, DEFAULT_PORT)
       assert.strictEqual(config.bind, "127.0.0.1")
+      assert.isFalse(config.tailscale)
       assert.strictEqual(config.logLevel, "Info")
       assert.strictEqual(config.configFile, join(home, ".config", "atc", "config.toml"))
       assert.strictEqual(config.dataDir, join(home, ".local", "share", "atc"))
@@ -45,6 +46,7 @@ describe("configuration", () => {
       assert.strictEqual(config.tokenFile, join(home, ".local", "share", "atc", "auth-token"))
       assert.strictEqual(config.logFile, join(home, ".local", "state", "atc", "atc.log"))
       assert.strictEqual(config.zmxExecutable, "zmx")
+      assert.strictEqual(config.tailscaleExecutable, "tailscale")
       assert.strictEqual(config.codexExecutable, "codex")
       assert.strictEqual(config.claudeExecutable, "claude")
       assert.strictEqual(
@@ -89,6 +91,25 @@ describe("configuration", () => {
     }),
   )
 
+  it.effect("tailscale settings follow the precedence rule", () =>
+    Effect.gen(function* () {
+      const file = writeConfig(
+        `tailscale = true\ntailscaleExecutable = "/opt/from-file/tailscale"\n`,
+      )
+      const fromFile = yield* load({ ATC_CONFIG: file })
+      assert.isTrue(fromFile.tailscale)
+      assert.strictEqual(fromFile.tailscaleExecutable, "/opt/from-file/tailscale")
+
+      const fromEnv = yield* load({
+        ATC_CONFIG: file,
+        ATC_TAILSCALE: "false",
+        ATC_TAILSCALE_EXECUTABLE: "/opt/from-env/tailscale",
+      })
+      assert.isFalse(fromEnv.tailscale)
+      assert.strictEqual(fromEnv.tailscaleExecutable, "/opt/from-env/tailscale")
+    }),
+  )
+
   it.effect("a relative zmxExecutable path is rejected (never cwd-dependent)", () =>
     Effect.gen(function* () {
       const error = yield* loadError({ ATC_ZMX_EXECUTABLE: "bin/zmx" })
@@ -96,6 +117,14 @@ describe("configuration", () => {
       assert.include(error.source, "ATC_ZMX_EXECUTABLE")
       // Bare names stay valid — they resolve on PATH.
       assert.strictEqual((yield* load({ ATC_ZMX_EXECUTABLE: "my-zmx" })).zmxExecutable, "my-zmx")
+    }),
+  )
+
+  it.effect("a relative tailscaleExecutable path is rejected", () =>
+    Effect.gen(function* () {
+      const error = yield* loadError({ ATC_TAILSCALE_EXECUTABLE: "bin/tailscale" })
+      assert.include(error.message, "bare name or an absolute path")
+      assert.include(error.source, "ATC_TAILSCALE_EXECUTABLE")
     }),
   )
 
