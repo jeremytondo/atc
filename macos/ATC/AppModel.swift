@@ -16,6 +16,10 @@ struct WindowNavigationSnapshot: Equatable {
             /// In the snapshot so a finish landing under the displayed thread
             /// re-runs reconciliation, which stamps it viewed (ATC-160).
             let isUnread: Bool
+            /// In the snapshot so the thread notifier sees every trigger state
+            /// change (ATC-185). Window reconciliation is idempotent, so the
+            /// passes this adds cost nothing.
+            let activityState: ThreadActivityState
         }
 
         struct TerminalRecord: Equatable {
@@ -57,6 +61,10 @@ final class AppModel {
     /// LRU order over `terminals` keys, least-recently-used first.
     private var attachOrder: [TerminalRef] = []
 
+    /// The app's one thread notifier: app-level so two open windows produce
+    /// one banner, not two. Silent unless the app supplies the system one.
+    private let threadNotifier: ThreadNotifier
+
     private let clientFactory: (ConnectionRecord, URL) -> any APIProtocol
     private let terminalControllerFactory: (String, ConnectionRuntime) -> TerminalSessionController
     private let terminalRecoveryMonitor: TerminalRecoveryMonitor
@@ -75,6 +83,11 @@ final class AppModel {
     /// closed window's state must deallocate).
     @ObservationIgnored private var windowReconcilers: [WeakWindowState] = []
     @ObservationIgnored private var lastNavigationSnapshot: WindowNavigationSnapshot?
+    /// A clicked banner whose thread cannot be opened yet. macOS delivers a
+    /// click that launched the app before any window registers or any store
+    /// has loaded, so the ref waits for reconciliation rather than being
+    /// dropped on the floor. One slot: a newer click supersedes an older one.
+    @ObservationIgnored private var pendingNotificationThread: ThreadRef?
 
     private struct WeakWindowState {
         weak var value: WindowState?
@@ -86,9 +99,11 @@ final class AppModel {
         terminalControllerFactory: ((String, ConnectionRuntime) -> TerminalSessionController)? = nil,
         terminalRecoveryMonitor: TerminalRecoveryMonitor? = nil,
         eventStreamFactory: ConnectionRuntime.EventStreamFactory? = nil,
+        threadNotifier: ThreadNotifier? = nil,
         attachmentBudget: Int = 12
     ) {
         self.attachmentBudget = attachmentBudget
+        self.threadNotifier = threadNotifier ?? ThreadNotifier()
         if let connections {
             self.connections = connections
             hasStarted = true
@@ -124,6 +139,10 @@ final class AppModel {
             self?.recoverTerminalsAfterInterruption()
         }
         self.terminalRecoveryMonitor.start()
+        self.threadNotifier.onOpenThread = { [weak self] ref in
+            self?.pendingNotificationThread = ref
+            self?.openPendingNotificationThread()
+        }
         observeNavigationChanges()
     }
 
@@ -163,19 +182,32 @@ final class AppModel {
         guard snapshot != lastNavigationSnapshot else { return }
         lastNavigationSnapshot = snapshot
         reconcileTerminalLifecycle()
+        threadNotifier.reconcile(connections: runtimes.map(ThreadNotifier.ConnectionInput.init(runtime:)))
         for entry in windowReconcilers {
             entry.value?.reconcile(in: self)
         }
+        openPendingNotificationThread()
     }
 
     func registerWindow(_ windowState: WindowState) {
         windowReconcilers.removeAll { $0.value == nil || $0.value === windowState }
         windowReconcilers.append(.init(value: windowState))
         windowState.reconcile(in: self)
+        openPendingNotificationThread()
     }
 
     func unregisterWindow(_ windowState: WindowState) {
         windowReconcilers.removeAll { $0.value === windowState || $0.value == nil }
+    }
+
+    /// Keeps `windowReconcilers` ordered by key recency, so a banner click
+    /// opens in the window the user last worked in — the one macOS raises on
+    /// activation — not whichever happened to register last.
+    func noteWindowKeyed(_ windowState: WindowState) {
+        guard windowReconcilers.contains(where: { $0.value === windowState }) else { return }
+        windowReconcilers.removeAll { $0.value === windowState || $0.value == nil }
+        windowReconcilers.append(.init(value: windowState))
+        openPendingNotificationThread()
     }
 
     // MARK: - Runtime access
@@ -234,7 +266,8 @@ final class AppModel {
                         id: $0.id,
                         projectID: $0.projectId,
                         isArchived: $0.isArchived,
-                        isUnread: $0.unread
+                        isUnread: $0.unread,
+                        activityState: $0.activityState
                     )
                 },
                 terminals: runtime.terminals.terminals.map {
@@ -330,6 +363,12 @@ final class AppModel {
     /// window should display.
     @discardableResult
     func openThread(_ ref: ThreadRef, retentionContext: TerminalRetentionContext = .empty) async throws -> TerminalRef {
+        // Every thread open funnels through here, so any open supersedes a
+        // parked banner click: once the user navigates on their own, a click
+        // still waiting on an unreachable server must not replay later and
+        // yank their selection. (The click's own open passes harmlessly —
+        // the slot was cleared when it was honored.)
+        pendingNotificationThread = nil
         guard let runtime = runtime(id: ref.connectionID) else {
             throw AppServerUnavailable()
         }
@@ -471,8 +510,32 @@ final class AppModel {
         return runtime
     }
 
+    /// Honors a clicked banner once a window exists and its Connection has
+    /// answered. `windowReconcilers` is ordered by key recency
+    /// (`noteWindowKeyed`), so `.last` is the window the user last worked in.
+    private func openPendingNotificationThread() {
+        guard let ref = pendingNotificationThread,
+              let window = windowReconcilers.compactMap(\.value).last,
+              let runtime = runtime(id: ref.connectionID),
+              runtime.threads.isResolved
+        else { return }
+        // A resolved store is the answer either way: open the thread, or drop
+        // a click for one that no longer exists — or was archived, which
+        // `openThread` refuses, so an archived hit must not consume the click
+        // as if it had opened.
+        pendingNotificationThread = nil
+        guard let thread = runtime.threads.thread(id: ref.threadID), !thread.isArchived else { return }
+        Task { await window.openThread(ref, in: self) }
+    }
+
     private func teardown(_ runtime: ConnectionRuntime) {
         runtime.stop()
+        threadNotifier.forget(connectionID: runtime.id)
+        // A parked click for this connection can never resolve; without this
+        // it would be re-checked on every reconcile forever.
+        if pendingNotificationThread?.connectionID == runtime.id {
+            pendingNotificationThread = nil
+        }
         for ref in terminals.keys where ref.connectionID == runtime.id {
             disconnectTerminal(ref: ref)
         }

@@ -84,7 +84,7 @@ final class WindowState {
 
     /// Whether the app is frontmost — the seam tests override; production
     /// asks AppKit. Viewing only counts when the user can actually see it.
-    @ObservationIgnored var isAppActive: () -> Bool = { NSApplication.shared.isActive }
+    @ObservationIgnored var isAppActive: () -> Bool = { AppActivity.isActive() }
 
     /// Mark-viewed requests in flight, so a burst of reconciliations does
     /// not re-stamp the same thread before the store merge lands.

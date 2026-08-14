@@ -2,7 +2,9 @@ import SwiftUI
 
 @main
 struct ATCApp: App {
-    @State private var appModel = AppModel()
+    // Only this call site gets the system notifier, so tests and previews can
+    // never post to the real Notification Center (see `ThreadNotifier`).
+    @State private var appModel = AppModel(threadNotifier: .system())
     @State private var configurationStore = ConfigurationStore { preferences in
         TerminalSessionController.applyTerminalPreferences(preferences)
     }
@@ -40,6 +42,10 @@ private struct WindowRootView: View {
 
     @State private var windowState: WindowState
     @State private var router: WindowKeyboardRouter
+    /// `.key` exactly while this window is the key window; the model keeps
+    /// its window list in key order so banner clicks open where the user
+    /// last worked.
+    @Environment(\.controlActiveState) private var controlActiveState
 
     init(appModel: AppModel, configStore: ConfigurationStore) {
         self.appModel = appModel
@@ -70,6 +76,10 @@ private struct WindowRootView: View {
         }
         .onDisappear {
             appModel.unregisterWindow(windowState)
+        }
+        .onChange(of: controlActiveState) { _, state in
+            guard state == .key else { return }
+            appModel.noteWindowKeyed(windowState)
         }
     }
 }
