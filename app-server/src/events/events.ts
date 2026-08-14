@@ -1,8 +1,8 @@
 import { Context, Duration, Effect, Layer, Queue, Stream } from "effect"
 import type { Cause } from "effect"
-import type { ResourceChangedEvent as ResourceChangedEventSchema } from "../api/contract.ts"
+import type * as Contract from "../api/contract.ts"
 
-export type ResourceChangedEvent = typeof ResourceChangedEventSchema.Type
+export type ResourceChangedEvent = typeof Contract.ResourceChangedEvent.Type
 
 // The Events service (ATC-128): the in-process fan-out for resource-change
 // events. Domain services publish next to each successful mutation; the

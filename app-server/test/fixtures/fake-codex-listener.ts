@@ -71,8 +71,7 @@ if (process.argv.includes("exec")) {
     stdin
       .split("\n")
       .map((line) => line.trim())
-      .filter((line) => line !== "")
-      .pop() ?? ""
+      .findLast((line) => line !== "") ?? ""
   if (outFile !== undefined) {
     await Bun.write(outFile, process.env["FAKE_CODEX_TITLE"] ?? `fake title: ${lastLine}`)
   }

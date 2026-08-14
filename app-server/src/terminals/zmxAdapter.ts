@@ -108,6 +108,7 @@ export const zmxSpawnEnv = (socketDir: string, endpoint: string) => ({
 
 /** Printable diagnostic from raw terminal output: control bytes stripped. */
 const printableTail = (tail: string): string =>
+  // oxlint-disable-next-line no-control-regex -- matching control bytes is the point here
   tail.replace(/\x1b\[[0-9;?]*[a-zA-Z]|[\x00-\x09\x0b-\x1f]/g, "").trim()
 
 export const layerWith = (options: ZmxOptions) =>

@@ -2,13 +2,13 @@ import { Context, Effect, Layer, Option, Schema } from "effect"
 import { SqlClient, SqlSchema } from "effect/unstable/sql"
 import { requireFound, rowHelpers } from "../platform/repositoryHelpers.ts"
 import { ProjectNotFound } from "../api/contract.ts"
-import type { Project as ProjectSchema } from "../api/contract.ts"
+import type * as Contract from "../api/contract.ts"
 
 // The Projects repository (ATC-121): the only module that speaks SQL for
 // projects. Row types stay here — handlers and the contract see plain
 // camelCase project objects shaped like the contract's Project schema.
 
-export type Project = typeof ProjectSchema.Type
+export type Project = typeof Contract.Project.Type
 
 /** Internal row shape (snake_case columns, as stored). */
 const ProjectRow = Schema.Struct({

@@ -94,12 +94,16 @@
     <div class="card">
       <div class="head">Build</div>
       <div class="rows">
-        <div class="row"><span class="k">Version</span><span class="v">{version.version}</span></div>
+        <div class="row">
+          <span class="k">Version</span><span class="v">{version.version}</span>
+        </div>
         <div class="row">
           <span class="k">API version</span><span class="v">{version.apiVersion}</span>
         </div>
         <div class="row"><span class="k">Commit</span><span class="v">{version.commit}</span></div>
-        <div class="row"><span class="k">Built at</span><span class="v">{version.builtAt}</span></div>
+        <div class="row">
+          <span class="k">Built at</span><span class="v">{version.builtAt}</span>
+        </div>
       </div>
     </div>
   {/if}
@@ -115,7 +119,9 @@
             <span class="v"><a href={tailscale.url}>{tailscale.url}</a></span>
           </div>
         {:else if tailscale.state === "error" && tailscale.reason !== undefined}
-          <div class="row"><span class="k">Reason</span><span class="v">{tailscale.reason}</span></div>
+          <div class="row">
+            <span class="k">Reason</span><span class="v">{tailscale.reason}</span>
+          </div>
         {/if}
       </div>
     </div>

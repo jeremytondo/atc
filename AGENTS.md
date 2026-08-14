@@ -98,9 +98,12 @@ practices.
 ## Verifying
 
 Run the smallest gate that covers what you changed; `mise tasks` lists them
-all. The ones you will actually reach for:
+all. Autofixable findings have fix tasks (`lint:fix`, `fmt`). Before
+publishing a PR, run root `mise run check` — the single gate CI also
+enforces. The ones you will actually reach for:
 
-- `mise run -C app-server check` — fmt, typecheck, tests, OpenAPI drift.
+- `mise run -C app-server check` — fmt, lint (oxlint + the ATC plugin rules
+  in `app-server/lint/`), typecheck, tests, OpenAPI drift, svelte-check.
 - `mise run contract:check` — after **any** contract change: OpenAPI drift, TS
   client tests, Swift client build.
 - `mise run -C app-server test:zmx` — opt into real-zmx smoke and compiled

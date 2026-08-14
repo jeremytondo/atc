@@ -6,7 +6,8 @@ import { HttpClient } from "effect/unstable/http"
 import * as path from "node:path"
 import * as Client from "../api/client.ts"
 import * as LocalTrust from "../api/localTrust.ts"
-import { AppConfig, ConfigLoadError, layer as appConfigLayer } from "../platform/config.ts"
+import { AppConfig, ConfigLoadError } from "../platform/config.ts"
+import * as Config from "../platform/config.ts"
 import * as Server from "../server.ts"
 
 // Shared CLI plumbing: the one-line stderr diagnostic contract, the base-URL
@@ -56,7 +57,7 @@ export const describeError = (error: unknown): string =>
  */
 export const withSettledConfig = (prefix: string) => {
   return <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    effect.pipe(Effect.provide(appConfigLayer), Effect.catch(reportOnce(prefix)))
+    effect.pipe(Effect.provide(Config.layer), Effect.catch(reportOnce(prefix)))
 }
 
 // --- Server liveness probing (shared by serve.ts and service.ts, whose two
@@ -121,7 +122,7 @@ export const withCliContext = <E>(
   effect: Effect.Effect<void, E, HttpClient.HttpClient | AppConfig | FileSystem.FileSystem>,
 ): Effect.Effect<void, ReportedError, FileSystem.FileSystem> =>
   effect.pipe(
-    Effect.provide([BunHttpClient.layer, appConfigLayer]),
+    Effect.provide([BunHttpClient.layer, Config.layer]),
     Effect.catch(reportOnce(`atc ${diagnosticName}`)),
   )
 

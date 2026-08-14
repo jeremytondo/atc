@@ -1,6 +1,7 @@
 import { Context, Effect, Layer } from "effect"
 import { AGENT_IDS, AgentNotFound, isAgentId } from "../api/contract.ts"
-import type { Agent as AgentSchema, AgentId } from "../api/contract.ts"
+import type * as Contract from "../api/contract.ts"
+import type { AgentId } from "../api/contract.ts"
 import { AppConfig } from "../platform/config.ts"
 import * as Subprocess from "../platform/subprocess.ts"
 import type { AgentAdapter } from "./agentAdapter.ts"
@@ -12,7 +13,7 @@ import {
 import { ClaudeAdapter } from "./claudeAdapter.ts"
 import { CodexAdapter } from "./codexAdapter.ts"
 
-export type Agent = typeof AgentSchema.Type
+export type Agent = typeof Contract.Agent.Type
 
 // The read-only built-in agent registry (ATC-124): the one place the public
 // agent slugs meet the provider adapters. Availability and versions are

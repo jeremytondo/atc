@@ -9,8 +9,8 @@ depends = ["install"]
 run = "bun run src/main.ts serve"
 
 [tasks.check]
-description = "All App Server gates: format check, strict type check, tests, OpenAPI and admin UI drift"
-depends = ["fmt:check", "typecheck", "test", "openapi:check", "web:assets:check"]
+description = "All App Server gates: format check, lint, strict type check, tests, OpenAPI and admin UI checks"
+depends = ["fmt:check", "lint", "typecheck", "test", "openapi:check", "web:check", "web:assets:check"]
 
 [tasks.build]
 description = "Compile the standalone atc executable for this machine into dist/"
@@ -56,6 +56,20 @@ description = "Strict TypeScript type check (no emit)"
 depends = ["install"]
 run = "bun run tsc --noEmit"
 
+# Semantic lint: oxlint categories plus the ATC plugin rules (lint/) that
+# enforce the AGENTS.md invariants. Svelte files are excluded in
+# .oxlintrc.json — oxlint's .svelte script-block analysis can't see template
+# bindings (false positives), so svelte-check (web:check) owns that surface.
+[tasks.lint]
+description = "Lint TypeScript with oxlint, including the ATC plugin rules"
+depends = ["install"]
+run = "bun run oxlint --report-unused-disable-directives --deny-warnings"
+
+[tasks."lint:fix"]
+description = "Apply oxlint autofixes"
+depends = ["install"]
+run = "bun run oxlint --fix --report-unused-disable-directives"
+
 # --bun forces the Bun runtime (vitest's shebang would otherwise pick node),
 # so tests exercise the same runtime the server ships on.
 [tasks.test]
@@ -66,10 +80,12 @@ run = "bun --bun vitest run"
 # --- Admin UI (web/) ---
 
 # The built UI (web/build) and its embed manifest are committed, so the
-# server and CI never need a web toolchain. The tradeoff: web:assets:check
-# only verifies manifest <-> web/build consistency — nothing in CI detects an
-# edited web/src whose build was never rerun, and no gate type-checks web/src.
-# Run web:check and web:build after changing web/src and commit the result.
+# server binary and its runtime never need a web toolchain. The standing
+# check task does: web:check (svelte-check) type-checks web/src, installing
+# the web dev dependencies via web:install. The remaining tradeoff is that
+# web:assets:check only verifies manifest <-> web/build consistency — nothing
+# detects an edited web/src whose build was never rerun. Run web:build after
+# changing web/src and commit the result.
 
 # dir (not bun's --cwd, which silently no-ops on relative paths): each task
 # runs inside web/ with its own package.json and lockfile.
