@@ -1,7 +1,8 @@
 import { Console, Effect, FileSystem } from "effect"
 import { Command } from "effect/unstable/cli"
 import * as AuthToken from "../platform/authToken.ts"
-import { AppConfig, layer as appConfigLayer } from "../platform/config.ts"
+import { AppConfig } from "../platform/config.ts"
+import * as Config from "../platform/config.ts"
 import * as Cli from "./cli.ts"
 
 // `atc token` (ATC-148): the remote-access credential, managed locally.
@@ -17,7 +18,7 @@ const printToken = <E>(
 ) =>
   read.pipe(
     Effect.flatMap((value) => Console.log(value)),
-    Effect.provide(appConfigLayer),
+    Effect.provide(Config.layer),
     Effect.catch(Cli.reportOnce(`atc ${diagnosticName}`)),
   )
 

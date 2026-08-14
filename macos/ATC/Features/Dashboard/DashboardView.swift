@@ -46,7 +46,8 @@ struct DashboardView: View {
         ) {
             Button("Delete Project", role: .destructive) {
                 if let card = deletingProject,
-                   let store = appModel.runtime(id: card.ref.connectionID)?.projects {
+                    let store = appModel.runtime(id: card.ref.connectionID)?.projects
+                {
                     appModel.run(on: card.ref.connectionID, reporting: { actionError = $0 }) {
                         try await store.delete(id: card.project.id)
                     }
@@ -56,11 +57,12 @@ struct DashboardView: View {
             // Counts are the visible (active/standalone) ones; the catch-all
             // phrase covers archived and ended residue the stores don't
             // surface, so it must read as an addition, not a subset.
-            Text("""
-            Also deletes its \(countLabel(deletingProject?.activeThreadCount ?? 0, "thread")) and \
-            \(countLabel(deletingProject?.standaloneTerminalCount ?? 0, "terminal")), plus \
-            any archived or ended ones. The project directory is never touched.
-            """)
+            Text(
+                """
+                Also deletes its \(countLabel(deletingProject?.activeThreadCount ?? 0, "thread")) and \
+                \(countLabel(deletingProject?.standaloneTerminalCount ?? 0, "terminal")), plus \
+                any archived or ended ones. The project directory is never touched.
+                """)
         }
         .actionErrorAlert($actionError)
     }
@@ -131,9 +133,11 @@ struct DashboardView: View {
                 .lineLimit(1)
                 .truncationMode(.head)
 
-            Text("\(countLabel(card.activeThreadCount, "thread")) · \(countLabel(card.standaloneTerminalCount, "terminal"))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Text(
+                "\(countLabel(card.activeThreadCount, "thread")) · \(countLabel(card.standaloneTerminalCount, "terminal"))"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
 
             Button("New Thread", systemImage: "plus.bubble") {
                 windowState.newThreadContext = NewThreadContext(projectRef: card.ref)
@@ -233,11 +237,11 @@ struct DashboardView: View {
 // are not.
 #if DEBUG
 
-#Preview {
-    DashboardView()
-        .environment(AppModel.preview())
-        .environment(WindowState())
-        .preferredColorScheme(.dark)
-}
+    #Preview {
+        DashboardView()
+            .environment(AppModel.preview())
+            .environment(WindowState())
+            .preferredColorScheme(.dark)
+    }
 
 #endif

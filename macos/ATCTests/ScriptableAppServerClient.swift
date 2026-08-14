@@ -1,5 +1,6 @@
-import Foundation
 import ATCAppServerAPI
+import Foundation
+
 @testable import ATC
 
 /// An in-memory App Server standing in for the generated `Client`. Tests seed
@@ -167,7 +168,8 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     // MARK: - Projects
 
     func listProjects(_ input: Operations.ListProjects.Input) async throws
-        -> Operations.ListProjects.Output {
+        -> Operations.ListProjects.Output
+    {
         let payload = mutate { model -> [Project] in
             model.listProjectsCount += 1
             return model.projects.sorted { $0.createdAt > $1.createdAt }
@@ -177,25 +179,30 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     }
 
     func createProject(_ input: Operations.CreateProject.Input) async throws
-        -> Operations.CreateProject.Output {
+        -> Operations.CreateProject.Output
+    {
         guard case .json(let request) = input.body else { throw StubUnimplemented("createProject") }
         try await gate()
-        return .ok(.init(body: .json(mutate { model -> Project in
-            let now = model.tick()
-            let project = Project(
-                id: model.nextID("prj"),
-                name: request.name,
-                defaultWorkingDirectory: request.defaultWorkingDirectory,
-                createdAt: now,
-                updatedAt: now
-            )
-            model.projects.append(project)
-            return project
-        })))
+        return .ok(
+            .init(
+                body: .json(
+                    mutate { model -> Project in
+                        let now = model.tick()
+                        let project = Project(
+                            id: model.nextID("prj"),
+                            name: request.name,
+                            defaultWorkingDirectory: request.defaultWorkingDirectory,
+                            createdAt: now,
+                            updatedAt: now
+                        )
+                        model.projects.append(project)
+                        return project
+                    })))
     }
 
     func getProject(_ input: Operations.GetProject.Input) async throws
-        -> Operations.GetProject.Output {
+        -> Operations.GetProject.Output
+    {
         try await gate()
         let id = input.path.projectId
         guard let project = projects.first(where: { $0.id == id }) else {
@@ -205,7 +212,8 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     }
 
     func updateProject(_ input: Operations.UpdateProject.Input) async throws
-        -> Operations.UpdateProject.Output {
+        -> Operations.UpdateProject.Output
+    {
         guard case .json(let request) = input.body else { throw StubUnimplemented("updateProject") }
         try await gate()
         let id = input.path.projectId
@@ -223,7 +231,8 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     }
 
     func deleteProject(_ input: Operations.DeleteProject.Input) async throws
-        -> Operations.DeleteProject.Output {
+        -> Operations.DeleteProject.Output
+    {
         try await gate()
         let id = input.path.projectId
         return mutate { model -> Operations.DeleteProject.Output in
@@ -242,7 +251,8 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     // MARK: - Terminals
 
     func listTerminals(_ input: Operations.ListTerminals.Input) async throws
-        -> Operations.ListTerminals.Output {
+        -> Operations.ListTerminals.Output
+    {
         let projectID = input.query.projectId
         let payload = mutate { model -> [Terminal] in
             model.listTerminalsCount += 1
@@ -255,7 +265,8 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     }
 
     func createTerminal(_ input: Operations.CreateTerminal.Input) async throws
-        -> Operations.CreateTerminal.Output {
+        -> Operations.CreateTerminal.Output
+    {
         guard case .json(let request) = input.body else { throw StubUnimplemented("createTerminal") }
         try await gate()
         return mutate { model -> Operations.CreateTerminal.Output in
@@ -276,7 +287,8 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     }
 
     func getTerminal(_ input: Operations.GetTerminal.Input) async throws
-        -> Operations.GetTerminal.Output {
+        -> Operations.GetTerminal.Output
+    {
         try await gate()
         let id = input.path.terminalId
         guard let terminal = terminals.first(where: { $0.id == id }) else {
@@ -286,7 +298,8 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     }
 
     func updateTerminal(_ input: Operations.UpdateTerminal.Input) async throws
-        -> Operations.UpdateTerminal.Output {
+        -> Operations.UpdateTerminal.Output
+    {
         guard case .json(let request) = input.body else { throw StubUnimplemented("updateTerminal") }
         try await gate()
         let id = input.path.terminalId
@@ -301,7 +314,8 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     }
 
     func deleteTerminal(_ input: Operations.DeleteTerminal.Input) async throws
-        -> Operations.DeleteTerminal.Output {
+        -> Operations.DeleteTerminal.Output
+    {
         try await gate()
         let id = input.path.terminalId
         return mutate { model -> Operations.DeleteTerminal.Output in
@@ -320,7 +334,8 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     // MARK: - Threads
 
     func listThreads(_ input: Operations.ListThreads.Input) async throws
-        -> Operations.ListThreads.Output {
+        -> Operations.ListThreads.Output
+    {
         let wantsArchived = input.query.archived == ._true
         let projectID = input.query.projectId
         let payload = mutate { model -> [ATCThread] in
@@ -341,7 +356,8 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     }
 
     func createThread(_ input: Operations.CreateThread.Input) async throws
-        -> Operations.CreateThread.Output {
+        -> Operations.CreateThread.Output
+    {
         guard case .json(let request) = input.body else { throw StubUnimplemented("createThread") }
         try await gate()
         return mutate { model -> Operations.CreateThread.Output in
@@ -367,7 +383,8 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     }
 
     func getThread(_ input: Operations.GetThread.Input) async throws
-        -> Operations.GetThread.Output {
+        -> Operations.GetThread.Output
+    {
         try await gate()
         let id = input.path.threadId
         guard let thread = threads.first(where: { $0.id == id }) else {
@@ -377,7 +394,8 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     }
 
     func updateThread(_ input: Operations.UpdateThread.Input) async throws
-        -> Operations.UpdateThread.Output {
+        -> Operations.UpdateThread.Output
+    {
         guard case .json(let request) = input.body else { throw StubUnimplemented("updateThread") }
         try await gate()
         let id = input.path.threadId
@@ -392,7 +410,8 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     }
 
     func deleteThread(_ input: Operations.DeleteThread.Input) async throws
-        -> Operations.DeleteThread.Output {
+        -> Operations.DeleteThread.Output
+    {
         try await gate()
         let id = input.path.threadId
         return mutate { model -> Operations.DeleteThread.Output in
@@ -406,7 +425,8 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     }
 
     func archiveThread(_ input: Operations.ArchiveThread.Input) async throws
-        -> Operations.ArchiveThread.Output {
+        -> Operations.ArchiveThread.Output
+    {
         try await gate()
         let id = input.path.threadId
         return mutate { model -> Operations.ArchiveThread.Output in
@@ -426,7 +446,8 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     }
 
     func unarchiveThread(_ input: Operations.UnarchiveThread.Input) async throws
-        -> Operations.UnarchiveThread.Output {
+        -> Operations.UnarchiveThread.Output
+    {
         try await gate()
         let id = input.path.threadId
         return mutate { model -> Operations.UnarchiveThread.Output in
@@ -440,7 +461,8 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     }
 
     func pinThread(_ input: Operations.PinThread.Input) async throws
-        -> Operations.PinThread.Output {
+        -> Operations.PinThread.Output
+    {
         try await gate()
         let id = input.path.threadId
         return mutate { model -> Operations.PinThread.Output in
@@ -448,11 +470,14 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
                 return .notFound(.init(body: .json(threadNotFound(id))))
             }
             guard model.threads[index].archivedAt == nil else {
-                return .conflict(.init(body: .json(.init(
-                    _tag: .threadArchived,
-                    threadId: id,
-                    message: "Thread \(id) is archived"
-                ))))
+                return .conflict(
+                    .init(
+                        body: .json(
+                            .init(
+                                _tag: .threadArchived,
+                                threadId: id,
+                                message: "Thread \(id) is archived"
+                            ))))
             }
             let now = model.tick()
             if model.threads[index].pinnedAt == nil {
@@ -466,7 +491,8 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     /// Idempotent per the contract: only an unread thread is written (and
     /// timestamped); a read one comes back unchanged.
     func markThreadViewed(_ input: Operations.MarkThreadViewed.Input) async throws
-        -> Operations.MarkThreadViewed.Output {
+        -> Operations.MarkThreadViewed.Output
+    {
         try await gate()
         let id = input.path.threadId
         return mutate { model -> Operations.MarkThreadViewed.Output in
@@ -483,7 +509,8 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     }
 
     func unpinThread(_ input: Operations.UnpinThread.Input) async throws
-        -> Operations.UnpinThread.Output {
+        -> Operations.UnpinThread.Output
+    {
         try await gate()
         let id = input.path.threadId
         return mutate { model -> Operations.UnpinThread.Output in
@@ -499,7 +526,8 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     /// Idempotent per the contract: a live linked terminal is returned as-is,
     /// otherwise a fresh live terminal is created and linked.
     func openThreadTerminal(_ input: Operations.OpenThreadTerminal.Input) async throws
-        -> Operations.OpenThreadTerminal.Output {
+        -> Operations.OpenThreadTerminal.Output
+    {
         try await gate()
         if let failure = openThreadTerminalFailure {
             return .serviceUnavailable(.init(body: .json(.init(value1: failure))))
@@ -512,9 +540,10 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
             }
             let thread = model.threads[index]
             if let linkedID = thread.linkedTerminalId,
-               let existing = model.terminals.first(where: {
-                   $0.id == linkedID && $0.status == .live
-               }) {
+                let existing = model.terminals.first(where: {
+                    $0.id == linkedID && $0.status == .live
+                })
+            {
                 return .ok(.init(body: .json(existing)))
             }
             let terminal = model.makeTerminal(
@@ -534,7 +563,8 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     // MARK: - Agents
 
     func listAgents(_ input: Operations.ListAgents.Input) async throws
-        -> Operations.ListAgents.Output {
+        -> Operations.ListAgents.Output
+    {
         let payload = mutate { model -> [Agent] in
             model.listAgentsCount += 1
             return model.agents
@@ -544,15 +574,19 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     }
 
     func getAgent(_ input: Operations.GetAgent.Input) async throws
-        -> Operations.GetAgent.Output {
+        -> Operations.GetAgent.Output
+    {
         try await gate()
         let id = input.path.agentId
         guard let agent = agents.first(where: { $0.id.rawValue == id }) else {
-            return .notFound(.init(body: .json(.init(
-                _tag: .agentNotFound,
-                agentId: id,
-                message: "No agent \(id)"
-            ))))
+            return .notFound(
+                .init(
+                    body: .json(
+                        .init(
+                            _tag: .agentNotFound,
+                            agentId: id,
+                            message: "No agent \(id)"
+                        ))))
         }
         return .ok(.init(body: .json(agent)))
     }
@@ -560,16 +594,19 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     // MARK: - Filesystem
 
     func checkDirectory(_ input: Operations.CheckDirectory.Input) async throws
-        -> Operations.CheckDirectory.Output {
+        -> Operations.CheckDirectory.Output
+    {
         try await gate()
         let path = input.query.path
-        let response = directoryCheck
+        let response =
+            directoryCheck
             ?? Components.Schemas.FsCheckResponse(path: path, state: .available, checkedAt: .now)
         return .ok(.init(body: .json(response)))
     }
 
     func listDirectory(_ input: Operations.ListDirectory.Input) async throws
-        -> Operations.ListDirectory.Output {
+        -> Operations.ListDirectory.Output
+    {
         try await gate()
         if let failure = directoryListingFailure {
             return .unprocessableContent(.init(body: .json(.init(value1: failure))))
@@ -583,24 +620,28 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     // MARK: - Unimplemented
 
     func getHealth(_ input: Operations.GetHealth.Input) async throws
-        -> Operations.GetHealth.Output {
+        -> Operations.GetHealth.Output
+    {
         throw StubUnimplemented("getHealth")
     }
 
     func getVersion(_ input: Operations.GetVersion.Input) async throws
-        -> Operations.GetVersion.Output {
+        -> Operations.GetVersion.Output
+    {
         throw StubUnimplemented("getVersion")
     }
 
     func getServerInfo(_ input: Operations.GetServerInfo.Input) async throws
-        -> Operations.GetServerInfo.Output {
+        -> Operations.GetServerInfo.Output
+    {
         throw StubUnimplemented("getServerInfo")
     }
 
     /// The app reaches the event stream through `ResourceEventStream`, never
     /// the contract client; `ScriptedEventStream` is the seam tests drive.
     func subscribeEvents(_ input: Operations.SubscribeEvents.Input) async throws
-        -> Operations.SubscribeEvents.Output {
+        -> Operations.SubscribeEvents.Output
+    {
         throw StubUnimplemented("subscribeEvents")
     }
 

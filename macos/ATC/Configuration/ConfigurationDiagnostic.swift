@@ -32,7 +32,8 @@ func configurationKeyPath(table: String, key: String) -> String {
     if key.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }) {
         return "[\(table)].\(key)"
     }
-    let escaped = key
+    let escaped =
+        key
         .replacingOccurrences(of: "\\", with: "\\\\")
         .replacingOccurrences(of: "\"", with: "\\\"")
     return "[\(table)].\"\(escaped)\""

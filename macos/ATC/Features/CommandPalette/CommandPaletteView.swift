@@ -55,17 +55,19 @@ struct CommandPaletteView: View {
         .accessibilityLabel("Command Palette")
         .accessibilityAddTraits(.isModal)
         .onExitCommand { dismissPalette() }
-        .background(PaletteWindowAccessor(
-            takeCapturedResponder: {
-                defer { router.responderBeforeSuspension = nil }
-                return router.responderBeforeSuspension as? NSResponder
-            },
-            onAttach: { queryIsFocused = true },
-            shouldRestoreCapturedResponder: {
-                responderRestoration.shouldRestoreCapturedResponder
-            },
-            fallback: { windowState.requestTerminalFocus() }
-        ))
+        .background(
+            PaletteWindowAccessor(
+                takeCapturedResponder: {
+                    defer { router.responderBeforeSuspension = nil }
+                    return router.responderBeforeSuspension as? NSResponder
+                },
+                onAttach: { queryIsFocused = true },
+                shouldRestoreCapturedResponder: {
+                    responderRestoration.shouldRestoreCapturedResponder
+                },
+                fallback: { windowState.requestTerminalFocus() }
+            )
+        )
         .onAppear { resetSelection(for: rows, presentation: presentation) }
         .onChange(of: query) {
             resetSelection(for: rows, presentation: presentation)
@@ -85,7 +87,7 @@ struct CommandPaletteView: View {
         // active row instead.
         .onChange(of: selectedID) {
             guard let selectedID,
-                  let result = rows.first(where: { $0.id == selectedID })
+                let result = rows.first(where: { $0.id == selectedID })
             else { return }
             AccessibilityNotification.Announcement(accessibilityLabel(for: result)).post()
         }
@@ -144,7 +146,11 @@ struct CommandPaletteView: View {
                 }
                 .scrollTargetLayout()
                 .padding(5)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { listHeight = $0 }
+                .onGeometryChange(for: CGFloat.self) {
+                    $0.size.height
+                } action: {
+                    listHeight = $0
+                }
             }
             .frame(height: min(Self.maxListHeight, listHeight))
             .scrollPosition(id: $scrolledID, anchor: .center)
@@ -168,8 +174,7 @@ struct CommandPaletteView: View {
         .opacity(isAvailable ? 1 : 0.6)
         .background {
             RoundedRectangle(cornerRadius: Radius.control)
-                .fill(isSelected ? Color.accentColor.opacity(0.65) :
-                    isHovered ? Color.primary.opacity(0.08) : .clear)
+                .fill(isSelected ? Color.accentColor.opacity(0.65) : isHovered ? Color.primary.opacity(0.08) : .clear)
         }
         .contentShape(Rectangle())
         .onHover { hovering in hoveredID = hovering ? result.id : nil }
@@ -228,7 +233,7 @@ struct CommandPaletteView: View {
     ) -> Text {
         let name = HighlightedText.title(title, ranges: ranges)
         guard title != type else { return name }
-        return Text("\(type): ").foregroundStyle(.secondary) + name
+        return Text("\(Text("\(type): ").foregroundStyle(.secondary))\(name)")
     }
 
     @ViewBuilder
@@ -281,7 +286,7 @@ struct CommandPaletteView: View {
         context: CommandContext
     ) {
         guard let selectedID,
-              let result = rows.first(where: { $0.id == selectedID })
+            let result = rows.first(where: { $0.id == selectedID })
         else {
             dismissPalette()
             return
@@ -431,10 +436,11 @@ private struct PaletteWindowAccessor: View {
         func detach() {
             guard let window = hostWindow else { return }
             if shouldRestoreCapturedResponder(),
-               let view = previousResponder as? NSView,
-               view.window === window,
-               view.acceptsFirstResponder,
-               window.makeFirstResponder(view) {
+                let view = previousResponder as? NSView,
+                view.window === window,
+                view.acceptsFirstResponder,
+                window.makeFirstResponder(view)
+            {
                 return
             }
             fallback()

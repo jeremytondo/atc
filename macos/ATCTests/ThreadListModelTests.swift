@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+
 @testable import ATC
 
 @Suite("Thread list model")
@@ -29,13 +30,17 @@ struct ThreadListModelTests {
     func duplicateProjectNames() {
         let model = ThreadListModel(
             inputs: [
-                input(local, name: "Local", projects: [
-                    Fixtures.project(id: "p1", name: "App"),
-                    Fixtures.project(id: "p2", name: "Website"),
-                ]),
-                input(remote, name: "Production", projects: [
-                    Fixtures.project(id: "p3", name: "App"),
-                ]),
+                input(
+                    local, name: "Local",
+                    projects: [
+                        Fixtures.project(id: "p1", name: "App"),
+                        Fixtures.project(id: "p2", name: "Website"),
+                    ]),
+                input(
+                    remote, name: "Production",
+                    projects: [
+                        Fixtures.project(id: "p3", name: "App")
+                    ]),
             ],
             filter: .all
         )
@@ -53,7 +58,7 @@ struct ThreadListModelTests {
                         Fixtures.thread(id: "t1", projectId: "prj"),
                         Fixtures.thread(id: "t2", projectId: "gone"),
                     ]
-                ),
+                )
             ],
             filter: .all
         )
@@ -75,7 +80,7 @@ struct ThreadListModelTests {
                         Fixtures.thread(id: "same", workingDirectory: "/src/app", createdAt: Fixtures.date(10)),
                         Fixtures.thread(id: "other", workingDirectory: "/src/app/pkg", createdAt: Fixtures.date(20)),
                     ]
-                ),
+                )
             ],
             filter: .all
         )
@@ -104,7 +109,7 @@ struct ThreadListModelTests {
                         Fixtures.thread(id: "arch_old", archivedAt: Fixtures.date(300)),
                         Fixtures.thread(id: "arch_new", archivedAt: Fixtures.date(400)),
                     ]
-                ),
+                )
             ],
             filter: .all
         )
@@ -131,7 +136,7 @@ struct ThreadListModelTests {
                     Fixtures.thread(id: "pinned", projectId: "p2", pinnedAt: Fixtures.date(1)),
                 ],
                 archived: [Fixtures.thread(id: "arch", projectId: "p2", archivedAt: Fixtures.date(2))]
-            ),
+            )
         ]
         let filtered = ThreadListModel(
             inputs: inputs,
@@ -170,7 +175,7 @@ struct ThreadListModelTests {
                     local,
                     name: "Local",
                     threads: [Fixtures.thread(id: "t1", pinnedAt: Fixtures.date(1))]
-                ),
+                )
             ],
             filter: .all
         )

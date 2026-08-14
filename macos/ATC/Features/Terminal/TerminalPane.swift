@@ -1,5 +1,5 @@
-import SwiftUI
 import ATCAppServerTransport
+import SwiftUI
 
 /// All retained terminal surfaces, stacked; only the selected one is visible.
 /// Hidden surfaces stay in the hierarchy so switching threads never tears

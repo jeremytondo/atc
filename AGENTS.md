@@ -98,9 +98,16 @@ practices.
 ## Verifying
 
 Run the smallest gate that covers what you changed; `mise tasks` lists them
-all. The ones you will actually reach for:
+all. Autofixable findings have fix tasks (`lint:fix`, `fmt`). Before
+publishing a PR, run root `mise run check` — the single gate CI also
+enforces. The ones you will actually reach for:
 
-- `mise run -C app-server check` — fmt, typecheck, tests, OpenAPI drift.
+- `mise run -C app-server check` — fmt, lint (oxlint + the ATC plugin rules
+  in `app-server/lint/`), typecheck, tests, OpenAPI drift, svelte-check.
+- `mise run swift:lint` / `swift:fmt:check` — SwiftLint and swift-format
+  over `macos/` and ATCKit (strict); `swift:lint:fix` and `swift:fmt` apply
+  the fixes. CI also promotes Swift compiler warnings to errors
+  (`ATC_STRICT_WARNINGS=1`); local builds stay permissive.
 - `mise run contract:check` — after **any** contract change: OpenAPI drift, TS
   client tests, Swift client build.
 - `mise run -C app-server test:zmx` — opt into real-zmx smoke and compiled
@@ -130,7 +137,10 @@ will give you v3 idioms that do not compile here.**
   "../terminals/terminals.ts"` — and reference `Terminals.layer`. Always use
   the module's canonical name (`terminals/terminals.ts` is `Terminals`
   everywhere, `zmxAdapter.ts` is `Zmx` everywhere), so one grep finds every
-  call site. Never alias an import. The exception is `cli/` command modules:
+  call site. Never alias an import; importing an export by its exported name
+  (`import { Events }`) is fine, renaming it is not — that is the enforced
+  invariant (`atc/canonical-namespace-imports`). The exception is `cli/`
+  command modules:
   they export commands (`project`, `terminal`, ...) consumed by named import
   in `main.ts`, so their basenames may mirror the domain folders without
   colliding.

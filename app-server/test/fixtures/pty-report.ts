@@ -2,6 +2,11 @@
 // reports window-size changes, and exits on command — the deterministic
 // counterpart for the Subprocess PTY seam tests.
 
+// No imports or exports, so parsers would otherwise treat this file as a
+// script and reject the top-level `for await`; mark it a module explicitly.
+// oxlint-disable-next-line unicorn/require-module-specifiers -- the empty export is the module marker
+export {}
+
 console.log(`tty:${process.stdout.isTTY === true}`)
 
 process.on("SIGWINCH", () => {

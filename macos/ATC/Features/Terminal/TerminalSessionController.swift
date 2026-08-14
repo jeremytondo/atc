@@ -1,9 +1,9 @@
-import Foundation
-import Observation
-import OSLog
-import Synchronization
 import ATCAppServerTransport
+import Foundation
 import GhosttyTerminal
+import OSLog
+import Observation
+import Synchronization
 
 private let logger = Logger(subsystem: "ElevenIdeas.atc", category: "terminal")
 
@@ -297,7 +297,8 @@ final class TerminalSessionController: Identifiable {
             connectionRef.set(nil)
             eventTask = nil
             if let opened = connectionOpenedAt,
-               now() - opened >= .milliseconds(retryPolicy.maximumDelayMilliseconds) {
+                now() - opened >= .milliseconds(retryPolicy.maximumDelayMilliseconds)
+            {
                 retryAttempt = 0
             }
             connectionOpenedAt = nil
@@ -327,8 +328,8 @@ final class TerminalSessionController: Identifiable {
             guard let self else { return }
             let live = await self.checkLive()
             guard generation == self.connectionGeneration,
-                  self.connection == nil,
-                  self.automaticRecoveryEnabled
+                self.connection == nil,
+                self.automaticRecoveryEnabled
             else { return }
             if live == false {
                 self.end(.terminalEnded, notify: true)
@@ -344,7 +345,8 @@ final class TerminalSessionController: Identifiable {
     /// attempt budget is spent (or recovery is disabled entirely).
     private func scheduleAutomaticReconnect() -> Bool {
         guard automaticRecoveryEnabled, retryTask == nil,
-              retryAttempt < retryPolicy.maximumAttempts else { return false }
+            retryAttempt < retryPolicy.maximumAttempts
+        else { return false }
         let delay = retryPolicy.delay(forAttempt: retryAttempt, jitterUnit: jitterUnit())
         retryAttempt += 1
         retryGeneration += 1
@@ -358,9 +360,9 @@ final class TerminalSessionController: Identifiable {
                 return
             }
             guard !Task.isCancelled, let self,
-                  generation == self.retryGeneration,
-                  self.automaticRecoveryEnabled,
-                  self.connection == nil
+                generation == self.retryGeneration,
+                self.automaticRecoveryEnabled,
+                self.connection == nil
             else { return }
             self.retryTask = nil
             self.connect(isReconnect: true)

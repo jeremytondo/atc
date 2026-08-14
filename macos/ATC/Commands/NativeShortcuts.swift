@@ -35,9 +35,10 @@ nonisolated enum NativeShortcuts {
             ("cmd+a", "Select All", .responderOwned),
             ("cmd+m", "Minimize", .responderOwned),
         ]
-        return Dictionary(uniqueKeysWithValues: values.map {
-            (requiredStroke($0.0), Entry(name: $0.1, owner: $0.2))
-        })
+        return Dictionary(
+            uniqueKeysWithValues: values.map {
+                (requiredStroke($0.0), Entry(name: $0.1, owner: $0.2))
+            })
     }()
 
     static let protectedTriggers: [KeyStroke: String] = entries.mapValues(\.name)

@@ -1,6 +1,7 @@
+import ATCAppServerAPI
 import Foundation
 import Testing
-import ATCAppServerAPI
+
 @testable import ATC
 
 /// TerminalsStore: the sidebar's standalone-terminal projection and
@@ -31,8 +32,9 @@ struct TerminalsStoreTests {
         let (store, _) = await loadedStore()
         #expect(store.hasLoadedOnce)
         #expect(store.lastError == nil)
-        #expect(store.terminals.map(\.id)
-            == ["trm_new", "trm_linked", "trm_ended", "trm_old", "trm_other"])
+        #expect(
+            store.terminals.map(\.id)
+                == ["trm_new", "trm_linked", "trm_ended", "trm_old", "trm_other"])
         #expect(store.terminal(id: "trm_old")?.id == "trm_old")
         #expect(store.terminal(id: "nope") == nil)
     }
@@ -42,8 +44,9 @@ struct TerminalsStoreTests {
         let (store, _) = await loadedStore()
         // Ended tombstones stay (the sidebar renders them); the thread's TUI
         // terminal and other projects' terminals do not.
-        #expect(store.standaloneTerminals(projectID: "prj").map(\.id)
-            == ["trm_old", "trm_ended", "trm_new"])
+        #expect(
+            store.standaloneTerminals(projectID: "prj").map(\.id)
+                == ["trm_old", "trm_ended", "trm_new"])
         #expect(store.standaloneTerminals(projectID: "other").map(\.id) == ["trm_other"])
         #expect(store.standaloneTerminals(projectID: "missing").isEmpty)
     }

@@ -1,5 +1,6 @@
 import AppKit
 import Testing
+
 @testable import ATC
 
 @MainActor
@@ -100,13 +101,14 @@ struct KeyboardRouterTests {
     @Test("modified continuations are never retried against root")
     func continuationDoesNotRetryRoot() throws {
         var executions: [CommandID] = []
-        let map = try keymap(#"""
-        [keyboard]
-        clear_default_keybindings = true
-        [keybindings]
-        "cmd+shift+y" = "data.refresh"
-        "leader>x" = "view.toggle-sidebar"
-        """#)
+        let map = try keymap(
+            #"""
+            [keyboard]
+            clear_default_keybindings = true
+            [keybindings]
+            "cmd+shift+y" = "data.refresh"
+            "leader>x" = "view.toggle-sidebar"
+            """#)
         let router = WindowKeyboardRouter(keymap: map) {
             executions.append($0)
             return .available
@@ -178,11 +180,12 @@ struct KeyboardRouterTests {
 
     @Test("a configured leader with no surviving sequences forwards")
     func unreservedLeader() throws {
-        let map = try keymap(#"""
-        [keyboard]
-        clear_default_keybindings = true
-        leader = "ctrl+j"
-        """#)
+        let map = try keymap(
+            #"""
+            [keyboard]
+            clear_default_keybindings = true
+            leader = "ctrl+j"
+            """#)
         let router = WindowKeyboardRouter(keymap: map) { _ in .available }
         #expect(!router.handle(try stroke("ctrl+j"), isRepeat: false))
     }

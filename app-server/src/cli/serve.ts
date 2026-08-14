@@ -2,7 +2,8 @@ import { Console, Effect, FileSystem, Layer, Option, Schema } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
 import * as AuthToken from "../platform/authToken.ts"
 import { BuildInfo } from "../platform/buildInfo.ts"
-import { AppConfig, layer as appConfigLayer } from "../platform/config.ts"
+import { AppConfig } from "../platform/config.ts"
+import * as Config from "../platform/config.ts"
 import { ServerInfoResponse } from "../api/contract.ts"
 import {
   isProcessAlive,
@@ -87,7 +88,7 @@ export const serve = Command.make("serve", { port, bind, tailscale }, ({ port, b
       Effect.provideService(AppConfig, effective),
     )
   }).pipe(
-    Effect.provide(appConfigLayer),
+    Effect.provide(Config.layer),
     Effect.catch(Cli.reportOnce("atc serve")),
     Effect.catchDefect((defect) =>
       isSystemError(defect) || isMigrationError(defect)

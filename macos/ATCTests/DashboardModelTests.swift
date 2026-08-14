@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+
 @testable import ATC
 
 @Suite("Dashboard model")
@@ -47,7 +48,7 @@ struct DashboardModelTests {
                     // A thread's TUI terminal belongs to the thread.
                     Fixtures.terminal(id: "tui", projectId: "p1", threadId: "t1"),
                 ]
-            ),
+            )
         ])
         let cards = try #require(model.sections.first?.cards)
         #expect(cards.map(\.project.id) == ["p1", "p2"])

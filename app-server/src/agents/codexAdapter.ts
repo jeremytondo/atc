@@ -994,7 +994,7 @@ export const layer = Layer.effect(CodexAdapter)(
         const tracked = descendants.get(rootId)
         if (tracked !== undefined) {
           const loadedSet = new Set(loaded)
-          for (const id of [...tracked.keys()]) {
+          for (const id of tracked.keys()) {
             if (!loadedSet.has(id)) tracked.delete(id)
           }
         }

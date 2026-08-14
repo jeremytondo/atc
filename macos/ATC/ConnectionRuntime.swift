@@ -84,7 +84,8 @@ final class ConnectionRuntime: Identifiable {
         self.record = record
         self.client = client
         self.baseURL = baseURL
-        transportHeaders = record.token.isEmpty
+        transportHeaders =
+            record.token.isEmpty
             ? [:]
             : ["Authorization": "Bearer \(record.token)"]
         self.eventStreamFactory = eventStreamFactory

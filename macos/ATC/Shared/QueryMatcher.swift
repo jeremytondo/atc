@@ -14,9 +14,10 @@ enum QueryMatcher {
         }
 
         let wordStarts = wordStartIndices(in: title)
-        let initials = String(wordStarts.compactMap {
-            String(title[$0]).lowercased().first
-        })
+        let initials = String(
+            wordStarts.compactMap {
+                String(title[$0]).lowercased().first
+            })
         guard let match = initials.range(of: trimmed.lowercased()) else { return nil }
 
         let offset = initials.distance(from: initials.startIndex, to: match.lowerBound)

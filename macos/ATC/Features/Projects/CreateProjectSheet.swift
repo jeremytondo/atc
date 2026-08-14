@@ -29,10 +29,13 @@ struct CreateProjectSheet: View {
             onSubmit: { Task { await submit() } }
         ) {
             Section {
-                Picker("Connection", selection: Binding(
-                    get: { connectionID },
-                    set: { connectionID = $0 }
-                )) {
+                Picker(
+                    "Connection",
+                    selection: Binding(
+                        get: { connectionID },
+                        set: { connectionID = $0 }
+                    )
+                ) {
                     // The selection is nil until `.task` preselects (and
                     // always when no Connections exist); keep a matching tag
                     // so AppKit doesn't log an invalid selection.

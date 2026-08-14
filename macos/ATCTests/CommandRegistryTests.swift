@@ -1,7 +1,8 @@
+import ATCAppServerAPI
 import Foundation
 import SwiftUI
 import Testing
-import ATCAppServerAPI
+
 @testable import ATC
 
 /// The command surface: every id has a descriptor, availability gates the
@@ -21,10 +22,11 @@ struct CommandRegistryTests {
         CommandContext(
             appModel: model,
             windowState: state,
-            configStore: store ?? ConfigurationStore(
-                configURL: FileManager.default.temporaryDirectory
-                    .appending(path: UUID().uuidString)
-            )
+            configStore: store
+                ?? ConfigurationStore(
+                    configURL: FileManager.default.temporaryDirectory
+                        .appending(path: UUID().uuidString)
+                )
         )
     }
 
@@ -45,20 +47,22 @@ struct CommandRegistryTests {
 
     @Test("every command id has exactly one titled descriptor")
     func descriptors() {
-        #expect(CommandID.allCases.map(\.rawValue) == [
-            "view.toggle-sidebar", "view.toggle-command-palette",
-            "view.search-threads", "view.search-terminals",
-            "view.show-dashboard", "thread.new", "terminal.new",
-            "project.new", "data.refresh", "configuration.reload",
-            "configuration.reveal",
-        ])
+        #expect(
+            CommandID.allCases.map(\.rawValue) == [
+                "view.toggle-sidebar", "view.toggle-command-palette",
+                "view.search-threads", "view.search-terminals",
+                "view.show-dashboard", "thread.new", "terminal.new",
+                "project.new", "data.refresh", "configuration.reload",
+                "configuration.reveal",
+            ])
         let descriptors = CommandRegistry.allDescriptors
         #expect(descriptors.map(\.id) == CommandID.allCases)
         #expect(Set(descriptors.map(\.id)).count == descriptors.count)
         #expect(descriptors.allSatisfy { !$0.title.isEmpty })
         // The palette openers never list themselves.
-        #expect(descriptors.filter { !$0.isPaletteEligible }.map(\.id)
-            == [.toggleCommandPalette, .searchThreads, .searchTerminals])
+        #expect(
+            descriptors.filter { !$0.isPaletteEligible }.map(\.id)
+                == [.toggleCommandPalette, .searchThreads, .searchTerminals])
     }
 
     @Test("commands that need no server are always available")

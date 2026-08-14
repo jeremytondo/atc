@@ -76,7 +76,8 @@ struct ThreadContentView: View {
                 ContentUnavailableView(
                     "Terminal Ended",
                     systemImage: "terminal",
-                    description: Text("This terminal is no longer running. Delete it from the sidebar when you are done with it.")
+                    description: Text(
+                        "This terminal is no longer running. Delete it from the sidebar when you are done with it.")
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(AppColors.canvas)

@@ -6,7 +6,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AgentUnavailable, resolveProviderExecutable } from "./agentAdapter.ts"
 import * as BuildInfo from "../platform/buildInfo.ts"
-import { AppConfig, ConfigLoadError, layer as appConfigLayer } from "../platform/config.ts"
+import { AppConfig, ConfigLoadError } from "../platform/config.ts"
+import * as Config from "../platform/config.ts"
 import * as Subprocess from "../platform/subprocess.ts"
 
 // Compiled-artifact provider smoke checks (ATC-88). `atc smoke ...` proves
@@ -401,7 +402,7 @@ const codexCommand = Command.make("codex", {}, () =>
         extendEnv: true,
         forceKillAfter: "2 seconds",
       })
-    }).pipe(Effect.provide(appConfigLayer)),
+    }).pipe(Effect.provide(Config.layer)),
   ),
 ).pipe(Command.withDescription("[unstable] Codex app-server launch and initialize round trip"))
 
@@ -411,7 +412,7 @@ const claudeCommand = Command.make("claude", {}, () =>
       const config = yield* AppConfig
       const executable = yield* resolveProviderExecutable("claude", config.claudeExecutable)
       yield* claudeSmoke(executable)
-    }).pipe(Effect.provide(appConfigLayer)),
+    }).pipe(Effect.provide(Config.layer)),
   ),
 ).pipe(
   Command.withDescription("[unstable] Claude Agent SDK round trip via the packaged executable"),

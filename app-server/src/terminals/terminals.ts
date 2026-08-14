@@ -2,11 +2,11 @@ import { Context, Effect, Layer, Option } from "effect"
 import type { Scope } from "effect"
 import {
   ProjectNotFound,
-  Terminal as TerminalSchema,
   TerminalLaunchFailed,
   TerminalNotFound,
   ZmxUnavailable,
 } from "../api/contract.ts"
+import type * as Contract from "../api/contract.ts"
 import type {
   CreateTerminalRequest,
   DirectoryCheckTimedOut,
@@ -25,7 +25,7 @@ import type {
 import { TerminalRepository } from "./terminalRepository.ts"
 import type { TerminalRecord } from "./terminalRepository.ts"
 
-export type Terminal = typeof TerminalSchema.Type
+export type Terminal = typeof Contract.Terminal.Type
 
 // The Terminals domain service (ATC-130): orchestrates the repository, the
 // TerminalAdapter, and directory validation under the ATC-122 reconciliation

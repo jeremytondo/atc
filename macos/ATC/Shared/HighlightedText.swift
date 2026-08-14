@@ -10,10 +10,11 @@ enum HighlightedText {
         var text = Text("")
         var cursor = title.startIndex
         for range in ranges.sorted(by: { $0.lowerBound < $1.lowerBound }) {
-            text = text + Text(String(title[cursor..<range.lowerBound]))
-            text = text + Text(String(title[range])).bold()
+            let plain = Text(String(title[cursor..<range.lowerBound]))
+            let match = Text(String(title[range])).bold()
+            text = Text("\(text)\(plain)\(match)")
             cursor = range.upperBound
         }
-        return text + Text(String(title[cursor...]))
+        return Text("\(text)\(Text(String(title[cursor...])))")
     }
 }

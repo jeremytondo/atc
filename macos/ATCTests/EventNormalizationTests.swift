@@ -1,5 +1,6 @@
 import AppKit
 import Testing
+
 @testable import ATC
 
 @Suite("Keyboard event normalization")
@@ -9,10 +10,12 @@ struct EventNormalizationTests {
         #expect(KeyStroke.resolveKey(produced: "т", asciiFallback: { "t" }) == "t")
 
         var consultedFallback = false
-        let producedASCII = KeyStroke.resolveKey(produced: "t", asciiFallback: {
-            consultedFallback = true
-            return "x"
-        })
+        let producedASCII = KeyStroke.resolveKey(
+            produced: "t",
+            asciiFallback: {
+                consultedFallback = true
+                return "x"
+            })
         #expect(producedASCII == "t")
         #expect(!consultedFallback)
 
@@ -23,68 +26,79 @@ struct EventNormalizationTests {
 
     @Test("layout-resolved command, shift, and option events normalize")
     func printableEvents() throws {
-        let commandB = try #require(event(
-            flags: .command,
-            characters: "b",
-            ignoringModifiers: "b",
-            keyCode: 11
-        ))
-        #expect(KeyStroke.normalize(event: commandB)
-            == KeyStroke(key: "b", modifiers: .command))
+        let commandB = try #require(
+            event(
+                flags: .command,
+                characters: "b",
+                ignoringModifiers: "b",
+                keyCode: 11
+            ))
+        #expect(
+            KeyStroke.normalize(event: commandB)
+                == KeyStroke(key: "b", modifiers: .command))
 
-        let shiftedOne = try #require(event(
-            flags: [.command, .shift],
-            characters: "!",
-            ignoringModifiers: "1",
-            keyCode: 18
-        ))
-        #expect(KeyStroke.normalize(event: shiftedOne)
-            == KeyStroke(key: "1", modifiers: [.command, .shift]))
+        let shiftedOne = try #require(
+            event(
+                flags: [.command, .shift],
+                characters: "!",
+                ignoringModifiers: "1",
+                keyCode: 18
+            ))
+        #expect(
+            KeyStroke.normalize(event: shiftedOne)
+                == KeyStroke(key: "1", modifiers: [.command, .shift]))
 
-        let optionB = try #require(event(
-            flags: .option,
-            characters: "∫",
-            ignoringModifiers: "b",
-            keyCode: 11
-        ))
-        #expect(KeyStroke.normalize(event: optionB)
-            == KeyStroke(key: "b", modifiers: .option))
+        let optionB = try #require(
+            event(
+                flags: .option,
+                characters: "∫",
+                ignoringModifiers: "b",
+                keyCode: 11
+            ))
+        #expect(
+            KeyStroke.normalize(event: optionB)
+                == KeyStroke(key: "b", modifiers: .option))
     }
 
     @Test("escape normalizes and function keys forward as unmappable")
     func specialEvents() throws {
-        let escape = try #require(event(
-            flags: [], characters: "\u{1b}", ignoringModifiers: "\u{1b}", keyCode: 53
-        ))
+        let escape = try #require(
+            event(
+                flags: [], characters: "\u{1b}", ignoringModifiers: "\u{1b}", keyCode: 53
+            ))
         #expect(KeyStroke.normalize(event: escape) == .escape)
 
         // Held modifiers never produce a distinct escape stroke; a pending
         // sequence cancels silently for shift+esc just like bare esc.
-        let shiftedEscape = try #require(event(
-            flags: .shift, characters: "\u{1b}", ignoringModifiers: "\u{1b}", keyCode: 53
-        ))
+        let shiftedEscape = try #require(
+            event(
+                flags: .shift, characters: "\u{1b}", ignoringModifiers: "\u{1b}", keyCode: 53
+            ))
         #expect(KeyStroke.normalize(event: shiftedEscape) == .escape)
 
         let functionCharacter = String(UnicodeScalar(NSF1FunctionKey)!)
-        let function = try #require(event(
-            flags: [],
-            characters: functionCharacter,
-            ignoringModifiers: functionCharacter,
-            keyCode: 122
-        ))
+        let function = try #require(
+            event(
+                flags: [],
+                characters: functionCharacter,
+                ignoringModifiers: functionCharacter,
+                keyCode: 122
+            ))
         #expect(KeyStroke.normalize(event: function) == nil)
     }
 
     @Test("a Cyrillic event uses its physical key's ASCII interpretation")
     func cyrillicEvent() throws {
-        let commandT = try #require(event(
-            flags: .command,
-            characters: "т",
-            ignoringModifiers: "т",
-            keyCode: 17
-        ))
-        #expect(KeyStroke.normalize(event: commandT)
-            == KeyStroke(key: "t", modifiers: .command))
+        let commandT = try #require(
+            event(
+                flags: .command,
+                characters: "т",
+                ignoringModifiers: "т",
+                keyCode: 17
+            ))
+        #expect(
+            KeyStroke.normalize(event: commandT)
+                == KeyStroke(key: "t", modifiers: .command))
     }
 
     private func event(

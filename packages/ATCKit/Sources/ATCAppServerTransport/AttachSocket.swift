@@ -54,10 +54,11 @@ protocol AttachWebSocketTask: Sendable {
 }
 
 /// Opens one connection; `onOpen` fires when the handshake completes.
-typealias AttachTransport = @Sendable (
-    _ request: URLRequest,
-    _ onOpen: @escaping @Sendable () -> Void
-) -> any AttachWebSocketTask
+typealias AttachTransport =
+    @Sendable (
+        _ request: URLRequest,
+        _ onOpen: @escaping @Sendable () -> Void
+    ) -> any AttachWebSocketTask
 
 public actor AttachSocket {
     /// Protocol-level pings are a liveness backstop for sleeping Macs and

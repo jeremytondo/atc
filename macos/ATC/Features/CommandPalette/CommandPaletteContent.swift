@@ -57,7 +57,8 @@ enum PaletteTypeKeyword: CaseIterable, Equatable {
     case terminals
 
     static func match(_ query: String) -> PaletteTypeKeyword? {
-        let query = query
+        let query =
+            query
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         guard query.count >= 3 else { return nil }
@@ -121,9 +122,10 @@ enum CommandPaletteContent {
         let expands = keyword == .threads
         return (model.pinned + model.recent).compactMap { item in
             let titleMatch = QueryMatcher.match(query, in: item.thread.displayName)
-            guard expands
-                || titleMatch != nil
-                || QueryMatcher.match(query, in: item.projectLabel) != nil
+            guard
+                expands
+                    || titleMatch != nil
+                    || QueryMatcher.match(query, in: item.projectLabel) != nil
             else { return nil }
             return ThreadResult(
                 ref: item.ref,
@@ -148,12 +150,14 @@ enum CommandPaletteContent {
         return context.appModel.runtimes.flatMap { runtime -> [TerminalResult] in
             runtime.terminals.terminals.compactMap { terminal in
                 guard terminal.threadId == nil else { return nil }
-                let projectName = runtime.projects.project(id: terminal.projectId)?.name
+                let projectName =
+                    runtime.projects.project(id: terminal.projectId)?.name
                     ?? "Unknown Project"
                 let titleMatch = QueryMatcher.match(query, in: terminal.displayName)
-                guard expands
-                    || titleMatch != nil
-                    || QueryMatcher.match(query, in: projectName) != nil
+                guard
+                    expands
+                        || titleMatch != nil
+                        || QueryMatcher.match(query, in: projectName) != nil
                 else { return nil }
                 return TerminalResult(
                     ref: TerminalRef(connectionID: runtime.id, terminalID: terminal.id),
@@ -183,7 +187,7 @@ enum CommandPaletteContent {
     ) -> [CommandPaletteRow] {
         CommandRegistry.allDescriptors.compactMap { descriptor in
             guard descriptor.isPaletteEligible,
-                  let match = QueryMatcher.match(query, in: descriptor.title)
+                let match = QueryMatcher.match(query, in: descriptor.title)
             else { return nil }
             return CommandPaletteRow(
                 id: descriptor.id,
@@ -192,10 +196,12 @@ enum CommandPaletteContent {
                 shortcut: keymap.menuShortcuts[descriptor.id],
                 availability: descriptor.availability(context)
             )
-        }.sorted { isOrderedBefore(
-            title: $0.title, id: $0.id,
-            thanTitle: $1.title, id: $1.id
-        ) }
+        }.sorted {
+            isOrderedBefore(
+                title: $0.title, id: $0.id,
+                thanTitle: $1.title, id: $1.id
+            )
+        }
     }
 
     /// Navigation rows order by title, then Connection, then the row's own

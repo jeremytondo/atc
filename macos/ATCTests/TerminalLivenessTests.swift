@@ -1,6 +1,7 @@
+import ATCAppServerTransport
 import Foundation
 import Testing
-import ATCAppServerTransport
+
 @testable import ATC
 
 /// Registry membership in `AppModel.terminals` means ownership (scrollback

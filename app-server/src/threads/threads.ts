@@ -28,11 +28,11 @@ import {
   isAgentId,
   ProviderSessionConflict,
   ProviderUnavailable,
-  Thread as ThreadSchema,
   ThreadArchived,
   ThreadBusy,
   ThreadNotFound,
 } from "../api/contract.ts"
+import type * as Contract from "../api/contract.ts"
 import type {
   CreateThreadRequest,
   DirectoryCheckTimedOut,
@@ -49,7 +49,7 @@ import type { Terminal } from "../terminals/terminals.ts"
 import { ThreadRepository } from "./threadRepository.ts"
 import type { ThreadRecord } from "./threadRepository.ts"
 
-export type Thread = typeof ThreadSchema.Type
+export type Thread = typeof Contract.Thread.Type
 
 // The Threads domain service (ATC-124): Threads are the primary unit of
 // work — durable ATC identity separate from provider identity. Invariants:

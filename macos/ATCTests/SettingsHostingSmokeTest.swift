@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Testing
+
 @testable import ATC
 
 /// Hosts the Settings window in a real window and pumps the run loop,

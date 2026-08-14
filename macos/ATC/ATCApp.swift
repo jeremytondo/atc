@@ -52,11 +52,12 @@ private struct WindowRootView: View {
         self.configStore = configStore
         let windowState = WindowState()
         _windowState = State(initialValue: windowState)
-        _router = State(initialValue: WindowKeyboardRouter.forWindow(
-            appModel: appModel,
-            windowState: windowState,
-            configStore: configStore
-        ))
+        _router = State(
+            initialValue: WindowKeyboardRouter.forWindow(
+                appModel: appModel,
+                windowState: windowState,
+                configStore: configStore
+            ))
     }
 
     var body: some View {

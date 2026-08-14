@@ -83,17 +83,19 @@ struct ThreadListModel {
         for input in inputs {
             for project in input.projects {
                 let ref = ProjectRef(connectionID: input.connectionID, projectID: project.id)
-                let label = nameCounts[project.name, default: 0] > 1
+                let label =
+                    nameCounts[project.name, default: 0] > 1
                     ? "\(project.name) · \(input.connectionName)"
                     : project.name
                 projectsByRef[ref] = project
                 labelsByRef[ref] = label
-                options.append(ProjectOption(
-                    ref: ref,
-                    project: project,
-                    connectionName: input.connectionName,
-                    label: label
-                ))
+                options.append(
+                    ProjectOption(
+                        ref: ref,
+                        project: project,
+                        connectionName: input.connectionName,
+                        label: label
+                    ))
             }
         }
         projects = options

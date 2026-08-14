@@ -60,13 +60,15 @@ enum ConfigurationLoader {
             guard recognizedTables.contains(key) else {
                 do {
                     _ = try root.table(forKey: key)
-                    diagnostics.append(diagnostic(
-                        "[\(key)] is not a recognized table (expected [keyboard], [keybindings], or [terminal])"
-                    ))
+                    diagnostics.append(
+                        diagnostic(
+                            "[\(key)] is not a recognized table (expected [keyboard], [keybindings], or [terminal])"
+                        ))
                 } catch {
-                    diagnostics.append(diagnostic(
-                        "Top-level key '\(key)' is unsupported; expected [keyboard], [keybindings], or [terminal]"
-                    ))
+                    diagnostics.append(
+                        diagnostic(
+                            "Top-level key '\(key)' is unsupported; expected [keyboard], [keybindings], or [terminal]"
+                        ))
                 }
                 continue
             }
@@ -105,32 +107,36 @@ enum ConfigurationLoader {
         var entries: [ParsedConfig.Entry] = []
         for key in table.keys.sorted() {
             guard keyboardKeys.contains(key) else {
-                diagnostics.append(diagnostic(
-                    "\(configurationKeyPath(table: "keyboard", key: key)) is not recognized"
-                ))
+                diagnostics.append(
+                    diagnostic(
+                        "\(configurationKeyPath(table: "keyboard", key: key)) is not recognized"
+                    ))
                 continue
             }
 
             switch key {
             case "leader":
                 do {
-                    entries.append(.init(
-                        key: key,
-                        value: .string(try table.string(forKey: key))
-                    ))
+                    entries.append(
+                        .init(
+                            key: key,
+                            value: .string(try table.string(forKey: key))
+                        ))
                 } catch {
                     diagnostics.append(diagnostic("[keyboard].leader must be a string"))
                 }
             case "clear_default_keybindings":
                 do {
-                    entries.append(.init(
-                        key: key,
-                        value: .boolean(try table.bool(forKey: key))
-                    ))
+                    entries.append(
+                        .init(
+                            key: key,
+                            value: .boolean(try table.bool(forKey: key))
+                        ))
                 } catch {
-                    diagnostics.append(diagnostic(
-                        "[keyboard].clear_default_keybindings must be a boolean"
-                    ))
+                    diagnostics.append(
+                        diagnostic(
+                            "[keyboard].clear_default_keybindings must be a boolean"
+                        ))
                 }
             default:
                 preconditionFailure("Recognized keyboard key is not decoded")
@@ -152,9 +158,10 @@ enum ConfigurationLoader {
                     value: .string(try table.string(forKey: key))
                 )
             } catch {
-                diagnostics.append(diagnostic(
-                    "\(configurationKeyPath(table: "keybindings", key: key)) must be a string command id or \"unbind\""
-                ))
+                diagnostics.append(
+                    diagnostic(
+                        "\(configurationKeyPath(table: "keybindings", key: key)) must be a string command id or \"unbind\""
+                    ))
                 return nil
             }
         }
@@ -172,9 +179,10 @@ enum ConfigurationLoader {
 
         for key in table.keys.sorted() {
             guard terminalKeys.contains(key) else {
-                diagnostics.append(diagnostic(
-                    "\(configurationKeyPath(table: "terminal", key: key)) is not recognized"
-                ))
+                diagnostics.append(
+                    diagnostic(
+                        "\(configurationKeyPath(table: "terminal", key: key)) is not recognized"
+                    ))
                 continue
             }
 
@@ -184,9 +192,10 @@ enum ConfigurationLoader {
                 do {
                     let value = try table.string(forKey: key)
                     guard TerminalPresentation.isKnownTheme(value) else {
-                        diagnostics.append(diagnostic(
-                            "[terminal].theme \"\(value)\" is not a known theme"
-                        ))
+                        diagnostics.append(
+                            diagnostic(
+                                "[terminal].theme \"\(value)\" is not a known theme"
+                            ))
                         continue
                     }
                     theme = value

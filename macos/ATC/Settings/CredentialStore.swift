@@ -36,7 +36,8 @@ nonisolated final class KeychainCredentialStore: CredentialStore {
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
+            let data = result as? Data
+        else { return nil }
         return String(data: data, encoding: .utf8)
     }
 

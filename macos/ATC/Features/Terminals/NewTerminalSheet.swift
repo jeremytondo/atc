@@ -75,11 +75,12 @@ struct NewTerminalSheet: View {
         defer { isSubmitting = false }
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
         do {
-            let terminal = try await runtime.terminals.create(.init(
-                projectId: projectRef.projectID,
-                name: trimmedName.isEmpty ? nil : trimmedName,
-                workingDirectory: workingDirectory.trimmingCharacters(in: .whitespaces)
-            ))
+            let terminal = try await runtime.terminals.create(
+                .init(
+                    projectId: projectRef.projectID,
+                    name: trimmedName.isEmpty ? nil : trimmedName,
+                    workingDirectory: workingDirectory.trimmingCharacters(in: .whitespaces)
+                ))
             submitError = nil
             windowState.newTerminalProject = nil
             windowState.selectTerminal(

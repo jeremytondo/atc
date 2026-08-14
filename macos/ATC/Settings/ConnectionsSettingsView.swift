@@ -7,7 +7,7 @@ enum ConnectionEditorTarget: Hashable {
     case new
 }
 
-/// The Connections settings section: a master list of Connections on the left
+/// The Connections settings section: a list of Connections on the left
 /// (name, URL, status dot, and a +/− bottom bar) and a draft editor on the
 /// right. Nothing touches `ConnectionsStore` until the editor's Save.
 struct ConnectionsSettingsView: View {
@@ -32,7 +32,7 @@ struct ConnectionsSettingsView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            master
+            connectionList
                 .frame(width: 240)
             Divider()
             detail
@@ -49,13 +49,15 @@ struct ConnectionsSettingsView: View {
                 }
             }
         } message: {
-            Text("This removes the connection from atc only. Its Projects and Terminal Sessions remain on the atc server.")
+            Text(
+                "This removes the connection from atc only. Its Projects and Terminal Sessions remain on the atc server."
+            )
         }
     }
 
-    // MARK: Master list
+    // MARK: Connection list
 
-    private var master: some View {
+    private var connectionList: some View {
         VStack(spacing: 0) {
             List(selection: $target) {
                 ForEach(store.connections) { record in
@@ -230,7 +232,9 @@ private struct ConnectionEditorView: View {
         ) {
             Button("Save and Disconnect", role: .destructive) { performSave() }
         } message: {
-            Text("Changing the URL or token reconnects this connection, and its open terminals will be disconnected. They keep running on the server.")
+            Text(
+                "Changing the URL or token reconnects this connection, and its open terminals will be disconnected. They keep running on the server."
+            )
         }
     }
 
@@ -256,8 +260,9 @@ private struct ConnectionEditorView: View {
     private func save() {
         saveError = nil
         if let record = currentRecord,
-           appModel.wouldRebuildConnection(id: record.id, urlString: urlString, token: token),
-           appModel.hasLiveTerminals(connectionID: record.id) {
+            appModel.wouldRebuildConnection(id: record.id, urlString: urlString, token: token),
+            appModel.hasLiveTerminals(connectionID: record.id)
+        {
             confirmRebuild = true
             return
         }
@@ -288,9 +293,10 @@ private struct ConnectionEditorView: View {
         }
     }
 
-    private func testConnection() {
+    func testConnection() {
         guard let origin = ConnectionURL.parse(urlString),
-              let url = URL(string: origin.urlString) else { return }
+            let url = URL(string: origin.urlString)
+        else { return }
         testGeneration += 1
         let generation = testGeneration
         let draftToken = token
@@ -325,22 +331,22 @@ private struct ConnectionEditorView: View {
 // are not.
 #if DEBUG
 
-#Preview("Connections — populated") {
-    ConnectionsSettingsView()
-        .environment(AppModel.preview())
-        .frame(width: 700, height: 450)
-        .preferredColorScheme(.dark)
-}
+    #Preview("Connections — populated") {
+        ConnectionsSettingsView()
+            .environment(AppModel.preview())
+            .frame(width: 700, height: 450)
+            .preferredColorScheme(.dark)
+    }
 
-#Preview("Connections — empty") {
-    let store = ConnectionsStore(
-        defaults: UserDefaults(suiteName: "preview.connections.empty")!,
-        credentials: InMemoryCredentialStore()
-    )
-    return ConnectionsSettingsView()
-        .environment(AppModel(connections: store))
-        .frame(width: 700, height: 450)
-        .preferredColorScheme(.dark)
-}
+    #Preview("Connections — empty") {
+        let store = ConnectionsStore(
+            defaults: UserDefaults(suiteName: "preview.connections.empty")!,
+            credentials: InMemoryCredentialStore()
+        )
+        return ConnectionsSettingsView()
+            .environment(AppModel(connections: store))
+            .frame(width: 700, height: 450)
+            .preferredColorScheme(.dark)
+    }
 
 #endif

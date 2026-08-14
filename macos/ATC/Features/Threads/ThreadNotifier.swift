@@ -21,8 +21,8 @@
 //   all: its baseline was never cleared, so finishes during a sleep or wifi
 //   gap diff as new and notify.
 
-import AppKit
 import ATCAppServerAPI
+import AppKit
 import Foundation
 import UserNotifications
 
@@ -41,10 +41,11 @@ final class ThreadNotifier {
         /// A banner is a poke, not a report: no agent name, no server name,
         /// and no message text — the API exposes no turn content anyway.
         func body(project: String?) -> String {
-            let lead = switch self {
-            case .finished: "Finished"
-            case .needsInput: "Needs your input"
-            }
+            let lead =
+                switch self {
+                case .finished: "Finished"
+                case .needsInput: "Needs your input"
+                }
             guard let project else { return lead }
             return "\(lead) · \(project)"
         }
@@ -164,7 +165,8 @@ final class ThreadNotifier {
             // restart), so the last known activity carries forward. Otherwise
             // every blip would withdraw a needs-input banner and re-post it,
             // with sound, when sight returned.
-            let activityState = thread.activityState == .unknown
+            let activityState =
+                thread.activityState == .unknown
                 ? previous?.activityState ?? .unknown
                 : thread.activityState
             let state = State(unread: thread.unread, activityState: activityState)
@@ -217,10 +219,11 @@ final class ThreadNotifier {
 
     private func takeDownIfStale(_ ref: ThreadRef, state: State) {
         guard let claim = delivered[ref] else { return }
-        let stillTrue = switch claim {
-        case .finished: state.unread
-        case .needsInput: state.activityState == .needsInput
-        }
+        let stillTrue =
+            switch claim {
+            case .finished: state.unread
+            case .needsInput: state.activityState == .needsInput
+            }
         guard !stillTrue else { return }
         takeDown(ref)
     }
@@ -277,7 +280,7 @@ extension ThreadRef {
     init?(notificationIdentifier: String) {
         let parts = notificationIdentifier.split(separator: "/")
         guard parts.count == 3, parts[0] == "thread",
-              let connectionID = UUID(uuidString: String(parts[1]))
+            let connectionID = UUID(uuidString: String(parts[1]))
         else { return nil }
         self.init(connectionID: connectionID, threadID: String(parts[2]))
     }

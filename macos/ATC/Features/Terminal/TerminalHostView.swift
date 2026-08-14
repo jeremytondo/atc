@@ -1,7 +1,7 @@
 import AppKit
+import GhosttyTerminal
 import OSLog
 import SwiftUI
-import GhosttyTerminal
 
 private let logger = Logger(subsystem: "ElevenIdeas.atc", category: "terminal")
 
@@ -149,7 +149,7 @@ final class TerminalContainerView: NSView {
         focusResignTask = Task { [weak window, weak terminalView] in
             try? await Task.sleep(for: Self.focusRetryDelay)
             guard !Task.isCancelled, let window, let terminalView,
-                  window.firstResponder === terminalView
+                window.firstResponder === terminalView
             else { return }
             window.makeFirstResponder(nil)
         }
