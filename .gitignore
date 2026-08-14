@@ -39,3 +39,6 @@ coverage/
 experiments/provider-identity-resume/.generated/
 experiments/provider-identity-resume/runs/
 *.profraw
+
+# xcodebuild SPM clone dir (ATC_XCODE_SPM_DIR; cached in CI)
+.spm-packages*/

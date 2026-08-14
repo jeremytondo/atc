@@ -46,11 +46,34 @@ jobs:
               - "mise.toml"
               - ".github/workflows/macos-ci.yml"
 
-  validate:
+  # SwiftLint ships official Linux binaries, so linting runs on a cheap
+  # runner while the macOS jobs spin up.
+  lint:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: jdx/mise-action@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: SwiftLint
+        run: mise run swift:lint
+
+  # Both macOS jobs cache packages/ATCKit/.build keyed on Package.resolved:
+  # SPM source checkouts plus build products, which SPM keeps incrementally
+  # correct (unlike DerivedData, which is never cached here). The app job
+  # needs it too — prepare-xcode-openapi.sh compiles swift-openapi-generator
+  # out of that directory before xcodebuild starts.
+  kit:
+    name: ATCKit tests + swift-format
     needs: changes
     if: needs.changes.outputs.relevant == 'true'
     runs-on: macos-26
-    timeout-minutes: 30
+    timeout-minutes: 15
     env:
       # CI-only: compiler warnings in our targets fail the build. Locally the
       # tasks stay permissive so a new Xcode deprecation can't block iteration.
@@ -62,20 +85,53 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Show Xcode version
-        run: xcodebuild -version
+      - uses: actions/cache@v5
+        with:
+          path: packages/ATCKit/.build
+          key: spm-kit-${{ runner.os }}-${{ hashFiles('packages/ATCKit/Package.resolved') }}
+          restore-keys: spm-kit-${{ runner.os }}-
 
-      # Same commands as local `mise run swift:lint` / `swift:fmt:check` /
-      # `kit:test` / `macos:test`.
-      - name: SwiftLint
-        run: mise run swift:lint
-
+      # Same commands as local `mise run swift:fmt:check` / `kit:test`.
       - name: swift-format check
         run: mise run swift:fmt:check
 
       - name: ATCKit tests
         run: mise run kit:test
 
+  app:
+    name: macOS app tests
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      ATC_STRICT_WARNINGS: "1"
+      # Pins where xcodebuild clones SPM dependencies so the checkout cache
+      # below has a stable path (DerivedData itself stays per-run).
+      ATC_XCODE_SPM_DIR: ${{ github.workspace }}/.spm-packages
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: jdx/mise-action@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/cache@v5
+        with:
+          path: packages/ATCKit/.build
+          key: spm-kit-${{ runner.os }}-${{ hashFiles('packages/ATCKit/Package.resolved') }}
+          restore-keys: spm-kit-${{ runner.os }}-
+
+      - uses: actions/cache@v5
+        with:
+          path: .spm-packages
+          key: spm-xcode-${{ runner.os }}-${{ hashFiles('macos/atc.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: spm-xcode-${{ runner.os }}-
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      # Same command as local `mise run macos:test`.
       - name: macOS app tests
         run: mise run macos:test
 
@@ -84,7 +140,7 @@ jobs:
   # ruleset can require it without hanging non-matching PRs.
   ci-ok:
     name: macos-ci-ok
-    needs: [changes, validate]
+    needs: [changes, lint, kit, app]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

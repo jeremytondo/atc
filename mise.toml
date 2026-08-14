@@ -120,23 +120,32 @@ set -euo pipefail
 derived_data_path="$(mktemp -d "${TMPDIR:-/tmp}/atc-macos-test.XXXXXX")"
 trap 'rm -rf "$derived_data_path"' EXIT
 
+# Optional xcodebuild arguments accumulate here; the ${extra[@]+...}
+# expansion below is the bash 3.2-safe way to expand a possibly-empty array
+# under set -u.
+extra=()
+
 # ATC_SWIFT_STRICT_WARNINGS feeds the indirection in project.pbxproj: only
 # this project's targets reference it, so a global SWIFT_TREAT_WARNINGS_AS_
 # ERRORS override cannot break Swift package dependencies.
-strict_settings=""
 if [ "${ATC_STRICT_WARNINGS:-0}" = "1" ]; then
-  strict_settings="ATC_SWIFT_STRICT_WARNINGS=YES"
+  extra+=("ATC_SWIFT_STRICT_WARNINGS=YES")
+fi
+
+# CI pins where xcodebuild clones SPM dependencies so the checkouts can be
+# cached across runs; unset locally, where Xcode's default location is fine.
+if [ -n "${ATC_XCODE_SPM_DIR:-}" ]; then
+  extra+=(-clonedSourcePackagesDirPath "$ATC_XCODE_SPM_DIR")
 fi
 
 scripts/prepare-xcode-openapi.sh "$derived_data_path"
-# $strict_settings intentionally unquoted: empty must vanish, not become "".
 xcodebuild test \
   -project macos/atc.xcodeproj \
   -scheme atc \
   -destination platform=macOS \
   -derivedDataPath "$derived_data_path" \
   -skipPackagePluginValidation \
-  CODE_SIGNING_ALLOWED=NO $strict_settings
+  CODE_SIGNING_ALLOWED=NO ${extra[@]+"${extra[@]}"}
 """
 
 [tasks.refs]
