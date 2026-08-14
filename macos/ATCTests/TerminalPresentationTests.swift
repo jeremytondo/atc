@@ -13,6 +13,7 @@ struct TerminalPresentationTests {
             ) == """
                 window-padding-x = 8
                 window-padding-y = 6
+                keybind = shift+enter=text:\\x1b\\r
                 """)
     }
 
@@ -21,19 +22,19 @@ struct TerminalPresentationTests {
         let cases: [(TerminalPreferences, String)] = [
             (
                 .init(fontFamily: "Berkeley Mono"),
-                "font-family = Berkeley Mono\nwindow-padding-x = 8\nwindow-padding-y = 6"
+                "font-family = Berkeley Mono\nwindow-padding-x = 8\nwindow-padding-y = 6\nkeybind = shift+enter=text:\\x1b\\r"
             ),
             (
                 .init(fontSize: 14),
-                "font-size = 14\nwindow-padding-x = 8\nwindow-padding-y = 6"
+                "font-size = 14\nwindow-padding-x = 8\nwindow-padding-y = 6\nkeybind = shift+enter=text:\\x1b\\r"
             ),
             (
                 .init(paddingX: 12),
-                "window-padding-x = 12\nwindow-padding-y = 6"
+                "window-padding-x = 12\nwindow-padding-y = 6\nkeybind = shift+enter=text:\\x1b\\r"
             ),
             (
                 .init(paddingY: 9),
-                "window-padding-x = 8\nwindow-padding-y = 9"
+                "window-padding-x = 8\nwindow-padding-y = 9\nkeybind = shift+enter=text:\\x1b\\r"
             ),
         ]
 
@@ -53,6 +54,7 @@ struct TerminalPresentationTests {
             ) == """
                 window-padding-x = 0
                 window-padding-y = 0
+                keybind = shift+enter=text:\\x1b\\r
                 """)
     }
 
@@ -65,6 +67,7 @@ struct TerminalPresentationTests {
             rendered == """
                 window-padding-x = 8
                 window-padding-y = 6
+                keybind = shift+enter=text:\\x1b\\r
                 """)
         #expect(!rendered.contains("theme"))
     }
@@ -72,12 +75,13 @@ struct TerminalPresentationTests {
     @Test("unset preferences apply safe padding and the app-owned canvas background")
     func compiledDefaultsController() {
         // Unset preferences keep libghostty's compiled defaults except for
-        // safe content padding and the app-owned background.
+        // safe content padding, the coding CLI keybind, and the app-owned background.
         let controller = TerminalPresentation.makeController(preferences: .init())
         #expect(
             controller.renderedConfig == """
                 window-padding-x = 8
                 window-padding-y = 6
+                keybind = shift+enter=text:\\x1b\\r
                 background = 141416
 
                 """)

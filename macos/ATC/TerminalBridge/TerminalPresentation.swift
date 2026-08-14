@@ -50,6 +50,9 @@ enum TerminalPresentation {
             }
             builder.withWindowPaddingX(preferences.paddingX ?? defaultPaddingX)
             builder.withWindowPaddingY(preferences.paddingY ?? defaultPaddingY)
+            // ATC owns newline-in-prompt for coding CLIs without reading the
+            // user's Ghostty configuration.
+            builder.withCustom("keybind", "shift+enter=text:\\x1b\\r")
             // background is rendered through the theme (themes render after
             // this configuration, so only a theme-level value wins).
         }
