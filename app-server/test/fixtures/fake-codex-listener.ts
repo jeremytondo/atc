@@ -313,6 +313,14 @@ const handle = (
         status: { type: "active", activeFlags: [] },
       })
       broadcast("turn/started", { threadId, turn: { id: turnId } })
+      // The real server broadcasts the turn's input back as a completed
+      // userMessage item — content text blocks, unlike agentMessage's
+      // top-level text — the retention evidence for title refinement.
+      broadcast("item/completed", {
+        threadId,
+        turnId,
+        item: { id: crypto.randomUUID(), type: "userMessage", content: [{ type: "text", text }] },
+      })
       if (text.includes("HANG")) {
         hangingTurns.add(threadId)
         return

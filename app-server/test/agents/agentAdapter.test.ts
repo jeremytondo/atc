@@ -3,6 +3,7 @@ import { Deferred, Effect, Fiber, Stream } from "effect"
 import type { AgentEvent } from "../../src/agents/agentAdapter.ts"
 import {
   aggregateActivity,
+  buildTitleContext,
   makeVersionGate,
   sanitizeTitle,
   titleInstruction,
@@ -99,15 +100,16 @@ describe("titleInstruction", () => {
     assert.include(instruction, "If no category clearly matches, omit the prefix.")
   })
 
-  it("asks for resolved references, and for prompt-only titling when it cannot", () => {
+  it("is tool-free: identifiers stay verbatim and are never guessed at", () => {
     const instruction = titleInstruction("$implement ATC-186")
     // Ahead of the prose, so sanitizeTitle's length cap cuts the
     // description rather than the identifier.
     assert.include(instruction, "put it ahead of the descriptive part")
     assert.include(instruction, "$name or /name is a skill invocation")
-    assert.include(instruction, "really call it, never describe calling it")
-    assert.include(instruction, "title from the message alone")
-    assert.include(instruction, "Never guess what the identifier refers to")
+    assert.include(instruction, "Never guess what a referenced identifier points to")
+    // The ATC-186 resolver-tool rules are gone (ATC-190).
+    assert.notInclude(instruction, "your tools")
+    assert.notInclude(instruction, "look up")
   })
 
   it("carries a capped prompt", () => {
@@ -115,6 +117,38 @@ describe("titleInstruction", () => {
     assert.include(instruction, "add a login page")
     const capped = titleInstruction("x".repeat(10_000))
     assert.isBelow(capped.length, 6_000)
+  })
+
+  it("the refinement variant carries context, the current title, and the no-churn rule", () => {
+    const refined = titleInstruction("$implement ATC-190", {
+      context: "user: /implement ATC-190\nassistant: Replacing resolver-driven thread naming.",
+      currentTitle: "Build - ATC-190",
+    })
+    assert.include(refined, "The thread's current title: Build - ATC-190")
+    assert.include(refined, "reply with it exactly, unchanged")
+    assert.include(refined, "assistant: Replacing resolver-driven thread naming.")
+    assert.include(refined, "The user's first message:")
+    // No adopted first-pass title: no keep-it rule to state.
+    const untitled = titleInstruction("$implement ATC-190", {
+      context: "assistant: context",
+      currentTitle: null,
+    })
+    assert.notInclude(untitled, "current title")
+  })
+})
+
+describe("buildTitleContext", () => {
+  it("joins trimmed lines, keeps the recent tail within the cap, and nulls on nothing", () => {
+    assert.strictEqual(
+      buildTitleContext(["  user: hi  ", "", "assistant: ok"]),
+      "user: hi\nassistant: ok",
+    )
+    assert.isNull(buildTitleContext([]))
+    assert.isNull(buildTitleContext(["   ", "\n"]))
+    const long = buildTitleContext(["x".repeat(9_000), "assistant: THE-END"])
+    assert.isNotNull(long)
+    assert.isAtMost(long!.length, 8_192)
+    assert.isTrue(long!.endsWith("assistant: THE-END"))
   })
 })
 

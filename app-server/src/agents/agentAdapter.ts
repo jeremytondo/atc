@@ -344,14 +344,29 @@ export interface AgentAdapter {
    * One bounded, session-less completion: a short display title for a
    * thread whose first user prompt is `prompt` (ATC-155). Runs as the
    * provider's cheapest ephemeral invocation — never a persisted provider
-   * session, never a writer on any existing one. Returns the model's raw
-   * text; callers apply `sanitizeTitle`. Failures are ordinary typed
+   * session, never a writer on any existing one. With `refine` (ATC-190)
+   * the same one-shot re-titles from collected conversation context and is
+   * told to keep a current title that already fits. Returns the model's
+   * raw text; callers apply `sanitizeTitle`. Failures are ordinary typed
    * errors — the caller decides that a missing title is not an error.
    */
   readonly generateTitle: (options: {
     readonly cwd: string
     readonly prompt: string
+    readonly refine?: TitleRefinement
   }) => Effect.Effect<string, AgentUnavailable | AgentProtocolError>
+  /**
+   * Best-effort recent conversation text for one session, feeding the one
+   * title refinement (ATC-190): whatever the adapter can reach cheaply —
+   * an on-demand transcript read (Claude) or the in-memory retention of
+   * observed message items (Codex) — as plain `user:`/`assistant:` lines
+   * capped near 8KB (`buildTitleContext`). Null when nothing usable
+   * exists. Never fails and never touches provider session state.
+   */
+  readonly collectTitleContext: (options: {
+    readonly providerSessionId: string
+    readonly cwd: string
+  }) => Effect.Effect<string | null>
   /**
    * Demand-driven reconciliation: the provider's current word on the
    * session's activity, `unknown` when it offers no evidence. Never
@@ -532,18 +547,44 @@ export const resolveProviderExecutable = (
     )
   })
 
+/** The refinement inputs (ATC-190): collected conversation context plus the
+ * title the thread currently carries (null when the first pass adopted
+ * nothing). */
+export interface TitleRefinement {
+  readonly context: string
+  readonly currentTitle: string | null
+}
+
+/** Cap on collected refinement context (T3Code precedent): the one-shot
+ * needs the gist of the conversation, never a transcript. */
+export const TITLE_CONTEXT_LIMIT = 8_192
+
+/**
+ * Assemble `collectTitleContext` output from labeled conversation lines:
+ * the most recent text within `TITLE_CONTEXT_LIMIT`, or null when nothing
+ * usable remains. Shared so every adapter's context reads the same to the
+ * shared instruction.
+ */
+export const buildTitleContext = (entries: ReadonlyArray<string>): string | null => {
+  const lines = entries.map((entry) => entry.trim()).filter((entry) => entry !== "")
+  if (lines.length === 0) return null
+  const text = lines.join("\n")
+  return text.length > TITLE_CONTEXT_LIMIT ? text.slice(-TITLE_CONTEXT_LIMIT) : text
+}
+
 /**
  * The one thread-title instruction (ATC-155), shared by every adapter's
  * generateTitle so Claude and Codex titles read the same. The user prompt
  * is capped so a pasted wall of text cannot blow up the one-shot's cost —
  * the opening lines are what a title needs.
  *
- * The reference rules (ATC-186) are unconditional: whether a lookup tool
- * exists is the provider's business (Claude's configured resolvers, Codex's
- * own connectors), and a run with none takes the same fallback the rules
- * demand when a lookup fails.
+ * The run is tool-free by design (ATC-190): a referenced identifier is
+ * never looked up here. The refinement variant carries the conversation
+ * the primary agent already produced — which names what any identifier
+ * turned out to mean — and demands no churn: a current title that already
+ * fits comes back verbatim.
  */
-export const titleInstruction = (prompt: string): string =>
+export const titleInstruction = (prompt: string, refine?: TitleRefinement): string =>
   [
     "You write concise titles for coding-agent conversation threads.",
     "Reply with the title only: a single line of plain text, with nothing before or after it.",
@@ -561,9 +602,24 @@ export const titleInstruction = (prompt: string): string =>
     "- If no category clearly matches, omit the prefix.",
     "- Keep every identifier the request names — issue id, PR number, URL — verbatim, and put it ahead of the descriptive part; identifiers do not count toward the word budget.",
     "- A leading $name or /name is a skill invocation: the name is the action being asked for (for example $grill means grill whatever follows).",
-    "- If your tools include one that can look up a referenced identifier, call it once — really call it, never describe calling it — and add the resource's real title. Use no other tool and never retry.",
-    "- If you have no such tool, or the lookup fails, title from the message alone: it may then say nothing about the resource beyond the identifier itself. Never guess what the identifier refers to, and never announce what you are about to do.",
-    "- Example: '$implement ATC-123' becomes 'Build - ATC-123 Restore terminal sessions' when the lookup resolves, and 'Build - ATC-123' when it does not.",
+    "- Never guess what a referenced identifier points to: without evidence of what it means, the title may say nothing about the resource beyond the identifier itself.",
+    ...(refine === undefined
+      ? []
+      : [
+          "",
+          "The conversation below shows what the work actually turned out to be — including what any referenced identifier means. Title the actual work.",
+          ...(refine.currentTitle === null
+            ? []
+            : [
+                `The thread's current title: ${refine.currentTitle}`,
+                "If that title already describes the actual work, reply with it exactly, unchanged. Replace it only when the conversation reveals something it misses.",
+              ]),
+          "",
+          "The conversation so far:",
+          // Already capped: refinement context only ever comes from
+          // collectTitleContext, whose contract is buildTitleContext.
+          refine.context,
+        ]),
     "",
     "The user's first message:",
     prompt.length > 4_000 ? `${prompt.slice(0, 4_000)}…` : prompt,
@@ -590,9 +646,8 @@ const WRAPPING_QUOTES = [
  * a title that long would not be a title.
  *
  * The line taken is the LAST non-empty one (ATC-186): a small model that
- * ignores "the title only" narrates first and answers last — reliably so
- * once a resolver tool is in play ("I don't have that tool… \n\n Build -
- * ATC-186") — and the narration is never the title.
+ * ignores "the title only" narrates first and answers last ("I can't look
+ * that up… \n\n Build - ATC-186") — and the narration is never the title.
  */
 export const sanitizeTitle = (raw: string): string | null => {
   const line = raw

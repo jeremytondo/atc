@@ -97,19 +97,25 @@ describe("thread auto-naming", () => {
     ).pipe(Effect.provide(TestLayer)),
   )
 
-  it.live("a creation-time name suppresses generation entirely", () =>
+  it.live("a creation-time name suppresses generation and refinement entirely", () =>
     Effect.gen(function* () {
       const { client, threadId, sessionId } = yield* openedThread("Named at birth")
       const requestsBefore = kit.fakeAgents.codex.titleRequests.length
+      const contextsBefore = kit.fakeAgents.codex.contextRequests.length
 
       kit.fakeAgents.codex.emitUserPrompt(sessionId, "first prompt")
-      // Barrier: a later event observed proves the prompt was consumed.
+      // A whole first turn passes: neither its busy onset nor its idle
+      // edge may trigger any title work on a creation-named thread.
+      kit.fakeAgents.codex.emitActivity(sessionId, "working")
+      kit.fakeAgents.codex.emitActivity(sessionId, "idle")
+      // Barrier: a later event observed proves the edges were consumed.
       kit.fakeAgents.codex.emitActivity(sessionId, "working")
       yield* eventually(
         client.v1.getThread({ params: { threadId } }),
         (read) => read.activityState === "working",
       )
       assert.strictEqual(kit.fakeAgents.codex.titleRequests.length, requestsBefore)
+      assert.strictEqual(kit.fakeAgents.codex.contextRequests.length, contextsBefore)
       assert.strictEqual(
         (yield* client.v1.getThread({ params: { threadId } })).name,
         "Named at birth",
@@ -172,7 +178,7 @@ describe("thread auto-naming", () => {
     }).pipe(Effect.provide(TestLayer)),
   )
 
-  it.live("the guarded rename is atomic: an existing name is never overwritten", () =>
+  it.live("the guarded rename is atomic: only the expected name is ever replaced", () =>
     Effect.gen(function* () {
       const client = yield* HttpApiTest.groups(Api, ["v1"])
       const repository = yield* ThreadRepository
@@ -182,19 +188,25 @@ describe("thread auto-naming", () => {
       const thread = yield* client.v1.createThread({
         payload: { projectId: project.id, agentId: "codex" },
       })
-      // Unnamed: the guarded write adopts.
-      const adopted = yield* repository.renameIfUnnamed(thread.id, "Generated")
+      // Unnamed: the first-pass write (expected null) adopts.
+      const adopted = yield* repository.renameIfUnchanged(thread.id, "Generated", null)
       assert.strictEqual(Option.getOrThrow(adopted).name, "Generated")
-      // Named: the guarded write refuses — even against another generated name.
-      const refused = yield* repository.renameIfUnnamed(thread.id, "Generated again")
+      // Named: expected-null refuses — even against another generated name.
+      const refused = yield* repository.renameIfUnchanged(thread.id, "Generated again", null)
       assert.isTrue(Option.isNone(refused))
+      // The refinement's seed guard: the exact current name replaces, any
+      // other expected value no-ops.
+      const stale = yield* repository.renameIfUnchanged(thread.id, "Refined", "Some other seed")
+      assert.isTrue(Option.isNone(stale))
+      const refined = yield* repository.renameIfUnchanged(thread.id, "Refined", "Generated")
+      assert.strictEqual(Option.getOrThrow(refined).name, "Refined")
       assert.strictEqual(
         (yield* client.v1.getThread({ params: { threadId: thread.id } })).name,
-        "Generated",
+        "Refined",
       )
       // A vanished row is a silent no-op, not a crash.
       yield* client.v1.deleteThread({ params: { threadId: thread.id } })
-      const gone = yield* repository.renameIfUnnamed(thread.id, "Ghost")
+      const gone = yield* repository.renameIfUnchanged(thread.id, "Ghost", null)
       assert.isTrue(Option.isNone(gone))
     }).pipe(Effect.provide(TestLayer)),
   )

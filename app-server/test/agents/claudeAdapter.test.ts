@@ -1,3 +1,4 @@
+import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk"
 import { assert, describe, it } from "@effect/vitest"
 import { Effect, Layer, Stream } from "effect"
 import * as fs from "node:fs"
@@ -837,53 +838,11 @@ describe("ClaudeAdapter generateTitle", () => {
         assert.strictEqual(captured?.["model"], "haiku")
         assert.deepStrictEqual(captured?.["tools"], [])
         assert.strictEqual(captured?.["cwd"], cwd)
-        // No resolver configured: no servers, nothing pre-approved.
-        assert.deepStrictEqual(captured?.["mcpServers"], {})
-        assert.deepStrictEqual(captured?.["allowedTools"], [])
-        assert.strictEqual(captured?.["strictMcpConfig"], true)
-      }).pipe(Effect.provide(layer))
-    }),
-  )
-
-  it.live("configured resolvers become MCP servers with exactly their tools allowed", () =>
-    Effect.gen(function* () {
-      const fake = makeFakeClaudeQuery()
-      let captured: Record<string, unknown> | undefined
-      const layer = claudeAdapterLayer(
-        {
-          queryFn: (args) => {
-            captured = args.options as unknown as Record<string, unknown>
-            return fake.queryFn(args)
-          },
-        },
-        "/bin/echo",
-        {
-          titleResolvers: {
-            linear: {
-              url: "https://mcp.linear.app/mcp",
-              headers: { "X-Probe": "1" },
-              tools: ["get_issue", "get_document"],
-            },
-          },
-        },
-      )
-      yield* Effect.gen(function* () {
-        const adapter = yield* ClaudeAdapter.ClaudeAdapter
-        yield* adapter.generateTitle({ cwd: workDir(), prompt: "$implement ATC-186" })
-        assert.deepStrictEqual(captured?.["mcpServers"], {
-          linear: {
-            type: "http",
-            url: "https://mcp.linear.app/mcp",
-            alwaysLoad: true,
-            headers: { "X-Probe": "1" },
-          },
-        })
-        assert.deepStrictEqual(captured?.["allowedTools"], [
-          "mcp__linear__get_issue",
-          "mcp__linear__get_document",
-        ])
-        // Enough turns for one lookup plus the reply; still bounded.
-        assert.strictEqual(captured?.["maxTurns"], 4)
+        // The resolver machinery is gone (ATC-190): no MCP servers, no
+        // pre-approvals — and strict MCP still keeps the project's own
+        // .mcp.json out of the unattended run.
+        assert.isUndefined(captured?.["mcpServers"])
+        assert.isUndefined(captured?.["allowedTools"])
         assert.strictEqual(captured?.["strictMcpConfig"], true)
       }).pipe(Effect.provide(layer))
     }),
@@ -916,6 +875,78 @@ describe("ClaudeAdapter generateTitle", () => {
         if (failure._tag === "AgentProtocolError") {
           assert.include(failure.reason, "sync setup boom")
         }
+      }).pipe(Effect.provide(layer))
+    }),
+  )
+})
+
+describe("ClaudeAdapter collectTitleContext", () => {
+  const transcriptMessage = (
+    type: "user" | "assistant" | "system",
+    content: unknown,
+    parentToolUseId: string | null = null,
+  ): SessionMessage =>
+    ({
+      type,
+      uuid: crypto.randomUUID(),
+      session_id: "context-session",
+      message: { role: type, content },
+      parent_tool_use_id: parentToolUseId,
+      parent_agent_id: null,
+    }) as SessionMessage
+
+  it.live("reads the transcript on demand into labeled conversation text", () =>
+    Effect.gen(function* () {
+      const calls: Array<{ sessionId: string; dir: string | undefined }> = []
+      const layer = claudeAdapterLayer({
+        sessionMessagesFn: (sessionId, options) => {
+          calls.push({ sessionId, dir: options?.dir })
+          return Promise.resolve([
+            transcriptMessage("user", "/implement ATC-190"),
+            transcriptMessage("assistant", [
+              { type: "text", text: "Reading the issue: replace resolver-driven naming." },
+              { type: "tool_use", id: "t1", name: "Read", input: {} },
+            ]),
+            // Tool results, tool-nested messages, and system entries carry
+            // no title signal and stay out of the context.
+            transcriptMessage("user", [{ type: "tool_result", tool_use_id: "t1", content: "…" }]),
+            transcriptMessage("assistant", "tool-nested narration", "tool-1"),
+            transcriptMessage("system", "compact boundary"),
+          ])
+        },
+      })
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter.ClaudeAdapter
+        const context = yield* adapter.collectTitleContext({
+          providerSessionId: "context-session",
+          cwd: "/work",
+        })
+        assert.strictEqual(
+          context,
+          "user: /implement ATC-190\n" +
+            "assistant: Reading the issue: replace resolver-driven naming.",
+        )
+        assert.deepStrictEqual(calls, [{ sessionId: "context-session", dir: "/work" }])
+      }).pipe(Effect.provide(layer))
+    }),
+  )
+
+  it.live("a failed or empty transcript read is silently no context", () =>
+    Effect.gen(function* () {
+      const layer = claudeAdapterLayer({
+        sessionMessagesFn: (sessionId) =>
+          sessionId === "empty-session"
+            ? Promise.resolve([])
+            : Promise.reject(new Error("no transcript")),
+      })
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter.ClaudeAdapter
+        assert.isNull(
+          yield* adapter.collectTitleContext({ providerSessionId: "empty-session", cwd: "/work" }),
+        )
+        assert.isNull(
+          yield* adapter.collectTitleContext({ providerSessionId: "gone-session", cwd: "/work" }),
+        )
       }).pipe(Effect.provide(layer))
     }),
   )
