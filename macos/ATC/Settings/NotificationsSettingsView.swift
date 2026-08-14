@@ -6,8 +6,9 @@ import UserNotifications
 /// worth surfacing — notifications turned off for atc at the OS level, where
 /// every banner would be dropped silently. Authorization is requested when the
 /// switch is turned on, so a fresh install never sees an unprompted system
-/// dialog, and status is read when the tab appears and when the switch is
-/// flipped rather than polled.
+/// dialog, and status is read when the tab appears, when the switch is
+/// flipped, and when the app re-activates (returning from System Settings
+/// after granting must clear the warning) rather than polled.
 struct NotificationsSettingsView: View {
     @AppStorage(ThreadNotifier.preferenceKey) private var isEnabled = false
     @State private var isDenied = false
@@ -35,6 +36,9 @@ struct NotificationsSettingsView: View {
         }
         .formStyle(.grouped)
         .task { await readAuthorization() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await readAuthorization() }
+        }
         .onChange(of: isEnabled) { _, enabled in
             Task {
                 if enabled {
