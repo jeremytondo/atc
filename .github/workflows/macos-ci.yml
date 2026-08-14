@@ -51,6 +51,10 @@ jobs:
     if: needs.changes.outputs.relevant == 'true'
     runs-on: macos-26
     timeout-minutes: 30
+    env:
+      # CI-only: compiler warnings in our targets fail the build. Locally the
+      # tasks stay permissive so a new Xcode deprecation can't block iteration.
+      ATC_STRICT_WARNINGS: "1"
     steps:
       - uses: actions/checkout@v7
 
@@ -61,7 +65,10 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      # Same commands as local `mise run kit:test` / `mise run macos:test`.
+      # Same commands as local `mise run swift:lint` / `kit:test` / `macos:test`.
+      - name: SwiftLint
+        run: mise run swift:lint
+
       - name: ATCKit tests
         run: mise run kit:test
 

@@ -7,7 +7,7 @@ enum ConnectionEditorTarget: Hashable {
     case new
 }
 
-/// The Connections settings section: a master list of Connections on the left
+/// The Connections settings section: a list of Connections on the left
 /// (name, URL, status dot, and a +/− bottom bar) and a draft editor on the
 /// right. Nothing touches `ConnectionsStore` until the editor's Save.
 struct ConnectionsSettingsView: View {
@@ -32,7 +32,7 @@ struct ConnectionsSettingsView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            master
+            connectionList
                 .frame(width: 240)
             Divider()
             detail
@@ -53,9 +53,9 @@ struct ConnectionsSettingsView: View {
         }
     }
 
-    // MARK: Master list
+    // MARK: Connection list
 
-    private var master: some View {
+    private var connectionList: some View {
         VStack(spacing: 0) {
             List(selection: $target) {
                 ForEach(store.connections) { record in
@@ -288,7 +288,7 @@ private struct ConnectionEditorView: View {
         }
     }
 
-    private func testConnection() {
+    func testConnection() {
         guard let origin = ConnectionURL.parse(urlString),
               let url = URL(string: origin.urlString) else { return }
         testGeneration += 1

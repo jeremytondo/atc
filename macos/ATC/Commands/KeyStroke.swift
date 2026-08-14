@@ -50,7 +50,7 @@ nonisolated struct KeyStroke: Hashable, Sendable, CustomStringConvertible {
     }
 
     var hasPrimaryModifier: Bool {
-        !modifiers.intersection(.primary).isEmpty
+        !modifiers.isDisjoint(with: .primary)
     }
 
     static func parse(_ text: String) -> Result<KeyStroke, TriggerError> {

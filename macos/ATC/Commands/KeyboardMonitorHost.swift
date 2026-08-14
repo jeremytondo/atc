@@ -75,8 +75,7 @@ struct KeyboardMonitorHost: View {
             detach()
             guard let window else { return }
             hostWindow = window
-            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
-                [weak self, weak window] event in
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak window] event in
                 guard let self, let window,
                       event.window === window,
                       window.isKeyWindow
@@ -87,8 +86,7 @@ struct KeyboardMonitorHost: View {
             // Held-modifier state for the sidebar's ⌘/⌥⌘ jump badges. Never
             // consumed; only the key window's monitor records, so a
             // background window's badges cannot light up.
-            flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) {
-                [weak self, weak window] event in
+            flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self, weak window] event in
                 guard let self, let window, window.isKeyWindow else { return event }
                 self.router.heldModifiers = KeyStroke.Modifiers(event.modifierFlags)
                 return event

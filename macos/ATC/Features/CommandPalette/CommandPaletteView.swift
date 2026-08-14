@@ -228,7 +228,7 @@ struct CommandPaletteView: View {
     ) -> Text {
         let name = HighlightedText.title(title, ranges: ranges)
         guard title != type else { return name }
-        return Text("\(type): ").foregroundStyle(.secondary) + name
+        return Text("\(Text("\(type): ").foregroundStyle(.secondary))\(name)")
     }
 
     @ViewBuilder

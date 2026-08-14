@@ -104,6 +104,9 @@ enforces. The ones you will actually reach for:
 
 - `mise run -C app-server check` — fmt, lint (oxlint + the ATC plugin rules
   in `app-server/lint/`), typecheck, tests, OpenAPI drift, svelte-check.
+- `mise run swift:lint` — SwiftLint over `macos/` and ATCKit (strict). CI
+  also promotes Swift compiler warnings to errors (`ATC_STRICT_WARNINGS=1`);
+  local builds stay permissive.
 - `mise run contract:check` — after **any** contract change: OpenAPI drift, TS
   client tests, Swift client build.
 - `mise run -C app-server test:zmx` — opt into real-zmx smoke and compiled

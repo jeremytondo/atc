@@ -326,6 +326,10 @@
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				// CI seam: warnings-as-errors only when ATC_SWIFT_STRICT_WARNINGS=YES
+				// is passed on the xcodebuild command line (empty locally = off). Only
+				// this project's targets reference it, so package deps stay unaffected.
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = "$(ATC_SWIFT_STRICT_WARNINGS)";
 			};
 			name = Debug;
 		};
@@ -382,6 +386,10 @@
 				MTL_FAST_MATH = YES;
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
+				// CI seam: warnings-as-errors only when ATC_SWIFT_STRICT_WARNINGS=YES
+				// is passed on the xcodebuild command line (empty locally = off). Only
+				// this project's targets reference it, so package deps stay unaffected.
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = "$(ATC_SWIFT_STRICT_WARNINGS)";
 			};
 			name = Release;
 		};

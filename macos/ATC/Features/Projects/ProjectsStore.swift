@@ -40,8 +40,7 @@ final class ProjectsStore {
     func create(name: String, defaultWorkingDirectory: String) async throws -> Project {
         let project: Project
         switch try await client
-            .createProject(body: .json(.init(name: name, defaultWorkingDirectory: defaultWorkingDirectory)))
-        {
+            .createProject(body: .json(.init(name: name, defaultWorkingDirectory: defaultWorkingDirectory))) {
         case .ok(let ok): project = try ok.body.json
         case .unprocessableContent(let failure):
             let payload = try failure.body.json

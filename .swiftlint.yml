@@ -1,0 +1,31 @@
+# SwiftLint for the Swift surfaces (macos/ + ATCKit), high-signal only:
+# metric/churn rules (lengths, counts) stay disabled; what remains must hold
+# at zero violations — run via `mise run swift:lint` (strict, warnings fail).
+included:
+  - macos
+  - packages/ATCKit
+excluded:
+  - packages/ATCKit/.build
+
+disabled_rules:
+  - line_length
+  - file_length
+  - type_body_length
+  - function_body_length
+  - cyclomatic_complexity
+  - identifier_name
+  - nesting
+  - todo
+  - large_tuple
+  - function_parameter_count
+  # The codebase deliberately uses Swift 6.1 trailing commas (mirroring the
+  # TS surfaces) and SwiftUI's Button(action:) { } label pattern.
+  - trailing_comma
+  - multiple_closures_with_trailing_closure
+  # Byte streams from terminals and SSE decode lossily on purpose:
+  # replacement characters beat dropped frames.
+  - optional_data_string_conversion
+
+type_name:
+  excluded:
+    - ID
