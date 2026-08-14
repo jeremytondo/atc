@@ -32,8 +32,8 @@ echo "installed $dir/atc ($("$dir/atc" --version))"
 """
 
 [tasks.check]
-description = "All gates: App Server check, Swift lint, Kit tests, macOS app tests"
-depends = ["app-server:check", "swift:lint", "kit:test", "macos:test"]
+description = "All gates: App Server check, Swift lint+format, Kit tests, macOS app tests"
+depends = ["app-server:check", "swift:lint", "swift:fmt:check", "kit:test", "macos:test"]
 
 [tasks.test]
 description = "All tests: App Server, ATCKit, macOS app"
@@ -80,6 +80,16 @@ run = "swiftlint lint --strict --quiet"
 [tasks."swift:lint:fix"]
 description = "Apply SwiftLint autocorrections"
 run = "swiftlint lint --fix --quiet"
+
+# swift format ships with the Swift toolchain; explicit paths keep it out of
+# packages/ATCKit/.build (dependency checkouts).
+[tasks."swift:fmt"]
+description = "Format Swift sources with swift format (.swift-format config)"
+run = "swift format --in-place --recursive macos packages/ATCKit/Sources packages/ATCKit/Tests packages/ATCKit/Package.swift"
+
+[tasks."swift:fmt:check"]
+description = "Fail if any Swift source is not swift-format-clean"
+run = "swift format lint --strict --recursive macos packages/ATCKit/Sources packages/ATCKit/Tests packages/ATCKit/Package.swift"
 
 # ATC_STRICT_WARNINGS=1 (set in CI) promotes compiler warnings to errors in
 # our targets only — SPM suppresses dependency warnings. Local runs stay

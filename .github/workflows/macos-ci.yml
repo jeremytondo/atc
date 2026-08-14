@@ -65,9 +65,13 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version
 
-      # Same commands as local `mise run swift:lint` / `kit:test` / `macos:test`.
+      # Same commands as local `mise run swift:lint` / `swift:fmt:check` /
+      # `kit:test` / `macos:test`.
       - name: SwiftLint
         run: mise run swift:lint
+
+      - name: swift-format check
+        run: mise run swift:fmt:check
 
       - name: ATCKit tests
         run: mise run kit:test
