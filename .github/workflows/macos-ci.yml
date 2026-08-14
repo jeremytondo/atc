@@ -1,15 +1,10 @@
 name: macOS CI
 
+# Runs on every PR so the required `macos-ci-ok` check always reports.
+# Path awareness lives at the job level (the `changes` job): a required check
+# from a workflow-level path filter would hang pending on non-matching PRs.
 on:
   pull_request:
-    paths:
-      - "macos/**"
-      - "packages/**"
-      # The ATCAppServerAPI Swift client is generated from this artifact at
-      # build time, so contract changes must rebuild the Swift surfaces.
-      - "app-server/openapi.json"
-      - "mise.toml"
-      - ".github/workflows/macos-ci.yml"
   push:
     branches:
       - main
@@ -28,7 +23,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Decides whether this PR touches the Swift surfaces. Push events are
+  # already path-filtered at the workflow level, so they always run everything.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      relevant: ${{ github.event_name == 'push' || steps.filter.outputs.relevant }}
+    steps:
+      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          filters: |
+            relevant:
+              - "macos/**"
+              - "packages/**"
+              # The ATCAppServerAPI Swift client is generated from this
+              # artifact at build time, so contract changes must rebuild the
+              # Swift surfaces.
+              - "app-server/openapi.json"
+              - "mise.toml"
+              - ".github/workflows/macos-ci.yml"
+
   validate:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     runs-on: macos-26
     timeout-minutes: 30
     steps:
@@ -47,3 +67,17 @@ jobs:
 
       - name: macOS app tests
         run: mise run macos:test
+
+  # The single required check for this workflow: reports on every PR (skipped
+  # upstream jobs are fine, failed or cancelled ones are not), so the `main`
+  # ruleset can require it without hanging non-matching PRs.
+  ci-ok:
+    name: macos-ci-ok
+    needs: [changes, validate]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail if any needed job failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
