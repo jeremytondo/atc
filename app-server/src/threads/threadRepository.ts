@@ -88,14 +88,18 @@ export class ThreadRepository extends Context.Service<
     /** Update the display label; callers hold the record — a vanished row is a bug. */
     readonly rename: (id: string, name: string) => Effect.Effect<ThreadRecord>
     /**
-     * Adopt a generated name ONLY while the thread is still unnamed
-     * (ATC-155): the name-IS-NULL guard is in the UPDATE itself, so a
-     * manual rename landing mid-generation wins the race atomically. None
-     * when nothing changed — already named, or the row vanished.
+     * Adopt a generated name ONLY while the name is still exactly
+     * `expected` (null = still unnamed): the null-safe guard is in the
+     * UPDATE itself, so a manual rename landing mid-generation wins the
+     * race atomically (ATC-155), and the refinement pass (ATC-190) can
+     * only replace the very title it seeded — any other writer's name
+     * survives untouched. None when nothing changed — the guard
+     * mismatched, or the row vanished.
      */
-    readonly renameIfUnnamed: (
+    readonly renameIfUnchanged: (
       id: string,
       name: string,
+      expected: string | null,
     ) => Effect.Effect<Option.Option<ThreadRecord>>
     /**
      * Adopt a freshly established provider identity: session id and opaque
@@ -177,12 +181,20 @@ export const layer = Layer.effect(ThreadRepository)(
       `,
     })
 
-    const renameIfUnnamedRows = SqlSchema.findAll({
-      Request: Schema.Struct({ id: Schema.String, name: Schema.String, updated_at: Schema.String }),
+    // SQLite `IS` is null-safe equality, so one guard covers both the
+    // first-pass adoption (expected null → name IS NULL) and the
+    // refinement's seed check (expected = the first-pass title).
+    const renameIfUnchangedRows = SqlSchema.findAll({
+      Request: Schema.Struct({
+        id: Schema.String,
+        name: Schema.String,
+        expected: Schema.NullOr(Schema.String),
+        updated_at: Schema.String,
+      }),
       Result: ThreadRow,
       execute: (patch) => sql`
         UPDATE threads SET name = ${patch.name}, updated_at = ${patch.updated_at}
-        WHERE id = ${patch.id} AND name IS NULL
+        WHERE id = ${patch.id} AND name IS ${patch.expected}
         RETURNING *
       `,
     })
@@ -349,9 +361,9 @@ export const layer = Layer.effect(ThreadRepository)(
           Effect.orDie,
           Effect.flatMap(requireFirst("rename")),
         ),
-      renameIfUnnamed: (id, name) =>
+      renameIfUnchanged: (id, name, expected) =>
         Effect.suspend(() =>
-          renameIfUnnamedRows({ id, name, updated_at: new Date().toISOString() }),
+          renameIfUnchangedRows({ id, name, expected, updated_at: new Date().toISOString() }),
         ).pipe(Effect.orDie, Effect.map(firstRecord)),
       setProviderSession: (id, providerSessionId, providerMetadata) =>
         Effect.suspend(() =>

@@ -85,7 +85,6 @@ export const testAppConfig = (overrides: Partial<AppConfig["Service"]>): Layer.L
     codexExecutable: "codex",
     claudeExecutable: "claude",
     terminalSocketDir: "/tmp/atc-sockets",
-    titleResolvers: {},
     ...overrides,
   })
 

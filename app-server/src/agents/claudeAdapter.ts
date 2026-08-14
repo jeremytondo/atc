@@ -5,8 +5,9 @@ import type {
   Options,
   SDKMessage,
   SDKUserMessage,
+  SessionMessage,
 } from "@anthropic-ai/claude-agent-sdk"
-import { query } from "@anthropic-ai/claude-agent-sdk"
+import { getSessionMessages, query } from "@anthropic-ai/claude-agent-sdk"
 import {
   Cause,
   Context,
@@ -33,6 +34,7 @@ import type {
 } from "./agentAdapter.ts"
 import {
   AgentResumeFailed,
+  buildTitleContext,
   emitAgentEvent,
   makeVersionGate,
   NESTED_SESSION_ENV_VARIABLES,
@@ -106,6 +108,8 @@ export type ClaudeQueryFn = (args: {
 
 export interface ClaudeAdapterOptions {
   readonly queryFn?: ClaudeQueryFn
+  /** The getSessionMessages seam, injectable so tests can script transcripts. */
+  readonly sessionMessagesFn?: typeof getSessionMessages
   /** How long create/first-turn waits for the SDK's identity evidence. */
   readonly initTimeout?: Duration.Input
 }
@@ -189,6 +193,40 @@ const userMessage = (text: string): SDKUserMessage => ({
   parent_tool_use_id: null,
 })
 
+/**
+ * Labeled plain-text lines from a transcript read (ATC-190): root user and
+ * assistant text blocks only — tool payloads, tool results, and system
+ * entries carry no title signal, and tool-nested messages are dispatch,
+ * not conversation.
+ */
+const transcriptLines = (messages: ReadonlyArray<SessionMessage>): Array<string> => {
+  const lines: Array<string> = []
+  for (const entry of messages) {
+    if (
+      (entry.type !== "user" && entry.type !== "assistant") ||
+      entry.parent_tool_use_id !== null
+    ) {
+      continue
+    }
+    const content = (entry.message as { content?: unknown } | null)?.content
+    const text =
+      typeof content === "string"
+        ? content
+        : Array.isArray(content)
+          ? content
+              .flatMap((block) => {
+                const candidate = block as { type?: unknown; text?: unknown }
+                return candidate.type === "text" && typeof candidate.text === "string"
+                  ? [candidate.text]
+                  : []
+              })
+              .join("\n")
+          : ""
+    if (text.trim() !== "") lines.push(`${entry.type}: ${text.trim()}`)
+  }
+  return lines
+}
+
 type GateError = AgentResumeFailed | AgentIdentityMismatch | AgentProtocolError
 
 interface LiveSession {
@@ -221,6 +259,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
       const fs = yield* FileSystem.FileSystem
       const hooks = yield* ClaudeHooks.ClaudeHooks
       const queryFn: ClaudeQueryFn = adapterOptions.queryFn ?? (query as unknown as ClaudeQueryFn)
+      const sessionMessagesFn = adapterOptions.sessionMessagesFn ?? getSessionMessages
       const initTimeout = adapterOptions.initTimeout ?? "60 seconds"
 
       /** Live sessions by verified (and, for resumes, expected) session id. */
@@ -455,40 +494,6 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
         yield* versionCheck
         return executable
       })
-
-      /**
-       * The title one-shot's resolver wiring (ATC-186). Only the configured
-       * tools are pre-approved; `dontAsk` denies the rest, so a resolver
-       * that also exposes write tools cannot be talked into using them.
-       * Server names must match what the provider stores credentials under
-       * — a name it cannot authenticate is skipped as `needs-auth`. With no
-       * resolvers this is the original locked-down shape: one turn, nothing
-       * to call.
-       */
-      const resolvers = Object.entries(config.titleResolvers)
-      const titleResolverOptions = {
-        mcpServers: Object.fromEntries(
-          resolvers.map(([name, resolver]) => [
-            name,
-            {
-              type: "http" as const,
-              url: resolver.url,
-              // A deferred tool would cost a tool-search turn the one-shot
-              // does not have; loading blocks only until the server
-              // connects (SDK-capped at 5s), inside the title timeout.
-              alwaysLoad: true,
-              ...(resolver.headers !== undefined ? { headers: resolver.headers } : {}),
-            },
-          ]),
-        ),
-        allowedTools: resolvers.flatMap(([name, resolver]) =>
-          resolver.tools.map((tool) => `mcp__${name}__${tool}`),
-        ),
-        // Room for the lookup turn, the reply, and one recovery: too few
-        // turns means no title at all, while the 90s timeout below is what
-        // actually bounds the run.
-        maxTurns: resolvers.length === 0 ? 1 : 4,
-      }
 
       const hookFilePaths = (providerSessionId: string) => ({
         headerFile: path.join(config.stateDir, `claude-hooks-${providerSessionId}.header`),
@@ -838,14 +843,13 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
             Effect.gen(function* () {
               const executable = yield* resolvedExecutable
               // The smoke-test one-shot shape (smoke.ts claudeRoundTrip):
-              // no built-in tools, nothing persisted — plus a haiku-class
-              // model, since a title needs speed, not depth. Turn count and
-              // any MCP resolver come from titleResolverOptions; strict MCP
+              // one turn, no tools, nothing persisted — plus a haiku-class
+              // model, since a title needs speed, not depth. Strict MCP
               // keeps the project's own .mcp.json out of an unattended run.
               const abort = new AbortController()
               yield* Effect.addFinalizer(() => Effect.sync(() => abort.abort()))
               const prompt = yield* Stream.toAsyncIterableEffect(
-                Stream.make(userMessage(titleInstruction(options.prompt))),
+                Stream.make(userMessage(titleInstruction(options.prompt, options.refine))),
               )
               // Wrapped so a synchronous SDK setup throw is the promised
               // typed error, not a defect.
@@ -862,9 +866,9 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
                       strictMcpConfig: true,
                       permissionMode: "dontAsk",
                       tools: [],
+                      maxTurns: 1,
                       persistSession: false,
                       model: "haiku",
-                      ...titleResolverOptions,
                     },
                   }),
                 catch: (error) =>
@@ -893,6 +897,32 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
                   ),
               }).pipe(withTitleTimeout(protocolError))
             }),
+          ),
+        // On-demand transcript read via the SDK (ATC-190) — the session
+        // JSONL under the project directory is the conversation the primary
+        // agent already produced; nothing is retained here. Best-effort by
+        // contract: any read failure — a hung read included, hence the
+        // bound — is debug-logged and reads as "nothing usable".
+        collectTitleContext: (options) =>
+          Effect.tryPromise({
+            try: () => sessionMessagesFn(options.providerSessionId, { dir: options.cwd }),
+            catch: (error) => (error instanceof Error ? error.message : String(error)),
+          }).pipe(
+            Effect.timeoutOrElse({
+              duration: "10 seconds",
+              orElse: () => Effect.fail("the transcript read timed out"),
+            }),
+            Effect.map(transcriptLines),
+            Effect.map(buildTitleContext),
+            Effect.catch((reason) =>
+              Effect.logDebug("claude title-context read failed").pipe(
+                Effect.annotateLogs({
+                  providerSessionId: options.providerSessionId,
+                  reason,
+                }),
+                Effect.as(null),
+              ),
+            ),
           ),
         // Claude offers no cheap truthful liveness query for a session it
         // is not driving; the domain's linked-terminal liveness carries

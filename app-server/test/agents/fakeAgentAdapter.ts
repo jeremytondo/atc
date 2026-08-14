@@ -57,12 +57,20 @@ export interface FakeAgentAdapter {
   /** Push one userPrompt event to every observer of `providerSessionId`. */
   readonly emitUserPrompt: (providerSessionId: string, text: string) => void
   /** generateTitle calls observed, in order. */
-  readonly titleRequests: Array<{ cwd: string; prompt: string }>
+  readonly titleRequests: Array<{
+    cwd: string
+    prompt: string
+    refine?: { context: string; currentTitle: string | null }
+  }>
   /** generateTitle outcomes (the raw title or the failure), in order —
    * the deterministic completion signal for race tests. */
   readonly titleOutcomes: Array<{ title?: string; error?: string }>
   /** Script what generateTitle returns (default "Fake generated title"). */
   readonly setTitle: (title: string) => void
+  /** collectTitleContext calls (providerSessionIds), in order. */
+  readonly contextRequests: Array<string>
+  /** Script what collectTitleContext returns for a session (default null). */
+  readonly setTitleContext: (providerSessionId: string, context: string | null) => void
   /** While set, generateTitle fails with AgentProtocolError(reason). */
   readonly setTitleFails: (reason: string | null) => void
   /** While set, generateTitle waits on a gate; unsetting releases waiters. */
@@ -115,6 +123,8 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
   const released: FakeAgentAdapter["released"] = []
   const titleRequests: FakeAgentAdapter["titleRequests"] = []
   const titleOutcomes: FakeAgentAdapter["titleOutcomes"] = []
+  const contextRequests: FakeAgentAdapter["contextRequests"] = []
+  const titleContexts = new Map<string, string>()
   let scriptedTitle = "Fake generated title"
   let titleFailsReason: string | null = null
   let titleGate: Deferred.Deferred<void> | null = null
@@ -359,7 +369,11 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
     generateTitle: (options) =>
       Effect.gen(function* () {
         yield* requireAvailable
-        titleRequests.push({ cwd: options.cwd, prompt: options.prompt })
+        titleRequests.push({
+          cwd: options.cwd,
+          prompt: options.prompt,
+          ...(options.refine !== undefined ? { refine: options.refine } : {}),
+        })
         const gate = titleGate
         if (gate !== null) yield* Deferred.await(gate)
         if (titleFailsReason !== null) {
@@ -370,6 +384,11 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
         }
         titleOutcomes.push({ title: scriptedTitle })
         return scriptedTitle
+      }),
+    collectTitleContext: (options) =>
+      Effect.sync(() => {
+        contextRequests.push(options.providerSessionId)
+        return titleContexts.get(options.providerSessionId) ?? null
       }),
     checkSession: (options) =>
       Effect.gen(function* () {
@@ -445,6 +464,11 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
     titleOutcomes,
     setTitle: (title) => {
       scriptedTitle = title
+    },
+    contextRequests,
+    setTitleContext: (providerSessionId, context) => {
+      if (context === null) titleContexts.delete(providerSessionId)
+      else titleContexts.set(providerSessionId, context)
     },
     setTitleFails: (reason) => {
       titleFailsReason = reason

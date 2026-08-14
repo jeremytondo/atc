@@ -30,6 +30,7 @@ import type {
 import {
   AgentResumeFailed,
   aggregateActivity,
+  buildTitleContext,
   emitAgentEvent,
   makeVersionGate,
   NESTED_SESSION_ENV_VARIABLES,
@@ -162,6 +163,28 @@ const SubAgentActivityNotification = Schema.Struct({
     agentThreadId: Schema.String,
   }),
 })
+// The full-text conversation items on the shared server's fan-out
+// (ATC-190): the only conversation evidence a passive socket can reach for
+// a TUI-created thread — thread/read {includeTurns: true} is rejected for
+// them outright (probed live 2026-08-10). agentMessage carries top-level
+// `text`; userMessage carries `content` text blocks — both accepted, and
+// an item carrying neither is skipped like any other unrecognized shape.
+const MessageItemNotification = Schema.Struct({
+  threadId: Schema.String,
+  item: Schema.Struct({
+    type: Schema.Literals(["userMessage", "agentMessage"]),
+    text: Schema.optional(Schema.String),
+    content: Schema.optional(
+      Schema.Array(Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String) })),
+    ),
+  }),
+})
+
+const messageItemText = (item: typeof MessageItemNotification.Type.item): string =>
+  item.text ??
+  (item.content ?? [])
+    .flatMap((block) => (block.type === "text" && block.text !== undefined ? [block.text] : []))
+    .join("\n")
 const StatusChangedNotification = Schema.Struct({
   threadId: Schema.String,
   status: Schema.optional(Schema.Unknown),
@@ -185,6 +208,7 @@ const ThreadStartedNotification = Schema.Struct({
   }),
 })
 const decodeSubAgentActivity = Schema.decodeUnknownOption(SubAgentActivityNotification)
+const decodeMessageItem = Schema.decodeUnknownOption(MessageItemNotification)
 const decodeStatusChanged = Schema.decodeUnknownOption(StatusChangedNotification)
 const decodeTurnStarted = Schema.decodeUnknownOption(TurnStartedNotification)
 const decodeTurnCompleted = Schema.decodeUnknownOption(TurnCompletedNotification)
@@ -377,6 +401,24 @@ export const layer = Layer.effect(CodexAdapter)(
     const parentOf = new Map<string, string>()
     const descendants = new Map<string, Map<string, AgentActivity>>()
 
+    // Recent conversation text per OBSERVED session (ATC-190), retained
+    // from the userMessage/agentMessage items already arriving on the held
+    // socket — no new RPCs, no polling. Folded through buildTitleContext on
+    // every message, so the stored value is always the already-capped
+    // context itself. In-memory only and pruned with the rest of the
+    // per-root bookkeeping; losing it merely costs a title refinement its
+    // context.
+    const recentMessages = new Map<string, string>()
+
+    const retainMessage = (threadId: string, kind: "userMessage" | "agentMessage", raw: string) => {
+      if (!observers.has(threadId)) return
+      const text = raw.trim()
+      if (text === "") return
+      const line = `${kind === "userMessage" ? "user" : "assistant"}: ${text}`
+      const context = buildTitleContext([recentMessages.get(threadId) ?? "", line])
+      if (context !== null) recentMessages.set(threadId, context)
+    }
+
     /** Follow parent links to the tree's root (bounded against cycles). */
     const resolveRoot = (threadId: string): string => {
       let current = threadId
@@ -439,6 +481,7 @@ export const layer = Layer.effect(CodexAdapter)(
         }
       }
       ownStatus.delete(rootId)
+      recentMessages.delete(rootId)
     }
     // Raw frames arrive on a sync WebSocket callback with no fiber to log
     // from, so the header's "raw events are logged at debug level" runs
@@ -577,10 +620,24 @@ export const layer = Layer.effect(CodexAdapter)(
       // PARENT's feed — descendants do not broadcast thread/started
       // (probed, experiments/subagent-activity).
       if (message.method === "item/started" || message.method === "item/completed") {
-        const decoded = decodeSubAgentActivity(params)
-        if (Option.isNone(decoded)) return
-        registerDescendant(decoded.value.threadId, decoded.value.item.agentThreadId)
-        emitAggregate(resolveRoot(decoded.value.threadId))
+        const subAgent = decodeSubAgentActivity(params)
+        if (Option.isSome(subAgent)) {
+          registerDescendant(subAgent.value.threadId, subAgent.value.item.agentThreadId)
+          emitAggregate(resolveRoot(subAgent.value.threadId))
+          return
+        }
+        // Completed conversation items feed the title-context retention;
+        // anything else stays the deliberate silent skip.
+        if (message.method === "item/completed") {
+          const item = decodeMessageItem(params)
+          if (Option.isSome(item)) {
+            retainMessage(
+              item.value.threadId,
+              item.value.item.type,
+              messageItemText(item.value.item),
+            )
+          }
+        }
         return
       }
       // Coarse status fans out for EVERY thread on the shared server
@@ -1263,7 +1320,7 @@ export const layer = Layer.effect(CodexAdapter)(
                 )
               // Keep the pipe drained so a chatty exec can never block on it.
               yield* Stream.runDrain(child.stdoutLines).pipe(Effect.ignore, Effect.forkScoped)
-              yield* child.writeLine(titleInstruction(options.prompt)).pipe(
+              yield* child.writeLine(titleInstruction(options.prompt, options.refine)).pipe(
                 Effect.andThen(child.endInput),
                 Effect.mapError((error) =>
                   protocolError(`could not write the title prompt: ${error.message}`),
@@ -1291,6 +1348,8 @@ export const layer = Layer.effect(CodexAdapter)(
             }).pipe(withTitleTimeout(protocolError))
           }),
         ),
+      collectTitleContext: (options) =>
+        Effect.sync(() => recentMessages.get(options.providerSessionId) ?? null),
       checkSession: (options) =>
         Effect.gen(function* () {
           const state = yield* getClientRetryable

@@ -1154,3 +1154,62 @@ describe("CodexAdapter descendant aggregation", () => {
     }),
   )
 })
+
+describe("CodexAdapter collectTitleContext", () => {
+  it.live(
+    "retains observed conversation items as labeled context, pruned with the root",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox()
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.gen(function* () {
+            const threadId = yield* Effect.scoped(
+              Effect.gen(function* () {
+                const { connection, turn } = yield* adapter.createSession({
+                  cwd: sandbox.cwd,
+                  input: "seed turn",
+                })
+                const id = connection.providerSessionId
+                const sink = yield* collectAgentEvents(connection.events)
+                yield* waitForAgentEvent(
+                  sink,
+                  (event) => event.type === "turnCompleted" && event.turnId === turn.turnId,
+                )
+                // Nothing observed the first turn, so nothing was retained.
+                assert.isNull(
+                  yield* adapter.collectTitleContext({
+                    providerSessionId: id,
+                    cwd: sandbox.cwd,
+                  }),
+                )
+                yield* adapter.observeSession({
+                  providerSessionId: id,
+                  providerMetadata: undefined,
+                })
+                const second = yield* connection.startTurn("hello context")
+                yield* waitForAgentEvent(
+                  sink,
+                  (event) => event.type === "turnCompleted" && event.turnId === second.turnId,
+                )
+                // Both the echoed user message and the reply, in order.
+                yield* eventually(
+                  adapter.collectTitleContext({ providerSessionId: id, cwd: sandbox.cwd }),
+                  (context) => context === "user: hello context\nassistant: fake: hello context",
+                )
+                return id
+              }),
+            )
+            // Writer and observer are gone: the retention went with the
+            // root's bookkeeping.
+            assert.isNull(
+              yield* adapter.collectTitleContext({
+                providerSessionId: threadId,
+                cwd: sandbox.cwd,
+              }),
+            )
+          }),
+        )
+      }),
+    30_000,
+  )
+})

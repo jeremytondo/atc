@@ -195,60 +195,12 @@ describe("configuration", () => {
       const error = yield* loadError({ ATC_CONFIG: file })
       assert.strictEqual(error.source, file)
       assert.include(error.message, '"prot"')
-    }),
-  )
-
-  it.effect("title resolvers default to none and parse from the config file", () =>
-    Effect.gen(function* () {
-      assert.deepStrictEqual((yield* load({})).titleResolvers, {})
-      const file = writeConfig(
-        `[titleResolvers.linear]\nurl = "https://mcp.linear.app/mcp"\ntools = ["get_issue"]\n\n` +
-          `[titleResolvers.linear.headers]\n"X-Probe" = "1"\n`,
+      // The retired ATC-186 resolver table (removed in ATC-190) is now an
+      // unknown key like any other — it fails the boot, never half-applies.
+      const legacy = writeConfig(
+        `[titleResolvers.linear]\nurl = "https://mcp.linear.app/mcp"\ntools = ["get_issue"]\n`,
       )
-      const config = yield* load({ ATC_CONFIG: file })
-      assert.deepStrictEqual(config.titleResolvers, {
-        linear: {
-          url: "https://mcp.linear.app/mcp",
-          tools: ["get_issue"],
-          headers: { "X-Probe": "1" },
-        },
-      })
-    }),
-  )
-
-  it.effect("a title resolver that could not be reached or trusted fails naming the file", () =>
-    Effect.gen(function* () {
-      // A non-http endpoint would silently never resolve anything.
-      const badUrl = writeConfig(
-        `[titleResolvers.linear]\nurl = "mcp.linear.app"\ntools = ["get_issue"]\n`,
-      )
-      const urlError = yield* loadError({ ATC_CONFIG: badUrl })
-      assert.strictEqual(urlError.source, badUrl)
-      assert.include(urlError.message, "titleResolvers")
-      assert.notInclude(urlError.message, "\n")
-
-      // Tools are the whole pre-approval: an empty list is a configuration
-      // mistake, and a wildcard would grant the server's write tools too.
-      const noTools = writeConfig(
-        `[titleResolvers.linear]\nurl = "https://mcp.linear.app/mcp"\ntools = []\n`,
-      )
-      assert.include((yield* loadError({ ATC_CONFIG: noTools })).message, "titleResolvers")
-      const wildcard = writeConfig(
-        `[titleResolvers.linear]\nurl = "https://mcp.linear.app/mcp"\ntools = ["*"]\n`,
-      )
-      assert.include((yield* loadError({ ATC_CONFIG: wildcard })).message, "titleResolvers")
-
-      // The name becomes the mcp__<server>__<tool> prefix.
-      const badName = writeConfig(
-        `[titleResolvers."my server"]\nurl = "https://example.com/mcp"\ntools = ["get_issue"]\n`,
-      )
-      assert.include((yield* loadError({ ATC_CONFIG: badName })).message, "titleResolvers")
-
-      // Unknown keys fail fast inside the table too, not just above it.
-      const typo = writeConfig(
-        `[titleResolvers.linear]\nurl = "https://mcp.linear.app/mcp"\ntools = ["get_issue"]\ntool = "get_issue"\n`,
-      )
-      assert.include((yield* loadError({ ATC_CONFIG: typo })).message, "titleResolvers")
+      assert.include((yield* loadError({ ATC_CONFIG: legacy })).message, '"titleResolvers"')
     }),
   )
 
