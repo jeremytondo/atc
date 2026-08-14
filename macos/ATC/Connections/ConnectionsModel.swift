@@ -62,19 +62,22 @@ enum ConnectionURL {
 
         // A scheme is present only when the string starts with `scheme://`.
         // Otherwise "host:7331" would be misread as scheme "host".
-        let hasScheme = trimmed.range(
-            of: "^[a-zA-Z][a-zA-Z0-9+.-]*://",
-            options: .regularExpression
-        ) != nil
+        let hasScheme =
+            trimmed.range(
+                of: "^[a-zA-Z][a-zA-Z0-9+.-]*://",
+                options: .regularExpression
+            ) != nil
         let candidate = hasScheme ? trimmed : "http://" + trimmed
 
         guard let comps = URLComponents(string: candidate) else { return nil }
         guard let scheme = comps.scheme?.lowercased(),
-              scheme == "http" || scheme == "https" else { return nil }
+            scheme == "http" || scheme == "https"
+        else { return nil }
         guard let host = comps.host, !host.isEmpty else { return nil }
         // Reject userinfo, query, and fragment.
         guard comps.user == nil, comps.password == nil,
-              comps.query == nil, comps.fragment == nil else { return nil }
+            comps.query == nil, comps.fragment == nil
+        else { return nil }
         // Origin-only: allow empty path or a single trailing slash.
         guard comps.path.isEmpty || comps.path == "/" else { return nil }
 
@@ -241,7 +244,8 @@ final class ConnectionsStore {
     /// (pre-Keychain data, or a previously failed credential write).
     private func load() -> Bool {
         guard let data = defaults.data(forKey: Keys.connections),
-              let decoded = try? JSONDecoder().decode([ConnectionRecord].self, from: data) else {
+            let decoded = try? JSONDecoder().decode([ConnectionRecord].self, from: data)
+        else {
             return false
         }
         connections = decoded.map { record in
@@ -287,7 +291,8 @@ final class ConnectionsStore {
         // Don't duplicate if the new store already holds data.
         guard connections.isEmpty else { return }
         guard let legacy = defaults.string(forKey: Keys.legacyURL),
-              let origin = ConnectionURL.parse(legacy) else { return }
+            let origin = ConnectionURL.parse(legacy)
+        else { return }
         let token = defaults.string(forKey: Keys.legacyToken) ?? ""
         let record = ConnectionRecord(
             name: ConnectionURL.derivedName(fromHost: origin.host),

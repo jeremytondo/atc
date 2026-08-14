@@ -1,6 +1,7 @@
+import ATCAppServerAPI
 import Foundation
 import Testing
-import ATCAppServerAPI
+
 @testable import ATC
 
 /// ThreadNotifier: the trigger, withdraw, and baseline decisions. Every case
@@ -55,10 +56,12 @@ struct ThreadNotifierTests {
         let recorder = Recorder()
         let notifier = recorder.makeNotifier()
 
-        notifier.reconcile(connections: [input([
-            Fixtures.thread(id: "thr1", unread: true),
-            Fixtures.thread(id: "thr2", activityState: .needsInput),
-        ])])
+        notifier.reconcile(connections: [
+            input([
+                Fixtures.thread(id: "thr1", unread: true),
+                Fixtures.thread(id: "thr2", activityState: .needsInput),
+            ])
+        ])
 
         #expect(recorder.posts.isEmpty)
         #expect(recorder.withdrawn.isEmpty)
@@ -70,17 +73,20 @@ struct ThreadNotifierTests {
         let notifier = recorder.makeNotifier()
         notifier.reconcile(connections: [input([Fixtures.thread(id: "thr1", name: "Fix login")])])
 
-        notifier.reconcile(connections: [input([
-            Fixtures.thread(id: "thr1", name: "Fix login", unread: true),
-        ])])
-
-        #expect(recorder.posts == [
-            Recorder.Banner(
-                id: ref("thr1").notificationIdentifier,
-                title: "Fix login",
-                body: "Finished · App"
-            ),
+        notifier.reconcile(connections: [
+            input([
+                Fixtures.thread(id: "thr1", name: "Fix login", unread: true)
+            ])
         ])
+
+        #expect(
+            recorder.posts == [
+                Recorder.Banner(
+                    id: ref("thr1").notificationIdentifier,
+                    title: "Fix login",
+                    body: "Finished · App"
+                )
+            ])
     }
 
     @Test("needs_input notifies, and outranks the unread a finished turn also sets")
@@ -89,15 +95,19 @@ struct ThreadNotifierTests {
         let notifier = recorder.makeNotifier()
         notifier.reconcile(connections: [input([Fixtures.thread(id: "thr1", name: "Fix login")])])
 
-        notifier.reconcile(connections: [input([
-            Fixtures.thread(id: "thr1", name: "Fix login", activityState: .needsInput, unread: true),
-        ])])
+        notifier.reconcile(connections: [
+            input([
+                Fixtures.thread(id: "thr1", name: "Fix login", activityState: .needsInput, unread: true)
+            ])
+        ])
         #expect(recorder.posts.map(\.body) == ["Needs your input · App"])
 
         // Still needing input is the same claim: no second banner for it.
-        notifier.reconcile(connections: [input([
-            Fixtures.thread(id: "thr1", name: "Fix login", activityState: .needsInput, unread: true),
-        ])])
+        notifier.reconcile(connections: [
+            input([
+                Fixtures.thread(id: "thr1", name: "Fix login", activityState: .needsInput, unread: true)
+            ])
+        ])
         #expect(recorder.posts.count == 1)
     }
 
@@ -123,15 +133,19 @@ struct ThreadNotifierTests {
         let recorder = Recorder()
         let notifier = recorder.makeNotifier()
         notifier.reconcile(connections: [input([Fixtures.thread(id: "thr1")])])
-        notifier.reconcile(connections: [input([
-            Fixtures.thread(id: "thr1", activityState: .needsInput, unread: true),
-        ])])
+        notifier.reconcile(connections: [
+            input([
+                Fixtures.thread(id: "thr1", activityState: .needsInput, unread: true)
+            ])
+        ])
 
         // Answering in the TUI resumes the turn. Unread was already set, so
         // nothing finished that the user has not been told about.
-        notifier.reconcile(connections: [input([
-            Fixtures.thread(id: "thr1", activityState: .working, unread: true),
-        ])])
+        notifier.reconcile(connections: [
+            input([
+                Fixtures.thread(id: "thr1", activityState: .working, unread: true)
+            ])
+        ])
 
         #expect(recorder.posts.count == 1)
         #expect(recorder.withdrawn == [ref("thr1").notificationIdentifier])
@@ -209,18 +223,22 @@ struct ThreadNotifierTests {
         let recorder = Recorder()
         let notifier = recorder.makeNotifier()
         notifier.reconcile(connections: [input([Fixtures.thread(id: "thr1")])])
-        notifier.reconcile(connections: [input([
-            Fixtures.thread(id: "thr1", activityState: .needsInput),
-        ])])
+        notifier.reconcile(connections: [
+            input([
+                Fixtures.thread(id: "thr1", activityState: .needsInput)
+            ])
+        ])
         #expect(recorder.posts.count == 1)
 
         // The turn finishes without input while ATC is frontmost: the
         // .finished trigger is suppressed, but the needs-input claim is now
         // false and the banner must still come down.
         notifier.isAppActive = { true }
-        notifier.reconcile(connections: [input([
-            Fixtures.thread(id: "thr1", activityState: .idle, unread: true),
-        ])])
+        notifier.reconcile(connections: [
+            input([
+                Fixtures.thread(id: "thr1", activityState: .idle, unread: true)
+            ])
+        ])
 
         #expect(recorder.posts.count == 1)
         #expect(recorder.withdrawn == [ref("thr1").notificationIdentifier])
@@ -231,19 +249,25 @@ struct ThreadNotifierTests {
         let recorder = Recorder()
         let notifier = recorder.makeNotifier()
         notifier.reconcile(connections: [input([Fixtures.thread(id: "thr1")])])
-        notifier.reconcile(connections: [input([
-            Fixtures.thread(id: "thr1", activityState: .needsInput),
-        ])])
+        notifier.reconcile(connections: [
+            input([
+                Fixtures.thread(id: "thr1", activityState: .needsInput)
+            ])
+        ])
         #expect(recorder.posts.count == 1)
 
         // The server loses sight of the provider (socket blip, restart) and
         // then finds it again: absence of evidence, not a state change.
-        notifier.reconcile(connections: [input([
-            Fixtures.thread(id: "thr1", activityState: .unknown),
-        ])])
-        notifier.reconcile(connections: [input([
-            Fixtures.thread(id: "thr1", activityState: .needsInput),
-        ])])
+        notifier.reconcile(connections: [
+            input([
+                Fixtures.thread(id: "thr1", activityState: .unknown)
+            ])
+        ])
+        notifier.reconcile(connections: [
+            input([
+                Fixtures.thread(id: "thr1", activityState: .needsInput)
+            ])
+        ])
 
         #expect(recorder.posts.count == 1)
         #expect(recorder.withdrawn.isEmpty)
@@ -254,15 +278,19 @@ struct ThreadNotifierTests {
         let recorder = Recorder()
         let notifier = recorder.makeNotifier()
         notifier.reconcile(connections: [input([Fixtures.thread(id: "thr1")])])
-        notifier.reconcile(connections: [input([
-            Fixtures.thread(id: "thr1", activityState: .needsInput),
-        ])])
+        notifier.reconcile(connections: [
+            input([
+                Fixtures.thread(id: "thr1", activityState: .needsInput)
+            ])
+        ])
 
         // activityState (live provider evidence) and unread (turn
         // persistence) can land in separate refreshes.
-        notifier.reconcile(connections: [input([
-            Fixtures.thread(id: "thr1", activityState: .needsInput, unread: true),
-        ])])
+        notifier.reconcile(connections: [
+            input([
+                Fixtures.thread(id: "thr1", activityState: .needsInput, unread: true)
+            ])
+        ])
 
         #expect(recorder.posts.map(\.body) == ["Needs your input · App"])
         #expect(recorder.withdrawn.isEmpty)
@@ -274,10 +302,12 @@ struct ThreadNotifierTests {
         let notifier = recorder.makeNotifier()
         notifier.reconcile(connections: [input([Fixtures.thread(id: "thr1")])])
 
-        notifier.reconcile(connections: [input([
-            Fixtures.thread(id: "thr1"),
-            Fixtures.thread(id: "thr2", unread: true),
-        ])])
+        notifier.reconcile(connections: [
+            input([
+                Fixtures.thread(id: "thr1"),
+                Fixtures.thread(id: "thr2", unread: true),
+            ])
+        ])
 
         #expect(recorder.posts.isEmpty)
     }

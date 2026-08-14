@@ -36,7 +36,8 @@ final class ThreadsStore {
         let includeArchived = hasLoadedArchivedOnce
         await refreshState.run {
             async let activeList = client.listThreads(query: .init()).ok.body.json
-            let archivedList = includeArchived
+            let archivedList =
+                includeArchived
                 ? try await client.listThreads(query: .init(archived: ._true)).ok.body.json
                 : nil
             return (active: try await activeList, archived: archivedList)

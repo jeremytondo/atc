@@ -60,12 +60,13 @@ struct DashboardModel {
                     needsInputCount: threads.filter { $0.activityState == .needsInput }.count
                 )
             }
-            sections.append(Section(
-                connectionID: input.connectionID,
-                connectionName: input.connectionName,
-                contextLabel: ConnectionURL.contextLabel(for: input.urlString),
-                cards: cards
-            ))
+            sections.append(
+                Section(
+                    connectionID: input.connectionID,
+                    connectionName: input.connectionName,
+                    contextLabel: ConnectionURL.contextLabel(for: input.urlString),
+                    cards: cards
+                ))
         }
     }
 }

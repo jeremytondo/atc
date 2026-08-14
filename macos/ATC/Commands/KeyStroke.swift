@@ -92,15 +92,17 @@ nonisolated struct KeyStroke: Hashable, Sendable, CustomStringConvertible {
         }
 
         guard keyToken != "escape" else {
-            return .failure(.init(
-                message: "Named key 'escape' is deferred beyond the MVP"
-            ))
+            return .failure(
+                .init(
+                    message: "Named key 'escape' is deferred beyond the MVP"
+                ))
         }
         guard keyToken.count == 1,
-              let scalar = keyToken.unicodeScalars.first,
-              isPrintable(scalar)
+            let scalar = keyToken.unicodeScalars.first,
+            isPrintable(scalar)
         else {
-            let kind = keyToken.hasPrefix("f") && Int(keyToken.dropFirst()) != nil
+            let kind =
+                keyToken.hasPrefix("f") && Int(keyToken.dropFirst()) != nil
                 ? "Function key '\(keyToken)'"
                 : "Key '\(keyToken)'"
             return .failure(.init(message: "\(kind) is deferred beyond the MVP"))
@@ -108,9 +110,10 @@ nonisolated struct KeyStroke: Hashable, Sendable, CustomStringConvertible {
         let stroke = KeyStroke(key: keyToken, modifiers: modifiers)
         guard !requiresPrimaryModifier || stroke.hasPrimaryModifier else {
             let detail = modifiers == [.shift] ? "shift-only" : "unmodified"
-            return .failure(.init(
-                message: "A \(detail) direct trigger is deferred beyond the MVP"
-            ))
+            return .failure(
+                .init(
+                    message: "A \(detail) direct trigger is deferred beyond the MVP"
+                ))
         }
         return .success(stroke)
     }
@@ -139,29 +142,33 @@ nonisolated enum ParsedKeySequence: Equatable {
         switch steps.count {
         case 1:
             guard steps[0].lowercased() != "leader" else {
-                return .failure(.init(
-                    message: "'leader' is reserved for the first step of leader>X"
-                ))
+                return .failure(
+                    .init(
+                        message: "'leader' is reserved for the first step of leader>X"
+                    ))
             }
             return KeyStroke.parse(steps[0]).map(ParsedKeySequence.direct)
         case 2:
             guard steps[0].lowercased() == "leader" else {
-                return .failure(.init(
-                    message: "Only leader>X sequences are supported in the MVP"
-                ))
+                return .failure(
+                    .init(
+                        message: "Only leader>X sequences are supported in the MVP"
+                    ))
             }
             guard steps[1].lowercased() != "leader" else {
-                return .failure(.init(
-                    message: "'leader' is only valid as the first sequence step"
-                ))
+                return .failure(
+                    .init(
+                        message: "'leader' is only valid as the first sequence step"
+                    ))
             }
             return KeyStroke.parseContinuation(steps[1]).map {
                 .leader(continuation: $0)
             }
         default:
-            return .failure(.init(
-                message: "Only two-step leader>X sequences are supported in the MVP"
-            ))
+            return .failure(
+                .init(
+                    message: "Only two-step leader>X sequences are supported in the MVP"
+                ))
         }
     }
 }

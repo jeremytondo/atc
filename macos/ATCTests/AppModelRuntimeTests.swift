@@ -1,6 +1,7 @@
+import ATCAppServerAPI
 import Foundation
 import Testing
-import ATCAppServerAPI
+
 @testable import ATC
 
 /// Runtime lifecycle (add / name-only edit / rebuild / delete), thread
@@ -97,8 +98,9 @@ struct AppModelRuntimeTests {
         #expect(warm.connections[0].threadsCurrent)
         #expect(warm.connections[0].terminalsCurrent)
         // Both lists feed the snapshot so archived threads reconcile too.
-        #expect(Set(warm.connections[0].threads.map(\.id))
-            == ["thr1", "thr2", "thr3", "thr_archived"])
+        #expect(
+            Set(warm.connections[0].threads.map(\.id))
+                == ["thr1", "thr2", "thr3", "thr_archived"])
         #expect(warm.connections[0].threads.filter(\.isArchived).map(\.id) == ["thr_archived"])
         #expect(Set(warm.connections[0].terminals.map(\.id)) == ["trm_live", "trm_ended"])
         #expect(warm.connections[0].terminals.filter(\.isLive).map(\.id) == ["trm_live"])

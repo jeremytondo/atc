@@ -1,7 +1,7 @@
-import Foundation
-import Observation
-import OSLog
 import ATCAppServerAPI
+import Foundation
+import OSLog
+import Observation
 
 private let logger = Logger(subsystem: "ElevenIdeas.atc", category: "appmodel")
 
@@ -111,21 +111,23 @@ final class AppModel {
             self.connections = ConnectionsStore(loadingDeferred: true)
             needsDeferredStart = true
         }
-        self.clientFactory = clientFactory ?? { record, url in
-            ConnectionClient.make(baseURL: url, token: record.token)
-        }
-        self.terminalControllerFactory = terminalControllerFactory ?? { terminalID, runtime in
-            TerminalSessionController(
-                terminalID: terminalID,
-                endpoint: AttachEndpoint(
-                    baseURL: runtime.baseURL,
-                    headers: runtime.transportHeaders
-                ),
-                checkLive: { [weak runtime] in
-                    await runtime?.terminals.checkLive(id: terminalID) ?? nil
-                }
-            )
-        }
+        self.clientFactory =
+            clientFactory ?? { record, url in
+                ConnectionClient.make(baseURL: url, token: record.token)
+            }
+        self.terminalControllerFactory =
+            terminalControllerFactory ?? { terminalID, runtime in
+                TerminalSessionController(
+                    terminalID: terminalID,
+                    endpoint: AttachEndpoint(
+                        baseURL: runtime.baseURL,
+                        headers: runtime.transportHeaders
+                    ),
+                    checkLive: { [weak runtime] in
+                        await runtime?.terminals.checkLive(id: terminalID) ?? nil
+                    }
+                )
+            }
         self.terminalRecoveryMonitor = terminalRecoveryMonitor ?? TerminalRecoveryMonitor()
         self.eventStreamFactory = eventStreamFactory
         if !needsDeferredStart {
@@ -256,25 +258,26 @@ final class AppModel {
     /// server-side into thread/terminal deletions, which this snapshot
     /// does observe — reconciliation rides that cascade.
     func windowNavigationSnapshot() -> WindowNavigationSnapshot {
-        WindowNavigationSnapshot(connections: runtimes.map { runtime in
-            WindowNavigationSnapshot.Connection(
-                id: runtime.id,
-                threadsCurrent: runtime.threads.isResolved,
-                terminalsCurrent: runtime.terminals.isResolved,
-                threads: (runtime.threads.threads + runtime.threads.archivedThreads).map {
-                    .init(
-                        id: $0.id,
-                        projectID: $0.projectId,
-                        isArchived: $0.isArchived,
-                        isUnread: $0.unread,
-                        activityState: $0.activityState
-                    )
-                },
-                terminals: runtime.terminals.terminals.map {
-                    .init(id: $0.id, projectID: $0.projectId, threadID: $0.threadId, isLive: $0.isLive)
-                }
-            )
-        })
+        WindowNavigationSnapshot(
+            connections: runtimes.map { runtime in
+                WindowNavigationSnapshot.Connection(
+                    id: runtime.id,
+                    threadsCurrent: runtime.threads.isResolved,
+                    terminalsCurrent: runtime.terminals.isResolved,
+                    threads: (runtime.threads.threads + runtime.threads.archivedThreads).map {
+                        .init(
+                            id: $0.id,
+                            projectID: $0.projectId,
+                            isArchived: $0.isArchived,
+                            isUnread: $0.unread,
+                            activityState: $0.activityState
+                        )
+                    },
+                    terminals: runtime.terminals.terminals.map {
+                        .init(id: $0.id, projectID: $0.projectId, threadID: $0.threadId, isLive: $0.isLive)
+                    }
+                )
+            })
     }
 
     /// Refreshes every Connection concurrently so one unreachable server
@@ -439,7 +442,7 @@ final class AppModel {
     func reconcileTerminalLifecycle() {
         for ref in Array(terminals.keys) {
             guard let runtime = runtime(id: ref.connectionID),
-                  runtime.terminals.isResolved
+                runtime.terminals.isResolved
             else { continue }
             guard let terminal = runtime.terminals.terminal(id: ref.terminalID) else {
                 disconnectTerminal(ref: ref)
@@ -515,9 +518,9 @@ final class AppModel {
     /// (`noteWindowKeyed`), so `.last` is the window the user last worked in.
     private func openPendingNotificationThread() {
         guard let ref = pendingNotificationThread,
-              let window = windowReconcilers.compactMap(\.value).last,
-              let runtime = runtime(id: ref.connectionID),
-              runtime.threads.isResolved
+            let window = windowReconcilers.compactMap(\.value).last,
+            let runtime = runtime(id: ref.connectionID),
+            runtime.threads.isResolved
         else { return }
         // A resolved store is the answer either way: open the thread, or drop
         // a click for one that no longer exists — or was archived, which

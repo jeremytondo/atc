@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "ATCKit",
     platforms: [
-        .macOS(.v26),
+        .macOS(.v26)
     ],
     products: [
         // Client generated from the App Server OpenAPI contract
@@ -31,7 +31,7 @@ let package = Package(
                 .product(name: "HTTPTypes", package: "swift-http-types"),
             ],
             plugins: [
-                .plugin(name: "OpenAPIGenerator", package: "swift-openapi-generator"),
+                .plugin(name: "OpenAPIGenerator", package: "swift-openapi-generator")
             ]
         ),
         .target(

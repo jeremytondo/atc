@@ -58,7 +58,8 @@ enum SidebarShortcuts {
         isPinnedExpanded: Bool,
         isRecentExpanded: Bool
     ) -> [ThreadRef] {
-        let rows = limited(model.pinned, expanded: isPinnedExpanded)
+        let rows =
+            limited(model.pinned, expanded: isPinnedExpanded)
             + limited(model.recent, expanded: isRecentExpanded)
         return rows.prefix(slotCount).map(\.ref)
     }
@@ -98,7 +99,7 @@ enum SidebarShortcuts {
             Task { await windowState.openThread(ref, in: appModel) }
         case .terminal(let slot):
             guard let project = windowState.activeProject,
-                  let store = appModel.runtime(id: project.connectionID)?.terminals
+                let store = appModel.runtime(id: project.connectionID)?.terminals
             else { return }
             let targets = terminalTargets(
                 store.standaloneTerminals(projectID: project.projectID),

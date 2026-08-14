@@ -1,4 +1,5 @@
 import Testing
+
 @testable import ATC
 
 @Suite("Command palette query matcher")

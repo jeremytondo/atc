@@ -85,10 +85,11 @@ struct NavigatorSidebar: View {
                 }
             }
         } message: {
-            Text("""
-            This removes the thread from atc and ends its TUI terminal if one is \
-            still running. The agent's own conversation history is not touched.
-            """)
+            Text(
+                """
+                This removes the thread from atc and ends its TUI terminal if one is \
+                still running. The agent's own conversation history is not touched.
+                """)
         }
         .confirmationDialog(
             "Delete Terminal “\(deletingTerminalName)”?",
@@ -96,7 +97,8 @@ struct NavigatorSidebar: View {
         ) {
             Button("Delete Terminal", role: .destructive) {
                 if let ref = deletingTerminal,
-                   let store = appModel.runtime(id: ref.connectionID)?.terminals {
+                    let store = appModel.runtime(id: ref.connectionID)?.terminals
+                {
                     appModel.run(on: ref.connectionID, reporting: { actionError = $0 }) {
                         try await store.delete(id: ref.terminalID)
                     }
@@ -237,7 +239,8 @@ struct NavigatorSidebar: View {
     /// Archived threads are management rows, not navigation: Restore returns
     /// the thread to the list and opens it, Delete is the only other action.
     private func archivedRow(_ item: ThreadListItem) -> some View {
-        let enabled = appModel.canMutate(connectionID: item.ref.connectionID)
+        let enabled =
+            appModel.canMutate(connectionID: item.ref.connectionID)
             && !inFlightThreads.contains(item.ref)
         return HStack(spacing: Spacing.sm) {
             Text("\(item.projectLabel) › \(item.thread.displayName)")
@@ -278,7 +281,8 @@ struct NavigatorSidebar: View {
     @ViewBuilder
     private func terminalsSection(_ project: ProjectRef) -> some View {
         @Bindable var windowState = windowState
-        let terminals = appModel.runtime(id: project.connectionID)?
+        let terminals =
+            appModel.runtime(id: project.connectionID)?
             .terminals.standaloneTerminals(projectID: project.projectID) ?? []
         NavigatorDisclosureHeader(
             title: "Terminals",
@@ -291,7 +295,8 @@ struct NavigatorSidebar: View {
             if terminals.isEmpty {
                 emptyLabel("No Terminals")
             } else {
-                let numbered = areTerminalBadgesVisible
+                let numbered =
+                    areTerminalBadgesVisible
                     ? SidebarShortcuts.terminalTargets(terminals, isSectionExpanded: true).count
                     : 0
                 ForEach(Array(terminals.enumerated()), id: \.element.id) { index, terminal in
@@ -375,9 +380,10 @@ struct NavigatorSidebar: View {
                 isExpanded.wrappedValue.toggle()
             } label: {
                 HStack(spacing: Spacing.xs) {
-                    Text(isExpanded.wrappedValue
-                        ? "Hide"
-                        : "\(total - SidebarShortcuts.initialRowLimit) more")
+                    Text(
+                        isExpanded.wrappedValue
+                            ? "Hide"
+                            : "\(total - SidebarShortcuts.initialRowLimit) more")
                     Image(systemName: isExpanded.wrappedValue ? "chevron.up" : "chevron.down")
                         .font(.caption2)
                 }
@@ -482,24 +488,26 @@ struct NavigatorSidebar: View {
                 title: "All Projects",
                 isSelected: windowState.threadFilter == .all,
                 action: { select(.all) }
-            ),
+            )
         ]
         if !model.projects.isEmpty {
             entries.append(.separator)
             for option in model.projects {
-                entries.append(.item(
-                    title: option.label,
-                    isSelected: windowState.threadFilter == .project(option.ref),
-                    action: { select(.project(option.ref)) }
-                ))
+                entries.append(
+                    .item(
+                        title: option.label,
+                        isSelected: windowState.threadFilter == .project(option.ref),
+                        action: { select(.project(option.ref)) }
+                    ))
             }
         }
         entries.append(.separator)
-        entries.append(.item(
-            title: "Archived",
-            isSelected: windowState.threadFilter == .archived,
-            action: { select(.archived) }
-        ))
+        entries.append(
+            .item(
+                title: "Archived",
+                isSelected: windowState.threadFilter == .archived,
+                action: { select(.archived) }
+            ))
         return entries
     }
 
@@ -529,9 +537,10 @@ struct NavigatorSidebar: View {
             isPinnedExpanded: windowState.isPinnedExpanded,
             isRecentExpanded: windowState.isRecentExpanded
         )
-        return Dictionary(uniqueKeysWithValues: targets.enumerated().map {
-            ($0.element, $0.offset + 1)
-        })
+        return Dictionary(
+            uniqueKeysWithValues: targets.enumerated().map {
+                ($0.element, $0.offset + 1)
+            })
     }
 }
 

@@ -2,6 +2,7 @@ import Foundation
 import HTTPTypes
 import OpenAPIRuntime
 import Testing
+
 @testable import ATCAppServerAPI
 
 /// Serves one canned JSON body for every request, capturing what the client sent.
@@ -164,7 +165,8 @@ struct ClientTests {
     @Test("pinThread decodes pinnedAt as a date")
     func pinThread() async throws {
         let (client, recorder) = try client(
-            returning: #"{"id":"t1","projectId":"p1","agentId":"codex","workingDirectory":"/code/atc","activityState":"idle","unread":false,"pinnedAt":"2026-08-06T12:34:56.789Z","createdAt":"2026-08-06T12:00:00.000Z","updatedAt":"2026-08-06T12:34:56.789Z"}"#
+            returning:
+                #"{"id":"t1","projectId":"p1","agentId":"codex","workingDirectory":"/code/atc","activityState":"idle","unread":false,"pinnedAt":"2026-08-06T12:34:56.789Z","createdAt":"2026-08-06T12:00:00.000Z","updatedAt":"2026-08-06T12:34:56.789Z"}"#
         )
         let thread = try await client.pinThread(path: .init(threadId: "t1")).ok.body.json
         #expect(thread.pinnedAt == Date(timeIntervalSince1970: 1_786_019_696.789))

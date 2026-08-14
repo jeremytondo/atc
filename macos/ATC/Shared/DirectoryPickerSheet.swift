@@ -51,7 +51,8 @@ final class DirectoryPickerModel {
                 // The server's tagged diagnostic (missing / inaccessible /
                 // not a directory / timed out) already reads well.
                 let body = try failure.body.json
-                errorMessage = body.value1?.message ?? body.value2?.message
+                errorMessage =
+                    body.value1?.message ?? body.value2?.message
                     ?? "The server couldn't list that folder."
             case .undocumented(statusCode: let status, _):
                 errorMessage = "Unexpected server response (\(status))."

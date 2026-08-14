@@ -23,10 +23,10 @@ struct SettingsView: View {
 // are not.
 #if DEBUG
 
-#Preview("Settings") {
-    SettingsView()
-        .environment(AppModel.preview())
-        .preferredColorScheme(.dark)
-}
+    #Preview("Settings") {
+        SettingsView()
+            .environment(AppModel.preview())
+            .preferredColorScheme(.dark)
+    }
 
 #endif

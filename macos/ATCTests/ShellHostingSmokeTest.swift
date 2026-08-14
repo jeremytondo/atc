@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Testing
+
 @testable import ATC
 
 /// Hosts the window the app actually boots into, in a real NSWindow, and

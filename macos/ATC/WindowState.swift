@@ -1,7 +1,7 @@
-import AppKit
 import ATCAppServerAPI
-import SwiftUI
+import AppKit
 import Observation
+import SwiftUI
 
 enum MainContentSelection: Equatable, Sendable {
     case dashboard
@@ -230,7 +230,8 @@ final class WindowState {
         if case .project(let ref) = threadFilter {
             if let runtime = appModel.runtime(id: ref.connectionID) {
                 if runtime.projects.isResolved,
-                   runtime.projects.project(id: ref.projectID) == nil {
+                    runtime.projects.project(id: ref.projectID) == nil
+                {
                     threadFilter = .all
                 }
             } else {
@@ -241,7 +242,8 @@ final class WindowState {
         if let activeProject {
             if let runtime = appModel.runtime(id: activeProject.connectionID) {
                 if runtime.projects.isResolved,
-                   runtime.projects.project(id: activeProject.projectID) == nil {
+                    runtime.projects.project(id: activeProject.projectID) == nil
+                {
                     self.activeProject = nil
                 }
             } else {
@@ -261,7 +263,8 @@ final class WindowState {
         if let ref = returnThread {
             if let runtime = appModel.runtime(id: ref.connectionID) {
                 if runtime.threads.isResolved,
-                   appModel.thread(for: ref)?.isArchived != false {
+                    appModel.thread(for: ref)?.isArchived != false
+                {
                     returnThread = nil
                 }
             } else {
@@ -315,7 +318,8 @@ final class WindowState {
     /// returns, so the displayed thread must not keep reading "Done".
     func markSelectedThreadViewedIfNeeded(in appModel: AppModel) {
         guard case .thread(let ref) = selectedContent,
-              let thread = appModel.thread(for: ref) else { return }
+            let thread = appModel.thread(for: ref)
+        else { return }
         markViewedIfDisplayed(ref, thread: thread, in: appModel)
     }
 
@@ -350,7 +354,8 @@ final class WindowState {
             let linkedRef = TerminalRef(connectionID: ref.connectionID, terminalID: linkedID)
             threadTerminals[ref] = linkedRef
             if let terminal = appModel.terminal(for: linkedRef), terminal.isLive,
-               appModel.terminals[linkedRef] == nil {
+                appModel.terminals[linkedRef] == nil
+            {
                 appModel.attachIfNeeded(
                     to: terminal,
                     connectionID: ref.connectionID,

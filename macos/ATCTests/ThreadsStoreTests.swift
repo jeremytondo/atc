@@ -1,6 +1,7 @@
+import ATCAppServerAPI
 import Foundation
 import Testing
-import ATCAppServerAPI
+
 @testable import ATC
 
 /// ThreadsStore: the active/archived split, the lazy archived load, and the
@@ -45,11 +46,12 @@ struct ThreadsStoreTests {
         await store.loadArchivedIfNeeded()
         #expect(client.listThreadsCount == afterFirstLoad)
 
-        client.threads.append(Fixtures.thread(
-            id: "thr_archived2",
-            archivedAt: Fixtures.date(70),
-            createdAt: Fixtures.date(6)
-        ))
+        client.threads.append(
+            Fixtures.thread(
+                id: "thr_archived2",
+                archivedAt: Fixtures.date(70),
+                createdAt: Fixtures.date(6)
+            ))
         await store.refresh()
         #expect(store.archivedThreads.map(\.id) == ["thr_archived2", "thr_archived"])
         #expect(client.listThreadsCount == afterFirstLoad + 2)

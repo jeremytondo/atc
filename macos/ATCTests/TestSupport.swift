@@ -1,7 +1,8 @@
-import AppKit
-import Foundation
 import ATCAppServerAPI
 import ATCAppServerTransport
+import AppKit
+import Foundation
+
 @testable import ATC
 
 // Shared harness for the App Server-era suites: an isolated AppModel wired to

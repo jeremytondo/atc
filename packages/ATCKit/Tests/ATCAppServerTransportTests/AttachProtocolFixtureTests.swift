@@ -5,6 +5,7 @@
 
 import Foundation
 import Testing
+
 @testable import ATCAppServerTransport
 
 private func fixture<T: Decodable>(_ name: String, as type: T.Type) throws -> T {

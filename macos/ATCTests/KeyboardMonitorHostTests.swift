@@ -1,5 +1,6 @@
 import AppKit
 import Testing
+
 @testable import ATC
 
 @MainActor
@@ -30,12 +31,13 @@ struct KeyboardMonitorHostTests {
         #expect(coordinator.handleKeyDown(event: quit, in: window) == nil)
         #expect(actions == [.terminate])
 
-        let quitRepeat = try #require(event(
-            flags: .command,
-            characters: "q",
-            keyCode: 12,
-            isRepeat: true
-        ))
+        let quitRepeat = try #require(
+            event(
+                flags: .command,
+                characters: "q",
+                keyCode: 12,
+                isRepeat: true
+            ))
         #expect(coordinator.handleKeyDown(event: quitRepeat, in: window) == nil)
         #expect(actions == [.terminate])
 

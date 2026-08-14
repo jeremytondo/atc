@@ -1,6 +1,6 @@
 import Foundation
-import Observation
 import OSLog
+import Observation
 
 struct ConfigNotice: Equatable {
     let message: String
@@ -62,12 +62,14 @@ final class ConfigurationStore {
         let base: URL
         if let xdg = environment["XDG_CONFIG_HOME"]?
             .trimmingCharacters(in: .whitespacesAndNewlines),
-           !xdg.isEmpty {
+            !xdg.isEmpty
+        {
             base = URL(fileURLWithPath: xdg, isDirectory: true)
         } else {
             base = homeDirectory.appending(path: ".config", directoryHint: .isDirectory)
         }
-        return base
+        return
+            base
             .appending(path: "atc", directoryHint: .isDirectory)
             .appending(path: "macos.toml", directoryHint: .notDirectory)
     }
@@ -87,10 +89,12 @@ final class ConfigurationStore {
             parsed = ConfigurationLoader.parse(data: try Data(contentsOf: configURL))
         } catch {
             fail(
-                diagnostics: [.init(
-                    severity: .error,
-                    message: "Could not read macos.toml: \(error.localizedDescription)"
-                )],
+                diagnostics: [
+                    .init(
+                        severity: .error,
+                        message: "Could not read macos.toml: \(error.localizedDescription)"
+                    )
+                ],
                 isLaunch: isLaunch
             )
             return
@@ -112,7 +116,8 @@ final class ConfigurationStore {
         self.diagnostics = diagnostics
         log(diagnostics)
         let errors = diagnostics.filter { $0.severity == .error }
-        let disposition = isLaunch
+        let disposition =
+            isLaunch
             ? "using defaults"
             : "keeping the previous configuration"
         let firstError = errors.first?.message ?? "unknown error"

@@ -137,7 +137,8 @@ enum CommandRegistry {
                 perform: { context in
                     let fileURL = context.configStore.configURL
                     let directoryURL = context.configStore.configDirectoryURL
-                    let selectedURL = FileManager.default.fileExists(atPath: fileURL.path)
+                    let selectedURL =
+                        FileManager.default.fileExists(atPath: fileURL.path)
                         ? fileURL
                         : directoryURL
                     NSWorkspace.shared.activateFileViewerSelecting([selectedURL])

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+
 @testable import ATC
 
 /// Pure URL validation/normalization and duplicate rules for Connections.
@@ -96,8 +97,8 @@ struct ConnectionURLTests {
 
     @Test("http vs https default ports do not collide")
     func differentEffectivePorts() {
-        let existing = [record("http://h")] // port 80
-        #expect(!ConnectionURL.isDuplicate("https://h", against: existing)) // port 443
+        let existing = [record("http://h")]  // port 80
+        #expect(!ConnectionURL.isDuplicate("https://h", against: existing))  // port 443
     }
 
     @Test("same host, different explicit port is not a duplicate")

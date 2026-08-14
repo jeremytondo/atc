@@ -77,8 +77,8 @@ struct KeyboardMonitorHost: View {
             hostWindow = window
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak window] event in
                 guard let self, let window,
-                      event.window === window,
-                      window.isKeyWindow
+                    event.window === window,
+                    window.isKeyWindow
                 else { return event }
                 return self.handleKeyDown(event: event, in: window)
             }
@@ -96,39 +96,42 @@ struct KeyboardMonitorHost: View {
             // Becoming key reseeds from the live hardware state: flags
             // changed while another window was key (⌘Tab back with ⌘ still
             // down) never produced a flagsChanged event here.
-            observers.append(center.addObserver(
-                forName: NSWindow.didBecomeKeyNotification,
-                object: window,
-                queue: .main
-            ) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    self?.router.heldModifiers = KeyStroke.Modifiers(NSEvent.modifierFlags)
-                }
-            })
-            observers.append(center.addObserver(
-                forName: NSWindow.didResignKeyNotification,
-                object: window,
-                queue: .main
-            ) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    self?.router.cancel()
-                    self?.router.heldModifiers = []
-                    self?.onDeactivate()
-                    self?.restoreOrphanedResponder()
-                }
-            })
-            observers.append(center.addObserver(
-                forName: NSApplication.didResignActiveNotification,
-                object: NSApp,
-                queue: .main
-            ) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    self?.router.cancel()
-                    self?.router.heldModifiers = []
-                    self?.onDeactivate()
-                    self?.restoreOrphanedResponder()
-                }
-            })
+            observers.append(
+                center.addObserver(
+                    forName: NSWindow.didBecomeKeyNotification,
+                    object: window,
+                    queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.router.heldModifiers = KeyStroke.Modifiers(NSEvent.modifierFlags)
+                    }
+                })
+            observers.append(
+                center.addObserver(
+                    forName: NSWindow.didResignKeyNotification,
+                    object: window,
+                    queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.router.cancel()
+                        self?.router.heldModifiers = []
+                        self?.onDeactivate()
+                        self?.restoreOrphanedResponder()
+                    }
+                })
+            observers.append(
+                center.addObserver(
+                    forName: NSApplication.didResignActiveNotification,
+                    object: NSApp,
+                    queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.router.cancel()
+                        self?.router.heldModifiers = []
+                        self?.onDeactivate()
+                        self?.restoreOrphanedResponder()
+                    }
+                })
         }
 
         // Seam below the window guards lets tests use synthesized events
@@ -165,10 +168,11 @@ struct KeyboardMonitorHost: View {
             guard let stashed = router.responderBeforeSuspension else { return }
             router.responderBeforeSuspension = nil
             if let window = hostWindow,
-               let view = stashed as? NSView,
-               view.window === window,
-               view.acceptsFirstResponder,
-               window.makeFirstResponder(view) {
+                let view = stashed as? NSView,
+                view.window === window,
+                view.acceptsFirstResponder,
+                window.makeFirstResponder(view)
+            {
                 return
             }
             focusFallback()
@@ -237,11 +241,13 @@ struct KeyboardRoutingContainer<Content: View>: View {
             }
             .environment(configStore)
             .environment(router)
-            .background(KeyboardMonitorHost(
-                router: router,
-                onDeactivate: { windowState.commandPalettePresentation = nil },
-                focusFallback: { windowState.requestTerminalFocus() }
-            ))
+            .background(
+                KeyboardMonitorHost(
+                    router: router,
+                    onDeactivate: { windowState.commandPalettePresentation = nil },
+                    focusFallback: { windowState.requestTerminalFocus() }
+                )
+            )
             .onChange(of: configStore.configuration.keymap.generation, initial: true) {
                 router.keymap = configStore.configuration.keymap
             }
@@ -275,12 +281,15 @@ extension KeyStroke {
         if event.keyCode == 53 {
             return .escape
         }
-        let produced = event.characters(byApplyingModifiers: [])
+        let produced =
+            event.characters(byApplyingModifiers: [])
             ?? event.charactersIgnoringModifiers
-        guard let key = resolveKey(
-            produced: produced,
-            asciiFallback: { asciiCharacter(for: event.keyCode) }
-        ) else { return nil }
+        guard
+            let key = resolveKey(
+                produced: produced,
+                asciiFallback: { asciiCharacter(for: event.keyCode) }
+            )
+        else { return nil }
         return KeyStroke(key: key, modifiers: modifiers)
     }
 
@@ -301,24 +310,24 @@ extension KeyStroke {
 
     private static func printableASCIIKey(_ characters: String?) -> String? {
         guard let characters,
-              characters.count == 1
+            characters.count == 1
         else { return nil }
         let lowercased = characters.lowercased()
         guard lowercased.count == 1,
-              lowercased.unicodeScalars.count == 1,
-              let scalar = lowercased.unicodeScalars.first,
-              scalar.value < 128,
-              isPrintable(scalar)
+            lowercased.unicodeScalars.count == 1,
+            let scalar = lowercased.unicodeScalars.first,
+            scalar.value < 128,
+            isPrintable(scalar)
         else { return nil }
         return lowercased
     }
 
     private static func asciiCharacter(for keyCode: UInt16) -> String? {
         guard let source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
-              let property = TISGetInputSourceProperty(
-                  source,
-                  kTISPropertyUnicodeKeyLayoutData
-              )
+            let property = TISGetInputSourceProperty(
+                source,
+                kTISPropertyUnicodeKeyLayoutData
+            )
         else { return nil }
         let data = unsafeBitCast(property, to: CFData.self)
         guard let bytes = CFDataGetBytePtr(data) else { return nil }

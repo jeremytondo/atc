@@ -25,6 +25,10 @@ disabled_rules:
   # Byte streams from terminals and SSE decode lossily on purpose:
   # replacement characters beat dropped frames.
   - optional_data_string_conversion
+  # swift-format owns brace placement (it breaks before `{` after a
+  # multiline clause, which this rule would fight); the swift:fmt:check
+  # gate already enforces it deterministically.
+  - opening_brace
 
 type_name:
   excluded:

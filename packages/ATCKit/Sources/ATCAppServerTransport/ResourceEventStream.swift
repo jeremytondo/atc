@@ -47,7 +47,8 @@ public enum ResourceEventStream {
 
     /// A single connection attempt: HTTP status plus the raw byte chunks.
     /// Injected in tests; live path wraps URLSession.bytes.
-    typealias Connector = @Sendable (URL, [String: String]) async throws
+    typealias Connector =
+        @Sendable (URL, [String: String]) async throws
         -> (statusCode: Int, chunks: AsyncThrowingStream<[UInt8], any Error>)
 
     public static func live(
@@ -92,7 +93,8 @@ public enum ResourceEventStream {
                     }
                     // Only a connection that lived a while proves the server
                     // healthy; a greet-then-drop cycle keeps escalating.
-                    let wasStable = sawConnected
+                    let wasStable =
+                        sawConnected
                         && clock.now - opened >= configuration.reconnectMaxDelay
                     attempt = wasStable ? 0 : attempt + 1
                     try? await Task.sleep(for: backoff.delay(forAttempt: attempt))

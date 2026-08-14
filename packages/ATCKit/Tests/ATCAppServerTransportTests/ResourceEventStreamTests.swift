@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+
 @testable import ATCAppServerTransport
 
 /// Scripted stand-in for the live URLSession connector: each connection
@@ -184,7 +185,7 @@ struct ResourceEventStreamTests {
                     "data: {\"resource\":\"project\",\"id\":\"p1\",\"change\":\"created\"}\n\n",
                 ],
                 thenHang: true
-            ),
+            )
         ])
         let stream = ResourceEventStream.stream(
             url: eventsURL, configuration: fastConfiguration(), connector: connector.connect()
@@ -210,7 +211,7 @@ struct ResourceEventStreamTests {
                     "data: {\"resource\":\"terminal\",\"id\":\"term1\",\"change\":\"deleted\"}\n\n",
                 ],
                 thenHang: true
-            ),
+            )
         ])
         let stream = ResourceEventStream.stream(
             url: eventsURL, configuration: fastConfiguration(), connector: connector.connect()

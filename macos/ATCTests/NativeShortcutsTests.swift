@@ -1,4 +1,5 @@
 import Testing
+
 @testable import ATC
 
 @Suite("Native shortcut classification")
@@ -22,9 +23,10 @@ struct NativeShortcutsTests {
             #expect(NativeShortcuts.appAction(for: try stroke(trigger)) == nil)
         }
         #expect(NativeShortcuts.appAction(for: try stroke("cmd+y")) == nil)
-        #expect(NativeShortcuts.appAction(
-            for: KeyStroke(key: "x", modifiers: [])
-        ) == nil)
+        #expect(
+            NativeShortcuts.appAction(
+                for: KeyStroke(key: "x", modifiers: [])
+            ) == nil)
     }
 
     private func stroke(_ text: String) throws -> KeyStroke {

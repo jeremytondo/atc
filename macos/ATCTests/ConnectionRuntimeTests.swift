@@ -1,7 +1,8 @@
-import Foundation
-import Testing
 import ATCAppServerAPI
 import ATCAppServerTransport
+import Foundation
+import Testing
+
 @testable import ATC
 
 /// The SSE-driven liveness model: `.connected` resyncs everything, `.change`
@@ -149,12 +150,13 @@ struct ConnectionRuntimeTests {
         defer { runtime.stop() }
 
         let threads = runtime.threads
-        runtime.updateRecord(ConnectionRecord(
-            id: runtime.id,
-            name: "Renamed",
-            urlString: runtime.record.urlString,
-            token: ""
-        ))
+        runtime.updateRecord(
+            ConnectionRecord(
+                id: runtime.id,
+                name: "Renamed",
+                urlString: runtime.record.urlString,
+                token: ""
+            ))
         #expect(runtime.record.name == "Renamed")
         #expect(runtime.threads === threads)
     }

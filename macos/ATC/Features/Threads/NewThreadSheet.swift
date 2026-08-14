@@ -95,8 +95,8 @@ struct NewThreadSheet: View {
             // Mask to the device-independent modifiers: `press.modifiers`
             // also carries capsLock/numericPad, which must not defeat ⌘1–9.
             guard press.modifiers.intersection([.command, .shift, .option, .control]) == .command,
-                  let digit = press.key.character.wholeNumberValue,
-                  digit - 1 < agents.count
+                let digit = press.key.character.wholeNumberValue,
+                digit - 1 < agents.count
             else { return .ignored }
             select(agents[digit - 1])
             return .handled
@@ -167,14 +167,16 @@ struct NewThreadSheet: View {
     /// The list is alphabetical (context Project first), so the header says
     /// what it shows rather than borrowing the mock's "Recent".
     private var resultsHeader: some View {
-        Text(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "Projects" : "Results")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, Self.gutter + Spacing.md)
-            .padding(.bottom, Spacing.xs)
-            .accessibilityAddTraits(.isHeader)
+        Text(
+            query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "Projects" : "Results"
+        )
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, Self.gutter + Spacing.md)
+        .padding(.bottom, Spacing.xs)
+        .accessibilityAddTraits(.isHeader)
     }
 
     @ViewBuilder
@@ -399,7 +401,8 @@ struct NewThreadSheet: View {
     private func selectProject(_ ref: ProjectRef?, in rows: [NewThreadLauncherModel.Row]) {
         guard selectedProject != ref else { return }
         selectedProject = ref
-        workingDirectory = rows.first { $0.id == ref }?
+        workingDirectory =
+            rows.first { $0.id == ref }?
             .option.project.defaultWorkingDirectory ?? ""
         if let row = rows.first(where: { $0.id == ref }) {
             AccessibilityNotification.Announcement(
@@ -427,11 +430,12 @@ struct NewThreadSheet: View {
         isSubmitting = true
         defer { isSubmitting = false }
         do {
-            let thread = try await runtime.threads.create(.init(
-                projectId: ref.projectID,
-                agentId: agentID,
-                workingDirectory: workingDirectory.trimmingCharacters(in: .whitespaces)
-            ))
+            let thread = try await runtime.threads.create(
+                .init(
+                    projectId: ref.projectID,
+                    agentId: agentID,
+                    workingDirectory: workingDirectory.trimmingCharacters(in: .whitespaces)
+                ))
             submitError = nil
             lastAgentRaw = agentID.rawValue
             windowState.threadCreated(

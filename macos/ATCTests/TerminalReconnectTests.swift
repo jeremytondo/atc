@@ -1,7 +1,8 @@
-import Foundation
-import Testing
 import ATCAppServerTransport
+import Foundation
 import GhosttyTerminal
+import Testing
+
 @testable import ATC
 
 /// Counts `onTerminalEnded` firings. A reference box keeps the callback's
@@ -50,14 +51,15 @@ struct TerminalReconnectTests {
         #expect(policy.delay(forAttempt: 0, jitterUnit: 0) == .milliseconds(400))
         #expect(policy.delay(forAttempt: 0, jitterUnit: 0.5) == .milliseconds(500))
         #expect(policy.delay(forAttempt: 0, jitterUnit: 1) == .milliseconds(600))
-        #expect((0...5).map { policy.delay(forAttempt: $0, jitterUnit: 0.5) } == [
-            .milliseconds(500),
-            .seconds(1),
-            .seconds(2),
-            .seconds(4),
-            .seconds(8),
-            .seconds(8),
-        ])
+        #expect(
+            (0...5).map { policy.delay(forAttempt: $0, jitterUnit: 0.5) } == [
+                .milliseconds(500),
+                .seconds(1),
+                .seconds(2),
+                .seconds(4),
+                .seconds(8),
+                .seconds(8),
+            ])
         #expect(policy.delay(forAttempt: 20, jitterUnit: 1) == .seconds(8))
     }
 

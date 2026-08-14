@@ -18,9 +18,11 @@ struct NotificationsSettingsView: View {
             Section {
                 Toggle("Notify me when a thread finishes or needs input", isOn: $isEnabled)
             } footer: {
-                Text("Banners appear only while atc is in the background, and come down once you have seen the thread — from any client.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text(
+                    "Banners appear only while atc is in the background, and come down once you have seen the thread — from any client."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
             if isEnabled, isDenied {
                 Section {
@@ -51,25 +53,28 @@ struct NotificationsSettingsView: View {
     }
 
     private func readAuthorization() async {
-        isDenied = await UNUserNotificationCenter.current()
+        isDenied =
+            await UNUserNotificationCenter.current()
             .notificationSettings().authorizationStatus == .denied
     }
 
     private func openSystemSettings() {
         let bundleID = Bundle.main.bundleIdentifier ?? ""
-        guard let url = URL(
-            string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(bundleID)"
-        ) else { return }
+        guard
+            let url = URL(
+                string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(bundleID)"
+            )
+        else { return }
         NSWorkspace.shared.open(url)
     }
 }
 
 #if DEBUG
 
-#Preview("Notifications") {
-    NotificationsSettingsView()
-        .frame(width: 700, height: 450)
-        .preferredColorScheme(.dark)
-}
+    #Preview("Notifications") {
+        NotificationsSettingsView()
+            .frame(width: 700, height: 450)
+            .preferredColorScheme(.dark)
+    }
 
 #endif

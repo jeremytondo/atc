@@ -1,6 +1,7 @@
+import ATCAppServerAPI
 import Foundation
 import Testing
-import ATCAppServerAPI
+
 @testable import ATC
 
 /// The jump-shortcut ordering authority: numbering follows what the collapse
@@ -16,13 +17,15 @@ struct SidebarShortcutsTests {
         filter: ThreadFilter = .all
     ) -> ThreadListModel {
         ThreadListModel(
-            inputs: [.init(
-                connectionID: connectionID,
-                connectionName: "A",
-                projects: [Fixtures.project(id: "prj")],
-                threads: threads,
-                archivedThreads: []
-            )],
+            inputs: [
+                .init(
+                    connectionID: connectionID,
+                    connectionName: "A",
+                    projects: [Fixtures.project(id: "prj")],
+                    threads: threads,
+                    archivedThreads: []
+                )
+            ],
             filter: filter
         )
     }
@@ -35,14 +38,17 @@ struct SidebarShortcutsTests {
 
     @Test("only exact ⌘digit and ⌥⌘digit map to jumps")
     func strokeMatching() {
-        #expect(SidebarShortcuts.jump(for: KeyStroke(key: "1", modifiers: [.command]))
-            == .thread(slot: 0))
-        #expect(SidebarShortcuts.jump(for: KeyStroke(key: "9", modifiers: [.command, .option]))
-            == .terminal(slot: 8))
+        #expect(
+            SidebarShortcuts.jump(for: KeyStroke(key: "1", modifiers: [.command]))
+                == .thread(slot: 0))
+        #expect(
+            SidebarShortcuts.jump(for: KeyStroke(key: "9", modifiers: [.command, .option]))
+                == .terminal(slot: 8))
         #expect(SidebarShortcuts.jump(for: KeyStroke(key: "0", modifiers: [.command])) == nil)
         #expect(SidebarShortcuts.jump(for: KeyStroke(key: "1", modifiers: [])) == nil)
-        #expect(SidebarShortcuts.jump(for: KeyStroke(key: "1", modifiers: [.command, .shift]))
-            == nil)
+        #expect(
+            SidebarShortcuts.jump(for: KeyStroke(key: "1", modifiers: [.command, .shift]))
+                == nil)
         #expect(SidebarShortcuts.jump(for: KeyStroke(key: "1", modifiers: [.option])) == nil)
         #expect(SidebarShortcuts.jump(for: KeyStroke(key: "b", modifiers: [.command])) == nil)
     }
@@ -51,11 +57,13 @@ struct SidebarShortcutsTests {
 
     @Test("pinned rows precede recent and collapsed sections stop at five")
     func threadOrdering() {
-        let threads = (1...7).map {
-            Fixtures.thread(id: "pin\($0)", pinnedAt: Fixtures.date(Double($0)))
-        } + (1...3).map {
-            Fixtures.thread(id: "rec\($0)", createdAt: Fixtures.date(100 + Double($0)))
-        }
+        let threads =
+            (1...7).map {
+                Fixtures.thread(id: "pin\($0)", pinnedAt: Fixtures.date(Double($0)))
+            }
+            + (1...3).map {
+                Fixtures.thread(id: "rec\($0)", createdAt: Fixtures.date(100 + Double($0)))
+            }
         let collapsed = SidebarShortcuts.threadTargets(
             model: model(threads: threads),
             isPinnedExpanded: false,
@@ -63,10 +71,11 @@ struct SidebarShortcutsTests {
         )
         // Five visible pinned rows (oldest pin first), then recent rows
         // newest-created-first; rows behind "N more" get no number.
-        #expect(collapsed == [
-            ref("pin1"), ref("pin2"), ref("pin3"), ref("pin4"), ref("pin5"),
-            ref("rec3"), ref("rec2"), ref("rec1"),
-        ])
+        #expect(
+            collapsed == [
+                ref("pin1"), ref("pin2"), ref("pin3"), ref("pin4"), ref("pin5"),
+                ref("rec3"), ref("rec2"), ref("rec1"),
+            ])
 
         let expanded = SidebarShortcuts.threadTargets(
             model: model(threads: threads),

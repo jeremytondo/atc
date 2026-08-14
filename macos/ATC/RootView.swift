@@ -59,14 +59,20 @@ struct RootView: View {
         .sheet(isPresented: $windowState.isCreateProjectPresented) {
             CreateProjectSheet()
         }
-        .sheet(item: $windowState.newThreadContext, onDismiss: {
-            windowState.requestTerminalFocus()
-        }) { context in
+        .sheet(
+            item: $windowState.newThreadContext,
+            onDismiss: {
+                windowState.requestTerminalFocus()
+            }
+        ) { context in
             NewThreadSheet(context: context)
         }
-        .sheet(item: $windowState.newTerminalProject, onDismiss: {
-            windowState.requestTerminalFocus()
-        }) { ref in
+        .sheet(
+            item: $windowState.newTerminalProject,
+            onDismiss: {
+                windowState.requestTerminalFocus()
+            }
+        ) { ref in
             NewTerminalSheet(projectRef: ref)
         }
         // Returning to the app with a freshly finished thread on screen
@@ -124,14 +130,15 @@ struct RootView: View {
     private var exceptionalStatus: some View {
         HStack(spacing: Spacing.md) {
             if let ref = selectedThread,
-               appModel.thread(for: ref)?.activityState == .needsInput {
+                appModel.thread(for: ref)?.activityState == .needsInput
+            {
                 Label(
                     ThreadActivityState.needsInput.detailLabel,
                     systemImage: "exclamationmark.bubble.fill"
                 )
-                    .font(.callout.weight(.medium))
-                    .foregroundStyle(Color.accentColor)
-                    .help("The agent is waiting for your input")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(Color.accentColor)
+                .help("The agent is waiting for your input")
             }
             if let name = unreachableConnectionName {
                 Label("\(name) unreachable", systemImage: "wifi.exclamationmark")
@@ -182,19 +189,21 @@ struct RootView: View {
 // are not.
 #if DEBUG
 
-#Preview {
-    let appModel = AppModel.preview()
-    let windowState = WindowState()
-    let configStore = ConfigurationStore()
-    RootView()
-        .environment(appModel)
-        .environment(windowState)
-        .environment(WindowKeyboardRouter.forWindow(
-            appModel: appModel,
-            windowState: windowState,
-            configStore: configStore
-        ))
-        .preferredColorScheme(.dark)
-}
+    #Preview {
+        let appModel = AppModel.preview()
+        let windowState = WindowState()
+        let configStore = ConfigurationStore()
+        RootView()
+            .environment(appModel)
+            .environment(windowState)
+            .environment(
+                WindowKeyboardRouter.forWindow(
+                    appModel: appModel,
+                    windowState: windowState,
+                    configStore: configStore
+                )
+            )
+            .preferredColorScheme(.dark)
+    }
 
 #endif
