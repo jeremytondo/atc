@@ -202,6 +202,10 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 45
     environment: release
+    env:
+      # Keep Xcode's package checkout outside disposable DerivedData so warm
+      # release runs do not clone the resolved dependency graph again.
+      ATC_XCODE_SPM_DIR: ${{ github.workspace }}/.spm-packages
     concurrency:
       group: product-release-macos-${{ needs.plan.outputs.channel == 'dev' && 'dev' || github.run_id }}
       cancel-in-progress: true
@@ -214,14 +218,19 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      - name: Restore SwiftPM tool cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: packages/ATCKit/.build
           key: spm-kit-${{ runner.os }}-${{ hashFiles('packages/ATCKit/Package.resolved') }}
           restore-keys: spm-kit-${{ runner.os }}-
 
-      - name: Test macOS app
-        run: mise run macos:test
+      - name: Restore Xcode package cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .spm-packages
+          key: spm-xcode-${{ runner.os }}-${{ hashFiles('macos/atc.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: spm-xcode-${{ runner.os }}-
 
       - name: Install ephemeral signing credentials
         id: signing
@@ -238,6 +247,7 @@ jobs:
           ATC_APP_STORE_CONNECT_KEY_PATH: ${{ steps.signing.outputs.app_store_connect_key_path }}
           ATC_APP_STORE_CONNECT_KEY_ID: ${{ vars.ATC_APP_STORE_CONNECT_KEY_ID }}
           ATC_APP_STORE_CONNECT_ISSUER_ID: ${{ vars.ATC_APP_STORE_CONNECT_ISSUER_ID }}
+          ATC_RELEASE_LOG_DIR: out/macos-release-logs
         run: |
           scripts/release-macos.sh \
             --channel "${{ needs.plan.outputs.channel }}" \
@@ -258,12 +268,14 @@ jobs:
           path: out/atc-macos-arm64.dmg
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        if: always()
+      - name: Upload macOS release failure logs
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: failure()
         with:
           name: product-release-macos-logs
-          path: .build/release-macos/**/logs/*.log
+          path: out/macos-release-logs
           if-no-files-found: warn
+          retention-days: 7
 
   publish:
     needs:

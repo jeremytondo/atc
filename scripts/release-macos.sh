@@ -24,8 +24,12 @@ log() {
 }
 
 die() {
-  printf 'error: %s\n' "$*" >&2
+  report_error "$*"
   exit 1
+}
+
+report_error() {
+  printf 'error: %s\n' "$*" >&2
 }
 
 usage_error() {
@@ -90,8 +94,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 PROJECT_PATH="$REPO_ROOT/macos/atc.xcodeproj"
 EXPORT_OPTIONS_PLIST="$SCRIPT_DIR/ExportOptions.DeveloperID.plist"
+PLIST_BUDDY="${ATC_PLIST_BUDDY:-/usr/libexec/PlistBuddy}"
 if [[ "$OUTPUT_PATH" != /* ]]; then
   OUTPUT_PATH="$REPO_ROOT/$OUTPUT_PATH"
+fi
+if [[ "$ATC_ARTIFACT_ROOT" != /* ]]; then
+  ATC_ARTIFACT_ROOT="$REPO_ROOT/$ATC_ARTIFACT_ROOT"
 fi
 
 case "$CHANNEL" in
@@ -99,15 +107,22 @@ case "$CHANNEL" in
   dev) BUNDLE_ID="ElevenIdeas.atc.dev" ;;
 esac
 
-RUN_DIR="$REPO_ROOT/$ATC_ARTIFACT_ROOT/$BUILD_NUMBER-$CHANNEL"
+RUN_DIR="$ATC_ARTIFACT_ROOT/$BUILD_NUMBER-$CHANNEL"
 ARCHIVE_PATH="$RUN_DIR/atc-$CHANNEL.xcarchive"
 EXPORT_PATH="$RUN_DIR/export"
 DERIVED_DATA_PATH="$RUN_DIR/DerivedData"
-SOURCE_PACKAGES_PATH="$RUN_DIR/SourcePackages"
+SOURCE_PACKAGES_PATH="${ATC_XCODE_SPM_DIR:-$RUN_DIR/SourcePackages}"
 DMG_ROOT="$RUN_DIR/dmg-root"
 DMG_PATH="$RUN_DIR/atc-macos-arm64.dmg"
 APP_PATH="$EXPORT_PATH/$APP_NAME.app"
-LOG_DIR="$RUN_DIR/logs"
+LOG_DIR="${ATC_RELEASE_LOG_DIR:-$RUN_DIR/logs}"
+
+if [[ "$SOURCE_PACKAGES_PATH" != /* ]]; then
+  SOURCE_PACKAGES_PATH="$REPO_ROOT/$SOURCE_PACKAGES_PATH"
+fi
+if [[ "$LOG_DIR" != /* ]]; then
+  LOG_DIR="$REPO_ROOT/$LOG_DIR"
+fi
 
 DEVELOPER_ID_IDENTITY=""
 NOTARY_ARGS=()
@@ -128,7 +143,8 @@ find_developer_id_identity() {
 
   if [[ -z "$DEVELOPER_ID_IDENTITY" ]]; then
     printf '%s\n' "$identities" >&2
-    die "No valid Developer ID Application identity found for Team ID $ATC_TEAM_ID"
+    report_error "No valid Developer ID Application identity found for Team ID $ATC_TEAM_ID"
+    return 1
   fi
 }
 
@@ -140,7 +156,10 @@ configure_notary_credentials() {
   if [[ -n "${ATC_APP_STORE_CONNECT_KEY_PATH:-}" &&
     -n "${ATC_APP_STORE_CONNECT_KEY_ID:-}" &&
     -n "${ATC_APP_STORE_CONNECT_ISSUER_ID:-}" ]]; then
-    [[ -f "$ATC_APP_STORE_CONNECT_KEY_PATH" ]] || die "App Store Connect API key not found: $ATC_APP_STORE_CONNECT_KEY_PATH"
+    if [[ ! -f "$ATC_APP_STORE_CONNECT_KEY_PATH" ]]; then
+      report_error "App Store Connect API key not found: $ATC_APP_STORE_CONNECT_KEY_PATH"
+      return 1
+    fi
     NOTARY_ARGS=(
       --key "$ATC_APP_STORE_CONNECT_KEY_PATH"
       --key-id "$ATC_APP_STORE_CONNECT_KEY_ID"
@@ -158,7 +177,8 @@ configure_notary_credentials() {
     )
     return
   fi
-  die "configure ATC_NOTARY_PROFILE or the three ATC_APP_STORE_CONNECT_KEY_* credentials"
+  report_error "configure ATC_NOTARY_PROFILE or the three ATC_APP_STORE_CONNECT_KEY_* credentials"
+  return 1
 }
 
 validate_notary_credentials() {
@@ -167,11 +187,18 @@ validate_notary_credentials() {
     return
   fi
   printf '%s\n' "$output" >&2
-  die "notarytool could not use the configured credentials"
+  report_error "notarytool could not use the configured credentials"
+  return 1
+}
+
+validate_prerequisites() {
+  find_developer_id_identity || return
+  configure_notary_credentials || return
+  validate_notary_credentials
 }
 
 plist_value() {
-  /usr/libexec/PlistBuddy -c "Print :$1" "$APP_PATH/Contents/Info.plist"
+  "$PLIST_BUDDY" -c "Print :$1" "$APP_PATH/Contents/Info.plist"
 }
 
 validate_exported_app() {
@@ -199,31 +226,51 @@ run_step() {
   local label="$1"
   local log_name="$2"
   local log_path="$LOG_DIR/$log_name.log"
+  local started_at=$SECONDS
   local status
   shift 2
 
   if [[ "$VERBOSE" -eq 1 ]]; then
     log "$label"
-    if "$@" 2>&1 | tee "$log_path"; then
+    if run_verbose_step "$log_path" "$@"; then
+      printf '==> %s complete (%ss)\n' "$label" "$((SECONDS - started_at))"
       return
     else
       status=$?
     fi
-    printf 'error: %s failed (full log: %s)\n' "$label" "$log_path" >&2
+    printf 'error: %s failed after %ss (full log: %s)\n' \
+      "$label" "$((SECONDS - started_at))" "$log_path" >&2
     return "$status"
   fi
 
   printf '  %-58s' "$label"
   if "$@" >"$log_path" 2>&1; then
-    printf '✓\n'
+    printf '✓ (%ss)\n' "$((SECONDS - started_at))"
     return
   else
     status=$?
   fi
-  printf '✗\n\n' >&2
+  printf '✗ (%ss)\n\n' "$((SECONDS - started_at))" >&2
   cat "$log_path" >&2
   printf 'error: %s failed (full log: %s)\n' "$label" "$log_path" >&2
   return "$status"
+}
+
+run_verbose_step() {
+  local log_path="$1"
+  local status=0
+  shift
+
+  # Pipeline elements run in subshells. Shell functions can populate signing
+  # state needed by later steps, so capture and replay their usually-small
+  # output while keeping the function in this shell. External build commands
+  # retain live streaming through tee.
+  if declare -F "$1" >/dev/null; then
+    "$@" >"$log_path" 2>&1 || status=$?
+    cat "$log_path"
+    return "$status"
+  fi
+  "$@" 2>&1 | tee "$log_path"
 }
 
 create_dmg() {
@@ -244,19 +291,15 @@ staple_dmg() {
 for tool in xcodebuild xcrun hdiutil security codesign spctl ditto; do
   require_tool "$tool"
 done
-[[ -x /usr/libexec/PlistBuddy ]] || die "Missing required tool: /usr/libexec/PlistBuddy"
+[[ -x "$PLIST_BUDDY" ]] || die "Missing required tool: $PLIST_BUDDY"
 [[ -d "$PROJECT_PATH" ]] || die "Missing Xcode project: $PROJECT_PATH"
 [[ -f "$EXPORT_OPTIONS_PLIST" ]] || die "Missing export options: $EXPORT_OPTIONS_PLIST"
 
 printf '\nmacOS release artifact (%s, %s)\n\n' "$CHANNEL" "$VERSION"
-printf '  %-58s' "Validate signing and notarization prerequisites"
-find_developer_id_identity
-configure_notary_credentials
-validate_notary_credentials
-printf '✓\n'
-
+RELEASE_STARTED_AT=$SECONDS
 mkdir -p "$RUN_DIR" "$EXPORT_PATH" "$DERIVED_DATA_PATH" "$SOURCE_PACKAGES_PATH" "$DMG_ROOT" "$LOG_DIR"
 
+run_step "Validate signing and notarization prerequisites" "00-prerequisites" validate_prerequisites
 run_step "Generate App Server API sources" "01-generate-api" \
   "$SCRIPT_DIR/prepare-xcode-openapi.sh" "$DERIVED_DATA_PATH"
 
@@ -314,3 +357,4 @@ printf 'Commit: %s\n' "$COMMIT"
 printf 'Built at: %s\n' "$BUILT_AT"
 printf 'DMG: %s\n' "$OUTPUT_PATH"
 printf 'Logs: %s\n' "$LOG_DIR"
+printf 'Elapsed: %ss\n' "$((SECONDS - RELEASE_STARTED_AT))"
