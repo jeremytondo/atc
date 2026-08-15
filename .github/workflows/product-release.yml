@@ -1,0 +1,300 @@
+# Whole-product release pipeline. Pushes to main replace the rolling dev
+# release; workflow dispatch promotes the current main head to an immutable
+# stable SemVer release. Repository scripts own identity, build, packaging,
+# notarization, and publication mechanics; Actions only orchestrates them.
+name: Product Release
+run-name: Product Release ${{ github.event_name == 'workflow_dispatch' && format('[{0}]', inputs.request_id) || format('[dev {0}]', github.sha) }}
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "app-server/**"
+      - "macos/**"
+      - "packages/**"
+      - "scripts/**"
+      - "install.sh"
+      - "mise.toml"
+      - ".github/workflows/product-release.yml"
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: "Unique dispatcher correlation ID"
+        type: string
+        required: true
+      release_type:
+        description: "Stable SemVer bump"
+        type: choice
+        required: true
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: product-release-plan-${{ github.event_name == 'push' && 'dev' || github.run_id }}
+      cancel-in-progress: true
+    outputs:
+      channel: ${{ steps.identity.outputs.channel }}
+      tag: ${{ steps.identity.outputs.tag }}
+      version: ${{ steps.identity.outputs.version }}
+      marketing_version: ${{ steps.identity.outputs.marketing_version }}
+      build_number: ${{ steps.identity.outputs.build_number }}
+      commit: ${{ steps.identity.outputs.commit }}
+      built_at: ${{ steps.identity.outputs.built_at }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require stable dispatch from main
+        if: github.event_name == 'workflow_dispatch' && github.ref_name != github.event.repository.default_branch
+        run: |
+          echo "stable releases must be dispatched against ${{ github.event.repository.default_branch }}" >&2
+          exit 1
+
+      - name: Compute shared product identity
+        id: identity
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            scripts/release-plan.sh dev >> "$GITHUB_OUTPUT"
+          else
+            scripts/release-plan.sh stable "${{ inputs.release_type }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  app-server-darwin:
+    needs: plan
+    runs-on: macos-14
+    timeout-minutes: 20
+    concurrency:
+      group: product-release-app-server-darwin-${{ needs.plan.outputs.channel == 'dev' && 'dev' || github.run_id }}
+      cancel-in-progress: true
+    defaults:
+      run:
+        working-directory: app-server
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          working_directory: app-server
+
+      - name: Build darwin targets
+        run: |
+          mise run deps
+          bun run scripts/build.ts \
+            --version=${{ needs.plan.outputs.version }} \
+            --channel=${{ needs.plan.outputs.channel }} \
+            --commit=${{ needs.plan.outputs.commit }} \
+            --built-at=${{ needs.plan.outputs.built_at }} \
+            darwin-arm64 darwin-x64
+
+      - name: Verify signatures, identity, and native behavior
+        run: |
+          for target in darwin-arm64 darwin-x64; do
+            codesign --verify --strict "dist/atc-$target" || codesign --force -s - "dist/atc-$target"
+            codesign --verify --strict "dist/atc-$target"
+          done
+          test "$(dist/atc-darwin-arm64 --version)" = "atc v${{ needs.plan.outputs.version }}"
+          ATC_COMPILED_BIN="$PWD/dist/atc-darwin-arm64" bun --bun vitest run test/compiled.blackbox.test.ts
+
+      - name: Package darwin targets
+        run: ../scripts/package-app-server.sh --dist dist --out out --checksums checksums-darwin.txt darwin-arm64 darwin-x64
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: product-release-assets-darwin
+          path: app-server/out/*
+          if-no-files-found: error
+
+  app-server-linux:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: product-release-app-server-linux-${{ needs.plan.outputs.channel == 'dev' && 'dev' || github.run_id }}
+      cancel-in-progress: true
+    defaults:
+      run:
+        working-directory: app-server
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          working_directory: app-server
+
+      - name: Standing App Server gate
+        run: mise run check
+
+      - name: Build linux targets
+        run: |
+          bun run scripts/build.ts \
+            --version=${{ needs.plan.outputs.version }} \
+            --channel=${{ needs.plan.outputs.channel }} \
+            --commit=${{ needs.plan.outputs.commit }} \
+            --built-at=${{ needs.plan.outputs.built_at }} \
+            linux-x64 linux-arm64
+
+      - name: Verify identity and native behavior
+        run: |
+          test "$(dist/atc-linux-x64 --version)" = "atc v${{ needs.plan.outputs.version }}"
+          ATC_COMPILED_BIN="$PWD/dist/atc-linux-x64" bun --bun vitest run test/compiled.blackbox.test.ts
+
+      - name: Package linux targets
+        run: ../scripts/package-app-server.sh --dist dist --out out --checksums checksums-linux.txt linux-x64 linux-arm64
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: product-release-assets-linux
+          path: app-server/out/*
+          if-no-files-found: error
+
+  validate-linux-arm:
+    needs: [plan, app-server-linux]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    concurrency:
+      group: product-release-validate-linux-arm-${{ needs.plan.outputs.channel == 'dev' && 'dev' || github.run_id }}
+      cancel-in-progress: true
+    defaults:
+      run:
+        working-directory: app-server
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          working_directory: app-server
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: product-release-assets-linux
+          path: app-server/out
+
+      - name: Validate packaged arm64 binary natively
+        run: |
+          mise run deps
+          tar -xzf out/atc-linux-arm64.tar.gz -C out
+          ATC_COMPILED_BIN="$PWD/out/atc" bun --bun vitest run test/compiled.blackbox.test.ts
+
+  macos:
+    needs: plan
+    runs-on: macos-26
+    timeout-minutes: 45
+    environment: release
+    concurrency:
+      group: product-release-macos-${{ needs.plan.outputs.channel == 'dev' && 'dev' || github.run_id }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: packages/ATCKit/.build
+          key: spm-kit-${{ runner.os }}-${{ hashFiles('packages/ATCKit/Package.resolved') }}
+          restore-keys: spm-kit-${{ runner.os }}-
+
+      - name: Test macOS app
+        run: mise run macos:test
+
+      - name: Install ephemeral signing credentials
+        id: signing
+        env:
+          ATC_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.ATC_DEVELOPER_ID_CERTIFICATE_BASE64 }}
+          ATC_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.ATC_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          ATC_APP_STORE_CONNECT_KEY_BASE64: ${{ secrets.ATC_APP_STORE_CONNECT_KEY_BASE64 }}
+          ATC_APP_STORE_CONNECT_KEY_ID: ${{ vars.ATC_APP_STORE_CONNECT_KEY_ID }}
+          ATC_APP_STORE_CONNECT_ISSUER_ID: ${{ vars.ATC_APP_STORE_CONNECT_ISSUER_ID }}
+        run: scripts/setup-macos-signing.sh
+
+      - name: Build, sign, notarize, staple, and verify DMG
+        env:
+          ATC_APP_STORE_CONNECT_KEY_PATH: ${{ steps.signing.outputs.app_store_connect_key_path }}
+          ATC_APP_STORE_CONNECT_KEY_ID: ${{ vars.ATC_APP_STORE_CONNECT_KEY_ID }}
+          ATC_APP_STORE_CONNECT_ISSUER_ID: ${{ vars.ATC_APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          scripts/release-macos.sh \
+            --channel "${{ needs.plan.outputs.channel }}" \
+            --version "${{ needs.plan.outputs.version }}" \
+            --marketing-version "${{ needs.plan.outputs.marketing_version }}" \
+            --build-number "${{ needs.plan.outputs.build_number }}" \
+            --commit "${{ needs.plan.outputs.commit }}" \
+            --built-at "${{ needs.plan.outputs.built_at }}" \
+            --output out/atc-macos-arm64.dmg
+
+      - name: Remove ephemeral signing credentials
+        if: always() && steps.signing.outcome != 'skipped'
+        run: scripts/cleanup-macos-signing.sh
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: product-release-assets-macos
+          path: out/atc-macos-arm64.dmg
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: product-release-macos-logs
+          path: .build/release-macos/**/logs/*.log
+          if-no-files-found: warn
+
+  publish:
+    needs:
+      [plan, app-server-darwin, app-server-linux, validate-linux-arm, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: product-release-publish
+      cancel-in-progress: false
+    steps:
+      # Publication needs checkout's credential to push the release tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: product-release-assets-*
+          path: release
+          merge-multiple: true
+
+      - name: Assemble and publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          scripts/merge-checksums.sh release
+          scripts/publish-release.sh \
+            --channel "${{ needs.plan.outputs.channel }}" \
+            --tag "${{ needs.plan.outputs.tag }}" \
+            --version "${{ needs.plan.outputs.version }}" \
+            --commit "${{ needs.plan.outputs.commit }}" \
+            --assets release

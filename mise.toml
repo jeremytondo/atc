@@ -32,8 +32,12 @@ echo "installed $dir/atc ($("$dir/atc" --version))"
 """
 
 [tasks.check]
-description = "All gates: App Server check, Swift lint+format, Kit tests, macOS app tests"
-depends = ["app-server:check", "swift:lint", "swift:fmt:check", "kit:test", "macos:test"]
+description = "All gates: App Server, Swift lint+format, Kit/macOS tests, release tooling"
+depends = ["app-server:check", "swift:lint", "swift:fmt:check", "kit:test", "macos:test", "release:check"]
+
+[tasks.build]
+description = "Build the local App Server binary and developer macOS app"
+depends = ["app-server:build", "macos:build"]
 
 [tasks.test]
 description = "All tests: App Server, ATCKit, macOS app"
@@ -64,10 +68,6 @@ depends = ["app-server:check", "kit:test"]
 [tasks."app-server:build"]
 description = "Compile the standalone App Server atc executable for this machine"
 run = "mise run -C app-server build"
-
-[tasks."app-server:build:all"]
-description = "Cross-compile standalone App Server atc executables for every release target"
-run = "mise run -C app-server 'build:all'"
 
 # --- Swift surfaces ---
 
@@ -148,6 +148,10 @@ xcodebuild test \
   CODE_SIGNING_ALLOWED=NO ${extra[@]+"${extra[@]}"}
 """
 
+[tasks."macos:build"]
+description = "Compile the local developer macOS app without release identity or publication"
+run = "scripts/build-macos.sh"
+
 [tasks.refs]
 description = "Fetch read-only reference source into repos/ (gitignored); delete a checkout and re-run to update"
 run = """
@@ -169,47 +173,11 @@ clone zmx --branch 'v0.6.0' https://github.com/neurosnap/zmx.git
 """
 
 # --- Releases ---
-# One mental model: release:<channel> releases the whole product;
-# <surface>:release:<channel> releases one surface. Nothing publishes on
-# merge — a release happens only when you run its task. The App Server tasks
-# dispatch the GitHub Actions pipeline
-# (.github/workflows/app-server-release.yml); the macOS tasks build,
-# notarize, and upload locally (signing lives on the developer Mac).
 
-[tasks."release:dev"]
-description = "Full dev release: App Server in CI + macOS DMG locally, in parallel (add --verbose for full macOS logs)"
-run = "scripts/release.sh dev"
+[tasks.release]
+description = "Dispatch and watch a stable whole-product release from main (usage: mise run release patch|minor|major)"
+run = "scripts/release.sh"
 
-[tasks."release:stable"]
-description = "Full stable release: cut vX.Y.Z in CI, then attach the macOS DMG (usage: mise run release:stable [patch|minor|major] [--verbose])"
-run = "scripts/release.sh stable"
-
-[tasks."app-server:release:stable"]
-description = "Dispatch the stable App Server release (usage: mise run app-server:release:stable [patch|minor|major])"
-run = """
-#!/usr/bin/env bash
-set -euo pipefail
-bump="${1:-patch}"
-case "$bump" in
-  patch|minor|major) ;;
-  *) echo "usage: mise run app-server:release:stable [patch|minor|major]" >&2; exit 1 ;;
-esac
-gh workflow run app-server-release.yml -f channel=stable -f release_type="$bump"
-echo "dispatched stable release ($bump bump); follow with: gh run watch"
-"""
-
-[tasks."app-server:release:dev"]
-description = "Build and publish the rolling dev-channel App Server release"
-run = [
-  "gh workflow run app-server-release.yml -f channel=dev",
-  "echo 'dispatched dev release; follow with: gh run watch'",
-]
-
-[tasks."macos:release:stable"]
-description = "Build, notarize, and attach the stable macOS DMG to the latest vX.Y.Z release (add --verbose for full logs)"
-run = "scripts/release-macos.sh --channel stable --upload"
-
-[tasks."macos:release:dev"]
-description = "Build and publish a notarized dev DMG to GitHub Releases (add --verbose for full logs)"
-run = "scripts/release-macos.sh --channel dev --upload"
-
+[tasks."release:check"]
+description = "Validate shared product release identity and packaging scripts"
+run = "scripts/release-test.sh"

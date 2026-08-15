@@ -5,7 +5,7 @@ bun = "1.3.14"
 
 [tasks.dev]
 description = "Run the App Server in the foreground (http://127.0.0.1:7331)"
-depends = ["install"]
+depends = ["deps"]
 run = "bun run src/main.ts serve"
 
 [tasks.check]
@@ -14,46 +14,46 @@ depends = ["fmt:check", "lint", "typecheck", "test", "openapi:check", "web:check
 
 [tasks.build]
 description = "Compile the standalone atc executable for this machine into dist/"
-depends = ["install"]
+depends = ["deps"]
 run = "bun run scripts/build.ts"
 
 [tasks."build:all"]
 description = "Cross-compile standalone atc executables for every release target into dist/"
-depends = ["install"]
+depends = ["deps"]
 run = "bun run scripts/build.ts --all"
 
 # --- Building blocks ---
 
-# fmt:check/typecheck/test share install as a dependency instead of each
+# fmt:check/typecheck/test share deps as a dependency instead of each
 # installing themselves: mise runs tasks in parallel, and concurrent installs
 # into the same node_modules race. A shared dependency runs exactly once.
-[tasks.install]
+[tasks.deps]
 description = "Install dependencies from the committed lockfile"
 run = "bun install --frozen-lockfile"
 
 [tasks.openapi]
 description = "Regenerate the checked-in OpenAPI artifact (openapi.json) from the contract"
-depends = ["install"]
+depends = ["deps"]
 run = "bun run scripts/openapi.ts"
 
 [tasks."openapi:check"]
 description = "Fail if openapi.json is stale relative to the contract"
-depends = ["install"]
+depends = ["deps"]
 run = "bun run scripts/openapi.ts --check"
 
 [tasks.fmt]
 description = "Format TypeScript, JSON, and Markdown with Prettier"
-depends = ["install"]
+depends = ["deps"]
 run = "bun run prettier --write ."
 
 [tasks."fmt:check"]
 description = "Fail if any file is not Prettier-clean"
-depends = ["install"]
+depends = ["deps"]
 run = "bun run prettier --check ."
 
 [tasks.typecheck]
 description = "Strict TypeScript type check (no emit)"
-depends = ["install"]
+depends = ["deps"]
 run = "bun run tsc --noEmit"
 
 # Semantic lint: oxlint categories plus the ATC plugin rules (lint/) that
@@ -62,19 +62,19 @@ run = "bun run tsc --noEmit"
 # bindings (false positives), so svelte-check (web:check) owns that surface.
 [tasks.lint]
 description = "Lint TypeScript with oxlint, including the ATC plugin rules"
-depends = ["install"]
+depends = ["deps"]
 run = "bun run oxlint --report-unused-disable-directives --deny-warnings"
 
 [tasks."lint:fix"]
 description = "Apply oxlint autofixes"
-depends = ["install"]
+depends = ["deps"]
 run = "bun run oxlint --fix --report-unused-disable-directives"
 
 # --bun forces the Bun runtime (vitest's shebang would otherwise pick node),
 # so tests exercise the same runtime the server ships on.
 [tasks.test]
 description = "Run the vitest suite on the Bun runtime"
-depends = ["install"]
+depends = ["deps"]
 run = "bun --bun vitest run"
 
 # --- Admin UI (web/) ---

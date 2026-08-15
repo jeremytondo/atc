@@ -20,6 +20,10 @@ DerivedData/
 !.env.example
 !.env.*.example
 
+# Release signing credentials
+*.p12
+*.p8
+
 # JavaScript / TypeScript / Bun
 node_modules/
 dist/

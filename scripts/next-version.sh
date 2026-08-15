@@ -48,4 +48,3 @@ if git rev-parse -q --verify "refs/tags/${next}" >/dev/null; then
 fi
 
 printf '%s\n' "$next"
-
