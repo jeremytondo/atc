@@ -121,27 +121,27 @@ while IFS= read -r action; do
     echo "release workflow action is not pinned to a full commit SHA: $action" >&2
     exit 1
   fi
-done < <(rg -o 'uses: [^ #]+' "$REPO_ROOT/.github/workflows/product-release.yml")
+done < <(git -C "$REPO_ROOT" grep -hoE 'uses: [^ #]+' -- .github/workflows/product-release.yml)
 
-if rg -q 'secrets\.ATC_APP_STORE_CONNECT_(KEY_ID|ISSUER_ID)' "$REPO_ROOT/.github/workflows/product-release.yml"; then
+if git -C "$REPO_ROOT" grep -qE 'secrets\.ATC_APP_STORE_CONNECT_(KEY_ID|ISSUER_ID)' -- .github/workflows/product-release.yml; then
   echo "non-secret App Store Connect identifiers must be environment variables" >&2
   exit 1
 fi
 
-if rg -q 'ATC_NOTARY_KEY_' \
-  "$REPO_ROOT/.github/workflows/product-release.yml" \
-  "$SCRIPT_DIR" \
-  -g '!release-test.sh'; then
+if git -C "$REPO_ROOT" grep -qE 'ATC_NOTARY_KEY_' -- \
+  .github/workflows/product-release.yml \
+  scripts \
+  ':(exclude)scripts/release-test.sh'; then
   echo "legacy misleading App Store Connect credential names remain" >&2
   exit 1
 fi
 
-rg -q '^run-name:.*request_id' "$REPO_ROOT/.github/workflows/product-release.yml"
-rg -q 'request_id=' "$SCRIPT_DIR/release.sh"
+git -C "$REPO_ROOT" grep -qE '^run-name:.*request_id' -- .github/workflows/product-release.yml
+git -C "$REPO_ROOT" grep -q 'request_id=' -- scripts/release.sh
 git -C "$REPO_ROOT" check-ignore -q --no-index AuthKey.p8
 git -C "$REPO_ROOT" check-ignore -q --no-index another-key.p8
 
-if rg -q 'release:(dev|stable)|app-server:release|macos:release' "$REPO_ROOT/mise.toml"; then
+if git -C "$REPO_ROOT" grep -qE 'release:(dev|stable)|app-server:release|macos:release' -- mise.toml; then
   echo "legacy public release tasks remain in mise.toml" >&2
   exit 1
 fi
