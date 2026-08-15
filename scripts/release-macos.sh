@@ -24,8 +24,12 @@ log() {
 }
 
 die() {
-  printf 'error: %s\n' "$*" >&2
+  report_error "$*"
   exit 1
+}
+
+report_error() {
+  printf 'error: %s\n' "$*" >&2
 }
 
 usage_error() {
@@ -135,7 +139,8 @@ find_developer_id_identity() {
 
   if [[ -z "$DEVELOPER_ID_IDENTITY" ]]; then
     printf '%s\n' "$identities" >&2
-    die "No valid Developer ID Application identity found for Team ID $ATC_TEAM_ID"
+    report_error "No valid Developer ID Application identity found for Team ID $ATC_TEAM_ID"
+    return 1
   fi
 }
 
@@ -165,7 +170,8 @@ configure_notary_credentials() {
     )
     return
   fi
-  die "configure ATC_NOTARY_PROFILE or the three ATC_APP_STORE_CONNECT_KEY_* credentials"
+  report_error "configure ATC_NOTARY_PROFILE or the three ATC_APP_STORE_CONNECT_KEY_* credentials"
+  return 1
 }
 
 validate_notary_credentials() {
@@ -174,7 +180,14 @@ validate_notary_credentials() {
     return
   fi
   printf '%s\n' "$output" >&2
-  die "notarytool could not use the configured credentials"
+  report_error "notarytool could not use the configured credentials"
+  return 1
+}
+
+validate_prerequisites() {
+  find_developer_id_identity || return
+  configure_notary_credentials || return
+  validate_notary_credentials
 }
 
 plist_value() {
@@ -260,15 +273,9 @@ done
 
 printf '\nmacOS release artifact (%s, %s)\n\n' "$CHANNEL" "$VERSION"
 RELEASE_STARTED_AT=$SECONDS
-PREREQUISITES_STARTED_AT=$SECONDS
-printf '  %-58s' "Validate signing and notarization prerequisites"
-find_developer_id_identity
-configure_notary_credentials
-validate_notary_credentials
-printf '✓ (%ss)\n' "$((SECONDS - PREREQUISITES_STARTED_AT))"
-
 mkdir -p "$RUN_DIR" "$EXPORT_PATH" "$DERIVED_DATA_PATH" "$SOURCE_PACKAGES_PATH" "$DMG_ROOT" "$LOG_DIR"
 
+run_step "Validate signing and notarization prerequisites" "00-prerequisites" validate_prerequisites
 run_step "Generate App Server API sources" "01-generate-api" \
   "$SCRIPT_DIR/prepare-xcode-openapi.sh" "$DERIVED_DATA_PATH"
 

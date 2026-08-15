@@ -116,6 +116,29 @@ set -e
 [[ $invalid_timestamp_status -eq 1 ]]
 [[ "$invalid_timestamp_output" == *"not a valid calendar timestamp"* ]]
 
+prerequisite_log_dir="$TEST_ROOT/release-logs"
+set +e
+prerequisite_output="$(
+  PATH="$fake_bin:$PATH" \
+    SECURITY_LOG="$security_log" \
+    ATC_RELEASE_LOG_DIR="$prerequisite_log_dir" \
+    "$SCRIPT_DIR/release-macos.sh" \
+    --channel dev \
+    --version 1.2.3-dev.2 \
+    --marketing-version 1.2.3 \
+    --build-number 2 \
+    --commit "$commit" \
+    --built-at 2026-08-15T12:34:56Z \
+    --output "$TEST_ROOT/atc.dmg" \
+    2>&1
+)"
+prerequisite_status=$?
+set -e
+[[ $prerequisite_status -eq 1 ]]
+[[ "$prerequisite_output" == *"Validate signing and notarization prerequisites"* ]]
+grep -Fq "No valid Developer ID Application identity found" \
+  "$prerequisite_log_dir/00-prerequisites.log"
+
 while IFS= read -r action; do
   if [[ ! "$action" =~ @[0-9a-f]{40}$ ]]; then
     echo "release workflow action is not pinned to a full commit SHA: $action" >&2
