@@ -14,8 +14,8 @@ usage: scripts/release-macos.sh \
   --built-at ISO-8601 \
   --output PATH [--verbose]
 
-Notarization uses either ATC_NOTARY_PROFILE or all of
-ATC_NOTARY_KEY_PATH, ATC_NOTARY_KEY_ID, and ATC_NOTARY_ISSUER_ID.
+Notarization uses either ATC_NOTARY_PROFILE or all three
+ATC_APP_STORE_CONNECT_KEY_* credentials.
 USAGE
 }
 
@@ -124,26 +124,28 @@ configure_notary_credentials() {
     NOTARY_ARGS=(--keychain-profile "$ATC_NOTARY_PROFILE")
     return
   fi
-  if [[ -n "${ATC_NOTARY_KEY_PATH:-}" && -n "${ATC_NOTARY_KEY_ID:-}" && -n "${ATC_NOTARY_ISSUER_ID:-}" ]]; then
-    [[ -f "$ATC_NOTARY_KEY_PATH" ]] || die "notary API key not found: $ATC_NOTARY_KEY_PATH"
+  if [[ -n "${ATC_APP_STORE_CONNECT_KEY_PATH:-}" &&
+    -n "${ATC_APP_STORE_CONNECT_KEY_ID:-}" &&
+    -n "${ATC_APP_STORE_CONNECT_ISSUER_ID:-}" ]]; then
+    [[ -f "$ATC_APP_STORE_CONNECT_KEY_PATH" ]] || die "App Store Connect API key not found: $ATC_APP_STORE_CONNECT_KEY_PATH"
     NOTARY_ARGS=(
-      --key "$ATC_NOTARY_KEY_PATH"
-      --key-id "$ATC_NOTARY_KEY_ID"
-      --issuer "$ATC_NOTARY_ISSUER_ID"
+      --key "$ATC_APP_STORE_CONNECT_KEY_PATH"
+      --key-id "$ATC_APP_STORE_CONNECT_KEY_ID"
+      --issuer "$ATC_APP_STORE_CONNECT_ISSUER_ID"
     )
     # The ephemeral runner imports only the long-lived Developer ID identity.
     # Automatic archive signing can use the same App Store Connect API key to
     # obtain its short-lived development signing assets; export then selects
     # the locally imported Developer ID certificate.
     XCODE_AUTH_ARGS=(
-      -authenticationKeyPath "$ATC_NOTARY_KEY_PATH"
-      -authenticationKeyID "$ATC_NOTARY_KEY_ID"
-      -authenticationKeyIssuerID "$ATC_NOTARY_ISSUER_ID"
+      -authenticationKeyPath "$ATC_APP_STORE_CONNECT_KEY_PATH"
+      -authenticationKeyID "$ATC_APP_STORE_CONNECT_KEY_ID"
+      -authenticationKeyIssuerID "$ATC_APP_STORE_CONNECT_ISSUER_ID"
       -allowProvisioningUpdates
     )
     return
   fi
-  die "configure ATC_NOTARY_PROFILE or the three ATC_NOTARY_KEY_* credentials"
+  die "configure ATC_NOTARY_PROFILE or the three ATC_APP_STORE_CONNECT_KEY_* credentials"
 }
 
 validate_notary_credentials() {

@@ -47,9 +47,10 @@ jobs:
       commit: ${{ steps.identity.outputs.commit }}
       built_at: ${{ steps.identity.outputs.built_at }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Require stable dispatch from main
         if: github.event_name == 'workflow_dispatch' && github.ref_name != github.event.repository.default_branch
@@ -77,9 +78,11 @@ jobs:
       run:
         working-directory: app-server
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           working_directory: app-server
@@ -106,7 +109,7 @@ jobs:
       - name: Package darwin targets
         run: ../scripts/package-app-server.sh --dist dist --out out --checksums checksums-darwin.txt darwin-arm64 darwin-x64
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: product-release-assets-darwin
           path: app-server/out/*
@@ -123,9 +126,11 @@ jobs:
       run:
         working-directory: app-server
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           working_directory: app-server
@@ -150,7 +155,7 @@ jobs:
       - name: Package linux targets
         run: ../scripts/package-app-server.sh --dist dist --out out --checksums checksums-linux.txt linux-x64 linux-arm64
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: product-release-assets-linux
           path: app-server/out/*
@@ -167,14 +172,16 @@ jobs:
       run:
         working-directory: app-server
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           working_directory: app-server
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: product-release-assets-linux
           path: app-server/out
@@ -194,13 +201,15 @@ jobs:
       group: product-release-macos-${{ needs.plan.outputs.channel == 'dev' && 'dev' || github.run_id }}
       cancel-in-progress: true
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: actions/cache@v5
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: packages/ATCKit/.build
           key: spm-kit-${{ runner.os }}-${{ hashFiles('packages/ATCKit/Package.resolved') }}
@@ -214,16 +223,16 @@ jobs:
         env:
           ATC_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.ATC_DEVELOPER_ID_CERTIFICATE_BASE64 }}
           ATC_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.ATC_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
-          ATC_NOTARY_KEY_BASE64: ${{ secrets.ATC_NOTARY_KEY_BASE64 }}
-          ATC_NOTARY_KEY_ID: ${{ secrets.ATC_NOTARY_KEY_ID }}
-          ATC_NOTARY_ISSUER_ID: ${{ secrets.ATC_NOTARY_ISSUER_ID }}
+          ATC_APP_STORE_CONNECT_KEY_BASE64: ${{ secrets.ATC_APP_STORE_CONNECT_KEY_BASE64 }}
+          ATC_APP_STORE_CONNECT_KEY_ID: ${{ vars.ATC_APP_STORE_CONNECT_KEY_ID }}
+          ATC_APP_STORE_CONNECT_ISSUER_ID: ${{ vars.ATC_APP_STORE_CONNECT_ISSUER_ID }}
         run: scripts/setup-macos-signing.sh
 
       - name: Build, sign, notarize, staple, and verify DMG
         env:
-          ATC_NOTARY_KEY_PATH: ${{ steps.signing.outputs.notary_key_path }}
-          ATC_NOTARY_KEY_ID: ${{ secrets.ATC_NOTARY_KEY_ID }}
-          ATC_NOTARY_ISSUER_ID: ${{ secrets.ATC_NOTARY_ISSUER_ID }}
+          ATC_APP_STORE_CONNECT_KEY_PATH: ${{ steps.signing.outputs.app_store_connect_key_path }}
+          ATC_APP_STORE_CONNECT_KEY_ID: ${{ vars.ATC_APP_STORE_CONNECT_KEY_ID }}
+          ATC_APP_STORE_CONNECT_ISSUER_ID: ${{ vars.ATC_APP_STORE_CONNECT_ISSUER_ID }}
         run: |
           scripts/release-macos.sh \
             --channel "${{ needs.plan.outputs.channel }}" \
@@ -234,13 +243,17 @@ jobs:
             --built-at "${{ needs.plan.outputs.built_at }}" \
             --output out/atc-macos-arm64.dmg
 
-      - uses: actions/upload-artifact@v6
+      - name: Remove ephemeral signing credentials
+        if: always() && steps.signing.outcome != 'skipped'
+        run: scripts/cleanup-macos-signing.sh
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: product-release-assets-macos
           path: out/atc-macos-arm64.dmg
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
           name: product-release-macos-logs
@@ -248,7 +261,8 @@ jobs:
           if-no-files-found: warn
 
   publish:
-    needs: [plan, app-server-darwin, app-server-linux, validate-linux-arm, macos]
+    needs:
+      [plan, app-server-darwin, app-server-linux, validate-linux-arm, macos]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -258,11 +272,12 @@ jobs:
       cancel-in-progress: false
       queue: max
     steps:
-      - uses: actions/checkout@v7
+      # Publication needs checkout's credential to push the release tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: product-release-assets-*
           path: release

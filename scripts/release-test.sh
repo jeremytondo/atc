@@ -59,6 +59,35 @@ chmod +x "$TEST_ROOT/dist/atc-darwin-arm64" "$TEST_ROOT/dist/atc-linux-x64"
 tar -tzf "$TEST_ROOT/out/atc-darwin-arm64.tar.gz" | grep -qx atc
 tar -tzf "$TEST_ROOT/out/atc-linux-x64.tar.gz" | grep -qx atc
 
+credential_dir="$TEST_ROOT/runner-temp/atc-release-credentials"
+mkdir -p "$credential_dir"
+touch \
+  "$credential_dir/release.keychain-db" \
+  "$credential_dir/developer-id.p12" \
+  "$credential_dir/AuthKey.p8"
+RUNNER_TEMP="$TEST_ROOT/runner-temp" "$SCRIPT_DIR/cleanup-macos-signing.sh"
+[[ ! -e "$credential_dir" ]]
+
+while IFS= read -r action; do
+  if [[ ! "$action" =~ @[0-9a-f]{40}$ ]]; then
+    echo "release workflow action is not pinned to a full commit SHA: $action" >&2
+    exit 1
+  fi
+done < <(rg -o 'uses: [^ #]+' "$REPO_ROOT/.github/workflows/product-release.yml")
+
+if rg -q 'secrets\.ATC_APP_STORE_CONNECT_(KEY_ID|ISSUER_ID)' "$REPO_ROOT/.github/workflows/product-release.yml"; then
+  echo "non-secret App Store Connect identifiers must be environment variables" >&2
+  exit 1
+fi
+
+if rg -q 'ATC_NOTARY_KEY_' \
+  "$REPO_ROOT/.github/workflows/product-release.yml" \
+  "$SCRIPT_DIR" \
+  -g '!release-test.sh'; then
+  echo "legacy misleading App Store Connect credential names remain" >&2
+  exit 1
+fi
+
 if rg -q 'release:(dev|stable)|app-server:release|macos:release' "$REPO_ROOT/mise.toml"; then
   echo "legacy public release tasks remain in mise.toml" >&2
   exit 1
