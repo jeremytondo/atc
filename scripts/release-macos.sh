@@ -103,11 +103,18 @@ RUN_DIR="$REPO_ROOT/$ATC_ARTIFACT_ROOT/$BUILD_NUMBER-$CHANNEL"
 ARCHIVE_PATH="$RUN_DIR/atc-$CHANNEL.xcarchive"
 EXPORT_PATH="$RUN_DIR/export"
 DERIVED_DATA_PATH="$RUN_DIR/DerivedData"
-SOURCE_PACKAGES_PATH="$RUN_DIR/SourcePackages"
+SOURCE_PACKAGES_PATH="${ATC_XCODE_SPM_DIR:-$RUN_DIR/SourcePackages}"
 DMG_ROOT="$RUN_DIR/dmg-root"
 DMG_PATH="$RUN_DIR/atc-macos-arm64.dmg"
 APP_PATH="$EXPORT_PATH/$APP_NAME.app"
-LOG_DIR="$RUN_DIR/logs"
+LOG_DIR="${ATC_RELEASE_LOG_DIR:-$RUN_DIR/logs}"
+
+if [[ "$SOURCE_PACKAGES_PATH" != /* ]]; then
+  SOURCE_PACKAGES_PATH="$REPO_ROOT/$SOURCE_PACKAGES_PATH"
+fi
+if [[ "$LOG_DIR" != /* ]]; then
+  LOG_DIR="$REPO_ROOT/$LOG_DIR"
+fi
 
 DEVELOPER_ID_IDENTITY=""
 NOTARY_ARGS=()
@@ -199,28 +206,31 @@ run_step() {
   local label="$1"
   local log_name="$2"
   local log_path="$LOG_DIR/$log_name.log"
+  local started_at=$SECONDS
   local status
   shift 2
 
   if [[ "$VERBOSE" -eq 1 ]]; then
     log "$label"
     if "$@" 2>&1 | tee "$log_path"; then
+      printf '==> %s complete (%ss)\n' "$label" "$((SECONDS - started_at))"
       return
     else
       status=$?
     fi
-    printf 'error: %s failed (full log: %s)\n' "$label" "$log_path" >&2
+    printf 'error: %s failed after %ss (full log: %s)\n' \
+      "$label" "$((SECONDS - started_at))" "$log_path" >&2
     return "$status"
   fi
 
   printf '  %-58s' "$label"
   if "$@" >"$log_path" 2>&1; then
-    printf '✓\n'
+    printf '✓ (%ss)\n' "$((SECONDS - started_at))"
     return
   else
     status=$?
   fi
-  printf '✗\n\n' >&2
+  printf '✗ (%ss)\n\n' "$((SECONDS - started_at))" >&2
   cat "$log_path" >&2
   printf 'error: %s failed (full log: %s)\n' "$label" "$log_path" >&2
   return "$status"
@@ -249,11 +259,13 @@ done
 [[ -f "$EXPORT_OPTIONS_PLIST" ]] || die "Missing export options: $EXPORT_OPTIONS_PLIST"
 
 printf '\nmacOS release artifact (%s, %s)\n\n' "$CHANNEL" "$VERSION"
+RELEASE_STARTED_AT=$SECONDS
+PREREQUISITES_STARTED_AT=$SECONDS
 printf '  %-58s' "Validate signing and notarization prerequisites"
 find_developer_id_identity
 configure_notary_credentials
 validate_notary_credentials
-printf '✓\n'
+printf '✓ (%ss)\n' "$((SECONDS - PREREQUISITES_STARTED_AT))"
 
 mkdir -p "$RUN_DIR" "$EXPORT_PATH" "$DERIVED_DATA_PATH" "$SOURCE_PACKAGES_PATH" "$DMG_ROOT" "$LOG_DIR"
 
@@ -314,3 +326,4 @@ printf 'Commit: %s\n' "$COMMIT"
 printf 'Built at: %s\n' "$BUILT_AT"
 printf 'DMG: %s\n' "$OUTPUT_PATH"
 printf 'Logs: %s\n' "$LOG_DIR"
+printf 'Elapsed: %ss\n' "$((SECONDS - RELEASE_STARTED_AT))"
