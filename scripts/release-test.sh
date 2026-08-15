@@ -169,10 +169,10 @@ printf '%s\n' \
   'fi' > "$fake_bin/security"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
-  'printf '\''xcrun %s\n'\'' "$*" >> "$TOOL_LOG"' > "$fake_bin/xcrun"
+  '{ printf '\''xcrun'\''; for arg in "$@"; do printf '\'' <%s>'\'' "$arg"; done; printf '\''\n'\''; } >> "$TOOL_LOG"' > "$fake_bin/xcrun"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
-  'printf '\''xcodebuild %s\n'\'' "$*" >> "$TOOL_LOG"' \
+  '{ printf '\''xcodebuild'\''; for arg in "$@"; do printf '\'' <%s>'\'' "$arg"; done; printf '\''\n'\''; } >> "$TOOL_LOG"' \
   'exit 1' > "$fake_bin/xcodebuild"
 chmod +x "$fake_bin/security" "$fake_bin/xcrun" "$fake_bin/xcodebuild"
 
@@ -195,7 +195,7 @@ set -e
 [[ $verbose_status -eq 1 ]]
 [[ "$verbose_output" == *"Archive atc.app failed"* ]]
 grep -Fq -- \
-  "-authenticationKeyPath $api_key_path -authenticationKeyID KEY123 -authenticationKeyIssuerID ISSUER123" \
+  "<-authenticationKeyPath> <$api_key_path> <-authenticationKeyID> <KEY123> <-authenticationKeyIssuerID> <ISSUER123>" \
   "$tool_log"
 
 missing_key_path="$TEST_ROOT/missing-key.p8"
