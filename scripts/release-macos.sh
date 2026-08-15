@@ -94,8 +94,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 PROJECT_PATH="$REPO_ROOT/macos/atc.xcodeproj"
 EXPORT_OPTIONS_PLIST="$SCRIPT_DIR/ExportOptions.DeveloperID.plist"
+PLIST_BUDDY="${ATC_PLIST_BUDDY:-/usr/libexec/PlistBuddy}"
 if [[ "$OUTPUT_PATH" != /* ]]; then
   OUTPUT_PATH="$REPO_ROOT/$OUTPUT_PATH"
+fi
+if [[ "$ATC_ARTIFACT_ROOT" != /* ]]; then
+  ATC_ARTIFACT_ROOT="$REPO_ROOT/$ATC_ARTIFACT_ROOT"
 fi
 
 case "$CHANNEL" in
@@ -103,7 +107,7 @@ case "$CHANNEL" in
   dev) BUNDLE_ID="ElevenIdeas.atc.dev" ;;
 esac
 
-RUN_DIR="$REPO_ROOT/$ATC_ARTIFACT_ROOT/$BUILD_NUMBER-$CHANNEL"
+RUN_DIR="$ATC_ARTIFACT_ROOT/$BUILD_NUMBER-$CHANNEL"
 ARCHIVE_PATH="$RUN_DIR/atc-$CHANNEL.xcarchive"
 EXPORT_PATH="$RUN_DIR/export"
 DERIVED_DATA_PATH="$RUN_DIR/DerivedData"
@@ -152,7 +156,10 @@ configure_notary_credentials() {
   if [[ -n "${ATC_APP_STORE_CONNECT_KEY_PATH:-}" &&
     -n "${ATC_APP_STORE_CONNECT_KEY_ID:-}" &&
     -n "${ATC_APP_STORE_CONNECT_ISSUER_ID:-}" ]]; then
-    [[ -f "$ATC_APP_STORE_CONNECT_KEY_PATH" ]] || die "App Store Connect API key not found: $ATC_APP_STORE_CONNECT_KEY_PATH"
+    if [[ ! -f "$ATC_APP_STORE_CONNECT_KEY_PATH" ]]; then
+      report_error "App Store Connect API key not found: $ATC_APP_STORE_CONNECT_KEY_PATH"
+      return 1
+    fi
     NOTARY_ARGS=(
       --key "$ATC_APP_STORE_CONNECT_KEY_PATH"
       --key-id "$ATC_APP_STORE_CONNECT_KEY_ID"
@@ -191,7 +198,7 @@ validate_prerequisites() {
 }
 
 plist_value() {
-  /usr/libexec/PlistBuddy -c "Print :$1" "$APP_PATH/Contents/Info.plist"
+  "$PLIST_BUDDY" -c "Print :$1" "$APP_PATH/Contents/Info.plist"
 }
 
 validate_exported_app() {
@@ -225,7 +232,7 @@ run_step() {
 
   if [[ "$VERBOSE" -eq 1 ]]; then
     log "$label"
-    if "$@" 2>&1 | tee "$log_path"; then
+    if run_verbose_step "$log_path" "$@"; then
       printf '==> %s complete (%ss)\n' "$label" "$((SECONDS - started_at))"
       return
     else
@@ -249,6 +256,23 @@ run_step() {
   return "$status"
 }
 
+run_verbose_step() {
+  local log_path="$1"
+  local status=0
+  shift
+
+  # Pipeline elements run in subshells. Shell functions can populate signing
+  # state needed by later steps, so capture and replay their usually-small
+  # output while keeping the function in this shell. External build commands
+  # retain live streaming through tee.
+  if declare -F "$1" >/dev/null; then
+    "$@" >"$log_path" 2>&1 || status=$?
+    cat "$log_path"
+    return "$status"
+  fi
+  "$@" 2>&1 | tee "$log_path"
+}
+
 create_dmg() {
   ditto "$APP_PATH" "$DMG_ROOT/$APP_NAME.app" &&
     ln -s /Applications "$DMG_ROOT/Applications" &&
@@ -267,7 +291,7 @@ staple_dmg() {
 for tool in xcodebuild xcrun hdiutil security codesign spctl ditto; do
   require_tool "$tool"
 done
-[[ -x /usr/libexec/PlistBuddy ]] || die "Missing required tool: /usr/libexec/PlistBuddy"
+[[ -x "$PLIST_BUDDY" ]] || die "Missing required tool: $PLIST_BUDDY"
 [[ -d "$PROJECT_PATH" ]] || die "Missing Xcode project: $PROJECT_PATH"
 [[ -f "$EXPORT_OPTIONS_PLIST" ]] || die "Missing export options: $EXPORT_OPTIONS_PLIST"
 

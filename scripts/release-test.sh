@@ -116,12 +116,24 @@ set -e
 [[ $invalid_timestamp_status -eq 1 ]]
 [[ "$invalid_timestamp_output" == *"not a valid calendar timestamp"* ]]
 
-prerequisite_log_dir="$TEST_ROOT/release-logs"
-set +e
-prerequisite_output="$(
-  PATH="$fake_bin:$PATH" \
-    SECURITY_LOG="$security_log" \
-    ATC_RELEASE_LOG_DIR="$prerequisite_log_dir" \
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'printf '\''%s\n'\'' "$4"' > "$fake_bin/date"
+for tool in xcodebuild xcrun hdiutil codesign spctl ditto swift PlistBuddy; do
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$fake_bin/$tool"
+done
+chmod +x "$fake_bin/date" "$fake_bin/xcodebuild" "$fake_bin/xcrun" \
+  "$fake_bin/hdiutil" "$fake_bin/codesign" "$fake_bin/spctl" \
+  "$fake_bin/ditto" "$fake_bin/swift" "$fake_bin/PlistBuddy"
+
+run_macos_release_test() {
+  local artifact_root="$1"
+  local log_dir="$2"
+  shift 2
+
+  ATC_ARTIFACT_ROOT="$artifact_root" \
+    ATC_PLIST_BUDDY="$fake_bin/PlistBuddy" \
+    ATC_RELEASE_LOG_DIR="$log_dir" \
     "$SCRIPT_DIR/release-macos.sh" \
     --channel dev \
     --version 1.2.3-dev.2 \
@@ -130,6 +142,15 @@ prerequisite_output="$(
     --commit "$commit" \
     --built-at 2026-08-15T12:34:56Z \
     --output "$TEST_ROOT/atc.dmg" \
+    "$@"
+}
+
+prerequisite_log_dir="$TEST_ROOT/release-logs"
+set +e
+prerequisite_output="$(
+  PATH="$fake_bin:$PATH" \
+    SECURITY_LOG="$security_log" \
+    run_macos_release_test "$TEST_ROOT/release-artifacts" "$prerequisite_log_dir" \
     2>&1
 )"
 prerequisite_status=$?
@@ -138,6 +159,64 @@ set -e
 [[ "$prerequisite_output" == *"Validate signing and notarization prerequisites"* ]]
 grep -Fq "No valid Developer ID Application identity found" \
   "$prerequisite_log_dir/00-prerequisites.log"
+
+tool_log="$TEST_ROOT/release-tools.log"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'printf '\''security %s\n'\'' "$*" >> "$TOOL_LOG"' \
+  'if [[ "$*" == "find-identity -v -p codesigning" ]]; then' \
+  '  printf '\''1) ABC "Developer ID Application: Test (337D6CNU4E)"\n'\''' \
+  'fi' > "$fake_bin/security"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'printf '\''xcrun %s\n'\'' "$*" >> "$TOOL_LOG"' > "$fake_bin/xcrun"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'printf '\''xcodebuild %s\n'\'' "$*" >> "$TOOL_LOG"' \
+  'exit 1' > "$fake_bin/xcodebuild"
+chmod +x "$fake_bin/security" "$fake_bin/xcrun" "$fake_bin/xcodebuild"
+
+api_key_path="$TEST_ROOT/AuthKey_TEST.p8"
+touch "$api_key_path"
+verbose_log_dir="$TEST_ROOT/verbose-release-logs"
+set +e
+verbose_output="$(
+  PATH="$fake_bin:$PATH" \
+    SECURITY_LOG="$security_log" \
+    TOOL_LOG="$tool_log" \
+    ATC_APP_STORE_CONNECT_KEY_PATH="$api_key_path" \
+    ATC_APP_STORE_CONNECT_KEY_ID="KEY123" \
+    ATC_APP_STORE_CONNECT_ISSUER_ID="ISSUER123" \
+    run_macos_release_test "$TEST_ROOT/verbose-release-artifacts" "$verbose_log_dir" --verbose \
+    2>&1
+)"
+verbose_status=$?
+set -e
+[[ $verbose_status -eq 1 ]]
+[[ "$verbose_output" == *"Archive atc.app failed"* ]]
+grep -Fq -- \
+  "-authenticationKeyPath $api_key_path -authenticationKeyID KEY123 -authenticationKeyIssuerID ISSUER123" \
+  "$tool_log"
+
+missing_key_path="$TEST_ROOT/missing-key.p8"
+missing_key_log_dir="$TEST_ROOT/missing-key-logs"
+set +e
+missing_key_output="$(
+  PATH="$fake_bin:$PATH" \
+    SECURITY_LOG="$security_log" \
+    TOOL_LOG="$tool_log" \
+    ATC_APP_STORE_CONNECT_KEY_PATH="$missing_key_path" \
+    ATC_APP_STORE_CONNECT_KEY_ID="KEY123" \
+    ATC_APP_STORE_CONNECT_ISSUER_ID="ISSUER123" \
+    run_macos_release_test "$TEST_ROOT/missing-key-artifacts" "$missing_key_log_dir" \
+    2>&1
+)"
+missing_key_status=$?
+set -e
+[[ $missing_key_status -eq 1 ]]
+[[ "$missing_key_output" == *"Validate signing and notarization prerequisites"* ]]
+grep -Fq "App Store Connect API key not found: $missing_key_path" \
+  "$missing_key_log_dir/00-prerequisites.log"
 
 while IFS= read -r action; do
   if [[ ! "$action" =~ @[0-9a-f]{40}$ ]]; then
