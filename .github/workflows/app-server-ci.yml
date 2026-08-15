@@ -12,7 +12,9 @@ on:
       - "app-server/**"
       - "mise.toml"
       - "install.sh"
+      - "scripts/**"
       - ".github/workflows/app-server-ci.yml"
+      - ".github/workflows/product-release.yml"
 
 permissions:
   contents: read
@@ -39,7 +41,9 @@ jobs:
               - "app-server/**"
               - "mise.toml"
               - "install.sh"
+              - "scripts/**"
               - ".github/workflows/app-server-ci.yml"
+              - ".github/workflows/product-release.yml"
 
   validate:
     needs: changes
@@ -68,6 +72,9 @@ jobs:
       # The root install script has no test suite; at least keep it parseable.
       - name: Syntax-check install.sh
         run: sh -n ../install.sh
+
+      - name: Release tooling tests
+        run: ../scripts/release-test.sh
 
   # Proves all four release targets compile. Cross-compilation alone says
   # nothing about runtime behavior — that is what native-validate is for.

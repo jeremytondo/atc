@@ -10,7 +10,7 @@ Bun is pinned in [`mise.toml`](mise.toml) and installed automatically by
 [mise](https://mise.jdx.dev). All workflows are mise tasks:
 
 ```sh
-mise run install       # install dependencies from the committed bun.lock
+mise run deps          # install dependencies from the committed bun.lock
 mise run dev           # run `atc serve` in the foreground (http://127.0.0.1:7331)
 mise run test          # run the vitest suite on the Bun runtime
 mise run fmt           # format with Prettier

@@ -12,8 +12,10 @@ on:
       - "macos/**"
       - "packages/**"
       - "app-server/openapi.json"
+      - "scripts/**"
       - "mise.toml"
       - ".github/workflows/macos-ci.yml"
+      - ".github/workflows/product-release.yml"
 
 permissions:
   contents: read
@@ -43,8 +45,10 @@ jobs:
               # artifact at build time, so contract changes must rebuild the
               # Swift surfaces.
               - "app-server/openapi.json"
+              - "scripts/**"
               - "mise.toml"
               - ".github/workflows/macos-ci.yml"
+              - ".github/workflows/product-release.yml"
 
   # SwiftLint ships official Linux binaries, so linting runs on a cheap
   # runner while the macOS jobs spin up.

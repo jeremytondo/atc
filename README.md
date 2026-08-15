@@ -20,8 +20,8 @@ curl -fsSL https://raw.githubusercontent.com/jeremytondo/atc/main/install.sh | s
 
 This downloads the latest stable GitHub Release for your platform, verifies
 its checksum, and installs `atc` to `~/.local/bin` (`ATC_INSTALL_DIR`
-overrides). To install the rolling dev-channel prerelease published on demand
-from `main`, pass the channel option to `sh`:
+overrides). Every successful relevant change on `main` replaces the rolling
+dev-channel prerelease. To install it, pass the channel option to `sh`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/jeremytondo/atc/main/install.sh | sh -s -- --channel dev
@@ -48,8 +48,9 @@ your terminal sessions.
 
 ## Development
 
-Each surface builds, tests, and releases independently; see
-[`.github/workflows/`](.github/workflows/).
+Local builds never publish or carry a release channel. GitHub Actions publishes
+both product surfaces together; `main` rolls the dev release forward and
+`mise run release patch|minor|major` explicitly promotes a stable release.
 
 Tasks run with [mise](https://mise.jdx.dev), which also installs the pinned
 toolchains. `mise tasks` lists everything; from the repo root:
@@ -57,6 +58,7 @@ toolchains. `mise tasks` lists everything; from the repo root:
 ```sh
 mise run dev            # run the App Server in the foreground (http://127.0.0.1:7331)
 mise run install        # build the App Server and install it as ~/.local/bin/atc
+mise run build          # build the App Server and developer macOS app in parallel
 mise run check          # every gate: App Server, ATCKit, macOS app
 mise run test           # every test suite
 mise run refs           # fetch read-only reference source into repos/ (gitignored)
