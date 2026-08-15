@@ -57,6 +57,7 @@ const explicitCommit = args.find((arg) => arg.startsWith("--commit="))?.slice("-
 const explicitBuiltAt = args
   .find((arg) => arg.startsWith("--built-at="))
   ?.slice("--built-at=".length)
+const releaseTimestampPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/
 if (channel !== undefined && channel !== "stable" && channel !== "dev") {
   throw new Error(`unknown channel ${channel}; expected stable or dev`)
 }
@@ -66,11 +67,14 @@ if (version === "") {
 if (explicitCommit === "") {
   throw new Error("--commit must not be empty")
 }
-if (
-  explicitBuiltAt === "" ||
-  (explicitBuiltAt !== undefined && isNaN(Date.parse(explicitBuiltAt)))
-) {
-  throw new Error("--built-at must be an ISO-8601 timestamp")
+if (explicitBuiltAt !== undefined) {
+  const parsedBuiltAt = Date.parse(explicitBuiltAt)
+  const canonicalBuiltAt = isNaN(parsedBuiltAt)
+    ? ""
+    : new Date(parsedBuiltAt).toISOString().replace(".000Z", "Z")
+  if (!releaseTimestampPattern.test(explicitBuiltAt) || canonicalBuiltAt !== explicitBuiltAt) {
+    throw new Error("--built-at must be a valid UTC timestamp in YYYY-MM-DDTHH:MM:SSZ format")
+  }
 }
 if (
   channel !== undefined &&

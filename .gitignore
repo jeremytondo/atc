@@ -22,7 +22,7 @@ DerivedData/
 
 # Release signing credentials
 *.p12
-AuthKey_*.p8
+*.p8
 
 # JavaScript / TypeScript / Bun
 node_modules/

@@ -22,29 +22,32 @@ command -v gh >/dev/null 2>&1 || die "Missing required tool: gh"
 gh auth status -h github.com >/dev/null 2>&1 || die "gh is not authenticated for github.com"
 
 WORKFLOW="product-release.yml"
-latest_run_id() {
+REQUEST_ID="$(printf '%s:%s:%s:%s' "$(date -u +%s)" "$$" "$RANDOM" "$RANDOM" | git hash-object --stdin)"
+RUN_TITLE="Product Release [$REQUEST_ID]"
+
+matching_run_id() {
   gh run list \
     --workflow "$WORKFLOW" \
     --event workflow_dispatch \
     --branch main \
-    --limit 1 \
-    --json databaseId \
-    -q '.[0].databaseId' 2>/dev/null || true
+    --limit 100 \
+    --json databaseId,displayTitle \
+    -q ".[] | select(.displayTitle == \"$RUN_TITLE\") | .databaseId" \
+    2>/dev/null | head -n 1 || true
 }
 
-PREVIOUS_RUN="$(latest_run_id)"
-gh workflow run "$WORKFLOW" --ref main -f release_type="$BUMP"
+gh workflow run "$WORKFLOW" --ref main -f release_type="$BUMP" -f request_id="$REQUEST_ID"
 printf 'dispatched stable %s release from main\n' "$BUMP"
 
-RUN_ID="$PREVIOUS_RUN"
+RUN_ID=""
 for _ in $(seq 1 30); do
-  RUN_ID="$(latest_run_id)"
-  if [[ -n "$RUN_ID" && "$RUN_ID" != "$PREVIOUS_RUN" ]]; then
+  RUN_ID="$(matching_run_id)"
+  if [[ -n "$RUN_ID" ]]; then
     break
   fi
   sleep 2
 done
-if [[ -z "$RUN_ID" || "$RUN_ID" == "$PREVIOUS_RUN" ]]; then
+if [[ -z "$RUN_ID" ]]; then
   die "the dispatched run never appeared; check gh run list --workflow $WORKFLOW"
 fi
 

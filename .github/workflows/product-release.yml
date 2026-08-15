@@ -3,6 +3,7 @@
 # stable SemVer release. Repository scripts own identity, build, packaging,
 # notarization, and publication mechanics; Actions only orchestrates them.
 name: Product Release
+run-name: Product Release ${{ github.event_name == 'workflow_dispatch' && format('[{0}]', inputs.request_id) || format('[dev {0}]', github.sha) }}
 
 on:
   push:
@@ -18,6 +19,10 @@ on:
       - ".github/workflows/product-release.yml"
   workflow_dispatch:
     inputs:
+      request_id:
+        description: "Unique dispatcher correlation ID"
+        type: string
+        required: true
       release_type:
         description: "Stable SemVer bump"
         type: choice
@@ -270,7 +275,6 @@ jobs:
     concurrency:
       group: product-release-publish
       cancel-in-progress: false
-      queue: max
     steps:
       # Publication needs checkout's credential to push the release tag.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

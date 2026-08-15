@@ -43,18 +43,17 @@ for name in "${expected[@]}"; do
   assets+=("$path")
 done
 
-# This is intentionally the last read before mutation. Dev builds that became
-# obsolete while packaging exit successfully; stable dispatches fail loudly so
-# the local watcher cannot report a release that never happened.
-REMOTE_MAIN="$(git ls-remote origin refs/heads/main | awk '{ print $1 }')"
-[[ -n "$REMOTE_MAIN" ]] || { echo "could not resolve origin/main" >&2; exit 1; }
-if [[ "$REMOTE_MAIN" != "$COMMIT" ]]; then
-  if [[ "$CHANNEL" == "dev" ]]; then
+# A stable dispatch releases the immutable main snapshot selected when the
+# workflow started. Later main pushes do not invalidate artifacts from that
+# snapshot. The rolling dev release, however, should never move backwards to an
+# obsolete build, so check its freshness immediately before updating dev.
+if [[ "$CHANNEL" == "dev" ]]; then
+  REMOTE_MAIN="$(git ls-remote origin refs/heads/main | awk '{ print $1 }')"
+  [[ -n "$REMOTE_MAIN" ]] || { echo "could not resolve origin/main" >&2; exit 1; }
+  if [[ "$REMOTE_MAIN" != "$COMMIT" ]]; then
     echo "skipping obsolete dev build $COMMIT; main is $REMOTE_MAIN"
     exit 0
   fi
-  echo "refusing stable release: artifact commit $COMMIT is no longer main ($REMOTE_MAIN)" >&2
-  exit 1
 fi
 
 git config user.name "github-actions[bot]"

@@ -60,13 +60,61 @@ tar -tzf "$TEST_ROOT/out/atc-darwin-arm64.tar.gz" | grep -qx atc
 tar -tzf "$TEST_ROOT/out/atc-linux-x64.tar.gz" | grep -qx atc
 
 credential_dir="$TEST_ROOT/runner-temp/atc-release-credentials"
-mkdir -p "$credential_dir"
+fake_bin="$TEST_ROOT/fake-bin"
+security_log="$TEST_ROOT/security.log"
+mkdir -p "$credential_dir" "$fake_bin"
+printf '%s\n' \
+  "$TEST_ROOT/Login Keychain.keychain-db" \
+  "$TEST_ROOT/Secondary.keychain-db" > "$credential_dir/original-keychains"
+printf '%s\n' "$TEST_ROOT/Login Keychain.keychain-db" > "$credential_dir/original-default-keychain"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'printf '\''%s\n'\'' "$*" >> "$SECURITY_LOG"' > "$fake_bin/security"
+chmod +x "$fake_bin/security"
 touch \
   "$credential_dir/release.keychain-db" \
   "$credential_dir/developer-id.p12" \
-  "$credential_dir/AuthKey.p8"
-RUNNER_TEMP="$TEST_ROOT/runner-temp" "$SCRIPT_DIR/cleanup-macos-signing.sh"
+  "$credential_dir/AuthKey.p8" \
+  "$credential_dir/unexpected-file"
+PATH="$fake_bin:$PATH" \
+  SECURITY_LOG="$security_log" \
+  RUNNER_TEMP="$TEST_ROOT/runner-temp" \
+  "$SCRIPT_DIR/cleanup-macos-signing.sh"
 [[ ! -e "$credential_dir" ]]
+grep -Fqx "list-keychains -d user -s $TEST_ROOT/Login Keychain.keychain-db $TEST_ROOT/Secondary.keychain-db" "$security_log"
+grep -Fqx "default-keychain -d user -s $TEST_ROOT/Login Keychain.keychain-db" "$security_log"
+grep -Fqx "delete-keychain $credential_dir/release.keychain-db" "$security_log"
+
+set +e
+missing_value_output="$($SCRIPT_DIR/package-app-server.sh --dist 2>&1)"
+missing_value_status=$?
+set -e
+[[ $missing_value_status -eq 2 ]]
+[[ "$missing_value_output" == *"missing value for --dist"* ]]
+
+set +e
+missing_value_output="$($SCRIPT_DIR/release-macos.sh --channel 2>&1)"
+missing_value_status=$?
+set -e
+[[ $missing_value_status -eq 2 ]]
+[[ "$missing_value_output" == *"missing value for --channel"* ]]
+
+set +e
+invalid_timestamp_output="$(
+  "$SCRIPT_DIR/release-macos.sh" \
+    --channel dev \
+    --version 1.2.3-dev.2 \
+    --marketing-version 1.2.3 \
+    --build-number 2 \
+    --commit "$commit" \
+    --built-at 2026-02-30T12:34:56Z \
+    --output "$TEST_ROOT/atc.dmg" \
+    2>&1
+)"
+invalid_timestamp_status=$?
+set -e
+[[ $invalid_timestamp_status -eq 1 ]]
+[[ "$invalid_timestamp_output" == *"not a valid calendar timestamp"* ]]
 
 while IFS= read -r action; do
   if [[ ! "$action" =~ @[0-9a-f]{40}$ ]]; then
@@ -87,6 +135,11 @@ if rg -q 'ATC_NOTARY_KEY_' \
   echo "legacy misleading App Store Connect credential names remain" >&2
   exit 1
 fi
+
+rg -q '^run-name:.*request_id' "$REPO_ROOT/.github/workflows/product-release.yml"
+rg -q 'request_id=' "$SCRIPT_DIR/release.sh"
+git -C "$REPO_ROOT" check-ignore -q --no-index AuthKey.p8
+git -C "$REPO_ROOT" check-ignore -q --no-index another-key.p8
 
 if rg -q 'release:(dev|stable)|app-server:release|macos:release' "$REPO_ROOT/mise.toml"; then
   echo "legacy public release tasks remain in mise.toml" >&2

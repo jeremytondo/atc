@@ -18,6 +18,8 @@ CREDENTIAL_DIR="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/atc-release-credentials"
 KEYCHAIN_PATH="$CREDENTIAL_DIR/release.keychain-db"
 CERTIFICATE_PATH="$CREDENTIAL_DIR/developer-id.p12"
 APP_STORE_CONNECT_KEY_PATH="$CREDENTIAL_DIR/AuthKey.p8"
+ORIGINAL_KEYCHAINS_PATH="$CREDENTIAL_DIR/original-keychains"
+ORIGINAL_DEFAULT_KEYCHAIN_PATH="$CREDENTIAL_DIR/original-default-keychain"
 KEYCHAIN_PASSWORD="$(uuidgen)"
 
 if [[ -e "$CREDENTIAL_DIR" ]]; then
@@ -25,6 +27,10 @@ if [[ -e "$CREDENTIAL_DIR" ]]; then
   exit 1
 fi
 mkdir -m 700 "$CREDENTIAL_DIR"
+security list-keychains -d user |
+  sed -E 's/^[[:space:]]*"([^"]+)"[[:space:]]*$/\1/' > "$ORIGINAL_KEYCHAINS_PATH"
+security default-keychain -d user |
+  sed -E 's/^[[:space:]]*"([^"]+)"[[:space:]]*$/\1/' > "$ORIGINAL_DEFAULT_KEYCHAIN_PATH"
 printf '%s' "$ATC_DEVELOPER_ID_CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
 printf '%s' "$ATC_APP_STORE_CONNECT_KEY_BASE64" | base64 --decode > "$APP_STORE_CONNECT_KEY_PATH"
 chmod 600 "$CERTIFICATE_PATH" "$APP_STORE_CONNECT_KEY_PATH"

@@ -11,7 +11,7 @@ usage: scripts/release-macos.sh \
   --marketing-version X.Y.Z \
   --build-number NUMBER \
   --commit SHA \
-  --built-at ISO-8601 \
+  --built-at YYYY-MM-DDTHH:MM:SSZ \
   --output PATH [--verbose]
 
 Notarization uses either ATC_NOTARY_PROFILE or all three
@@ -28,6 +28,16 @@ die() {
   exit 1
 }
 
+usage_error() {
+  usage >&2
+  printf 'error: %s\n' "$*" >&2
+  exit 2
+}
+
+require_value() {
+  [[ $# -ge 2 && -n "$2" ]] || usage_error "missing value for $1"
+}
+
 require_tool() {
   command -v "$1" >/dev/null 2>&1 || die "Missing required tool: $1"
 }
@@ -42,13 +52,13 @@ OUTPUT_PATH=""
 VERBOSE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --channel) CHANNEL="${2:-}"; shift 2 ;;
-    --version) VERSION="${2:-}"; shift 2 ;;
-    --marketing-version) MARKETING_VERSION="${2:-}"; shift 2 ;;
-    --build-number) BUILD_NUMBER="${2:-}"; shift 2 ;;
-    --commit) COMMIT="${2:-}"; shift 2 ;;
-    --built-at) BUILT_AT="${2:-}"; shift 2 ;;
-    --output) OUTPUT_PATH="${2:-}"; shift 2 ;;
+    --channel) require_value "$@"; CHANNEL="$2"; shift 2 ;;
+    --version) require_value "$@"; VERSION="$2"; shift 2 ;;
+    --marketing-version) require_value "$@"; MARKETING_VERSION="$2"; shift 2 ;;
+    --build-number) require_value "$@"; BUILD_NUMBER="$2"; shift 2 ;;
+    --commit) require_value "$@"; COMMIT="$2"; shift 2 ;;
+    --built-at) require_value "$@"; BUILT_AT="$2"; shift 2 ;;
+    --output) require_value "$@"; OUTPUT_PATH="$2"; shift 2 ;;
     --verbose) VERBOSE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; die "Unknown argument: $1" ;;
@@ -63,7 +73,10 @@ esac
 [[ "$MARKETING_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "--marketing-version must be X.Y.Z"
 [[ "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || die "--build-number must be a positive integer"
 [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || die "--commit must be a full Git commit SHA"
-[[ -n "$BUILT_AT" ]] || die "--built-at is required"
+[[ "$BUILT_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] ||
+  die "--built-at must be a UTC timestamp in YYYY-MM-DDTHH:MM:SSZ format"
+[[ "$(date -j -f '%Y-%m-%dT%H:%M:%SZ' "$BUILT_AT" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || true)" == "$BUILT_AT" ]] ||
+  die "--built-at is not a valid calendar timestamp"
 [[ -n "$OUTPUT_PATH" ]] || die "--output is required"
 
 ATC_TEAM_ID="${ATC_TEAM_ID:-337D6CNU4E}"
