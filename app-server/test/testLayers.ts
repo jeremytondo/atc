@@ -83,6 +83,7 @@ export const testAppConfig = (overrides: Partial<AppConfig["Service"]>): Layer.L
     zmxExecutable: "zmx",
     tailscaleExecutable: "tailscale",
     codexExecutable: "codex",
+    codexHome: "/tmp/atc-codex-home",
     claudeExecutable: "claude",
     terminalSocketDir: "/tmp/atc-sockets",
     ...overrides,

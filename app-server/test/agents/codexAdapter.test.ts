@@ -6,20 +6,23 @@ import * as CodexAdapter from "../../src/agents/codexAdapter.ts"
 import * as CodexServer from "../../src/agents/codexServer.ts"
 import { eventually } from "../testLayers.ts"
 import {
+  type CodexSandbox,
   codexAdapterLayer,
   collectAgentEvents,
   makeCodexSandbox,
+  openExternal,
   waitForAgentEvent,
 } from "./agentTestKit.ts"
 
 // Codex adapter tests against the fake app-server fixture, through the real
-// supervision module (ensure → detached fixture → WebSocket → adapter). All
-// it.live: real processes, sockets, and clock. Each test block ends with
-// CodexServer.stop() via `withAdapter` so no detached fixture leaks.
+// supervision module (ensure → detached fixture on the sandbox's well-known
+// unix socket → WebSocket → adapter). All it.live: real processes, sockets,
+// and clock. Each test block ends with CodexServer.stop() via `withAdapter`
+// so no detached fixture leaks.
 
 /** Run `use` with the adapter, then always stop the detached server. */
 const withAdapter = (
-  sandbox: { readonly stateDir: string; readonly wrapper: string },
+  sandbox: CodexSandbox,
   use: (adapter: CodexAdapter.CodexAdapter["Service"]) => Effect.Effect<void, unknown, never>,
 ) =>
   Effect.gen(function* () {
@@ -280,23 +283,15 @@ describe("CodexAdapter", () => {
 
               // A second client of the same shared server (the TUI stand-in)
               // drives a turn on the same thread.
-              const identity = JSON.parse(
-                fs.readFileSync(path.join(sandbox.stateDir, "codex-app-server.json"), "utf8"),
-              ) as { port: number }
-              const external = new WebSocket(`ws://127.0.0.1:${identity.port}`)
-              yield* Effect.callback<void>((resume) => {
-                external.onopen = () => resume(Effect.void)
+              const external = yield* openExternal(sandbox.socketPath)
+              external.send({
+                id: 1,
+                method: "turn/start",
+                params: {
+                  threadId: connection.providerSessionId,
+                  input: [{ type: "text", text: "external turn" }],
+                },
               })
-              external.send(
-                JSON.stringify({
-                  id: 1,
-                  method: "turn/start",
-                  params: {
-                    threadId: connection.providerSessionId,
-                    input: [{ type: "text", text: "external turn" }],
-                  },
-                }),
-              )
               yield* waitForAgentEvent(
                 sink,
                 (event) =>
@@ -304,7 +299,6 @@ describe("CodexAdapter", () => {
                   event.turnId !== turn.turnId &&
                   event.outcome === "completed",
               )
-              external.close()
             }),
           ),
         )
@@ -332,9 +326,12 @@ describe("CodexAdapter", () => {
               providerMetadata: undefined,
             })
             assert.strictEqual(launchSpec.command[0], sandbox.wrapper)
-            assert.deepStrictEqual(launchSpec.command.slice(1, 3), ["resume", "--remote"])
-            assert.match(launchSpec.command[3] ?? "", /^ws:\/\/127\.0\.0\.1:\d+$/)
-            assert.strictEqual(launchSpec.command[4], sessionId)
+            assert.deepStrictEqual(launchSpec.command.slice(1), [
+              "resume",
+              "--remote",
+              `unix://${sandbox.socketPath}`,
+              sessionId,
+            ])
 
             // A session codex no longer has (pruned/deleted history) fails
             // the probe closed instead of launching a TUI that dies in the
@@ -382,33 +379,6 @@ describe("CodexAdapter", () => {
 // thread/list reconciliation check — the TUI stand-in is a second WebSocket
 // client of the same shared fake app-server.
 describe("CodexAdapter TUI session plumbing", () => {
-  const openExternal = (url: string) =>
-    Effect.acquireRelease(
-      Effect.callback<WebSocket>((resume) => {
-        const socket = new WebSocket(url)
-        socket.onopen = () => resume(Effect.succeed(socket))
-      }),
-      (socket) => Effect.sync(() => socket.close()),
-    )
-
-  const externalRequest = (socket: WebSocket, id: number, method: string, params: unknown) =>
-    Effect.callback<Record<string, unknown>>((resume) => {
-      const listener = (event: MessageEvent) => {
-        const message = JSON.parse(String(event.data)) as { id?: number; result?: unknown }
-        if (message.id === id) {
-          socket.removeEventListener("message", listener)
-          resume(Effect.succeed((message.result ?? {}) as Record<string, unknown>))
-        }
-      }
-      socket.addEventListener("message", listener)
-      socket.send(JSON.stringify({ id, method, params }))
-    })
-
-  const startExternalThread = (socket: WebSocket, id: number, cwd: string) =>
-    externalRequest(socket, id, "thread/start", { cwd }).pipe(
-      Effect.map((result) => (result["thread"] as { id: string }).id),
-    )
-
   const waitForActivity = (sink: Array<string>, wanted: string) =>
     eventually(
       Effect.sync(() => sink),
@@ -429,13 +399,16 @@ describe("CodexAdapter TUI session plumbing", () => {
               // --cd pins the thread's cwd server-side: the remote TUI does
               // not forward its own working directory (codex 0.146.0).
               assert.deepStrictEqual(prepared.launchSpec.command.slice(1, 3), ["--cd", sandbox.cwd])
-              assert.strictEqual(prepared.launchSpec.command[3], "--remote")
-              const url = prepared.launchSpec.command[4] ?? ""
-              assert.match(url, /^ws:\/\/127\.0\.0\.1:\d+$/)
+              // The TUI is pointed at the shared server's well-known socket
+              // explicitly — never left to its own auto-join.
+              assert.deepStrictEqual(prepared.launchSpec.command.slice(3), [
+                "--remote",
+                `unix://${sandbox.socketPath}`,
+              ])
 
               // The launched TUI stand-in bootstraps a thread in the cwd.
-              const external = yield* openExternal(url)
-              const threadId = yield* startExternalThread(external, 1, sandbox.cwd)
+              const external = yield* openExternal(sandbox.socketPath)
+              const threadId = yield* external.startThread(1, sandbox.cwd)
               const identity = yield* prepared.identity
               assert.strictEqual(identity.providerSessionId, threadId)
               assert.strictEqual(identity.cwd, sandbox.cwd)
@@ -457,11 +430,10 @@ describe("CodexAdapter TUI session plumbing", () => {
           Effect.scoped(
             Effect.gen(function* () {
               const prepared = yield* adapter.prepareTuiSession({ cwd: sandbox.cwd })
-              const url = prepared.launchSpec.command[4] ?? ""
-              const external = yield* openExternal(url)
+              const external = yield* openExternal(sandbox.socketPath)
               // Another client's thread in a different cwd is not ours.
-              const foreignId = yield* startExternalThread(external, 1, otherCwd)
-              const matchingId = yield* startExternalThread(external, 2, sandbox.cwd)
+              const foreignId = yield* external.startThread(1, otherCwd)
+              const matchingId = yield* external.startThread(2, sandbox.cwd)
               const identity = yield* prepared.identity
               assert.notStrictEqual(identity.providerSessionId, foreignId)
               assert.strictEqual(identity.providerSessionId, matchingId)
@@ -483,11 +455,8 @@ describe("CodexAdapter TUI session plumbing", () => {
               // Arm the shared connection, then drive a thread externally.
               const activity = yield* adapter.checkSession({ providerSessionId: "none" })
               assert.strictEqual(activity, "unknown")
-              const identity = JSON.parse(
-                fs.readFileSync(path.join(sandbox.stateDir, "codex-app-server.json"), "utf8"),
-              ) as { port: number }
-              const external = yield* openExternal(`ws://127.0.0.1:${identity.port}`)
-              const threadId = yield* startExternalThread(external, 1, sandbox.cwd)
+              const external = yield* openExternal(sandbox.socketPath)
+              const threadId = yield* external.startThread(1, sandbox.cwd)
 
               const stream = yield* adapter.observeSession({
                 providerSessionId: threadId,
@@ -503,7 +472,7 @@ describe("CodexAdapter TUI session plumbing", () => {
                 Effect.ignore,
                 Effect.forkScoped,
               )
-              yield* externalRequest(external, 2, "turn/start", {
+              yield* external.request(2, "turn/start", {
                 threadId,
                 input: [{ type: "text", text: "external turn" }],
               })
@@ -532,11 +501,8 @@ describe("CodexAdapter TUI session plumbing", () => {
                 yield* adapter.checkSession({ providerSessionId: "none" }),
                 "unknown",
               )
-              const identity = JSON.parse(
-                fs.readFileSync(path.join(sandbox.stateDir, "codex-app-server.json"), "utf8"),
-              ) as { port: number }
-              const external = yield* openExternal(`ws://127.0.0.1:${identity.port}`)
-              const threadId = yield* startExternalThread(external, 1, sandbox.cwd)
+              const external = yield* openExternal(sandbox.socketPath)
+              const threadId = yield* external.startThread(1, sandbox.cwd)
               const stream = yield* adapter.observeSession({
                 providerSessionId: threadId,
                 providerMetadata: undefined,
@@ -551,7 +517,7 @@ describe("CodexAdapter TUI session plumbing", () => {
                 Effect.ignore,
                 Effect.forkScoped,
               )
-              yield* externalRequest(external, 2, "turn/start", {
+              yield* external.request(2, "turn/start", {
                 threadId,
                 input: [{ type: "text", text: "please add dark mode" }],
               })
@@ -559,7 +525,7 @@ describe("CodexAdapter TUI session plumbing", () => {
               yield* waitForActivity(sink, "idle")
               // A second turn's busy transition re-reads nothing: the first
               // prompt was already emitted, exactly once.
-              yield* externalRequest(external, 3, "turn/start", {
+              yield* external.request(3, "turn/start", {
                 threadId,
                 input: [{ type: "text", text: "second message" }],
               })
@@ -630,11 +596,8 @@ describe("CodexAdapter TUI session plumbing", () => {
                 yield* adapter.checkSession({ providerSessionId: "none" }),
                 "unknown",
               )
-              const identity = JSON.parse(
-                fs.readFileSync(path.join(sandbox.stateDir, "codex-app-server.json"), "utf8"),
-              ) as { port: number }
-              const external = yield* openExternal(`ws://127.0.0.1:${identity.port}`)
-              const threadId = yield* startExternalThread(external, 1, sandbox.cwd)
+              const external = yield* openExternal(sandbox.socketPath)
+              const threadId = yield* external.startThread(1, sandbox.cwd)
               const stream = yield* adapter.observeSession({
                 providerSessionId: threadId,
                 providerMetadata: undefined,
@@ -649,7 +612,7 @@ describe("CodexAdapter TUI session plumbing", () => {
                 Effect.ignore,
                 Effect.forkScoped,
               )
-              yield* externalRequest(external, 2, "turn/start", {
+              yield* external.request(2, "turn/start", {
                 threadId,
                 input: [{ type: "text", text: "slow read" }],
               })
@@ -687,11 +650,8 @@ describe("CodexAdapter TUI session plumbing", () => {
                 yield* adapter.checkSession({ providerSessionId: "none" }),
                 "unknown",
               )
-              const identity = JSON.parse(
-                fs.readFileSync(path.join(sandbox.stateDir, "codex-app-server.json"), "utf8"),
-              ) as { port: number }
-              const external = yield* openExternal(`ws://127.0.0.1:${identity.port}`)
-              const threadId = yield* startExternalThread(external, 1, sandbox.cwd)
+              const external = yield* openExternal(sandbox.socketPath)
+              const threadId = yield* external.startThread(1, sandbox.cwd)
               const stream = yield* adapter.observeSession({
                 providerSessionId: threadId,
                 providerMetadata: undefined,
@@ -706,7 +666,7 @@ describe("CodexAdapter TUI session plumbing", () => {
                 Effect.ignore,
                 Effect.forkScoped,
               )
-              yield* externalRequest(external, 2, "turn/start", {
+              yield* external.request(2, "turn/start", {
                 threadId,
                 input: [{ type: "text", text: "late preview" }],
               })
@@ -754,16 +714,13 @@ describe("CodexAdapter TUI session plumbing", () => {
               yield* adapter.checkSession({ providerSessionId: "missing" }),
               "unknown",
             )
-            const identity = JSON.parse(
-              fs.readFileSync(path.join(sandbox.stateDir, "codex-app-server.json"), "utf8"),
-            ) as { port: number }
             // The fake serves one thread per page, so the second thread only
             // appears after following nextCursor.
             const laterPage = yield* Effect.scoped(
               Effect.gen(function* () {
-                const socket = yield* openExternal(`ws://127.0.0.1:${identity.port}`)
-                yield* startExternalThread(socket, 1, sandbox.cwd)
-                return yield* startExternalThread(socket, 2, sandbox.cwd)
+                const socket = yield* openExternal(sandbox.socketPath)
+                yield* socket.startThread(1, sandbox.cwd)
+                return yield* socket.startThread(2, sandbox.cwd)
               }),
             )
             assert.strictEqual(
@@ -780,8 +737,8 @@ describe("CodexAdapter TUI session plumbing", () => {
             // tuiLaunch must not fail it closed as deleted.
             yield* Effect.scoped(
               Effect.gen(function* () {
-                const socket = yield* openExternal(`ws://127.0.0.1:${identity.port}`)
-                yield* externalRequest(socket, 3, "thread/archive", { threadId: laterPage })
+                const socket = yield* openExternal(sandbox.socketPath)
+                yield* socket.request(3, "thread/archive", { threadId: laterPage })
               }),
             )
             assert.strictEqual(
@@ -806,40 +763,11 @@ describe("CodexAdapter TUI session plumbing", () => {
 // the parent, child thread/status/changed broadcasts, no thread/started,
 // no thread/list entry, and loaded/list + thread/read for reconciliation.
 describe("CodexAdapter descendant aggregation", () => {
-  const openExternal = (url: string) =>
-    Effect.acquireRelease(
-      Effect.callback<WebSocket>((resume) => {
-        const socket = new WebSocket(url)
-        socket.onopen = () => resume(Effect.succeed(socket))
-      }),
-      (socket) => Effect.sync(() => socket.close()),
-    )
-
-  const externalRequest = (socket: WebSocket, id: number, method: string, params: unknown) =>
-    Effect.callback<Record<string, unknown>>((resume) => {
-      const listener = (event: MessageEvent) => {
-        const message = JSON.parse(String(event.data)) as { id?: number; result?: unknown }
-        if (message.id === id) {
-          socket.removeEventListener("message", listener)
-          resume(Effect.succeed((message.result ?? {}) as Record<string, unknown>))
-        }
-      }
-      socket.addEventListener("message", listener)
-      socket.send(JSON.stringify({ id, method, params }))
-    })
-
-  const fixtureUrl = (sandbox: { readonly stateDir: string }) => {
-    const identity = JSON.parse(
-      fs.readFileSync(path.join(sandbox.stateDir, "codex-app-server.json"), "utf8"),
-    ) as { port: number }
-    return `ws://127.0.0.1:${identity.port}`
-  }
-
-  const finishChild = (sandbox: { readonly stateDir: string }, childId: string) =>
+  const finishChild = (sandbox: { readonly socketPath: string }, childId: string) =>
     Effect.scoped(
       Effect.gen(function* () {
-        const socket = yield* openExternal(fixtureUrl(sandbox))
-        yield* externalRequest(socket, 900, "test/child/finish", { threadId: childId })
+        const socket = yield* openExternal(sandbox.socketPath)
+        yield* socket.request(900, "test/child/finish", { threadId: childId })
       }),
     )
 
@@ -921,11 +849,11 @@ describe("CodexAdapter descendant aggregation", () => {
             Effect.gen(function* () {
               // Force the shared connection (and fixture) up.
               yield* adapter.checkSession({ providerSessionId: "missing" })
-              const url = fixtureUrl(sandbox)
+              const url = sandbox.socketPath
               const rootId = yield* Effect.scoped(
                 Effect.gen(function* () {
                   const socket = yield* openExternal(url)
-                  const started = yield* externalRequest(socket, 1, "thread/start", {
+                  const started = yield* socket.request(1, "thread/start", {
                     cwd: sandbox.cwd,
                   })
                   return (started["thread"] as { id: string }).id
@@ -948,7 +876,7 @@ describe("CodexAdapter descendant aggregation", () => {
               yield* Effect.scoped(
                 Effect.gen(function* () {
                   const socket = yield* openExternal(url)
-                  yield* externalRequest(socket, 2, "turn/start", {
+                  yield* socket.request(2, "turn/start", {
                     threadId: rootId,
                     input: [{ type: "text", text: "SPAWN from tui" }],
                   })
@@ -979,16 +907,16 @@ describe("CodexAdapter descendant aggregation", () => {
         yield* withAdapter(sandbox, (adapter) =>
           Effect.gen(function* () {
             yield* adapter.checkSession({ providerSessionId: "missing" })
-            const url = fixtureUrl(sandbox)
+            const url = sandbox.socketPath
             const spawn = (input: string) =>
               Effect.scoped(
                 Effect.gen(function* () {
                   const socket = yield* openExternal(url)
-                  const started = yield* externalRequest(socket, 1, "thread/start", {
+                  const started = yield* socket.request(1, "thread/start", {
                     cwd: sandbox.cwd,
                   })
                   const rootId = (started["thread"] as { id: string }).id
-                  yield* externalRequest(socket, 2, "turn/start", {
+                  yield* socket.request(2, "turn/start", {
                     threadId: rootId,
                     input: [{ type: "text", text: input }],
                   })
@@ -1040,8 +968,8 @@ describe("CodexAdapter descendant aggregation", () => {
               // ...then the child finishes and unloads without a broadcast.
               yield* Effect.scoped(
                 Effect.gen(function* () {
-                  const socket = yield* openExternal(fixtureUrl(sandbox))
-                  yield* externalRequest(socket, 901, "test/child/vanish", {
+                  const socket = yield* openExternal(sandbox.socketPath)
+                  yield* socket.request(901, "test/child/vanish", {
                     threadId: `${connection.providerSessionId}-child-1`,
                   })
                 }),
@@ -1073,11 +1001,11 @@ describe("CodexAdapter descendant aggregation", () => {
             Effect.scoped(
               Effect.gen(function* () {
                 yield* adapter.checkSession({ providerSessionId: "missing" })
-                const url = fixtureUrl(sandbox)
+                const url = sandbox.socketPath
                 const rootId = yield* Effect.scoped(
                   Effect.gen(function* () {
                     const socket = yield* openExternal(url)
-                    const started = yield* externalRequest(socket, 1, "thread/start", {
+                    const started = yield* socket.request(1, "thread/start", {
                       cwd: sandbox.cwd,
                     })
                     return (started["thread"] as { id: string }).id
@@ -1101,7 +1029,7 @@ describe("CodexAdapter descendant aggregation", () => {
                 yield* Effect.scoped(
                   Effect.gen(function* () {
                     const socket = yield* openExternal(url)
-                    yield* externalRequest(socket, 2, "turn/start", {
+                    yield* socket.request(2, "turn/start", {
                       threadId: rootId,
                       input: [{ type: "text", text: "SPAWN then die" }],
                     })

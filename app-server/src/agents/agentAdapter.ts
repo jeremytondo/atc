@@ -710,14 +710,26 @@ export const readInstalledVersion = (
     // Bounded: a wedged binary must not hang a demand-driven registry read.
     Effect.timeoutOrElse({ duration: "5 seconds", orElse: () => Effect.succeed("") }),
     Effect.orElseSucceed(() => ""),
-    Effect.map(
-      (output) =>
-        output
-          .match(/(\d+)\.(\d+)\.(\d+)/)
-          ?.slice(1, 4)
-          .join(".") ?? null,
-    ),
+    Effect.map(parseVersion),
   )
+
+/** The first x.y.z in `text` (a --version line, a userAgent), else null. */
+export const parseVersion = (text: string): string | null =>
+  text
+    .match(/(\d+)\.(\d+)\.(\d+)/)
+    ?.slice(1, 4)
+    .join(".") ?? null
+
+/** Whether `installed` is below the `tested` x.y.z floor (component-wise). */
+export const versionIsOlder = (installed: string, tested: string): boolean => {
+  const left = installed.split(".").map(Number)
+  const right = tested.split(".").map(Number)
+  for (let index = 0; index < 3; index++) {
+    const difference = (left[index] ?? 0) - (right[index] ?? 0)
+    if (difference !== 0) return difference < 0
+  }
+  return false
+}
 
 /**
  * The shared version-drift rule (record + warn, never block), memoized to
@@ -750,13 +762,7 @@ export const makeVersionGate = (
           `could not determine the installed ${provider} version (tested against ${testedVersion})`,
         )
       }
-      // Components are small; packing keeps the comparison one expression.
-      const pack = (version: string) =>
-        version
-          .split(".")
-          .map(Number)
-          .reduce((total, part) => total * 1_000 + part, 0)
-      if (pack(installed) < pack(testedVersion)) {
+      if (versionIsOlder(installed, testedVersion)) {
         yield* Effect.logWarning(
           `installed ${provider} ${installed} is older than the tested ${testedVersion}; proceeding, but upgrade it if provider behavior misbehaves`,
         )

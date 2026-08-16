@@ -5,8 +5,10 @@ import {
   aggregateActivity,
   buildTitleContext,
   makeVersionGate,
+  parseVersion,
   sanitizeTitle,
   titleInstruction,
+  versionIsOlder,
 } from "../../src/agents/agentAdapter.ts"
 import type { Subprocess } from "../../src/platform/subprocess.ts"
 import { makeFakeAgentAdapter } from "./fakeAgentAdapter.ts"
@@ -329,6 +331,21 @@ const untilSpawns = (fake: { spawns: () => number }, count: number) =>
       yield* Effect.yieldNow
     }
   })
+
+describe("version helpers", () => {
+  it("parse the first x.y.z and compare floors", () => {
+    assert.strictEqual(parseVersion("codex-cli 0.147.0"), "0.147.0")
+    assert.strictEqual(
+      parseVersion("codex_chatgpt_ios_remote/0.147.0 (Mac OS 26.5.2; arm64)"),
+      "0.147.0",
+    )
+    assert.isNull(parseVersion("unknown"))
+    assert.isTrue(versionIsOlder("0.146.0", "0.147.0"))
+    assert.isFalse(versionIsOlder("0.147.0", "0.147.0"))
+    assert.isFalse(versionIsOlder("1.0.0", "0.147.0"))
+    assert.isTrue(versionIsOlder("0.146.1000", "0.147.0"))
+  })
+})
 
 describe("makeVersionGate", () => {
   it.effect("single-flight: concurrent callers share one version read, memoized after", () =>

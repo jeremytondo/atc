@@ -34,22 +34,33 @@ import {
   emitAgentEvent,
   makeVersionGate,
   NESTED_SESSION_ENV_VARIABLES,
+  parseVersion,
   providerErrors,
   resolveProviderExecutable,
   samePath,
   titleInstruction,
+  versionIsOlder,
   withTitleTimeout,
 } from "./agentAdapter.ts"
 import * as BuildInfo from "../platform/buildInfo.ts"
 import * as CodexServer from "./codexServer.ts"
 import { AppConfig } from "../platform/config.ts"
 import * as Subprocess from "../platform/subprocess.ts"
+import * as UnixWebSocket from "../platform/unixWebSocket.ts"
 
-// The Codex AgentAdapter (ATC-123): one WebSocket JSON-RPC client of the
-// profile's supervised, detached app-server (codexServer.ts), multiplexing
-// every thread over that single shared connection — which is what makes
-// TUI-driven turns observable on our feed. Invariants beyond the seam's:
+// The Codex AgentAdapter (ATC-123): one JSON-RPC client of the machine's
+// shared Codex app-server (codexServer.ts adopts or starts it on Codex's
+// well-known unix control socket — ATC-196), multiplexing every thread
+// over that single held connection. Because every Codex client on the
+// machine — ATC-launched TUIs, plain `codex` in a terminal, the desktop app
+// over SSH — is a client of that same process, turns driven from any of
+// them are observable on our feed and no surface conflicts with another
+// for a thread's writer lock. Invariants beyond the seam's:
 //
+//   - The transport is a WebSocket over the unix socket (unixWebSocket.ts);
+//     ATC-launched TUIs are pointed at the same socket explicitly
+//     (`--remote unix://<path>`) so identity capture never depends on the
+//     TUI's own auto-join, which silently turns off under `-c` overrides.
 //   - One writer per thread is enforced HERE (the app-server would accept a
 //     concurrent second writer, and concurrent writers corrupt provider
 //     turn attribution — ATC-83 evidence).
@@ -70,8 +81,11 @@ import * as Subprocess from "../platform/subprocess.ts"
 //     per-id thread/read. Descendant bookkeeping is in-memory and pruned
 //     on teardown, root unobserve/unregister, and release.
 
-/** The codex-cli version this adapter was validated against (record + warn). */
-const CODEX_TESTED_VERSION = "0.146.0"
+/** The codex-cli version this adapter was validated against (record + warn).
+ * Gated twice: the CLI ATC resolves (TUI launches, title one-shots) and the
+ * running app-server (from `initialize`'s userAgent) — an adopted server
+ * can drift from the CLI. */
+const CODEX_TESTED_VERSION = "0.147.0"
 
 const REQUEST_TIMEOUT = "30 seconds"
 
@@ -118,6 +132,11 @@ const ThreadReply = Schema.Struct({
 })
 
 const TurnReply = Schema.Struct({ turn: Schema.Struct({ id: Schema.String }) })
+
+// initialize's userAgent carries the server's own version, e.g.
+// "codex_chatgpt_ios_remote/0.147.0 (Mac OS 26.5; arm64) ..." (probed live
+// 2026-08-15) — the only version evidence an adopted server offers.
+const InitializeReply = Schema.Struct({ userAgent: Schema.optional(Schema.String) })
 
 // The real thread/list reply is paginated: { data, nextCursor } (probe
 // evidence in experiments/provider-identity-resume, pinned generated schema
@@ -252,7 +271,7 @@ interface PendingReply {
 }
 
 interface ClientState {
-  readonly socket: WebSocket
+  readonly socket: UnixWebSocket.Connection
   readonly pending: Map<number, PendingReply>
   nextId: number
   alive: boolean
@@ -741,39 +760,40 @@ export const layer = Layer.effect(CodexAdapter)(
       CODEX_TESTED_VERSION,
     )
 
-    const openSocket = (url: string): Effect.Effect<ClientState, AgentUnavailable> =>
+    const openSocket = (socketPath: string): Effect.Effect<ClientState, AgentUnavailable> =>
       Effect.callback<ClientState, AgentUnavailable>((resume) => {
-        const socket = new WebSocket(url)
+        const socket = UnixWebSocket.open(socketPath)
         const state: ClientState = { socket, pending: new Map(), nextId: 1, alive: true }
         socket.onopen = () => resume(Effect.succeed(state))
-        socket.onerror = () => {
-          teardown(state, "connection failed")
-          resume(Effect.fail(unavailable(`could not connect to ${url}`)))
+        // Before open this is the connect failure; after, a lost connection.
+        socket.onclose = (reason) => {
+          teardown(state, `the codex app-server connection closed: ${reason}`)
+          resume(Effect.fail(unavailable(`could not connect to ${socketPath}: ${reason}`)))
         }
-        socket.onclose = () => teardown(state, "the codex app-server connection closed")
-        socket.onmessage = (event) => dispatch(state, String(event.data))
+        socket.onmessage = (text) => dispatch(state, text)
         return Effect.sync(() => {
           if (current !== state) teardown(state, "connection attempt interrupted")
         })
       }).pipe(
         Effect.timeoutOrElse({
           duration: "5 seconds",
-          orElse: () => Effect.fail(unavailable(`timed out connecting to ${url}`)),
+          orElse: () => Effect.fail(unavailable(`timed out connecting to ${socketPath}`)),
         }),
       )
 
     const connect = Effect.gen(function* () {
       yield* versionCheck
       const info = yield* codexServer.ensure()
-      const state = yield* openSocket(info.url)
+      const state = yield* openSocket(info.socketPath)
       // A failed or interrupted handshake must close this socket: a
       // half-open connection would double-deliver broadcasts and, on its
       // eventual death, could not be told apart from the live one.
-      yield* request(state, "initialize", {
+      const reply = yield* request(state, "initialize", {
         clientInfo: { name: "atc", title: "ATC App Server", version: build.version },
         capabilities: null,
       }).pipe(
         Effect.mapError(rpcToProtocol),
+        Effect.flatMap((reply) => decodeReply(InitializeReply, reply)),
         Effect.onExit((exit) =>
           Effect.sync(() => {
             if (exit._tag === "Failure") teardown(state, "the handshake failed")
@@ -782,6 +802,14 @@ export const layer = Layer.effect(CodexAdapter)(
       )
       state.socket.send(JSON.stringify({ method: "initialized", params: {} }))
       current = state
+      // The shared server may be older than the CLI ATC resolved (adopted
+      // from another client): record + warn, never block.
+      const serverVersion = parseVersion(reply.userAgent ?? "")
+      if (serverVersion !== null && versionIsOlder(serverVersion, CODEX_TESTED_VERSION)) {
+        yield* Effect.logWarning(
+          `the shared codex app-server is ${serverVersion}, older than the tested ${CODEX_TESTED_VERSION}; proceeding, but restart it on a newer codex if provider behavior misbehaves`,
+        )
+      }
       return state
     })
 
@@ -1115,7 +1143,13 @@ export const layer = Layer.effect(CodexAdapter)(
           const info = yield* codexServer.ensure()
           return {
             launchSpec: {
-              command: [executable, "resume", "--remote", info.url, options.providerSessionId],
+              command: [
+                executable,
+                "resume",
+                "--remote",
+                `unix://${info.socketPath}`,
+                options.providerSessionId,
+              ],
               env: {},
             },
           }
@@ -1157,7 +1191,7 @@ export const layer = Layer.effect(CodexAdapter)(
             // the new thread with ITS process cwd and the capture's cwd match
             // below can never adopt the thread (observed on codex 0.146.0).
             launchSpec: {
-              command: [executable, "--cd", options.cwd, "--remote", info.url],
+              command: [executable, "--cd", options.cwd, "--remote", `unix://${info.socketPath}`],
               env: {},
             },
             identity: Deferred.await(gate),
