@@ -41,6 +41,9 @@ esac
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="${ATC_RELEASE_REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd -P)}"
 git -C "$REPO_ROOT" rev-parse --verify "${COMMIT}^{commit}" >/dev/null
+for path in "${PATHS[@]}"; do
+  git -C "$REPO_ROOT" cat-file -e "$COMMIT:$path"
+done
 
 {
   printf 'component %s\n' "$COMPONENT"

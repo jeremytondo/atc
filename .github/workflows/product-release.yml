@@ -85,12 +85,14 @@ jobs:
       - name: Validate dispatched release request
         if: github.event_name == 'workflow_dispatch'
         env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DISPATCH_REF: ${{ github.ref_name }}
           RELEASE_MODE: ${{ inputs.mode }}
           PR_NUMBER: ${{ inputs.pr_number }}
         run: |
           if [ "$RELEASE_MODE" = "stable" ]; then
-            test "${{ github.ref_name }}" = "${{ github.event.repository.default_branch }}" || {
-              echo "stable releases must be dispatched against ${{ github.event.repository.default_branch }}" >&2
+            test "$DISPATCH_REF" = "$DEFAULT_BRANCH" || {
+              echo "stable releases must be dispatched against $DEFAULT_BRANCH" >&2
               exit 1
             }
             test -z "$PR_NUMBER" || {
@@ -135,11 +137,7 @@ jobs:
             gh release download "${{ steps.identity.outputs.tag }}" \
               --pattern manifest.json --dir manifests/current || true
           fi
-          if [ "${{ steps.identity.outputs.tag }}" != "dev" ] || [ ! -f manifests/current/manifest.json ]; then
-            gh release download dev --pattern manifest.json --dir manifests/dev || true
-          else
-            mv manifests/current/manifest.json manifests/dev/manifest.json
-          fi
+          gh release download dev --pattern manifest.json --dir manifests/dev || true
 
       - name: Select reusable components
         id: components
@@ -278,7 +276,7 @@ jobs:
           tar -xzf out/atc-linux-arm64.tar.gz -C out
           ATC_COMPILED_BIN="$PWD/out/atc" bun --bun vitest run test/compiled.blackbox.test.ts
 
-  reuse_app_server:
+  reuse-app-server:
     needs: plan
     if: needs.plan.outputs.reuse_app_server == 'true'
     runs-on: ubuntu-latest
@@ -388,7 +386,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-  reuse_macos:
+  reuse-macos:
     needs: plan
     if: needs.plan.outputs.reuse_macos == 'true'
     runs-on: ubuntu-latest
@@ -421,19 +419,19 @@ jobs:
         app-server-darwin,
         app-server-linux,
         validate-linux-arm,
-        reuse_app_server,
+        reuse-app-server,
         macos,
-        reuse_macos,
+        reuse-macos,
       ]
     if: >-
       always() &&
       needs.plan.result == 'success' &&
       (
-        (needs.plan.outputs.reuse_app_server == 'true' && needs.reuse_app_server.result == 'success') ||
+        (needs.plan.outputs.reuse_app_server == 'true' && needs['reuse-app-server'].result == 'success') ||
         (needs.plan.outputs.reuse_app_server != 'true' && needs['app-server-darwin'].result == 'success' && needs['app-server-linux'].result == 'success' && needs['validate-linux-arm'].result == 'success')
       ) &&
       (
-        (needs.plan.outputs.reuse_macos == 'true' && needs.reuse_macos.result == 'success') ||
+        (needs.plan.outputs.reuse_macos == 'true' && needs['reuse-macos'].result == 'success') ||
         (needs.plan.outputs.reuse_macos != 'true' && needs.macos.result == 'success')
       )
     runs-on: ubuntu-latest

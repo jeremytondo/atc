@@ -35,6 +35,13 @@ done
 
 case "$KIND" in stable|dev|candidate) ;; *) usage; exit 2 ;; esac
 [[ -n "$TAG" && -n "$VERSION" && -n "$OUTPUT" ]] || { usage; exit 2; }
+[[ -n "$APP_SERVER_VERSION" && -n "$MACOS_VERSION" ]] || { usage; exit 2; }
+for value in "$BUILT_AT" "$APP_SERVER_BUILT_AT" "$MACOS_BUILT_AT"; do
+  [[ "$value" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || {
+    echo "invalid release timestamp: $value" >&2
+    exit 1
+  }
+done
 for value in "$COMMIT" "$APP_SERVER_COMMIT" "$MACOS_COMMIT"; do
   [[ "$value" =~ ^[0-9a-f]{40}$ ]] || { usage; exit 2; }
 done

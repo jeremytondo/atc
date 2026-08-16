@@ -69,7 +69,8 @@ fi
 if [[ "$KIND" == "candidate" ]]; then
   [[ "$TAG" =~ ^dev-pr-([1-9][0-9]*)$ ]] || { echo "candidate releases must use a dev-pr-N tag" >&2; exit 1; }
   PR_NUMBER="${BASH_REMATCH[1]}"
-  PR_STATE="$(gh pr view "$PR_NUMBER" --json state --jq .state 2>/dev/null || true)"
+  PR_STATE="$(gh pr view "$PR_NUMBER" --json state --jq .state)" ||
+    { echo "could not resolve PR #$PR_NUMBER state" >&2; exit 1; }
   if [[ "$PR_STATE" != "OPEN" ]]; then
     echo "skipping candidate build for closed PR #$PR_NUMBER"
     exit 0

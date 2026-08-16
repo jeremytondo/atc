@@ -16,13 +16,14 @@ select_component() {
   local component="$1"
   local fingerprint="$2"
   local manifest tag
+  shift 2
   for manifest in "$@"; do
     [[ -f "$manifest" ]] || continue
     jq -e --arg component "$component" --arg fingerprint "$fingerprint" '
       .schemaVersion == 1 and
       .release.tag != null and
       .components[$component].fingerprint == $fingerprint and
-      (.components[$component].version | type == "string" and length > 0) and
+      (.components[$component].version | type == "string" and test("^[0-9A-Za-z.+-]+$")) and
       (.components[$component].commit | type == "string" and test("^[0-9a-f]{40}$")) and
       (.components[$component].builtAt | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
     ' "$manifest" >/dev/null 2>&1 || continue

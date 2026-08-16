@@ -31,6 +31,10 @@ COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 SHORT_COMMIT="${COMMIT:0:8}"
 BUILD_NUMBER="$(git -C "$REPO_ROOT" rev-list --count HEAD)"
 BUILT_AT="${ATC_RELEASE_BUILT_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+[[ "$BUILT_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || {
+  echo "invalid release timestamp: $BUILT_AT" >&2
+  exit 1
+}
 
 if [[ "$CHANNEL" == "stable" ]]; then
   NEXT_TAG="$(cd "$REPO_ROOT" && "$SCRIPT_DIR/next-version.sh" "$BUMP")"

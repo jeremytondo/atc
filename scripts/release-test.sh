@@ -13,8 +13,26 @@ done
 git -C "$TEST_ROOT" init -q
 git -C "$TEST_ROOT" config user.name test
 git -C "$TEST_ROOT" config user.email test@example.com
-touch "$TEST_ROOT/file"
-git -C "$TEST_ROOT" add file
+mkdir -p \
+  "$TEST_ROOT/.github/workflows" \
+  "$TEST_ROOT/app-server" \
+  "$TEST_ROOT/macos" \
+  "$TEST_ROOT/packages" \
+  "$TEST_ROOT/scripts"
+touch \
+  "$TEST_ROOT/app-server/source.ts" \
+  "$TEST_ROOT/app-server/openapi.json" \
+  "$TEST_ROOT/macos/source.swift" \
+  "$TEST_ROOT/packages/source.swift" \
+  "$TEST_ROOT/mise.toml" \
+  "$TEST_ROOT/.github/workflows/product-release.yml" \
+  "$TEST_ROOT/scripts/ExportOptions.DeveloperID.plist" \
+  "$TEST_ROOT/scripts/package-app-server.sh" \
+  "$TEST_ROOT/scripts/prepare-xcode-openapi.sh" \
+  "$TEST_ROOT/scripts/release-fingerprint.sh" \
+  "$TEST_ROOT/scripts/release-macos.sh" \
+  "$TEST_ROOT/scripts/release-plan.sh"
+git -C "$TEST_ROOT" add .
 git -C "$TEST_ROOT" commit -qm initial
 git -C "$TEST_ROOT" tag v1.2.3
 git -C "$TEST_ROOT" commit --allow-empty -qm second
@@ -52,6 +70,17 @@ candidate="$(
 [[ "$(awk -F= '$1 == "tag" { print $2 }' <<< "$candidate")" == "dev-pr-214" ]]
 [[ "$(awk -F= '$1 == "version" { print $2 }' <<< "$candidate")" == "2026.8.15-dev.t070304+${commit:0:8}" ]]
 
+set +e
+invalid_plan_output="$(
+  ATC_RELEASE_REPO_ROOT="$TEST_ROOT" \
+    ATC_RELEASE_BUILT_AT="2026-08-15 07:03:04" \
+    "$SCRIPT_DIR/release-plan.sh" dev 2>&1
+)"
+invalid_plan_status=$?
+set -e
+[[ $invalid_plan_status -eq 1 ]]
+[[ "$invalid_plan_output" == *"invalid release timestamp"* ]]
+
 app_fingerprint="$(ATC_RELEASE_REPO_ROOT="$TEST_ROOT" "$SCRIPT_DIR/release-fingerprint.sh" app-server)"
 mac_fingerprint="$(ATC_RELEASE_REPO_ROOT="$TEST_ROOT" "$SCRIPT_DIR/release-fingerprint.sh" macos)"
 [[ "$app_fingerprint" =~ ^[0-9a-f]{64}$ && "$mac_fingerprint" =~ ^[0-9a-f]{64}$ ]]
@@ -77,14 +106,20 @@ manifest="$TEST_ROOT/manifest.json"
   --output "$manifest"
 jq -e '.schemaVersion == 1 and .release.tag == "dev" and .components.macos.reusedFrom == "dev"' "$manifest" >/dev/null
 
-selection="$($SCRIPT_DIR/select-release-components.sh "$app_fingerprint" "$mac_fingerprint" "$manifest")"
+selection="$("$SCRIPT_DIR/select-release-components.sh" "$app_fingerprint" "$mac_fingerprint" "$manifest")"
 [[ "$(awk -F= '$1 == "reuse_app_server" { print $2 }' <<< "$selection")" == "true" ]]
 [[ "$(awk -F= '$1 == "app_server_source_tag" { print $2 }' <<< "$selection")" == "dev" ]]
 [[ "$(awk -F= '$1 == "reuse_macos" { print $2 }' <<< "$selection")" == "true" ]]
 
-miss_selection="$($SCRIPT_DIR/select-release-components.sh "$(printf app | shasum -a 256 | awk '{ print $1 }')" "$(printf mac | shasum -a 256 | awk '{ print $1 }')" "$manifest")"
+miss_selection="$("$SCRIPT_DIR/select-release-components.sh" "$(printf app | shasum -a 256 | awk '{ print $1 }')" "$(printf mac | shasum -a 256 | awk '{ print $1 }')" "$manifest")"
 [[ "$(awk -F= '$1 == "reuse_app_server" { print $2 }' <<< "$miss_selection")" == "false" ]]
 [[ "$(awk -F= '$1 == "reuse_macos" { print $2 }' <<< "$miss_selection")" == "false" ]]
+
+unsafe_manifest="$TEST_ROOT/unsafe-manifest.json"
+jq '.components.appServer.version = "unsafe\noutput=true"' "$manifest" > "$unsafe_manifest"
+unsafe_selection="$("$SCRIPT_DIR/select-release-components.sh" "$app_fingerprint" "$mac_fingerprint" "$unsafe_manifest")"
+[[ "$(awk -F= '$1 == "reuse_app_server" { print $2 }' <<< "$unsafe_selection")" == "false" ]]
+[[ "$(awk -F= '$1 == "reuse_macos" { print $2 }' <<< "$unsafe_selection")" == "true" ]]
 
 mkdir -p "$TEST_ROOT/dist" "$TEST_ROOT/out"
 cp /bin/sh "$TEST_ROOT/dist/atc-darwin-arm64"
@@ -131,6 +166,100 @@ grep -Fqx "list-keychains -d user -s $TEST_ROOT/Login Keychain.keychain-db $TEST
 grep -Fqx "default-keychain -d user -s $TEST_ROOT/Login Keychain.keychain-db" "$security_log"
 grep -Fqx "delete-keychain $credential_dir/release.keychain-db" "$security_log"
 
+release_fake_bin="$TEST_ROOT/release-fake-bin"
+release_source="$TEST_ROOT/release-source"
+mkdir -p "$release_fake_bin" "$release_source"
+printf 'original asset\n' > "$release_source/atc-linux-x64.tar.gz"
+(
+  cd "$release_source"
+  shasum -a 256 atc-linux-x64.tar.gz > checksums.txt
+)
+printf 'tampered asset\n' > "$release_source/atc-linux-x64.tar.gz"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'if [[ "$1" == "release" && "$2" == "download" ]]; then' \
+  '  pattern=""' \
+  '  out=""' \
+  '  shift 2' \
+  '  while [[ $# -gt 0 ]]; do' \
+  '    case "$1" in' \
+  '      --pattern) pattern="$2"; shift 2 ;;' \
+  '      --dir) out="$2"; shift 2 ;;' \
+  '      *) shift ;;' \
+  '    esac' \
+  '  done' \
+  '  cp "$FAKE_RELEASE_SOURCE/$pattern" "$out/$pattern"' \
+  '  exit 0' \
+  'fi' \
+  'if [[ "$1" == "pr" && "$2" == "view" ]]; then' \
+  '  if [[ "$*" == *"--json state"* ]]; then' \
+  '    [[ "$FAKE_PR_STATE" != "ERROR" ]] || exit 1' \
+  '    printf '\''%s\n'\'' "$FAKE_PR_STATE"' \
+  '    exit 0' \
+  '  fi' \
+  '  if [[ "$*" == *"--json headRefOid"* ]]; then' \
+  '    printf '\''%s\n'\'' "$FAKE_PR_HEAD"' \
+  '    exit 0' \
+  '  fi' \
+  'fi' \
+  'exit 99' > "$release_fake_bin/gh"
+chmod +x "$release_fake_bin/gh"
+
+set +e
+reuse_output="$(
+  PATH="$release_fake_bin:$PATH" \
+    FAKE_RELEASE_SOURCE="$release_source" \
+    "$SCRIPT_DIR/reuse-release-assets.sh" \
+    --tag dev \
+    --out "$TEST_ROOT/reused-assets" \
+    --checksums checksums-reused.txt \
+    atc-linux-x64.tar.gz 2>&1
+)"
+reuse_status=$?
+set -e
+[[ $reuse_status -eq 1 ]]
+[[ "$reuse_output" == *"checksum mismatch"* ]]
+
+candidate_assets="$TEST_ROOT/candidate-assets"
+mkdir -p "$candidate_assets"
+touch \
+  "$candidate_assets/atc-darwin-arm64.tar.gz" \
+  "$candidate_assets/atc-darwin-x64.tar.gz" \
+  "$candidate_assets/atc-linux-arm64.tar.gz" \
+  "$candidate_assets/atc-linux-x64.tar.gz" \
+  "$candidate_assets/atc-macos-arm64.dmg" \
+  "$candidate_assets/checksums.txt" \
+  "$candidate_assets/manifest.json"
+
+candidate_publish() {
+  PATH="$release_fake_bin:$PATH" \
+    FAKE_PR_STATE="$1" \
+    FAKE_PR_HEAD="$2" \
+    "$SCRIPT_DIR/publish-release.sh" \
+    --kind candidate \
+    --channel dev \
+    --tag dev-pr-214 \
+    --version "2026.8.15-dev.t070304+${commit:0:8}" \
+    --commit "$commit" \
+    --built-at 2026-08-15T07:03:04Z \
+    --assets "$candidate_assets"
+}
+
+closed_output="$(candidate_publish CLOSED "$commit")"
+[[ "$closed_output" == *"skipping candidate build for closed PR #214"* ]]
+
+stale_head="0000000000000000000000000000000000000000"
+stale_output="$(candidate_publish OPEN "$stale_head")"
+[[ "$stale_output" == *"skipping obsolete candidate build $commit"* ]]
+
+set +e
+state_error_output="$(candidate_publish ERROR "$commit" 2>&1)"
+state_error_status=$?
+set -e
+[[ $state_error_status -eq 1 ]]
+[[ "$state_error_output" == *"could not resolve PR #214 state"* ]]
+
 set +e
 missing_value_output="$($SCRIPT_DIR/package-app-server.sh --dist 2>&1)"
 missing_value_status=$?
@@ -144,6 +273,13 @@ missing_value_status=$?
 set -e
 [[ $missing_value_status -eq 2 ]]
 [[ "$missing_value_output" == *"missing value for --channel"* ]]
+
+set +e
+missing_pr_output="$("$SCRIPT_DIR/dev-build.sh" --pr 2>&1)"
+missing_pr_status=$?
+set -e
+[[ $missing_pr_status -eq 2 ]]
+[[ "$missing_pr_output" == *"usage: mise run dev-build"* ]]
 
 set +e
 invalid_timestamp_output="$(
