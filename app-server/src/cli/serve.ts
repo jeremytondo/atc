@@ -13,6 +13,7 @@ import {
 } from "../platform/subprocess.ts"
 import * as Server from "../server.ts"
 import * as Cli from "./cli.ts"
+import { randomUUID } from "node:crypto"
 
 // Running the service: `serve` is the foreground primitive (what a
 // supervisor owns, and what `start` spawns); `start`/`stop`/`status` are the
@@ -120,6 +121,24 @@ const readPidRecord = (fs: FileSystem.FileSystem, file: string) =>
     Effect.catch(() => Effect.succeed(undefined)),
   )
 
+/** Prefer the child's one-line CLI diagnostic; otherwise retain a bounded
+ * stderr tail for unexpected startup failures. */
+const startupDiagnostic = (text: string): string | undefined => {
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "")
+  const reported = lines.findLast((line) => line.startsWith("atc serve:"))
+  const detail = reported ?? lines.slice(-5).join(" ")
+  return detail === "" ? undefined : detail.slice(0, 2_000)
+}
+
+const readStartupDiagnostic = (fs: FileSystem.FileSystem, file: string) =>
+  fs.readFileString(file).pipe(
+    Effect.map(startupDiagnostic),
+    Effect.catch(() => Effect.succeed(undefined)),
+  )
+
 const signal = (pid: number, name: "SIGTERM" | "SIGKILL") =>
   Effect.sync(() => {
     // A process that exits between the liveness check and the signal is
@@ -128,6 +147,28 @@ const signal = (pid: number, name: "SIGTERM" | "SIGKILL") =>
       process.kill(pid, name)
     } catch {
       // ignored
+    }
+  })
+
+/** Stop a detached child whose start cannot be completed, then remove only
+ * the pidfile still proven to belong to it. Cleanup never masks the failure
+ * that made the start incomplete. */
+const cleanupFailedStart = (
+  fs: FileSystem.FileSystem,
+  pid: number,
+  pidFile: string,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    yield* signal(pid, "SIGTERM")
+    const exited = yield* waitForProcessExit(pid, { attempts: 50, interval: "100 millis" })
+    const stopped = exited
+      ? true
+      : yield* signal(pid, "SIGKILL").pipe(
+          Effect.andThen(waitForProcessExit(pid, { attempts: 20, interval: "100 millis" })),
+        )
+    const current = yield* readPidRecord(fs, pidFile)
+    if (stopped && current?.pid === pid) {
+      yield* fs.remove(pidFile).pipe(Effect.ignore)
     }
   })
 
@@ -177,36 +218,46 @@ export const start = Command.make("start", { port, bind, tailscale }, ({ port, b
       effective.bind,
       ...(effective.tailscale ? ["--tailscale"] : []),
     ]
-    const pid = yield* subprocess.spawnDetached(
-      build.commit === "dev"
-        ? { executable: process.execPath, args: [process.argv[1] ?? "src/main.ts", ...serveArgs] }
-        : { executable: process.execPath, args: serveArgs },
-    )
     yield* fs.makeDirectory(config.stateDir, { recursive: true })
+    const startupErrorFile = `${config.stateDir}/.start-${randomUUID()}.stderr`
+    const pid = yield* subprocess
+      .spawnDetached(
+        build.commit === "dev"
+          ? {
+              executable: process.execPath,
+              args: [process.argv[1] ?? "src/main.ts", ...serveArgs],
+              stderrFile: startupErrorFile,
+            }
+          : { executable: process.execPath, args: serveArgs, stderrFile: startupErrorFile },
+      )
+      .pipe(Effect.tapError(() => fs.remove(startupErrorFile).pipe(Effect.ignore)))
     yield* encodePidRecord({ pid, port: effective.port, bind: effective.bind }).pipe(
       Effect.flatMap((json) => fs.writeFileString(effective.pidFile, json)),
+      Effect.tapError(() =>
+        cleanupFailedStart(fs, pid, effective.pidFile).pipe(
+          Effect.andThen(fs.remove(startupErrorFile).pipe(Effect.ignore)),
+        ),
+      ),
     )
-    const healthy = yield* Cli.pollUntil(
-      15_000,
-      150,
-      Cli.probeHealth(probeHost, effective.port, 1_000, token),
+    // A child that already exited can never become healthy. Race its exit
+    // against the health deadline so boot failures surface immediately.
+    const healthy = yield* Effect.raceFirst(
+      Cli.pollUntil(15_000, 150, Cli.probeHealth(probeHost, effective.port, 1_000, token)),
+      waitForProcessExit(pid, { attempts: 300, interval: "50 millis" }).pipe(Effect.as(false)),
     )
     if (!healthy) {
       // Success is only ever reported for a healthy server, so the spawned
       // child is stopped rather than left as an orphan no `stop` can reach.
-      yield* signal(pid, "SIGTERM")
-      yield* waitForProcessExit(pid, { attempts: 50, interval: "100 millis" })
-      // Concurrent starts are not serialized; remove the pidfile only while
-      // it still records OUR child, so a racing start's healthy server is
-      // never made invisible by this cleanup.
-      const current = yield* readPidRecord(fs, effective.pidFile)
-      if (current?.pid === pid) {
-        yield* fs.remove(effective.pidFile).pipe(Effect.ignore)
-      }
+      yield* cleanupFailedStart(fs, pid, effective.pidFile)
+      const diagnostic = yield* readStartupDiagnostic(fs, startupErrorFile)
+      yield* fs.remove(startupErrorFile).pipe(Effect.ignore)
       return yield* Cli.failReported(
-        `atc start: the server did not become healthy within 15s (stopped pid ${pid}); logs: ${effective.logFile}`,
+        diagnostic === undefined
+          ? `atc start: the server did not become healthy within 15s (stopped pid ${pid}); logs: ${effective.logFile}`
+          : `atc start: the server failed to start: ${diagnostic}`,
       )
     }
+    yield* fs.remove(startupErrorFile).pipe(Effect.ignore)
     yield* Console.log(
       `started atc app server (pid ${pid}) on http://${Server.hostForUrl(effective.bind)}:${effective.port} (logs: ${effective.logFile})`,
     )

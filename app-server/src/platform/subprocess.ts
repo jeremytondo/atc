@@ -14,6 +14,7 @@ import {
 import * as Poll from "./poll.ts"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { spawn as nodeSpawn } from "node:child_process"
+import { closeSync, openSync } from "node:fs"
 
 // The generic subprocess seam: how the App Server launches and supervises
 // child processes. Children are acquired in Scopes, so closing the scope —
@@ -125,12 +126,15 @@ export class Subprocess extends Context.Service<
     /**
      * The one deliberate exception to scope ownership: spawn a child meant
      * to OUTLIVE this process (`atc start`'s background server). Detached
-     * session, stdio ignored, environment inherited; returns the pid. The
-     * caller owns liveness from here — nothing supervises the child.
+     * session, environment inherited, stdout ignored, and stderr optionally
+     * redirected for startup diagnostics; returns the pid. The caller owns
+     * liveness from here — nothing supervises the child.
      */
     readonly spawnDetached: (spec: {
       readonly executable: string
       readonly args?: ReadonlyArray<string>
+      /** Optional file receiving the detached child's stderr. */
+      readonly stderrFile?: string
     }) => Effect.Effect<number, SubprocessError>
   }
 >()("app-server/Subprocess") {}
@@ -459,22 +463,29 @@ const spawnPty = Effect.fnUntraced(function* (spec: PtySpawnSpec) {
 const spawnDetached = (spec: {
   readonly executable: string
   readonly args?: ReadonlyArray<string>
+  readonly stderrFile?: string
 }) =>
   Effect.try({
     try: () => {
-      const child = nodeSpawn(spec.executable, [...(spec.args ?? [])], {
-        detached: true,
-        stdio: "ignore",
-      })
-      // An EventEmitter with no error listener re-throws asynchronously and
-      // would crash this process; the missing-pid check below is the actual
-      // fast-fail, and anything later is the caller's bounded-wait problem.
-      child.on("error", () => {})
-      if (child.pid === undefined) {
-        throw new Error("the child reported no pid")
+      const stderr =
+        spec.stderrFile === undefined ? undefined : openSync(spec.stderrFile, "wx", 0o600)
+      try {
+        const child = nodeSpawn(spec.executable, [...(spec.args ?? [])], {
+          detached: true,
+          stdio: ["ignore", "ignore", stderr ?? "ignore"],
+        })
+        // An EventEmitter with no error listener re-throws asynchronously and
+        // would crash this process; the missing-pid check below is the actual
+        // fast-fail, and anything later is the caller's bounded-wait problem.
+        child.on("error", () => {})
+        if (child.pid === undefined) {
+          throw new Error("the child reported no pid")
+        }
+        child.unref()
+        return child.pid
+      } finally {
+        if (stderr !== undefined) closeSync(stderr)
       }
-      child.unref()
-      return child.pid
     },
     catch: (error) =>
       new SubprocessError({

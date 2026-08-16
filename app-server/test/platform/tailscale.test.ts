@@ -15,6 +15,17 @@ const layerFor = (executable: string, port = 8443) =>
   )
 
 describe("Tailscale supervisor", () => {
+  it("falls back to the documented macOS app CLI only for the default executable", () => {
+    assert.deepStrictEqual(Tailscale.executableCandidates("tailscale", "darwin"), [
+      "tailscale",
+      "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+    ])
+    assert.deepStrictEqual(Tailscale.executableCandidates("tailscale", "linux"), ["tailscale"])
+    assert.deepStrictEqual(Tailscale.executableCandidates("custom-tailscale", "darwin"), [
+      "custom-tailscale",
+    ])
+  })
+
   it.live("verifies a healthy foreground Serve child and reports its URL", () => {
     const sandbox = makeFakeTailscaleSandbox()
     return Effect.gen(function* () {

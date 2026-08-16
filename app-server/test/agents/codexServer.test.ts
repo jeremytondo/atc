@@ -23,6 +23,15 @@ const fixturePid = (sandbox: { readonly pidFile: string }): number =>
 const readIdentity = (identityFile: string): { pid: number } =>
   JSON.parse(fs.readFileSync(identityFile, "utf8")) as { pid: number }
 
+/** A writer may have created or truncated the file between poll attempts. */
+const readIdentityIfReady = (identityFile: string): { pid: number } | undefined => {
+  try {
+    return readIdentity(identityFile)
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * A server ATC did not start: the fixture launched by hand on the sandbox's
  * well-known socket (no pid file, so a later ATC spawn would be visible).
@@ -133,8 +142,8 @@ describe("CodexServer", () => {
             // is armed again now that a server of ours exists.
             process.kill(own.pid!, "SIGKILL")
             yield* waitFor(() => {
-              if (!fs.existsSync(sandbox.identityFile)) return false
-              const identity = readIdentity(sandbox.identityFile)
+              const identity = readIdentityIfReady(sandbox.identityFile)
+              if (identity === undefined) return false
               return identity.pid !== own.pid && Subprocess.isProcessAlive(identity.pid)
             })
             yield* codex.stop()
@@ -351,8 +360,8 @@ describe("CodexServer", () => {
           const info = yield* codex.ensure()
           process.kill(info.pid!, "SIGKILL")
           yield* waitFor(() => {
-            if (!fs.existsSync(sandbox.identityFile)) return false
-            const identity = readIdentity(sandbox.identityFile)
+            const identity = readIdentityIfReady(sandbox.identityFile)
+            if (identity === undefined) return false
             return identity.pid !== info.pid && Subprocess.isProcessAlive(identity.pid)
           })
           const replacement = yield* codex.ensure()
