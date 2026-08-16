@@ -13,6 +13,10 @@ if (stateDir === undefined) {
   console.error("fake-tailscale: FAKE_TAILSCALE_STATE is not set")
   process.exit(2)
 }
+if (process.env["TAILSCALE_BE_CLI"] !== "1") {
+  console.error("fake-tailscale: TAILSCALE_BE_CLI is not set to 1")
+  process.exit(2)
+}
 fs.mkdirSync(stateDir, { recursive: true })
 
 const setting = (name: string, fallback: string): string => {

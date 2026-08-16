@@ -167,6 +167,25 @@ describe("atc start / stop / status (black box)", () => {
     expect(stopped.exitCode).toBe(0)
   }, 60_000)
 
+  test("start surfaces a detached server's actionable boot failure", async () => {
+    const failedEnv = isolatedEnv(join(scratch, "failed-start"), {
+      ATC_ZMX_EXECUTABLE: sandbox.wrapper,
+      ATC_TAILSCALE_EXECUTABLE: "/definitely/missing/tailscale",
+    })
+    const failedCli = (...args: Array<string>) =>
+      runCli([process.execPath, "src/main.ts"], args, appServerRoot, failedEnv)
+    const failedPidFile = join(failedEnv.XDG_STATE_HOME, "atc", "atc.pid")
+    const port = await freePort()
+
+    const started = await failedCli("start", "--port", String(port), "--tailscale")
+    expect(started.exitCode).not.toBe(0)
+    expect(started.stderr).toContain(
+      'atc start: the server failed to start: atc serve: tailscale executable "/definitely/missing/tailscale" not found',
+    )
+    expect(started.stderr).not.toContain("did not become healthy within 15s")
+    expect(existsSync(failedPidFile)).toBe(false)
+  }, 30_000)
+
   test("start threads --tailscale through serve and status reports the verified URL", async () => {
     const tailscaleSandbox = makeFakeTailscaleSandbox()
     const tailscaleEnv = isolatedEnv(join(scratch, "tailscale"), {

@@ -13,6 +13,7 @@ import {
 } from "../platform/subprocess.ts"
 import * as Server from "../server.ts"
 import * as Cli from "./cli.ts"
+import { randomUUID } from "node:crypto"
 
 // Running the service: `serve` is the foreground primitive (what a
 // supervisor owns, and what `start` spawns); `start`/`stop`/`status` are the
@@ -120,6 +121,24 @@ const readPidRecord = (fs: FileSystem.FileSystem, file: string) =>
     Effect.catch(() => Effect.succeed(undefined)),
   )
 
+/** Prefer the child's one-line CLI diagnostic; otherwise retain a bounded
+ * stderr tail for unexpected startup failures. */
+const startupDiagnostic = (text: string): string | undefined => {
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "")
+  const reported = lines.findLast((line) => line.startsWith("atc serve:"))
+  const detail = reported ?? lines.slice(-5).join(" ")
+  return detail === "" ? undefined : detail.slice(0, 2_000)
+}
+
+const readStartupDiagnostic = (fs: FileSystem.FileSystem, file: string) =>
+  fs.readFileString(file).pipe(
+    Effect.map(startupDiagnostic),
+    Effect.catch(() => Effect.succeed(undefined)),
+  )
+
 const signal = (pid: number, name: "SIGTERM" | "SIGKILL") =>
   Effect.sync(() => {
     // A process that exits between the liveness check and the signal is
@@ -177,19 +196,27 @@ export const start = Command.make("start", { port, bind, tailscale }, ({ port, b
       effective.bind,
       ...(effective.tailscale ? ["--tailscale"] : []),
     ]
-    const pid = yield* subprocess.spawnDetached(
-      build.commit === "dev"
-        ? { executable: process.execPath, args: [process.argv[1] ?? "src/main.ts", ...serveArgs] }
-        : { executable: process.execPath, args: serveArgs },
-    )
     yield* fs.makeDirectory(config.stateDir, { recursive: true })
+    const startupErrorFile = `${config.stateDir}/.start-${randomUUID()}.stderr`
+    const pid = yield* subprocess
+      .spawnDetached(
+        build.commit === "dev"
+          ? {
+              executable: process.execPath,
+              args: [process.argv[1] ?? "src/main.ts", ...serveArgs],
+              stderrFile: startupErrorFile,
+            }
+          : { executable: process.execPath, args: serveArgs, stderrFile: startupErrorFile },
+      )
+      .pipe(Effect.tapError(() => fs.remove(startupErrorFile).pipe(Effect.ignore)))
     yield* encodePidRecord({ pid, port: effective.port, bind: effective.bind }).pipe(
       Effect.flatMap((json) => fs.writeFileString(effective.pidFile, json)),
     )
-    const healthy = yield* Cli.pollUntil(
-      15_000,
-      150,
-      Cli.probeHealth(probeHost, effective.port, 1_000, token),
+    // A child that already exited can never become healthy. Race its exit
+    // against the health deadline so boot failures surface immediately.
+    const healthy = yield* Effect.raceFirst(
+      Cli.pollUntil(15_000, 150, Cli.probeHealth(probeHost, effective.port, 1_000, token)),
+      waitForProcessExit(pid, { attempts: 300, interval: "50 millis" }).pipe(Effect.as(false)),
     )
     if (!healthy) {
       // Success is only ever reported for a healthy server, so the spawned
@@ -203,10 +230,15 @@ export const start = Command.make("start", { port, bind, tailscale }, ({ port, b
       if (current?.pid === pid) {
         yield* fs.remove(effective.pidFile).pipe(Effect.ignore)
       }
+      const diagnostic = yield* readStartupDiagnostic(fs, startupErrorFile)
+      yield* fs.remove(startupErrorFile).pipe(Effect.ignore)
       return yield* Cli.failReported(
-        `atc start: the server did not become healthy within 15s (stopped pid ${pid}); logs: ${effective.logFile}`,
+        diagnostic === undefined
+          ? `atc start: the server did not become healthy within 15s (stopped pid ${pid}); logs: ${effective.logFile}`
+          : `atc start: the server failed to start: ${diagnostic}`,
       )
     }
+    yield* fs.remove(startupErrorFile).pipe(Effect.ignore)
     yield* Console.log(
       `started atc app server (pid ${pid}) on http://${Server.hostForUrl(effective.bind)}:${effective.port} (logs: ${effective.logFile})`,
     )

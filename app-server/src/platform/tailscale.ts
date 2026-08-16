@@ -43,6 +43,26 @@ const StatusOutput = Schema.Struct({
 const decodeStatus = Schema.decodeEffect(Schema.fromJsonString(StatusOutput))
 const STATUS_TIMEOUT: Duration.Input = "10 seconds"
 const SERVE_READY_TIMEOUT: Duration.Input = "15 seconds"
+const MACOS_APP_EXECUTABLE = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+
+/** Default discovery follows Tailscale's supported installation shapes:
+ * normal PATH lookup everywhere, then the CLI bundled in the macOS app. A
+ * custom configured name/path is exact user intent and gets no fallback. */
+export const executableCandidates = (
+  configured: string,
+  platform: typeof process.platform,
+): ReadonlyArray<string> =>
+  configured === "tailscale" && platform === "darwin"
+    ? [configured, MACOS_APP_EXECUTABLE]
+    : [configured]
+
+const resolveExecutable = (configured: string): string | null => {
+  for (const candidate of executableCandidates(configured, process.platform)) {
+    const resolved = Subprocess.resolveExecutable(candidate)
+    if (resolved !== null && existsSync(resolved)) return resolved
+  }
+  return null
+}
 
 const failed = (reason: string) => new AttemptFailed({ reason })
 
@@ -69,7 +89,9 @@ const runStatus = (
     const child = yield* subprocess.spawn({
       executable,
       args: ["status", "--json"],
-      env: {},
+      // The macOS app and CLI are one executable. Tailscale otherwise guesses
+      // which mode to enter from shell variables that services need not have.
+      env: { TAILSCALE_BE_CLI: "1" },
       extendEnv: true,
     })
     yield* child.endInput
@@ -121,7 +143,7 @@ const superviseServe = (
     const child = yield* subprocess.spawn({
       executable,
       args: ["serve", `--https=${port}`, `localhost:${port}`],
-      env: {},
+      env: { TAILSCALE_BE_CLI: "1" },
       extendEnv: true,
     })
     yield* child.endInput
@@ -198,12 +220,15 @@ export const layer = Layer.effect(Tailscale)(
 
     const subprocess = yield* Subprocess.Subprocess
     const configured = config.tailscaleExecutable
-    const executable = Subprocess.resolveExecutable(configured)
-    if (executable === null || !existsSync(executable)) {
+    const executable = resolveExecutable(configured)
+    if (executable === null) {
+      const tried = executableCandidates(configured, process.platform)
       return yield* Effect.fail(
         new TailscaleConfigError({
           reason:
-            `tailscale executable "${configured}" not found; install Tailscale or set ` +
+            `tailscale executable "${configured}" not found` +
+            (tried.length > 1 ? ` (also tried ${tried.slice(1).join(", ")})` : "") +
+            "; install Tailscale or set " +
             "tailscaleExecutable in config.toml / ATC_TAILSCALE_EXECUTABLE",
         }),
       )
