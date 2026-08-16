@@ -23,7 +23,7 @@ gh auth status -h github.com >/dev/null 2>&1 || die "gh is not authenticated for
 
 WORKFLOW="product-release.yml"
 REQUEST_ID="$(printf '%s:%s:%s:%s' "$(date -u +%s)" "$$" "$RANDOM" "$RANDOM" | git hash-object --stdin)"
-RUN_TITLE="Product Release [$REQUEST_ID]"
+RUN_TITLE="Product Release [stable:$REQUEST_ID]"
 
 matching_run_id() {
   gh run list \
@@ -36,7 +36,7 @@ matching_run_id() {
     2>/dev/null | head -n 1 || true
 }
 
-gh workflow run "$WORKFLOW" --ref main -f release_type="$BUMP" -f request_id="$REQUEST_ID"
+gh workflow run "$WORKFLOW" --ref main -f mode=stable -f release_type="$BUMP" -f request_id="$REQUEST_ID"
 printf 'dispatched stable %s release from main\n' "$BUMP"
 
 RUN_ID=""

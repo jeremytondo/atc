@@ -178,6 +178,10 @@ clone zmx --branch 'v0.6.0' https://github.com/neurosnap/zmx.git
 description = "Dispatch and watch a stable whole-product release from main (usage: mise run release patch|minor|major)"
 run = "scripts/release.sh"
 
+[tasks."dev-build"]
+description = "Dispatch and watch a rolling whole-product dev candidate for the current PR"
+run = "scripts/dev-build.sh"
+
 [tasks."release:check"]
 description = "Validate shared product release identity and packaging scripts"
 run = "scripts/release-test.sh"

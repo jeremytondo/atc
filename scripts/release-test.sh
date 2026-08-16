@@ -25,6 +25,7 @@ stable="$(
     "$SCRIPT_DIR/release-plan.sh" stable minor
 )"
 [[ "$(awk -F= '$1 == "tag" { print $2 }' <<< "$stable")" == "v1.3.0" ]]
+[[ "$(awk -F= '$1 == "kind" { print $2 }' <<< "$stable")" == "stable" ]]
 [[ "$(awk -F= '$1 == "version" { print $2 }' <<< "$stable")" == "1.3.0" ]]
 [[ "$(awk -F= '$1 == "marketing_version" { print $2 }' <<< "$stable")" == "1.3.0" ]]
 [[ "$(awk -F= '$1 == "build_number" { print $2 }' <<< "$stable")" == "2" ]]
@@ -37,8 +38,53 @@ dev="$(
     "$SCRIPT_DIR/release-plan.sh" dev
 )"
 [[ "$(awk -F= '$1 == "tag" { print $2 }' <<< "$dev")" == "dev" ]]
-[[ "$(awk -F= '$1 == "version" { print $2 }' <<< "$dev")" == "1.2.4-dev.2+${commit:0:12}" ]]
+[[ "$(awk -F= '$1 == "kind" { print $2 }' <<< "$dev")" == "dev" ]]
+[[ "$(awk -F= '$1 == "version" { print $2 }' <<< "$dev")" == "2026.8.15-dev.t123456+${commit:0:8}" ]]
+[[ "$(awk -F= '$1 == "marketing_version" { print $2 }' <<< "$dev")" == "2026.8.15" ]]
 [[ "$(awk -F= '$1 == "commit" { print $2 }' <<< "$dev")" == "$commit" ]]
+
+candidate="$(
+  ATC_RELEASE_REPO_ROOT="$TEST_ROOT" \
+    ATC_RELEASE_BUILT_AT="2026-08-15T07:03:04Z" \
+    "$SCRIPT_DIR/release-plan.sh" dev dev-pr-214
+)"
+[[ "$(awk -F= '$1 == "kind" { print $2 }' <<< "$candidate")" == "candidate" ]]
+[[ "$(awk -F= '$1 == "tag" { print $2 }' <<< "$candidate")" == "dev-pr-214" ]]
+[[ "$(awk -F= '$1 == "version" { print $2 }' <<< "$candidate")" == "2026.8.15-dev.t070304+${commit:0:8}" ]]
+
+app_fingerprint="$(ATC_RELEASE_REPO_ROOT="$TEST_ROOT" "$SCRIPT_DIR/release-fingerprint.sh" app-server)"
+mac_fingerprint="$(ATC_RELEASE_REPO_ROOT="$TEST_ROOT" "$SCRIPT_DIR/release-fingerprint.sh" macos)"
+[[ "$app_fingerprint" =~ ^[0-9a-f]{64}$ && "$mac_fingerprint" =~ ^[0-9a-f]{64}$ ]]
+[[ "$app_fingerprint" != "$mac_fingerprint" ]]
+
+manifest="$TEST_ROOT/manifest.json"
+"$SCRIPT_DIR/write-release-manifest.sh" \
+  --kind dev \
+  --tag dev \
+  --version "2026.8.15-dev.t123456+${commit:0:8}" \
+  --commit "$commit" \
+  --built-at 2026-08-15T12:34:56Z \
+  --app-server-fingerprint "$app_fingerprint" \
+  --app-server-version "2026.8.15-dev.t123456+${commit:0:8}" \
+  --app-server-commit "$commit" \
+  --app-server-built-at 2026-08-15T12:34:56Z \
+  --app-server-reused-from "" \
+  --macos-fingerprint "$mac_fingerprint" \
+  --macos-version 2026.8.14-dev.t221030+deadbeef \
+  --macos-commit "$commit" \
+  --macos-built-at 2026-08-14T22:10:30Z \
+  --macos-reused-from dev \
+  --output "$manifest"
+jq -e '.schemaVersion == 1 and .release.tag == "dev" and .components.macos.reusedFrom == "dev"' "$manifest" >/dev/null
+
+selection="$($SCRIPT_DIR/select-release-components.sh "$app_fingerprint" "$mac_fingerprint" "$manifest")"
+[[ "$(awk -F= '$1 == "reuse_app_server" { print $2 }' <<< "$selection")" == "true" ]]
+[[ "$(awk -F= '$1 == "app_server_source_tag" { print $2 }' <<< "$selection")" == "dev" ]]
+[[ "$(awk -F= '$1 == "reuse_macos" { print $2 }' <<< "$selection")" == "true" ]]
+
+miss_selection="$($SCRIPT_DIR/select-release-components.sh "$(printf app | shasum -a 256 | awk '{ print $1 }')" "$(printf mac | shasum -a 256 | awk '{ print $1 }')" "$manifest")"
+[[ "$(awk -F= '$1 == "reuse_app_server" { print $2 }' <<< "$miss_selection")" == "false" ]]
+[[ "$(awk -F= '$1 == "reuse_macos" { print $2 }' <<< "$miss_selection")" == "false" ]]
 
 mkdir -p "$TEST_ROOT/dist" "$TEST_ROOT/out"
 cp /bin/sh "$TEST_ROOT/dist/atc-darwin-arm64"
@@ -223,7 +269,7 @@ while IFS= read -r action; do
     echo "release workflow action is not pinned to a full commit SHA: $action" >&2
     exit 1
   fi
-done < <(git -C "$REPO_ROOT" grep -hoE 'uses: [^ #]+' -- .github/workflows/product-release.yml)
+done < <(git -C "$REPO_ROOT" grep -hoE 'uses: [^ #]+' -- .github/workflows/product-*.yml)
 
 if git -C "$REPO_ROOT" grep -qE 'secrets\.ATC_APP_STORE_CONNECT_(KEY_ID|ISSUER_ID)' -- .github/workflows/product-release.yml; then
   echo "non-secret App Store Connect identifiers must be environment variables" >&2
@@ -239,7 +285,10 @@ if git -C "$REPO_ROOT" grep -qE 'ATC_NOTARY_KEY_' -- \
 fi
 
 git -C "$REPO_ROOT" grep -qE '^run-name:.*request_id' -- .github/workflows/product-release.yml
-git -C "$REPO_ROOT" grep -q 'request_id=' -- scripts/release.sh
+grep -q 'request_id=' "$REPO_ROOT/scripts/release.sh"
+grep -q 'Product Release \[stable:$REQUEST_ID\]' "$REPO_ROOT/scripts/release.sh"
+grep -q 'request_id=' "$REPO_ROOT/scripts/dev-build.sh"
+grep -q 'mode=candidate' "$REPO_ROOT/scripts/dev-build.sh"
 git -C "$REPO_ROOT" check-ignore -q --no-index AuthKey.p8
 git -C "$REPO_ROOT" check-ignore -q --no-index another-key.p8
 
