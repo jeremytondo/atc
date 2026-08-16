@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, describe, expect, test } from "vitest"
@@ -184,6 +192,24 @@ describe("atc start / stop / status (black box)", () => {
     )
     expect(started.stderr).not.toContain("did not become healthy within 15s")
     expect(existsSync(failedPidFile)).toBe(false)
+  }, 30_000)
+
+  test("start stops the detached server when its pidfile cannot be persisted", async () => {
+    const failedEnv = isolatedEnv(join(scratch, "failed-pid-write"), {
+      ATC_ZMX_EXECUTABLE: sandbox.wrapper,
+    })
+    const failedCli = (...args: Array<string>) =>
+      runCli([process.execPath, "src/main.ts"], args, appServerRoot, failedEnv)
+    const stateDir = join(failedEnv.XDG_STATE_HOME, "atc")
+    // A directory at the pidfile path makes the post-spawn write fail without
+    // making the state directory unavailable to the startup stderr capture.
+    mkdirSync(join(stateDir, "atc.pid"), { recursive: true })
+    const port = await freePort()
+
+    const started = await failedCli("start", "--port", String(port))
+    expect(started.exitCode).not.toBe(0)
+    await expect(fetch(`http://127.0.0.1:${port}/api/v1/health`)).rejects.toThrow()
+    expect(readdirSync(stateDir).filter((name) => name.startsWith(".start-"))).toEqual([])
   }, 30_000)
 
   test("start threads --tailscale through serve and status reports the verified URL", async () => {

@@ -150,6 +150,28 @@ const signal = (pid: number, name: "SIGTERM" | "SIGKILL") =>
     }
   })
 
+/** Stop a detached child whose start cannot be completed, then remove only
+ * the pidfile still proven to belong to it. Cleanup never masks the failure
+ * that made the start incomplete. */
+const cleanupFailedStart = (
+  fs: FileSystem.FileSystem,
+  pid: number,
+  pidFile: string,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    yield* signal(pid, "SIGTERM")
+    const exited = yield* waitForProcessExit(pid, { attempts: 50, interval: "100 millis" })
+    const stopped = exited
+      ? true
+      : yield* signal(pid, "SIGKILL").pipe(
+          Effect.andThen(waitForProcessExit(pid, { attempts: 20, interval: "100 millis" })),
+        )
+    const current = yield* readPidRecord(fs, pidFile)
+    if (stopped && current?.pid === pid) {
+      yield* fs.remove(pidFile).pipe(Effect.ignore)
+    }
+  })
+
 export const start = Command.make("start", { port, bind, tailscale }, ({ port, bind, tailscale }) =>
   Effect.gen(function* () {
     const config = yield* AppConfig
@@ -211,6 +233,11 @@ export const start = Command.make("start", { port, bind, tailscale }, ({ port, b
       .pipe(Effect.tapError(() => fs.remove(startupErrorFile).pipe(Effect.ignore)))
     yield* encodePidRecord({ pid, port: effective.port, bind: effective.bind }).pipe(
       Effect.flatMap((json) => fs.writeFileString(effective.pidFile, json)),
+      Effect.tapError(() =>
+        cleanupFailedStart(fs, pid, effective.pidFile).pipe(
+          Effect.andThen(fs.remove(startupErrorFile).pipe(Effect.ignore)),
+        ),
+      ),
     )
     // A child that already exited can never become healthy. Race its exit
     // against the health deadline so boot failures surface immediately.
@@ -221,15 +248,7 @@ export const start = Command.make("start", { port, bind, tailscale }, ({ port, b
     if (!healthy) {
       // Success is only ever reported for a healthy server, so the spawned
       // child is stopped rather than left as an orphan no `stop` can reach.
-      yield* signal(pid, "SIGTERM")
-      yield* waitForProcessExit(pid, { attempts: 50, interval: "100 millis" })
-      // Concurrent starts are not serialized; remove the pidfile only while
-      // it still records OUR child, so a racing start's healthy server is
-      // never made invisible by this cleanup.
-      const current = yield* readPidRecord(fs, effective.pidFile)
-      if (current?.pid === pid) {
-        yield* fs.remove(effective.pidFile).pipe(Effect.ignore)
-      }
+      yield* cleanupFailedStart(fs, pid, effective.pidFile)
       const diagnostic = yield* readStartupDiagnostic(fs, startupErrorFile)
       yield* fs.remove(startupErrorFile).pipe(Effect.ignore)
       return yield* Cli.failReported(
