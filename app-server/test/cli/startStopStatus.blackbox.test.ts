@@ -201,13 +201,17 @@ describe("atc start / stop / status (black box)", () => {
     const failedCli = (...args: Array<string>) =>
       runCli([process.execPath, "src/main.ts"], args, appServerRoot, failedEnv)
     const stateDir = join(failedEnv.XDG_STATE_HOME, "atc")
+    const failedPidFile = join(stateDir, "atc.pid")
     // A directory at the pidfile path makes the post-spawn write fail without
     // making the state directory unavailable to the startup stderr capture.
-    mkdirSync(join(stateDir, "atc.pid"), { recursive: true })
+    mkdirSync(failedPidFile, { recursive: true })
     const port = await freePort()
 
     const started = await failedCli("start", "--port", String(port))
     expect(started.exitCode).not.toBe(0)
+    expect(started.stderr).toContain(
+      `atc start: BadResource: FileSystem.writeFile (${failedPidFile})`,
+    )
     await expect(fetch(`http://127.0.0.1:${port}/api/v1/health`)).rejects.toThrow()
     expect(readdirSync(stateDir).filter((name) => name.startsWith(".start-"))).toEqual([])
   }, 30_000)
