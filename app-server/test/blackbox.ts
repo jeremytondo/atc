@@ -35,8 +35,8 @@ process.on("exit", cleanupTempDirs)
 export const makeShortSocketDir = (): string => trackTempDir(mkdtempSync("/tmp/atc-zs-"))
 
 /**
- * Environment pointing every settled location (config, data, state) away
- * from the real user locations on the machine running the tests. The state
+ * Environment pointing every settled location (config, data, state, Codex
+ * home) away from the real user locations on the machine running the tests. The state
  * home gets its own short /tmp path rather than living under `dir`: the
  * terminal socket directory lives under it and must fit the unix
  * socket-path budget. Read the location back from the returned env when a
@@ -54,6 +54,9 @@ export const isolatedEnv = (dir: string, extra: Record<string, string> = {}) => 
   XDG_CONFIG_HOME: `${dir}/config`,
   XDG_DATA_HOME: `${dir}/data`,
   XDG_STATE_HOME: trackTempDir(mkdtempSync("/tmp/atc-st-")),
+  // A private Codex home: the shared app-server socket under the real one
+  // belongs to the developer's Codex clients.
+  CODEX_HOME: `${dir}/codex`,
   ...extra,
 })
 

@@ -17,47 +17,64 @@ import { providerErrors, resolveProviderExecutable } from "./agentAdapter.ts"
 import type { AgentUnavailable } from "./agentAdapter.ts"
 import { AppConfig } from "../platform/config.ts"
 import * as Subprocess from "../platform/subprocess.ts"
+import * as UnixWebSocket from "../platform/unixWebSocket.ts"
 
-// Supervision for the single long-lived `codex app-server` per ATC profile
-// (ATC-123). Invariants that are invisible from the call sites:
+// Supervision of the ONE shared `codex app-server` per CODEX_HOME (ATC-196),
+// reached on Codex's well-known control socket
+// ($CODEX_HOME/app-server-control/app-server-control.sock) — the address
+// every Codex client on the machine meets at: the desktop/mobile apps over
+// SSH, plain `codex` invocations (which auto-join a live server), and ATC.
+// Invariants that are invisible from the call sites:
 //
-//   - The server is spawned DETACHED (reparented through an intermediate sh,
-//     zmx-style) because a live `codex resume --remote` TUI dies the moment
-//     its app-server dies, with no reconnect loop. A scoped child would kill
-//     every attached TUI on every ATC restart — so ATC shutdown deliberately
-//     leaves the server running, and boot re-adopts it from the persisted
-//     identity file + /readyz. Adopt-or-replace, never accumulate.
-//   - Exactly one server per profile, always ATC's own `--listen` listener —
-//     never the machine-wide `codex app-server proxy` daemon (externally
-//     owned; observed held by the Codex desktop integration).
+//   - Adopt-or-start. Whatever answers the socket is adopted as-is; ATC
+//     starts `codex app-server --listen unix://` only when nothing answers,
+//     and never runs an app-server on any other address. A private server
+//     splits the thread store — one process may write a thread at a time,
+//     and live events reach only clients of the same process — which is
+//     exactly the failure this module exists to prevent.
+//   - Ownership boundary. ATC never kills, replaces, or signals a server it
+//     did not start, and never invokes `codex app-server daemon *` (the
+//     managed daemon/updater). It replaces only its own recorded pid, and
+//     only once that pid is dead or has stopped answering. A codex upgrade
+//     therefore takes effect on the next start after the USER stops the
+//     server — never implicitly.
+//   - The server ATC starts is spawned DETACHED (reparented through an
+//     intermediate sh, zmx-style) because a `codex resume --remote` TUI
+//     dies the moment its app-server dies, with no reconnect loop. So ATC
+//     shutdown deliberately leaves the server running, and the next boot
+//     adopts it from the socket like any other client would.
 //   - A persisted pid is only trusted (and only ever signaled) after its
 //     command line still looks like an app-server: pids get recycled, and
 //     SIGKILLing a stranger is worse than leaking a server.
-//   - `stop` is the only intentional-kill path. The exit watcher restarts a
-//     server that died underneath us (with backoff); interrupting the
-//     watcher (layer shutdown) never touches the process itself.
+//   - "Answers" means accepts a WebSocket handshake. The adapter's
+//     `initialize` right after is what actually gates use; the probe only
+//     decides whether a start is needed.
+//   - `stop` is the only intentional-kill path and only ever targets our
+//     own recorded pid. The exit watcher restarts our own dead server (a
+//     server that appeared on the socket meanwhile is adopted, never
+//     replaced); interrupting the watcher never touches the process.
 
-/** Persisted identity of the detached server, in stateDir. */
+/** Persisted identity of the server ATC started, in stateDir. */
 const ServerIdentity = Schema.Struct({
   pid: Schema.Number,
-  port: Schema.Number,
   startedAt: Schema.String,
 })
 
 export interface CodexServerInfo {
-  readonly pid: number
-  readonly port: number
-  /** JSON-RPC WebSocket endpoint (also the TUI `--remote` endpoint). */
-  readonly url: string
+  /** The well-known control socket every Codex client on the machine shares. */
+  readonly socketPath: string
+  /** The pid of the server ATC started, or null when a foreign server was adopted. */
+  readonly pid: number | null
 }
 
 export interface CodexServerOptions {
-  /** Readiness window for a freshly spawned server. */
+  /** How long a freshly started server may take to answer. */
   readonly readyTimeout?: Duration.Input
   /**
-   * Readiness window when adopting an already-running pid. Deliberately
-   * generous by default: concluding a live server is dead kills every
-   * attached TUI, so patience is the cheaper error.
+   * How long our own already-running server may take to answer again
+   * before it is replaced. Deliberately generous by default: concluding a
+   * live server is dead kills every attached TUI, so patience is the
+   * cheaper error.
    */
   readonly adoptTimeout?: Duration.Input
   /** Exit-watcher poll interval. */
@@ -71,15 +88,15 @@ export class CodexServer extends Context.Service<
   CodexServer,
   {
     /**
-     * The profile's ready app-server: adopt the persisted one when it is
-     * alive and answers /readyz, replace it otherwise, spawn fresh when
-     * there is none. Serialized — concurrent callers get the same server.
+     * The shared app-server: adopt whatever answers the well-known socket,
+     * else start one (detached). Serialized — concurrent callers get the
+     * same answer.
      */
     readonly ensure: () => Effect.Effect<CodexServerInfo, AgentUnavailable>
     /**
-     * Intentionally stop the detached server and clear its identity. Live
-     * TUIs attached to it will exit — callers own that decision. Stopping
-     * an already-stopped server succeeds.
+     * Intentionally stop the server ATC started and clear its identity;
+     * a foreign server is left alone. Live TUIs attached to it will exit —
+     * callers own that decision. Stopping nothing succeeds.
      */
     readonly stop: () => Effect.Effect<void, AgentUnavailable>
   }
@@ -87,48 +104,27 @@ export class CodexServer extends Context.Service<
 
 const { unavailable } = providerErrors("codex")
 
-/** Readiness-gate failure that must stop the retry loop: the pid is gone. */
+/** Readiness-wait outcome that must stop polling: the pid is gone. */
 class ServerExited extends Schema.TaggedErrorClass<ServerExited>()("ServerExited", {
   pid: Schema.Number,
 }) {}
 
-const infoFor = (pid: number, port: number): CodexServerInfo => ({
-  pid,
-  port,
-  url: `ws://127.0.0.1:${port}`,
-})
+/** Codex's hardcoded control socket location under its home directory. */
+export const controlSocketPath = (codexHome: string): string =>
+  path.join(codexHome, "app-server-control", "app-server-control.sock")
 
-/** An OS-assigned free loopback port; the tiny claim race is acceptable. */
-const freePort = Effect.try({
-  try: () => {
-    const listener = Bun.listen({
-      hostname: "127.0.0.1",
-      port: 0,
-      socket: { data: () => {} },
-    })
-    const port = listener.port
-    listener.stop(true)
-    return port
-  },
-  catch: (error) => unavailable(`could not allocate a listen port: ${error}`),
-})
-
-/** One /readyz probe; any failure (refused, non-2xx, >1s) is "not ready". */
-const probeReady = (port: number): Effect.Effect<void, AgentUnavailable> =>
-  Effect.tryPromise({
-    try: (signal) => fetch(`http://127.0.0.1:${port}/readyz`, { signal }),
-    catch: () => unavailable(`not answering /readyz on port ${port}`),
-  }).pipe(
-    Effect.timeoutOrElse({
-      duration: "1 second",
-      orElse: () => Effect.fail(unavailable(`/readyz probe timed out on port ${port}`)),
-    }),
-    Effect.flatMap((response) =>
-      response.ok
-        ? Effect.void
-        : Effect.fail(unavailable(`/readyz answered ${response.status} on port ${port}`)),
-    ),
-  )
+/** One handshake probe: whether something completes a WebSocket upgrade. */
+const probeSocket = (socketPath: string): Effect.Effect<boolean> =>
+  Effect.callback<boolean>((resume) => {
+    const socket = UnixWebSocket.open(socketPath)
+    // Resume before closing: close() reports onclose synchronously.
+    socket.onopen = () => {
+      resume(Effect.succeed(true))
+      socket.close()
+    }
+    socket.onclose = () => resume(Effect.succeed(false))
+    return Effect.sync(() => socket.close())
+  }).pipe(Effect.timeoutOrElse({ duration: "1 second", orElse: () => Effect.succeed(false) }))
 
 /** SIGTERM → bounded wait → SIGKILL → verified gone. Absent pid succeeds. */
 const terminate = (pid: number): Effect.Effect<void, AgentUnavailable> =>
@@ -154,12 +150,18 @@ export const layerWith = (options: CodexServerOptions) =>
       const config = yield* AppConfig
       const subprocess = yield* Subprocess.Subprocess
       const fs = yield* FileSystem.FileSystem
+      const socketPath = controlSocketPath(config.codexHome)
       const identityFile = path.join(config.stateDir, "codex-app-server.json")
       const logFile = path.join(config.stateDir, "codex-app-server.log")
       const readyTimeout = options.readyTimeout ?? "15 seconds"
       const adoptTimeout = options.adoptTimeout ?? "10 seconds"
       const watchInterval = options.watchInterval ?? "1 second"
-      const readySchedule = Schedule.exponential("100 millis").pipe(Schedule.jittered)
+      // Capped backoff: a real server takes a second or two to bind, and an
+      // uncapped exponential would leave whole seconds on the table.
+      const readySchedule = Schedule.min([
+        Schedule.exponential("100 millis"),
+        Schedule.spaced("1 second"),
+      ]).pipe(Schedule.jittered)
 
       const current = yield* Ref.make<CodexServerInfo | null>(null)
       const lock = yield* Semaphore.make(1)
@@ -172,13 +174,7 @@ export const layerWith = (options: CodexServerOptions) =>
       const isOurServer = (pid: number) =>
         Subprocess.processHasArgvToken(subprocess, pid, "app-server")
 
-      /** Terminate `pid` only if it is provably still our server. */
-      const terminateOurs = (pid: number) =>
-        Effect.gen(function* () {
-          if (yield* isOurServer(pid)) yield* terminate(pid)
-        })
-
-      /** Last log lines, for actionable spawn/readiness diagnostics. */
+      /** Last log lines, for actionable start/readiness diagnostics. */
       const logTail = fs.readFileString(logFile).pipe(
         Effect.map((text) => {
           const lines = text.trimEnd().split("\n").slice(-10).join("\n")
@@ -188,15 +184,18 @@ export const layerWith = (options: CodexServerOptions) =>
       )
 
       /**
-       * Poll /readyz until ready, the window elapses, or the pid dies —
-       * a dead pid fails immediately instead of burning the whole window
-       * (the lock is held while this runs).
+       * Poll the socket until it answers, the window elapses, or `pid`
+       * dies — a dead pid fails immediately instead of burning the whole
+       * window (the lock is held while this runs).
        */
-      const awaitReady = (pid: number, port: number, window: Duration.Input) =>
+      const awaitAnswer = (pid: number, window: Duration.Input) =>
         Effect.suspend((): Effect.Effect<void, AgentUnavailable | ServerExited> =>
-          Subprocess.isProcessAlive(pid)
-            ? probeReady(port)
-            : Effect.fail(new ServerExited({ pid })),
+          Effect.gen(function* () {
+            if (yield* probeSocket(socketPath)) return
+            return yield* Subprocess.isProcessAlive(pid)
+              ? Effect.fail(unavailable("not answering yet"))
+              : Effect.fail(new ServerExited({ pid }))
+          }),
         ).pipe(
           Effect.retry({
             schedule: readySchedule,
@@ -204,18 +203,13 @@ export const layerWith = (options: CodexServerOptions) =>
           }),
           Effect.timeoutOrElse({
             duration: window,
-            orElse: () => Effect.fail(unavailable(`gave up waiting for /readyz on port ${port}`)),
+            orElse: () =>
+              Effect.fail(
+                unavailable(
+                  `not answering on ${socketPath} within ${Duration.format(Duration.fromInputUnsafe(window))}`,
+                ),
+              ),
           }),
-          Effect.catch((error) =>
-            Effect.gen(function* () {
-              const tail = yield* logTail
-              const cause =
-                error._tag === "ServerExited"
-                  ? `process ${pid} exited before becoming ready`
-                  : `not ready within ${Duration.format(Duration.fromInputUnsafe(window))} on port ${port}`
-              return yield* Effect.fail(unavailable(cause + tail))
-            }),
-          ),
         )
 
       const readIdentity = fs.readFileString(identityFile).pipe(
@@ -224,15 +218,15 @@ export const layerWith = (options: CodexServerOptions) =>
         ),
         Effect.flatMap((json) => Schema.decodeUnknownEffect(ServerIdentity)(json)),
         Effect.map(Option.some),
-        // Absent or corrupt identity is "no server" — replaced, never trusted.
+        // Absent or corrupt identity is "no server of ours" — never trusted.
         Effect.orElseSucceed(() => Option.none<typeof ServerIdentity.Type>()),
       )
 
-      const writeIdentity = (pid: number, port: number) =>
+      const writeIdentity = (pid: number) =>
         fs
           .writeFileString(
             identityFile,
-            JSON.stringify({ pid, port, startedAt: new Date().toISOString() }, null, 2),
+            JSON.stringify({ pid, startedAt: new Date().toISOString() }, null, 2),
           )
           .pipe(
             Effect.mapError((error) => unavailable(`could not persist identity: ${error.message}`)),
@@ -240,13 +234,28 @@ export const layerWith = (options: CodexServerOptions) =>
 
       const clearIdentity = fs.remove(identityFile).pipe(Effect.ignore)
 
+      /**
+       * Who serves an answering socket: our recorded pid when it is alive
+       * and still an app-server, otherwise a foreign server (and a stale
+       * identity of ours is cleared).
+       */
+      const claimAnswering = Effect.gen(function* () {
+        const persisted = yield* readIdentity
+        if (Option.isSome(persisted) && (yield* isOurServer(persisted.value.pid))) {
+          return { socketPath, pid: persisted.value.pid }
+        }
+        yield* clearIdentity
+        return { socketPath, pid: null }
+      })
+
       // Detached spawn, zmx-style: an intermediate sh backgrounds the server
       // (reparenting it away from ATC, stdin from /dev/null so it can never
       // see EOF when ATC exits) and echoes the server's pid. The sh itself
-      // is a normal scoped child that exits immediately.
+      // is a normal scoped child that exits immediately. `--listen unix://`
+      // with no path binds Codex's well-known socket for the CODEX_HOME the
+      // server inherits — the derivation stays codex's.
       const spawnDetached = Effect.gen(function* () {
         const executable = yield* resolveProviderExecutable("codex", config.codexExecutable)
-        const port = yield* freePort
         yield* fs
           .makeDirectory(config.stateDir, { recursive: true })
           .pipe(
@@ -258,14 +267,14 @@ export const layerWith = (options: CodexServerOptions) =>
               executable: "/bin/sh",
               args: [
                 "-c",
-                `nohup "$1" app-server --listen "$2" >"$3" 2>&1 </dev/null & echo $!`,
+                `nohup "$1" app-server --listen unix:// >"$2" 2>&1 </dev/null & echo $!`,
                 "sh",
                 executable,
-                `ws://127.0.0.1:${port}`,
                 logFile,
               ],
               env: {},
-              // The server needs the user's full environment (auth state).
+              // The server needs the user's full environment (auth state,
+              // CODEX_HOME).
               extendEnv: true,
               // A fixed, neutral cwd: the detached server outlives ATC, and
               // codex uses the server's cwd as the default for threads whose
@@ -286,10 +295,39 @@ export const layerWith = (options: CodexServerOptions) =>
         }
         // From here the detached server exists: any non-success exit —
         // identity write failure, readiness failure, interruption — must
-        // reap it, or "never accumulate" is broken.
-        yield* Effect.gen(function* () {
-          yield* writeIdentity(pid, port)
-          yield* awaitReady(pid, port, readyTimeout)
+        // reap it, or ATC could accumulate servers of its own. (If a
+        // foreign server binds the socket while our child is still
+        // starting, the answer seen here may be the foreign one's while our
+        // child has not yet exited "already in use"; the identity then
+        // briefly names that pid, and the exit watcher reconciles on its
+        // next tick by adopting the winner.)
+        const outcome = yield* Effect.gen(function* () {
+          yield* writeIdentity(pid)
+          return yield* awaitAnswer(pid, readyTimeout).pipe(
+            // Answering while our child is already gone: another server
+            // took the socket and ours exited "already in use".
+            Effect.map(() =>
+              Subprocess.isProcessAlive(pid) ? ("started" as const) : ("raced" as const),
+            ),
+            Effect.catchTag("ServerExited", () =>
+              Effect.gen(function* () {
+                // Our child exited: either it lost the start race to
+                // another client's server (codex exits "already in use"),
+                // which we then adopt, or it failed outright.
+                if (yield* probeSocket(socketPath)) return "raced" as const
+                const tail = yield* logTail
+                return yield* Effect.fail(
+                  unavailable(`process ${pid} exited before answering on ${socketPath}` + tail),
+                )
+              }),
+            ),
+            Effect.catchTag("AgentUnavailable", (error) =>
+              Effect.gen(function* () {
+                const tail = yield* logTail
+                return yield* Effect.fail(unavailable(error.reason + tail))
+              }),
+            ),
+          )
         }).pipe(
           Effect.onExit((exit) =>
             exit._tag === "Failure"
@@ -297,28 +335,39 @@ export const layerWith = (options: CodexServerOptions) =>
               : Effect.void,
           ),
         )
-        yield* Effect.logInfo("codex app-server started").pipe(Effect.annotateLogs({ pid, port }))
-        return infoFor(pid, port)
+        if (outcome === "raced") {
+          yield* clearIdentity
+          yield* Effect.logInfo("codex app-server adopted (another client started it first)")
+          return { socketPath, pid: null }
+        }
+        yield* Effect.logInfo("codex app-server started").pipe(
+          Effect.annotateLogs({ pid, socketPath }),
+        )
+        return { socketPath, pid }
       })
 
-      // Adopt-or-replace against the persisted identity, then spawn fresh if
-      // nothing was adoptable. Callers hold the lock.
+      // Adopt whatever answers; else wait for (or replace) our own recorded
+      // server; else start one. Callers hold the lock.
       const acquire = Effect.gen(function* () {
+        if (yield* probeSocket(socketPath)) {
+          const info = yield* claimAnswering
+          yield* Effect.logInfo(
+            info.pid === null ? "codex app-server adopted" : "codex app-server re-adopted",
+          ).pipe(Effect.annotateLogs({ socketPath, pid: info.pid }))
+          return info
+        }
         const persisted = yield* readIdentity
         if (Option.isSome(persisted)) {
-          const { pid, port } = persisted.value
+          const { pid } = persisted.value
           if (yield* isOurServer(pid)) {
-            const adopted = yield* awaitReady(pid, port, adoptTimeout).pipe(
+            // Ours, alive, silent: it may still be starting up. Wait, and
+            // only then replace it — replacing our own server is within
+            // the ownership boundary; a foreign one never gets here.
+            const answered = yield* awaitAnswer(pid, adoptTimeout).pipe(
               Effect.as(true),
               Effect.orElseSucceed(() => false),
             )
-            if (adopted) {
-              yield* Effect.logInfo("codex app-server adopted").pipe(
-                Effect.annotateLogs({ pid, port }),
-              )
-              return infoFor(pid, port)
-            }
-            // Alive but not answering: replace it rather than accumulate.
+            if (answered) return { socketPath, pid }
             yield* terminate(pid)
           }
           yield* clearIdentity
@@ -329,12 +378,13 @@ export const layerWith = (options: CodexServerOptions) =>
       const watchLoop: Effect.Effect<void> = Effect.gen(function* () {
         while (true) {
           const info = yield* Ref.get(current)
-          if (info === null) return
+          // Only a server we started is ours to watch and restart.
+          if (info === null || info.pid === null) return
           if (Subprocess.isProcessAlive(info.pid)) {
             yield* Effect.sleep(watchInterval)
             continue
           }
-          yield* Effect.logWarning("codex app-server exited unexpectedly; restarting").pipe(
+          yield* Effect.logWarning("codex app-server exited unexpectedly; recovering").pipe(
             Effect.annotateLogs({ pid: info.pid }),
           )
           yield* Ref.set(current, null)
@@ -371,15 +421,11 @@ export const layerWith = (options: CodexServerOptions) =>
           .withPermits(1)(
             Effect.gen(function* () {
               const cached = yield* Ref.get(current)
-              if (cached !== null && Subprocess.isProcessAlive(cached.pid)) {
-                const stillReady = yield* probeReady(cached.port).pipe(
-                  Effect.as(true),
-                  Effect.orElseSucceed(() => false),
-                )
-                // Not ready ≠ dead: acquire re-probes within adoptTimeout
-                // before concluding anything drastic.
-                if (stillReady) return cached
-              }
+              const ownAlive =
+                cached !== null && (cached.pid === null || Subprocess.isProcessAlive(cached.pid))
+              // Not answering ≠ dead: acquire re-probes within adoptTimeout
+              // before concluding anything drastic.
+              if (ownAlive && (yield* probeSocket(socketPath))) return cached
               yield* Ref.set(current, null)
               const info = yield* acquire
               yield* Ref.set(current, info)
@@ -396,13 +442,15 @@ export const layerWith = (options: CodexServerOptions) =>
             Effect.gen(function* () {
               // Cache and file normally agree; if they diverged (another
               // process rewrote the file), reap both — an unrecorded server
-              // would be unadoptable forever.
+              // of ours would be unadoptable forever.
               const cached = yield* Ref.get(current)
               const persisted = yield* readIdentity
               const pids = new Set<number>()
-              if (cached !== null) pids.add(cached.pid)
+              if (cached !== null && cached.pid !== null) pids.add(cached.pid)
               if (Option.isSome(persisted)) pids.add(persisted.value.pid)
-              for (const pid of pids) yield* terminateOurs(pid)
+              for (const pid of pids) {
+                if (yield* isOurServer(pid)) yield* terminate(pid)
+              }
               yield* clearIdentity
               yield* Ref.set(current, null)
             }),

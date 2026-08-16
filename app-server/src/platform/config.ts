@@ -18,7 +18,9 @@ import { DEFAULT_PORT } from "../api/contract.ts"
 //                                             terminals/ (zmx sockets)
 //
 // ATC_CONFIG overrides the config file path; ATC_DATA_DIR the data directory.
-// The TOML format never leaks past this module.
+// CODEX_HOME (codex's own variable, default ~/.codex) is read as-is so ATC
+// finds the same shared Codex app-server socket every other Codex client
+// does. The TOML format never leaks past this module.
 
 /** Environment shape consumed by the pipeline; tests inject their own. */
 export type Env = Record<string, string | undefined>
@@ -99,6 +101,13 @@ export class AppConfig extends Context.Service<
     readonly tailscaleExecutable: string
     /** Codex CLI executable: an absolute path, or a name resolved on PATH. */
     readonly codexExecutable: string
+    /**
+     * The Codex home directory exactly as codex itself resolves it
+     * (CODEX_HOME, else ~/.codex). Environment only — it is codex's
+     * variable, not ATC's, and ATC must agree with every other Codex client
+     * on the machine: the shared app-server control socket lives under it.
+     */
+    readonly codexHome: string
     /** Claude Code executable: an absolute path, or a name resolved on PATH. */
     readonly claudeExecutable: string
     /**
@@ -327,6 +336,7 @@ export const load = (
       "state directory",
       "XDG_STATE_HOME",
     )
+    const home = nonEmpty(env["HOME"]) ?? os.homedir()
     return {
       port: settings.port,
       bind: settings.bind,
@@ -335,7 +345,7 @@ export const load = (
       context,
       logLevel: settings.logLevel,
       configFile,
-      home: nonEmpty(env["HOME"]) ?? os.homedir(),
+      home,
       dataDir,
       stateDir,
       dbFile: path.join(dataDir, "atc.db"),
@@ -345,6 +355,7 @@ export const load = (
       zmxExecutable: settings.zmxExecutable,
       tailscaleExecutable: settings.tailscaleExecutable,
       codexExecutable: settings.codexExecutable,
+      codexHome: nonEmpty(env["CODEX_HOME"]) ?? path.join(home, ".codex"),
       claudeExecutable: settings.claudeExecutable,
       terminalSocketDir: path.join(stateDir, "terminals"),
     }

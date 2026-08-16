@@ -1,8 +1,11 @@
-// Fixture stand-in for `codex app-server --listen ws://127.0.0.1:<port>`:
-// binds the requested port, answers /readyz, and speaks the JSON-RPC subset
-// the codex adapter uses (initialize, thread/start, thread/resume,
-// turn/start, turn/interrupt, thread/unsubscribe), broadcasting
-// notifications to every connected socket like the real shared app-server.
+// Fixture stand-in for `codex app-server --listen unix://`: serves a
+// WebSocket on Codex's well-known control socket under CODEX_HOME and
+// speaks the JSON-RPC subset the codex adapter uses
+// (initialize, thread/start, thread/resume, turn/start, turn/interrupt,
+// thread/unsubscribe), broadcasting notifications to every connected
+// socket like the real shared app-server. Like the real server it exits
+// "already in use" when a live server answers the socket, and rebinds
+// over a stale socket file that nothing answers.
 //
 // Turn behavior is keyed off the input text: containing "HANG" leaves the
 // turn active until interrupted; containing "APPROVAL" first round-trips an
@@ -17,10 +20,13 @@
 // "test/child/finish" request completes a child.
 //
 // Env switches (baked into the wrapper script by tests):
-//   FAKE_CODEX_MODE       "ok" (default) | "never-ready" (503 /readyz)
+//   FAKE_CODEX_MODE       "ok" (default) | "never-ready" (alive, never binds)
 //   FAKE_CODEX_WRONG_CWD  "start" | "resume" — lie about cwd in that reply
-//   FAKE_CODEX_VERSION    printed for `--version` (default 0.146.0)
-//   FAKE_CODEX_PID_FILE   record this pid for reap assertions
+//   FAKE_CODEX_VERSION    printed for `--version` and carried in initialize's
+//                         userAgent (default 0.147.0)
+//   FAKE_CODEX_PID_FILE   record this pid for reap assertions; the listener
+//                         argv lands next to it (listen-record.json) so
+//                         tests can pin the launch shape
 //   FAKE_CODEX_TTL_MS     self-exit backstop (default 120s) so a test that
 //                         fails to stop() a detached fixture cannot leak it
 //   FAKE_CODEX_READ_DELAY_MS  delay root thread/read replies, so tests can
@@ -31,8 +37,11 @@
 //                         flush lag), so tests can prove the ATC-155
 //                         discovery loop lands mid-turn
 
+import { existsSync, mkdirSync, rmSync } from "node:fs"
+import * as path from "node:path"
+
 if (process.argv.includes("--version")) {
-  console.log(`codex-cli ${process.env["FAKE_CODEX_VERSION"] ?? "0.146.0"}`)
+  console.log(`codex-cli ${process.env["FAKE_CODEX_VERSION"] ?? "0.147.0"}`)
   process.exit(0)
 }
 
@@ -78,18 +87,58 @@ if (process.argv.includes("exec")) {
   process.exit(0)
 }
 
-const listenArg = process.argv.find((arg) => arg.startsWith("ws://"))
-if (listenArg === undefined) {
-  console.error("fake-codex-listener: no ws:// listen argument")
-  process.exit(64)
-}
-const port = Number.parseInt(new URL(listenArg).port, 10)
+const listenIndex = process.argv.indexOf("--listen")
+const listenArg = listenIndex >= 0 ? process.argv[listenIndex + 1] : undefined
 const mode = process.env["FAKE_CODEX_MODE"] ?? "ok"
 const wrongCwd = process.env["FAKE_CODEX_WRONG_CWD"]
+const version = process.env["FAKE_CODEX_VERSION"] ?? "0.147.0"
 const ttl = Number.parseInt(process.env["FAKE_CODEX_TTL_MS"] ?? "120000", 10)
 const pidFile = process.env["FAKE_CODEX_PID_FILE"]
 if (pidFile !== undefined && pidFile !== "") {
   await Bun.write(pidFile, String(process.pid))
+  await Bun.write(
+    path.join(path.dirname(pidFile), "listen-record.json"),
+    JSON.stringify({ argv: process.argv.slice(2) }),
+  )
+}
+setTimeout(() => process.exit(0), ttl)
+
+// Bare `unix://` — the one shape ATC starts — binds the well-known socket
+// under CODEX_HOME (~/.codex by default), the same derivation as codex.
+if (listenArg !== "unix://") {
+  console.error("fake-codex-listener: expected --listen unix://")
+  process.exit(64)
+}
+const codexHome =
+  process.env["CODEX_HOME"] !== undefined && process.env["CODEX_HOME"] !== ""
+    ? process.env["CODEX_HOME"]
+    : `${process.env["HOME"]}/.codex`
+const socketPath = `${codexHome}/app-server-control/app-server-control.sock`
+
+// A wedged server: alive, never binds.
+if (mode === "never-ready") await new Promise(() => {})
+
+// The real server's startup rule: a live server answering the socket means
+// "already in use"; a stale socket file that nothing answers is rebound.
+mkdirSync(path.dirname(socketPath), { recursive: true })
+if (existsSync(socketPath)) {
+  const answers = await Bun.connect({
+    unix: socketPath,
+    socket: {
+      data() {},
+      open(socket) {
+        socket.end()
+      },
+    },
+  }).then(
+    () => true,
+    () => false,
+  )
+  if (answers) {
+    console.error("app-server control socket is already in use")
+    process.exit(1)
+  }
+  rmSync(socketPath, { force: true })
 }
 
 interface Thread {
@@ -181,7 +230,7 @@ const handle = (
   const params = message.params ?? {}
   switch (message.method) {
     case "initialize":
-      return respond({ userAgent: "fake-codex-app-server" })
+      return respond({ userAgent: `fake-codex-app-server/${version}` })
     case "initialized":
       return
     case "thread/start": {
@@ -387,15 +436,8 @@ const handle = (
 }
 
 Bun.serve({
-  hostname: "127.0.0.1",
-  port,
+  unix: socketPath,
   fetch(request, server) {
-    const url = new URL(request.url)
-    if (url.pathname === "/readyz") {
-      return mode === "ok"
-        ? new Response("ok", { status: 200 })
-        : new Response("not ready", { status: 503 })
-    }
     if (server.upgrade(request)) return undefined
     return new Response("not found", { status: 404 })
   },
@@ -411,5 +453,3 @@ Bun.serve({
     },
   },
 })
-
-setTimeout(() => process.exit(0), ttl)

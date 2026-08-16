@@ -48,11 +48,22 @@ describe("configuration", () => {
       assert.strictEqual(config.zmxExecutable, "zmx")
       assert.strictEqual(config.tailscaleExecutable, "tailscale")
       assert.strictEqual(config.codexExecutable, "codex")
+      assert.strictEqual(config.codexHome, join(home, ".codex"))
       assert.strictEqual(config.claudeExecutable, "claude")
       assert.strictEqual(
         config.terminalSocketDir,
         join(home, ".local", "state", "atc", "terminals"),
       )
+    }),
+  )
+
+  it.effect("codexHome follows codex's own CODEX_HOME variable", () =>
+    Effect.gen(function* () {
+      const config = yield* load({ CODEX_HOME: "/opt/codex-home" })
+      assert.strictEqual(config.codexHome, "/opt/codex-home")
+      // Empty means unset, like every other environment value.
+      const unset = yield* load({ CODEX_HOME: "" })
+      assert.strictEqual(unset.codexHome, join(home, ".codex"))
     }),
   )
 

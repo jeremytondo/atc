@@ -72,10 +72,13 @@ server domain logic, and no tooling should enforce an API-to-CLI mapping.
 1. **Formatting above `app-server/`.** Only ever `mise run -C app-server fmt`.
    A bare `prettier --write .` from the repo root rewrites the read-only
    `repos/` clones and dozens of unrelated tracked files.
-2. **Touching the user's real zmx sessions.** `zmx` with no `ZMX_DIR` points at
-   the developer's own multiplexer, not ATC's. Always scope debugging to
-   `ZMX_DIR=~/.local/state/atc/terminals zmx list`, and never kill a session
-   you did not create.
+2. **Touching the user's real zmx sessions or Codex server.** `zmx` with no
+   `ZMX_DIR` points at the developer's own multiplexer, not ATC's. Always
+   scope debugging to `ZMX_DIR=~/.local/state/atc/terminals zmx list`, and
+   never kill a session you did not create. Likewise the `codex app-server`
+   on `~/.codex/app-server-control/` is shared with the Codex desktop app and
+   every terminal `codex`: never kill it, and test against a private
+   `CODEX_HOME`.
 3. **Editing generated output.** `app-server/openapi.json` is generated from
    the contract, and `packages/ATCKit/Sources/ATCAppServerAPI/openapi.json` is
    a symlink to it. The admin UI build (`app-server/web/build/`) and its embed
