@@ -367,6 +367,9 @@ jobs:
             --built-at "${{ needs.plan.outputs.built_at }}" \
             --output out/atc-macos-arm64.dmg
 
+      - name: Checksum macOS asset
+        run: (cd out && shasum -a 256 atc-macos-arm64.dmg > checksums-macos.txt)
+
       - name: Remove ephemeral signing credentials
         if: always() && steps.signing.outcome != 'skipped'
         run: scripts/cleanup-macos-signing.sh
@@ -374,7 +377,9 @@ jobs:
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: product-release-assets-macos
-          path: out/atc-macos-arm64.dmg
+          path: |
+            out/atc-macos-arm64.dmg
+            out/checksums-macos.txt
           if-no-files-found: error
 
       - name: Upload macOS release failure logs

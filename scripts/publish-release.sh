@@ -37,15 +37,15 @@ esac
 [[ -n "$TAG" && -n "$VERSION" && -n "$BUILT_AT" && "$COMMIT" =~ ^[0-9a-f]{40}$ && -d "$ASSET_DIR" ]] || { usage; exit 2; }
 [[ "$KIND" == "stable" && "$CHANNEL" == "stable" ]] || [[ "$KIND" != "stable" && "$CHANNEL" == "dev" ]] || { usage; exit 2; }
 
-expected=(
+checksummed=(
   atc-darwin-arm64.tar.gz
   atc-darwin-x64.tar.gz
   atc-linux-arm64.tar.gz
   atc-linux-x64.tar.gz
   atc-macos-arm64.dmg
-  checksums.txt
   manifest.json
 )
+expected=("${checksummed[@]}" checksums.txt)
 assets=()
 for name in "${expected[@]}"; do
   path="$ASSET_DIR/$name"
@@ -82,6 +82,13 @@ if [[ "$KIND" == "candidate" ]]; then
     exit 0
   fi
 fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+"$SCRIPT_DIR/verify-release-assets.sh" \
+  --exact \
+  "$ASSET_DIR/checksums.txt" \
+  "$ASSET_DIR" \
+  "${checksummed[@]}"
 
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

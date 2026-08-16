@@ -135,10 +135,23 @@ chmod +x "$TEST_ROOT/dist/atc-darwin-arm64" "$TEST_ROOT/dist/atc-linux-x64"
   --out "$TEST_ROOT/out" \
   --checksums checksums-linux.txt \
   linux-x64
+printf 'macOS disk image\n' > "$TEST_ROOT/out/atc-macos-arm64.dmg"
+(
+  cd "$TEST_ROOT/out"
+  shasum -a 256 atc-macos-arm64.dmg > checksums-macos.txt
+)
 "$SCRIPT_DIR/merge-checksums.sh" "$TEST_ROOT/out"
-[[ "$(wc -l < "$TEST_ROOT/out/checksums.txt" | tr -d ' ')" == "2" ]]
+[[ "$(wc -l < "$TEST_ROOT/out/checksums.txt" | tr -d ' ')" == "3" ]]
 tar -tzf "$TEST_ROOT/out/atc-darwin-arm64.tar.gz" | grep -qx atc
 tar -tzf "$TEST_ROOT/out/atc-linux-x64.tar.gz" | grep -qx atc
+grep -q '  atc-macos-arm64.dmg$' "$TEST_ROOT/out/checksums.txt"
+"$SCRIPT_DIR/verify-release-assets.sh" \
+  --exact \
+  "$TEST_ROOT/out/checksums.txt" \
+  "$TEST_ROOT/out" \
+  atc-darwin-arm64.tar.gz \
+  atc-linux-x64.tar.gz \
+  atc-macos-arm64.dmg
 
 credential_dir="$TEST_ROOT/runner-temp/atc-release-credentials"
 fake_bin="$TEST_ROOT/fake-bin"
@@ -204,7 +217,11 @@ printf '%s\n' \
   '  fi' \
   'fi' \
   'exit 99' > "$release_fake_bin/gh"
-chmod +x "$release_fake_bin/gh"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'echo "unexpected git command: $*" >&2' \
+  'exit 99' > "$release_fake_bin/git"
+chmod +x "$release_fake_bin/gh" "$release_fake_bin/git"
 
 set +e
 reuse_output="$(
@@ -259,6 +276,22 @@ state_error_status=$?
 set -e
 [[ $state_error_status -eq 1 ]]
 [[ "$state_error_output" == *"could not resolve PR #214 state"* ]]
+
+(
+  cd "$candidate_assets"
+  shasum -a 256 \
+    atc-darwin-arm64.tar.gz \
+    atc-darwin-x64.tar.gz \
+    atc-linux-arm64.tar.gz \
+    atc-linux-x64.tar.gz \
+    manifest.json > checksums.txt
+)
+set +e
+incomplete_checksums_output="$(candidate_publish OPEN "$commit" 2>&1)"
+incomplete_checksums_status=$?
+set -e
+[[ $incomplete_checksums_status -eq 1 ]]
+[[ "$incomplete_checksums_output" == *"does not include exactly one valid checksum for atc-macos-arm64.dmg"* ]]
 
 set +e
 missing_value_output="$($SCRIPT_DIR/package-app-server.sh --dist 2>&1)"
@@ -421,6 +454,8 @@ if git -C "$REPO_ROOT" grep -qE 'ATC_NOTARY_KEY_' -- \
 fi
 
 git -C "$REPO_ROOT" grep -qE '^run-name:.*request_id' -- .github/workflows/product-release.yml
+git -C "$REPO_ROOT" grep -qF 'shasum -a 256 atc-macos-arm64.dmg > checksums-macos.txt' -- .github/workflows/product-release.yml
+git -C "$REPO_ROOT" grep -qF 'out/checksums-macos.txt' -- .github/workflows/product-release.yml
 grep -q 'request_id=' "$REPO_ROOT/scripts/release.sh"
 grep -q 'Product Release \[stable:$REQUEST_ID\]' "$REPO_ROOT/scripts/release.sh"
 grep -q 'request_id=' "$REPO_ROOT/scripts/dev-build.sh"
