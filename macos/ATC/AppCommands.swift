@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct AppCommands: Commands {
@@ -34,6 +35,14 @@ struct AppCommands: Commands {
     }
 
     var body: some Commands {
+        CommandGroup(replacing: .appInfo) {
+            Button("About atc") {
+                NSApplication.shared.orderFrontStandardAboutPanel(
+                    options: [.version: displayedBuildVersion]
+                )
+            }
+        }
+
         CommandGroup(replacing: .newItem) {
             commandButton(.newThread)
             commandButton(.newTerminal)
@@ -57,6 +66,21 @@ struct AppCommands: Commands {
             commandButton(.reloadConfiguration, appScoped: true)
             commandButton(.revealConfiguration, appScoped: true)
         }
+    }
+
+    /// Release builds carry the complete stable or CalVer component identity
+    /// in ATCBuildVersion. Local builds fall back to Xcode's marketing version.
+    private var displayedBuildVersion: String {
+        let releaseVersion =
+            Bundle.main.object(
+                forInfoDictionaryKey: "ATCBuildVersion"
+            ) as? String
+        if let releaseVersion, !releaseVersion.isEmpty {
+            return releaseVersion
+        }
+        return Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+        ) as? String ?? "Development Build"
     }
 
     @ViewBuilder
