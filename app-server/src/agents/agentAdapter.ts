@@ -75,6 +75,10 @@ export const NESTED_SESSION_ENV_VARIABLES = [
  */
 export type AgentActivity = "idle" | "working" | "needs_input" | "unknown"
 
+/** Busy covers a pending request too: a turn parked on an approval is mid-turn. */
+export const isBusyActivity = (activity: AgentActivity): boolean =>
+  activity === "working" || activity === "needs_input"
+
 const ACTIVITY_PRECEDENCE: Record<AgentActivity, number> = {
   needs_input: 3,
   working: 2,
@@ -150,7 +154,7 @@ export type AgentSessionEvent =
 /**
  * One entry of the normalized writer feed. Turn ids are provider-native
  * where the provider has them (Codex) and adapter-minted where it does not
- * (Claude) — unique within the thread either way, since Threads persists
+ * (Claude) — unique within the thread either way, since the Thread runtime persists
  * them. `turnStarted` always precedes its `turnCompleted`; every item event
  * of a turn falls between the two. `textDelta` is live-only: it extends the
  * text of the `assistantText` / `reasoning` item whose `itemStarted` carried

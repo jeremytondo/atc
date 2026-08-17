@@ -940,7 +940,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
       /**
        * Open a turn on the feed: turnStarted, then the user's prompt as the
        * turn's first item (the SDK never echoes it), then the input itself.
-       * Turn ids are uuids — Threads persists them, so a process-local
+       * Turn ids are uuids — the Thread runtime persists them, so a process-local
        * counter would collide with an earlier process's turns.
        */
       const beginTurn = (session: LiveSession, text: string): string => {

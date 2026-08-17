@@ -382,7 +382,7 @@ export const ResourceChangedEvent = Schema.Struct({
 // --- The Thread runtime vocabulary (ATC-193) ---------------------------------
 //
 // Defined once, here, and reused verbatim by the AgentAdapter seam: adapters
-// emit these values, Threads persists them, and every client decodes them.
+// emit these values, the Thread runtime persists them, and every client decodes them.
 // Every union is `oneOf` over NAMED variants with one literal discriminant
 // (`type` / `kind`), so openapi.ts can stamp an OpenAPI discriminator and the
 // generated Swift client gets one enum per union instead of a struct of
@@ -538,7 +538,9 @@ export const ThreadTurn = Schema.Struct({
     description: "Provider turn id (Codex) or adapter-derived (Claude); unique within the thread.",
   }),
   status: ThreadTurnStatus,
-  error: Schema.optionalKey(Schema.String.annotate({ description: "Present iff failed." })),
+  error: Schema.optionalKey(
+    Schema.String.annotate({ description: "Failure detail; only ever present when failed." }),
+  ),
   promptId: Schema.optionalKey(
     Schema.String.annotate({
       description: "The queued prompt this turn ran, when ATC started it.",
@@ -674,7 +676,9 @@ export const QueuedPromptList = Schema.Array(QueuedPrompt).annotate({
 
 export const ThreadTranscript = Schema.Struct({
   items: Schema.Array(ThreadItem).annotate({ description: "Transcript order, oldest first." }),
-  turns: Schema.Array(ThreadTurn).annotate({ description: "Every turn referenced by `items`." }),
+  turns: Schema.Array(ThreadTurn).annotate({
+    description: "Every turn referenced by `items`, plus any turn still running.",
+  }),
   seq: Schema.Int.annotate({
     description: "The thread's change counter at the time of the read; subscribe with after=seq.",
   }),
@@ -993,6 +997,69 @@ export class ThreadBusy extends Schema.TaggedErrorClass<ThreadBusy>()(
     super({
       ...props,
       message: `thread ${props.threadId} is working; retry once the turn completes`,
+    })
+  }
+}
+
+/** Unknown or already-answered request id on the thread. */
+export class RequestNotFound extends Schema.TaggedErrorClass<RequestNotFound>()(
+  "RequestNotFound",
+  { threadId: Schema.String, requestId: Schema.String, message: errorMessage },
+  {
+    identifier: "RequestNotFound",
+    description:
+      "No pending request with the given id on this thread (unknown, or already answered).",
+    httpApiStatus: 404,
+  },
+) {
+  constructor(props: { readonly threadId: string; readonly requestId: string }) {
+    super({
+      ...props,
+      message: `thread ${props.threadId} has no pending request ${props.requestId}`,
+    })
+  }
+}
+
+/** The answer does not fit the request (kind mismatch, unknown question, non-option answer). */
+export class InvalidRequestAnswer extends Schema.TaggedErrorClass<InvalidRequestAnswer>()(
+  "InvalidRequestAnswer",
+  {
+    threadId: Schema.String,
+    requestId: Schema.String,
+    reason: Schema.String,
+    message: errorMessage,
+  },
+  {
+    identifier: "InvalidRequestAnswer",
+    description:
+      "The answer does not fit the pending request: kind mismatch, unknown question id, or a non-option answer to a question that is not freeform.",
+    httpApiStatus: 400,
+  },
+) {
+  constructor(props: {
+    readonly threadId: string
+    readonly requestId: string
+    readonly reason: string
+  }) {
+    super({ ...props, message: props.reason })
+  }
+}
+
+/** Unknown queued prompt id, or the prompt already started (it is a turn now). */
+export class QueuedPromptNotFound extends Schema.TaggedErrorClass<QueuedPromptNotFound>()(
+  "QueuedPromptNotFound",
+  { threadId: Schema.String, promptId: Schema.String, message: errorMessage },
+  {
+    identifier: "QueuedPromptNotFound",
+    description:
+      "No waiting prompt with the given id on this thread (unknown, or already started).",
+    httpApiStatus: 404,
+  },
+) {
+  constructor(props: { readonly threadId: string; readonly promptId: string }) {
+    super({
+      ...props,
+      message: `thread ${props.threadId} has no waiting prompt ${props.promptId}`,
     })
   }
 }

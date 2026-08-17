@@ -306,7 +306,7 @@ interface LiveSession {
   ownTurn: string | null
   /** The active turn's TOOL items by id (latest state), so an approval can
    * name its item and flip it to pending; cleared at turn end. Text items
-   * are never retained — Threads owns the transcript. */
+   * are never retained — the Thread runtime owns the transcript. */
   readonly toolItems: Map<string, ThreadItem>
   /** Parked requests by request id, closed with their turn. */
   readonly pendingRequests: Map<string, PendingRequest>
@@ -1132,7 +1132,7 @@ export const layer = Layer.effect(CodexAdapter)(
               emit(session, { type: "requestClosed", requestId })
             }),
         }
-        return { connection, unregister }
+        return { connection, session, unregister }
       })
 
     /**
@@ -1270,12 +1270,22 @@ export const layer = Layer.effect(CodexAdapter)(
             if (!samePath(decoded.thread.cwd, options.cwd)) {
               return yield* Effect.fail(identityMismatch("cwd", options.cwd, decoded.thread.cwd))
             }
-            const { connection } = yield* registerSession(
+            const { connection, session } = yield* registerSession(
               state,
               decoded.thread.id,
               options.cwd,
               decoded.thread.status,
             )
+            // A turn still running on the shared server (ours before a
+            // restart, or a TUI's) is the interrupt target this connection
+            // may name; thread/resume's turns say which it is.
+            const running = yield* CodexItems.decodeHistoryTurns(decoded.thread.turns ?? []).pipe(
+              Effect.map((turns) => turns.findLast((turn) => turn.status === "inProgress")),
+              Effect.orElseSucceed(() => undefined),
+            )
+            if (running !== undefined && session.activeTurn === null) {
+              session.activeTurn = running.id
+            }
             return connection
           }),
         ),

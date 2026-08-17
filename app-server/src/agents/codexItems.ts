@@ -22,7 +22,7 @@ import { fileChangeTitle, toolOutcome } from "./agentAdapter.ts"
 //     re-numbers items positionally (`item-1`, `item-2`, … — probed live
 //     2026-08-17 on 0.147) and omits some tool items (an `exec` custom tool
 //     call recorded in the rollout did not come back as a commandExecution).
-//     Threads therefore treats a re-read as a wholesale replacement, never a
+//     The Thread runtime therefore treats a re-read as a wholesale replacement, never a
 //     merge by id.
 //   - hookPrompt and the review-mode markers are deliberately not emitted;
 //     every other unknown or exotic item type surfaces as a `toolCall`

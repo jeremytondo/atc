@@ -23,7 +23,9 @@ import * as Projects from "./projects/projects.ts"
 import * as TerminalRepository from "./terminals/terminalRepository.ts"
 import * as Terminals from "./terminals/terminals.ts"
 import * as ThreadRepository from "./threads/threadRepository.ts"
+import * as ThreadRuntime from "./threads/threadRuntime.ts"
 import * as Threads from "./threads/threads.ts"
+import * as TranscriptRepository from "./threads/transcriptRepository.ts"
 import * as Zmx from "./terminals/zmxAdapter.ts"
 
 // OpenAPI discovery (ATC-131): the contract-derived document at a stable
@@ -128,10 +130,12 @@ export const production = (options: { readonly port: number; readonly hostname?:
     // server-info handler and the optional trust allowlist read one instance.
     Layer.provideMerge(Tailscale.layer),
     // Projects sits above Threads (its delete cascades through them), which
-    // sits above Terminals — each provide feeds everything composed so far.
+    // sits above the ThreadRuntime (activity ledger, transcript, turns) and
+    // Terminals — each provide feeds everything composed so far.
     Layer.provide(Projects.layer),
     Layer.provide(Threads.layer),
-    Layer.provide([Terminals.layer, AgentRegistry.layer]),
+    Layer.provide([Terminals.layer, ThreadRuntime.layer]),
+    Layer.provide(AgentRegistry.layer),
     // Below Terminals (the deepest publisher) so one memoized Events instance
     // serves every domain service, the handlers, and the shutdown drain.
     Layer.provide(Events.layer),
@@ -141,6 +145,7 @@ export const production = (options: { readonly port: number; readonly hostname?:
       ProjectRepository.layer,
       TerminalRepository.layer,
       ThreadRepository.layer,
+      TranscriptRepository.layer,
       Directories.layer,
       Zmx.layer,
       ClaudeHooks.layer,

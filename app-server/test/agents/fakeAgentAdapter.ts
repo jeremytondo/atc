@@ -47,6 +47,9 @@ export interface FakeAgentAdapter {
   readonly setUnavailable: (reason: string | null) => void
   /** Insert a resumable session directly (no createSession). */
   readonly seed: (providerSessionId: string, cwd: string) => FakeAgentSession
+  /** Make the next resume of `providerSessionId` find turn `turnId` still
+   * running (working) — a shared provider server across an ATC restart. */
+  readonly seedRunningTurn: (providerSessionId: string, turnId: string) => void
   /** Complete the active turn of `providerSessionId` with `outcome`. */
   readonly completeTurn: (providerSessionId: string, outcome: AgentTurnOutcome) => void
   /** Open a stock provider request (an approval, or a one-question ask)
@@ -137,6 +140,7 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
   const connections = new Map<string, LiveConnection>()
   const observers = new Map<string, Set<Queue.Queue<AgentSessionEvent, Cause.Done>>>()
   const checkActivity = new Map<string, AgentActivity>()
+  const runningOnResume = new Map<string, string>()
   const histories = new Map<string, ReadonlyArray<HistoryTurn>>()
   const historyReads: Array<string> = []
   const answers: FakeAgentAdapter["answers"] = []
@@ -158,6 +162,7 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
   let unavailableReason: string | null = null
   let nextSessionId = 1
   let nextTurnId = 1
+  const instance = crypto.randomUUID().slice(0, 8)
   let nextRequestId = 1
 
   const requireAvailable = Effect.suspend(() =>
@@ -194,10 +199,12 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
         )
       }
       const events = yield* Queue.make<AgentEvent, Cause.Done>()
+      const running = runningOnResume.get(session.providerSessionId) ?? null
+      runningOnResume.delete(session.providerSessionId)
       const live: LiveConnection = {
         events,
-        activity: "idle",
-        activeTurn: null,
+        activity: running === null ? "idle" : "working",
+        activeTurn: running,
         closed: false,
         openRequests: new Map(),
       }
@@ -231,9 +238,17 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
             )
           }
           session.inputs.push(input)
-          const turnId = `fake-turn-${nextTurnId++}`
+          // Unique across fake instances: turn ids are persisted, and a
+          // "restarted" fake must not collide with the previous one's turns.
+          const turnId = `fake-turn-${nextTurnId++}-${instance}`
           live.activeTurn = turnId
           emit(live, { type: "turnStarted", turnId })
+          // Both real adapters put the prompt on the feed as the turn's
+          // first item (Codex via the fan-out, Claude explicitly).
+          emit(live, {
+            type: "itemCompleted",
+            item: { type: "userMessage", id: `${turnId}:prompt`, turnId, text: input },
+          })
           setActivity(live, "working")
           return { turnId }
         })
@@ -478,6 +493,9 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
       const session: FakeAgentSession = { providerSessionId, cwd, inputs: [] }
       sessions.set(providerSessionId, session)
       return session
+    },
+    seedRunningTurn: (providerSessionId, turnId) => {
+      runningOnResume.set(providerSessionId, turnId)
     },
     completeTurn: (providerSessionId, outcome) => finishTurn(providerSessionId, outcome),
     openRequest: (providerSessionId, kind) => {

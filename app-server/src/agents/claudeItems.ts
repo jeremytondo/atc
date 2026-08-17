@@ -24,7 +24,7 @@ import { fileChangeTitle, toolOutcome } from "./agentAdapter.ts"
 //     text and thinking blocks are keyed `${messageKey}:${blockIndex}` where
 //     the key is the API message id while streaming and the SDK message
 //     uuid otherwise. History ids therefore differ from live ids for text —
-//     accepted: Threads replaces its copy wholesale on a re-read.
+//     accepted: the Thread runtime replaces its copy wholesale on a re-read.
 //   - Tool names decide the item shape: Bash → command; Edit / Write /
 //     MultiEdit / NotebookEdit → fileChange; `mcp__<server>__<tool>` →
 //     mcpCall; everything else → toolCall. A tool_result completes its item;

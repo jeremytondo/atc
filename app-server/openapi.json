@@ -2684,7 +2684,7 @@
           },
           "error": {
             "type": "string",
-            "description": "Present iff failed."
+            "description": "Failure detail; only ever present when failed."
           },
           "promptId": {
             "type": "string",
@@ -3214,7 +3214,7 @@
             "items": {
               "$ref": "#/components/schemas/ThreadTurn"
             },
-            "description": "Every turn referenced by `items`."
+            "description": "Every turn referenced by `items`, plus any turn still running."
           },
           "seq": {
             "type": "integer",

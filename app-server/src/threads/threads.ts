@@ -23,7 +23,11 @@ import type {
   AgentUnavailable,
   TuiLaunchSpec,
 } from "../agents/agentAdapter.ts"
-import { NESTED_SESSION_ENV_VARIABLES, sanitizeTitle } from "../agents/agentAdapter.ts"
+import {
+  isBusyActivity,
+  NESTED_SESSION_ENV_VARIABLES,
+  sanitizeTitle,
+} from "../agents/agentAdapter.ts"
 import {
   isAgentId,
   ProviderSessionConflict,
@@ -48,6 +52,7 @@ import { Terminals } from "../terminals/terminals.ts"
 import type { Terminal } from "../terminals/terminals.ts"
 import { ThreadRepository } from "./threadRepository.ts"
 import type { ThreadRecord } from "./threadRepository.ts"
+import { ThreadRuntime } from "./threadRuntime.ts"
 
 export type Thread = typeof Contract.Thread.Type
 
@@ -68,30 +73,32 @@ export type Thread = typeof Contract.Thread.Type
 //     (concurrent opens conflict). Confirmed sessions reopen their exact
 //     id; unconfirmed ones re-materialize with fresh identity — there is
 //     no history to protect yet.
-//   - The writer rule is a WRITE SEAT, not a terminal check (ATC-124
-//     surface-agnostic follow-up): the live-linked-terminal check above IS
-//     the V1 seat check, because a TUI terminal is the only holder that
-//     can exist yet. Native mode adds the second holder type — the
-//     adapter connection — here, so "open a TUI while native drives" and
-//     "prompt natively while a TUI is live" become the same conflict;
-//     nothing ever binds a Thread to one surface (sequential cross-surface
-//     alternation stays supported).
+//   - No lock between surfaces (ATC-193): a TUI may open while the runtime
+//     drives a turn and a prompt may arrive while a TUI is live — the
+//     provider taking one turn at a time is its own affair, and the only
+//     guard is the in-progress state plus the queue. Nothing binds a Thread
+//     to one surface.
 //   - workingDirectory is validated, canonicalized, and immutable.
-//   - activityState is in-memory evidence from the one normalized status
-//     feed, never persisted; `unknown` when there is no evidence, and a
-//     busy state whose driver (the seat holder: the linked terminal in
-//     V1, the adapter connection in native mode) is gone re-derives
-//     demand-driven from the adapter's reconciliation check on read. The
-//     confirmed marker is persisted at the FIRST busy signal observed on
-//     the feed — a submitted prompt is already durable provider history
-//     worth protecting, and writing at onset (not busy→idle) keeps the
-//     marker across a restart or observer gap mid-first-turn — the same
-//     signal for every provider.
+//   - activityState is in-memory evidence, never persisted, and lives in
+//     the ThreadRuntime's activity ledger — fed by the terminal-observation
+//     drain here and by native turns there, one set of rules (first busy
+//     confirms, busy→idle stamps the finish, every transition publishes).
+//     `unknown` when there is no evidence; a busy state whose driver is
+//     gone re-derives demand-driven from the adapter's reconciliation
+//     check on read, unless the runtime is driving the thread (its
+//     evidence is authoritative) or a shared-server observation still
+//     covers it. The confirmed marker is persisted at the FIRST busy signal
+//     — a submitted prompt is already durable provider history worth
+//     protecting — the same signal for every provider.
 //   - The unread overlay (ATC-160) is derived, never stored as a flag:
 //     last_finished_at is stamped at the observed busy→idle drop — the
-//     drain loop and the driver-gone re-derivation alike — last_viewed_at
-//     by markViewed, and archived rows are never unread. The activity
+//     ledger and the driver-gone re-derivation alike — last_viewed_at by
+//     markViewed, and archived rows are never unread. The activity
 //     vocabulary is untouched; "Done" is client-side display translation.
+//   - Observed conversation items (the shared-server fan-out on a
+//     TUI-driven Codex thread) feed the runtime's transcript copy, and an
+//     observed busy→idle asks the runtime to re-read the provider's
+//     history — the copy for turns ATC did not drive.
 //   - Auto-naming (ATC-155): the first user prompt observed on a thread
 //     that was unnamed AND unconfirmed when its subscription started forks
 //     one fire-and-forget title generation through the adapter seam. A
@@ -205,6 +212,7 @@ export const layerWith = (options: ThreadsOptions) =>
       const terminals = yield* Terminals
       const registry = yield* AgentRegistry
       const events = yield* Events
+      const runtime = yield* ThreadRuntime
       // Observation fibers outlive their originating requests; they live in
       // the service's own scope so shutdown reaps every subscription.
       const serviceScope = yield* Effect.scope
@@ -212,10 +220,6 @@ export const layerWith = (options: ThreadsOptions) =>
       const launchWatchInterval = options.launchWatchInterval ?? "500 millis"
       const titleRefineDelay = options.titleRefineDelay ?? "30 seconds"
 
-      // Live activity evidence by thread id, fed by the per-session
-      // subscriptions below. In-memory only — restart resets to no
-      // evidence, and reads re-derive on demand.
-      const liveActivity = new Map<string, AgentActivity>()
       /** The observed session per thread; the child scope closes it. */
       interface Observation {
         readonly providerSessionId: string
@@ -242,8 +246,7 @@ export const layerWith = (options: ThreadsOptions) =>
       const adapterFor = (record: ThreadRecord): AgentAdapter | undefined =>
         isAgentId(record.agentId) ? registry.adapterFor(record.agentId) : undefined
 
-      const isBusy = (activity: AgentActivity): boolean =>
-        activity === "working" || activity === "needs_input"
+      const isBusy = isBusyActivity
 
       /**
        * The unread overlay (ATC-160): a finish no client has viewed yet.
@@ -448,7 +451,6 @@ export const layerWith = (options: ThreadsOptions) =>
                 ),
                 Scope.provide(child),
               )
-            let confirmed = record.confirmedAt !== undefined
             // Auto-name eligibility is fixed at subscription start: a name
             // or a confirmed first turn already on the record rules the
             // thread out (retro-naming is a non-goal), and the first prompt
@@ -477,16 +479,15 @@ export const layerWith = (options: ThreadsOptions) =>
                     Deferred.doneUnsafe(naming.promptArrived, Effect.void)
                     return
                   }
-                  // Item events feed the transcript copy (ATC-193, the
-                  // Threads runtime PR); the activity subscription ignores them.
-                  if (event.type !== "activity") return
-                  const activity = event.activity
-                  const previous = liveActivity.get(record.id)
-                  liveActivity.set(record.id, activity)
-                  if (!confirmed && isBusy(activity)) {
-                    confirmed = true
-                    yield* repository.confirm(record.id)
+                  // Conversation items observed on the shared server feed
+                  // the runtime's transcript copy (ATC-193).
+                  if (event.type !== "activity") {
+                    yield* runtime.recordObserved(record, event)
+                    return
                   }
+                  const activity = event.activity
+                  // The ledger applies the confirm / finish / publish rules.
+                  const { previous } = yield* runtime.noteActivity(record, activity)
                   // The first busy evidence arms the one refinement fiber
                   // (ATC-190), in the service scope for the same reason as
                   // the generation above. Armed even before the prompt is
@@ -496,17 +497,13 @@ export const layerWith = (options: ThreadsOptions) =>
                     naming.armed = true
                     yield* refineThreadTitle(record, naming).pipe(Effect.forkIn(serviceScope))
                   }
-                  // The busy→idle drop IS the turn-finished signal (ATC-160):
-                  // stamp before publishing so the refetch the event triggers
-                  // already sees the thread unread.
+                  // The busy→idle drop is the turn's end: the refinement's
+                  // trigger, and — for a turn ATC did not drive — the moment
+                  // to re-read the provider's history (forked: the drain
+                  // must never wait on the provider).
                   if (previous !== undefined && isBusy(previous) && activity === "idle") {
-                    yield* repository.markFinished(record.id)
                     Deferred.doneUnsafe(naming.turnEnded, Effect.void)
-                  }
-                  // One publish covers both the activity transition and the
-                  // confirm write above (which only happens on a transition).
-                  if (previous !== activity) {
-                    yield* events.publish({ resource: "thread", id: record.id, change: "updated" })
+                    yield* runtime.observedIdle(record).pipe(Effect.forkIn(serviceScope))
                   }
                 }),
               ),
@@ -532,7 +529,7 @@ export const layerWith = (options: ThreadsOptions) =>
 
       const unobserve = (threadId: string): Effect.Effect<void> =>
         Effect.gen(function* () {
-          liveActivity.delete(threadId)
+          yield* runtime.clearActivity(threadId)
           const observation = observed.get(threadId)
           if (observation === undefined) return
           observed.delete(threadId)
@@ -555,8 +552,10 @@ export const layerWith = (options: ThreadsOptions) =>
       ): Effect.Effect<{ readonly activity: AgentActivity; readonly record: ThreadRecord }> =>
         Effect.gen(function* () {
           if (record.providerSessionId === undefined) return { activity: "idle" as const, record }
-          const live = liveActivity.get(record.id) ?? "unknown"
+          const live = (yield* runtime.activity(record.id)) ?? "unknown"
           if (!isBusy(live) || linked !== undefined) return { activity: live, record }
+          // The runtime's own turn is the evidence — never re-derived.
+          if (yield* runtime.isDriving(record.id)) return { activity: live, record }
           const adapter = adapterFor(record)
           // A live observation whose feed outlives the TUI (shared-server
           // providers) is already authoritative — it drives liveActivity —
@@ -578,28 +577,23 @@ export const layerWith = (options: ThreadsOptions) =>
               : yield* adapter
                   .checkSession({ providerSessionId })
                   .pipe(Effect.orElseSucceed(() => "unknown" as const))
-          liveActivity.set(record.id, checked)
-          // A finish discovered on read stamps too (the busy snapshot was
-          // real evidence and the check says the turn is over), and the
-          // record is re-read so the discovering response itself presents
-          // the thread unread — never a stale `unread: false` racing the
-          // publish-triggered refetch.
+          // The ledger stamps a finish discovered here (the busy snapshot
+          // was real evidence and the check says the turn is over) and
+          // publishes the change to every subscriber. Loop-safe: the busy
+          // snapshot is gone, so the next event-triggered read returns at
+          // the short-circuit above without publishing. The record is
+          // re-read so the discovering response itself presents the thread
+          // unread — never a stale `unread: false` racing the refetch.
+          yield* runtime.noteActivity(record, checked)
+          if (checked === "idle") {
+            // A turn ended under observation, discovered here: the same
+            // moment the drain loop reports (re-read, drain the queue).
+            yield* runtime.observedIdle(record).pipe(Effect.forkIn(serviceScope))
+          }
           const current =
             checked === "idle"
-              ? yield* repository
-                  .markFinished(record.id)
-                  .pipe(
-                    Effect.andThen(repository.get(record.id)),
-                    Effect.map(Option.getOrElse(() => record)),
-                  )
+              ? yield* repository.get(record.id).pipe(Effect.map(Option.getOrElse(() => record)))
               : record
-          // Other subscribers must hear about the re-derived state too, not
-          // just the client whose read triggered it. Loop-safe: the busy
-          // snapshot is gone, so the next event-triggered read returns at
-          // the short-circuit above without publishing.
-          if (checked !== live) {
-            yield* events.publish({ resource: "thread", id: record.id, change: "updated" })
-          }
           return { activity: checked, record: current }
         })
 
@@ -947,6 +941,7 @@ export const layerWith = (options: ThreadsOptions) =>
                 .delete(linked.id)
                 .pipe(Effect.catchTag("TerminalNotFound", () => Effect.void))
             }
+            yield* runtime.release(id)
             const adapter = adapterFor(record)
             if (adapter !== undefined && record.providerSessionId !== undefined) {
               yield* adapter.releaseSession({
@@ -1060,6 +1055,7 @@ export const layerWith = (options: ThreadsOptions) =>
               // hook plumbing; the next tuiLaunch recreates it) and stop
               // observation. The provider conversation itself is untouched,
               // so unarchive + open resumes it exactly.
+              yield* runtime.release(id)
               const adapter = adapterFor(record)
               if (adapter !== undefined && record.providerSessionId !== undefined) {
                 yield* adapter.releaseSession({
