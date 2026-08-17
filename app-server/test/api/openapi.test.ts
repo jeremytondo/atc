@@ -181,6 +181,14 @@ describe("openapi document vs runtime", () => {
       "/api/v1/threads/{threadId}/unpin",
       "/api/v1/threads/{threadId}/viewed",
       "/api/v1/threads/{threadId}/terminal",
+      "/api/v1/threads/{threadId}/prompt",
+      "/api/v1/threads/{threadId}/transcript",
+      "/api/v1/threads/{threadId}/events",
+      "/api/v1/threads/{threadId}/interrupt",
+      "/api/v1/threads/{threadId}/requests",
+      "/api/v1/threads/{threadId}/requests/{requestId}/answer",
+      "/api/v1/threads/{threadId}/queue",
+      "/api/v1/threads/{threadId}/queue/{promptId}",
       "/api/v1/agents",
       "/api/v1/agents/{agentId}",
       "/api/v1/events",
@@ -545,6 +553,244 @@ describe("openapi document vs runtime", () => {
         message: "no agent with id nope",
       })
     }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
+  )
+
+  // The Thread runtime routes (ATC-193): documented shapes against the raw
+  // wire, over the fake adapter (TestRepositoryLayers).
+  it.effect("thread prompt / queue / interrupt document and return their payloads", () =>
+    Effect.gen(function* () {
+      const client = yield* rawClient
+      const project = yield* client.post("http://127.0.0.1/api/v1/projects", {
+        body: HttpBody.jsonUnsafe({ name: "Runtime Docs", defaultWorkingDirectory: "/tmp" }),
+      })
+      const projectBody = (yield* project.json) as { id: string }
+      const created = yield* client.post("http://127.0.0.1/api/v1/threads", {
+        body: HttpBody.jsonUnsafe({ projectId: projectBody.id, agentId: "codex" }),
+      })
+      const thread = (yield* created.json) as { id: string }
+      const base = `http://127.0.0.1/api/v1/threads/${thread.id}`
+
+      const prompted = yield* client.post(`${base}/prompt`, {
+        body: HttpBody.jsonUnsafe({ prompt: "hello" }),
+      })
+      assert.strictEqual(prompted.status, 200)
+      const promptBody = (yield* prompted.json) as { promptId: string; turnId?: string }
+      assert.isString(promptBody.promptId)
+      assert.isString(promptBody.turnId)
+      assert.deepStrictEqual(
+        operation(`/api/v1/threads/{threadId}/prompt`, "post").responses["200"]!.content[
+          "application/json"
+        ]!.schema,
+        { $ref: "#/components/schemas/PromptThreadResponse" },
+      )
+      assert.sameMembers(Object.keys(componentSchema("PromptThreadResponse").properties), [
+        "promptId",
+        "turnId",
+      ])
+      // A second prompt queues (the fake turn is still running).
+      const queued = yield* client.post(`${base}/prompt`, {
+        body: HttpBody.jsonUnsafe({ prompt: "later" }),
+      })
+      const queuedBody = (yield* queued.json) as { promptId: string; turnId?: string }
+      assert.isUndefined(queuedBody.turnId)
+      const list = yield* client.get(`${base}/queue`)
+      assert.strictEqual(list.status, 200)
+      const listBody = (yield* list.json) as Array<{ id: string; prompt: string; queuedAt: string }>
+      assert.deepStrictEqual(
+        listBody.map((entry) => [entry.id, entry.prompt]),
+        [[queuedBody.promptId, "later"]],
+      )
+      assert.deepStrictEqual(
+        operation(`/api/v1/threads/{threadId}/queue`).responses["200"]!.content["application/json"]!
+          .schema,
+        { $ref: "#/components/schemas/QueuedPromptList" },
+      )
+      const removed = yield* client.del(`${base}/queue/${queuedBody.promptId}`)
+      assert.strictEqual(removed.status, 204)
+      const gone = yield* client.del(`${base}/queue/${queuedBody.promptId}`)
+      assert.strictEqual(gone.status, 404)
+      // Two 404s share the status: the thread, or the prompt.
+      assert.deepStrictEqual(
+        operation(`/api/v1/threads/{threadId}/queue/{promptId}`, "delete").responses["404"]!
+          .content["application/json"]!.schema as unknown,
+        {
+          anyOf: [
+            { $ref: "#/components/schemas/ThreadNotFoundJsonEncoding" },
+            { $ref: "#/components/schemas/QueuedPromptNotFoundJsonEncoding" },
+          ],
+        },
+      )
+      const interrupted = yield* client.post(`${base}/interrupt`, { body: HttpBody.empty })
+      assert.strictEqual(interrupted.status, 204)
+      const requests = yield* client.get(`${base}/requests`)
+      assert.strictEqual(requests.status, 200)
+      assert.deepStrictEqual(yield* requests.json, [])
+      assert.deepStrictEqual(
+        operation(`/api/v1/threads/{threadId}/requests`).responses["200"]!.content[
+          "application/json"
+        ]!.schema,
+        { $ref: "#/components/schemas/ThreadRequestList" },
+      )
+      const unanswered = yield* client.post(`${base}/requests/nope/answer`, {
+        body: HttpBody.jsonUnsafe({ kind: "approval", decision: "accept" }),
+      })
+      assert.strictEqual(unanswered.status, 404)
+      assert.deepStrictEqual(yield* unanswered.json, {
+        _tag: "RequestNotFound",
+        threadId: thread.id,
+        requestId: "nope",
+        message: `thread ${thread.id} has no pending request nope`,
+      })
+      assert.deepStrictEqual(
+        operation(`/api/v1/threads/{threadId}/requests/{requestId}/answer`, "post").responses[
+          "400"
+        ]!.content["application/json"]!.schema,
+        { $ref: "#/components/schemas/InvalidRequestAnswerJsonEncoding" },
+      )
+      const transcript = yield* client.get(`${base}/transcript?limit=5`)
+      assert.strictEqual(transcript.status, 200)
+      const transcriptBody = (yield* transcript.json) as {
+        items: Array<{ type: string }>
+        turns: Array<{ id: string; status: string }>
+        seq: number
+        snapshotVersion: number
+        hasMore: boolean
+      }
+      assert.deepStrictEqual(
+        transcriptBody.turns.map((turn) => turn.status),
+        ["interrupted"],
+      )
+      assert.isNumber(transcriptBody.seq)
+      assert.strictEqual(transcriptBody.snapshotVersion, 0)
+      assert.isFalse(transcriptBody.hasMore)
+      assert.deepStrictEqual(
+        operation(`/api/v1/threads/{threadId}/transcript`).responses["200"]!.content[
+          "application/json"
+        ]!.schema,
+        { $ref: "#/components/schemas/ThreadTranscript" },
+      )
+      assert.sameMembers(Object.keys(componentSchema("ThreadTranscript").properties), [
+        "items",
+        "turns",
+        "seq",
+        "snapshotVersion",
+        "hasMore",
+      ])
+    }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
+  )
+
+  it.live("GET /api/v1/threads/{threadId}/events: the documented SSE shape matches the bytes", () =>
+    Effect.gen(function* () {
+      const content = operation("/api/v1/threads/{threadId}/events").responses["200"]!.content[
+        "text/event-stream"
+      ]!
+      assert.deepStrictEqual(content.schema as unknown, {
+        $ref: "#/components/schemas/ThreadEventJsonEncoding",
+      })
+      const description = (
+        operation("/api/v1/threads/{threadId}/events").responses["200"]! as unknown as {
+          description: string
+        }
+      ).description
+      for (const token of [": connected", ": heartbeat", "`data:`", "ThreadEvent"]) {
+        assert.include(description, token)
+      }
+      // The event union is a discriminated component with one variant per
+      // event type — what generated clients decode the frames into.
+      const event = componentSchema("ThreadEvent") as unknown as {
+        oneOf: Array<{ $ref: string }>
+        discriminator: { propertyName: string; mapping: Record<string, string> }
+      }
+      assert.strictEqual(event.discriminator.propertyName, "type")
+      assert.sameMembers(Object.keys(event.discriminator.mapping), [
+        "item.started",
+        "item.updated",
+        "item.completed",
+        "turn.started",
+        "turn.completed",
+        "text.delta",
+        "request.opened",
+        "request.closed",
+        "queue.updated",
+        "snapshot.invalidated",
+      ])
+
+      const { base } = yield* startServer(
+        Server.layer({ port: 0 }).pipe(Layer.provide([TestBuildInfoLayer, TestRepositoryLayers])),
+      )
+      const json = <A>(response: Promise<Response>) => response.then((r) => r.json() as Promise<A>)
+      const project = yield* Effect.promise(() =>
+        json<{ id: string }>(
+          fetch(`${base}/api/v1/projects`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: "ThreadSse", defaultWorkingDirectory: "/tmp" }),
+          }),
+        ),
+      )
+      const thread = yield* Effect.promise(() =>
+        json<{ id: string }>(
+          fetch(`${base}/api/v1/threads`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ projectId: project.id, agentId: "codex" }),
+          }),
+        ),
+      )
+      const response = yield* Effect.promise(() =>
+        fetch(`${base}/api/v1/threads/${thread.id}/events`, {
+          headers: { accept: "text/event-stream" },
+        }),
+      )
+      assert.match(response.headers.get("content-type") ?? "", /^text\/event-stream/)
+      const reader = response.body!.getReader()
+      const opening = yield* Effect.promise(() => reader.read())
+      // A prefix, not the whole chunk: the transport may batch a frame in.
+      const openingText = new TextDecoder().decode(opening.value)
+      assert.isTrue(
+        openingText.startsWith(": connected\n\n"),
+        `expected the connected comment first, got ${JSON.stringify(openingText)}`,
+      )
+
+      yield* Effect.promise(() =>
+        fetch(`${base}/api/v1/threads/${thread.id}/prompt`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ prompt: "stream me" }),
+        }),
+      )
+      // Frames arrive as bare `data:` lines; the first durable one is the
+      // queue update, then the turn start with its seq. Bounded: a missing
+      // frame must fail naming what was seen, not hang on heartbeats.
+      let text = openingText
+      yield* Effect.promise(async () => {
+        while (!text.includes('"type":"turn.started"')) {
+          const chunk = await reader.read()
+          if (chunk.done) break
+          text += new TextDecoder().decode(chunk.value)
+        }
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: "10 seconds",
+          orElse: () => Effect.die(new Error(`no turn.started frame within 10s; saw: ${text}`)),
+        }),
+      )
+      const frames = text.split("\n\n").filter((frame) => frame.startsWith("data: "))
+      const parsed = frames.map(
+        (frame) =>
+          JSON.parse(frame.slice("data: ".length)) as {
+            type: string
+            seq?: number
+          },
+      )
+      assert.strictEqual(parsed[0]?.type, "queue.updated")
+      assert.isUndefined(parsed[0]?.seq)
+      const started = parsed.find((event) => event.type === "turn.started")
+      assert.isNumber(started?.seq)
+      assert.isFalse(text.includes("\nid:"))
+      assert.isFalse(text.includes("\nevent:"))
+      yield* Effect.promise(() => reader.cancel())
+    }),
   )
 
   // it.live: real socket I/O — the point is pinning the *documented* frame

@@ -1,14 +1,30 @@
-import { Effect } from "effect"
+import { Console, Effect, Option, Schema, Stream } from "effect"
 import { Argument, Command, Flag } from "effect/unstable/cli"
 import * as path from "node:path"
+import type * as Contract from "../api/contract.ts"
 import { AGENT_IDS } from "../api/contract.ts"
 import * as Cli from "./cli.ts"
 import { attachAndReport } from "./terminals.ts"
 
 // The `atc thread` command group: thin client commands over the contract,
-// plus `thread open` — open-terminal + raw attach, the one command here
-// with local TTY behavior. Threads are the primary unit of work, so they
-// get the full named set (ATC-124).
+// plus the commands that earn a name by local TTY or streaming behavior —
+// `thread open` (open-terminal + raw attach) and the runtime set (ATC-193):
+// `prompt --follow` / `follow` stream the per-thread events as JSON lines
+// until the turn ends (or forever); `answer` composes a request answer from
+// flags. Threads are the primary unit of work, so they get the full named
+// set (ATC-124); everything else stays `atc api`.
+
+type ThreadEvent = typeof Contract.ThreadEvent.Type
+
+/** Print each event as one JSON line; stop when `done` says so (or the stream ends). */
+const printEvents = (
+  events: Stream.Stream<ThreadEvent, unknown>,
+  done: (event: ThreadEvent) => boolean = () => false,
+) =>
+  events.pipe(
+    Stream.takeUntil(done),
+    Stream.runForEach((event) => Console.log(JSON.stringify(event))),
+  )
 
 const threadIdArgument = Argument.string("thread-id")
 
@@ -110,6 +126,161 @@ const threadDelete = Cli.clientCommand(
     ),
 )
 
+const threadPrompt = Command.make(
+  "prompt",
+  {
+    threadId: threadIdArgument,
+    text: Argument.string("text"),
+    follow: Flag.boolean("follow").pipe(
+      Flag.withDescription("Stream the thread's events (JSON lines) until this prompt's turn ends"),
+    ),
+  },
+  ({ threadId, text, follow }) =>
+    Cli.withClient("thread prompt", (client) =>
+      Effect.gen(function* () {
+        // Subscribe BEFORE prompting so no event of the turn is missed.
+        const events = follow
+          ? yield* client.v1.subscribeThreadEvents({ params: { threadId }, query: {} })
+          : undefined
+        const admitted = yield* client.v1.promptThread({
+          params: { threadId },
+          payload: { prompt: text },
+        })
+        // Without --follow the admission is the result; with it, stdout is
+        // a pure ThreadEvent stream (the turn.started event names the
+        // prompt) that ends when this prompt's turn does.
+        if (events === undefined) return yield* Console.log(JSON.stringify(admitted))
+        yield* printEvents(
+          events,
+          (event) =>
+            event.type === "turn.completed" &&
+            (event.turn.id === admitted.turnId || event.turn.promptId === admitted.promptId),
+        )
+      }),
+    ),
+).pipe(
+  Command.withDescription(
+    "Prompt the thread (queued if a turn is running); --follow streams the thread's events (JSON lines) until this prompt's turn ends",
+  ),
+)
+
+const threadFollow = Command.make(
+  "follow",
+  {
+    threadId: threadIdArgument,
+    after: Flag.optional(
+      Flag.integer("after").pipe(
+        Flag.withDescription("Replay every durable change after this seq before going live"),
+      ),
+    ),
+  },
+  ({ threadId, after }) =>
+    Cli.withClient("thread follow", (client) =>
+      Effect.gen(function* () {
+        const events = yield* client.v1.subscribeThreadEvents({
+          params: { threadId },
+          query: Cli.optionalKey("after", after),
+        })
+        yield* printEvents(events)
+      }),
+    ),
+).pipe(Command.withDescription("Stream the thread's events as JSON lines (Ctrl-C to stop)"))
+
+const threadInterrupt = Cli.clientCommand(
+  "thread interrupt",
+  "Interrupt the running turn (queued prompts stay queued)",
+  { threadId: threadIdArgument },
+  (client, { threadId }) => client.v1.interruptThread({ params: { threadId } }),
+)
+
+const threadTranscript = Cli.clientCommand(
+  "thread transcript",
+  "Read the thread's transcript (newest page; --before pages older)",
+  {
+    threadId: threadIdArgument,
+    limit: Flag.optional(Flag.integer("limit").pipe(Flag.withDescription("Most items to return"))),
+    before: Flag.optional(
+      Flag.string("before").pipe(Flag.withDescription("Return items before this item id")),
+    ),
+  },
+  (client, { threadId, limit, before }) =>
+    client.v1.getThreadTranscript({
+      params: { threadId },
+      query: { ...Cli.optionalKey("limit", limit), ...Cli.optionalKey("before", before) },
+    }),
+)
+
+const threadRequests = Cli.clientCommand(
+  "thread requests",
+  "List the thread's pending provider requests (approvals and questions)",
+  { threadId: threadIdArgument },
+  (client, { threadId }) => client.v1.listThreadRequests({ params: { threadId } }),
+)
+
+const DECISIONS = ["accept", "acceptForSession", "decline", "cancel"] as const
+
+const decodeAnswers = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Array(Schema.String))),
+)
+
+const threadAnswer = Command.make(
+  "answer",
+  {
+    threadId: threadIdArgument,
+    requestId: Argument.string("request-id"),
+    decision: Flag.optional(
+      Flag.choice("decision", DECISIONS).pipe(
+        Flag.withDescription(
+          "Approval decision (cancel = decline and interrupt the turn); exclusive with --answers",
+        ),
+      ),
+    ),
+    answers: Flag.optional(
+      Flag.string("answers").pipe(
+        Flag.withDescription(
+          'Question answers as JSON, question id → chosen labels or freeform text ({"q0":["blue"]}); "-" reads the JSON from stdin (use it for secret answers, which must never sit in argv)',
+        ),
+      ),
+    ),
+  },
+  ({ threadId, requestId, decision, answers }) =>
+    Cli.withClient("thread answer", (client) =>
+      Effect.gen(function* () {
+        if (Option.isSome(decision) === Option.isSome(answers)) {
+          return yield* Effect.fail(new Error("pass exactly one of --decision or --answers"))
+        }
+        if (Option.isSome(decision)) {
+          return yield* client.v1.answerThreadRequest({
+            params: { threadId, requestId },
+            payload: { kind: "approval", decision: decision.value },
+          })
+        }
+        const raw = Option.getOrElse(answers, () => "-")
+        const json = raw === "-" ? yield* Effect.promise(() => Bun.stdin.text()) : raw
+        const decoded = yield* decodeAnswers(json).pipe(
+          Effect.mapError(
+            (error) => new Error(`--answers must be a JSON object: ${error.message}`),
+          ),
+        )
+        yield* client.v1.answerThreadRequest({
+          params: { threadId, requestId },
+          payload: { kind: "question", answers: decoded },
+        })
+      }),
+    ),
+).pipe(
+  Command.withDescription(
+    "Answer a pending request: --decision for an approval, --answers (JSON, or - for stdin) for a question",
+  ),
+)
+
+const threadQueue = Cli.clientCommand(
+  "thread queue",
+  "List the prompts still waiting to run, oldest first",
+  { threadId: threadIdArgument },
+  (client, { threadId }) => client.v1.listThreadQueue({ params: { threadId } }),
+)
+
 export const thread = Command.make("thread").pipe(
   Command.withDescription("Manage durable agent threads (the primary unit of work)"),
   Command.withSubcommands([
@@ -118,6 +289,13 @@ export const thread = Command.make("thread").pipe(
     threadCreate,
     threadUpdate,
     threadOpen,
+    threadPrompt,
+    threadFollow,
+    threadInterrupt,
+    threadTranscript,
+    threadRequests,
+    threadAnswer,
+    threadQueue,
     threadArchive,
     threadUnarchive,
     threadDelete,

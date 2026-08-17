@@ -458,6 +458,54 @@ import OpenAPIRuntime
 
         // MARK: - Agents
 
+        // MARK: - Thread runtime (ATC-193) — previews show an idle, empty runtime.
+
+        func promptThread(_ input: Operations.PromptThread.Input) async throws -> Operations.PromptThread.Output {
+            .ok(.init(body: .json(.init(promptId: "0192f4c0-0000-7000-8000-000000000001", turnId: nil))))
+        }
+
+        func getThreadTranscript(
+            _ input: Operations.GetThreadTranscript.Input
+        ) async throws -> Operations.GetThreadTranscript.Output {
+            .ok(.init(body: .json(.init(items: [], turns: [], seq: 0, snapshotVersion: 0, hasMore: false))))
+        }
+
+        func subscribeThreadEvents(
+            _ input: Operations.SubscribeThreadEvents.Input
+        ) async throws -> Operations.SubscribeThreadEvents.Output {
+            .ok(.init(body: .textEventStream(HTTPBody(": connected\n\n"))))
+        }
+
+        func interruptThread(_ input: Operations.InterruptThread.Input) async throws
+            -> Operations.InterruptThread.Output
+        {
+            .noContent(.init())
+        }
+
+        func listThreadRequests(
+            _ input: Operations.ListThreadRequests.Input
+        ) async throws -> Operations.ListThreadRequests.Output {
+            .ok(.init(body: .json([])))
+        }
+
+        func answerThreadRequest(
+            _ input: Operations.AnswerThreadRequest.Input
+        ) async throws -> Operations.AnswerThreadRequest.Output {
+            .noContent(.init())
+        }
+
+        func listThreadQueue(_ input: Operations.ListThreadQueue.Input) async throws
+            -> Operations.ListThreadQueue.Output
+        {
+            .ok(.init(body: .json([])))
+        }
+
+        func deleteQueuedPrompt(
+            _ input: Operations.DeleteQueuedPrompt.Input
+        ) async throws -> Operations.DeleteQueuedPrompt.Output {
+            .noContent(.init())
+        }
+
         func listAgents(_ input: Operations.ListAgents.Input) async throws -> Operations.ListAgents.Output {
             .ok(.init(body: .json(agents)))
         }

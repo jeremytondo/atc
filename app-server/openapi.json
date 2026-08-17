@@ -1097,6 +1097,449 @@
         "description": "Open the thread's TUI terminal. Idempotent: a live linked terminal is returned as-is. Otherwise the provider TUI is launched in a new terminal — a confirmed session is relaunched against its exact persisted identity (ATC never adopts a different one), an unconfirmed one materializes a fresh provider session whose identity is established and persisted before this call returns. A provider that can be probed (Codex) fails fast when the persisted session no longer exists; one that cannot (Claude) launches blind — a successful open whose terminal dies within seconds is a state clients must expect and surface."
       }
     },
+    "/api/v1/threads/{threadId}/prompt": {
+      "post": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "promptThread",
+        "parameters": [
+          {
+            "name": "threadId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A prompt was admitted: it started a turn now, or waits in the queue.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptThreadResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No thread exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadNotFoundJsonEncoding"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The thread is archived; unarchive it first. | The thread's provider session cannot be driven as requested (resume failed, identity mismatch, or a concurrent writer). Fail-closed: no changed identity was adopted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ThreadArchivedJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProviderSessionConflictJsonEncoding"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The thread's agent provider cannot be used right now (not installed, not ready, or unreachable). Retryable once the cause is fixed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderUnavailableJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "Prompt the thread. Always admitted: an idle thread starts a turn at once (`turnId` present) and a busy one queues the prompt to run at the next idle (`turnId` absent) — there is no busy error and no lock between surfaces. The turn is server-owned: the client's connection never matters to it. When the prompt would start now and the provider refuses, it is un-admitted (the error means not accepted; nothing stays queued); a prompt queued behind others is admitted regardless. Follow the turn on the per-thread event stream.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromptThreadRequest"
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/api/v1/threads/{threadId}/transcript": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "getThreadTranscript",
+        "parameters": [
+          {
+            "name": "threadId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "description": "Page older: return items before this item id (a cursor from a replaced copy reads as an empty page)."
+            },
+            "required": false
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d+$",
+              "description": "Most items to return, 1–200 (default 200)."
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ATC's normalized copy of the provider conversation — a rebuildable projection, never the authority.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadTranscript"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No thread exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadNotFoundJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "Read the thread's transcript: the newest `limit` items (or the page before `before`), oldest first, with every turn they reference and any running turn, plus the head `seq` to subscribe after and the `snapshotVersion`. The transcript is ATC's copy of the provider's conversation — a re-read from the provider replaces it wholesale (snapshotVersion bumps, `snapshot.invalidated` on the stream)."
+      }
+    },
+    "/api/v1/threads/{threadId}/events": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "subscribeThreadEvents",
+        "parameters": [
+          {
+            "name": "threadId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d+$",
+              "description": "Replay every durable change after this seq before going live; omit for live only."
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A data-only SSE byte stream. Each event is a single `data:` line whose payload is a JSON-encoded ThreadEvent (see that component schema); frames never carry `id:` or `event:` lines. Comment lines are protocol control, ignored by conforming SSE parsers: the stream opens with `: connected` (the resync handshake) and a `: heartbeat` follows roughly every 25 seconds. Example:\n\n```\n: connected\n\n: heartbeat\n\ndata: {\"type\":\"item.completed\",\"seq\":42,\"item\":{\"type\":\"assistantText\",\"id\":\"msg_1\",\"turnId\":\"turn_1\",\"text\":\"done\",\"complete\":true}}\n```",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadEventJsonEncoding"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No thread exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadNotFoundJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "Subscribe to one thread's live events (SSE): items as they start, stream (`text.delta`), update, and complete; turns; pending requests; the queue; and snapshot invalidations. Durable events carry `seq`; track the highest seen and reconnect with `after=<seq>` to replay every change you missed (current state per row, in seq order) — a rejoin from before a provider re-read gets `snapshot.invalidated` instead: refetch the transcript and resubscribe after its `seq`. Framed like /events (see that endpoint's response); a subscriber that falls too far behind is ended and should resubscribe with `after`."
+      }
+    },
+    "/api/v1/threads/{threadId}/interrupt": {
+      "post": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "interruptThread",
+        "parameters": [
+          {
+            "name": "threadId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "<No Content>"
+          },
+          "404": {
+            "description": "No thread exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadNotFoundJsonEncoding"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The thread's agent provider cannot be used right now (not installed, not ready, or unreachable). Retryable once the cause is fixed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderUnavailableJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "Interrupt the turn the server is driving (its `turn.completed` reads interrupted). A thread with no server-driven turn is a no-op — a turn a TUI drives is interrupted from the TUI — and queued prompts stay queued; they run at the next idle."
+      }
+    },
+    "/api/v1/threads/{threadId}/requests": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "listThreadRequests",
+        "parameters": [
+          {
+            "name": "threadId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The thread's pending requests, oldest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadRequestList"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No thread exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadNotFoundJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "List the thread's pending provider requests (approvals and questions). Requests park until answered — no timeout — and die with their turn."
+      }
+    },
+    "/api/v1/threads/{threadId}/requests/{requestId}/answer": {
+      "post": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "answerThreadRequest",
+        "parameters": [
+          {
+            "name": "threadId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "name": "requestId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "<No Content>"
+          },
+          "400": {
+            "description": "The answer does not fit the pending request: kind mismatch, unknown question id, or a non-option answer to a question that is not freeform.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidRequestAnswerJsonEncoding"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No thread exists with the given id. | No pending request with the given id on this thread (unknown, or already answered).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ThreadNotFoundJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RequestNotFoundJsonEncoding"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The thread's agent provider cannot be used right now (not installed, not ready, or unreachable). Retryable once the cause is fixed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderUnavailableJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "Answer a pending request. The answer's `kind` must match the request's; question answers must cover every question with option labels (or freeform text where allowed). An answered or unknown request is 404.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ThreadRequestAnswer"
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/api/v1/threads/{threadId}/queue": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "listThreadQueue",
+        "parameters": [
+          {
+            "name": "threadId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Prompts still waiting, oldest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueuedPromptList"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No thread exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadNotFoundJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "List the prompts still waiting to run, oldest first."
+      }
+    },
+    "/api/v1/threads/{threadId}/queue/{promptId}": {
+      "delete": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "deleteQueuedPrompt",
+        "parameters": [
+          {
+            "name": "threadId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "name": "promptId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "<No Content>"
+          },
+          "404": {
+            "description": "No thread exists with the given id. | No waiting prompt with the given id on this thread (unknown, or already started).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ThreadNotFoundJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/QueuedPromptNotFoundJsonEncoding"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "Withdraw a waiting prompt. A prompt that already started is a turn now (404); interrupt the thread instead."
+      }
+    },
     "/api/v1/agents": {
       "get": {
         "tags": [
@@ -1971,184 +2414,38 @@
         ],
         "additionalProperties": false
       },
-      "Agent": {
+      "PromptThreadRequest": {
         "type": "object",
         "properties": {
-          "id": {
-            "$ref": "#/components/schemas/AgentId"
-          },
-          "available": {
-            "type": "boolean",
-            "description": "Whether the agent's CLI is installed and resolvable right now."
-          },
-          "reason": {
+          "prompt": {
             "type": "string",
-            "description": "Actionable install-or-configure hint; absent when available."
-          },
-          "detectedVersion": {
-            "type": "string",
-            "description": "Installed CLI version, when it could be determined."
+            "minLength": 1,
+            "description": "The user's message."
           }
         },
         "required": [
-          "id",
-          "available"
+          "prompt"
         ],
         "additionalProperties": false,
-        "description": "A built-in agent provider: availability report, detected on demand and never persisted."
+        "description": "Payload for prompting a thread: text only (attachments are additive later)."
       },
-      "AgentList": {
-        "type": "array",
-        "items": {
-          "$ref": "#/components/schemas/Agent"
-        },
-        "description": "The built-in agent registry."
-      },
-      "AgentNotFoundJsonEncoding": {
+      "PromptThreadResponse": {
         "type": "object",
         "properties": {
-          "_tag": {
+          "promptId": {
             "type": "string",
-            "enum": [
-              "AgentNotFound"
-            ]
+            "description": "The admitted prompt's id."
           },
-          "agentId": {
-            "type": "string"
-          },
-          "message": {
+          "turnId": {
             "type": "string",
-            "description": "Human-readable diagnostic derived from the structured fields."
+            "description": "Present when the prompt started a turn at once; absent when it queued."
           }
         },
         "required": [
-          "_tag",
-          "agentId",
-          "message"
-        ],
-        "additionalProperties": false
-      },
-      "ResourceChangedEventJsonEncoding": {
-        "type": "string",
-        "contentMediaType": "application/json"
-      },
-      "DirectoryState": {
-        "type": "string",
-        "enum": [
-          "available",
-          "missing",
-          "inaccessible",
-          "not_directory",
-          "unknown"
-        ],
-        "description": "Tagged result of a demand-driven directory health check."
-      },
-      "FsCheckResponse": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string",
-            "description": "The checked path (canonicalized when the directory is available)."
-          },
-          "state": {
-            "$ref": "#/components/schemas/DirectoryState"
-          },
-          "checkedAt": {
-            "type": "string",
-            "description": "Check time.",
-            "format": "date-time"
-          },
-          "reason": {
-            "type": "string",
-            "description": "Why the state is not conclusive (e.g. \"timeout\" for unknown); absent otherwise."
-          }
-        },
-        "required": [
-          "path",
-          "state",
-          "checkedAt"
+          "promptId"
         ],
         "additionalProperties": false,
-        "description": "Result of a directory health check. Never persisted."
-      },
-      "FsListEntry": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "description": "Directory name within the listed directory."
-          },
-          "path": {
-            "type": "string",
-            "description": "Absolute path of the subdirectory (not symlink-resolved)."
-          }
-        },
-        "required": [
-          "name",
-          "path"
-        ],
-        "additionalProperties": false,
-        "description": "One subdirectory of a listed directory."
-      },
-      "FsListResponse": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string",
-            "description": "Canonical (symlink-resolved) absolute path of the listed directory."
-          },
-          "parent": {
-            "type": "string",
-            "description": "Parent directory of `path`; absent at the filesystem root."
-          },
-          "entries": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/FsListEntry"
-            },
-            "description": "Subdirectories only — non-recursive, dotfolders excluded, symlinks included when they resolve to directories, sorted case-insensitively by name."
-          }
-        },
-        "required": [
-          "path",
-          "entries"
-        ],
-        "additionalProperties": false,
-        "description": "A directory listing for the server-backed folder browser. Never persisted."
-      },
-      "ResourceChangedEvent": {
-        "type": "object",
-        "properties": {
-          "resource": {
-            "type": "string",
-            "enum": [
-              "project",
-              "thread",
-              "terminal"
-            ],
-            "description": "Which resource collection changed."
-          },
-          "id": {
-            "type": "string",
-            "description": "Id of the changed resource."
-          },
-          "change": {
-            "type": "string",
-            "enum": [
-              "created",
-              "updated",
-              "deleted"
-            ],
-            "description": "What happened. Every field-level transition (status, archive state, activity) is \"updated\"."
-          }
-        },
-        "required": [
-          "resource",
-          "id",
-          "change"
-        ],
-        "additionalProperties": false,
-        "description": "Thin invalidation event: names what changed, never carries resource state. Clients coalesce events and refetch through the corresponding GETs, which stay the single source of truth."
+        "description": "A prompt was admitted: it started a turn now, or waits in the queue."
       },
       "ThreadItemUserMessage": {
         "type": "object",
@@ -2590,78 +2887,6 @@
           }
         }
       },
-      "ThreadEventItemStarted": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "enum": [
-              "item.started"
-            ]
-          },
-          "seq": {
-            "type": "integer",
-            "description": "Position of this durable change."
-          },
-          "item": {
-            "$ref": "#/components/schemas/ThreadItem"
-          }
-        },
-        "required": [
-          "type",
-          "seq",
-          "item"
-        ],
-        "additionalProperties": false
-      },
-      "ThreadEventItemUpdated": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "enum": [
-              "item.updated"
-            ]
-          },
-          "seq": {
-            "type": "integer",
-            "description": "Position of this durable change."
-          },
-          "item": {
-            "$ref": "#/components/schemas/ThreadItem"
-          }
-        },
-        "required": [
-          "type",
-          "seq",
-          "item"
-        ],
-        "additionalProperties": false
-      },
-      "ThreadEventItemCompleted": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "enum": [
-              "item.completed"
-            ]
-          },
-          "seq": {
-            "type": "integer",
-            "description": "Position of this durable change."
-          },
-          "item": {
-            "$ref": "#/components/schemas/ThreadItem"
-          }
-        },
-        "required": [
-          "type",
-          "seq",
-          "item"
-        ],
-        "additionalProperties": false
-      },
       "ThreadTurnStatus": {
         "type": "string",
         "enum": [
@@ -2708,77 +2933,49 @@
         "additionalProperties": false,
         "description": "One turn of the conversation."
       },
-      "ThreadEventTurnStarted": {
+      "ThreadTranscript": {
         "type": "object",
         "properties": {
-          "type": {
-            "type": "string",
-            "enum": [
-              "turn.started"
-            ]
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ThreadItem"
+            },
+            "description": "Transcript order, oldest first."
+          },
+          "turns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ThreadTurn"
+            },
+            "description": "Every turn referenced by `items`, plus any turn still running."
           },
           "seq": {
             "type": "integer",
-            "description": "Position of this durable change."
+            "description": "The thread's change counter at the time of the read; subscribe with after=seq."
           },
-          "turn": {
-            "$ref": "#/components/schemas/ThreadTurn"
-          }
-        },
-        "required": [
-          "type",
-          "seq",
-          "turn"
-        ],
-        "additionalProperties": false
-      },
-      "ThreadEventTurnCompleted": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "enum": [
-              "turn.completed"
-            ]
-          },
-          "seq": {
+          "snapshotVersion": {
             "type": "integer",
-            "description": "Position of this durable change."
+            "description": "Bumps whenever a provider re-read replaced the copy."
           },
-          "turn": {
-            "$ref": "#/components/schemas/ThreadTurn"
+          "hasMore": {
+            "type": "boolean",
+            "description": "Older items exist before the first one returned."
           }
         },
         "required": [
-          "type",
+          "items",
+          "turns",
           "seq",
-          "turn"
-        ],
-        "additionalProperties": false
-      },
-      "ThreadEventTextDelta": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "enum": [
-              "text.delta"
-            ]
-          },
-          "itemId": {
-            "type": "string"
-          },
-          "delta": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "type",
-          "itemId",
-          "delta"
+          "snapshotVersion",
+          "hasMore"
         ],
         "additionalProperties": false,
-        "description": "Live-only, never replayed: appends to a streaming assistantText or reasoning item."
+        "description": "ATC's normalized copy of the provider conversation — a rebuildable projection, never the authority."
+      },
+      "ThreadEventJsonEncoding": {
+        "type": "string",
+        "contentMediaType": "application/json"
       },
       "QuestionOption": {
         "type": "object",
@@ -3034,6 +3231,527 @@
           }
         }
       },
+      "ThreadRequestList": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ThreadRequest"
+        },
+        "description": "The thread's pending requests, oldest first."
+      },
+      "ThreadRequestQuestionAnswer": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "question"
+            ]
+          },
+          "answers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "description": "Question id → chosen option labels (exactly one unless multiSelect), or one freeform string."
+          }
+        },
+        "required": [
+          "kind",
+          "answers"
+        ],
+        "additionalProperties": false
+      },
+      "ApprovalDecision": {
+        "type": "string",
+        "enum": [
+          "accept",
+          "acceptForSession",
+          "decline",
+          "cancel"
+        ],
+        "description": "cancel = decline and interrupt the turn."
+      },
+      "ThreadRequestApprovalAnswer": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "approval"
+            ]
+          },
+          "decision": {
+            "$ref": "#/components/schemas/ApprovalDecision"
+          }
+        },
+        "required": [
+          "kind",
+          "decision"
+        ],
+        "additionalProperties": false
+      },
+      "ThreadRequestAnswer": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ThreadRequestQuestionAnswer"
+          },
+          {
+            "$ref": "#/components/schemas/ThreadRequestApprovalAnswer"
+          }
+        ],
+        "description": "The answer to a pending request; `kind` must match the request's.",
+        "discriminator": {
+          "propertyName": "kind",
+          "mapping": {
+            "question": "#/components/schemas/ThreadRequestQuestionAnswer",
+            "approval": "#/components/schemas/ThreadRequestApprovalAnswer"
+          }
+        }
+      },
+      "RequestNotFoundJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "RequestNotFound"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
+          }
+        },
+        "required": [
+          "_tag",
+          "threadId",
+          "requestId",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "InvalidRequestAnswerJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "InvalidRequestAnswer"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
+          }
+        },
+        "required": [
+          "_tag",
+          "threadId",
+          "requestId",
+          "reason",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "QueuedPrompt": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "queuedAt": {
+            "type": "string",
+            "description": "When the prompt was admitted.",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "prompt",
+          "queuedAt"
+        ],
+        "additionalProperties": false,
+        "description": "A prompt admitted while a turn was running; it runs at the next idle."
+      },
+      "QueuedPromptList": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/QueuedPrompt"
+        },
+        "description": "Prompts still waiting, oldest first."
+      },
+      "QueuedPromptNotFoundJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "QueuedPromptNotFound"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "promptId": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
+          }
+        },
+        "required": [
+          "_tag",
+          "threadId",
+          "promptId",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "Agent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/AgentId"
+          },
+          "available": {
+            "type": "boolean",
+            "description": "Whether the agent's CLI is installed and resolvable right now."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Actionable install-or-configure hint; absent when available."
+          },
+          "detectedVersion": {
+            "type": "string",
+            "description": "Installed CLI version, when it could be determined."
+          }
+        },
+        "required": [
+          "id",
+          "available"
+        ],
+        "additionalProperties": false,
+        "description": "A built-in agent provider: availability report, detected on demand and never persisted."
+      },
+      "AgentList": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Agent"
+        },
+        "description": "The built-in agent registry."
+      },
+      "AgentNotFoundJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "AgentNotFound"
+            ]
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
+          }
+        },
+        "required": [
+          "_tag",
+          "agentId",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "ResourceChangedEventJsonEncoding": {
+        "type": "string",
+        "contentMediaType": "application/json"
+      },
+      "DirectoryState": {
+        "type": "string",
+        "enum": [
+          "available",
+          "missing",
+          "inaccessible",
+          "not_directory",
+          "unknown"
+        ],
+        "description": "Tagged result of a demand-driven directory health check."
+      },
+      "FsCheckResponse": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The checked path (canonicalized when the directory is available)."
+          },
+          "state": {
+            "$ref": "#/components/schemas/DirectoryState"
+          },
+          "checkedAt": {
+            "type": "string",
+            "description": "Check time.",
+            "format": "date-time"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why the state is not conclusive (e.g. \"timeout\" for unknown); absent otherwise."
+          }
+        },
+        "required": [
+          "path",
+          "state",
+          "checkedAt"
+        ],
+        "additionalProperties": false,
+        "description": "Result of a directory health check. Never persisted."
+      },
+      "FsListEntry": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Directory name within the listed directory."
+          },
+          "path": {
+            "type": "string",
+            "description": "Absolute path of the subdirectory (not symlink-resolved)."
+          }
+        },
+        "required": [
+          "name",
+          "path"
+        ],
+        "additionalProperties": false,
+        "description": "One subdirectory of a listed directory."
+      },
+      "FsListResponse": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Canonical (symlink-resolved) absolute path of the listed directory."
+          },
+          "parent": {
+            "type": "string",
+            "description": "Parent directory of `path`; absent at the filesystem root."
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FsListEntry"
+            },
+            "description": "Subdirectories only — non-recursive, dotfolders excluded, symlinks included when they resolve to directories, sorted case-insensitively by name."
+          }
+        },
+        "required": [
+          "path",
+          "entries"
+        ],
+        "additionalProperties": false,
+        "description": "A directory listing for the server-backed folder browser. Never persisted."
+      },
+      "ResourceChangedEvent": {
+        "type": "object",
+        "properties": {
+          "resource": {
+            "type": "string",
+            "enum": [
+              "project",
+              "thread",
+              "terminal"
+            ],
+            "description": "Which resource collection changed."
+          },
+          "id": {
+            "type": "string",
+            "description": "Id of the changed resource."
+          },
+          "change": {
+            "type": "string",
+            "enum": [
+              "created",
+              "updated",
+              "deleted"
+            ],
+            "description": "What happened. Every field-level transition (status, archive state, activity) is \"updated\"."
+          }
+        },
+        "required": [
+          "resource",
+          "id",
+          "change"
+        ],
+        "additionalProperties": false,
+        "description": "Thin invalidation event: names what changed, never carries resource state. Clients coalesce events and refetch through the corresponding GETs, which stay the single source of truth."
+      },
+      "ThreadEventItemStarted": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "item.started"
+            ]
+          },
+          "seq": {
+            "type": "integer",
+            "description": "Position of this durable change."
+          },
+          "item": {
+            "$ref": "#/components/schemas/ThreadItem"
+          }
+        },
+        "required": [
+          "type",
+          "seq",
+          "item"
+        ],
+        "additionalProperties": false
+      },
+      "ThreadEventItemUpdated": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "item.updated"
+            ]
+          },
+          "seq": {
+            "type": "integer",
+            "description": "Position of this durable change."
+          },
+          "item": {
+            "$ref": "#/components/schemas/ThreadItem"
+          }
+        },
+        "required": [
+          "type",
+          "seq",
+          "item"
+        ],
+        "additionalProperties": false
+      },
+      "ThreadEventItemCompleted": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "item.completed"
+            ]
+          },
+          "seq": {
+            "type": "integer",
+            "description": "Position of this durable change."
+          },
+          "item": {
+            "$ref": "#/components/schemas/ThreadItem"
+          }
+        },
+        "required": [
+          "type",
+          "seq",
+          "item"
+        ],
+        "additionalProperties": false
+      },
+      "ThreadEventTurnStarted": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "turn.started"
+            ]
+          },
+          "seq": {
+            "type": "integer",
+            "description": "Position of this durable change."
+          },
+          "turn": {
+            "$ref": "#/components/schemas/ThreadTurn"
+          }
+        },
+        "required": [
+          "type",
+          "seq",
+          "turn"
+        ],
+        "additionalProperties": false
+      },
+      "ThreadEventTurnCompleted": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "turn.completed"
+            ]
+          },
+          "seq": {
+            "type": "integer",
+            "description": "Position of this durable change."
+          },
+          "turn": {
+            "$ref": "#/components/schemas/ThreadTurn"
+          }
+        },
+        "required": [
+          "type",
+          "seq",
+          "turn"
+        ],
+        "additionalProperties": false
+      },
+      "ThreadEventTextDelta": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "text.delta"
+            ]
+          },
+          "itemId": {
+            "type": "string"
+          },
+          "delta": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "itemId",
+          "delta"
+        ],
+        "additionalProperties": false,
+        "description": "Live-only, never replayed: appends to a streaming assistantText or reasoning item."
+      },
       "ThreadEventRequestOpened": {
         "type": "object",
         "properties": {
@@ -3073,36 +3791,6 @@
         ],
         "additionalProperties": false,
         "description": "Live-only."
-      },
-      "QueuedPrompt": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "prompt": {
-            "type": "string"
-          },
-          "queuedAt": {
-            "type": "string",
-            "description": "When the prompt was admitted.",
-            "format": "date-time"
-          }
-        },
-        "required": [
-          "id",
-          "prompt",
-          "queuedAt"
-        ],
-        "additionalProperties": false,
-        "description": "A prompt admitted while a turn was running; it runs at the next idle."
-      },
-      "QueuedPromptList": {
-        "type": "array",
-        "items": {
-          "$ref": "#/components/schemas/QueuedPrompt"
-        },
-        "description": "Prompts still waiting, oldest first."
       },
       "ThreadEventQueueUpdated": {
         "type": "object",
@@ -3196,119 +3884,6 @@
             "request.closed": "#/components/schemas/ThreadEventRequestClosed",
             "queue.updated": "#/components/schemas/ThreadEventQueueUpdated",
             "snapshot.invalidated": "#/components/schemas/ThreadEventSnapshotInvalidated"
-          }
-        }
-      },
-      "ThreadTranscript": {
-        "type": "object",
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ThreadItem"
-            },
-            "description": "Transcript order, oldest first."
-          },
-          "turns": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ThreadTurn"
-            },
-            "description": "Every turn referenced by `items`, plus any turn still running."
-          },
-          "seq": {
-            "type": "integer",
-            "description": "The thread's change counter at the time of the read; subscribe with after=seq."
-          },
-          "snapshotVersion": {
-            "type": "integer",
-            "description": "Bumps whenever a provider re-read replaced the copy."
-          },
-          "hasMore": {
-            "type": "boolean",
-            "description": "Older items exist before the first one returned."
-          }
-        },
-        "required": [
-          "items",
-          "turns",
-          "seq",
-          "snapshotVersion",
-          "hasMore"
-        ],
-        "additionalProperties": false,
-        "description": "ATC's normalized copy of the provider conversation — a rebuildable projection, never the authority."
-      },
-      "ThreadRequestQuestionAnswer": {
-        "type": "object",
-        "properties": {
-          "kind": {
-            "type": "string",
-            "enum": [
-              "question"
-            ]
-          },
-          "answers": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            },
-            "description": "Question id → chosen option labels (exactly one unless multiSelect), or one freeform string."
-          }
-        },
-        "required": [
-          "kind",
-          "answers"
-        ],
-        "additionalProperties": false
-      },
-      "ApprovalDecision": {
-        "type": "string",
-        "enum": [
-          "accept",
-          "acceptForSession",
-          "decline",
-          "cancel"
-        ],
-        "description": "cancel = decline and interrupt the turn."
-      },
-      "ThreadRequestApprovalAnswer": {
-        "type": "object",
-        "properties": {
-          "kind": {
-            "type": "string",
-            "enum": [
-              "approval"
-            ]
-          },
-          "decision": {
-            "$ref": "#/components/schemas/ApprovalDecision"
-          }
-        },
-        "required": [
-          "kind",
-          "decision"
-        ],
-        "additionalProperties": false
-      },
-      "ThreadRequestAnswer": {
-        "oneOf": [
-          {
-            "$ref": "#/components/schemas/ThreadRequestQuestionAnswer"
-          },
-          {
-            "$ref": "#/components/schemas/ThreadRequestApprovalAnswer"
-          }
-        ],
-        "description": "The answer to a pending request; `kind` must match the request's.",
-        "discriminator": {
-          "propertyName": "kind",
-          "mapping": {
-            "question": "#/components/schemas/ThreadRequestQuestionAnswer",
-            "approval": "#/components/schemas/ThreadRequestApprovalAnswer"
           }
         }
       }

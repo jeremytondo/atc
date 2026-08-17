@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Schema, SchemaTransformation } from "effect"
 import {
   HttpApi,
   HttpApiEndpoint,
@@ -70,6 +70,20 @@ export const AbsolutePath = Schema.String.check(
 /** A wire timestamp: RFC 3339 UTC with millisecond precision (`Date.toISOString()`). */
 const timestamp = (description: string) =>
   Schema.String.annotate({ format: "date-time", description })
+
+/** A decimal integer query parameter within [min, max] (query values are strings on the wire). */
+const integerParam = (description: string, min: number, max?: number) =>
+  Schema.String.check(Schema.isPattern(/^\d+$/, { description: "a decimal integer" }))
+    .annotate({ description })
+    .pipe(
+      Schema.decodeTo(
+        Schema.Int.check(
+          Schema.isGreaterThanOrEqualTo(min),
+          ...(max === undefined ? [] : [Schema.isLessThanOrEqualTo(max)]),
+        ),
+        SchemaTransformation.numberFromString,
+      ),
+    )
 
 export const ProjectName = Schema.NonEmptyString.annotate({
   description: "Human-readable project name.",
@@ -658,6 +672,25 @@ export const ThreadRequestAnswer = Schema.Union(
 ).annotate({
   identifier: "ThreadRequestAnswer",
   description: "The answer to a pending request; `kind` must match the request's.",
+})
+
+export const PromptThreadRequest = Schema.Struct({
+  prompt: Schema.NonEmptyString.annotate({ description: "The user's message." }),
+}).annotate({
+  identifier: "PromptThreadRequest",
+  description: "Payload for prompting a thread: text only (attachments are additive later).",
+})
+
+export const PromptThreadResponse = Schema.Struct({
+  promptId: Schema.String.annotate({ description: "The admitted prompt's id." }),
+  turnId: Schema.optionalKey(
+    Schema.String.annotate({
+      description: "Present when the prompt started a turn at once; absent when it queued.",
+    }),
+  ),
+}).annotate({
+  identifier: "PromptThreadResponse",
+  description: "A prompt was admitted: it started a turn now, or waits in the queue.",
 })
 
 export const QueuedPrompt = Schema.Struct({
@@ -1325,6 +1358,108 @@ export class V1 extends HttpApiGroup.make("v1")
         "Open the thread's TUI terminal. Idempotent: a live linked terminal is returned as-is. Otherwise the provider TUI is launched in a new terminal — a confirmed session is relaunched against its exact persisted identity (ATC never adopts a different one), an unconfirmed one materializes a fresh provider session whose identity is established and persisted before this call returns. " +
           "A provider that can be probed (Codex) fails fast when the persisted session no longer exists; one that cannot (Claude) launches blind — a successful open whose terminal dies within seconds is a state clients must expect and surface.",
       ),
+    // --- The Thread runtime (ATC-193): drive a thread with no Terminal ---
+    HttpApiEndpoint.post("promptThread", "/threads/:threadId/prompt", {
+      params: threadIdParam,
+      payload: PromptThreadRequest,
+      success: PromptThreadResponse,
+      error: [ThreadNotFound, ThreadArchived, ProviderUnavailable, ProviderSessionConflict],
+    })
+      .annotate(OpenApi.Identifier, "promptThread")
+      .annotate(
+        OpenApi.Description,
+        "Prompt the thread. Always admitted: an idle thread starts a turn at once (`turnId` present) and a busy one queues the prompt to run at the next idle (`turnId` absent) — there is no busy error and no lock between surfaces. " +
+          "The turn is server-owned: the client's connection never matters to it. When the prompt would start now and the provider refuses, it is un-admitted (the error means not accepted; nothing stays queued); a prompt queued behind others is admitted regardless. Follow the turn on the per-thread event stream.",
+      ),
+    HttpApiEndpoint.get("getThreadTranscript", "/threads/:threadId/transcript", {
+      params: threadIdParam,
+      query: {
+        before: Schema.optionalKey(
+          Schema.String.annotate({
+            description:
+              "Page older: return items before this item id (a cursor from a replaced copy reads as an empty page).",
+          }),
+        ),
+        limit: Schema.optionalKey(
+          integerParam("Most items to return, 1–200 (default 200).", 1, 200),
+        ),
+      },
+      success: ThreadTranscript,
+      error: ThreadNotFound,
+    })
+      .annotate(OpenApi.Identifier, "getThreadTranscript")
+      .annotate(
+        OpenApi.Description,
+        "Read the thread's transcript: the newest `limit` items (or the page before `before`), oldest first, with every turn they reference and any running turn, plus the head `seq` to subscribe after and the `snapshotVersion`. " +
+          "The transcript is ATC's copy of the provider's conversation — a re-read from the provider replaces it wholesale (snapshotVersion bumps, `snapshot.invalidated` on the stream).",
+      ),
+    HttpApiEndpoint.get("subscribeThreadEvents", "/threads/:threadId/events", {
+      params: threadIdParam,
+      query: {
+        after: Schema.optionalKey(
+          integerParam(
+            "Replay every durable change after this seq before going live; omit for live only.",
+            0,
+          ),
+        ),
+      },
+      success: HttpApiSchema.StreamSse({ data: ThreadEvent }),
+      error: ThreadNotFound,
+    })
+      .annotate(OpenApi.Identifier, "subscribeThreadEvents")
+      // The generated 200 documents StreamSse's frame envelope; openapi.ts
+      // replaces it with the data-only wire shape (see subscribeEvents).
+      .annotate(
+        OpenApi.Description,
+        "Subscribe to one thread's live events (SSE): items as they start, stream (`text.delta`), update, and complete; turns; pending requests; the queue; and snapshot invalidations. " +
+          "Durable events carry `seq`; track the highest seen and reconnect with `after=<seq>` to replay every change you missed (current state per row, in seq order) — a rejoin from before a provider re-read gets `snapshot.invalidated` instead: refetch the transcript and resubscribe after its `seq`. " +
+          "Framed like /events (see that endpoint's response); a subscriber that falls too far behind is ended and should resubscribe with `after`.",
+      ),
+    HttpApiEndpoint.post("interruptThread", "/threads/:threadId/interrupt", {
+      params: threadIdParam,
+      error: [ThreadNotFound, ProviderUnavailable],
+    })
+      .annotate(OpenApi.Identifier, "interruptThread")
+      .annotate(
+        OpenApi.Description,
+        "Interrupt the turn the server is driving (its `turn.completed` reads interrupted). A thread with no server-driven turn is a no-op — a turn a TUI drives is interrupted from the TUI — and queued prompts stay queued; they run at the next idle.",
+      ),
+    HttpApiEndpoint.get("listThreadRequests", "/threads/:threadId/requests", {
+      params: threadIdParam,
+      success: ThreadRequestList,
+      error: ThreadNotFound,
+    })
+      .annotate(OpenApi.Identifier, "listThreadRequests")
+      .annotate(
+        OpenApi.Description,
+        "List the thread's pending provider requests (approvals and questions). Requests park until answered — no timeout — and die with their turn.",
+      ),
+    HttpApiEndpoint.post("answerThreadRequest", "/threads/:threadId/requests/:requestId/answer", {
+      params: { threadId: Schema.String, requestId: Schema.String },
+      payload: ThreadRequestAnswer,
+      error: [ThreadNotFound, RequestNotFound, InvalidRequestAnswer, ProviderUnavailable],
+    })
+      .annotate(OpenApi.Identifier, "answerThreadRequest")
+      .annotate(
+        OpenApi.Description,
+        "Answer a pending request. The answer's `kind` must match the request's; question answers must cover every question with option labels (or freeform text where allowed). An answered or unknown request is 404.",
+      ),
+    HttpApiEndpoint.get("listThreadQueue", "/threads/:threadId/queue", {
+      params: threadIdParam,
+      success: QueuedPromptList,
+      error: ThreadNotFound,
+    })
+      .annotate(OpenApi.Identifier, "listThreadQueue")
+      .annotate(OpenApi.Description, "List the prompts still waiting to run, oldest first."),
+    HttpApiEndpoint.delete("deleteQueuedPrompt", "/threads/:threadId/queue/:promptId", {
+      params: { threadId: Schema.String, promptId: Schema.String },
+      error: [ThreadNotFound, QueuedPromptNotFound],
+    })
+      .annotate(OpenApi.Identifier, "deleteQueuedPrompt")
+      .annotate(
+        OpenApi.Description,
+        "Withdraw a waiting prompt. A prompt that already started is a turn now (404); interrupt the thread instead.",
+      ),
     HttpApiEndpoint.get("listAgents", "/agents", { success: AgentList })
       .annotate(OpenApi.Identifier, "listAgents")
       .annotate(
@@ -1344,7 +1479,7 @@ export class V1 extends HttpApiGroup.make("v1")
       .annotate(OpenApi.Identifier, "subscribeEvents")
       // The generated 200 for this endpoint documents StreamSse's decoded
       // frame envelope, not the data-only bytes the server actually emits —
-      // openapi.ts (withDataOnlySseResponse) replaces it with the wire-true
+      // openapi.ts (withDataOnlySseResponses) replaces it with the wire-true
       // shape, and openapi.test.ts pins that documented shape to the bytes.
       .annotate(
         OpenApi.Description,

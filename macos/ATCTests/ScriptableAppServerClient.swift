@@ -645,6 +645,56 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         throw StubUnimplemented("subscribeEvents")
     }
 
+    // MARK: - Thread runtime (ATC-193): no macOS client yet (ATC-191)
+
+    func promptThread(_ input: Operations.PromptThread.Input) async throws
+        -> Operations.PromptThread.Output
+    {
+        throw StubUnimplemented("promptThread")
+    }
+
+    func getThreadTranscript(_ input: Operations.GetThreadTranscript.Input) async throws
+        -> Operations.GetThreadTranscript.Output
+    {
+        throw StubUnimplemented("getThreadTranscript")
+    }
+
+    func subscribeThreadEvents(_ input: Operations.SubscribeThreadEvents.Input) async throws
+        -> Operations.SubscribeThreadEvents.Output
+    {
+        throw StubUnimplemented("subscribeThreadEvents")
+    }
+
+    func interruptThread(_ input: Operations.InterruptThread.Input) async throws
+        -> Operations.InterruptThread.Output
+    {
+        throw StubUnimplemented("interruptThread")
+    }
+
+    func listThreadRequests(_ input: Operations.ListThreadRequests.Input) async throws
+        -> Operations.ListThreadRequests.Output
+    {
+        throw StubUnimplemented("listThreadRequests")
+    }
+
+    func answerThreadRequest(_ input: Operations.AnswerThreadRequest.Input) async throws
+        -> Operations.AnswerThreadRequest.Output
+    {
+        throw StubUnimplemented("answerThreadRequest")
+    }
+
+    func listThreadQueue(_ input: Operations.ListThreadQueue.Input) async throws
+        -> Operations.ListThreadQueue.Output
+    {
+        throw StubUnimplemented("listThreadQueue")
+    }
+
+    func deleteQueuedPrompt(_ input: Operations.DeleteQueuedPrompt.Input) async throws
+        -> Operations.DeleteQueuedPrompt.Output
+    {
+        throw StubUnimplemented("deleteQueuedPrompt")
+    }
+
     // MARK: - Private
 
     private func gate() async throws {

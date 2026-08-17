@@ -96,7 +96,7 @@ export type QueuedPrompt = typeof Contract.QueuedPrompt.Type
 //     behind one start lock; threads still recovering at startup queue
 //     their prompts until recovery has settled them.
 
-/** The most items one transcript read returns. */
+/** The default transcript page (the contract caps requests at the same size). */
 const TRANSCRIPT_PAGE = 200
 
 /** Per-subscriber backlog; overflow ends the stream (resubscribe after=seq). */
@@ -141,7 +141,8 @@ export class ThreadRuntime extends Context.Service<
       id: string,
       promptId: string,
     ) => Effect.Effect<void, ThreadNotFound | QueuedPromptNotFound>
-    /** A page of the transcript (newest `limit`, or the page before `before`). */
+    /** A page of the transcript (newest `limit`, default 200 — the contract
+     * bounds it; or the page before `before`). */
     readonly transcript: (
       id: string,
       options?: { readonly before?: string | undefined; readonly limit?: number | undefined },
@@ -149,12 +150,13 @@ export class ThreadRuntime extends Context.Service<
     /**
      * The per-thread event stream. With `after`, every durable change past
      * that seq replays first (current row state), then live events follow;
-     * without it the stream is live only. Scoped: closing unsubscribes.
+     * without it the stream is live only. Registered eagerly (a publish
+     * after this returns is delivered); the stream's end unsubscribes.
      */
     readonly subscribe: (
       id: string,
       after?: number | undefined,
-    ) => Effect.Effect<Stream.Stream<ThreadEvent>, ThreadNotFound, Scope.Scope>
+    ) => Effect.Effect<Stream.Stream<ThreadEvent>, ThreadNotFound>
     /** Replace the copy with provider history (see the header's rules). No
      * route calls this — the triggers are internal; it exists for tests
      * and manual repair. */
@@ -837,7 +839,7 @@ export const layer = Layer.effect(ThreadRuntime)(
           Effect.andThen(
             transcripts.read(id, {
               before: options?.before,
-              limit: Math.max(1, Math.min(options?.limit ?? TRANSCRIPT_PAGE, TRANSCRIPT_PAGE)),
+              limit: options?.limit ?? TRANSCRIPT_PAGE,
             }),
           ),
         ),
@@ -849,23 +851,22 @@ export const layer = Layer.effect(ThreadRuntime)(
           })
           // Registered BEFORE the replay read: anything published in
           // between waits in the queue, and the seq filter below drops
-          // what the replay already covered.
-          yield* Effect.acquireRelease(
-            Effect.sync(() => {
-              const set = hubs.get(id) ?? new Set()
-              set.add(queue)
-              hubs.set(id, set)
-            }),
-            () =>
-              Effect.sync(() => {
-                const set = hubs.get(id)
-                set?.delete(queue)
-                if (set?.size === 0) hubs.delete(id)
-                Queue.endUnsafe(queue)
-              }),
-          )
-          if (after === undefined) return Stream.fromQueue(queue)
-          const { changes, counters } = yield* transcripts.changesAfter(id, after)
+          // what the replay already covered. A stream that never runs
+          // self-heals the way Events' do: its queue fills and publish
+          // drops it.
+          const set = hubs.get(id) ?? new Set()
+          set.add(queue)
+          hubs.set(id, set)
+          const unsubscribe = Effect.sync(() => {
+            set.delete(queue)
+            if (set.size === 0 && hubs.get(id) === set) hubs.delete(id)
+            Queue.endUnsafe(queue)
+          })
+          if (after === undefined) return Stream.fromQueue(queue).pipe(Stream.ensuring(unsubscribe))
+          // A replay read that dies must not strand the registration.
+          const { changes, counters } = yield* transcripts
+            .changesAfter(id, after)
+            .pipe(Effect.onExit((exit) => (exit._tag === "Failure" ? unsubscribe : Effect.void)))
           // A copy replaced since `after`: what was deleted cannot be
           // replayed, so the client is told to refetch instead.
           const replay: ReadonlyArray<ThreadEvent> =
@@ -883,7 +884,7 @@ export const layer = Layer.effect(ThreadRuntime)(
             Stream.fromQueue(queue).pipe(
               Stream.filter((event) => !("seq" in event) || event.seq > counters.seq),
             ),
-          )
+          ).pipe(Stream.ensuring(unsubscribe))
         }),
       reread: (id) => repository.require(id).pipe(Effect.flatMap(rereadRecord)),
       activity: (id) => Effect.sync(() => liveActivity.get(id)),
