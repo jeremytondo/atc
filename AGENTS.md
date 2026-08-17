@@ -56,16 +56,21 @@ that:
 
 ## Surfaces
 
-The server stands on its own and is meant as a flexible resource that other
-apps can connect to and be built on top of. The Web UI is more admin interface
-than API client. It's meant as a place to manage all aspects of the server and
-document the CLI and API. The HTTP API is the complete canonical App Server
-interface; the CLI is an agent gateway over it — `atc api` gives complete
-access to every API operation, and a named command earns its place by
-composing a workflow, needing local process/filesystem/TTY/streaming
-behavior, materially improving on supplying raw JSON, or being a thin
-convenience over a common read/CRUD operation. CLI commands never duplicate
-server domain logic, and no tooling should enforce an API-to-CLI mapping.
+The model is the Codex app-server: install one App Server on a machine and it
+is the brain — it owns Projects, Threads, Terminals, and provider sessions —
+and any number of clients attach to it, locally or remotely, and see the same
+live state. The macOS app is the first client; the `atc` CLI, a future iOS
+app, and integrations such as Linear are clients of the same API. Nothing a
+client needs may exist only inside a client: if the macOS app can do it,
+`curl` can. The Web UI is more admin interface than API client: a place to
+manage all aspects of the server and document the CLI and API. The HTTP API
+is the complete canonical App Server interface; the CLI is an agent gateway
+over it — `atc api` gives complete access to every API operation, and a named
+command earns its place by composing a workflow, needing local
+process/filesystem/TTY/streaming behavior, materially improving on supplying
+raw JSON, or being a thin convenience over a common read/CRUD operation. CLI
+commands never duplicate server domain logic, and no tooling should enforce
+an API-to-CLI mapping.
 
 ## The ways to hurt yourself
 
