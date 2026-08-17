@@ -477,6 +477,9 @@ export const layerWith = (options: ThreadsOptions) =>
                     Deferred.doneUnsafe(naming.promptArrived, Effect.void)
                     return
                   }
+                  // Item events feed the transcript copy (ATC-193, the
+                  // Threads runtime PR); the activity subscription ignores them.
+                  if (event.type !== "activity") return
                   const activity = event.activity
                   const previous = liveActivity.get(record.id)
                   liveActivity.set(record.id, activity)

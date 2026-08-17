@@ -379,6 +379,400 @@ export const ResourceChangedEvent = Schema.Struct({
     "Thin invalidation event: names what changed, never carries resource state. Clients coalesce events and refetch through the corresponding GETs, which stay the single source of truth.",
 })
 
+// --- The Thread runtime vocabulary (ATC-193) ---------------------------------
+//
+// Defined once, here, and reused verbatim by the AgentAdapter seam: adapters
+// emit these values, Threads persists them, and every client decodes them.
+// Every union is `oneOf` over NAMED variants with one literal discriminant
+// (`type` / `kind`), so openapi.ts can stamp an OpenAPI discriminator and the
+// generated Swift client gets one enum per union instead of a struct of
+// optionals. Optional fields are absent keys, never null (see
+// UpdateProjectRequest).
+
+export const FileChange = Schema.Struct({
+  path: Schema.String.annotate({ description: "Path of the changed file." }),
+  kind: Schema.Literals(["add", "update", "delete"]),
+  diff: Schema.optionalKey(
+    Schema.String.annotate({ description: "Unified diff, when the provider supplies one." }),
+  ),
+}).annotate({ identifier: "FileChange", description: "One file touched by a change." })
+
+export const ToolStatus = Schema.Literals(["pending", "running", "completed", "error"]).annotate({
+  identifier: "ToolStatus",
+  description:
+    "Lifecycle of a tool item: pending (not executing yet — typically awaiting approval), running, completed, or error.",
+})
+
+// `id` is the provider's own item id when it has a stable one (Codex item id,
+// Claude tool_use id), otherwise adapter-derived — unique within a thread,
+// never ATC-minted. Items carry no position: transcript order is array order,
+// live items append at the tail, and an update re-sends the whole item
+// (upsert by id).
+const threadItemBase = {
+  id: Schema.String.annotate({ description: "Item id, unique within the thread." }),
+  turnId: Schema.String.annotate({ description: "The turn this item belongs to." }),
+  parentItemId: Schema.optionalKey(
+    Schema.String.annotate({
+      description:
+        "The enclosing item when this work happened inside a subagent or nested tool; absent at top level.",
+    }),
+  ),
+  providerMetadata: Schema.optionalKey(
+    Schema.Unknown.annotate({
+      description:
+        "Opaque provider-namespaced JSON (e.g. { codex: { phase } }). Clients never branch on it.",
+    }),
+  ),
+}
+
+const toolFields = {
+  title: Schema.String.annotate({
+    description: 'Adapter-rendered one-liner for list rows ("bun test", "Edit threads.ts").',
+  }),
+  status: ToolStatus,
+  error: Schema.optionalKey(
+    Schema.String.annotate({
+      description:
+        'Human-readable failure; present iff status is error (a declined approval is "declined").',
+    }),
+  ),
+}
+
+export const ThreadItemUserMessage = Schema.Struct({
+  type: Schema.Literal("userMessage"),
+  ...threadItemBase,
+  text: Schema.String,
+}).annotate({ identifier: "ThreadItemUserMessage", description: "A user prompt (text only)." })
+
+export const ThreadItemAssistantText = Schema.Struct({
+  type: Schema.Literal("assistantText"),
+  ...threadItemBase,
+  text: Schema.String,
+  complete: Schema.Boolean.annotate({
+    description: "False while the text is still streaming (text.delta events extend it).",
+  }),
+}).annotate({ identifier: "ThreadItemAssistantText", description: "Assistant message text." })
+
+export const ThreadItemReasoning = Schema.Struct({
+  type: Schema.Literal("reasoning"),
+  ...threadItemBase,
+  text: Schema.String,
+  complete: Schema.Boolean.annotate({
+    description: "False while the text is still streaming (text.delta events extend it).",
+  }),
+}).annotate({ identifier: "ThreadItemReasoning", description: "Model reasoning (summary) text." })
+
+export const ThreadItemCommand = Schema.Struct({
+  type: Schema.Literal("command"),
+  ...threadItemBase,
+  ...toolFields,
+  command: Schema.String,
+  cwd: Schema.optionalKey(Schema.String),
+  output: Schema.optionalKey(Schema.String.annotate({ description: "Aggregated stdout/stderr." })),
+  exitCode: Schema.optionalKey(Schema.Int),
+}).annotate({ identifier: "ThreadItemCommand", description: "A shell command the agent ran." })
+
+export const ThreadItemFileChange = Schema.Struct({
+  type: Schema.Literal("fileChange"),
+  ...threadItemBase,
+  ...toolFields,
+  changes: Schema.Array(FileChange),
+}).annotate({ identifier: "ThreadItemFileChange", description: "Files the agent changed." })
+
+export const ThreadItemMcpCall = Schema.Struct({
+  type: Schema.Literal("mcpCall"),
+  ...threadItemBase,
+  ...toolFields,
+  server: Schema.String,
+  tool: Schema.String,
+  arguments: Schema.Unknown,
+  result: Schema.optionalKey(Schema.Unknown),
+}).annotate({ identifier: "ThreadItemMcpCall", description: "An MCP tool call." })
+
+export const ThreadItemToolCall = Schema.Struct({
+  type: Schema.Literal("toolCall"),
+  ...threadItemBase,
+  ...toolFields,
+  name: Schema.String,
+  input: Schema.Unknown,
+  output: Schema.optionalKey(Schema.Unknown),
+}).annotate({
+  identifier: "ThreadItemToolCall",
+  description: "Any other tool call (file reads, searches, subagents, web fetches, …).",
+})
+
+export const ThreadItemCompaction = Schema.Struct({
+  type: Schema.Literal("compaction"),
+  ...threadItemBase,
+}).annotate({
+  identifier: "ThreadItemCompaction",
+  description: "Marker: the provider compacted the conversation context here.",
+})
+
+export const ThreadItem = Schema.Union(
+  [
+    ThreadItemUserMessage,
+    ThreadItemAssistantText,
+    ThreadItemReasoning,
+    ThreadItemCommand,
+    ThreadItemFileChange,
+    ThreadItemMcpCall,
+    ThreadItemToolCall,
+    ThreadItemCompaction,
+  ],
+  { mode: "oneOf" },
+).annotate({
+  identifier: "ThreadItem",
+  description: "One normalized transcript item, discriminated by `type`.",
+})
+
+export const ThreadTurnStatus = Schema.Literals([
+  "running",
+  "completed",
+  "interrupted",
+  "failed",
+]).annotate({ identifier: "ThreadTurnStatus", description: "Lifecycle of one turn." })
+
+export const ThreadTurn = Schema.Struct({
+  id: Schema.String.annotate({
+    description: "Provider turn id (Codex) or adapter-derived (Claude); unique within the thread.",
+  }),
+  status: ThreadTurnStatus,
+  error: Schema.optionalKey(Schema.String.annotate({ description: "Present iff failed." })),
+  promptId: Schema.optionalKey(
+    Schema.String.annotate({
+      description: "The queued prompt this turn ran, when ATC started it.",
+    }),
+  ),
+  startedAt: Schema.optionalKey(timestamp("Turn start; history re-reads may lack it.")),
+  endedAt: Schema.optionalKey(timestamp("Turn end; absent while running.")),
+}).annotate({ identifier: "ThreadTurn", description: "One turn of the conversation." })
+
+export const Question = Schema.Struct({
+  id: Schema.String.annotate({ description: "Question id, the key of the answer." }),
+  header: Schema.String,
+  question: Schema.String,
+  options: Schema.Array(
+    Schema.Struct({ label: Schema.String, description: Schema.String }).annotate({
+      identifier: "QuestionOption",
+    }),
+  ),
+  multiSelect: Schema.Boolean,
+  freeform: Schema.Boolean.annotate({
+    description: "A typed answer that is not one of the options is accepted.",
+  }),
+  secret: Schema.Boolean.annotate({
+    description: "The answer is sensitive (a credential): mask it while typing and never echo it.",
+  }),
+}).annotate({ identifier: "Question", description: "One question the agent asked the user." })
+
+export const ApprovalSubjectCommand = Schema.Struct({
+  type: Schema.Literal("command"),
+  command: Schema.String,
+  cwd: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "ApprovalSubjectCommand" })
+
+export const ApprovalSubjectFileChange = Schema.Struct({
+  type: Schema.Literal("fileChange"),
+  changes: Schema.Array(FileChange),
+}).annotate({ identifier: "ApprovalSubjectFileChange" })
+
+export const ApprovalSubjectTool = Schema.Struct({
+  type: Schema.Literal("tool"),
+  name: Schema.String,
+  input: Schema.Unknown,
+}).annotate({ identifier: "ApprovalSubjectTool" })
+
+export const ApprovalSubject = Schema.Union(
+  [ApprovalSubjectCommand, ApprovalSubjectFileChange, ApprovalSubjectTool],
+  { mode: "oneOf" },
+).annotate({
+  identifier: "ApprovalSubject",
+  description: "What the agent is asking permission for, discriminated by `type`.",
+})
+
+const threadRequestBase = {
+  id: Schema.String.annotate({ description: "Request id; answer it through the API." }),
+  turnId: Schema.String,
+  itemId: Schema.optionalKey(
+    Schema.String.annotate({ description: "The item awaiting this request, when known." }),
+  ),
+  openedAt: timestamp("When the provider opened the request."),
+}
+
+export const ThreadRequestQuestion = Schema.Struct({
+  kind: Schema.Literal("question"),
+  ...threadRequestBase,
+  questions: Schema.Array(Question),
+}).annotate({ identifier: "ThreadRequestQuestion", description: "The agent asked questions." })
+
+export const ThreadRequestApproval = Schema.Struct({
+  kind: Schema.Literal("approval"),
+  ...threadRequestBase,
+  title: Schema.String.annotate({ description: "One-line prompt to show the user." }),
+  reason: Schema.optionalKey(Schema.String.annotate({ description: "Why approval is needed." })),
+  subject: ApprovalSubject,
+}).annotate({ identifier: "ThreadRequestApproval", description: "The agent asked for approval." })
+
+export const ThreadRequest = Schema.Union([ThreadRequestQuestion, ThreadRequestApproval], {
+  mode: "oneOf",
+}).annotate({
+  identifier: "ThreadRequest",
+  description:
+    "A pending provider request parked until answered — live state, not a transcript item; discriminated by `kind`.",
+})
+
+export const ThreadRequestList = Schema.Array(ThreadRequest).annotate({
+  identifier: "ThreadRequestList",
+  description: "The thread's pending requests, oldest first.",
+})
+
+export const ThreadRequestQuestionAnswer = Schema.Struct({
+  kind: Schema.Literal("question"),
+  answers: Schema.Record(Schema.String, Schema.Array(Schema.String)).annotate({
+    description:
+      "Question id → chosen option labels (exactly one unless multiSelect), or one freeform string.",
+  }),
+}).annotate({ identifier: "ThreadRequestQuestionAnswer" })
+
+export const ApprovalDecision = Schema.Literals([
+  "accept",
+  "acceptForSession",
+  "decline",
+  "cancel",
+]).annotate({
+  identifier: "ApprovalDecision",
+  description: "cancel = decline and interrupt the turn.",
+})
+
+export const ThreadRequestApprovalAnswer = Schema.Struct({
+  kind: Schema.Literal("approval"),
+  decision: ApprovalDecision,
+}).annotate({ identifier: "ThreadRequestApprovalAnswer" })
+
+export const ThreadRequestAnswer = Schema.Union(
+  [ThreadRequestQuestionAnswer, ThreadRequestApprovalAnswer],
+  { mode: "oneOf" },
+).annotate({
+  identifier: "ThreadRequestAnswer",
+  description: "The answer to a pending request; `kind` must match the request's.",
+})
+
+export const QueuedPrompt = Schema.Struct({
+  id: Schema.String,
+  prompt: Schema.String,
+  queuedAt: timestamp("When the prompt was admitted."),
+}).annotate({
+  identifier: "QueuedPrompt",
+  description: "A prompt admitted while a turn was running; it runs at the next idle.",
+})
+
+export const QueuedPromptList = Schema.Array(QueuedPrompt).annotate({
+  identifier: "QueuedPromptList",
+  description: "Prompts still waiting, oldest first.",
+})
+
+export const ThreadTranscript = Schema.Struct({
+  items: Schema.Array(ThreadItem).annotate({ description: "Transcript order, oldest first." }),
+  turns: Schema.Array(ThreadTurn).annotate({ description: "Every turn referenced by `items`." }),
+  seq: Schema.Int.annotate({
+    description: "The thread's change counter at the time of the read; subscribe with after=seq.",
+  }),
+  snapshotVersion: Schema.Int.annotate({
+    description: "Bumps whenever a provider re-read replaced the copy.",
+  }),
+  hasMore: Schema.Boolean.annotate({
+    description: "Older items exist before the first one returned.",
+  }),
+}).annotate({
+  identifier: "ThreadTranscript",
+  description:
+    "ATC's normalized copy of the provider conversation — a rebuildable projection, never the authority.",
+})
+
+// `seq` is the thread's monotonic change counter: every durable change takes
+// the next value and it appears only on durable events (and as the head of a
+// transcript). Live-only events carry none and are never replayed.
+const seq = Schema.Int.annotate({ description: "Position of this durable change." })
+
+export const ThreadEventItemStarted = Schema.Struct({
+  type: Schema.Literal("item.started"),
+  seq,
+  item: ThreadItem,
+}).annotate({ identifier: "ThreadEventItemStarted" })
+export const ThreadEventItemUpdated = Schema.Struct({
+  type: Schema.Literal("item.updated"),
+  seq,
+  item: ThreadItem,
+}).annotate({ identifier: "ThreadEventItemUpdated" })
+export const ThreadEventItemCompleted = Schema.Struct({
+  type: Schema.Literal("item.completed"),
+  seq,
+  item: ThreadItem,
+}).annotate({ identifier: "ThreadEventItemCompleted" })
+export const ThreadEventTurnStarted = Schema.Struct({
+  type: Schema.Literal("turn.started"),
+  seq,
+  turn: ThreadTurn,
+}).annotate({ identifier: "ThreadEventTurnStarted" })
+export const ThreadEventTurnCompleted = Schema.Struct({
+  type: Schema.Literal("turn.completed"),
+  seq,
+  turn: ThreadTurn,
+}).annotate({ identifier: "ThreadEventTurnCompleted" })
+export const ThreadEventTextDelta = Schema.Struct({
+  type: Schema.Literal("text.delta"),
+  itemId: Schema.String,
+  delta: Schema.String,
+}).annotate({
+  identifier: "ThreadEventTextDelta",
+  description: "Live-only, never replayed: appends to a streaming assistantText or reasoning item.",
+})
+export const ThreadEventRequestOpened = Schema.Struct({
+  type: Schema.Literal("request.opened"),
+  request: ThreadRequest,
+}).annotate({ identifier: "ThreadEventRequestOpened", description: "Live-only." })
+export const ThreadEventRequestClosed = Schema.Struct({
+  type: Schema.Literal("request.closed"),
+  requestId: Schema.String,
+}).annotate({ identifier: "ThreadEventRequestClosed", description: "Live-only." })
+export const ThreadEventQueueUpdated = Schema.Struct({
+  type: Schema.Literal("queue.updated"),
+  prompts: QueuedPromptList,
+}).annotate({
+  identifier: "ThreadEventQueueUpdated",
+  description: "Live-only: the full queue, every time it changes.",
+})
+export const ThreadEventSnapshotInvalidated = Schema.Struct({
+  type: Schema.Literal("snapshot.invalidated"),
+  seq,
+  snapshotVersion: Schema.Int,
+}).annotate({
+  identifier: "ThreadEventSnapshotInvalidated",
+  description:
+    "A provider re-read replaced the copy: refetch the transcript and resubscribe after `seq`.",
+})
+
+export const ThreadEvent = Schema.Union(
+  [
+    ThreadEventItemStarted,
+    ThreadEventItemUpdated,
+    ThreadEventItemCompleted,
+    ThreadEventTurnStarted,
+    ThreadEventTurnCompleted,
+    ThreadEventTextDelta,
+    ThreadEventRequestOpened,
+    ThreadEventRequestClosed,
+    ThreadEventQueueUpdated,
+    ThreadEventSnapshotInvalidated,
+  ],
+  { mode: "oneOf" },
+).annotate({
+  identifier: "ThreadEvent",
+  description:
+    "One per-thread stream event, discriminated by `type`. Durable events carry `seq` and replay on reconnect (after=seq); live-only events do not.",
+})
+
 // Every error carries a required `message` field ON THE WIRE, computed from
 // the structured fields by the class's own constructor — the one place each
 // message rule lives. Construction sites never pass it, every consumer (the

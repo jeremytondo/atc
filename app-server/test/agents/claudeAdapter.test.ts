@@ -229,7 +229,7 @@ describe("ClaudeAdapter", () => {
     }),
   )
 
-  it.live("permission callbacks surface as request events and are denied", () =>
+  it.live("permission callbacks park as approval requests until answered", () =>
     Effect.gen(function* () {
       const cwd = workDir()
       const { fake, layer } = adapterStack()
@@ -242,18 +242,251 @@ describe("ClaudeAdapter", () => {
               input: "needs PERMISSION for a tool",
             })
             const sink = yield* collectAgentEvents(connection.events)
+            yield* waitForAgentEvent(sink, (event) => event.type === "requestOpened")
+            const opened = sink.find((event) => event.type === "requestOpened")
+            if (opened?.type !== "requestOpened" || opened.request.kind !== "approval") {
+              return assert.fail("expected an approval request")
+            }
+            // The SDK's pre-rendered title and reason ride the request; the
+            // Bash input becomes a command subject naming the tool item.
+            assert.strictEqual(opened.request.title, "Claude wants to run pwd")
+            assert.strictEqual(opened.request.reason, "outside the allow list")
+            assert.deepStrictEqual(opened.request.subject, { type: "command", command: "pwd" })
+            assert.strictEqual(opened.request.itemId, "fake-tool-use-1")
+            // The tool item is pending while its approval parks (whether the
+            // ask or the tool_use block landed first) — nothing has been
+            // denied yet.
             yield* waitForAgentEvent(
               sink,
-              (event) => event.type === "requestOpened" && event.kind === "approval",
+              (event) =>
+                (event.type === "itemStarted" || event.type === "itemUpdated") &&
+                event.item.id === "fake-tool-use-1" &&
+                event.item.type === "command" &&
+                event.item.status === "pending",
             )
+            assert.deepStrictEqual(fake.decisions, [])
+            assert.isTrue(
+              sink.some((event) => event.type === "activity" && event.activity === "needs_input"),
+            )
+            yield* connection.respond(opened.request.id, { kind: "approval", decision: "accept" })
             yield* waitForAgentEvent(sink, (event) => event.type === "requestClosed")
             yield* waitForAgentEvent(
               sink,
               (event) => event.type === "turnCompleted" && event.turnId === turn.turnId,
             )
-            assert.deepStrictEqual(fake.denials, [{ toolName: "Bash", behavior: "deny" }])
+            assert.deepStrictEqual(fake.decisions, [
+              { toolName: "Bash", result: { behavior: "allow" } },
+            ])
+            // Accepted: the command ran and its result completed the item.
+            const completed = sink.find(
+              (event) => event.type === "itemCompleted" && event.item.id === "fake-tool-use-1",
+            )
             assert.isTrue(
-              sink.some((event) => event.type === "activity" && event.activity === "needs_input"),
+              completed?.type === "itemCompleted" &&
+                completed.item.type === "command" &&
+                completed.item.status === "completed" &&
+                completed.item.output === "/work",
+            )
+            // Answered requests are gone: a second answer is a conflict.
+            const again = yield* Effect.flip(
+              connection.respond(opened.request.id, { kind: "approval", decision: "accept" }),
+            )
+            assert.strictEqual(again._tag, "AgentConflict")
+          }),
+        )
+      }).pipe(Effect.provide(layer))
+    }),
+  )
+
+  it.live("a declined approval fails the tool item; a cancel interrupts the turn", () =>
+    Effect.gen(function* () {
+      const cwd = workDir()
+      const { fake, layer } = adapterStack()
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter.ClaudeAdapter
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const { connection, turn } = yield* adapter.createSession({
+              cwd,
+              input: "needs PERMISSION for a tool",
+            })
+            const sink = yield* collectAgentEvents(connection.events)
+            yield* waitForAgentEvent(sink, (event) => event.type === "requestOpened")
+            const opened = sink.find((event) => event.type === "requestOpened")
+            if (opened?.type !== "requestOpened") return assert.fail("expected a request")
+            // Kind mismatch is a conflict, and leaves the request parked.
+            const mismatch = yield* Effect.flip(
+              connection.respond(opened.request.id, { kind: "question", answers: {} }),
+            )
+            assert.strictEqual(mismatch._tag, "AgentConflict")
+            yield* connection.respond(opened.request.id, { kind: "approval", decision: "decline" })
+            yield* waitForAgentEvent(
+              sink,
+              (event) => event.type === "turnCompleted" && event.turnId === turn.turnId,
+            )
+            assert.deepStrictEqual(fake.decisions, [
+              { toolName: "Bash", result: { behavior: "deny", message: "declined" } },
+            ])
+            const completed = sink.find(
+              (event) => event.type === "itemCompleted" && event.item.id === "fake-tool-use-1",
+            )
+            assert.isTrue(
+              completed?.type === "itemCompleted" &&
+                completed.item.type === "command" &&
+                completed.item.status === "error",
+            )
+          }),
+        )
+        // cancel = deny + interrupt: the turn ends interrupted (and, Claude
+        // being Claude, the connection with it).
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const { connection, turn } = yield* adapter.createSession({
+              cwd,
+              input: "needs PERMISSION again",
+            })
+            const sink = yield* collectAgentEvents(connection.events)
+            yield* waitForAgentEvent(sink, (event) => event.type === "requestOpened")
+            const opened = sink.find((event) => event.type === "requestOpened")
+            if (opened?.type !== "requestOpened") return assert.fail("expected a request")
+            yield* connection.respond(opened.request.id, { kind: "approval", decision: "cancel" })
+            yield* waitForAgentEvent(
+              sink,
+              (event) =>
+                event.type === "turnCompleted" &&
+                event.turnId === turn.turnId &&
+                event.outcome === "interrupted",
+            )
+          }),
+        )
+      }).pipe(Effect.provide(layer))
+    }),
+  )
+
+  it.live("assistant text streams as content blocks; the per-block echo never duplicates it", () =>
+    Effect.gen(function* () {
+      const cwd = workDir()
+      const { layer } = adapterStack()
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter.ClaudeAdapter
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const { connection, turn } = yield* adapter.createSession({
+              cwd,
+              input: "STREAM please",
+            })
+            const sink = yield* collectAgentEvents(connection.events)
+            yield* waitForAgentEvent(
+              sink,
+              (event) => event.type === "turnCompleted" && event.turnId === turn.turnId,
+            )
+            const items = sink.flatMap((event) =>
+              event.type === "itemStarted" ||
+              event.type === "itemCompleted" ||
+              event.type === "textDelta"
+                ? [event]
+                : [],
+            )
+            // The prompt is the turn's first item, keyed by the turn.
+            assert.deepStrictEqual(items[0], {
+              type: "itemCompleted",
+              item: {
+                type: "userMessage",
+                id: `${turn.turnId}:prompt`,
+                turnId: turn.turnId,
+                text: "STREAM please",
+              },
+            })
+            // Then the streamed block: keyed by API message id + block index.
+            assert.deepStrictEqual(items.slice(1), [
+              {
+                type: "itemStarted",
+                item: {
+                  type: "assistantText",
+                  id: "msg_fake_1:0",
+                  turnId: turn.turnId,
+                  text: "",
+                  complete: false,
+                },
+              },
+              { type: "textDelta", itemId: "msg_fake_1:0", delta: "fake: " },
+              { type: "textDelta", itemId: "msg_fake_1:0", delta: "STREAM please" },
+              {
+                type: "itemCompleted",
+                item: {
+                  type: "assistantText",
+                  id: "msg_fake_1:0",
+                  turnId: turn.turnId,
+                  text: "fake: STREAM please",
+                  complete: true,
+                },
+              },
+            ])
+          }),
+        )
+      }).pipe(Effect.provide(layer))
+    }),
+  )
+
+  it.live("tool_use blocks open tool items and their results complete them", () =>
+    Effect.gen(function* () {
+      const cwd = workDir()
+      const { layer } = adapterStack()
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter.ClaudeAdapter
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const { connection, turn } = yield* adapter.createSession({
+              cwd,
+              input: "use a TOOL",
+            })
+            const sink = yield* collectAgentEvents(connection.events)
+            yield* waitForAgentEvent(
+              sink,
+              (event) => event.type === "turnCompleted" && event.turnId === turn.turnId,
+            )
+            const tool = sink.flatMap((event) =>
+              (event.type === "itemStarted" || event.type === "itemCompleted") &&
+              event.item.id === "toolu_fake_read"
+                ? [event]
+                : [],
+            )
+            assert.deepStrictEqual(tool, [
+              {
+                type: "itemStarted",
+                item: {
+                  type: "toolCall",
+                  id: "toolu_fake_read",
+                  turnId: turn.turnId,
+                  title: "Read notes.md",
+                  status: "running",
+                  name: "Read",
+                  input: { file_path: "/work/notes.md" },
+                },
+              },
+              {
+                type: "itemCompleted",
+                item: {
+                  type: "toolCall",
+                  id: "toolu_fake_read",
+                  turnId: turn.turnId,
+                  title: "Read notes.md",
+                  status: "completed",
+                  name: "Read",
+                  input: { file_path: "/work/notes.md" },
+                  output: { file: { filePath: "/work/notes.md", content: "hello" } },
+                },
+              },
+            ])
+            // The un-streamed final text still lands, keyed by its message uuid.
+            const text = sink.find(
+              (event) => event.type === "itemCompleted" && event.item.type === "assistantText",
+            )
+            assert.isTrue(
+              text?.type === "itemCompleted" &&
+                text.item.type === "assistantText" &&
+                text.item.text === "fake: use a TOOL" &&
+                text.item.complete,
             )
           }),
         )
@@ -406,7 +639,7 @@ describe("ClaudeAdapter", () => {
     }),
   )
 
-  it.live("AskUserQuestion surfaces as a question, not an approval", () =>
+  it.live("AskUserQuestion surfaces as a question; answers go back keyed by question text", () =>
     Effect.gen(function* () {
       const cwd = workDir()
       const { fake, layer } = adapterStack()
@@ -421,14 +654,54 @@ describe("ClaudeAdapter", () => {
             const sink = yield* collectAgentEvents(connection.events)
             yield* waitForAgentEvent(
               sink,
-              (event) => event.type === "requestOpened" && event.kind === "question",
+              (event) => event.type === "requestOpened" && event.request.kind === "question",
             )
+            const opened = sink.find((event) => event.type === "requestOpened")
+            if (opened?.type !== "requestOpened" || opened.request.kind !== "question") {
+              return assert.fail("expected a question request")
+            }
+            assert.deepStrictEqual(
+              opened.request.questions.map((question) => [
+                question.id,
+                question.header,
+                question.options.map((option) => option.label),
+                question.freeform,
+              ]),
+              [
+                ["q0", "Color", ["red", "blue"], true],
+                ["q1", "Notes", [], true],
+              ],
+            )
+            yield* connection.respond(opened.request.id, {
+              kind: "question",
+              answers: { q0: ["blue"], q1: ["ship it"] },
+            })
             yield* waitForAgentEvent(
               sink,
               (event) => event.type === "turnCompleted" && event.turnId === turn.turnId,
             )
-            assert.deepStrictEqual(fake.denials, [
-              { toolName: "AskUserQuestion", behavior: "deny" },
+            assert.deepStrictEqual(fake.decisions, [
+              {
+                toolName: "AskUserQuestion",
+                result: {
+                  behavior: "allow",
+                  updatedInput: {
+                    questions: [
+                      {
+                        question: "Which color?",
+                        header: "Color",
+                        options: [
+                          { label: "red", description: "warm" },
+                          { label: "blue", description: "cool" },
+                        ],
+                        multiSelect: false,
+                      },
+                      { question: "Any notes?", header: "Notes", options: [], multiSelect: false },
+                    ],
+                    answers: { "Which color?": "blue", "Any notes?": "ship it" },
+                  },
+                },
+              },
             ])
           }),
         )
@@ -530,7 +803,13 @@ describe("ClaudeAdapter TUI session plumbing", () => {
       yield* stream.pipe(
         Stream.runForEach((event) =>
           Effect.sync(() =>
-            sink.push(event.type === "activity" ? event.activity : `prompt:${event.text}`),
+            sink.push(
+              event.type === "activity"
+                ? event.activity
+                : event.type === "userPrompt"
+                  ? `prompt:${event.text}`
+                  : `item:${event.item.type}`,
+            ),
           ),
         ),
         Effect.ignore,
@@ -929,6 +1208,50 @@ describe("ClaudeAdapter collectTitleContext", () => {
         assert.deepStrictEqual(calls, [{ sessionId: "context-session", dir: "/work" }])
       }).pipe(Effect.provide(layer))
     }),
+  )
+
+  it.live(
+    "readHistory normalizes the transcript into turns; a failed read is a protocol error",
+    () =>
+      Effect.gen(function* () {
+        const calls: Array<{ sessionId: string; dir: string | undefined }> = []
+        const layer = claudeAdapterLayer({
+          sessionMessagesFn: (sessionId, options) => {
+            calls.push({ sessionId, dir: options?.dir })
+            if (sessionId === "gone-session") return Promise.reject(new Error("no transcript"))
+            return Promise.resolve([
+              transcriptMessage("user", "hello"),
+              transcriptMessage("assistant", [
+                { type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } },
+              ]),
+              transcriptMessage("user", [
+                { type: "tool_result", tool_use_id: "t1", content: "a b" },
+              ]),
+              transcriptMessage("assistant", "two files"),
+            ])
+          },
+        })
+        yield* Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter.ClaudeAdapter
+          const history = yield* adapter.readHistory({
+            providerSessionId: "context-session",
+            cwd: "/work",
+          })
+          assert.deepStrictEqual(calls, [{ sessionId: "context-session", dir: "/work" }])
+          assert.strictEqual(history.length, 1)
+          assert.deepStrictEqual(
+            history[0]?.items.map((item) => item.type),
+            ["userMessage", "command", "assistantText"],
+          )
+          const command = history[0]?.items[1]
+          assert.isTrue(command?.type === "command" && command.output === "a b")
+          assert.strictEqual(history[0]?.turn.status, "completed")
+          const failure = yield* Effect.flip(
+            adapter.readHistory({ providerSessionId: "gone-session", cwd: "/work" }),
+          )
+          assert.strictEqual(failure._tag, "AgentProtocolError")
+        }).pipe(Effect.provide(layer))
+      }),
   )
 
   it.live("a failed or empty transcript read is silently no context", () =>

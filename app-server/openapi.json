@@ -2149,6 +2149,1168 @@
         ],
         "additionalProperties": false,
         "description": "Thin invalidation event: names what changed, never carries resource state. Clients coalesce events and refetch through the corresponding GETs, which stay the single source of truth."
+      },
+      "ThreadItemUserMessage": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "userMessage"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "Item id, unique within the thread."
+          },
+          "turnId": {
+            "type": "string",
+            "description": "The turn this item belongs to."
+          },
+          "parentItemId": {
+            "type": "string",
+            "description": "The enclosing item when this work happened inside a subagent or nested tool; absent at top level."
+          },
+          "providerMetadata": {},
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "id",
+          "turnId",
+          "text"
+        ],
+        "additionalProperties": false,
+        "description": "A user prompt (text only)."
+      },
+      "ThreadItemAssistantText": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "assistantText"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "Item id, unique within the thread."
+          },
+          "turnId": {
+            "type": "string",
+            "description": "The turn this item belongs to."
+          },
+          "parentItemId": {
+            "type": "string",
+            "description": "The enclosing item when this work happened inside a subagent or nested tool; absent at top level."
+          },
+          "providerMetadata": {},
+          "text": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean",
+            "description": "False while the text is still streaming (text.delta events extend it)."
+          }
+        },
+        "required": [
+          "type",
+          "id",
+          "turnId",
+          "text",
+          "complete"
+        ],
+        "additionalProperties": false,
+        "description": "Assistant message text."
+      },
+      "ThreadItemReasoning": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "reasoning"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "Item id, unique within the thread."
+          },
+          "turnId": {
+            "type": "string",
+            "description": "The turn this item belongs to."
+          },
+          "parentItemId": {
+            "type": "string",
+            "description": "The enclosing item when this work happened inside a subagent or nested tool; absent at top level."
+          },
+          "providerMetadata": {},
+          "text": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean",
+            "description": "False while the text is still streaming (text.delta events extend it)."
+          }
+        },
+        "required": [
+          "type",
+          "id",
+          "turnId",
+          "text",
+          "complete"
+        ],
+        "additionalProperties": false,
+        "description": "Model reasoning (summary) text."
+      },
+      "ToolStatus": {
+        "type": "string",
+        "enum": [
+          "pending",
+          "running",
+          "completed",
+          "error"
+        ],
+        "description": "Lifecycle of a tool item: pending (not executing yet — typically awaiting approval), running, completed, or error."
+      },
+      "ThreadItemCommand": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "command"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "Item id, unique within the thread."
+          },
+          "turnId": {
+            "type": "string",
+            "description": "The turn this item belongs to."
+          },
+          "parentItemId": {
+            "type": "string",
+            "description": "The enclosing item when this work happened inside a subagent or nested tool; absent at top level."
+          },
+          "providerMetadata": {},
+          "title": {
+            "type": "string",
+            "description": "Adapter-rendered one-liner for list rows (\"bun test\", \"Edit threads.ts\")."
+          },
+          "status": {
+            "$ref": "#/components/schemas/ToolStatus"
+          },
+          "error": {
+            "type": "string",
+            "description": "Human-readable failure; present iff status is error (a declined approval is \"declined\")."
+          },
+          "command": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "output": {
+            "type": "string",
+            "description": "Aggregated stdout/stderr."
+          },
+          "exitCode": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "type",
+          "id",
+          "turnId",
+          "title",
+          "status",
+          "command"
+        ],
+        "additionalProperties": false,
+        "description": "A shell command the agent ran."
+      },
+      "FileChange": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path of the changed file."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "add",
+              "update",
+              "delete"
+            ]
+          },
+          "diff": {
+            "type": "string",
+            "description": "Unified diff, when the provider supplies one."
+          }
+        },
+        "required": [
+          "path",
+          "kind"
+        ],
+        "additionalProperties": false,
+        "description": "One file touched by a change."
+      },
+      "ThreadItemFileChange": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "fileChange"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "Item id, unique within the thread."
+          },
+          "turnId": {
+            "type": "string",
+            "description": "The turn this item belongs to."
+          },
+          "parentItemId": {
+            "type": "string",
+            "description": "The enclosing item when this work happened inside a subagent or nested tool; absent at top level."
+          },
+          "providerMetadata": {},
+          "title": {
+            "type": "string",
+            "description": "Adapter-rendered one-liner for list rows (\"bun test\", \"Edit threads.ts\")."
+          },
+          "status": {
+            "$ref": "#/components/schemas/ToolStatus"
+          },
+          "error": {
+            "type": "string",
+            "description": "Human-readable failure; present iff status is error (a declined approval is \"declined\")."
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FileChange"
+            }
+          }
+        },
+        "required": [
+          "type",
+          "id",
+          "turnId",
+          "title",
+          "status",
+          "changes"
+        ],
+        "additionalProperties": false,
+        "description": "Files the agent changed."
+      },
+      "ThreadItemMcpCall": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "mcpCall"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "Item id, unique within the thread."
+          },
+          "turnId": {
+            "type": "string",
+            "description": "The turn this item belongs to."
+          },
+          "parentItemId": {
+            "type": "string",
+            "description": "The enclosing item when this work happened inside a subagent or nested tool; absent at top level."
+          },
+          "providerMetadata": {},
+          "title": {
+            "type": "string",
+            "description": "Adapter-rendered one-liner for list rows (\"bun test\", \"Edit threads.ts\")."
+          },
+          "status": {
+            "$ref": "#/components/schemas/ToolStatus"
+          },
+          "error": {
+            "type": "string",
+            "description": "Human-readable failure; present iff status is error (a declined approval is \"declined\")."
+          },
+          "server": {
+            "type": "string"
+          },
+          "tool": {
+            "type": "string"
+          },
+          "arguments": {},
+          "result": {}
+        },
+        "required": [
+          "type",
+          "id",
+          "turnId",
+          "title",
+          "status",
+          "server",
+          "tool",
+          "arguments"
+        ],
+        "additionalProperties": false,
+        "description": "An MCP tool call."
+      },
+      "ThreadItemToolCall": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "toolCall"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "Item id, unique within the thread."
+          },
+          "turnId": {
+            "type": "string",
+            "description": "The turn this item belongs to."
+          },
+          "parentItemId": {
+            "type": "string",
+            "description": "The enclosing item when this work happened inside a subagent or nested tool; absent at top level."
+          },
+          "providerMetadata": {},
+          "title": {
+            "type": "string",
+            "description": "Adapter-rendered one-liner for list rows (\"bun test\", \"Edit threads.ts\")."
+          },
+          "status": {
+            "$ref": "#/components/schemas/ToolStatus"
+          },
+          "error": {
+            "type": "string",
+            "description": "Human-readable failure; present iff status is error (a declined approval is \"declined\")."
+          },
+          "name": {
+            "type": "string"
+          },
+          "input": {},
+          "output": {}
+        },
+        "required": [
+          "type",
+          "id",
+          "turnId",
+          "title",
+          "status",
+          "name",
+          "input"
+        ],
+        "additionalProperties": false,
+        "description": "Any other tool call (file reads, searches, subagents, web fetches, …)."
+      },
+      "ThreadItemCompaction": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "compaction"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "Item id, unique within the thread."
+          },
+          "turnId": {
+            "type": "string",
+            "description": "The turn this item belongs to."
+          },
+          "parentItemId": {
+            "type": "string",
+            "description": "The enclosing item when this work happened inside a subagent or nested tool; absent at top level."
+          },
+          "providerMetadata": {}
+        },
+        "required": [
+          "type",
+          "id",
+          "turnId"
+        ],
+        "additionalProperties": false,
+        "description": "Marker: the provider compacted the conversation context here."
+      },
+      "ThreadItem": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ThreadItemUserMessage"
+          },
+          {
+            "$ref": "#/components/schemas/ThreadItemAssistantText"
+          },
+          {
+            "$ref": "#/components/schemas/ThreadItemReasoning"
+          },
+          {
+            "$ref": "#/components/schemas/ThreadItemCommand"
+          },
+          {
+            "$ref": "#/components/schemas/ThreadItemFileChange"
+          },
+          {
+            "$ref": "#/components/schemas/ThreadItemMcpCall"
+          },
+          {
+            "$ref": "#/components/schemas/ThreadItemToolCall"
+          },
+          {
+            "$ref": "#/components/schemas/ThreadItemCompaction"
+          }
+        ],
+        "description": "One normalized transcript item, discriminated by `type`.",
+        "discriminator": {
+          "propertyName": "type",
+          "mapping": {
+            "userMessage": "#/components/schemas/ThreadItemUserMessage",
+            "assistantText": "#/components/schemas/ThreadItemAssistantText",
+            "reasoning": "#/components/schemas/ThreadItemReasoning",
+            "command": "#/components/schemas/ThreadItemCommand",
+            "fileChange": "#/components/schemas/ThreadItemFileChange",
+            "mcpCall": "#/components/schemas/ThreadItemMcpCall",
+            "toolCall": "#/components/schemas/ThreadItemToolCall",
+            "compaction": "#/components/schemas/ThreadItemCompaction"
+          }
+        }
+      },
+      "ThreadEventItemStarted": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "item.started"
+            ]
+          },
+          "seq": {
+            "type": "integer",
+            "description": "Position of this durable change."
+          },
+          "item": {
+            "$ref": "#/components/schemas/ThreadItem"
+          }
+        },
+        "required": [
+          "type",
+          "seq",
+          "item"
+        ],
+        "additionalProperties": false
+      },
+      "ThreadEventItemUpdated": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "item.updated"
+            ]
+          },
+          "seq": {
+            "type": "integer",
+            "description": "Position of this durable change."
+          },
+          "item": {
+            "$ref": "#/components/schemas/ThreadItem"
+          }
+        },
+        "required": [
+          "type",
+          "seq",
+          "item"
+        ],
+        "additionalProperties": false
+      },
+      "ThreadEventItemCompleted": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "item.completed"
+            ]
+          },
+          "seq": {
+            "type": "integer",
+            "description": "Position of this durable change."
+          },
+          "item": {
+            "$ref": "#/components/schemas/ThreadItem"
+          }
+        },
+        "required": [
+          "type",
+          "seq",
+          "item"
+        ],
+        "additionalProperties": false
+      },
+      "ThreadTurnStatus": {
+        "type": "string",
+        "enum": [
+          "running",
+          "completed",
+          "interrupted",
+          "failed"
+        ],
+        "description": "Lifecycle of one turn."
+      },
+      "ThreadTurn": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Provider turn id (Codex) or adapter-derived (Claude); unique within the thread."
+          },
+          "status": {
+            "$ref": "#/components/schemas/ThreadTurnStatus"
+          },
+          "error": {
+            "type": "string",
+            "description": "Present iff failed."
+          },
+          "promptId": {
+            "type": "string",
+            "description": "The queued prompt this turn ran, when ATC started it."
+          },
+          "startedAt": {
+            "type": "string",
+            "description": "Turn start; history re-reads may lack it.",
+            "format": "date-time"
+          },
+          "endedAt": {
+            "type": "string",
+            "description": "Turn end; absent while running.",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "status"
+        ],
+        "additionalProperties": false,
+        "description": "One turn of the conversation."
+      },
+      "ThreadEventTurnStarted": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "turn.started"
+            ]
+          },
+          "seq": {
+            "type": "integer",
+            "description": "Position of this durable change."
+          },
+          "turn": {
+            "$ref": "#/components/schemas/ThreadTurn"
+          }
+        },
+        "required": [
+          "type",
+          "seq",
+          "turn"
+        ],
+        "additionalProperties": false
+      },
+      "ThreadEventTurnCompleted": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "turn.completed"
+            ]
+          },
+          "seq": {
+            "type": "integer",
+            "description": "Position of this durable change."
+          },
+          "turn": {
+            "$ref": "#/components/schemas/ThreadTurn"
+          }
+        },
+        "required": [
+          "type",
+          "seq",
+          "turn"
+        ],
+        "additionalProperties": false
+      },
+      "ThreadEventTextDelta": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "text.delta"
+            ]
+          },
+          "itemId": {
+            "type": "string"
+          },
+          "delta": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "itemId",
+          "delta"
+        ],
+        "additionalProperties": false,
+        "description": "Live-only, never replayed: appends to a streaming assistantText or reasoning item."
+      },
+      "QuestionOption": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "description"
+        ],
+        "additionalProperties": false
+      },
+      "Question": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Question id, the key of the answer."
+          },
+          "header": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QuestionOption"
+            }
+          },
+          "multiSelect": {
+            "type": "boolean"
+          },
+          "freeform": {
+            "type": "boolean",
+            "description": "A typed answer that is not one of the options is accepted."
+          },
+          "secret": {
+            "type": "boolean",
+            "description": "The answer is sensitive (a credential): mask it while typing and never echo it."
+          }
+        },
+        "required": [
+          "id",
+          "header",
+          "question",
+          "options",
+          "multiSelect",
+          "freeform",
+          "secret"
+        ],
+        "additionalProperties": false,
+        "description": "One question the agent asked the user."
+      },
+      "ThreadRequestQuestion": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "question"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "Request id; answer it through the API."
+          },
+          "turnId": {
+            "type": "string"
+          },
+          "itemId": {
+            "type": "string",
+            "description": "The item awaiting this request, when known."
+          },
+          "openedAt": {
+            "type": "string",
+            "description": "When the provider opened the request.",
+            "format": "date-time"
+          },
+          "questions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Question"
+            }
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "turnId",
+          "openedAt",
+          "questions"
+        ],
+        "additionalProperties": false,
+        "description": "The agent asked questions."
+      },
+      "ApprovalSubjectCommand": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "command"
+            ]
+          },
+          "command": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "command"
+        ],
+        "additionalProperties": false
+      },
+      "ApprovalSubjectFileChange": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "fileChange"
+            ]
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FileChange"
+            }
+          }
+        },
+        "required": [
+          "type",
+          "changes"
+        ],
+        "additionalProperties": false
+      },
+      "ApprovalSubjectTool": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "tool"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "input": {}
+        },
+        "required": [
+          "type",
+          "name",
+          "input"
+        ],
+        "additionalProperties": false
+      },
+      "ApprovalSubject": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ApprovalSubjectCommand"
+          },
+          {
+            "$ref": "#/components/schemas/ApprovalSubjectFileChange"
+          },
+          {
+            "$ref": "#/components/schemas/ApprovalSubjectTool"
+          }
+        ],
+        "description": "What the agent is asking permission for, discriminated by `type`.",
+        "discriminator": {
+          "propertyName": "type",
+          "mapping": {
+            "command": "#/components/schemas/ApprovalSubjectCommand",
+            "fileChange": "#/components/schemas/ApprovalSubjectFileChange",
+            "tool": "#/components/schemas/ApprovalSubjectTool"
+          }
+        }
+      },
+      "ThreadRequestApproval": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "approval"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "Request id; answer it through the API."
+          },
+          "turnId": {
+            "type": "string"
+          },
+          "itemId": {
+            "type": "string",
+            "description": "The item awaiting this request, when known."
+          },
+          "openedAt": {
+            "type": "string",
+            "description": "When the provider opened the request.",
+            "format": "date-time"
+          },
+          "title": {
+            "type": "string",
+            "description": "One-line prompt to show the user."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why approval is needed."
+          },
+          "subject": {
+            "$ref": "#/components/schemas/ApprovalSubject"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "turnId",
+          "openedAt",
+          "title",
+          "subject"
+        ],
+        "additionalProperties": false,
+        "description": "The agent asked for approval."
+      },
+      "ThreadRequest": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ThreadRequestQuestion"
+          },
+          {
+            "$ref": "#/components/schemas/ThreadRequestApproval"
+          }
+        ],
+        "description": "A pending provider request parked until answered — live state, not a transcript item; discriminated by `kind`.",
+        "discriminator": {
+          "propertyName": "kind",
+          "mapping": {
+            "question": "#/components/schemas/ThreadRequestQuestion",
+            "approval": "#/components/schemas/ThreadRequestApproval"
+          }
+        }
+      },
+      "ThreadEventRequestOpened": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "request.opened"
+            ]
+          },
+          "request": {
+            "$ref": "#/components/schemas/ThreadRequest"
+          }
+        },
+        "required": [
+          "type",
+          "request"
+        ],
+        "additionalProperties": false,
+        "description": "Live-only."
+      },
+      "ThreadEventRequestClosed": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "request.closed"
+            ]
+          },
+          "requestId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "requestId"
+        ],
+        "additionalProperties": false,
+        "description": "Live-only."
+      },
+      "QueuedPrompt": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "queuedAt": {
+            "type": "string",
+            "description": "When the prompt was admitted.",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "prompt",
+          "queuedAt"
+        ],
+        "additionalProperties": false,
+        "description": "A prompt admitted while a turn was running; it runs at the next idle."
+      },
+      "QueuedPromptList": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/QueuedPrompt"
+        },
+        "description": "Prompts still waiting, oldest first."
+      },
+      "ThreadEventQueueUpdated": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "queue.updated"
+            ]
+          },
+          "prompts": {
+            "$ref": "#/components/schemas/QueuedPromptList"
+          }
+        },
+        "required": [
+          "type",
+          "prompts"
+        ],
+        "additionalProperties": false,
+        "description": "Live-only: the full queue, every time it changes."
+      },
+      "ThreadEventSnapshotInvalidated": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "snapshot.invalidated"
+            ]
+          },
+          "seq": {
+            "type": "integer",
+            "description": "Position of this durable change."
+          },
+          "snapshotVersion": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "type",
+          "seq",
+          "snapshotVersion"
+        ],
+        "additionalProperties": false,
+        "description": "A provider re-read replaced the copy: refetch the transcript and resubscribe after `seq`."
+      },
+      "ThreadEvent": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ThreadEventItemStarted"
+          },
+          {
+            "$ref": "#/components/schemas/ThreadEventItemUpdated"
+          },
+          {
+            "$ref": "#/components/schemas/ThreadEventItemCompleted"
+          },
+          {
+            "$ref": "#/components/schemas/ThreadEventTurnStarted"
+          },
+          {
+            "$ref": "#/components/schemas/ThreadEventTurnCompleted"
+          },
+          {
+            "$ref": "#/components/schemas/ThreadEventTextDelta"
+          },
+          {
+            "$ref": "#/components/schemas/ThreadEventRequestOpened"
+          },
+          {
+            "$ref": "#/components/schemas/ThreadEventRequestClosed"
+          },
+          {
+            "$ref": "#/components/schemas/ThreadEventQueueUpdated"
+          },
+          {
+            "$ref": "#/components/schemas/ThreadEventSnapshotInvalidated"
+          }
+        ],
+        "description": "One per-thread stream event, discriminated by `type`. Durable events carry `seq` and replay on reconnect (after=seq); live-only events do not.",
+        "discriminator": {
+          "propertyName": "type",
+          "mapping": {
+            "item.started": "#/components/schemas/ThreadEventItemStarted",
+            "item.updated": "#/components/schemas/ThreadEventItemUpdated",
+            "item.completed": "#/components/schemas/ThreadEventItemCompleted",
+            "turn.started": "#/components/schemas/ThreadEventTurnStarted",
+            "turn.completed": "#/components/schemas/ThreadEventTurnCompleted",
+            "text.delta": "#/components/schemas/ThreadEventTextDelta",
+            "request.opened": "#/components/schemas/ThreadEventRequestOpened",
+            "request.closed": "#/components/schemas/ThreadEventRequestClosed",
+            "queue.updated": "#/components/schemas/ThreadEventQueueUpdated",
+            "snapshot.invalidated": "#/components/schemas/ThreadEventSnapshotInvalidated"
+          }
+        }
+      },
+      "ThreadTranscript": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ThreadItem"
+            },
+            "description": "Transcript order, oldest first."
+          },
+          "turns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ThreadTurn"
+            },
+            "description": "Every turn referenced by `items`."
+          },
+          "seq": {
+            "type": "integer",
+            "description": "The thread's change counter at the time of the read; subscribe with after=seq."
+          },
+          "snapshotVersion": {
+            "type": "integer",
+            "description": "Bumps whenever a provider re-read replaced the copy."
+          },
+          "hasMore": {
+            "type": "boolean",
+            "description": "Older items exist before the first one returned."
+          }
+        },
+        "required": [
+          "items",
+          "turns",
+          "seq",
+          "snapshotVersion",
+          "hasMore"
+        ],
+        "additionalProperties": false,
+        "description": "ATC's normalized copy of the provider conversation — a rebuildable projection, never the authority."
+      },
+      "ThreadRequestQuestionAnswer": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "question"
+            ]
+          },
+          "answers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "description": "Question id → chosen option labels (exactly one unless multiSelect), or one freeform string."
+          }
+        },
+        "required": [
+          "kind",
+          "answers"
+        ],
+        "additionalProperties": false
+      },
+      "ApprovalDecision": {
+        "type": "string",
+        "enum": [
+          "accept",
+          "acceptForSession",
+          "decline",
+          "cancel"
+        ],
+        "description": "cancel = decline and interrupt the turn."
+      },
+      "ThreadRequestApprovalAnswer": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "approval"
+            ]
+          },
+          "decision": {
+            "$ref": "#/components/schemas/ApprovalDecision"
+          }
+        },
+        "required": [
+          "kind",
+          "decision"
+        ],
+        "additionalProperties": false
+      },
+      "ThreadRequestAnswer": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ThreadRequestQuestionAnswer"
+          },
+          {
+            "$ref": "#/components/schemas/ThreadRequestApprovalAnswer"
+          }
+        ],
+        "description": "The answer to a pending request; `kind` must match the request's.",
+        "discriminator": {
+          "propertyName": "kind",
+          "mapping": {
+            "question": "#/components/schemas/ThreadRequestQuestionAnswer",
+            "approval": "#/components/schemas/ThreadRequestApprovalAnswer"
+          }
+        }
       }
     },
     "securitySchemes": {

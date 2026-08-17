@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest"
 import { Effect, Stream } from "effect"
 import * as fs from "node:fs"
 import * as path from "node:path"
+import type { AgentSessionEvent } from "../../src/agents/agentAdapter.ts"
 import * as CodexAdapter from "../../src/agents/codexAdapter.ts"
 import * as CodexServer from "../../src/agents/codexServer.ts"
 import { eventually } from "../testLayers.ts"
@@ -231,7 +232,7 @@ describe("CodexAdapter", () => {
   )
 
   it.live(
-    "provider approval requests surface on the feed and are auto-rejected",
+    "provider approval requests park on the feed until answered on the JSON-RPC request",
     () =>
       Effect.gen(function* () {
         const sandbox = makeCodexSandbox()
@@ -245,16 +246,127 @@ describe("CodexAdapter", () => {
               const sink = yield* collectAgentEvents(connection.events)
               yield* waitForAgentEvent(sink, (event) => event.type === "requestOpened")
               const opened = sink.find((event) => event.type === "requestOpened")
-              assert.strictEqual(opened?.type === "requestOpened" ? opened.kind : "", "approval")
+              if (opened?.type !== "requestOpened" || opened.request.kind !== "approval") {
+                return assert.fail("expected an approval request")
+              }
+              // The command, cwd, and reason ride the request; it names the
+              // pending commandExecution item, which flips to pending.
+              assert.deepStrictEqual(opened.request.subject, {
+                type: "command",
+                command: "/bin/sh -c pwd",
+                cwd: sandbox.cwd,
+              })
+              assert.strictEqual(opened.request.reason, "needs network")
+              assert.strictEqual(opened.request.turnId, turn.turnId)
+              const itemId = opened.request.itemId
+              assert.isString(itemId)
+              yield* waitForAgentEvent(
+                sink,
+                (event) =>
+                  event.type === "itemUpdated" &&
+                  event.item.id === itemId &&
+                  event.item.type === "command" &&
+                  event.item.status === "pending",
+              )
+              // needs_input was truthfully reported while the request parks.
+              yield* waitForAgentEvent(
+                sink,
+                (event) => event.type === "activity" && event.activity === "needs_input",
+              )
+              assert.isFalse(sink.some((event) => event.type === "turnCompleted"))
+              yield* connection.respond(opened.request.id, { kind: "approval", decision: "accept" })
               yield* waitForAgentEvent(sink, (event) => event.type === "requestClosed")
-              // The reject unblocks the fixture, so the turn still completes.
               yield* waitForAgentEvent(
                 sink,
                 (event) => event.type === "turnCompleted" && event.turnId === turn.turnId,
               )
-              // needs_input was truthfully reported while the request hung.
+              const completed = sink.find(
+                (event) => event.type === "itemCompleted" && event.item.id === itemId,
+              )
               assert.isTrue(
-                sink.some((event) => event.type === "activity" && event.activity === "needs_input"),
+                completed?.type === "itemCompleted" &&
+                  completed.item.type === "command" &&
+                  completed.item.status === "completed" &&
+                  completed.item.exitCode === 0,
+              )
+              const again = yield* Effect.flip(
+                connection.respond(opened.request.id, { kind: "approval", decision: "accept" }),
+              )
+              assert.strictEqual(again._tag, "AgentConflict")
+            }),
+          ),
+        )
+      }),
+    30_000,
+  )
+
+  it.live(
+    "a declined approval ends the item declined; questions answer by id",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox()
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const { connection, turn } = yield* adapter.createSession({
+                cwd: sandbox.cwd,
+                input: "needs APPROVAL for this",
+              })
+              const sink = yield* collectAgentEvents(connection.events)
+              yield* waitForAgentEvent(sink, (event) => event.type === "requestOpened")
+              const opened = sink.find((event) => event.type === "requestOpened")
+              if (opened?.type !== "requestOpened") return assert.fail("expected a request")
+              yield* connection.respond(opened.request.id, {
+                kind: "approval",
+                decision: "decline",
+              })
+              yield* waitForAgentEvent(
+                sink,
+                (event) => event.type === "turnCompleted" && event.turnId === turn.turnId,
+              )
+              const declined = sink.find(
+                (event) =>
+                  event.type === "itemCompleted" &&
+                  event.item.id === opened.request.itemId &&
+                  event.item.type === "command" &&
+                  event.item.status === "error" &&
+                  event.item.error === "declined",
+              )
+              assert.isDefined(declined)
+
+              // A question round trip: answers keyed by the question id reach
+              // the provider (the fixture echoes them back as its reply).
+              const asked = yield* connection.startTurn("QUESTION time")
+              yield* waitForAgentEvent(
+                sink,
+                (event) => event.type === "requestOpened" && event.request.kind === "question",
+              )
+              const question = sink.findLast((event) => event.type === "requestOpened")
+              if (question?.type !== "requestOpened" || question.request.kind !== "question") {
+                return assert.fail("expected a question request")
+              }
+              assert.deepStrictEqual(
+                question.request.questions.map((entry) => [entry.id, entry.freeform]),
+                [["color", false]],
+              )
+              yield* connection.respond(question.request.id, {
+                kind: "question",
+                answers: { color: ["blue"] },
+              })
+              yield* waitForAgentEvent(
+                sink,
+                (event) => event.type === "turnCompleted" && event.turnId === asked.turnId,
+              )
+              const echo = sink.find(
+                (event) =>
+                  event.type === "itemCompleted" &&
+                  event.item.type === "assistantText" &&
+                  event.item.text.startsWith("answers:"),
+              )
+              assert.isTrue(
+                echo?.type === "itemCompleted" &&
+                  echo.item.type === "assistantText" &&
+                  echo.item.text === 'answers: {"color":{"answers":["blue"]}}',
               )
             }),
           ),
@@ -351,6 +463,121 @@ describe("CodexAdapter", () => {
   )
 
   it.live(
+    "agent text streams: itemStarted, deltas, itemCompleted — after the user's message item",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox()
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const { connection, turn } = yield* adapter.createSession({
+                cwd: sandbox.cwd,
+                input: "STREAM me",
+              })
+              const sink = yield* collectAgentEvents(connection.events)
+              yield* waitForAgentEvent(
+                sink,
+                (event) => event.type === "turnCompleted" && event.turnId === turn.turnId,
+              )
+              const items = sink.flatMap((event) =>
+                event.type === "itemStarted" ||
+                event.type === "itemCompleted" ||
+                event.type === "textDelta"
+                  ? [event]
+                  : [],
+              )
+              const first = items[0]
+              assert.isTrue(
+                first?.type === "itemCompleted" &&
+                  first.item.type === "userMessage" &&
+                  first.item.text === "STREAM me" &&
+                  first.item.turnId === turn.turnId,
+              )
+              const started = items[1]
+              if (started?.type !== "itemStarted" || started.item.type !== "assistantText") {
+                return assert.fail("expected the streamed agent message to start")
+              }
+              assert.strictEqual(started.item.complete, false)
+              assert.deepStrictEqual(
+                items.slice(2, 4).map((event) => (event.type === "textDelta" ? event : null)),
+                [
+                  { type: "textDelta", itemId: started.item.id, delta: "fake: " },
+                  { type: "textDelta", itemId: started.item.id, delta: "STREAM me" },
+                ],
+              )
+              const completed = items[4]
+              assert.isTrue(
+                completed?.type === "itemCompleted" &&
+                  completed.item.type === "assistantText" &&
+                  completed.item.id === started.item.id &&
+                  completed.item.complete &&
+                  completed.item.text === "fake: STREAM me",
+              )
+            }),
+          ),
+        )
+      }),
+    30_000,
+  )
+
+  it.live(
+    "readHistory returns thread/resume's turns and items; an unknown id fails closed",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox()
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.gen(function* () {
+            const threadId = yield* Effect.scoped(
+              Effect.gen(function* () {
+                const { connection, turn } = yield* adapter.createSession({
+                  cwd: sandbox.cwd,
+                  input: "run a COMMAND",
+                })
+                const sink = yield* collectAgentEvents(connection.events)
+                yield* waitForAgentEvent(
+                  sink,
+                  (event) => event.type === "turnCompleted" && event.turnId === turn.turnId,
+                )
+                return connection.providerSessionId
+              }),
+            )
+            const history = yield* adapter.readHistory({
+              providerSessionId: threadId,
+              cwd: sandbox.cwd,
+            })
+            assert.strictEqual(history.length, 1)
+            const [entry] = history
+            assert.strictEqual(entry?.turn.status, "completed")
+            assert.isString(entry?.turn.startedAt)
+            assert.isString(entry?.turn.endedAt)
+            assert.deepStrictEqual(
+              entry?.items.map((item) => [item.type, item.turnId === entry.turn.id]),
+              [
+                ["userMessage", true],
+                ["command", true],
+                ["assistantText", true],
+              ],
+            )
+            const command = entry?.items[1]
+            assert.isTrue(
+              command?.type === "command" &&
+                command.status === "completed" &&
+                command.exitCode === 0,
+            )
+            const failure = yield* Effect.flip(
+              adapter.readHistory({
+                providerSessionId: "00000000-0000-7000-8000-000000000000",
+                cwd: sandbox.cwd,
+              }),
+            )
+            assert.strictEqual(failure._tag, "AgentResumeFailed")
+          }),
+        )
+      }),
+    30_000,
+  )
+
+  it.live(
     "an older installed codex warns but still works",
     () =>
       Effect.gen(function* () {
@@ -420,6 +647,58 @@ describe("CodexAdapter TUI session plumbing", () => {
   )
 
   it.live(
+    "observers of a TUI-driven thread receive its conversation items",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox()
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              // Any passive call brings the shared server up for the stand-in.
+              yield* adapter.checkSession({ providerSessionId: "warm-up" })
+              const external = yield* openExternal(sandbox.socketPath)
+              const threadId = yield* external.startThread(1, sandbox.cwd)
+              const stream = yield* adapter.observeSession({
+                providerSessionId: threadId,
+                providerMetadata: undefined,
+              })
+              const sink: Array<AgentSessionEvent> = []
+              yield* stream.pipe(
+                Stream.runForEach((event) => Effect.sync(() => sink.push(event))),
+                Effect.forkScoped,
+              )
+              // The TUI stand-in drives a turn; the fan-out carries its items.
+              yield* external.request(2, "turn/start", {
+                threadId,
+                input: [{ type: "text", text: "from the tui" }],
+              })
+              yield* eventually(
+                Effect.sync(() => sink),
+                (entries) =>
+                  entries.some(
+                    (event) =>
+                      event.type === "itemCompleted" && event.item.type === "assistantText",
+                  ),
+                { attempts: 200, interval: "25 millis" },
+              )
+              const items = sink.flatMap((event) =>
+                event.type === "itemCompleted" ? [event.item] : [],
+              )
+              assert.deepStrictEqual(
+                items.map((item) => [item.type, item.type === "userMessage" ? item.text : ""]),
+                [
+                  ["userMessage", "from the tui"],
+                  ["assistantText", ""],
+                ],
+              )
+            }),
+          ),
+        )
+      }),
+    30_000,
+  )
+
+  it.live(
     "capture ignores foreign-cwd threads and adopts the matching one",
     () =>
       Effect.gen(function* () {
@@ -466,7 +745,13 @@ describe("CodexAdapter TUI session plumbing", () => {
               yield* stream.pipe(
                 Stream.runForEach((event) =>
                   Effect.sync(() =>
-                    sink.push(event.type === "activity" ? event.activity : `prompt:${event.text}`),
+                    sink.push(
+                      event.type === "activity"
+                        ? event.activity
+                        : event.type === "userPrompt"
+                          ? `prompt:${event.text}`
+                          : `item:${event.item.type}`,
+                    ),
                   ),
                 ),
                 Effect.ignore,
@@ -511,7 +796,13 @@ describe("CodexAdapter TUI session plumbing", () => {
               yield* stream.pipe(
                 Stream.runForEach((event) =>
                   Effect.sync(() =>
-                    sink.push(event.type === "activity" ? event.activity : `prompt:${event.text}`),
+                    sink.push(
+                      event.type === "activity"
+                        ? event.activity
+                        : event.type === "userPrompt"
+                          ? `prompt:${event.text}`
+                          : `item:${event.item.type}`,
+                    ),
                   ),
                 ),
                 Effect.ignore,
@@ -606,7 +897,13 @@ describe("CodexAdapter TUI session plumbing", () => {
               yield* stream.pipe(
                 Stream.runForEach((event) =>
                   Effect.sync(() =>
-                    sink.push(event.type === "activity" ? event.activity : `prompt:${event.text}`),
+                    sink.push(
+                      event.type === "activity"
+                        ? event.activity
+                        : event.type === "userPrompt"
+                          ? `prompt:${event.text}`
+                          : `item:${event.item.type}`,
+                    ),
                   ),
                 ),
                 Effect.ignore,
@@ -660,7 +957,13 @@ describe("CodexAdapter TUI session plumbing", () => {
               yield* stream.pipe(
                 Stream.runForEach((event) =>
                   Effect.sync(() =>
-                    sink.push(event.type === "activity" ? event.activity : `prompt:${event.text}`),
+                    sink.push(
+                      event.type === "activity"
+                        ? event.activity
+                        : event.type === "userPrompt"
+                          ? `prompt:${event.text}`
+                          : `item:${event.item.type}`,
+                    ),
                   ),
                 ),
                 Effect.ignore,
@@ -675,7 +978,7 @@ describe("CodexAdapter TUI session plumbing", () => {
               // No transition after idle exists to re-arm discovery — the
               // in-fiber retry alone delivered the prompt.
               assert.deepStrictEqual(
-                sink.filter((entry) => !entry.startsWith("prompt:")),
+                sink.filter((entry) => !entry.startsWith("prompt:") && !entry.startsWith("item:")),
                 ["working", "idle"],
               )
             }),
@@ -867,7 +1170,13 @@ describe("CodexAdapter descendant aggregation", () => {
               yield* stream.pipe(
                 Stream.runForEach((event) =>
                   Effect.sync(() =>
-                    sink.push(event.type === "activity" ? event.activity : `prompt:${event.text}`),
+                    sink.push(
+                      event.type === "activity"
+                        ? event.activity
+                        : event.type === "userPrompt"
+                          ? `prompt:${event.text}`
+                          : `item:${event.item.type}`,
+                    ),
                   ),
                 ),
                 Effect.forkScoped,
@@ -1020,7 +1329,11 @@ describe("CodexAdapter descendant aggregation", () => {
                   Stream.runForEach((event) =>
                     Effect.sync(() =>
                       sink.push(
-                        event.type === "activity" ? event.activity : `prompt:${event.text}`,
+                        event.type === "activity"
+                          ? event.activity
+                          : event.type === "userPrompt"
+                            ? `prompt:${event.text}`
+                            : `item:${event.item.type}`,
                       ),
                     ),
                   ),

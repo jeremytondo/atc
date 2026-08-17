@@ -268,12 +268,58 @@ describe("AgentAdapter seam semantics (fake adapter)", () => {
       const requestId = fake.openRequest(connection.providerSessionId, "approval")
       yield* waitForEvent(
         sink,
-        (event) => event.type === "requestOpened" && event.requestId === requestId,
+        (event) => event.type === "requestOpened" && event.request.id === requestId,
       )
       assert.strictEqual(yield* connection.activity, "needs_input")
       fake.closeRequest(connection.providerSessionId, requestId)
       assert.strictEqual(yield* connection.activity, "working")
     }).pipe(Effect.scoped),
+  )
+
+  it.effect("respond answers a parked request; unknown or mismatched answers conflict", () =>
+    Effect.gen(function* () {
+      const fake = makeFakeAgentAdapter()
+      const { connection } = yield* fake.adapter.createSession({ cwd: "/work", input: "ask me" })
+      const sink = yield* collectEvents(connection.events)
+      const requestId = fake.openRequest(connection.providerSessionId, "question")
+      yield* waitForEvent(sink, (event) => event.type === "requestOpened")
+      const mismatch = yield* Effect.flip(
+        connection.respond(requestId, { kind: "approval", decision: "accept" }),
+      )
+      assert.strictEqual(mismatch._tag, "AgentConflict")
+      yield* connection.respond(requestId, { kind: "question", answers: { q0: ["A"] } })
+      yield* waitForEvent(
+        sink,
+        (event) => event.type === "requestClosed" && event.requestId === requestId,
+      )
+      assert.deepStrictEqual(fake.answers, [
+        { requestId, answer: { kind: "question", answers: { q0: ["A"] } } },
+      ])
+      const gone = yield* Effect.flip(
+        connection.respond(requestId, { kind: "question", answers: { q0: ["A"] } }),
+      )
+      assert.strictEqual(gone._tag, "AgentConflict")
+    }).pipe(Effect.scoped),
+  )
+
+  it.effect("readHistory returns the scripted turns and records the read", () =>
+    Effect.gen(function* () {
+      const fake = makeFakeAgentAdapter()
+      fake.seed("s1", "/work")
+      assert.deepStrictEqual(
+        yield* fake.adapter.readHistory({ providerSessionId: "s1", cwd: "/work" }),
+        [],
+      )
+      fake.setHistory("s1", [
+        {
+          turn: { id: "t1", status: "completed" },
+          items: [{ type: "userMessage", id: "u1", turnId: "t1", text: "hi" }],
+        },
+      ])
+      const history = yield* fake.adapter.readHistory({ providerSessionId: "s1", cwd: "/work" })
+      assert.strictEqual(history[0]?.items[0]?.type, "userMessage")
+      assert.deepStrictEqual(fake.historyReads, ["s1", "s1"])
+    }),
   )
 
   it.effect("unavailability is injected everywhere", () =>

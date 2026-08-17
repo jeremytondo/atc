@@ -170,7 +170,7 @@ describe("claude hook webhook delivery", () => {
         const prompts: Array<string> = []
         yield* hooks.subscribe((sessionId, event) => {
           if (event.type === "activity") seen.push({ sessionId, activity: event.activity })
-          else prompts.push(event.text)
+          if (event.type === "userPrompt") prompts.push(event.text)
         })
         const secret = yield* hooks.registerSecret(RECORDED_SESSION)
 

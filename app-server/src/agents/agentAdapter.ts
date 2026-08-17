@@ -1,7 +1,9 @@
 import { Cause, Duration, Effect, Queue, Schema, Semaphore, Stream } from "effect"
 import type { Scope } from "effect"
 import { existsSync, realpathSync } from "node:fs"
+import { basename } from "node:path"
 import type { AgentId } from "../api/contract.ts"
+import type * as Contract from "../api/contract.ts"
 import type { Subprocess } from "../platform/subprocess.ts"
 import { resolveExecutable } from "../platform/subprocess.ts"
 
@@ -19,9 +21,18 @@ import { resolveExecutable } from "../platform/subprocess.ts"
 //     writers; observation never opens a second writer.
 //   - Status is derived from structured provider events only — never from
 //     transcript or terminal-output parsing.
-//   - Responding to provider requests (approvals, questions) is native-mode
-//     work: adapters surface `requestOpened` and answer the provider
-//     conservatively (reject) so a turn can never hang on ATC.
+//   - Conversation content crosses the seam in the ONE contract vocabulary
+//     (ThreadItem / ThreadTurn / ThreadRequest, contract.ts — ATC-193):
+//     an adapter's job is provider wire shape → those types, full stop.
+//     There is no seam-private content vocabulary and no mapping layer
+//     above the adapters. Item ids are the provider's stable ids where it
+//     has them, otherwise adapter-derived, unique within a thread, and
+//     never minted above the seam.
+//   - Provider requests (approvals, questions) are surfaced as
+//     `requestOpened` and PARKED until `respond` answers them — no timeout,
+//     no auto-reject; the request dies with its turn (closed on
+//     turnCompleted) or its connection. Requests raised for a turn another
+//     writer started are never ours to answer.
 //
 // The fake adapter for tests lives in test/agents/fakeAgentAdapter.ts; per-provider
 // service tags live with their adapters (codexAdapter.ts, claudeAdapter.ts).
@@ -93,27 +104,59 @@ export const aggregateActivity = (
 
 export type AgentTurnOutcome = "completed" | "interrupted" | "failed"
 
+/** The contract vocabulary as the seam speaks it (see the header). */
+export type ThreadItem = typeof Contract.ThreadItem.Type
+export type ThreadTurn = typeof Contract.ThreadTurn.Type
+export type ThreadRequest = typeof Contract.ThreadRequest.Type
+export type ThreadRequestAnswer = typeof Contract.ThreadRequestAnswer.Type
+export type ApprovalSubject = typeof Contract.ApprovalSubject.Type
+export type FileChange = typeof Contract.FileChange.Type
+export type ToolStatus = typeof Contract.ToolStatus.Type
+
+/** One turn of provider history, as `readHistory` returns it. */
+export interface HistoryTurn {
+  readonly turn: ThreadTurn
+  readonly items: ReadonlyArray<ThreadItem>
+}
+
+/**
+ * The item lifecycle events shared by both feeds: `itemStarted` opens an
+ * item (a streaming text item arrives with `complete: false`), `itemUpdated`
+ * re-sends the whole item after a change (a tool flipping to pending, output
+ * landing), `itemCompleted` carries its final state. Every event carries the
+ * FULL item — consumers upsert by id and never patch.
+ */
+export type AgentItemEvent =
+  | { readonly type: "itemStarted"; readonly item: ThreadItem }
+  | { readonly type: "itemUpdated"; readonly item: ThreadItem }
+  | { readonly type: "itemCompleted"; readonly item: ThreadItem }
+
 /**
  * One entry of a TUI-driven session's observation feed (observeSession).
  * `userPrompt` is best-effort evidence of a user prompt submitted to the
  * session — adapters emit at least the session's first prompt when their
  * evidence source carries it (Claude: the UserPromptSubmit webhook; Codex:
  * a demand-driven thread/read of the session's preview), and consumers
- * must tolerate duplicates, later prompts, and absence.
+ * must tolerate duplicates, later prompts, and absence. Item events arrive
+ * only from a provider whose shared server fans conversation items out to
+ * passive observers (Codex); a hooks-fed observation (Claude) is
+ * activity-only and its turns reach ATC through `readHistory`.
  */
 export type AgentSessionEvent =
   | { readonly type: "activity"; readonly activity: AgentActivity }
   | { readonly type: "userPrompt"; readonly text: string }
-
-export type AgentRequestKind = "approval" | "question"
+  | AgentItemEvent
 
 /**
- * One entry of the normalized status feed. Turn and request ids are
- * adapter-scoped correlation ids — provider-native where the provider has
- * them (Codex), adapter-minted and process-local where it does not
- * (Claude); never persist them as durable identity. `turnStarted` always
- * precedes its `turnCompleted`. Raw provider events stay inside the
- * adapters (logged there for diagnostics, never re-parsed above the seam).
+ * One entry of the normalized writer feed. Turn ids are provider-native
+ * where the provider has them (Codex) and adapter-minted where it does not
+ * (Claude) — unique within the thread either way, since Threads persists
+ * them. `turnStarted` always precedes its `turnCompleted`; every item event
+ * of a turn falls between the two. `textDelta` is live-only: it extends the
+ * text of the `assistantText` / `reasoning` item whose `itemStarted` carried
+ * `complete: false`, and is never persisted or replayed. Raw provider events
+ * stay inside the adapters (logged there for diagnostics, never re-parsed
+ * above the seam).
  */
 export type AgentEvent =
   | { readonly type: "activity"; readonly activity: AgentActivity }
@@ -125,7 +168,9 @@ export type AgentEvent =
       /** Human-readable failure/interrupt detail, for diagnostics only. */
       readonly detail?: string
     }
-  | { readonly type: "requestOpened"; readonly requestId: string; readonly kind: AgentRequestKind }
+  | AgentItemEvent
+  | { readonly type: "textDelta"; readonly itemId: string; readonly delta: string }
+  | { readonly type: "requestOpened"; readonly request: ThreadRequest }
   | { readonly type: "requestClosed"; readonly requestId: string }
 
 /** Correlation handle for exactly one turn — interrupt targets this turn. */
@@ -210,6 +255,17 @@ export interface AgentConnection {
    */
   readonly interrupt: (
     turn: AgentTurn,
+  ) => Effect.Effect<void, AgentConflict | AgentUnavailable | AgentProtocolError>
+  /**
+   * Answer a parked provider request (Codex: reply on the JSON-RPC request;
+   * Claude: resolve the parked `canUseTool`). The answer's `kind` must
+   * match the request's. Success means the provider took the answer; the
+   * feed's `requestClosed` follows. An unknown, already-answered, or
+   * mismatched request is `AgentConflict`.
+   */
+  readonly respond: (
+    requestId: string,
+    answer: ThreadRequestAnswer,
   ) => Effect.Effect<void, AgentConflict | AgentUnavailable | AgentProtocolError>
 }
 
@@ -368,6 +424,22 @@ export interface AgentAdapter {
     readonly cwd: string
   }) => Effect.Effect<string | null>
   /**
+   * The provider's own record of the session's conversation, normalized:
+   * every turn with its items, oldest first. Codex reads `thread/resume`
+   * (side-effect free on a loaded thread; it also loads the thread, which
+   * the read path needs); Claude reads `getSessionMessages` and groups it
+   * into turns at each top-level user message. Never opens a writer, never
+   * starts a turn. Threads uses it to REPLACE its copy wholesale — item ids
+   * here need not match the ids the same turns carried live.
+   */
+  readonly readHistory: (options: {
+    readonly providerSessionId: string
+    readonly cwd: string
+  }) => Effect.Effect<
+    ReadonlyArray<HistoryTurn>,
+    AgentUnavailable | AgentResumeFailed | AgentProtocolError
+  >
+  /**
    * Demand-driven reconciliation: the provider's current word on the
    * session's activity, `unknown` when it offers no evidence. Never
    * guesses; failures are the retryable AgentUnavailable.
@@ -468,7 +540,49 @@ export const providerErrors = (provider: AgentProvider) => {
     staleTurn: (turnId: string) => conflict(`turn ${turnId} is not the active turn`),
     writerConnected: (providerSessionId: string) =>
       conflict(`a writer is already connected to ${providerSessionId}`),
+    unknownRequest: (requestId: string) => conflict(`request ${requestId} is not pending`),
+    answerKindMismatch: (requestId: string, expected: string) =>
+      conflict(`request ${requestId} expects a ${expected} answer`),
   }
+}
+
+/** The shared tool-status rule: a declined approval is an error, and every
+ * error carries a human-readable reason (`toolFields` in the contract). */
+export const toolOutcome = (
+  status: "pending" | "running" | "completed" | "declined",
+  failure: string | null,
+): { readonly status: ToolStatus; readonly error?: string } => {
+  if (status === "declined") return { status: "error", error: "declined" }
+  if (failure !== null) return { status: "error", error: failure }
+  return { status }
+}
+
+/** The shared fileChange title rule: one verb for the batch, the file name
+ * for a single change, a count beyond that. */
+export const fileChangeTitle = (changes: ReadonlyArray<FileChange>): string => {
+  const kinds = new Set(changes.map((change) => change.kind))
+  const verb =
+    kinds.size === 1 && kinds.has("add")
+      ? "Create"
+      : kinds.size === 1 && kinds.has("delete")
+        ? "Delete"
+        : "Edit"
+  if (changes.length === 1) return `${verb} ${basename(changes[0]!.path)}`
+  return `${verb} ${changes.length} files`
+}
+
+/**
+ * The pending ↔ running flip a parked approval performs on its tool item:
+ * the re-sent item, or null when there is nothing to change (not a tool
+ * item, already there, or past those states).
+ */
+export const withToolStatus = (
+  item: ThreadItem,
+  status: "pending" | "running",
+): ThreadItem | null => {
+  if (!("status" in item) || item.status === status) return null
+  if (item.status !== "pending" && item.status !== "running") return null
+  return { ...item, status }
 }
 
 /** Bound on one title one-shot (ATC-155); a hung child/query is cut here. */

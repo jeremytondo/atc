@@ -4,10 +4,13 @@ import type {
   AgentAdapter,
   AgentConnection,
   AgentEvent,
-  AgentRequestKind,
   AgentSessionEvent,
   AgentTurn,
   AgentTurnOutcome,
+  HistoryTurn,
+  ThreadItem,
+  ThreadRequest,
+  ThreadRequestAnswer,
 } from "../../src/agents/agentAdapter.ts"
 import {
   AgentConflict,
@@ -21,8 +24,9 @@ import {
 // same observable semantics the real adapters must hold — create and resume
 // are distinct, resume fails closed on unknown ids and mismatched cwd, one
 // active writer per session, one active turn per connection, stale interrupt
-// targets rejected — plus controls to script turn outcomes and provider
-// requests and switches to inject unavailability.
+// targets rejected, provider requests parked until answered — plus controls
+// to script turn outcomes, items, requests, and history, and switches to
+// inject unavailability.
 //
 // It models the EAGER-verification, connection-survives-failed-turns flavor
 // (Codex). Claude differs on both axes (verification at first turn,
@@ -45,10 +49,25 @@ export interface FakeAgentAdapter {
   readonly seed: (providerSessionId: string, cwd: string) => FakeAgentSession
   /** Complete the active turn of `providerSessionId` with `outcome`. */
   readonly completeTurn: (providerSessionId: string, outcome: AgentTurnOutcome) => void
-  /** Open a provider request on the active turn; activity → needs_input. */
-  readonly openRequest: (providerSessionId: string, kind: AgentRequestKind) => string
-  /** Close a previously opened request; activity → working. */
+  /** Open a stock provider request (an approval, or a one-question ask)
+   * on the active turn; activity → needs_input. */
+  readonly openRequest: (providerSessionId: string, kind: "approval" | "question") => string
+  /** Close a previously opened request without an answer; activity → working. */
   readonly closeRequest: (providerSessionId: string, requestId: string) => void
+  /** Answers `respond` delivered, in order. */
+  readonly answers: Array<{ requestId: string; answer: ThreadRequestAnswer }>
+  /** Push one item event onto the active connection's feed. */
+  readonly emitItem: (
+    providerSessionId: string,
+    phase: "itemStarted" | "itemUpdated" | "itemCompleted",
+    item: ThreadItem,
+  ) => void
+  /** Push one text delta onto the active connection's feed. */
+  readonly emitTextDelta: (providerSessionId: string, itemId: string, delta: string) => void
+  /** Script what readHistory returns for a session (default []). */
+  readonly setHistory: (providerSessionId: string, turns: ReadonlyArray<HistoryTurn>) => void
+  /** readHistory calls (providerSessionIds), in order. */
+  readonly historyReads: Array<string>
   /** While set, prepared identities wait on a gate; unsetting releases any
    * waiter (so a hung identity can resolve late, after the test acted). */
   readonly setIdentityHangs: (hangs: boolean) => void
@@ -109,7 +128,7 @@ interface LiveConnection {
   activity: AgentActivity
   activeTurn: string | null
   closed: boolean
-  readonly openRequests: Set<string>
+  readonly openRequests: Map<string, ThreadRequest>
 }
 
 export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): FakeAgentAdapter => {
@@ -118,6 +137,9 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
   const connections = new Map<string, LiveConnection>()
   const observers = new Map<string, Set<Queue.Queue<AgentSessionEvent, Cause.Done>>>()
   const checkActivity = new Map<string, AgentActivity>()
+  const histories = new Map<string, ReadonlyArray<HistoryTurn>>()
+  const historyReads: Array<string> = []
+  const answers: FakeAgentAdapter["answers"] = []
   const prunedSessions = new Set<string>()
   const prepared: FakeAgentAdapter["prepared"] = []
   const released: FakeAgentAdapter["released"] = []
@@ -177,7 +199,7 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
         activity: "idle",
         activeTurn: null,
         closed: false,
-        openRequests: new Set(),
+        openRequests: new Map(),
       }
       connections.set(session.providerSessionId, live)
       yield* Effect.addFinalizer(() =>
@@ -240,6 +262,32 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
             }
             finishTurn(session.providerSessionId, "interrupted")
           }),
+        respond: (requestId, answer) =>
+          Effect.gen(function* () {
+            yield* requireAvailable
+            yield* requireOpen
+            const request = live.openRequests.get(requestId)
+            if (request === undefined) {
+              return yield* Effect.fail(
+                new AgentConflict({
+                  provider: "codex",
+                  reason: `request ${requestId} is not pending`,
+                }),
+              )
+            }
+            if (request.kind !== answer.kind) {
+              return yield* Effect.fail(
+                new AgentConflict({
+                  provider: "codex",
+                  reason: `request ${requestId} expects a ${request.kind} answer`,
+                }),
+              )
+            }
+            answers.push({ requestId, answer })
+            live.openRequests.delete(requestId)
+            emit(live, { type: "requestClosed", requestId })
+            setActivity(live, "working")
+          }),
       }
       return connection
     })
@@ -251,7 +299,7 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
     }
     const turnId = live.activeTurn
     live.activeTurn = null
-    for (const requestId of live.openRequests) {
+    for (const requestId of live.openRequests.keys()) {
       emit(live, { type: "requestClosed", requestId })
     }
     live.openRequests.clear()
@@ -390,6 +438,12 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
         contextRequests.push(options.providerSessionId)
         return titleContexts.get(options.providerSessionId) ?? null
       }),
+    readHistory: (options) =>
+      Effect.gen(function* () {
+        yield* requireAvailable
+        historyReads.push(options.providerSessionId)
+        return histories.get(options.providerSessionId) ?? []
+      }),
     checkSession: (options) =>
       Effect.gen(function* () {
         checkCalls.push(options.providerSessionId)
@@ -429,11 +483,48 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
     openRequest: (providerSessionId, kind) => {
       const live = requireLive(providerSessionId)
       const requestId = `fake-request-${nextRequestId++}`
-      live.openRequests.add(requestId)
-      emit(live, { type: "requestOpened", requestId, kind })
+      const base = {
+        id: requestId,
+        turnId: live.activeTurn ?? "",
+        openedAt: new Date().toISOString(),
+      }
+      const request: ThreadRequest =
+        kind === "approval"
+          ? { kind, ...base, title: "pwd", subject: { type: "command", command: "pwd" } }
+          : {
+              kind,
+              ...base,
+              questions: [
+                {
+                  id: "q0",
+                  header: "Choice",
+                  question: "Which one?",
+                  options: [
+                    { label: "A", description: "first" },
+                    { label: "B", description: "second" },
+                  ],
+                  multiSelect: false,
+                  freeform: false,
+                  secret: false,
+                },
+              ],
+            }
+      live.openRequests.set(requestId, request)
+      emit(live, { type: "requestOpened", request })
       setActivity(live, "needs_input")
       return requestId
     },
+    answers,
+    emitItem: (providerSessionId, phase, item) => {
+      emit(requireLive(providerSessionId), { type: phase, item })
+    },
+    emitTextDelta: (providerSessionId, itemId, delta) => {
+      emit(requireLive(providerSessionId), { type: "textDelta", itemId, delta })
+    },
+    setHistory: (providerSessionId, turns) => {
+      histories.set(providerSessionId, turns)
+    },
+    historyReads,
     closeRequest: (providerSessionId, requestId) => {
       const live = requireLive(providerSessionId)
       if (!live.openRequests.delete(requestId)) {
