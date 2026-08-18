@@ -75,7 +75,7 @@ public enum ThreadEventStream {
                 return .disconnected
             case .data(let payload):
                 guard
-                    let event = try? JSONDecoder().decode(ThreadEvent.self, from: Data(payload.utf8))
+                    let event = try? makeJSONDecoder().decode(ThreadEvent.self, from: Data(payload.utf8))
                 else { return nil }
                 return .event(event)
             }

@@ -14,6 +14,19 @@ private let textDelta = """
 private let snapshotInvalidated = """
     data: {"type":"snapshot.invalidated","seq":9,"snapshotVersion":2}\n\n
     """
+// Exactly what the server's contract encoder emits for the request events.
+private let questionOpened = """
+    data: {"type":"request.opened","request":{"kind":"question","id":"req1","turnId":"t1","itemId":"i1","openedAt":"2026-08-18T10:00:00.000Z","questions":[{"id":"q1","header":"Pick","question":"Which?","options":[{"label":"A","description":"a"}],"multiSelect":false,"freeform":true,"secret":false}]}}\n\n
+    """
+private let approvalOpened = """
+    data: {"type":"request.opened","request":{"kind":"approval","id":"req2","turnId":"t1","openedAt":"2026-08-18T10:00:00.000Z","title":"Run command?","reason":"because","subject":{"type":"command","command":"ls","cwd":"/tmp"}}}\n\n
+    """
+private let requestClosed = """
+    data: {"type":"request.closed","requestId":"req1"}\n\n
+    """
+private let turnStarted = """
+    data: {"type":"turn.started","seq":8,"turn":{"id":"turn1","status":"running","startedAt":"2026-08-18T10:00:00.000Z"}}\n\n
+    """
 
 /// A resume cursor the test moves as the consumer would.
 private final class Cursor: @unchecked Sendable {
@@ -65,6 +78,50 @@ struct ThreadEventStreamTests {
         #expect(invalidated.seq == 9)
         // No `after` → a live-only subscribe, no query at all.
         #expect(connector.urls == [eventsURL])
+    }
+
+    // Requests and turns carry `date-time` fields: they decode only through
+    // the App Server's date transcoder, and a stream drops what it cannot
+    // decode — so this is the test that keeps request cards appearing live.
+    @Test("events with timestamps decode: a question, an approval, a close, a turn")
+    func timestampedEventsDecode() async {
+        let connector = ScriptedConnector([
+            .stream(
+                [": connected\n\n", questionOpened, approvalOpened, requestClosed, turnStarted], thenHang: true)
+        ])
+        let stream = ThreadEventStream.stream(
+            url: eventsURL, after: { nil }, configuration: fastConfiguration(), connector: connector.connect()
+        )
+
+        let events = await collect(stream, count: 5)
+
+        guard events.count == 5 else {
+            Issue.record("expected 5 events, got \(events)")
+            return
+        }
+        guard case .event(.request_opened(let opened)) = events[1], case .question(let question) = opened.request
+        else {
+            Issue.record("expected a question request.opened, got \(events[1])")
+            return
+        }
+        #expect(question.id == "req1")
+        #expect(question.questions.first?.options.first?.label == "A")
+        guard case .event(.request_opened(let opened)) = events[2], case .approval(let approval) = opened.request
+        else {
+            Issue.record("expected an approval request.opened, got \(events[2])")
+            return
+        }
+        #expect(approval.title == "Run command?")
+        guard case .event(.request_closed(let closed)) = events[3] else {
+            Issue.record("expected request.closed, got \(events[3])")
+            return
+        }
+        #expect(closed.requestId == "req1")
+        guard case .event(.turn_started(let started)) = events[4] else {
+            Issue.record("expected turn.started, got \(events[4])")
+            return
+        }
+        #expect(started.turn.startedAt != nil)
     }
 
     @Test("every (re)connect asks the caller for its resume seq")
