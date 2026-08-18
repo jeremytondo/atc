@@ -35,6 +35,7 @@ import {
   ThreadNotFound,
 } from "../api/contract.ts"
 import { Events } from "../events/events.ts"
+import { ThreadNaming } from "./threadNaming.ts"
 import { ThreadRepository } from "./threadRepository.ts"
 import type { ThreadRecord } from "./threadRepository.ts"
 import { TranscriptRepository } from "./transcriptRepository.ts"
@@ -79,7 +80,9 @@ export type QueuedPrompt = typeof Contract.QueuedPrompt.Type
 //     (unread, ATC-160), and every transition publishes the thread as
 //     updated. Turn end forces idle — the connection is released, so no
 //     later evidence can arrive on it. While the runtime drives a thread,
-//     its ledger entry is authoritative and never re-derived.
+//     its ledger entry is authoritative and never re-derived. The ledger
+//     also feeds ThreadNaming every busy/idle edge, whichever surface
+//     produced it (ATC-202).
 //   - Startup: threads with a running turn re-read history (their status
 //     is whatever the provider says); a turn still running on a shared
 //     provider server (Codex) is reattached and followed to its end, any
@@ -175,7 +178,8 @@ export class ThreadRuntime extends Context.Service<
       record: ThreadRecord,
       activity: AgentActivity,
     ) => Effect.Effect<{ readonly previous: AgentActivity | undefined }>
-    /** Drop the ledger entry (an observation ended). */
+    /** Drop the ledger entry (an observation ended) — unless the runtime is
+     * driving the thread, whose own evidence stays authoritative. */
     readonly clearActivity: (id: string) => Effect.Effect<void>
     /** Record an item observed on a TUI-driven session (the shared-server fan-out). */
     readonly recordObserved: (record: ThreadRecord, event: AgentItemEvent) => Effect.Effect<void>
@@ -194,6 +198,7 @@ export const layer = Layer.effect(ThreadRuntime)(
     const transcripts = yield* TranscriptRepository
     const registry = yield* AgentRegistry
     const events = yield* Events
+    const naming = yield* ThreadNaming
     // Runs and their drain fibers outlive their originating requests; they
     // live in the service scope so shutdown releases every connection.
     const serviceScope = yield* Effect.scope
@@ -333,6 +338,7 @@ export const layer = Layer.effect(ThreadRuntime)(
         if (previous !== undefined && isBusy(previous) && activity === "idle") {
           yield* repository.markFinished(record.id)
         }
+        yield* naming.noteActivity(record, previous, activity)
         if (previous !== activity) {
           yield* events.publish({ resource: "thread", id: record.id, change: "updated" })
         }
@@ -472,6 +478,7 @@ export const layer = Layer.effect(ThreadRuntime)(
         run.finished = true
         closeRequests(record.id, run)
         yield* noteActivity(record, "unknown")
+        yield* naming.noteFeedEnded(record)
         yield* Effect.logWarning("the turn's connection failed; re-reading provider history").pipe(
           Effect.annotateLogs({ threadId: record.id, turnId: run.turnId, reason }),
         )
@@ -583,6 +590,10 @@ export const layer = Layer.effect(ThreadRuntime)(
               exit._tag === "Failure" ? Scope.close(scope, Exit.void) : Effect.void,
             ),
           )
+          // The adopted record predates this turn's confirm (a fresh
+          // session is unconfirmed by construction), which is what makes a
+          // native first prompt eligible for naming (ATC-202).
+          yield* naming.notePrompt(started.record, next.value.prompt)
           const turnId = started.turn.turnId
           const turn: ThreadTurn = {
             id: turnId,
@@ -892,6 +903,7 @@ export const layer = Layer.effect(ThreadRuntime)(
       noteActivity,
       clearActivity: (id) =>
         Effect.sync(() => {
+          if (runs.has(id)) return
           liveActivity.delete(id)
           nativeBusy.delete(id)
         }),
