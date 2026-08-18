@@ -82,6 +82,8 @@ private struct ChatPane: View {
     @State private var draft = ""
     @State private var isSending = false
     @State private var isFollowingTail = true
+    /// Bumped to jump to the tail and follow it again (a sent prompt).
+    @State private var followRequest = 0
     @State private var actionError: String?
 
     private var transcript: ChatTranscript { chat.transcript }
@@ -140,21 +142,29 @@ private struct ChatPane: View {
             // edge effect.
             .scrollEdgeEffectUnderToolbar()
             .safeAreaBar(edge: .bottom) { bottomStack }
-            // The user scrolling away from the tail stops auto-follow;
-            // returning to it resumes. The toolbar and the composer bar
-            // are content insets that the visible rect spans, so the tail
-            // is where the visible rect reaches the content's end plus the
-            // bottom inset.
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.visibleRect.maxY
-                    >= geometry.contentSize.height + geometry.contentInsets.bottom - Spacing.xxl
-            } action: { _, atBottom in
-                isFollowingTail = atBottom
-            }
-            .onChange(of: transcript.items) { _, _ in
+            // Tail-follow, T3Code style: while following, every content
+            // or viewport size change re-pins the tail above the composer
+            // (done from the geometry change, once layout has the new
+            // sizes — a scroll issued when the model changes lands short of
+            // rows that are not measured yet). Only the user's own scroll
+            // gesture leaves follow mode: content growth moves the geometry
+            // too, so it must never be what decides. Ending a gesture at the
+            // tail resumes following.
+            .onScrollGeometryChange(for: TailLayout.self, of: TailLayout.init) { _, _ in
                 if isFollowingTail { proxy.scrollTo(tailAnchor, anchor: .bottom) }
             }
-            .onChange(of: transcript.isLoaded) { _, _ in
+            .onScrollPhaseChange { previous, phase, context in
+                // A gesture leaves follow mode; a gesture ending at the tail
+                // resumes it. An idle that no gesture led to (the first
+                // callback, a programmatic scroll settling) decides nothing.
+                if phase.isGesture {
+                    isFollowingTail = false
+                } else if phase == .idle, previous.isGesture {
+                    isFollowingTail = context.geometry.isAtTail
+                }
+            }
+            .onChange(of: followRequest) { _, _ in
+                isFollowingTail = true
                 proxy.scrollTo(tailAnchor, anchor: .bottom)
             }
         }
@@ -172,6 +182,17 @@ private struct ChatPane: View {
     }
 
     private let tailAnchor = "tail"
+
+    /// The sizes whose change moves the tail: the content's and the
+    /// viewport's (a window resize re-pins too).
+    private struct TailLayout: Equatable {
+        let content: CGFloat
+        let container: CGFloat
+        init(_ geometry: ScrollGeometry) {
+            content = geometry.contentSize.height
+            container = geometry.containerSize.height
+        }
+    }
 
     /// The server drives a turn (Stop is offered), or the agent is busy under
     /// a TUI (items land at idle — the server's re-read).
@@ -248,7 +269,7 @@ private struct ChatPane: View {
         Task {
             if await chat.send(prompt) {
                 draft = ""
-                isFollowingTail = true
+                followRequest += 1
             }
             isSending = false
         }
@@ -272,5 +293,28 @@ private struct ChatPane: View {
         case .live:
             EmptyView()
         }
+    }
+}
+
+extension ScrollPhase {
+    /// The user is scrolling: their finger or wheel is driving it, or its
+    /// momentum still is.
+    var isGesture: Bool {
+        switch self {
+        case .tracking, .interacting, .decelerating: true
+        case .idle, .animating: false
+        @unknown default: false
+        }
+    }
+}
+
+extension ScrollGeometry {
+    /// The toolbar and the composer bar are content insets: the container is
+    /// the area between them, so the tail is in view when the container's
+    /// bottom edge — offset plus insets plus container — reaches the
+    /// content's end plus the bottom inset (with some slack).
+    var isAtTail: Bool {
+        let viewportBottom = contentOffset.y + contentInsets.top + containerSize.height + contentInsets.bottom
+        return viewportBottom >= contentSize.height + contentInsets.bottom - Spacing.xxl
     }
 }
