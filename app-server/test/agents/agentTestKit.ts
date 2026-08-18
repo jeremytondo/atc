@@ -114,7 +114,9 @@ export const claudeAdapterLayer = (
   configOverrides: Partial<Parameters<typeof testAppConfig>[0]> = {},
   hooksLayer: Layer.Layer<ClaudeHooks.ClaudeHooks> = ClaudeHooks.layer,
 ): Layer.Layer<ClaudeAdapter.ClaudeAdapter | ClaudeHooks.ClaudeHooks, unknown> =>
-  ClaudeAdapter.layerWith(options).pipe(
+  // No session file unless a test scripts one: history reads must never
+  // reach the developer's real ~/.claude.
+  ClaudeAdapter.layerWith({ sessionFileFn: () => Promise.resolve(null), ...options }).pipe(
     Layer.provideMerge(hooksLayer),
     Layer.provide(testAppConfig({ claudeExecutable: executable, ...configOverrides })),
     Layer.provide(Subprocess.layer),

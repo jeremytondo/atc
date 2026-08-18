@@ -139,16 +139,22 @@ describe("thread auto-naming", () => {
       })
 
       // A later native prompt on the (now confirmed) thread never re-titles.
+      // Idle lands before the run's connection is released, so the prompt
+      // may start at once or queue and start moments later — either way
+      // it runs, and it must not name again.
       fake.completeTurn(yield* readSessionId, "completed")
       yield* eventually(
         client.v1.getThread({ params: { threadId } }),
         (read) => read.activityState === "idle",
       )
-      const second = yield* client.v1.promptThread({
+      yield* client.v1.promptThread({
         params: { threadId },
         payload: { prompt: "now remove it again" },
       })
-      assert.isString(second.turnId)
+      yield* eventually(
+        client.v1.getThread({ params: { threadId } }),
+        (read) => read.activityState === "working",
+      )
       assert.strictEqual(fake.titleRequests.length, requestsBefore + 1)
 
       fake.completeTurn(yield* readSessionId, "completed")
