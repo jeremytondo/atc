@@ -1254,6 +1254,158 @@ describe("ClaudeAdapter collectTitleContext", () => {
       }),
   )
 
+  it.live(
+    "readHistory reads the session file with every branch in file order; the SDK is the fallback",
+    () =>
+      Effect.gen(function* () {
+        // A session driven from two surfaces: the TUI's second prompt forks
+        // from before the native turn (its in-memory conversation never saw
+        // it), so the last-written leaf's branch (what getSessionMessages
+        // returns) would drop the native turn entirely.
+        const line = (entry: Record<string, unknown>) => JSON.stringify(entry)
+        const file = [
+          line({
+            type: "user",
+            uuid: "u1",
+            parentUuid: null,
+            sessionId: "s",
+            message: { role: "user", content: "hi" },
+          }),
+          line({
+            type: "assistant",
+            uuid: "a1",
+            parentUuid: "u1",
+            sessionId: "s",
+            message: { role: "assistant", content: [{ type: "text", text: "hello" }] },
+          }),
+          line({
+            type: "user",
+            uuid: "n1",
+            parentUuid: "a1",
+            sessionId: "s",
+            origin: "sdk",
+            message: { role: "user", content: "native" },
+          }),
+          line({
+            type: "assistant",
+            uuid: "na1",
+            parentUuid: "n1",
+            sessionId: "s",
+            message: { role: "assistant", content: [{ type: "text", text: "native reply" }] },
+          }),
+          line({
+            type: "user",
+            uuid: "u2",
+            parentUuid: "a1",
+            sessionId: "s",
+            message: { role: "user", content: "tui again" },
+          }),
+          line({ type: "attachment", uuid: "att", parentUuid: "u2", sessionId: "s" }),
+          line({
+            type: "user",
+            uuid: "meta",
+            parentUuid: "u2",
+            sessionId: "s",
+            isMeta: true,
+            message: { role: "user", content: "reminder" },
+          }),
+          line({
+            type: "assistant",
+            uuid: "a2",
+            parentUuid: "u2",
+            sessionId: "s",
+            message: { role: "assistant", content: [{ type: "text", text: "tui reply" }] },
+          }),
+          "{not json",
+        ].join("\n")
+        const sdkCalls: Array<string> = []
+        const layer = claudeAdapterLayer({
+          sessionFileFn: (sessionId) => Promise.resolve(sessionId === "s" ? file : null),
+          sessionMessagesFn: (sessionId) => {
+            sdkCalls.push(sessionId)
+            return Promise.resolve([
+              transcriptMessage("user", "from the sdk"),
+              transcriptMessage("assistant", "reply"),
+            ])
+          },
+        })
+        yield* Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter.ClaudeAdapter
+          const history = yield* adapter.readHistory({ providerSessionId: "s", cwd: "/work" })
+          assert.deepStrictEqual(
+            history.map((turn) =>
+              turn.items.map((item) => ("text" in item ? item.text : item.type)),
+            ),
+            [
+              ["hi", "hello"],
+              ["native", "native reply"],
+              ["tui again", "tui reply"],
+            ],
+          )
+          assert.deepStrictEqual(sdkCalls, [])
+          const fallback = yield* adapter.readHistory({
+            providerSessionId: "elsewhere",
+            cwd: "/work",
+          })
+          assert.deepStrictEqual(sdkCalls, ["elsewhere"])
+          assert.strictEqual(fallback.length, 1)
+        }).pipe(Effect.provide(layer))
+      }),
+  )
+
+  it.live("readHistory settles while the newest turn is still output-less", () =>
+    Effect.gen(function* () {
+      // Claude appends the assistant line after the Stop hook that triggers
+      // the observed-idle read: the first read sees the prompt alone.
+      const prompt = JSON.stringify({
+        type: "user",
+        uuid: "u1",
+        parentUuid: null,
+        sessionId: "s",
+        message: { role: "user", content: "hi" },
+      })
+      const reply = JSON.stringify({
+        type: "assistant",
+        uuid: "a1",
+        parentUuid: "u1",
+        sessionId: "s",
+        message: { role: "assistant", content: [{ type: "text", text: "hello" }] },
+      })
+      let reads = 0
+      const layer = claudeAdapterLayer({
+        historySettleDelay: "1 millis",
+        sessionFileFn: () => {
+          reads += 1
+          return Promise.resolve(reads < 3 ? prompt : `${prompt}\n${reply}`)
+        },
+      })
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter.ClaudeAdapter
+        const history = yield* adapter.readHistory({ providerSessionId: "s", cwd: "/work" })
+        assert.strictEqual(reads, 3)
+        assert.deepStrictEqual(
+          history[0]?.items.map((item) => item.type),
+          ["userMessage", "assistantText"],
+        )
+        // A turn that truly produced nothing settles out after the bound.
+        reads = 0
+        const quiet = claudeAdapterLayer({
+          historySettleDelay: "1 millis",
+          sessionFileFn: () => {
+            reads += 1
+            return Promise.resolve(prompt)
+          },
+        })
+        yield* Effect.gen(function* () {
+          const bounded = yield* ClaudeAdapter.ClaudeAdapter
+          const history = yield* bounded.readHistory({ providerSessionId: "s", cwd: "/work" })
+          assert.strictEqual(history[0]?.items.length, 1)
+          assert.strictEqual(reads, 9)
+        }).pipe(Effect.provide(quiet))
+      }).pipe(Effect.provide(layer))
+    }),
+  )
+
   it.live("a failed or empty transcript read is silently no context", () =>
     Effect.gen(function* () {
       const layer = claudeAdapterLayer({

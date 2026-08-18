@@ -33,6 +33,7 @@ import type {
   AgentProtocolError,
   AgentSessionEvent,
   AgentUnavailable,
+  HistoryTurn,
   ThreadItem,
   ThreadRequest,
 } from "./agentAdapter.ts"
@@ -49,6 +50,7 @@ import {
   withTitleTimeout,
   withToolStatus,
 } from "./agentAdapter.ts"
+import * as os from "node:os"
 import * as path from "node:path"
 import * as ClaudeHooks from "./claudeHooks.ts"
 import * as ClaudeItems from "./claudeItems.ts"
@@ -105,6 +107,20 @@ import * as Subprocess from "../platform/subprocess.ts"
 //     ThreadRequests until `respond` resolves them; a turn's end or the
 //     session's close resolves any survivor with a deny so the SDK child
 //     never waits on a request nothing will answer.
+//   - History (ATC-191): the session's own JSONL is read directly and every
+//     branch is kept, in file order. A session driven from two surfaces
+//     FORKS — a running TUI holds its conversation in memory, so its next
+//     prompt parents to its own last message, not to a turn ATC drove
+//     through the SDK, and vice versa — and the SDK's getSessionMessages
+//     returns only the branch of the last-written leaf, which would wipe the
+//     other surface's turns from ATC's copy on every re-read. The union is
+//     what actually happened in the session; whichever surface resumes next
+//     continues from the last-written leaf (Claude Code's rule), which is
+//     the provider's limitation, not ATC's. getSessionMessages remains the
+//     fallback when the file cannot be located. Claude also appends a turn's
+//     assistant line only after its Stop hook has run, so a read at the
+//     observed idle settles briefly while the newest turn is still output-
+//     less (readHistory).
 //   - One writer per session id, enforced here. Webhook hook activity is
 //     NOT bridged into these feeds: a TUI-driven session has no adapter
 //     connection by definition, and while ATC drives, the same vocabulary
@@ -128,11 +144,82 @@ export type ClaudeQueryFn = (args: {
 
 export interface ClaudeAdapterOptions {
   readonly queryFn?: ClaudeQueryFn
-  /** The getSessionMessages seam, injectable so tests can script transcripts. */
+  /** The getSessionMessages seam (fallback reader), injectable so tests can script transcripts. */
   readonly sessionMessagesFn?: typeof getSessionMessages
+  /**
+   * The session-file seam: the raw JSONL of `<config>/projects/<cwd key>/<id>.jsonl`,
+   * null when it cannot be located. Injectable so tests script transcripts.
+   */
+  readonly sessionFileFn?: (sessionId: string, cwd: string) => Promise<string | null>
   /** How long create/first-turn waits for the SDK's identity evidence. */
   readonly initTimeout?: Duration.Input
+  /** Pause between readHistory's settle re-reads (see the header). */
+  readonly historySettleDelay?: Duration.Input
 }
+
+/** How many settle re-reads readHistory allows before taking the transcript as it is. */
+const HISTORY_SETTLE_ATTEMPTS = 8
+
+/** A Claude session id as it appears on disk: one path segment, never a traversal. */
+const SessionFileId = Schema.String.check(
+  Schema.isPattern(/^[A-Za-z0-9_-]+$/, { description: "a Claude session id" }),
+)
+const decodeSessionFileId = Schema.decodeUnknownOption(SessionFileId)
+
+/**
+ * Where Claude Code keeps a session's JSONL: the config dir's `projects/`,
+ * one directory per cwd with every non-alphanumeric character replaced by
+ * `-` (Claude's own rule; a very long cwd is hashed instead, and reads as
+ * "not located" here — the SDK fallback covers it). The config dir is read
+ * from the same environment the SDK child gets, because that is what
+ * decides where Claude writes; an ATC setting could only disagree with it.
+ */
+const claudeSessionFile = (env: Record<string, string>, sessionId: string, cwd: string): string => {
+  const configDir = env["CLAUDE_CONFIG_DIR"] || path.join(env["HOME"] || os.homedir(), ".claude")
+  return path.join(configDir, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`)
+}
+
+const readClaudeSessionFile = async (sessionId: string, cwd: string): Promise<string | null> => {
+  if (Option.isNone(decodeSessionFileId(sessionId))) return null
+  const file = Bun.file(claudeSessionFile(claudeEnvironment(), sessionId, cwd))
+  return (await file.exists()) ? file.text() : null
+}
+
+/** One conversation line of a session file — anything else is skipped. */
+const SessionFileLine = Schema.Struct({
+  type: Schema.Literals(["user", "assistant"]),
+  uuid: Schema.String,
+  sessionId: Schema.optional(Schema.String),
+  message: Schema.Unknown,
+  timestamp: Schema.optional(Schema.String),
+  isSidechain: Schema.optional(Schema.Boolean),
+  isMeta: Schema.optional(Schema.Boolean),
+})
+const decodeSessionFileLine = Schema.decodeUnknownOption(SessionFileLine)
+
+/**
+ * The session file's top-level user/assistant lines as SessionMessages, in
+ * file order — every branch. Sidechain (subagent) and meta lines are not
+ * conversation; unparseable lines (a write in progress) are skipped.
+ */
+const sessionMessagesFromFile = (text: string, sessionId: string): ReadonlyArray<SessionMessage> =>
+  text.split("\n").flatMap((line) => {
+    const parsed = Option.liftThrowable(() => JSON.parse(line) as unknown)()
+    const entry = Option.flatMap(parsed, decodeSessionFileLine)
+    if (Option.isNone(entry)) return []
+    if (entry.value.isSidechain === true || entry.value.isMeta === true) return []
+    return [
+      {
+        type: entry.value.type,
+        uuid: entry.value.uuid,
+        session_id: entry.value.sessionId ?? sessionId,
+        message: entry.value.message,
+        parent_tool_use_id: null,
+        parent_agent_id: null,
+        ...(entry.value.timestamp !== undefined ? { timestamp: entry.value.timestamp } : {}),
+      } as SessionMessage,
+    ]
+  })
 
 // The thread's opaque providerMetadata, as this adapter mints it. Decoded
 // tolerantly: unknown or malformed metadata is "no secret", never an error.
@@ -309,7 +396,9 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
       const hooks = yield* ClaudeHooks.ClaudeHooks
       const queryFn: ClaudeQueryFn = adapterOptions.queryFn ?? (query as unknown as ClaudeQueryFn)
       const sessionMessagesFn = adapterOptions.sessionMessagesFn ?? getSessionMessages
+      const sessionFileFn = adapterOptions.sessionFileFn ?? readClaudeSessionFile
       const initTimeout = adapterOptions.initTimeout ?? "60 seconds"
+      const historySettleDelay = adapterOptions.historySettleDelay ?? "250 millis"
 
       /** Live sessions by verified (and, for resumes, expected) session id. */
       const sessions = new Map<string, LiveSession>()
@@ -960,18 +1049,50 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
         return turnId
       }
 
-      /** The bounded getSessionMessages read behind both transcript readers. */
+      /**
+       * The bounded transcript read behind both readers: the session file
+       * (every branch, see the header), else getSessionMessages.
+       */
       const readTranscript = (
         providerSessionId: string,
         cwd: string,
       ): Effect.Effect<ReadonlyArray<SessionMessage>, string> =>
         Effect.tryPromise({
-          try: () => sessionMessagesFn(providerSessionId, { dir: cwd }),
+          try: async () => {
+            const text = await sessionFileFn(providerSessionId, cwd)
+            return text === null
+              ? sessionMessagesFn(providerSessionId, { dir: cwd })
+              : sessionMessagesFromFile(text, providerSessionId)
+          },
           catch: (error) => (error instanceof Error ? error.message : String(error)),
         }).pipe(
           Effect.timeoutOrElse({
             duration: "10 seconds",
             orElse: () => Effect.fail("the transcript read timed out"),
+          }),
+        )
+
+      /**
+       * readHistory's read: re-read while the newest turn holds nothing but
+       * its prompt, because Claude appends the assistant line after the Stop
+       * hook that triggers the observed-idle read (bounded — a turn that
+       * really produced nothing simply reads as such after the last try).
+       */
+      const readSettledHistory = (
+        providerSessionId: string,
+        cwd: string,
+        attempt = 0,
+      ): Effect.Effect<ReadonlyArray<HistoryTurn>, string> =>
+        readTranscript(providerSessionId, cwd).pipe(
+          Effect.map(ClaudeItems.mapHistory),
+          Effect.flatMap((history) => {
+            const newest = history.at(-1)
+            const settled = newest === undefined || newest.items.length > 1
+            return settled || attempt >= HISTORY_SETTLE_ATTEMPTS
+              ? Effect.succeed(history)
+              : Effect.sleep(historySettleDelay).pipe(
+                  Effect.andThen(readSettledHistory(providerSessionId, cwd, attempt + 1)),
+                )
           }),
         )
 
@@ -1260,8 +1381,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
         // reads as empty — the SDK cannot tell "no such session" from "no
         // messages yet"; only a failing read is an error.
         readHistory: (options) =>
-          readTranscript(options.providerSessionId, options.cwd).pipe(
-            Effect.map(ClaudeItems.mapHistory),
+          readSettledHistory(options.providerSessionId, options.cwd).pipe(
             Effect.mapError((reason) => protocolError(`the transcript read failed: ${reason}`)),
           ),
         // Claude offers no cheap truthful liveness query for a session it
