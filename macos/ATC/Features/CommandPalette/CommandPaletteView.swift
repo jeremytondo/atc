@@ -65,7 +65,7 @@ struct CommandPaletteView: View {
                 shouldRestoreCapturedResponder: {
                     responderRestoration.shouldRestoreCapturedResponder
                 },
-                fallback: { windowState.requestTerminalFocus() }
+                fallback: { windowState.requestContentFocus() }
             )
         )
         .onAppear { resetSelection(for: rows, presentation: presentation) }

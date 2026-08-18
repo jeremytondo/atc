@@ -99,6 +99,58 @@ nonisolated final class ScriptedEventStream: @unchecked Sendable {
     }
 }
 
+// MARK: - Scripted thread event stream
+
+/// The per-thread SSE seam under test control: hand `factory` to a runtime
+/// through `threadEventStreamFactory`; every Chat model's subscription is
+/// recorded (thread id and its live `after` cursor) and driven from the
+/// test with `connect` / `send` / `disconnect`.
+nonisolated final class ScriptedThreadEventStream: @unchecked Sendable {
+    struct Subscription {
+        let threadID: String
+        /// The model's resume cursor, read live — what a reconnect would ask.
+        let after: @Sendable () -> Int?
+        let continuation: AsyncStream<ThreadEventStream.Event>.Continuation
+    }
+
+    private let lock = NSLock()
+    private var recorded: [Subscription] = []
+
+    var subscriptions: [Subscription] { lock.withLock { recorded } }
+
+    var factory: ConnectionRuntime.ThreadEventStreamFactory {
+        { [self] _, threadID, _, after in
+            let (stream, continuation) = AsyncStream.makeStream(of: ThreadEventStream.Event.self)
+            lock.withLock {
+                recorded.append(Subscription(threadID: threadID, after: after, continuation: continuation))
+            }
+            return stream
+        }
+    }
+
+    /// The most recent subscription for a thread (a model subscribes once
+    /// and resumes on the same stream).
+    private func subscription(_ threadID: String) -> Subscription? {
+        subscriptions.last { $0.threadID == threadID }
+    }
+
+    /// Connects as the live stream would: it asks the resume cursor first
+    /// (that is what a real (re)connect sends as `after`), then opens.
+    func connect(_ threadID: String) {
+        guard let subscription = subscription(threadID) else { return }
+        _ = subscription.after()
+        subscription.continuation.yield(.connected)
+    }
+
+    func send(_ threadID: String, _ event: ThreadEvent) {
+        subscription(threadID)?.continuation.yield(.event(event))
+    }
+
+    func disconnect(_ threadID: String) {
+        subscription(threadID)?.continuation.yield(.disconnected)
+    }
+}
+
 // MARK: - Attach harness
 
 /// Stands in for the attach WebSocket. Every connection attempt is recorded
@@ -209,6 +261,7 @@ struct TestModel {
 func makeModel(
     client: ScriptableAppServerClient = ScriptableAppServerClient(),
     events: ScriptedEventStream? = nil,
+    threadEvents: ScriptedThreadEventStream? = nil,
     attach: AttachHarness = AttachHarness(),
     attachmentBudget: Int = 12,
     threadNotifier: ThreadNotifier? = nil,
@@ -221,6 +274,7 @@ func makeModel(
         connections: store,
         client: client,
         events: events,
+        threadEvents: threadEvents,
         attach: attach,
         threadNotifier: threadNotifier,
         attachmentBudget: attachmentBudget
@@ -254,6 +308,7 @@ func makeEmptyAppModel(
         connections: makeConnectionsStore(),
         client: client,
         events: nil,
+        threadEvents: nil,
         attach: attach,
         threadNotifier: nil,
         attachmentBudget: 12
@@ -273,6 +328,7 @@ private func makeAppModel(
     connections: ConnectionsStore,
     client: ScriptableAppServerClient,
     events: ScriptedEventStream?,
+    threadEvents: ScriptedThreadEventStream?,
     attach: AttachHarness,
     threadNotifier: ThreadNotifier?,
     attachmentBudget: Int
@@ -291,6 +347,8 @@ private func makeAppModel(
         // An absent factory would leave the runtime on the live SSE stream,
         // pointing the suite at a real socket.
         eventStreamFactory: { _, _ in events?.stream ?? ScriptedEventStream.inert() },
+        // Same rule for the per-thread streams: never a live socket.
+        threadEventStreamFactory: threadEvents?.factory ?? { _, _, _, _ in AsyncStream { _ in } },
         threadNotifier: threadNotifier,
         attachmentBudget: attachmentBudget
     )

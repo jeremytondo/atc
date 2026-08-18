@@ -45,6 +45,19 @@ struct RootView: View {
             ToolbarItem(placement: .status) {
                 exceptionalStatus
             }
+            // Chat | TUI for the displayed thread; the mode is app-wide per
+            // thread (AppModel), so two windows on one thread agree.
+            ToolbarItem(placement: .principal) {
+                if let ref = selectedThread {
+                    Picker("View", selection: viewModeBinding(ref)) {
+                        Text("Chat").tag(ThreadViewMode.chat)
+                        Text("TUI").tag(ThreadViewMode.tui)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .help("Show the thread as a native chat or its provider TUI")
+                }
+            }
             ToolbarItem(placement: .primaryAction) {
                 Toggle(isOn: $windowState.isInspectorPresented) {
                     Label("Inspector", systemImage: "sidebar.trailing")
@@ -62,7 +75,7 @@ struct RootView: View {
         .sheet(
             item: $windowState.newThreadContext,
             onDismiss: {
-                windowState.requestTerminalFocus()
+                windowState.requestContentFocus()
             }
         ) { context in
             NewThreadSheet(context: context)
@@ -70,7 +83,7 @@ struct RootView: View {
         .sheet(
             item: $windowState.newTerminalProject,
             onDismiss: {
-                windowState.requestTerminalFocus()
+                windowState.requestContentFocus()
             }
         ) { ref in
             NewTerminalSheet(projectRef: ref)
@@ -177,6 +190,13 @@ struct RootView: View {
 
     private var selectedThread: ThreadRef? {
         windowState.selectedThread
+    }
+
+    private func viewModeBinding(_ ref: ThreadRef) -> Binding<ThreadViewMode> {
+        Binding(
+            get: { appModel.viewMode(for: ref) },
+            set: { appModel.setViewMode($0, for: ref) }
+        )
     }
 
     private func projectName(for connectionID: UUID, projectID: String) -> String {

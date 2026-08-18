@@ -54,6 +54,7 @@ struct AppCommands: Commands {
 
         CommandGroup(after: .sidebar) {
             commandButton(.toggleSidebar)
+            commandButton(.toggleThreadViewMode)
             commandButton(.showDashboard)
             commandButton(.refresh, appScoped: true)
             commandButton(.toggleCommandPalette)

@@ -21,6 +21,13 @@ struct WindowStateTests {
         return test
     }
 
+    /// The terminal-first path: these suites predate Chat, so the thread
+    /// is put in TUI mode before opening.
+    private func openInTUI(_ ref: ThreadRef, state: WindowState, in test: TestModel) async {
+        test.model.setViewMode(.tui, for: ref)
+        await state.openThread(ref, in: test.model)
+    }
+
     // MARK: - Launch state
 
     @Test("a window opens on Dashboard with no project context and no filter")
@@ -36,13 +43,13 @@ struct WindowStateTests {
 
     // MARK: - Opening threads
 
-    @Test("openThread selects the thread, adopts its project, and records its terminal")
+    @Test("openThread in TUI selects the thread, adopts its project, and records its terminal")
     func openThreadSucceeds() async throws {
         let test = try await loadedModel()
         let state = WindowState()
         let ref = test.threadRef("thr1")
 
-        await state.openThread(ref, in: test.model)
+        await openInTUI(ref, state: state, in: test)
 
         #expect(state.selectedContent == .thread(ref))
         #expect(state.selectedThread == ref)
@@ -51,7 +58,7 @@ struct WindowStateTests {
         #expect(state.visibleTerminal == terminalRef)
         #expect(test.model.terminals[terminalRef] != nil)
         #expect(state.threadOpenErrors[ref] == nil)
-        #expect(state.terminalFocusRequest > 0)
+        #expect(state.contentFocusRequest > 0)
     }
 
     @Test("a failed open keeps the selection and records the error")
@@ -62,7 +69,7 @@ struct WindowStateTests {
         let ref = test.threadRef("thr1")
 
         client.shouldFail = true
-        await state.openThread(ref, in: test.model)
+        await openInTUI(ref, state: state, in: test)
 
         // The content area stays on the thread and explains itself; bouncing
         // back to Dashboard would lose the user's place on a transient error.
@@ -155,7 +162,7 @@ struct WindowStateTests {
         let test = try await loadedModel(client)
         let state = WindowState()
         let ref = test.threadRef("thr1")
-        await state.openThread(ref, in: test.model)
+        await openInTUI(ref, state: state, in: test)
 
         try await test.runtime.threads.archive(id: "thr1")
         state.reconcile(in: test.model)
@@ -217,7 +224,7 @@ struct WindowStateTests {
         let test = try await loadedModel()
         let state = WindowState()
         let ref = test.threadRef("thr1")
-        await state.openThread(ref, in: test.model)
+        await openInTUI(ref, state: state, in: test)
         state.threadFilter = .project(test.projectRef("prj"))
 
         test.model.removeConnection(id: test.connectionID)
@@ -246,7 +253,7 @@ struct WindowStateTests {
         let test = try await loadedModel(client)
         let state = WindowState()
         let ref = test.threadRef("thr1")
-        await state.openThread(ref, in: test.model)
+        await openInTUI(ref, state: state, in: test)
         let original = try #require(state.threadTerminals[ref])
 
         // A relaunch elsewhere replaced the thread's TUI terminal.
@@ -275,7 +282,7 @@ struct WindowStateTests {
         let test = try await loadedModel()
         let state = WindowState()
         let ref = test.threadRef("thr1")
-        await state.openThread(ref, in: test.model)
+        await openInTUI(ref, state: state, in: test)
         let terminalRef = try #require(state.threadTerminals[ref])
 
         // Eviction or Connection teardown released the controller while the
@@ -296,7 +303,7 @@ struct WindowStateTests {
         let test = try await loadedModel(client)
         let state = WindowState()
         let ref = test.threadRef("thr1")
-        await state.openThread(ref, in: test.model)
+        await openInTUI(ref, state: state, in: test)
         let terminalRef = try #require(state.threadTerminals[ref])
 
         // The thread lets go of its terminal but the terminal row stays
@@ -321,7 +328,7 @@ struct WindowStateTests {
         let test = try await loadedModel(client)
         let state = WindowState()
         let ref = test.threadRef("thr1")
-        await state.openThread(ref, in: test.model)
+        await openInTUI(ref, state: state, in: test)
         let terminalRef = try #require(state.threadTerminals[ref])
 
         client.terminals.removeAll { $0.id == terminalRef.terminalID }
@@ -442,17 +449,108 @@ struct WindowStateTests {
         #expect(state.columnVisibility == .all)
     }
 
-    @Test("terminal focus is only requested while a terminal is visible")
-    func focusRequestsRequireATerminal() async throws {
+    @Test("content focus advances on every request, including re-selecting the same row")
+    func focusRequestsAdvance() async throws {
         let test = try await loadedModel()
         let state = WindowState()
-        state.requestTerminalFocus()
-        #expect(state.terminalFocusRequest == 0)
-
         state.selectTerminal(test.terminalRef("trm_live"), in: test.model)
-        let after = state.terminalFocusRequest
-        #expect(after > 0)
-        state.requestTerminalFocus()
-        #expect(state.terminalFocusRequest == after + 1)
+        let first = state.contentFocusRequest
+        #expect(first > 0)
+        state.selectTerminal(test.terminalRef("trm_live"), in: test.model)
+        #expect(state.contentFocusRequest == first + 1)
+        state.requestContentFocus()
+        #expect(state.contentFocusRequest == first + 2)
+    }
+
+    // MARK: - Chat and TUI
+
+    @Test("Chat is the default: opening a thread selects it and never opens or attaches a terminal")
+    func chatIsDefault() async throws {
+        let test = try await loadedModel()
+        let state = WindowState()
+        let ref = test.threadRef("thr1")
+
+        await state.openThread(ref, in: test.model)
+
+        #expect(test.model.viewMode(for: ref) == .chat)
+        #expect(state.selectedContent == .thread(ref))
+        #expect(state.activeProject == test.projectRef("prj"))
+        #expect(state.threadTerminals[ref] == nil)
+        #expect(test.model.terminals.isEmpty)
+        #expect(test.client.openThreadTerminalCount == 0)
+        #expect(state.contentFocusRequest > 0)
+    }
+
+    @Test("switching the displayed thread to TUI opens its terminal; back to Chat leaves it retained")
+    func switchingModes() async throws {
+        let test = try await loadedModel()
+        let state = WindowState()
+        test.model.registerWindow(state)
+        let ref = test.threadRef("thr1")
+        await state.openThread(ref, in: test.model)
+
+        test.model.setViewMode(.tui, for: ref)
+        await settle(until: { state.threadTerminals[ref] != nil })
+        let terminalRef = try #require(state.threadTerminals[ref])
+        #expect(test.model.terminals[terminalRef] != nil)
+        #expect(test.client.openThreadTerminalCount == 1)
+
+        test.model.setViewMode(.chat, for: ref)
+        await drainPendingTasks()
+        // The surface survives the flip; only what the pane shows changes.
+        #expect(state.threadTerminals[ref] == terminalRef)
+        #expect(test.model.terminals[terminalRef] != nil)
+        #expect(test.client.openThreadTerminalCount == 1)
+
+        state.toggleViewMode(in: test.model)
+        #expect(test.model.viewMode(for: ref) == .tui)
+        await drainPendingTasks()
+    }
+
+    @Test("the mode is remembered per thread and shared by every window showing it")
+    func modeIsSharedAcrossWindows() async throws {
+        let test = try await loadedModel()
+        let first = WindowState()
+        let second = WindowState()
+        let elsewhere = WindowState()
+        for window in [first, second, elsewhere] { test.model.registerWindow(window) }
+        let ref = test.threadRef("thr1")
+        let other = test.threadRef("thr2")
+        await first.openThread(ref, in: test.model)
+        await second.openThread(ref, in: test.model)
+        await elsewhere.openThread(other, in: test.model)
+
+        first.toggleViewMode(in: test.model)
+        // Both windows on the thread open its terminal, without a second
+        // server open; the window on another thread is untouched.
+        await settle(until: { first.threadTerminals[ref] != nil && second.threadTerminals[ref] != nil })
+        #expect(test.model.viewMode(for: ref) == .tui)
+        #expect(test.model.viewMode(for: other) == .chat)
+        #expect(first.threadTerminals[ref] == second.threadTerminals[ref])
+        #expect(test.client.openThreadTerminalCount <= 2)
+        #expect(elsewhere.threadTerminals.isEmpty)
+    }
+
+    @Test("in Chat, reconciliation tracks the linked terminal but never attaches it")
+    func chatNeverAttachesOnReconcile() async throws {
+        let client = ScriptableAppServerClient()
+        let test = try await loadedModel(client)
+        let state = WindowState()
+        let ref = test.threadRef("thr1")
+        await state.openThread(ref, in: test.model)
+
+        // Another client (a TUI elsewhere) links a live terminal.
+        let linked = Fixtures.terminal(id: "trm_linked", threadId: "thr1")
+        client.terminals += [linked]
+        client.threads = client.threads.map { thread in
+            var thread = thread
+            if thread.id == "thr1" { thread.linkedTerminalId = "trm_linked" }
+            return thread
+        }
+        await test.runtime.refresh()
+        state.reconcile(in: test.model)
+
+        #expect(state.threadTerminals[ref] == test.terminalRef("trm_linked"))
+        #expect(test.model.terminals.isEmpty)
     }
 }

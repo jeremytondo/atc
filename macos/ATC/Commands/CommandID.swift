@@ -5,6 +5,7 @@ enum CommandID: String, CaseIterable, Sendable {
     case searchTerminals = "view.search-terminals"
     case showDashboard = "view.show-dashboard"
     case newThread = "thread.new"
+    case toggleThreadViewMode = "thread.toggle-view-mode"
     case newTerminal = "terminal.new"
     case newProject = "project.new"
     case refresh = "data.refresh"

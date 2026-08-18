@@ -30,6 +30,7 @@ struct CommandDescriptor {
 enum CommandRegistry {
     private static let connectionUnavailable = "Requires a reachable Connection"
     private static let projectContextUnavailable = "Requires an open Project"
+    private static let threadUnavailable = "Requires an open Thread"
     private static let dialogUnavailable = "Not available while a dialog is open"
     private static let paletteOpenUnavailable = "Not available while the Command Palette is open"
 
@@ -90,6 +91,17 @@ enum CommandRegistry {
                 title: "New Thread",
                 availability: anyConnectionAvailability,
                 perform: { $0.windowState.presentNewThread() }
+            )
+        case .toggleThreadViewMode:
+            CommandDescriptor(
+                id: id,
+                title: "Toggle Chat/TUI",
+                availability: {
+                    $0.windowState.selectedThread == nil
+                        ? .unavailable(reason: threadUnavailable)
+                        : .available
+                },
+                perform: { $0.windowState.toggleViewMode(in: $0.appModel) }
             )
         case .newTerminal:
             CommandDescriptor(

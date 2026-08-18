@@ -35,6 +35,19 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         /// While set, openThreadTerminal fails 503 with this payload — the
         /// install-or-configure message the unwrap seam must surface.
         var openThreadTerminalFailure: Components.Schemas.ProviderUnavailableJsonEncoding?
+        /// The Thread runtime (ATC-193) as seen by one client: a transcript
+        /// page per thread (an unseeded thread reads as empty), the pending
+        /// requests and queue, and what clients did about them.
+        var transcripts: [String: ThreadTranscriptPage] = [:]
+        var threadRequests: [String: [ThreadRequest]] = [:]
+        var threadQueues: [String: [QueuedPrompt]] = [:]
+        /// While set, promptThread fails 503 with this payload.
+        var promptThreadFailure: Components.Schemas.ProviderUnavailableJsonEncoding?
+        var transcriptReads: [(threadID: String, before: String?)] = []
+        var prompts: [(threadID: String, prompt: String)] = []
+        var answers: [(threadID: String, requestID: String, answer: ThreadRequestAnswer)] = []
+        var withdrawnPrompts: [(threadID: String, promptID: String)] = []
+        var interruptCount = 0
         var createdThreadRequests: [Components.Schemas.CreateThreadRequest] = []
         var createdTerminalRequests: [Components.Schemas.CreateTerminalRequest] = []
         var listProjectsCount = 0
@@ -148,6 +161,27 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         set { lock.withLock { state.openThreadTerminalFailure = newValue } }
     }
 
+    /// Transcript page served for a thread id; unseeded threads read empty.
+    var transcripts: [String: ThreadTranscriptPage] {
+        get { lock.withLock { state.transcripts } }
+        set { lock.withLock { state.transcripts = newValue } }
+    }
+
+    var threadRequests: [String: [ThreadRequest]] {
+        get { lock.withLock { state.threadRequests } }
+        set { lock.withLock { state.threadRequests = newValue } }
+    }
+
+    var threadQueues: [String: [QueuedPrompt]] {
+        get { lock.withLock { state.threadQueues } }
+        set { lock.withLock { state.threadQueues = newValue } }
+    }
+
+    var promptThreadFailure: Components.Schemas.ProviderUnavailableJsonEncoding? {
+        get { lock.withLock { state.promptThreadFailure } }
+        set { lock.withLock { state.promptThreadFailure = newValue } }
+    }
+
     // MARK: - Captured requests and call counts
 
     var createdThreadRequests: [Components.Schemas.CreateThreadRequest] {
@@ -164,6 +198,13 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     var listAgentsCount: Int { lock.withLock { state.listAgentsCount } }
     var openThreadTerminalCount: Int { lock.withLock { state.openThreadTerminalCount } }
     var markThreadViewedCount: Int { lock.withLock { state.markThreadViewedCount } }
+    var transcriptReads: [(threadID: String, before: String?)] { lock.withLock { state.transcriptReads } }
+    var prompts: [(threadID: String, prompt: String)] { lock.withLock { state.prompts } }
+    var answers: [(threadID: String, requestID: String, answer: ThreadRequestAnswer)] {
+        lock.withLock { state.answers }
+    }
+    var withdrawnPrompts: [(threadID: String, promptID: String)] { lock.withLock { state.withdrawnPrompts } }
+    var interruptCount: Int { lock.withLock { state.interruptCount } }
 
     // MARK: - Projects
 
@@ -645,20 +686,53 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         throw StubUnimplemented("subscribeEvents")
     }
 
-    // MARK: - Thread runtime (ATC-193): no macOS client yet (ATC-191)
+    // MARK: - Thread runtime (ATC-193)
 
+    /// Always admitted, always starting a turn at once (this stand-in never
+    /// models a busy thread — queue state is seeded directly).
     func promptThread(_ input: Operations.PromptThread.Input) async throws
         -> Operations.PromptThread.Output
     {
-        throw StubUnimplemented("promptThread")
+        guard case .json(let request) = input.body else { throw StubUnimplemented("promptThread") }
+        try await gate()
+        if let failure = promptThreadFailure {
+            return .serviceUnavailable(.init(body: .json(failure)))
+        }
+        let id = input.path.threadId
+        return mutate { model -> Operations.PromptThread.Output in
+            guard model.threads.contains(where: { $0.id == id }) else {
+                return .notFound(.init(body: .json(threadNotFound(id))))
+            }
+            model.prompts.append((id, request.prompt))
+            return .ok(.init(body: .json(.init(promptId: model.nextID("prm"), turnId: model.nextID("turn")))))
+        }
     }
 
+    /// Serves the seeded page for the thread; a `before` cursor reads as an
+    /// empty page (the contract's "cursor from a replaced copy" case) unless
+    /// the test seeded a page under `"<threadId>@before=<cursor>"`.
     func getThreadTranscript(_ input: Operations.GetThreadTranscript.Input) async throws
         -> Operations.GetThreadTranscript.Output
     {
-        throw StubUnimplemented("getThreadTranscript")
+        let id = input.path.threadId
+        let before = input.query.before
+        let page = mutate { model -> ThreadTranscriptPage? in
+            model.transcriptReads.append((id, before))
+            guard model.threads.contains(where: { $0.id == id }) else { return nil }
+            if let before {
+                return model.transcripts["\(id)@before=\(before)"]
+                    ?? ThreadTranscriptPage(items: [], turns: [], seq: 0, snapshotVersion: 0, hasMore: false)
+            }
+            return model.transcripts[id]
+                ?? ThreadTranscriptPage(items: [], turns: [], seq: 0, snapshotVersion: 0, hasMore: false)
+        }
+        try await gate()
+        guard let page else { return .notFound(.init(body: .json(threadNotFound(id)))) }
+        return .ok(.init(body: .json(page)))
     }
 
+    /// The app reaches the per-thread stream through `ThreadEventStream`,
+    /// never the contract client; `ScriptedThreadEventStream` is the seam.
     func subscribeThreadEvents(_ input: Operations.SubscribeThreadEvents.Input) async throws
         -> Operations.SubscribeThreadEvents.Output
     {
@@ -668,31 +742,92 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     func interruptThread(_ input: Operations.InterruptThread.Input) async throws
         -> Operations.InterruptThread.Output
     {
-        throw StubUnimplemented("interruptThread")
+        try await gate()
+        let id = input.path.threadId
+        return mutate { model -> Operations.InterruptThread.Output in
+            guard model.threads.contains(where: { $0.id == id }) else {
+                return .notFound(.init(body: .json(threadNotFound(id))))
+            }
+            model.interruptCount += 1
+            return .noContent(.init())
+        }
     }
 
     func listThreadRequests(_ input: Operations.ListThreadRequests.Input) async throws
         -> Operations.ListThreadRequests.Output
     {
-        throw StubUnimplemented("listThreadRequests")
+        let id = input.path.threadId
+        let requests = mutate { model -> [ThreadRequest]? in
+            model.threads.contains(where: { $0.id == id }) ? model.threadRequests[id] ?? [] : nil
+        }
+        try await gate()
+        guard let requests else { return .notFound(.init(body: .json(threadNotFound(id)))) }
+        return .ok(.init(body: .json(requests)))
     }
 
+    /// Records the answer and closes the request (a live server would also
+    /// emit `request.closed`; tests push that through the scripted stream).
     func answerThreadRequest(_ input: Operations.AnswerThreadRequest.Input) async throws
         -> Operations.AnswerThreadRequest.Output
     {
-        throw StubUnimplemented("answerThreadRequest")
+        guard case .json(let answer) = input.body else { throw StubUnimplemented("answerThreadRequest") }
+        try await gate()
+        let id = input.path.threadId
+        let requestID = input.path.requestId
+        return mutate { model -> Operations.AnswerThreadRequest.Output in
+            guard model.threads.contains(where: { $0.id == id }) else {
+                return .notFound(.init(body: .json(.init(value1: threadNotFound(id)))))
+            }
+            guard model.threadRequests[id, default: []].contains(where: { $0.id == requestID }) else {
+                return .notFound(
+                    .init(
+                        body: .json(
+                            .init(
+                                value2: .init(
+                                    _tag: .requestNotFound, threadId: id, requestId: requestID,
+                                    message: "No pending request \(requestID)")))))
+            }
+            model.answers.append((id, requestID, answer))
+            model.threadRequests[id]?.removeAll { $0.id == requestID }
+            return .noContent(.init())
+        }
     }
 
     func listThreadQueue(_ input: Operations.ListThreadQueue.Input) async throws
         -> Operations.ListThreadQueue.Output
     {
-        throw StubUnimplemented("listThreadQueue")
+        let id = input.path.threadId
+        let queue = mutate { model -> [QueuedPrompt]? in
+            model.threads.contains(where: { $0.id == id }) ? model.threadQueues[id] ?? [] : nil
+        }
+        try await gate()
+        guard let queue else { return .notFound(.init(body: .json(threadNotFound(id)))) }
+        return .ok(.init(body: .json(queue)))
     }
 
     func deleteQueuedPrompt(_ input: Operations.DeleteQueuedPrompt.Input) async throws
         -> Operations.DeleteQueuedPrompt.Output
     {
-        throw StubUnimplemented("deleteQueuedPrompt")
+        try await gate()
+        let id = input.path.threadId
+        let promptID = input.path.promptId
+        return mutate { model -> Operations.DeleteQueuedPrompt.Output in
+            guard model.threads.contains(where: { $0.id == id }) else {
+                return .notFound(.init(body: .json(.init(value1: threadNotFound(id)))))
+            }
+            guard model.threadQueues[id, default: []].contains(where: { $0.id == promptID }) else {
+                return .notFound(
+                    .init(
+                        body: .json(
+                            .init(
+                                value2: .init(
+                                    _tag: .queuedPromptNotFound, threadId: id, promptId: promptID,
+                                    message: "No queued prompt \(promptID)")))))
+            }
+            model.withdrawnPrompts.append((id, promptID))
+            model.threadQueues[id]?.removeAll { $0.id == promptID }
+            return .noContent(.init())
+        }
     }
 
     // MARK: - Private
@@ -823,6 +958,54 @@ enum Fixtures {
             updatedAt: createdAt,
             endedAt: status == .ended ? createdAt : nil
         )
+    }
+
+    // MARK: Thread runtime
+
+    static func userMessage(_ id: String, turn: String = "turn1", text: String = "hi", parent: String? = nil)
+        -> ThreadItem
+    {
+        .userMessage(.init(_type: .userMessage, id: id, turnId: turn, parentItemId: parent, text: text))
+    }
+
+    static func assistantText(
+        _ id: String, turn: String = "turn1", text: String = "", complete: Bool = false, parent: String? = nil
+    ) -> ThreadItem {
+        .assistantText(
+            .init(_type: .assistantText, id: id, turnId: turn, parentItemId: parent, text: text, complete: complete))
+    }
+
+    static func command(
+        _ id: String, turn: String = "turn1", title: String = "bun test", status: ToolStatus = .running,
+        parent: String? = nil, output: String? = nil, exitCode: Int? = nil
+    ) -> ThreadItem {
+        .command(
+            .init(
+                _type: .command, id: id, turnId: turn, parentItemId: parent, title: title, status: status,
+                command: title, output: output, exitCode: exitCode))
+    }
+
+    static func turn(_ id: String, status: Components.Schemas.ThreadTurnStatus = .running, error: String? = nil)
+        -> ThreadTurn
+    {
+        ThreadTurn(id: id, status: status, error: error)
+    }
+
+    static func page(
+        items: [ThreadItem], turns: [ThreadTurn] = [], seq: Int, snapshotVersion: Int = 1, hasMore: Bool = false
+    ) -> ThreadTranscriptPage {
+        ThreadTranscriptPage(items: items, turns: turns, seq: seq, snapshotVersion: snapshotVersion, hasMore: hasMore)
+    }
+
+    static func queued(_ id: String, prompt: String = "later") -> QueuedPrompt {
+        QueuedPrompt(id: id, prompt: prompt, queuedAt: epoch)
+    }
+
+    static func approval(_ id: String, turn: String = "turn1", title: String = "Run bun test?") -> ThreadRequest {
+        .approval(
+            .init(
+                kind: .approval, id: id, turnId: turn, openedAt: epoch, title: title,
+                subject: .command(.init(_type: .command, command: "bun test"))))
     }
 
     static func agent(_ id: AgentID, available: Bool = true) -> Agent {

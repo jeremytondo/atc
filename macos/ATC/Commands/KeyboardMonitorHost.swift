@@ -245,7 +245,7 @@ struct KeyboardRoutingContainer<Content: View>: View {
                 KeyboardMonitorHost(
                     router: router,
                     onDeactivate: { windowState.commandPalettePresentation = nil },
-                    focusFallback: { windowState.requestTerminalFocus() }
+                    focusFallback: { windowState.requestContentFocus() }
                 )
             )
             .onChange(of: configStore.configuration.keymap.generation, initial: true) {

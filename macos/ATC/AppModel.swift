@@ -1,4 +1,5 @@
 import ATCAppServerAPI
+import ATCAppServerTransport
 import Foundation
 import OSLog
 import Observation
@@ -39,6 +40,13 @@ struct WindowNavigationSnapshot: Equatable {
     let connections: [Connection]
 }
 
+/// How a window shows a Thread: its native transcript and composer (Chat)
+/// or its provider TUI in the linked Terminal (TUI). One at a time.
+enum ThreadViewMode: Equatable, Sendable {
+    case chat
+    case tui
+}
+
 /// Root domain model: owns the Connection list and one `ConnectionRuntime`
 /// per Connection, plus the terminal-controller registry that keeps attach
 /// WebSockets and Ghostty surfaces alive across navigation.
@@ -46,6 +54,13 @@ struct WindowNavigationSnapshot: Equatable {
 final class AppModel {
     let connections: ConnectionsStore
     private(set) var runtimes: [ConnectionRuntime] = []
+
+    /// The remembered Chat/TUI mode per thread, for this app session only —
+    /// app-level so every window on one thread agrees. Chat is the default
+    /// for any thread with no remembered mode, without exception: the
+    /// transcript is there either way because the server re-reads provider
+    /// history.
+    private(set) var threadViewModes: [ThreadRef: ThreadViewMode] = [:]
 
     /// Live terminal attaches by composite ref. Connections and surfaces
     /// stay alive here while the user switches around the sidebar, bounded
@@ -68,7 +83,8 @@ final class AppModel {
     private let clientFactory: (ConnectionRecord, URL) -> any APIProtocol
     private let terminalControllerFactory: (String, ConnectionRuntime) -> TerminalSessionController
     private let terminalRecoveryMonitor: TerminalRecoveryMonitor
-    private let eventStreamFactory: ConnectionRuntime.EventStreamFactory?
+    private let eventStreamFactory: ConnectionRuntime.EventStreamFactory
+    private let threadEventStreamFactory: ConnectionRuntime.ThreadEventStreamFactory
 
     /// The default (real Keychain-backed) construction path defers loading
     /// and runtime building to `start()` so launch never blocks the first
@@ -99,6 +115,7 @@ final class AppModel {
         terminalControllerFactory: ((String, ConnectionRuntime) -> TerminalSessionController)? = nil,
         terminalRecoveryMonitor: TerminalRecoveryMonitor? = nil,
         eventStreamFactory: ConnectionRuntime.EventStreamFactory? = nil,
+        threadEventStreamFactory: ConnectionRuntime.ThreadEventStreamFactory? = nil,
         threadNotifier: ThreadNotifier? = nil,
         attachmentBudget: Int = 12
     ) {
@@ -129,7 +146,10 @@ final class AppModel {
                 )
             }
         self.terminalRecoveryMonitor = terminalRecoveryMonitor ?? TerminalRecoveryMonitor()
-        self.eventStreamFactory = eventStreamFactory
+        self.eventStreamFactory =
+            eventStreamFactory ?? { ResourceEventStream.live(baseURL: $0, headers: $1) }
+        self.threadEventStreamFactory =
+            threadEventStreamFactory ?? { ThreadEventStream.live(baseURL: $0, threadId: $1, headers: $2, after: $3) }
         if !needsDeferredStart {
             for record in self.connections.connections {
                 if let runtime = makeRuntime(record) {
@@ -232,6 +252,20 @@ final class AppModel {
 
     func thread(for ref: ThreadRef) -> ATCThread? {
         runtime(id: ref.connectionID)?.threads.thread(id: ref.threadID)
+    }
+
+    func viewMode(for ref: ThreadRef) -> ThreadViewMode {
+        threadViewModes[ref] ?? .chat
+    }
+
+    /// Remembers the mode and re-opens the thread in every window showing
+    /// it: TUI runs the idempotent terminal open, Chat needs nothing opened
+    /// (each window's `openThread` decides).
+    func setViewMode(_ mode: ThreadViewMode, for ref: ThreadRef) {
+        threadViewModes[ref] = mode
+        for window in windowReconcilers.compactMap(\.value) where window.selectedThread == ref {
+            Task { await window.openThread(ref, in: self, reveal: false) }
+        }
     }
 
     func terminal(for ref: TerminalRef) -> Terminal? {
@@ -361,17 +395,20 @@ final class AppModel {
 
     // MARK: - Thread and terminal opening
 
+    /// Every thread open (Chat or TUI) reports here first: any open
+    /// supersedes a parked banner click — once the user navigates on their
+    /// own, a click still waiting on an unreachable server must not replay
+    /// later and yank their selection. (The click's own open passes
+    /// harmlessly — the slot was cleared when it was honored.)
+    func noteThreadOpened() {
+        pendingNotificationThread = nil
+    }
+
     /// Idempotently opens the thread's TUI terminal on the server, then
     /// attaches (or reuses) its controller. Returns the terminal ref the
     /// window should display.
     @discardableResult
     func openThread(_ ref: ThreadRef, retentionContext: TerminalRetentionContext = .empty) async throws -> TerminalRef {
-        // Every thread open funnels through here, so any open supersedes a
-        // parked banner click: once the user navigates on their own, a click
-        // still waiting on an unreachable server must not replay later and
-        // yank their selection. (The click's own open passes harmlessly —
-        // the slot was cleared when it was honored.)
-        pendingNotificationThread = nil
         guard let runtime = runtime(id: ref.connectionID) else {
             throw AppServerUnavailable()
         }
@@ -498,17 +535,13 @@ final class AppModel {
             logger.error("skipping connection \(record.id) — unparseable URL \(record.urlString)")
             return nil
         }
-        let runtime: ConnectionRuntime
-        if let eventStreamFactory {
-            runtime = ConnectionRuntime(
-                record: record,
-                client: clientFactory(record, url),
-                baseURL: url,
-                eventStreamFactory: eventStreamFactory
-            )
-        } else {
-            runtime = ConnectionRuntime(record: record, client: clientFactory(record, url), baseURL: url)
-        }
+        let runtime = ConnectionRuntime(
+            record: record,
+            client: clientFactory(record, url),
+            baseURL: url,
+            eventStreamFactory: eventStreamFactory,
+            threadEventStreamFactory: threadEventStreamFactory
+        )
         runtime.start()
         return runtime
     }

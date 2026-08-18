@@ -39,6 +39,9 @@ extension Components.Schemas.ThreadArchivedJsonEncoding: ServerErrorPayload {}
 extension Components.Schemas.ThreadBusyJsonEncoding: ServerErrorPayload {}
 extension Components.Schemas.ProviderUnavailableJsonEncoding: ServerErrorPayload {}
 extension Components.Schemas.ProviderSessionConflictJsonEncoding: ServerErrorPayload {}
+extension Components.Schemas.RequestNotFoundJsonEncoding: ServerErrorPayload {}
+extension Components.Schemas.InvalidRequestAnswerJsonEncoding: ServerErrorPayload {}
+extension Components.Schemas.QueuedPromptNotFoundJsonEncoding: ServerErrorPayload {}
 
 extension ServerError {
     /// Wrap a single-schema failure payload.
