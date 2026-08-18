@@ -172,7 +172,7 @@ describe("Resident writer connections", () => {
           threads.get(threadId).pipe(Effect.orDie),
           (current) => current.activityState === "idle",
         )
-        // Still shown? No — closed. The connection stays resident.
+        // The TUI was closed, not shown: the connection stays resident.
         assert.isTrue(claude.isConnected(sessionId))
       }).pipe(Effect.provide(kit.layer)),
   )

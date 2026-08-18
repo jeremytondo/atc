@@ -509,12 +509,13 @@ const make = (options: ThreadRuntimeOptions) =>
         const closing = Deferred.makeUnsafe<void>()
         writer.closing = closing
         return Scope.close(writer.scope, Exit.void).pipe(
-          Effect.andThen(
+          // Deregister and release the waiters however the close ends — an
+          // interrupted close (shutdown) must not leave them parked.
+          Effect.ensuring(
             Effect.sync(() => {
               if (writers.get(id) === writer) writers.delete(id)
-            }),
+            }).pipe(Effect.andThen(Deferred.succeed(closing, void 0))),
           ),
-          Effect.andThen(Deferred.succeed(closing, void 0)),
           Effect.forkIn(serviceScope),
           Effect.as(closing),
         )
@@ -529,23 +530,27 @@ const make = (options: ThreadRuntimeOptions) =>
      * Close the writer from one of its own fibers (the drain, the idle
      * timer): the close begins now; the wait for it, then `then`, then the
      * next queued prompt (on a fresh connection) and a wanted TUI's return
-     * run in the service scope.
+     * run in the service scope. Uninterruptible from the begin to the fork:
+     * the close interrupts this very fiber, and the continuation is what
+     * starts a prompt admitted during the close.
      */
     const dropWriter = (
       id: string,
       writer: Writer,
       then: Effect.Effect<void> = Effect.void,
     ): Effect.Effect<void> =>
-      beginClose(id, writer).pipe(
-        Effect.flatMap((closing) =>
-          Deferred.await(closing).pipe(
-            Effect.andThen(then),
-            Effect.andThen(startNextLogged(id)),
-            Effect.andThen(relaunchTui(id)),
-            Effect.forkIn(serviceScope),
+      Effect.uninterruptible(
+        beginClose(id, writer).pipe(
+          Effect.flatMap((closing) =>
+            Deferred.await(closing).pipe(
+              Effect.andThen(then),
+              Effect.andThen(startNextLogged(id)),
+              Effect.andThen(relaunchTui(id)),
+              Effect.forkIn(serviceScope),
+            ),
           ),
+          Effect.asVoid,
         ),
-        Effect.asVoid,
       )
 
     /**
