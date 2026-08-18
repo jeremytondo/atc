@@ -27,6 +27,8 @@ private let requestClosed = """
 private let turnStarted = """
     data: {"type":"turn.started","seq":8,"turn":{"id":"turn1","status":"running","startedAt":"2026-08-18T10:00:00.000Z"}}\n\n
     """
+/// 2026-08-18T10:00:00.000Z, the timestamp in the payloads above.
+private let payloadDate = Date(timeIntervalSince1970: 1_787_047_200)
 
 /// A resume cursor the test moves as the consumer would.
 private final class Cursor: @unchecked Sendable {
@@ -105,6 +107,7 @@ struct ThreadEventStreamTests {
             return
         }
         #expect(question.id == "req1")
+        #expect(question.openedAt == payloadDate)
         #expect(question.questions.first?.options.first?.label == "A")
         guard case .event(.request_opened(let opened)) = events[2], case .approval(let approval) = opened.request
         else {
@@ -112,6 +115,7 @@ struct ThreadEventStreamTests {
             return
         }
         #expect(approval.title == "Run command?")
+        #expect(approval.openedAt == payloadDate)
         guard case .event(.request_closed(let closed)) = events[3] else {
             Issue.record("expected request.closed, got \(events[3])")
             return
@@ -121,7 +125,7 @@ struct ThreadEventStreamTests {
             Issue.record("expected turn.started, got \(events[4])")
             return
         }
-        #expect(started.turn.startedAt != nil)
+        #expect(started.turn.startedAt == payloadDate)
     }
 
     @Test("every (re)connect asks the caller for its resume seq")

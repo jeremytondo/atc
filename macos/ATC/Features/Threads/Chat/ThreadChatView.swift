@@ -150,7 +150,7 @@ private struct ChatPane: View {
             // gesture leaves follow mode: content growth moves the geometry
             // too, so it must never be what decides. Ending a gesture at the
             // tail resumes following.
-            .onScrollGeometryChange(for: TailLayout.self, of: TailLayout.init) { _, _ in
+            .onScrollGeometryChange(for: ChatTailLayout.self, of: ChatTailLayout.init) { _, _ in
                 if isFollowingTail { proxy.scrollTo(tailAnchor, anchor: .bottom) }
             }
             .onScrollPhaseChange { previous, phase, context in
@@ -182,17 +182,6 @@ private struct ChatPane: View {
     }
 
     private let tailAnchor = "tail"
-
-    /// The sizes whose change moves the tail: the content's and the
-    /// viewport's (a window resize re-pins too).
-    private struct TailLayout: Equatable {
-        let content: CGFloat
-        let container: CGFloat
-        init(_ geometry: ScrollGeometry) {
-            content = geometry.contentSize.height
-            container = geometry.containerSize.height
-        }
-    }
 
     /// The server drives a turn (Stop is offered), or the agent is busy under
     /// a TUI (items land at idle — the server's re-read).
@@ -293,6 +282,25 @@ private struct ChatPane: View {
         case .live:
             EmptyView()
         }
+    }
+}
+
+/// The sizes whose change moves the tail: the content's, the viewport's (a
+/// window resize re-pins too), and the bars' — the composer growing with a
+/// draft, a request card or the queue appearing — so a change to any of them
+/// re-pins while following. Insets are tracked in their own right rather than
+/// through the container they shrink.
+struct ChatTailLayout: Equatable {
+    let content: CGFloat
+    let container: CGFloat
+    let insetTop: CGFloat
+    let insetBottom: CGFloat
+
+    init(_ geometry: ScrollGeometry) {
+        content = geometry.contentSize.height
+        container = geometry.containerSize.height
+        insetTop = geometry.contentInsets.top
+        insetBottom = geometry.contentInsets.bottom
     }
 }
 

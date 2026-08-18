@@ -35,6 +35,22 @@ struct ChatTailFollowTests {
         #expect(!geometry(offsetY: -52).isAtTail)
     }
 
+    @Test("a bar growing under the tail is a layout change that re-pins")
+    func insetOnlyChangeIsALayoutChange() {
+        let before = ChatTailLayout(geometry(offsetY: 62))
+        // The composer grew by a line: only the bottom inset moved.
+        let after = ChatTailLayout(
+            ScrollGeometry(
+                contentOffset: CGPoint(x: 0, y: 62),
+                contentSize: CGSize(width: 1162, height: 859),
+                contentInsets: EdgeInsets(top: 52, leading: 0, bottom: 138, trailing: 0),
+                containerSize: CGSize(width: 1162, height: 728)
+            ))
+        #expect(before != after)
+        // Scrolling alone is not.
+        #expect(before == ChatTailLayout(geometry(offsetY: 0)))
+    }
+
     @Test("only the user's own scrolling counts as a gesture")
     func gesturePhases() {
         #expect(ScrollPhase.tracking.isGesture)
