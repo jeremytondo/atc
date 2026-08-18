@@ -56,8 +56,9 @@ struct ThreadContentView: View {
         if appModel.thread(for: ref) == nil {
             unavailableCover
         } else if appModel.viewMode(for: ref) == .chat {
-            // Identity per thread: the composer draft and scroll position
-            // belong to one thread, never carried to the next.
+            // Identity per thread: scroll position and the Chat hold belong
+            // to one thread, never carried to the next (the composer draft
+            // lives on AppModel and survives the switch).
             ThreadChatView(ref: ref).id(ref)
         } else if let message = windowState.threadOpenErrors[ref] {
             FloatingBanner {

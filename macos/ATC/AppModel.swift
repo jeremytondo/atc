@@ -62,6 +62,11 @@ final class AppModel {
     /// history.
     private(set) var threadViewModes: [ThreadRef: ThreadViewMode] = [:]
 
+    /// Unsent composer text per thread, for this app session only — app-level
+    /// like the view mode, so every window on one thread shares one draft and
+    /// switching views (TUI, another thread, Dashboard) never loses it.
+    private(set) var threadDrafts: [ThreadRef: String] = [:]
+
     /// Live terminal attaches by composite ref. Connections and surfaces
     /// stay alive here while the user switches around the sidebar, bounded
     /// by `attachmentBudget`.
@@ -256,6 +261,14 @@ final class AppModel {
 
     func viewMode(for ref: ThreadRef) -> ThreadViewMode {
         threadViewModes[ref] ?? .chat
+    }
+
+    func draft(for ref: ThreadRef) -> String {
+        threadDrafts[ref] ?? ""
+    }
+
+    func setDraft(_ text: String, for ref: ThreadRef) {
+        threadDrafts[ref] = text.isEmpty ? nil : text
     }
 
     /// Remembers the mode and re-opens the thread in every window showing
