@@ -457,6 +457,12 @@ import OpenAPIRuntime
                         ))))
         }
 
+        func closeThreadTerminal(
+            _ input: Operations.CloseThreadTerminal.Input
+        ) async throws -> Operations.CloseThreadTerminal.Output {
+            .ok(.init(body: .json(try thread(input.path.threadId))))
+        }
+
         // MARK: - Agents
 
         // MARK: - Thread runtime (ATC-193) — previews show an idle, empty runtime.

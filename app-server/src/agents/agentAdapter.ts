@@ -142,9 +142,12 @@ export type AgentItemEvent =
  * evidence source carries it (Claude: the UserPromptSubmit webhook; Codex:
  * a demand-driven thread/read of the session's preview), and consumers
  * must tolerate duplicates, later prompts, and absence. Item events arrive
- * only from a provider whose shared server fans conversation items out to
- * passive observers (Codex); a hooks-fed observation (Claude) is
- * activity-only and its turns reach ATC through `readHistory`.
+ * from a provider whose shared server fans conversation items out to
+ * passive observers (Codex), and — the one item a hooks-fed observation
+ * (Claude) can carry — the submitted prompt itself, as a completed
+ * `userMessage` under an observed turn id, so a Chat reader shows what the
+ * TUI is working on; the turn's remaining items reach ATC through
+ * `readHistory` at its end.
  */
 export type AgentSessionEvent =
   | { readonly type: "activity"; readonly activity: AgentActivity }
@@ -317,13 +320,17 @@ export interface PreparedTuiSession {
 export interface AgentAdapter {
   readonly provider: AgentProvider
   /**
-   * Whether observeSession's feed stays authoritative once no TUI drives
-   * the session: a shared provider server (Codex) keeps streaming evidence
-   * after the TUI dies, so a busy state under a live observation is
-   * current; a hooks feed (Claude) dies silently with the TUI, so a busy
-   * state must re-derive through checkSession instead.
+   * Whether the provider runs one shared server that every process — the
+   * TUI, ATC's own connection — attaches to (Codex): observeSession's feed
+   * stays authoritative once no TUI drives the session, a turn ATC started
+   * survives ATC's restart, and a TUI and a native connection coexist on
+   * one session. Without it (Claude) each process holds the session in
+   * memory: the hooks feed dies silently with the TUI (a busy state must
+   * re-derive through checkSession), and two live processes FORK the
+   * session — so the Thread runtime keeps one live process per thread
+   * (its surface-ownership rules, threadRuntime.ts).
    */
-  readonly observationOutlivesTui: boolean
+  readonly sharedServer: boolean
   /**
    * Create a new provider session in `cwd` and start its first turn. The
    * provider's echoed working directory is verified like resume's — a

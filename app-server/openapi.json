@@ -1040,13 +1040,16 @@
             }
           },
           "409": {
-            "description": "The thread is archived; unarchive it first. | The thread's provider session cannot be driven as requested (resume failed, identity mismatch, or a concurrent writer). Fail-closed: no changed identity was adopted.",
+            "description": "The thread is archived; unarchive it first. | The thread's agent session is actively working; retry once the turn completes. | The thread's provider session cannot be driven as requested (resume failed, identity mismatch, or a concurrent writer). Fail-closed: no changed identity was adopted.",
             "content": {
               "application/json": {
                 "schema": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/ThreadArchivedJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ThreadBusyJsonEncoding"
                     },
                     {
                       "$ref": "#/components/schemas/ProviderSessionConflictJsonEncoding"
@@ -1094,7 +1097,73 @@
             }
           }
         },
-        "description": "Open the thread's TUI terminal. Idempotent: a live linked terminal is returned as-is. Otherwise the provider TUI is launched in a new terminal — a confirmed session is relaunched against its exact persisted identity (ATC never adopts a different one), an unconfirmed one materializes a fresh provider session whose identity is established and persisted before this call returns. A provider that can be probed (Codex) fails fast when the persisted session no longer exists; one that cannot (Claude) launches blind — a successful open whose terminal dies within seconds is a state clients must expect and surface."
+        "description": "Open the thread's TUI terminal — the client is showing the TUI. Idempotent: a live linked terminal is returned as-is. Otherwise the provider TUI is launched in a new terminal — a confirmed session is relaunched against its exact persisted identity (ATC never adopts a different one), an unconfirmed one materializes a fresh provider session whose identity is established and persisted before this call returns. A provider that can be probed (Codex) fails fast when the persisted session no longer exists; one that cannot (Claude Code) launches blind — a successful open whose terminal dies within seconds is a state clients must expect and surface. One live process per thread (Claude Code): while the server is driving a turn the open fails ThreadBusy and the TUI launches by itself when that turn ends — watch the thread's `linkedTerminalId`; a prompt sent while the TUI is live takes the thread over (the TUI ends once idle, the turn runs, and the TUI relaunches when the queue drains). Codex, whose shared server lets both coexist, needs none of this."
+      },
+      "delete": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "closeThreadTerminal",
+        "parameters": [
+          {
+            "name": "threadId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A durable Thread: the primary unit of agent work. Its ATC identity is separate from provider identity, and it never requires a Terminal.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Thread"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No thread exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadNotFoundJsonEncoding"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The thread's provider session cannot be driven as requested (resume failed, identity mismatch, or a concurrent writer). Fail-closed: no changed identity was adopted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderSessionConflictJsonEncoding"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The thread's agent provider cannot be used right now (not installed, not ready, or unreachable). Retryable once the cause is fixed. | The zmx multiplexer cannot be consulted right now. Retryable; stored terminal state is untouched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderUnavailableJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ZmxUnavailableJsonEncoding"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "Close the thread's TUI — the client stopped showing it (switched to Chat). On a provider whose session lives in one process at a time (Claude Code) this hands the thread back to the App Server: an idle TUI ends now, a busy one when its turn completes — either way only once that turn is on disk (a history read that fails leaves the TUI running and fails the call retryably) — and the next prompt resumes the full conversation natively; opening the terminal again relaunches the TUI. On a shared-server provider (Codex) the TUI needs no hand-off and keeps running; the call changes nothing. Returns the thread."
       }
     },
     "/api/v1/threads/{threadId}/prompt": {
@@ -1162,7 +1231,7 @@
             }
           }
         },
-        "description": "Prompt the thread. Always admitted: an idle thread starts a turn at once (`turnId` present) and a busy one queues the prompt to run at the next idle (`turnId` absent) — there is no busy error and no lock between surfaces. The turn is server-owned: the client's connection never matters to it. When the prompt would start now and the provider refuses, it is un-admitted (the error means not accepted; nothing stays queued); a prompt queued behind others is admitted regardless. Follow the turn on the per-thread event stream.",
+        "description": "Prompt the thread. Always admitted: an idle thread starts a turn at once (`turnId` present) and a busy one queues the prompt to run at the next idle (`turnId` absent) — there is no busy error and no lock between surfaces. On a one-process provider (Claude Code) a prompt while the TUI is live takes the thread over: the TUI ends once idle, the turn runs natively, and the TUI relaunches when the queue drains (see openThreadTerminal). The turn is server-owned: the client's connection never matters to it. When the prompt would start now and the provider refuses, it is un-admitted (the error means not accepted; nothing stays queued); a prompt queued behind others is admitted regardless. Follow the turn on the per-thread event stream.",
         "requestBody": {
           "content": {
             "application/json": {

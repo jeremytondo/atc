@@ -114,6 +114,13 @@ const threadOpen = Command.make("open", { threadId: threadIdArgument }, ({ threa
   ),
 )
 
+const threadClose = Cli.clientCommand(
+  "thread close",
+  "Close the thread's TUI: hand the thread back to Chat/API prompts (a Claude TUI ends once its turn is on disk; a Codex TUI keeps running)",
+  { threadId: threadIdArgument },
+  (client, { threadId }) => client.v1.closeThreadTerminal({ params: { threadId } }),
+)
+
 const threadDelete = Cli.clientCommand(
   "thread delete",
   "Delete a thread: kill its live linked terminal, remove the record (provider history is untouched)",
@@ -289,6 +296,7 @@ export const thread = Command.make("thread").pipe(
     threadCreate,
     threadUpdate,
     threadOpen,
+    threadClose,
     threadPrompt,
     threadFollow,
     threadInterrupt,

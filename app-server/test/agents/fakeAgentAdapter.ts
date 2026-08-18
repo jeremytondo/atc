@@ -123,7 +123,7 @@ export interface FakeAgentAdapter {
 
 export interface FakeAgentAdapterOptions {
   /** Adapter's observation-authority shape (default true — codex-like). */
-  readonly observationOutlivesTui?: boolean
+  readonly sharedServer?: boolean
 }
 
 interface LiveConnection {
@@ -324,7 +324,7 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
 
   const adapter: AgentAdapter = {
     provider: "codex",
-    observationOutlivesTui: options.observationOutlivesTui ?? true,
+    sharedServer: options.sharedServer ?? true,
     createSession: (options) =>
       Effect.gen(function* () {
         yield* requireAvailable

@@ -26,6 +26,7 @@ import * as Terminals from "../src/terminals/terminals.ts"
 import * as ThreadRepository from "../src/threads/threadRepository.ts"
 import * as ThreadNaming from "../src/threads/threadNaming.ts"
 import * as ThreadRuntime from "../src/threads/threadRuntime.ts"
+import * as ThreadTui from "../src/threads/threadTui.ts"
 import * as TranscriptRepository from "../src/threads/transcriptRepository.ts"
 import * as Threads from "../src/threads/threads.ts"
 import * as Zmx from "../src/terminals/zmxAdapter.ts"
@@ -131,7 +132,7 @@ export const makeTestServiceLayers = (
     claude: makeFakeAgentAdapter({
       // Hooks-shaped: its observation feed dies silently with the TUI, so
       // stale-busy re-derivation stays reachable through this fake.
-      observationOutlivesTui: false,
+      sharedServer: false,
     }),
   }
   const base = Layer.mergeAll(
@@ -159,9 +160,12 @@ export const makeTestServiceLayers = (
   const naming = ThreadNaming.layerWith(threadOptions).pipe(
     Layer.provide([services, registry, eventsLayer]),
   )
-  const runtime = ThreadRuntime.layer.pipe(Layer.provide([services, registry, eventsLayer, naming]))
+  const threadTui = ThreadTui.layer.pipe(Layer.provide([services, terminals]))
+  const runtime = ThreadRuntime.layer.pipe(
+    Layer.provide([services, registry, eventsLayer, naming, threadTui]),
+  )
   const threads = Threads.layerWith(threadOptions).pipe(
-    Layer.provide([services, terminals, registry, eventsLayer, runtime, naming]),
+    Layer.provide([services, terminals, registry, eventsLayer, runtime, naming, threadTui]),
   )
   return {
     fake,
