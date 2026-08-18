@@ -26,6 +26,7 @@ import * as ThreadRepository from "./threads/threadRepository.ts"
 import * as ThreadNaming from "./threads/threadNaming.ts"
 import * as ThreadRuntime from "./threads/threadRuntime.ts"
 import * as Threads from "./threads/threads.ts"
+import * as ThreadTui from "./threads/threadTui.ts"
 import * as TranscriptRepository from "./threads/transcriptRepository.ts"
 import * as Zmx from "./terminals/zmxAdapter.ts"
 
@@ -131,12 +132,15 @@ export const production = (options: { readonly port: number; readonly hostname?:
     // server-info handler and the optional trust allowlist read one instance.
     Layer.provideMerge(Tailscale.layer),
     // Projects sits above Threads (its delete cascades through them), which
-    // sits above the ThreadRuntime (activity ledger, transcript, turns) and
-    // Terminals; ThreadNaming serves both Threads and the runtime — each
-    // provide feeds everything composed so far.
+    // sits above the ThreadRuntime (activity ledger, transcript, turns,
+    // observation, TUI ownership); ThreadTui and Terminals serve both, and
+    // ThreadNaming serves Threads and the runtime — each provide feeds
+    // everything composed so far.
     Layer.provide(Projects.layer),
     Layer.provide(Threads.layer),
-    Layer.provide([Terminals.layer, ThreadRuntime.layer]),
+    Layer.provide(ThreadRuntime.layer),
+    Layer.provide(ThreadTui.layer),
+    Layer.provide(Terminals.layer),
     Layer.provide(ThreadNaming.layer),
     Layer.provide(AgentRegistry.layer),
     // Below Terminals (the deepest publisher) so one memoized Events instance

@@ -35,6 +35,10 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         /// While set, openThreadTerminal fails 503 with this payload — the
         /// install-or-configure message the unwrap seam must surface.
         var openThreadTerminalFailure: Components.Schemas.ProviderUnavailableJsonEncoding?
+        /// While set, openThreadTerminal is refused 409 ThreadBusy (the
+        /// server is driving a turn and launches the TUI itself later).
+        var openThreadTerminalBusy = false
+        var closeThreadTerminalCount = 0
         /// The Thread runtime (ATC-193) as seen by one client: a transcript
         /// page per thread (an unseeded thread reads as empty), the pending
         /// requests and queue, and what clients did about them.
@@ -160,6 +164,13 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         get { lock.withLock { state.openThreadTerminalFailure } }
         set { lock.withLock { state.openThreadTerminalFailure = newValue } }
     }
+
+    var openThreadTerminalBusy: Bool {
+        get { lock.withLock { state.openThreadTerminalBusy } }
+        set { lock.withLock { state.openThreadTerminalBusy = newValue } }
+    }
+
+    var closeThreadTerminalCount: Int { lock.withLock { state.closeThreadTerminalCount } }
 
     /// Transcript page served for a thread id; unseeded threads read empty.
     var transcripts: [String: ThreadTranscriptPage] {
@@ -579,6 +590,15 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
             guard let index = model.threads.firstIndex(where: { $0.id == id }) else {
                 return .notFound(.init(body: .json(threadNotFound(id))))
             }
+            if model.openThreadTerminalBusy {
+                return .conflict(
+                    .init(
+                        body: .json(
+                            .init(
+                                value2: .init(
+                                    _tag: .threadBusy, threadId: id,
+                                    message: "thread \(id) is working; retry once the turn completes")))))
+            }
             let thread = model.threads[index]
             if let linkedID = thread.linkedTerminalId,
                 let existing = model.terminals.first(where: {
@@ -598,6 +618,28 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
             model.threads[index].linkedTerminalId = terminal.id
             model.threads[index].updatedAt = terminal.createdAt
             return .ok(.init(body: .json(terminal)))
+        }
+    }
+
+    /// The Claude hand-off as one client sees it: the linked terminal ends
+    /// (its record removed, the thread unlinked). A Codex TUI would keep
+    /// running; this double models the one-process provider.
+    func closeThreadTerminal(_ input: Operations.CloseThreadTerminal.Input) async throws
+        -> Operations.CloseThreadTerminal.Output
+    {
+        try await gate()
+        let id = input.path.threadId
+        return mutate { model -> Operations.CloseThreadTerminal.Output in
+            model.closeThreadTerminalCount += 1
+            guard let index = model.threads.firstIndex(where: { $0.id == id }) else {
+                return .notFound(.init(body: .json(threadNotFound(id))))
+            }
+            if let linkedID = model.threads[index].linkedTerminalId {
+                model.terminals.removeAll { $0.id == linkedID }
+                model.threads[index].linkedTerminalId = nil
+                model.threads[index].updatedAt = model.tick()
+            }
+            return .ok(.init(body: .json(model.threads[index])))
         }
     }
 

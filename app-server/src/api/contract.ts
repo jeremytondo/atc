@@ -1344,6 +1344,7 @@ export class V1 extends HttpApiGroup.make("v1")
       error: [
         ThreadNotFound,
         ThreadArchived,
+        ThreadBusy,
         ProviderUnavailable,
         ProviderSessionConflict,
         DirectoryUnavailable,
@@ -1355,8 +1356,19 @@ export class V1 extends HttpApiGroup.make("v1")
       .annotate(OpenApi.Identifier, "openThreadTerminal")
       .annotate(
         OpenApi.Description,
-        "Open the thread's TUI terminal. Idempotent: a live linked terminal is returned as-is. Otherwise the provider TUI is launched in a new terminal — a confirmed session is relaunched against its exact persisted identity (ATC never adopts a different one), an unconfirmed one materializes a fresh provider session whose identity is established and persisted before this call returns. " +
-          "A provider that can be probed (Codex) fails fast when the persisted session no longer exists; one that cannot (Claude) launches blind — a successful open whose terminal dies within seconds is a state clients must expect and surface.",
+        "Open the thread's TUI terminal — the client is showing the TUI. Idempotent: a live linked terminal is returned as-is. Otherwise the provider TUI is launched in a new terminal — a confirmed session is relaunched against its exact persisted identity (ATC never adopts a different one), an unconfirmed one materializes a fresh provider session whose identity is established and persisted before this call returns. " +
+          "A provider that can be probed (Codex) fails fast when the persisted session no longer exists; one that cannot (Claude Code) launches blind — a successful open whose terminal dies within seconds is a state clients must expect and surface. " +
+          "One live process per thread (Claude Code): while the server is driving a turn the open fails ThreadBusy and the TUI launches by itself when that turn ends — watch the thread's `linkedTerminalId`; a prompt sent while the TUI is live takes the thread over (the TUI ends once idle, the turn runs, and the TUI relaunches when the queue drains). Codex, whose shared server lets both coexist, needs none of this.",
+      ),
+    HttpApiEndpoint.delete("closeThreadTerminal", "/threads/:threadId/terminal", {
+      params: threadIdParam,
+      success: Thread,
+      error: [ThreadNotFound, ProviderUnavailable, ProviderSessionConflict, ZmxUnavailable],
+    })
+      .annotate(OpenApi.Identifier, "closeThreadTerminal")
+      .annotate(
+        OpenApi.Description,
+        "Close the thread's TUI — the client stopped showing it (switched to Chat). On a provider whose session lives in one process at a time (Claude Code) this hands the thread back to the App Server: an idle TUI ends now, a busy one when its turn completes — either way only once that turn is on disk (a history read that fails leaves the TUI running and fails the call retryably) — and the next prompt resumes the full conversation natively; opening the terminal again relaunches the TUI. On a shared-server provider (Codex) the TUI needs no hand-off and keeps running; the call changes nothing. Returns the thread.",
       ),
     // --- The Thread runtime (ATC-193): drive a thread with no Terminal ---
     HttpApiEndpoint.post("promptThread", "/threads/:threadId/prompt", {
@@ -1368,7 +1380,7 @@ export class V1 extends HttpApiGroup.make("v1")
       .annotate(OpenApi.Identifier, "promptThread")
       .annotate(
         OpenApi.Description,
-        "Prompt the thread. Always admitted: an idle thread starts a turn at once (`turnId` present) and a busy one queues the prompt to run at the next idle (`turnId` absent) — there is no busy error and no lock between surfaces. " +
+        "Prompt the thread. Always admitted: an idle thread starts a turn at once (`turnId` present) and a busy one queues the prompt to run at the next idle (`turnId` absent) — there is no busy error and no lock between surfaces. On a one-process provider (Claude Code) a prompt while the TUI is live takes the thread over: the TUI ends once idle, the turn runs natively, and the TUI relaunches when the queue drains (see openThreadTerminal). " +
           "The turn is server-owned: the client's connection never matters to it. When the prompt would start now and the provider refuses, it is un-admitted (the error means not accepted; nothing stays queued); a prompt queued behind others is admitted regardless. Follow the turn on the per-thread event stream.",
       ),
     HttpApiEndpoint.get("getThreadTranscript", "/threads/:threadId/transcript", {

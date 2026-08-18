@@ -32,12 +32,18 @@ _Avoid_: Session, conversation
 One of the two views of a Thread, and the default: the Thread's transcript
 and a composer, driven natively through the App Server with no Terminal
 involved. Chat and TUI show the same conversation; which one a Thread is
-shown in is remembered for the app session and shared by every window.
+shown in is remembered for the app session and shared by every window. The
+App Server owns a Thread by default: switching a Claude Code Thread to Chat
+hands it back (its TUI ends once the current turn is on disk), and a Chat
+prompt sent while its TUI is live takes over the same way — the TUI comes
+back when the prompt is done. Codex Threads need no hand-off.
 _Avoid_: Native mode, transcript view
 
 **TUI**:
 The other view of a Thread: its provider TUI running in the linked Terminal.
-Opening a Thread in TUI launches or reuses that Terminal.
+Opening a Thread in TUI launches or reuses that Terminal; while the App
+Server is driving a turn on a Claude Code Thread, the TUI opens once that
+turn ends.
 _Avoid_: Terminal mode, terminal view
 
 **Terminal**:

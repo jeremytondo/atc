@@ -100,6 +100,7 @@ export const V1Handlers = HttpApiBuilder.group(
         .handle("markThreadViewed", ({ params }) => threads.markViewed(params.threadId))
         .handle("deleteThread", ({ params }) => threads.delete(params.threadId))
         .handle("openThreadTerminal", ({ params }) => threads.openTerminal(params.threadId))
+        .handle("closeThreadTerminal", ({ params }) => threads.closeTerminal(params.threadId))
         .handle("promptThread", ({ params, payload }) =>
           runtime.prompt(params.threadId, payload.prompt),
         )

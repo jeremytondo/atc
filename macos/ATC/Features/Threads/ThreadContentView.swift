@@ -4,11 +4,13 @@
 //
 // A thread shows in one of two modes (`AppModel.viewMode(for:)`): Chat draws
 // `ThreadChatView` over the pane with the thread's terminal hidden (a
-// retained surface survives the mode flip untouched); TUI shows the terminal
-// with the status/relaunch banners over it. A thread whose TUI terminal has
+// retained surface survives the mode flip untouched — though the server may
+// end a Claude TUI once Chat is shown, ATC-203); TUI shows the terminal with
+// the status/relaunch banners over it. A thread whose TUI terminal has
 // ended keeps its final frame: the relaunch bar floats above the retained
 // surface instead of replacing it, and relaunching is just `openThread`
-// again — the server's open is idempotent.
+// again — the server's open is idempotent. A TUI open the server defers
+// (it is driving a turn) shows a waiting banner until the terminal appears.
 
 import ATCAppServerAPI
 import ATCAppServerTransport
@@ -67,6 +69,17 @@ struct ThreadContentView: View {
                     Task { await windowState.openThread(ref, in: appModel) }
                 }
                 .keyboardShortcut(.defaultAction)
+            }
+        } else if windowState.threadsAwaitingTui.contains(ref) {
+            // The server is driving a turn on this thread and launches the
+            // TUI itself when it ends; the linked terminal then attaches
+            // through reconciliation. Retry re-asks (still busy, or launched).
+            FloatingBanner {
+                ProgressView().controlSize(.small)
+                Text("Waiting for the current turn to finish…")
+                Button("Retry") {
+                    Task { await windowState.openThread(ref, in: appModel) }
+                }
             }
         } else if let controller = controller(for: ref) {
             if case .ended(.terminalEnded) = controller.phase {

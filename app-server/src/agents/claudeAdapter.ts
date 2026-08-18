@@ -50,7 +50,6 @@ import {
   withTitleTimeout,
   withToolStatus,
 } from "./agentAdapter.ts"
-import * as os from "node:os"
 import * as path from "node:path"
 import * as ClaudeHooks from "./claudeHooks.ts"
 import * as ClaudeItems from "./claudeItems.ts"
@@ -107,30 +106,39 @@ import * as Subprocess from "../platform/subprocess.ts"
 //     ThreadRequests until `respond` resolves them; a turn's end or the
 //     session's close resolves any survivor with a deny so the SDK child
 //     never waits on a request nothing will answer.
-//   - History (ATC-191): the session's own JSONL is read directly and every
-//     branch is kept, in file order. A session driven from two surfaces
-//     FORKS — a running TUI holds its conversation in memory, so its next
-//     prompt parents to its own last message, not to a turn ATC drove
-//     through the SDK, and vice versa — and the SDK's getSessionMessages
-//     returns only the branch of the last-written leaf, which would wipe the
-//     other surface's turns from ATC's copy on every re-read. The union is
-//     what actually happened in the session; whichever surface resumes next
-//     continues from the last-written leaf (Claude Code's rule), which is
-//     the provider's limitation, not ATC's. getSessionMessages remains the
-//     fallback when the file cannot be located. Claude also appends a turn's
-//     assistant line only after its Stop hook has run, so a read at the
-//     observed idle settles briefly while the newest turn is still output-
-//     less (readHistory).
+//   - One live `claude` process per thread (ATC-203). Claude Code has no
+//     shared brain: two live processes on one session id FORK it — each
+//     holds its conversation in memory and appends with its own leaf, and
+//     neither sees the other's turns. So a session is driven by exactly one
+//     process at a time, owned by the active surface — the SDK child this
+//     adapter opens with `query()`, or the TUI launched from the launch spec
+//     below (`sharedServer: false` tells the Thread runtime to hand off
+//     between them: it ends one before starting the other, and it never
+//     ends a process it did not start). History is therefore read through
+//     the SDK's `getSessionMessages` (the official surface — no direct
+//     JSONL reads); with a single writer there is one leaf, so it is
+//     truthful. Threads that forked under the old adapter resume from
+//     their last-written leaf; the orphaned branch is history the model
+//     will not see (one-time, no compatibility path).
+//   - End a TUI only after its last turn is on disk: Claude appends a
+//     turn's assistant line AFTER its Stop hook has run, so a read at the
+//     observed idle settles briefly while the newest turn is still
+//     output-less (readHistory) — that bounded settle is the gate the
+//     runtime runs before ending a TUI, and the only wait this adapter
+//     keeps.
 //   - One writer per session id, enforced here. Webhook hook activity is
 //     NOT bridged into these feeds: a TUI-driven session has no adapter
 //     connection by definition, and while ATC drives, the same vocabulary
 //     already arrives as in-process SDK callbacks — a webhook delivery for
 //     a live connection could only be stale or spoofed. TUI-driven activity
 //     flows through observeSession below, which is the claudeHooks
-//     subscriber; consumers stay above the seam.
+//     subscriber; consumers stay above the seam. That feed also carries the
+//     TUI's submitted prompt as an observed `userMessage` item (the seam's
+//     one hooks-carried item), so a Chat reader shows what the TUI is
+//     working on before the turn's re-read lands.
 
 /** The Claude Code version this adapter was validated against. */
-const CLAUDE_TESTED_VERSION = "2.1.221"
+const CLAUDE_TESTED_VERSION = "2.1.234"
 
 export class ClaudeAdapter extends Context.Service<ClaudeAdapter, AgentAdapter>()(
   "app-server/ClaudeAdapter",
@@ -144,13 +152,8 @@ export type ClaudeQueryFn = (args: {
 
 export interface ClaudeAdapterOptions {
   readonly queryFn?: ClaudeQueryFn
-  /** The getSessionMessages seam (fallback reader), injectable so tests can script transcripts. */
+  /** The getSessionMessages seam, injectable so tests can script transcripts. */
   readonly sessionMessagesFn?: typeof getSessionMessages
-  /**
-   * The session-file seam: the raw JSONL of `<config>/projects/<cwd key>/<id>.jsonl`,
-   * null when it cannot be located. Injectable so tests script transcripts.
-   */
-  readonly sessionFileFn?: (sessionId: string, cwd: string) => Promise<string | null>
   /** How long create/first-turn waits for the SDK's identity evidence. */
   readonly initTimeout?: Duration.Input
   /** Pause between readHistory's settle re-reads (see the header). */
@@ -159,67 +162,6 @@ export interface ClaudeAdapterOptions {
 
 /** How many settle re-reads readHistory allows before taking the transcript as it is. */
 const HISTORY_SETTLE_ATTEMPTS = 8
-
-/** A Claude session id as it appears on disk: one path segment, never a traversal. */
-const SessionFileId = Schema.String.check(
-  Schema.isPattern(/^[A-Za-z0-9_-]+$/, { description: "a Claude session id" }),
-)
-const decodeSessionFileId = Schema.decodeUnknownOption(SessionFileId)
-
-/**
- * Where Claude Code keeps a session's JSONL: the config dir's `projects/`,
- * one directory per cwd with every non-alphanumeric character replaced by
- * `-` (Claude's own rule; a very long cwd is hashed instead, and reads as
- * "not located" here — the SDK fallback covers it). The config dir is read
- * from the same environment the SDK child gets, because that is what
- * decides where Claude writes; an ATC setting could only disagree with it.
- */
-const claudeSessionFile = (env: Record<string, string>, sessionId: string, cwd: string): string => {
-  const configDir = env["CLAUDE_CONFIG_DIR"] || path.join(env["HOME"] || os.homedir(), ".claude")
-  return path.join(configDir, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"), `${sessionId}.jsonl`)
-}
-
-const readClaudeSessionFile = async (sessionId: string, cwd: string): Promise<string | null> => {
-  if (Option.isNone(decodeSessionFileId(sessionId))) return null
-  const file = Bun.file(claudeSessionFile(claudeEnvironment(), sessionId, cwd))
-  return (await file.exists()) ? file.text() : null
-}
-
-/** One conversation line of a session file — anything else is skipped. */
-const SessionFileLine = Schema.Struct({
-  type: Schema.Literals(["user", "assistant"]),
-  uuid: Schema.String,
-  sessionId: Schema.optional(Schema.String),
-  message: Schema.Unknown,
-  timestamp: Schema.optional(Schema.String),
-  isSidechain: Schema.optional(Schema.Boolean),
-  isMeta: Schema.optional(Schema.Boolean),
-})
-const decodeSessionFileLine = Schema.decodeUnknownOption(SessionFileLine)
-
-/**
- * The session file's top-level user/assistant lines as SessionMessages, in
- * file order — every branch. Sidechain (subagent) and meta lines are not
- * conversation; unparseable lines (a write in progress) are skipped.
- */
-const sessionMessagesFromFile = (text: string, sessionId: string): ReadonlyArray<SessionMessage> =>
-  text.split("\n").flatMap((line) => {
-    const parsed = Option.liftThrowable(() => JSON.parse(line) as unknown)()
-    const entry = Option.flatMap(parsed, decodeSessionFileLine)
-    if (Option.isNone(entry)) return []
-    if (entry.value.isSidechain === true || entry.value.isMeta === true) return []
-    return [
-      {
-        type: entry.value.type,
-        uuid: entry.value.uuid,
-        session_id: entry.value.sessionId ?? sessionId,
-        message: entry.value.message,
-        parent_tool_use_id: null,
-        parent_agent_id: null,
-        ...(entry.value.timestamp !== undefined ? { timestamp: entry.value.timestamp } : {}),
-      } as SessionMessage,
-    ]
-  })
 
 // The thread's opaque providerMetadata, as this adapter mints it. Decoded
 // tolerantly: unknown or malformed metadata is "no secret", never an error.
@@ -396,7 +338,6 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
       const hooks = yield* ClaudeHooks.ClaudeHooks
       const queryFn: ClaudeQueryFn = adapterOptions.queryFn ?? (query as unknown as ClaudeQueryFn)
       const sessionMessagesFn = adapterOptions.sessionMessagesFn ?? getSessionMessages
-      const sessionFileFn = adapterOptions.sessionFileFn ?? readClaudeSessionFile
       const initTimeout = adapterOptions.initTimeout ?? "60 seconds"
       const historySettleDelay = adapterOptions.historySettleDelay ?? "250 millis"
 
@@ -1049,21 +990,13 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
         return turnId
       }
 
-      /**
-       * The bounded transcript read behind both readers: the session file
-       * (every branch, see the header), else getSessionMessages.
-       */
+      /** The bounded transcript read behind both readers (getSessionMessages). */
       const readTranscript = (
         providerSessionId: string,
         cwd: string,
       ): Effect.Effect<ReadonlyArray<SessionMessage>, string> =>
         Effect.tryPromise({
-          try: async () => {
-            const text = await sessionFileFn(providerSessionId, cwd)
-            return text === null
-              ? sessionMessagesFn(providerSessionId, { dir: cwd })
-              : sessionMessagesFromFile(text, providerSessionId)
-          },
+          try: () => sessionMessagesFn(providerSessionId, { dir: cwd }),
           catch: (error) => (error instanceof Error ? error.message : String(error)),
         }).pipe(
           Effect.timeoutOrElse({
@@ -1190,7 +1123,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
 
       const adapter: AgentAdapter = {
         provider: "claude",
-        observationOutlivesTui: false,
+        sharedServer: false,
         createSession: (options) =>
           Effect.gen(function* () {
             const session = yield* openSession({ cwd: options.cwd })
@@ -1292,9 +1225,22 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
             // Registered before the subscription so it runs after it on
             // scope close: unsubscribe first, then end the queue.
             yield* Effect.addFinalizer(() => Effect.sync(() => Queue.endUnsafe(queue)))
+            const offer = (event: AgentSessionEvent): void => {
+              if (!Queue.offerUnsafe(queue, event)) Queue.endUnsafe(queue)
+            }
             yield* hooks.subscribe((sessionId, event) => {
               if (sessionId !== options.providerSessionId) return
-              if (!Queue.offerUnsafe(queue, event)) Queue.endUnsafe(queue)
+              offer(event)
+              // The TUI's prompt as an observed item (see the header): its
+              // own turn id, replaced wholesale by the re-read at the
+              // turn's end.
+              if (event.type === "userPrompt") {
+                const turnId = `claude-observed-${crypto.randomUUID()}`
+                offer({
+                  type: "itemCompleted",
+                  item: { type: "userMessage", id: `${turnId}:prompt`, turnId, text: event.text },
+                })
+              }
             })
             return Stream.fromQueue(queue)
           }),
@@ -1358,9 +1304,9 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
               }).pipe(withTitleTimeout(protocolError))
             }),
           ),
-        // On-demand transcript read via the SDK (ATC-190) — the session
-        // JSONL under the project directory is the conversation the primary
-        // agent already produced; nothing is retained here. Best-effort by
+        // On-demand transcript read via the SDK (ATC-190) — the conversation
+        // the primary agent already produced; nothing is retained here.
+        // Best-effort by
         // contract: any read failure — a hung read included, hence the
         // bound — is debug-logged and reads as "nothing usable".
         collectTitleContext: (options) =>

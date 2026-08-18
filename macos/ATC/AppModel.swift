@@ -260,11 +260,31 @@ final class AppModel {
 
     /// Remembers the mode and re-opens the thread in every window showing
     /// it: TUI runs the idempotent terminal open, Chat needs nothing opened
-    /// (each window's `openThread` decides).
+    /// (each window's `openThread` decides) but tells the server the TUI is
+    /// no longer shown (`closeTerminalIfChat`).
     func setViewMode(_ mode: ThreadViewMode, for ref: ThreadRef) {
+        let previous = viewMode(for: ref)
         threadViewModes[ref] = mode
+        if previous == .tui { closeTerminalIfChat(ref) }
         for window in windowReconcilers.compactMap(\.value) where window.selectedThread == ref {
             Task { await window.openThread(ref, in: self, reveal: false) }
+        }
+    }
+
+    /// Tells the server the TUI is no longer shown when the thread's mode
+    /// is Chat: the server hands a one-process (Claude) thread back to Chat,
+    /// ending its TUI once the current turn is on disk; a Codex TUI keeps
+    /// running. Called on the switch to Chat and after any TUI open that
+    /// completes once the mode has flipped back (the open and the close are
+    /// independent requests, so the later one must win). Best-effort: a
+    /// failed close leaves the TUI in charge until the next prompt or close.
+    func closeTerminalIfChat(_ ref: ThreadRef) {
+        guard viewMode(for: ref) == .chat, let runtime = runtime(id: ref.connectionID) else { return }
+        Task { [weak self] in
+            // A flip back to TUI before this Task ran makes the close stale:
+            // it must not end the terminal that open just made.
+            guard self?.viewMode(for: ref) == .chat else { return }
+            _ = try? await runtime.threads.closeTerminal(threadID: ref.threadID)
         }
     }
 

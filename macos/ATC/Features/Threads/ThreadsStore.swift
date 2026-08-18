@@ -176,13 +176,19 @@ final class ThreadsStore {
     /// is returned as-is, otherwise the provider TUI is (re)launched. The
     /// failure messages here are the install-or-configure guidance the
     /// server exists to provide — never collapse them into a status dump.
+    /// `ThreadTerminalBusy` is the one refusal that is not an error to show:
+    /// the server is driving a turn and launches the TUI itself when it
+    /// ends (the thread's `linkedTerminalId` appears).
     func openTerminal(threadID: String) async throws -> Terminal {
         switch try await client.openThreadTerminal(path: .init(threadId: threadID)) {
         case .ok(let ok): return try ok.body.json
         case .notFound(let failure): throw ServerError(try failure.body.json)
         case .conflict(let failure):
             let payload = try failure.body.json
-            throw ServerError(anyOf: payload.value1, payload.value2)
+            // By tag, so a reordered anyOf fails to compile here rather
+            // than misclassify.
+            if payload.value2?._tag == .threadBusy { throw ThreadTerminalBusy() }
+            throw ServerError(anyOf: payload.value1, payload.value2, payload.value3)
         case .unprocessableContent(let failure):
             let payload = try failure.body.json
             throw ServerError(anyOf: payload.value1, payload.value2, payload.value3)
@@ -191,6 +197,25 @@ final class ThreadsStore {
             throw ServerError(anyOf: payload.value1, payload.value2)
         case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
         }
+    }
+
+    /// The window stopped showing the TUI (switched to Chat): the server
+    /// hands a Claude thread back to Chat once its turn is on disk (the
+    /// terminal ends); a Codex TUI keeps running. Merges the returned thread.
+    @discardableResult
+    func closeTerminal(threadID: String) async throws -> ATCThread {
+        let thread: ATCThread
+        switch try await client.closeThreadTerminal(path: .init(threadId: threadID)) {
+        case .ok(let ok): thread = try ok.body.json
+        case .notFound(let failure): throw ServerError(try failure.body.json)
+        case .conflict(let failure): throw ServerError(try failure.body.json)
+        case .serviceUnavailable(let failure):
+            let payload = try failure.body.json
+            throw ServerError(anyOf: payload.value1, payload.value2)
+        case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
+        }
+        merge(thread)
+        return thread
     }
 
     /// Places a server-returned thread into whichever list its archive state

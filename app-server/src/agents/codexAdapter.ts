@@ -1211,7 +1211,7 @@ export const layer = Layer.effect(CodexAdapter)(
 
     const adapter: AgentAdapter = {
       provider: "codex",
-      observationOutlivesTui: true,
+      sharedServer: true,
       createSession: (options) =>
         Effect.gen(function* () {
           // thread/start broadcasts thread/started to every socket — ours
