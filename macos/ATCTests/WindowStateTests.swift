@@ -511,6 +511,22 @@ struct WindowStateTests {
         #expect(test.client.closeThreadTerminalCount == 1)
     }
 
+    @Test("composer drafts are per-thread and survive switching modes")
+    func composerDraftsSurviveSwitchingModes() async throws {
+        let test = try await loadedModel()
+        let ref = test.threadRef("thr1")
+        let other = test.threadRef("thr2")
+
+        test.model.setDraft("unfinished prompt", for: ref)
+        #expect(test.model.draft(for: ref) == "unfinished prompt")
+        #expect(test.model.draft(for: other) == "")
+        test.model.setViewMode(.tui, for: ref)
+        test.model.setViewMode(.chat, for: ref)
+        #expect(test.model.draft(for: ref) == "unfinished prompt")
+        test.model.setDraft("", for: ref)
+        #expect(test.model.threadDrafts[ref] == nil)
+    }
+
     @Test("a TUI open refused while the server drives a turn waits, then attaches the terminal it launches")
     func deferredTuiOpenAttachesOnArrival() async throws {
         let client = ScriptableAppServerClient()

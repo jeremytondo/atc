@@ -5,6 +5,7 @@
 // model for exactly as long as it is on screen (`acquireChat` / `releaseChat`
 // on the Connection's runtime), so navigating away or flipping to TUI drops
 // the subscription while a second window on the same thread keeps it.
+// The composer draft lives on `AppModel`, so it survives leaving Chat.
 //
 // The transcript follows the tail until the user scrolls up, and offers
 // "Load earlier" at the top while older pages exist. Connection loss shows a
@@ -79,7 +80,6 @@ private struct ChatPane: View {
     let thread: ATCThread
     let focusRequest: UInt
 
-    @State private var draft = ""
     @State private var isSending = false
     @State private var isFollowingTail = true
     /// Bumped to jump to the tail and follow it again (a sent prompt).
@@ -87,6 +87,13 @@ private struct ChatPane: View {
     @State private var actionError: String?
 
     private var transcript: ChatTranscript { chat.transcript }
+
+    private var draftBinding: Binding<String> {
+        Binding(
+            get: { appModel.draft(for: ref) },
+            set: { appModel.setDraft($0, for: ref) }
+        )
+    }
 
     var body: some View {
         transcriptList
@@ -234,7 +241,7 @@ private struct ChatPane: View {
                     }
                 }
                 ChatComposer(
-                    text: $draft,
+                    text: draftBinding,
                     isSending: isSending,
                     showsStop: transcript.runningTurn != nil,
                     error: chat.promptError,
@@ -252,12 +259,16 @@ private struct ChatPane: View {
     }
 
     private func send() {
-        let prompt = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let submitted = appModel.draft(for: ref)
+        let prompt = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty, !isSending else { return }
         isSending = true
         Task {
             if await chat.send(prompt) {
-                draft = ""
+                // Clear only what was sent: the draft is shared, and text
+                // typed while the send was in flight (here or in another
+                // window on the thread) is never discarded.
+                if appModel.draft(for: ref) == submitted { appModel.setDraft("", for: ref) }
                 followRequest += 1
             }
             isSending = false
