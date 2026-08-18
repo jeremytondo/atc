@@ -26,6 +26,9 @@ struct CommandPaletteContentTests {
         await test.runtime.threads.loadArchivedIfNeeded()
 
         let state = WindowState()
+        // TUI mode: the palette's terminals test relies on the linked TUI
+        // terminal this open creates.
+        test.model.setViewMode(.tui, for: test.threadRef("thr1"))
         await state.openThread(test.threadRef("thr1"), in: test.model)
         let context = CommandContext(
             appModel: test.model,

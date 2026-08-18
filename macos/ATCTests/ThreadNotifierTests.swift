@@ -410,7 +410,7 @@ struct ThreadNotifierTests {
         // Parked: no window is registered yet.
         notifier.onOpenThread?(test.threadRef("thr3"))
 
-        _ = try await test.model.openThread(test.threadRef("thr1"))
+        await WindowState().openThread(test.threadRef("thr1"), in: test.model)
 
         // A window arriving later must not replay the superseded click.
         let window = WindowState()

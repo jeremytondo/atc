@@ -23,10 +23,22 @@ _Avoid_: Local project, app project, Workspace
 **Thread**:
 A durable agent conversation (Codex or Claude Code) — the primary object users
 create and navigate. A Thread belongs to a Project, has an Agent and an
-immutable working directory, and is always reopenable: opening it launches or
-reuses its provider TUI in a linked Terminal. Threads have no Ended state; a
-Thread whose TUI terminal exited simply relaunches on open.
-_Avoid_: Session, conversation, chat
+immutable working directory, and is always reopenable in either of its two
+views, Chat or TUI. Threads have no Ended state; a Thread whose TUI terminal
+exited simply relaunches when opened in TUI.
+_Avoid_: Session, conversation
+
+**Chat**:
+One of the two views of a Thread, and the default: the Thread's transcript
+and a composer, driven natively through the App Server with no Terminal
+involved. Chat and TUI show the same conversation; which one a Thread is
+shown in is remembered for the app session and shared by every window.
+_Avoid_: Native mode, transcript view
+
+**TUI**:
+The other view of a Thread: its provider TUI running in the linked Terminal.
+Opening a Thread in TUI launches or reuses that Terminal.
+_Avoid_: Terminal mode, terminal view
 
 **Terminal**:
 A server-owned zmx-backed process. A Thread's TUI runs in a linked Terminal

@@ -2,9 +2,13 @@
 // with nothing open, so live surfaces and their attach WebSockets survive
 // sidebar navigation; every other state draws over it.
 //
-// A thread whose TUI terminal has ended keeps its final frame: the relaunch
-// bar floats above the retained surface instead of replacing it, and
-// relaunching is just `openThread` again — the server's open is idempotent.
+// A thread shows in one of two modes (`AppModel.viewMode(for:)`): Chat draws
+// `ThreadChatView` over the pane with the thread's terminal hidden (a
+// retained surface survives the mode flip untouched); TUI shows the terminal
+// with the status/relaunch banners over it. A thread whose TUI terminal has
+// ended keeps its final frame: the relaunch bar floats above the retained
+// surface instead of replacing it, and relaunching is just `openThread`
+// again — the server's open is idempotent.
 
 import ATCAppServerAPI
 import ATCAppServerTransport
@@ -17,11 +21,20 @@ struct ThreadContentView: View {
     var body: some View {
         ZStack {
             TerminalPane(
-                visibleRef: windowState.visibleTerminal,
-                focusRequest: windowState.terminalFocusRequest
+                visibleRef: shownTerminal,
+                focusRequest: windowState.contentFocusRequest
             )
             cover
         }
+    }
+
+    /// The terminal the pane should actually show: none while the selected
+    /// thread is in Chat, even though its terminal stays retained.
+    private var shownTerminal: TerminalRef? {
+        if case .thread(let ref) = windowState.selectedContent, appModel.viewMode(for: ref) == .chat {
+            return nil
+        }
+        return windowState.visibleTerminal
     }
 
     @ViewBuilder
@@ -40,8 +53,12 @@ struct ThreadContentView: View {
     private func threadCover(_ ref: ThreadRef) -> some View {
         if appModel.thread(for: ref) == nil {
             unavailableCover
+        } else if appModel.viewMode(for: ref) == .chat {
+            // Identity per thread: the composer draft and scroll position
+            // belong to one thread, never carried to the next.
+            ThreadChatView(ref: ref).id(ref)
         } else if let message = windowState.threadOpenErrors[ref] {
-            banner {
+            FloatingBanner {
                 Image(systemName: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
                 Text(message)
@@ -58,7 +75,7 @@ struct ThreadContentView: View {
                 TerminalStatusBanner(controller: controller)
             }
         } else if windowState.openingThreads.contains(ref) {
-            banner {
+            FloatingBanner {
                 ProgressView().controlSize(.small)
                 Text("Opening thread…")
             }
@@ -88,7 +105,7 @@ struct ThreadContentView: View {
     }
 
     private func relaunchBar(_ ref: ThreadRef) -> some View {
-        banner {
+        FloatingBanner {
             Image(systemName: "arrow.clockwise")
             Text("Terminal ended")
             Button("Relaunch") {
@@ -106,15 +123,6 @@ struct ThreadContentView: View {
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(AppColors.canvas)
-    }
-
-    private func banner(@ViewBuilder content: () -> some View) -> some View {
-        HStack(spacing: Spacing.sm, content: content)
-            .padding(.horizontal, Spacing.md)
-            .padding(.vertical, Spacing.sm)
-            .glassEffect()
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .padding(.top, Spacing.lg)
     }
 
     private func controller(for ref: ThreadRef) -> TerminalSessionController? {

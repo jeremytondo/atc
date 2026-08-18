@@ -14,6 +14,14 @@ typealias Agent = Components.Schemas.Agent
 typealias AgentID = Components.Schemas.AgentId
 typealias ThreadActivityState = Components.Schemas.ThreadActivityState
 typealias TerminalStatus = Components.Schemas.TerminalStatus
+typealias ThreadItem = Components.Schemas.ThreadItem
+typealias ThreadTurn = Components.Schemas.ThreadTurn
+typealias ThreadRequest = Components.Schemas.ThreadRequest
+typealias ThreadRequestAnswer = Components.Schemas.ThreadRequestAnswer
+typealias QueuedPrompt = Components.Schemas.QueuedPrompt
+typealias ThreadEvent = Components.Schemas.ThreadEvent
+typealias ThreadTranscriptPage = Components.Schemas.ThreadTranscript
+typealias ToolStatus = Components.Schemas.ToolStatus
 
 extension AgentID {
     var displayName: String {
@@ -106,4 +114,68 @@ extension Terminal {
     }
 
     var isLive: Bool { status == .live }
+}
+
+extension ThreadItem {
+    /// Item id, unique within the thread — the upsert key.
+    var id: String { head.id }
+    var turnId: String { head.turnId }
+    /// The enclosing item when this work happened inside a subagent or
+    /// nested tool; absent at top level.
+    var parentItemId: String? { head.parentItemId }
+
+    /// The fields every item variant carries, read through one switch.
+    private var head: (id: String, turnId: String, parentItemId: String?) {
+        switch self {
+        case .userMessage(let item): (item.id, item.turnId, item.parentItemId)
+        case .assistantText(let item): (item.id, item.turnId, item.parentItemId)
+        case .reasoning(let item): (item.id, item.turnId, item.parentItemId)
+        case .command(let item): (item.id, item.turnId, item.parentItemId)
+        case .fileChange(let item): (item.id, item.turnId, item.parentItemId)
+        case .mcpCall(let item): (item.id, item.turnId, item.parentItemId)
+        case .toolCall(let item): (item.id, item.turnId, item.parentItemId)
+        case .compaction(let item): (item.id, item.turnId, item.parentItemId)
+        }
+    }
+
+    /// Extends a still-streaming text item (`text.delta`). A completed item
+    /// already holds its whole text (a delta replayed behind the page that
+    /// completed it must not double it); other items ignore deltas.
+    mutating func appendText(_ delta: String) {
+        switch self {
+        case .assistantText(var item) where !item.complete:
+            item.text += delta
+            self = .assistantText(item)
+        case .reasoning(var item) where !item.complete:
+            item.text += delta
+            self = .reasoning(item)
+        case .assistantText, .reasoning, .userMessage, .command, .fileChange, .mcpCall, .toolCall, .compaction:
+            break
+        }
+    }
+}
+
+extension ThreadRequest {
+    var id: String {
+        switch self {
+        case .question(let request): request.id
+        case .approval(let request): request.id
+        }
+    }
+}
+
+extension ThreadEvent {
+    /// The durable position of this change; nil for live-only events (text
+    /// deltas, requests, the queue), which are never replayed.
+    var seq: Int? {
+        switch self {
+        case .item_started(let event): event.seq
+        case .item_updated(let event): event.seq
+        case .item_completed(let event): event.seq
+        case .turn_started(let event): event.seq
+        case .turn_completed(let event): event.seq
+        case .snapshot_invalidated(let event): event.seq
+        case .text_delta, .request_opened, .request_closed, .queue_updated: nil
+        }
+    }
 }

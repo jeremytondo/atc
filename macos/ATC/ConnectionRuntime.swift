@@ -1,6 +1,7 @@
 // Everything the app runs for one configured Connection: one contract
-// client, four stores, and the SSE event loop that keeps them current.
-// AppModel builds and tears these down as the Connection list changes.
+// client, four stores, the SSE event loop that keeps them current, and one
+// Chat model per thread any window is showing in Chat. AppModel builds and
+// tears these down as the Connection list changes.
 //
 // Liveness model (no polling): the resource-change stream drives refreshes.
 // Every `.connected` refetches all lists — the server guarantees the
@@ -9,6 +10,11 @@
 // refetched per named collection (thread and terminal listings are priced —
 // they consult the multiplexer). Reachability derives from the stream plus
 // refresh outcomes; an unreachable Connection keeps its last-loaded data.
+//
+// Chat models are held by count: `acquireChat` on display, `releaseChat`
+// when a window stops showing the thread in Chat. Two windows on one thread
+// share one model (one transcript copy, one per-thread stream); the last
+// release stops it. `stop()` stops them all.
 
 import ATCAppServerAPI
 import ATCAppServerTransport
@@ -41,6 +47,9 @@ struct ProjectRef: Hashable, Sendable, Identifiable {
 @Observable
 final class ConnectionRuntime: Identifiable {
     typealias EventStreamFactory = (URL, [String: String]) -> AsyncStream<ResourceEventStream.Event>
+    /// (base URL, thread id, headers, resume cursor) → the per-thread stream.
+    typealias ThreadEventStreamFactory =
+        (URL, String, [String: String], @escaping @Sendable () -> Int?) -> AsyncStream<ThreadEventStream.Event>
 
     /// The record this runtime was built from. Name-only edits update it in
     /// place; URL/token edits rebuild the whole runtime instead.
@@ -61,7 +70,9 @@ final class ConnectionRuntime: Identifiable {
     private(set) var reachability: Reachability = .unknown
 
     private let eventStreamFactory: (URL, [String: String]) -> AsyncStream<ResourceEventStream.Event>
+    private let threadEventStreamFactory: ThreadEventStreamFactory
     private var eventTask: Task<Void, Never>?
+    private var chats: [String: (model: ThreadChatModel, holds: Int)] = [:]
     private var firstContactTask: Task<Void, Never>?
     /// Whether the SSE stream is currently open. `.connected` requires it:
     /// without the stream no invalidations flow, so a green dot would lie
@@ -79,6 +90,9 @@ final class ConnectionRuntime: Identifiable {
         baseURL: URL,
         eventStreamFactory: @escaping (URL, [String: String]) -> AsyncStream<ResourceEventStream.Event> = {
             ResourceEventStream.live(baseURL: $0, headers: $1)
+        },
+        threadEventStreamFactory: @escaping ThreadEventStreamFactory = {
+            ThreadEventStream.live(baseURL: $0, threadId: $1, headers: $2, after: $3)
         }
     ) {
         self.record = record
@@ -89,6 +103,7 @@ final class ConnectionRuntime: Identifiable {
             ? [:]
             : ["Authorization": "Bearer \(record.token)"]
         self.eventStreamFactory = eventStreamFactory
+        self.threadEventStreamFactory = threadEventStreamFactory
         projects = ProjectsStore(client: client)
         threads = ThreadsStore(client: client)
         terminals = TerminalsStore(client: client)
@@ -140,6 +155,40 @@ final class ConnectionRuntime: Identifiable {
         coalesceTask = nil
         pendingResources = []
         streamOpen = false
+        for entry in chats.values {
+            entry.model.stop()
+        }
+        chats = [:]
+    }
+
+    // MARK: - Chat models
+
+    /// The thread's Chat model, started on first acquire. Every acquire is
+    /// paired with a `releaseChat`.
+    func acquireChat(threadID: String) -> ThreadChatModel {
+        if let entry = chats[threadID] {
+            chats[threadID] = (entry.model, entry.holds + 1)
+            return entry.model
+        }
+        let makeStream = threadEventStreamFactory
+        let (baseURL, headers) = (baseURL, transportHeaders)
+        let model = ThreadChatModel(threadID: threadID, client: client) { after in
+            makeStream(baseURL, threadID, headers, after)
+        }
+        chats[threadID] = (model, 1)
+        model.start()
+        return model
+    }
+
+    /// The last release stops the stream and drops the copy.
+    func releaseChat(threadID: String) {
+        guard let entry = chats[threadID] else { return }
+        if entry.holds > 1 {
+            chats[threadID] = (entry.model, entry.holds - 1)
+            return
+        }
+        entry.model.stop()
+        chats[threadID] = nil
     }
 
     /// One combined refresh of all four stores; the Connection is reachable

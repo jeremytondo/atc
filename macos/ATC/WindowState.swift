@@ -94,10 +94,11 @@ final class WindowState {
         isCreateProjectPresented || newThreadContext != nil || newTerminalProject != nil
     }
 
-    /// Advances for every explicit request to type in the visible terminal.
-    /// Unlike selection, this also changes when the user re-selects the
-    /// same sidebar row.
-    private(set) var terminalFocusRequest: UInt = 0
+    /// Advances for every explicit request to type in the displayed content
+    /// — the visible terminal, or the Chat composer. Unlike selection, this
+    /// also changes when the user re-selects the same sidebar row. Only the
+    /// surface actually on screen answers it.
+    private(set) var contentFocusRequest: UInt = 0
 
     var selectedThread: ThreadRef? {
         guard case .thread(let ref) = selectedContent else { return nil }
@@ -136,34 +137,48 @@ final class WindowState {
     // MARK: - Navigation transitions
 
     /// The single thread-open transition used by every entry point: select
-    /// immediately (the content area shows the connecting state), then
-    /// idempotently open the TUI terminal and attach. Establishes the
-    /// thread's Project as the launch-local context.
+    /// immediately, establish the thread's Project as the launch-local
+    /// context, then — only in TUI mode — idempotently open the TUI terminal
+    /// and attach. Chat mode never opens or attaches a terminal; the Chat
+    /// view acquires the thread's transcript on display instead.
     func openThread(_ ref: ThreadRef, in appModel: AppModel, reveal: Bool = true) async {
         guard let thread = appModel.thread(for: ref) else { return }
         guard !thread.isArchived else { return }
 
+        appModel.noteThreadOpened()
         selectedContent = .thread(ref)
         if reveal { sidebarRevealToken += 1 }
         returnThread = ref
         activeProject = ProjectRef(connectionID: ref.connectionID, projectID: thread.projectId)
         threadOpenErrors[ref] = nil
-        requestTerminalFocus()
         // Opening is viewing (ATC-160). Guarded on the store's unread flag;
         // a finish the store hasn't refreshed into yet is caught by
         // reconciliation once it lands (markViewedIfDisplayed).
         if thread.unread { markViewed(ref, in: appModel) }
+        requestContentFocus()
 
+        guard appModel.viewMode(for: ref) == .tui else { return }
         guard !openingThreads.contains(ref) else { return }
         openingThreads.insert(ref)
         defer { openingThreads.remove(ref) }
         do {
             let terminalRef = try await appModel.openThread(ref, retentionContext: retentionContext)
             threadTerminals[ref] = terminalRef
-            requestTerminalFocus()
+            // The user may have flipped back to Chat while the open was in
+            // flight; the terminal stays retained (hidden), but Chat keeps
+            // the focus.
+            if appModel.viewMode(for: ref) == .tui { requestContentFocus() }
         } catch {
             threadOpenErrors[ref] = error.localizedDescription
         }
+    }
+
+    /// Flips the displayed thread between Chat and TUI. The mode is
+    /// app-wide (`AppModel.setViewMode`), which re-opens the thread in every
+    /// window showing it.
+    func toggleViewMode(in appModel: AppModel) {
+        guard let ref = selectedThread else { return }
+        appModel.setViewMode(appModel.viewMode(for: ref) == .chat ? .tui : .chat, for: ref)
     }
 
     /// Selects a standalone Terminal. Live terminals attach; an ended one
@@ -181,7 +196,7 @@ final class WindowState {
         } else {
             appModel.touchTerminal(ref)
         }
-        requestTerminalFocus()
+        requestContentFocus()
     }
 
     func showDashboard() {
@@ -189,11 +204,10 @@ final class WindowState {
         isInspectorPresented = false
     }
 
-    /// Reasserts terminal focus after transient UI (notably a creation
+    /// Reasserts content focus after transient UI (notably a creation
     /// sheet) has finished handing first-responder ownership back.
-    func requestTerminalFocus() {
-        guard visibleTerminal != nil else { return }
-        terminalFocusRequest &+= 1
+    func requestContentFocus() {
+        contentFocusRequest &+= 1
     }
 
     func toggleSidebar() {
@@ -348,12 +362,15 @@ final class WindowState {
 
     /// Keeps the displayed thread's terminal mapping and attach current:
     /// adopt the server's linked terminal when it differs (a relaunch made
-    /// a new one), and reattach a live terminal that lost its controller.
+    /// a new one), and — in TUI mode — reattach a live terminal that lost
+    /// its controller. Chat mode tracks the mapping but never attaches; the
+    /// switch to TUI opens (and attaches) on its own.
     private func reconcileThreadTerminal(_ ref: ThreadRef, thread: ATCThread, in appModel: AppModel) {
         if let linkedID = thread.linkedTerminalId {
             let linkedRef = TerminalRef(connectionID: ref.connectionID, terminalID: linkedID)
             threadTerminals[ref] = linkedRef
-            if let terminal = appModel.terminal(for: linkedRef), terminal.isLive,
+            if appModel.viewMode(for: ref) == .tui,
+                let terminal = appModel.terminal(for: linkedRef), terminal.isLive,
                 appModel.terminals[linkedRef] == nil
             {
                 appModel.attachIfNeeded(

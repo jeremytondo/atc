@@ -37,30 +37,30 @@ struct TerminalStatusBanner: View {
     var body: some View {
         switch controller.phase {
         case .connecting:
-            banner {
+            FloatingBanner {
                 ProgressView().controlSize(.small)
                 Text("Connecting…")
             }
         case .connected:
             EmptyView()
         case .reconnecting:
-            banner {
+            FloatingBanner {
                 ProgressView().controlSize(.small)
                 Text("Reconnecting…")
             }
         case .ended(.terminalEnded):
-            banner {
+            FloatingBanner {
                 Image(systemName: "checkmark.circle")
                 Text("Terminal ended")
             }
         case .ended(.rejected(let statusCode)):
-            banner {
+            FloatingBanner {
                 Image(systemName: "exclamationmark.triangle")
                 Text("Attach refused (\(statusCode))")
                 Button("Reconnect") { controller.reconnect() }
             }
         case .ended(.retryable):
-            banner {
+            FloatingBanner {
                 Image(systemName: "wifi.exclamationmark")
                 Text("Connection lost")
                 Button("Reconnect") { controller.reconnect() }
@@ -69,21 +69,11 @@ struct TerminalStatusBanner: View {
             // No production path renders this today (disconnects also drop
             // the controller); the branch exists for a future user-facing
             // detach and to keep the switch exhaustive.
-            banner {
+            FloatingBanner {
                 Image(systemName: "cable.connector.slash")
                 Text("Disconnected")
                 Button("Reconnect") { controller.reconnect() }
             }
         }
-    }
-
-    private func banner(@ViewBuilder content: () -> some View) -> some View {
-        HStack(spacing: Spacing.sm, content: content)
-            .padding(.horizontal, Spacing.md)
-            .padding(.vertical, Spacing.sm)
-            // Floating overlay on Liquid Glass, like the toolbar controls.
-            .glassEffect()
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .padding(.top, Spacing.lg)
     }
 }

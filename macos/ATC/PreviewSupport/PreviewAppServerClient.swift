@@ -44,7 +44,8 @@ import OpenAPIRuntime
                     )
                 },
                 terminalRecoveryMonitor: .disabled(),
-                eventStreamFactory: { _, _ in AsyncStream { $0.yield(.connected) } }
+                eventStreamFactory: { _, _ in AsyncStream { $0.yield(.connected) } },
+                threadEventStreamFactory: { _, _, _, _ in AsyncStream { $0.yield(.connected) } }
             )
         }
     }
