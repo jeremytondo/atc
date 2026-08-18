@@ -280,7 +280,12 @@ final class AppModel {
     /// failed close leaves the TUI in charge until the next prompt or close.
     func closeTerminalIfChat(_ ref: ThreadRef) {
         guard viewMode(for: ref) == .chat, let runtime = runtime(id: ref.connectionID) else { return }
-        Task { _ = try? await runtime.threads.closeTerminal(threadID: ref.threadID) }
+        Task { [weak self] in
+            // A flip back to TUI before this Task ran makes the close stale:
+            // it must not end the terminal that open just made.
+            guard self?.viewMode(for: ref) == .chat else { return }
+            _ = try? await runtime.threads.closeTerminal(threadID: ref.threadID)
+        }
     }
 
     func terminal(for ref: TerminalRef) -> Terminal? {

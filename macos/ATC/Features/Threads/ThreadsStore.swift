@@ -185,7 +185,9 @@ final class ThreadsStore {
         case .notFound(let failure): throw ServerError(try failure.body.json)
         case .conflict(let failure):
             let payload = try failure.body.json
-            if payload.value2 != nil { throw ThreadTerminalBusy() }
+            // By tag, so a reordered anyOf fails to compile here rather
+            // than misclassify.
+            if payload.value2?._tag == .threadBusy { throw ThreadTerminalBusy() }
             throw ServerError(anyOf: payload.value1, payload.value2, payload.value3)
         case .unprocessableContent(let failure):
             let payload = try failure.body.json

@@ -75,8 +75,9 @@ export type QueuedPrompt = typeof Contract.QueuedPrompt.Type
 //     live processes fork the session). The native side owns the thread by
 //     default; the TUI owns it only while clients want it: `tuiWanted` is a
 //     per-thread, last-writer-wins mark — openTui sets it, closeTui clears
-//     it, and a TUI found live when observation begins is wanted until a
-//     client says otherwise. It is deliberately not per-client presence
+//     it, and a TUI found live at a thread's first observation (no client
+//     has spoken for it yet — after a restart) is wanted until a client
+//     says otherwise. It is deliberately not per-client presence
 //     (single user; a client that quits without closing leaves the TUI in
 //     charge until the next close, nothing worse). A native turn against a
 //     live TUI queues while the TUI is busy (the ledger), then ENDS the TUI
@@ -286,6 +287,11 @@ export const layer = Layer.effect(ThreadRuntime)(
     const observed = new Map<string, Observation>()
     /** Threads whose clients want the TUI (the header's ownership rule). */
     const tuiWanted = new Set<string>()
+    /** Threads whose TUI want is settled — a client said open or close, or
+     * a live TUI was adopted at first observation. Only an unsettled
+     * thread's observation may mark the TUI wanted: a feed that ends and is
+     * re-observed must not undo an explicit close. */
+    const tuiSettled = new Set<string>()
     /** Threads with a TUI launch in flight: no native turn starts meanwhile. */
     const tuiOpening = new Set<string>()
     // Threads the startup pass has not settled yet: their prompts wait.
@@ -813,6 +819,7 @@ export const layer = Layer.effect(ThreadRuntime)(
     const openTui: ThreadRuntime["Service"]["openTui"] = (record, launch) =>
       Effect.gen(function* () {
         tuiWanted.add(record.id)
+        tuiSettled.add(record.id)
         // The refusal, the linked re-check, and the launch claim are one
         // step under the start lock: a prompt cannot start a run between
         // them, and a relaunch (which holds the lock while it launches) is
@@ -847,6 +854,7 @@ export const layer = Layer.effect(ThreadRuntime)(
       withStartLock(record.id)(
         Effect.gen(function* () {
           tuiWanted.delete(record.id)
+          tuiSettled.add(record.id)
           if (!oneProcess(record)) return
           // Busy: the observed idle ends it (observedIdle below).
           if (isBusy(liveActivity.get(record.id) ?? "unknown")) return
@@ -883,6 +891,9 @@ export const layer = Layer.effect(ThreadRuntime)(
             ),
           )
           if (!settled || !oneProcess(record) || tuiWanted.has(record.id)) return
+          // A prompt typed into the TUI while the read was in flight keeps
+          // the thread (the rule endTui applies); its own idle ends it.
+          if (isBusy(liveActivity.get(record.id) ?? "unknown")) return
           const linked = yield* tui.linked(record)
           if (linked === undefined) return
           yield* tui
@@ -903,6 +914,7 @@ export const layer = Layer.effect(ThreadRuntime)(
         // driving the thread, whose own evidence stays authoritative.
         if (!runs.has(id)) liveActivity.delete(id)
         tuiWanted.delete(id)
+        tuiSettled.delete(id)
         const observation = observed.get(id)
         if (observation === undefined) return
         observed.delete(id)
@@ -928,9 +940,9 @@ export const layer = Layer.effect(ThreadRuntime)(
 
     /**
      * Start (once) the thread's normalized session subscription. A TUI is
-     * live or launching whenever this is called, so a NEW observation marks
-     * the TUI wanted (a live TUI found after a restart stays in charge until
-     * a client says otherwise).
+     * live or launching whenever this is called, so the FIRST observation
+     * of a thread no client has spoken for marks the TUI wanted (a live TUI
+     * found after a restart stays in charge until a client says otherwise).
      */
     const observe = (record: ThreadRecord): Effect.Effect<void> =>
       Effect.gen(function* () {
@@ -952,7 +964,10 @@ export const layer = Layer.effect(ThreadRuntime)(
         const child = Scope.forkUnsafe(serviceScope)
         const observation: Observation = { providerSessionId, scope: child }
         observed.set(record.id, observation)
-        tuiWanted.add(record.id)
+        if (!tuiSettled.has(record.id)) {
+          tuiWanted.add(record.id)
+          tuiSettled.add(record.id)
+        }
         const releaseClaim = Effect.gen(function* () {
           if (observed.get(record.id) !== observation) return
           observed.delete(record.id)
@@ -1262,7 +1277,6 @@ export const layer = Layer.effect(ThreadRuntime)(
           Effect.gen(function* () {
             const run = runs.get(id)
             liveActivity.delete(id)
-            tuiWanted.delete(id)
             yield* unobserve(id)
             if (run !== undefined) {
               run.finished = true

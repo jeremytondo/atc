@@ -183,7 +183,14 @@ final class WindowState {
         } catch is ThreadTerminalBusy {
             // The server is driving a turn: it launches the TUI when the
             // turn ends, and reconciliation attaches it (the linked
-            // terminal appears on the thread). Not an error to show.
+            // terminal appears on the thread). Not an error to show — unless
+            // the user flipped back to Chat meanwhile: then the request is
+            // retracted (a close after the open, so the later one wins).
+            guard appModel.viewMode(for: ref) == .tui else {
+                threadsAwaitingTui.remove(ref)
+                appModel.closeTerminalIfChat(ref)
+                return
+            }
             threadsAwaitingTui.insert(ref)
         } catch {
             threadOpenErrors[ref] = error.localizedDescription
