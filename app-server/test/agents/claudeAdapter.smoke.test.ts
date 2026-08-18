@@ -13,6 +13,9 @@ import { trackTempDir } from "../blackbox.ts"
 // interrupted outcome. Needs an installed, authenticated Claude Code; runs
 // real (cheap) turns from a directory outside any repository.
 
+/** Cheap real-provider settings for the smoke turns (a real, small model). */
+const SMOKE_SETTINGS = { model: "haiku", mode: "chat", access: "supervised" } as const
+
 const enabled = process.env["ATC_SMOKE"] === "1"
 
 describe.skipIf(!enabled)("live claude adapter smoke (opt-in)", () => {
@@ -33,6 +36,7 @@ describe.skipIf(!enabled)("live claude adapter smoke (opt-in)", () => {
               const { connection, turn } = yield* adapter.createSession({
                 cwd,
                 input: "Reply with exactly: SMOKE-OK",
+                settings: SMOKE_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)
               yield* waitForAgentEvent(
@@ -53,10 +57,12 @@ describe.skipIf(!enabled)("live claude adapter smoke (opt-in)", () => {
               const connection = yield* adapter.resumeSession({
                 providerSessionId: sessionId,
                 cwd,
+                settings: SMOKE_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)
               const turn = yield* connection.startTurn(
                 "What exact text did I ask you to reply with earlier? Answer with just that text.",
+                SMOKE_SETTINGS,
               )
               assert.strictEqual(connection.providerSessionId, sessionId)
               yield* waitForAgentEvent(
@@ -76,10 +82,12 @@ describe.skipIf(!enabled)("live claude adapter smoke (opt-in)", () => {
               const connection = yield* adapter.resumeSession({
                 providerSessionId: sessionId,
                 cwd,
+                settings: SMOKE_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)
               const turn = yield* connection.startTurn(
                 "Count from 1 to 500, one number per line. Do not stop early.",
+                SMOKE_SETTINGS,
               )
               yield* waitForAgentEvent(
                 sink,
@@ -104,8 +112,9 @@ describe.skipIf(!enabled)("live claude adapter smoke (opt-in)", () => {
               const connection = yield* adapter.resumeSession({
                 providerSessionId: "00000000-0000-4000-8000-000000000000",
                 cwd,
+                settings: SMOKE_SETTINGS,
               })
-              return yield* Effect.flip(connection.startTurn("hello?"))
+              return yield* Effect.flip(connection.startTurn("hello?", SMOKE_SETTINGS))
             }),
           )
           assert.strictEqual(failure._tag, "AgentResumeFailed")

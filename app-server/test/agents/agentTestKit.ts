@@ -3,7 +3,7 @@ import { Duration, Effect, Layer, Stream } from "effect"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
-import type { AgentEvent } from "../../src/agents/agentAdapter.ts"
+import type { AgentEvent, ThreadSettings } from "../../src/agents/agentAdapter.ts"
 import * as ClaudeAdapter from "../../src/agents/claudeAdapter.ts"
 import * as ClaudeHooks from "../../src/agents/claudeHooks.ts"
 import * as CodexAdapter from "../../src/agents/codexAdapter.ts"
@@ -18,6 +18,14 @@ import { TestBuildInfoLayer } from "../testBuildInfo.ts"
 // sandbox (wrapper-script seam, like makeFakeZmxSandbox), the layer stacks
 // under supervision/adapter tests, and the event-feed helpers every adapter
 // test asserts with.
+
+/** The settings every adapter test starts turns with unless it says otherwise. */
+export const TEST_SETTINGS: ThreadSettings = {
+  model: "test-model",
+  reasoning: "medium",
+  mode: "chat",
+  access: "auto",
+}
 
 const fakeCodexFixture = fileURLToPath(
   new URL("../fixtures/fake-codex-listener.ts", import.meta.url),

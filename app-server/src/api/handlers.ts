@@ -118,6 +118,7 @@ export const V1Handlers = HttpApiBuilder.group(
         )
         .handle("listAgents", () => agents.list())
         .handle("getAgent", ({ params }) => agents.get(params.agentId))
+        .handle("listAgentModels", ({ params }) => agents.models(params.agentId))
         // handleRaw instead of the typed handler for one reason: this stream
         // emits nothing until the first change, and Bun's fetch (every Bun
         // client, the contract TS client included) does not resolve a

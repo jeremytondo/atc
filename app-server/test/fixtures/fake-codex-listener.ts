@@ -27,6 +27,16 @@
 // "NEEDSINPUT" makes the child wait on approval. The test-only
 // "test/child/finish" request completes a child.
 //
+// Settings (ATC-205): each thread holds model / effort / approvalPolicy /
+// sandbox / mode as the real server does. thread/start takes model,
+// approvalPolicy and sandbox; thread/start and thread/resume echo them at the
+// reply's top level; turn/start applies its overrides (model, effort,
+// approvalPolicy, sandboxPolicy, collaborationMode) and records the params
+// it received on the turn (`overrides`, visible via thread/resume for
+// assertions); thread/settings/update changes settings and broadcasts
+// thread/settings/updated like a TUI change would; model/list serves a
+// small catalog.
+//
 // Env switches (baked into the wrapper script by tests):
 //   FAKE_CODEX_MODE       "ok" (default) | "never-ready" (alive, never binds)
 //   FAKE_CODEX_WRONG_CWD  "start" | "resume" — lie about cwd in that reply
@@ -40,6 +50,7 @@
 //   FAKE_CODEX_READ_DELAY_MS  delay root thread/read replies, so tests can
 //                         prove activity never waits on the ATC-155
 //                         prompt (preview) read
+//   FAKE_CODEX_MODEL_PAGED  "1" — serve model/list one model per page
 //   FAKE_CODEX_PREVIEW_DELAY_MS  make preview readable only this long
 //                         after the first turn starts (the real rollout
 //                         flush lag), so tests can prove the ATC-155
@@ -156,12 +167,23 @@ interface Turn {
   readonly startedAt: number
   completedAt: number | null
   error: { message: string } | null
+  /** Fixture-only: the turn/start params beyond input/threadId. */
+  readonly overrides?: Record<string, unknown>
+}
+
+interface ThreadSettings {
+  model: string
+  effort: string | null
+  approvalPolicy: unknown
+  sandboxType: string
+  mode: string
 }
 
 interface Thread {
   readonly id: string
   readonly cwd: string
   readonly turns: Array<Turn>
+  readonly settings: ThreadSettings
   // "Usually the first user message in the thread, if available" — set at
   // the first turn/start, like the real rollout history (ATC-155).
   preview: string
@@ -194,6 +216,85 @@ const threadShape = (thread: Thread, cwd: string) => ({
   status: { type: "idle" },
   turns: thread.turns,
 })
+
+const SANDBOX_TYPES: Record<string, string> = {
+  "read-only": "readOnly",
+  "workspace-write": "workspaceWrite",
+  "danger-full-access": "dangerFullAccess",
+}
+
+/** The reply's top-level settings echo, as the real thread/start and thread/resume carry it. */
+const settingsEcho = (thread: Thread) => ({
+  model: thread.settings.model,
+  reasoningEffort: thread.settings.effort,
+  approvalPolicy: thread.settings.approvalPolicy,
+  sandbox: { type: thread.settings.sandboxType },
+})
+
+const settingsUpdatedParams = (thread: Thread) => ({
+  threadId: thread.id,
+  threadSettings: {
+    model: thread.settings.model,
+    effort: thread.settings.effort,
+    approvalPolicy: thread.settings.approvalPolicy,
+    sandboxPolicy: { type: thread.settings.sandboxType },
+    collaborationMode: { mode: thread.settings.mode },
+  },
+})
+
+const FAKE_MODELS = [
+  {
+    id: "fake-sol",
+    model: "fake-sol",
+    displayName: "Fake Sol",
+    description: "the default",
+    hidden: false,
+    isDefault: true,
+    supportedReasoningEfforts: ["low", "medium", "high", "xhigh"].map((level) => ({
+      reasoningEffort: level,
+      description: level,
+    })),
+    defaultReasoningEffort: "medium",
+  },
+  {
+    id: "fake-luna",
+    model: "fake-luna",
+    displayName: "Fake Luna",
+    description: "smaller",
+    hidden: false,
+    isDefault: false,
+    supportedReasoningEfforts: ["low", "medium"].map((level) => ({
+      reasoningEffort: level,
+      description: level,
+    })),
+    defaultReasoningEffort: "low",
+  },
+  {
+    // A default the model does not itself list (seen on real catalogs):
+    // the seam clamps it to the first listed level.
+    id: "fake-terra",
+    model: "fake-terra",
+    displayName: "Fake Terra",
+    description: "misreports its default",
+    hidden: false,
+    isDefault: false,
+    supportedReasoningEfforts: ["low", "medium"].map((level) => ({
+      reasoningEffort: level,
+      description: level,
+    })),
+    defaultReasoningEffort: "high",
+  },
+  {
+    id: "fake-hidden",
+    model: "fake-hidden",
+    displayName: "Hidden",
+    description: "not listed",
+    hidden: true,
+    isDefault: false,
+    supportedReasoningEfforts: [],
+    defaultReasoningEffort: "low",
+  },
+]
 
 const childStatus = (child: Child) =>
   child.status === "idle"
@@ -277,13 +378,24 @@ const handle = (
         id: crypto.randomUUID(),
         cwd,
         turns: [],
+        settings: {
+          model: String(params["model"] ?? "fake-sol"),
+          // Like the real reply: a fresh thread echoes its model's default effort.
+          effort:
+            FAKE_MODELS.find((model) => model.model === String(params["model"] ?? "fake-sol"))
+              ?.defaultReasoningEffort ?? null,
+          approvalPolicy: params["approvalPolicy"] ?? "on-request",
+          sandboxType:
+            SANDBOX_TYPES[String(params["sandbox"] ?? "workspace-write")] ?? "workspaceWrite",
+          mode: "default",
+        },
         preview: "",
         previewReadableAt: 0,
         archived: false,
       }
       threads.set(thread.id, thread)
       const reported = wrongCwd === "start" ? `${cwd}-wrong` : cwd
-      respond({ thread: threadShape(thread, reported) })
+      respond({ thread: threadShape(thread, reported), ...settingsEcho(thread) })
       return broadcast("thread/started", { thread: { id: thread.id, cwd: reported } })
     }
     case "thread/resume": {
@@ -304,8 +416,36 @@ const handle = (
             error: turn.error,
             startedAt: turn.startedAt,
             completedAt: turn.completedAt,
+            // Fixture-only: what turn/start received (settings assertions).
+            overrides: turn.overrides,
           })),
         },
+        ...settingsEcho(thread),
+      })
+    }
+    case "thread/settings/update": {
+      const thread = threads.get(String(params["threadId"] ?? ""))
+      if (thread === undefined) return respondError(-32600, "unknown thread")
+      if (typeof params["model"] === "string") thread.settings.model = params["model"]
+      if ("effort" in params) thread.settings.effort = (params["effort"] as string | null) ?? null
+      if ("approvalPolicy" in params) thread.settings.approvalPolicy = params["approvalPolicy"]
+      if (typeof params["sandboxType"] === "string")
+        thread.settings.sandboxType = params["sandboxType"]
+      if (typeof params["mode"] === "string") thread.settings.mode = params["mode"]
+      respond({})
+      return broadcast("thread/settings/updated", settingsUpdatedParams(thread))
+    }
+    case "model/list": {
+      // Paginated like the real reply: one model per page under
+      // FAKE_CODEX_MODEL_PAGED, else everything at once.
+      if (process.env["FAKE_CODEX_MODEL_PAGED"] !== "1") {
+        return respond({ data: FAKE_MODELS, nextCursor: null })
+      }
+      const start = Number.parseInt(String(params["cursor"] ?? "0"), 10)
+      const next = start + 1
+      return respond({
+        data: FAKE_MODELS.slice(start, next),
+        nextCursor: next < FAKE_MODELS.length ? String(next) : null,
       })
     }
     case "thread/unsubscribe":
@@ -400,6 +540,15 @@ const handle = (
       const input = params["input"] as Array<{ text?: string }> | undefined
       const text = input?.[0]?.text ?? ""
       const turnId = crypto.randomUUID()
+      // Overrides are sticky for this and subsequent turns, like the real server.
+      if (typeof params["model"] === "string") thread.settings.model = params["model"]
+      if (typeof params["effort"] === "string") thread.settings.effort = params["effort"]
+      if ("approvalPolicy" in params) thread.settings.approvalPolicy = params["approvalPolicy"]
+      const sandboxPolicy = params["sandboxPolicy"] as { type?: string } | undefined
+      if (typeof sandboxPolicy?.type === "string") thread.settings.sandboxType = sandboxPolicy.type
+      const collaboration = params["collaborationMode"] as { mode?: string } | undefined
+      if (typeof collaboration?.mode === "string") thread.settings.mode = collaboration.mode
+      const { input: _input, threadId: _threadId, ...overrides } = params
       thread.turns.push({
         id: turnId,
         status: "inProgress",
@@ -407,6 +556,7 @@ const handle = (
         startedAt: Math.floor(Date.now() / 1000),
         completedAt: null,
         error: null,
+        overrides,
       })
       if (thread.preview === "") {
         thread.preview = text

@@ -568,7 +568,11 @@ describe("ThreadRuntime", () => {
       assert.isFalse(yield* runtime.hasWriter(thread.id))
       // The fake connection was closed with the run: no writer remains.
       const resumed = yield* Effect.scoped(
-        fake.adapter.resumeSession({ providerSessionId, cwd: thread.workingDirectory }),
+        fake.adapter.resumeSession({
+          providerSessionId,
+          cwd: thread.workingDirectory,
+          settings: thread.settings,
+        }),
       )
       assert.strictEqual(resumed.providerSessionId, providerSessionId)
     }).pipe(Effect.scoped, Effect.provide(kit.layer)),

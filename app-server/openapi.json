@@ -701,6 +701,16 @@
               }
             }
           },
+          "400": {
+            "description": "The settings patch does not fit the agent's model catalog: an unknown model, or a reasoning level the model does not support.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidThreadSettingsJsonEncoding"
+                }
+              }
+            }
+          },
           "404": {
             "description": "No thread exists with the given id.",
             "content": {
@@ -710,9 +720,19 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The thread's agent provider cannot be used right now (not installed, not ready, or unreachable). Retryable once the cause is fixed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderUnavailableJsonEncoding"
+                }
+              }
+            }
           }
         },
-        "description": "Update a thread's display label (the only mutable field).",
+        "description": "Update a thread's display label and/or settings. A model or reasoning change is validated against the agent's model catalog (ProviderUnavailable when the catalog cannot be read); other fields never consult the provider.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1649,7 +1669,7 @@
         ],
         "responses": {
           "200": {
-            "description": "A built-in agent provider: availability report, detected on demand and never persisted.",
+            "description": "A built-in agent provider: availability report, detected on demand and never persisted, plus `defaults` — what a new thread of this agent starts with: the settings of the last thread whose settings were changed (write-through), read-only here.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1670,6 +1690,57 @@
           }
         },
         "description": "Fetch one built-in agent by its registry slug."
+      }
+    },
+    "/api/v1/agents/{agentId}/models": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "listAgentModels",
+        "parameters": [
+          {
+            "name": "agentId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "An agent's model catalog, in the provider's order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentModelList"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No built-in agent exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentNotFoundJsonEncoding"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The thread's agent provider cannot be used right now (not installed, not ready, or unreachable). Retryable once the cause is fixed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderUnavailableJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "The agent's model catalog as its provider reports it, cached server-side for a short while."
       }
     },
     "/api/v1/events": {
@@ -2233,6 +2304,61 @@
         ],
         "description": "Built-in agent registry slug."
       },
+      "ReasoningLevel": {
+        "type": "string",
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
+        "description": "Reasoning effort. Which levels a model accepts comes from the agent's model catalog (listAgentModels)."
+      },
+      "ThreadMode": {
+        "type": "string",
+        "enum": [
+          "chat",
+          "plan"
+        ],
+        "description": "`chat` works normally; `plan` explores and proposes without mutating the workspace."
+      },
+      "ThreadAccess": {
+        "type": "string",
+        "enum": [
+          "supervised",
+          "autoAcceptEdits",
+          "auto",
+          "fullAccess"
+        ],
+        "description": "The access ladder: `supervised` asks before every write and command; `autoAcceptEdits` auto-approves edits inside the workspace; `auto` works within the workspace without asking; `fullAccess` bypasses approvals and sandboxing entirely."
+      },
+      "ThreadSettings": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "The provider's model id, as listed by listAgentModels (`value`)."
+          },
+          "reasoning": {
+            "$ref": "#/components/schemas/ReasoningLevel"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/ThreadMode"
+          },
+          "access": {
+            "$ref": "#/components/schemas/ThreadAccess"
+          }
+        },
+        "required": [
+          "model",
+          "mode",
+          "access"
+        ],
+        "additionalProperties": false,
+        "description": "Per-thread model, reasoning, mode, and access. What the thread's next turn runs with; a change made in the provider itself (its TUI, another client) is adopted here as soon as ATC hears of it. `reasoning` is absent for a model that does not support effort levels."
+      },
       "ThreadActivityState": {
         "type": "string",
         "enum": [
@@ -2264,6 +2390,9 @@
           "workingDirectory": {
             "type": "string",
             "description": "Canonical directory the thread's agent session works in (immutable)."
+          },
+          "settings": {
+            "$ref": "#/components/schemas/ThreadSettings"
           },
           "activityState": {
             "$ref": "#/components/schemas/ThreadActivityState"
@@ -2302,6 +2431,7 @@
           "projectId",
           "agentId",
           "workingDirectory",
+          "settings",
           "activityState",
           "unread",
           "createdAt",
@@ -2368,16 +2498,95 @@
         ],
         "additionalProperties": false
       },
+      "ThreadSettingsPatch": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "New model id."
+          },
+          "reasoning": {
+            "$ref": "#/components/schemas/ReasoningLevel"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/ThreadMode"
+          },
+          "access": {
+            "$ref": "#/components/schemas/ThreadAccess"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Partial settings update; only the given fields change. `reasoning` must be a level the (new or current) model supports; omitted on a model change, the current level carries over when the new model supports it, else the new model's default applies."
+      },
       "UpdateThreadRequest": {
         "type": "object",
         "properties": {
           "name": {
             "type": "string",
             "description": "New display label."
+          },
+          "settings": {
+            "$ref": "#/components/schemas/ThreadSettingsPatch"
           }
         },
         "additionalProperties": false,
-        "description": "Partial update; only the display label is mutable."
+        "description": "Partial update of the display label and/or the settings. A settings change writes ATC state only: it takes effect at the thread's next turn (a turn in flight is never disturbed) and becomes the agent's defaults for new threads."
+      },
+      "InvalidThreadSettingsJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "InvalidThreadSettings"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
+          }
+        },
+        "required": [
+          "_tag",
+          "threadId",
+          "reason",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "ProviderUnavailableJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "ProviderUnavailable"
+            ]
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
+          }
+        },
+        "required": [
+          "_tag",
+          "agentId",
+          "reason",
+          "message"
+        ],
+        "additionalProperties": false
       },
       "ThreadBusyJsonEncoding": {
         "type": "object",
@@ -2450,34 +2659,6 @@
         "required": [
           "_tag",
           "threadId",
-          "reason",
-          "message"
-        ],
-        "additionalProperties": false
-      },
-      "ProviderUnavailableJsonEncoding": {
-        "type": "object",
-        "properties": {
-          "_tag": {
-            "type": "string",
-            "enum": [
-              "ProviderUnavailable"
-            ]
-          },
-          "agentId": {
-            "type": "string"
-          },
-          "reason": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string",
-            "description": "Human-readable diagnostic derived from the structured fields."
-          }
-        },
-        "required": [
-          "_tag",
-          "agentId",
           "reason",
           "message"
         ],
@@ -3515,14 +3696,18 @@
           "detectedVersion": {
             "type": "string",
             "description": "Installed CLI version, when it could be determined."
+          },
+          "defaults": {
+            "$ref": "#/components/schemas/ThreadSettings"
           }
         },
         "required": [
           "id",
-          "available"
+          "available",
+          "defaults"
         ],
         "additionalProperties": false,
-        "description": "A built-in agent provider: availability report, detected on demand and never persisted."
+        "description": "A built-in agent provider: availability report, detected on demand and never persisted, plus `defaults` — what a new thread of this agent starts with: the settings of the last thread whose settings were changed (write-through), read-only here."
       },
       "AgentList": {
         "type": "array",
@@ -3554,6 +3739,52 @@
           "message"
         ],
         "additionalProperties": false
+      },
+      "AgentModel": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string",
+            "description": "The id to store in ThreadSettings.model."
+          },
+          "displayName": {
+            "type": "string",
+            "description": "The provider's own display name."
+          },
+          "description": {
+            "type": "string"
+          },
+          "isDefault": {
+            "type": "boolean",
+            "description": "The provider's default model (what a session gets when none is chosen)."
+          },
+          "supportedEffortLevels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReasoningLevel"
+            },
+            "description": "The reasoning levels the model accepts; empty for a model with no effort support (its threads carry no reasoning)."
+          },
+          "defaultEffortLevel": {
+            "$ref": "#/components/schemas/ReasoningLevel"
+          }
+        },
+        "required": [
+          "value",
+          "displayName",
+          "description",
+          "isDefault",
+          "supportedEffortLevels"
+        ],
+        "additionalProperties": false,
+        "description": "One entry of an agent's model catalog, as the provider itself reports it. `defaultEffortLevel` is the level a thread gets on switching to this model when its current level is unsupported; absent for a model with no effort support."
+      },
+      "AgentModelList": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/AgentModel"
+        },
+        "description": "An agent's model catalog, in the provider's order."
       },
       "ResourceChangedEventJsonEncoding": {
         "type": "string",

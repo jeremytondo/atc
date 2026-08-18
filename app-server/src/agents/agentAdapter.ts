@@ -33,6 +33,18 @@ import { resolveExecutable } from "../platform/subprocess.ts"
 //     no auto-reject; the request dies with its turn (closed on
 //     turnCompleted) or its connection. Requests raised for a turn another
 //     writer started are never ours to answer.
+//   - Settings (ATC-205) cross the seam in the contract's ThreadSettings
+//     vocabulary. The caller's settings are what a turn RUNS with:
+//     `startTurn` (and `createSession`) take them, and the adapter pushes
+//     only what differs from the live session's own values — an unchanged
+//     turn costs no extra provider round-trip. The provider's word on its
+//     session settings — a change made in its TUI or another client, or what
+//     a fresh process actually applied — comes back as a `settings` event,
+//     partial (only what the provider reported), and the caller adopts it.
+//     The access ladder and the plan/chat mode are translated INSIDE the
+//     adapters (Claude permissionMode; Codex approvalPolicy + sandbox +
+//     collaborationMode); no rung name leaks below the seam and no provider
+//     knob leaks above it.
 //
 // The fake adapter for tests lives in test/agents/fakeAgentAdapter.ts; per-provider
 // service tags live with their adapters (codexAdapter.ts, claudeAdapter.ts).
@@ -116,6 +128,23 @@ export type ThreadRequestAnswer = typeof Contract.ThreadRequestAnswer.Type
 export type ApprovalSubject = typeof Contract.ApprovalSubject.Type
 export type FileChange = typeof Contract.FileChange.Type
 export type ToolStatus = typeof Contract.ToolStatus.Type
+export type ThreadSettings = typeof Contract.ThreadSettings.Type
+export type ReasoningLevel = typeof Contract.ReasoningLevel.Type
+export type ThreadAccess = typeof Contract.ThreadAccess.Type
+export type ThreadMode = typeof Contract.ThreadMode.Type
+export type AgentModel = typeof Contract.AgentModel.Type
+
+/**
+ * What a provider reported about its session's settings (ATC-205): only the
+ * fields it spoke about are present; `reasoning: null` is "the model runs
+ * with no effort level" (as opposed to "not reported").
+ */
+export interface ProviderSettings {
+  readonly model?: string
+  readonly reasoning?: ReasoningLevel | null
+  readonly mode?: ThreadMode
+  readonly access?: ThreadAccess
+}
 
 /** One turn of provider history, as `readHistory` returns it. */
 export interface HistoryTurn {
@@ -152,6 +181,7 @@ export type AgentItemEvent =
 export type AgentSessionEvent =
   | { readonly type: "activity"; readonly activity: AgentActivity }
   | { readonly type: "userPrompt"; readonly text: string }
+  | { readonly type: "settings"; readonly settings: ProviderSettings }
   | AgentItemEvent
 
 /**
@@ -179,6 +209,8 @@ export type AgentEvent =
   | { readonly type: "textDelta"; readonly itemId: string; readonly delta: string }
   | { readonly type: "requestOpened"; readonly request: ThreadRequest }
   | { readonly type: "requestClosed"; readonly requestId: string }
+  /** The provider's word on the session's settings (see the header). */
+  | { readonly type: "settings"; readonly settings: ProviderSettings }
 
 /** Correlation handle for exactly one turn — interrupt targets this turn. */
 export interface AgentTurn {
@@ -238,14 +270,18 @@ export interface AgentConnection {
    */
   readonly events: Stream.Stream<AgentEvent, AgentProtocolError>
   /**
-   * Start exactly one turn with user input. Fails with `AgentConflict`
-   * while another turn is active on this connection; completion arrives on
-   * the feed as `turnCompleted`. A provider whose resume verification is
-   * deferred (Claude) completes it here on the connection's first turn, so
-   * `AgentResumeFailed` / `AgentIdentityMismatch` can surface fail-closed.
+   * Start exactly one turn with user input, running with `settings`: the
+   * adapter pushes whatever differs from the live session's own values
+   * before the input goes out (nothing when nothing changed). Fails with
+   * `AgentConflict` while another turn is active on this connection;
+   * completion arrives on the feed as `turnCompleted`. A provider whose
+   * resume verification is deferred (Claude) completes it here on the
+   * connection's first turn, so `AgentResumeFailed` /
+   * `AgentIdentityMismatch` can surface fail-closed.
    */
   readonly startTurn: (
     input: string,
+    settings: ThreadSettings,
   ) => Effect.Effect<
     AgentTurn,
     | AgentConflict
@@ -340,6 +376,7 @@ export interface AgentAdapter {
   readonly createSession: (options: {
     readonly cwd: string
     readonly input: string
+    readonly settings: ThreadSettings
   }) => Effect.Effect<
     AgentSessionStart,
     AgentUnavailable | AgentConflict | AgentIdentityMismatch | AgentProtocolError,
@@ -352,11 +389,16 @@ export interface AgentAdapter {
    * evidence available: Codex verifies here (thread/resume echoes identity);
    * the Claude SDK emits no identity evidence until a turn starts (probed
    * 2026-08-03), so its verification completes — still fail-closed — at the
-   * connection's first `startTurn`.
+   * connection's first `startTurn`. `settings` are what the connection is
+   * opened with: a one-process provider (Claude) spawns its child with them
+   * so the first turn pushes nothing; a shared-server provider (Codex) reads
+   * its baseline from the resume reply instead and lets the first turn push
+   * the difference — the resume itself never reconfigures a session.
    */
   readonly resumeSession: (options: {
     readonly providerSessionId: string
     readonly cwd: string
+    readonly settings: ThreadSettings
   }) => Effect.Effect<
     AgentConnection,
     | AgentUnavailable
@@ -408,6 +450,17 @@ export interface AgentAdapter {
     readonly providerSessionId: string
     readonly providerMetadata: string | undefined
   }) => Effect.Effect<Stream.Stream<AgentSessionEvent>, AgentUnavailable, Scope.Scope>
+  /**
+   * The provider's model catalog (ATC-205), normalized: `value` is the id
+   * ThreadSettings.model stores and the adapter sends back to the provider;
+   * every entry names a real model (Claude's `default` meta-entry is folded
+   * into the alias it resolves to). Never a persisted session; the caller
+   * caches it.
+   */
+  readonly listModels: () => Effect.Effect<
+    ReadonlyArray<AgentModel>,
+    AgentUnavailable | AgentProtocolError
+  >
   /**
    * One bounded, session-less completion: a short display title for a
    * thread whose first user prompt is `prompt` (ATC-155). Runs as the
@@ -858,19 +911,37 @@ export const versionIsOlder = (installed: string, tested: string): boolean => {
 }
 
 /**
+ * Memoize one effect's success for `ttl`, safely under concurrency (the
+ * version gate and the model catalogs use it). NOT plain Effect.cached: the
+ * cache memoizes whatever exit its driving fiber produces, interruption and
+ * failure included, so a dropped request driving the first run would poison
+ * every later caller for the process, and a provider that was down once
+ * would stay "down" until the TTL. Instead the memo is invalidated when its
+ * driver fails or is interrupted, and the semaphore keeps callers out of the
+ * cache's waiter path (a waiter racing an invalidate would replay a cleared
+ * exit).
+ */
+export const memoizeSuccess = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  ttl: Duration.Input,
+): Effect.Effect<Effect.Effect<A, E, R>> =>
+  Effect.gen(function* () {
+    const lock = yield* Semaphore.make(1)
+    const [cached, invalidate] = yield* Effect.cachedInvalidateWithTTL(effect, ttl)
+    return lock.withPermits(1)(
+      Effect.onInterrupt(cached, () => invalidate).pipe(Effect.tapError(() => invalidate)),
+    )
+  })
+
+/**
  * The shared version-drift rule (record + warn, never block), memoized to
- * one single-flight check per adapter: resolve the configured executable,
- * read the installed version via `--version`, and log one actionable
- * warning when it is below the floor the adapter was validated against.
- * Warn-only: a missing executable never fails the gate — every call site
- * resolves or spawns the executable itself and reports the actionable
- * diagnostic there — and a memoized failure would pin "unavailable" past a
- * mid-session install. NOT plain Effect.cached: the cache memoizes whatever
- * exit its driving fiber produces, interruption included, so a dropped
- * request driving the first check would poison every later caller for the
- * process. Instead the memo is invalidated when its driver is interrupted,
- * and the semaphore keeps callers out of the cache's waiter path (a waiter
- * racing an invalidate would replay a cleared exit).
+ * one single-flight check per adapter (`memoizeSuccess`): resolve the
+ * configured executable, read the installed version via `--version`, and log
+ * one actionable warning when it is below the floor the adapter was
+ * validated against. Warn-only: a missing executable never fails the gate —
+ * every call site resolves or spawns the executable itself and reports the
+ * actionable diagnostic there — and a memoized failure would pin
+ * "unavailable" past a mid-session install.
  */
 export const makeVersionGate = (
   subprocess: Subprocess["Service"],
@@ -879,7 +950,6 @@ export const makeVersionGate = (
   testedVersion: string,
 ): Effect.Effect<Effect.Effect<void>> =>
   Effect.gen(function* () {
-    const lock = yield* Semaphore.make(1)
     const check = Effect.gen(function* () {
       const executable = yield* resolveProviderExecutable(provider, configured)
       const installed = yield* readInstalledVersion(subprocess, executable)
@@ -894,6 +964,5 @@ export const makeVersionGate = (
         )
       }
     }).pipe(Effect.catchTag("AgentUnavailable", () => Effect.void))
-    const [cached, invalidate] = yield* Effect.cachedInvalidateWithTTL(check, Duration.infinity)
-    return lock.withPermits(1)(Effect.onInterrupt(cached, () => invalidate))
+    return yield* memoizeSuccess(check, Duration.infinity)
   })

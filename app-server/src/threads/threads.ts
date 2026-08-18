@@ -11,6 +11,7 @@ import type {
 } from "../agents/agentAdapter.ts"
 import { isBusyActivity } from "../agents/agentAdapter.ts"
 import {
+  InvalidThreadSettings,
   isAgentId,
   ProviderSessionConflict,
   ProviderUnavailable,
@@ -25,8 +26,10 @@ import type {
   DirectoryUnavailable,
   ProjectNotFound,
   TerminalLaunchFailed,
+  ThreadSettingsPatch,
   ZmxUnavailable,
 } from "../api/contract.ts"
+import { SqlClient } from "effect/unstable/sql"
 import { Events } from "../events/events.ts"
 import { Directories } from "../platform/directories.ts"
 import { ProjectRepository } from "../projects/projectRepository.ts"
@@ -36,6 +39,8 @@ import { ThreadNaming } from "./threadNaming.ts"
 import { ThreadRepository } from "./threadRepository.ts"
 import type { ThreadRecord } from "./threadRepository.ts"
 import { ThreadRuntime } from "./threadRuntime.ts"
+import { applySettingsPatch, sameSettings } from "./threadSettings.ts"
+import type { ThreadSettings } from "./threadSettings.ts"
 import { ThreadTui } from "./threadTui.ts"
 
 export type Thread = typeof Contract.Thread.Type
@@ -85,6 +90,15 @@ export type Thread = typeof Contract.Thread.Type
 //     vocabulary is untouched; "Done" is client-side display translation.
 //   - Auto-naming lives in ThreadNaming (ATC-155/190/202), fed by the
 //     runtime's observation and turns.
+//   - Settings (ATC-205) are stored state the runtime hands to the adapter
+//     at every turn start; a change here never touches a provider — it
+//     takes effect at the next turn, and a turn in flight is never
+//     disturbed. Only a model or reasoning change consults the agent's
+//     model catalog (validation and the per-model reasoning rule,
+//     threadSettings.ts). Every change writes through to the agent's
+//     defaults, which `create` reads — a new thread starts as the last
+//     changed one ended. Provider-side changes are adopted by the runtime
+//     (its `settings` events), never here.
 //   - archived threads are never pinned: pin refuses archived records, and
 //     archive clears the pin in the same repository write so no client can
 //     observe or restore an archived pin.
@@ -132,8 +146,11 @@ export class Threads extends Context.Service<
     /** Patch mutable fields; an empty patch changes nothing, updatedAt included. */
     readonly update: (
       id: string,
-      patch: { readonly name?: string | undefined },
-    ) => Effect.Effect<Thread, ThreadNotFound>
+      patch: {
+        readonly name?: string | undefined
+        readonly settings?: typeof ThreadSettingsPatch.Type | undefined
+      },
+    ) => Effect.Effect<Thread, ThreadNotFound | InvalidThreadSettings | ProviderUnavailable>
     /** Kill the live linked terminal and release adapter runtime resources,
      * then set archivedAt (idempotent and convergent — see the header);
      * refused while the agent session is actively working. */
@@ -191,6 +208,10 @@ export const layerWith = (options: ThreadsOptions) =>
       const runtime = yield* ThreadRuntime
       const naming = yield* ThreadNaming
       const tui = yield* ThreadTui
+      // No SQL is written here: the client is held for `withTransaction`
+      // alone, so the settings write and its defaults write-through commit
+      // together (both repositories run on this one client).
+      const sql = yield* SqlClient.SqlClient
       // Forked work (a discovered finish's re-read) outlives its request;
       // it lives in the service's own scope.
       const serviceScope = yield* Effect.scope
@@ -304,6 +325,7 @@ export const layerWith = (options: ThreadsOptions) =>
         agentId: record.agentId as Thread["agentId"],
         ...(record.name !== undefined ? { name: record.name } : {}),
         workingDirectory: record.workingDirectory,
+        settings: record.settings,
         activityState,
         unread: isUnread(record),
         ...(linkedTerminalId !== undefined ? { linkedTerminalId } : {}),
@@ -617,6 +639,89 @@ export const layerWith = (options: ThreadsOptions) =>
           }),
         )
 
+      /**
+       * Resolve the settings half of an `update` (the header's settings
+       * bullet) BEFORE anything is written: the catalog is consulted only
+       * when the patch touches model or reasoning, so an access or mode
+       * change never waits on — or fails with — the provider, and a
+       * rejection leaves the row (name included) untouched.
+       */
+      const resolveSettings = (
+        record: ThreadRecord,
+        patch: typeof ThreadSettingsPatch.Type,
+      ): Effect.Effect<ThreadSettings, InvalidThreadSettings | ProviderUnavailable> =>
+        Effect.gen(function* () {
+          const needsCatalog = patch.model !== undefined || patch.reasoning !== undefined
+          const catalog = needsCatalog
+            ? yield* registry.models(record.agentId).pipe(
+                Effect.catchTag("AgentNotFound", () =>
+                  Effect.fail(
+                    new ProviderUnavailable({
+                      agentId: record.agentId,
+                      reason: `this build knows no agent "${record.agentId}"`,
+                    }),
+                  ),
+                ),
+              )
+            : null
+          const applied = applySettingsPatch(record.settings, patch, catalog)
+          if ("rejected" in applied) {
+            return yield* Effect.fail(
+              new InvalidThreadSettings({ threadId: record.id, reason: applied.rejected }),
+            )
+          }
+          return applied.settings
+        })
+
+      /**
+       * Apply and store a settings patch: resolve it against the row as it
+       * stands, write only while the row still stands there (the
+       * repository's compare-and-swap), and on losing that race — a
+       * provider report or another patch landed in between — re-read and
+       * re-apply the patch on top, so a partial patch never overwrites a
+       * change it did not make. A patch that resolves to what the row
+       * already holds is a no-op: no write, no defaults write-through, no
+       * event (a re-pick of the checked entry must never reset another
+       * thread's future defaults). The write-through to the agent's
+       * defaults carries the thread's whole settings, so a new thread
+       * starts exactly as this one now stands; it commits with the row.
+       */
+      const patchSettings = (
+        record: ThreadRecord,
+        patch: typeof ThreadSettingsPatch.Type,
+      ): Effect.Effect<
+        { readonly record: ThreadRecord; readonly changed: boolean },
+        ThreadNotFound | InvalidThreadSettings | ProviderUnavailable
+      > =>
+        Effect.gen(function* () {
+          let current = record
+          for (let attempt = 0; attempt < 8; attempt++) {
+            const settings = yield* resolveSettings(current, patch)
+            if (sameSettings(settings, current.settings)) return { record: current, changed: false }
+            const written = yield* sql
+              .withTransaction(
+                Effect.gen(function* () {
+                  const updated = yield* repository.setSettingsIfUnchanged(
+                    current.id,
+                    current.settings,
+                    settings,
+                  )
+                  if (Option.isSome(updated) && isAgentId(current.agentId)) {
+                    yield* registry.setDefaults(current.agentId, settings)
+                  }
+                  return updated
+                }),
+                // A transaction failure is a database failure: a defect, like
+                // the repositories' own.
+              )
+              .pipe(Effect.orDie)
+            if (Option.isSome(written)) return { record: written.value, changed: true }
+            // Lost the race (or the row vanished: require's typed 404).
+            current = yield* repository.require(record.id)
+          }
+          return yield* Effect.die(new Error(`thread ${record.id}: settings never settled`))
+        })
+
       return {
         list: (listOptions) =>
           Effect.gen(function* () {
@@ -663,20 +768,30 @@ export const layerWith = (options: ThreadsOptions) =>
               agentId: input.agentId,
               name: input.name,
               workingDirectory: canonical,
+              settings: yield* registry.defaults(input.agentId),
             })
             yield* events.publish({ resource: "thread", id: record.id, change: "created" })
             return toThread(record, undefined, "idle")
           }),
         update: (id, patch) =>
-          // An empty patch changes nothing — including updatedAt (the same
-          // rule the other repositories apply).
-          patch.name === undefined
-            ? repository.require(id).pipe(Effect.flatMap(assembleAlone))
-            : repository.require(id).pipe(
-                Effect.andThen(repository.rename(id, patch.name)),
-                Effect.tap(() => events.publish({ resource: "thread", id, change: "updated" })),
-                Effect.flatMap(assembleAlone),
-              ),
+          Effect.gen(function* () {
+            const record = yield* repository.require(id)
+            // Settings are validated BEFORE the rename lands (a rejection
+            // leaves the row untouched, name included); a patch that
+            // changes nothing changes nothing — updatedAt included, the
+            // rule the other repositories apply — and publishes nothing.
+            const settled =
+              patch.settings === undefined || Object.keys(patch.settings).length === 0
+                ? { record, changed: false }
+                : yield* patchSettings(record, patch.settings)
+            const renamed =
+              patch.name === undefined ? settled.record : yield* repository.rename(id, patch.name)
+            if (!settled.changed && patch.name === undefined) {
+              return yield* assembleAlone(record)
+            }
+            yield* events.publish({ resource: "thread", id, change: "updated" })
+            return yield* assembleAlone(renamed)
+          }),
         archive: (id) =>
           withLifecycleLock(id)(
             Effect.gen(function* () {

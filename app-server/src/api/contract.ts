@@ -279,6 +279,96 @@ export const AgentId = Schema.Literals(AGENT_IDS).annotate({
 export const isAgentId = (id: string): id is typeof AgentId.Type =>
   (AGENT_IDS as ReadonlyArray<string>).includes(id)
 
+// --- Chat mode settings (ATC-205) -------------------------------------------
+//
+// One vocabulary for both providers; the adapters translate it (the access
+// ladder → Claude permissionMode / Codex approvalPolicy + sandbox, mode →
+// Claude `plan` / Codex collaborationMode). `reasoning` is per MODEL, not
+// per agent: it is absent for models with no effort support, and a model
+// change resets it to the new model's default.
+
+export const ReasoningLevel = Schema.Literals([
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+]).annotate({
+  identifier: "ReasoningLevel",
+  description:
+    "Reasoning effort. Which levels a model accepts comes from the agent's model catalog (listAgentModels).",
+})
+
+/** Whether `value` is a reasoning level this build knows (narrows like isAgentId). */
+export const isReasoningLevel = Schema.is(ReasoningLevel)
+
+export const ThreadMode = Schema.Literals(["chat", "plan"]).annotate({
+  identifier: "ThreadMode",
+  description:
+    "`chat` works normally; `plan` explores and proposes without mutating the workspace.",
+})
+
+export const ThreadAccess = Schema.Literals([
+  "supervised",
+  "autoAcceptEdits",
+  "auto",
+  "fullAccess",
+]).annotate({
+  identifier: "ThreadAccess",
+  description:
+    "The access ladder: `supervised` asks before every write and command; `autoAcceptEdits` auto-approves edits inside the workspace; `auto` works within the workspace without asking; `fullAccess` bypasses approvals and sandboxing entirely.",
+})
+
+export const ThreadSettings = Schema.Struct({
+  model: Schema.String.annotate({
+    description: "The provider's model id, as listed by listAgentModels (`value`).",
+  }),
+  // Absent keys (not null) for optional fields — see UpdateProjectRequest.
+  // Reasoning is absent for a model that does not support effort levels.
+  reasoning: Schema.optionalKey(ReasoningLevel),
+  mode: ThreadMode,
+  access: ThreadAccess,
+}).annotate({
+  identifier: "ThreadSettings",
+  description:
+    "Per-thread model, reasoning, mode, and access. What the thread's next turn runs with; a change made in the provider itself (its TUI, another client) is adopted here as soon as ATC hears of it. `reasoning` is absent for a model that does not support effort levels.",
+})
+
+export const ThreadSettingsPatch = Schema.Struct({
+  model: Schema.optionalKey(Schema.String.annotate({ description: "New model id." })),
+  reasoning: Schema.optionalKey(ReasoningLevel),
+  mode: Schema.optionalKey(ThreadMode),
+  access: Schema.optionalKey(ThreadAccess),
+}).annotate({
+  identifier: "ThreadSettingsPatch",
+  description:
+    "Partial settings update; only the given fields change. `reasoning` must be a level the (new or current) model supports; omitted on a model change, the current level carries over when the new model supports it, else the new model's default applies.",
+})
+
+export const AgentModel = Schema.Struct({
+  value: Schema.String.annotate({ description: "The id to store in ThreadSettings.model." }),
+  displayName: Schema.String.annotate({ description: "The provider's own display name." }),
+  description: Schema.String,
+  isDefault: Schema.Boolean.annotate({
+    description: "The provider's default model (what a session gets when none is chosen).",
+  }),
+  supportedEffortLevels: Schema.Array(ReasoningLevel).annotate({
+    description:
+      "The reasoning levels the model accepts; empty for a model with no effort support (its threads carry no reasoning).",
+  }),
+  defaultEffortLevel: Schema.optionalKey(ReasoningLevel),
+}).annotate({
+  identifier: "AgentModel",
+  description:
+    "One entry of an agent's model catalog, as the provider itself reports it. `defaultEffortLevel` is the level a thread gets on switching to this model when its current level is unsupported; absent for a model with no effort support.",
+})
+
+export const AgentModelList = Schema.Array(AgentModel).annotate({
+  identifier: "AgentModelList",
+  description: "An agent's model catalog, in the provider's order.",
+})
+
 export const Agent = Schema.Struct({
   id: AgentId,
   available: Schema.Boolean.annotate({
@@ -295,10 +385,11 @@ export const Agent = Schema.Struct({
       description: "Installed CLI version, when it could be determined.",
     }),
   ),
+  defaults: ThreadSettings,
 }).annotate({
   identifier: "Agent",
   description:
-    "A built-in agent provider: availability report, detected on demand and never persisted.",
+    "A built-in agent provider: availability report, detected on demand and never persisted, plus `defaults` — what a new thread of this agent starts with: the settings of the last thread whose settings were changed (write-through), read-only here.",
 })
 
 export const AgentList = Schema.Array(Agent).annotate({
@@ -326,6 +417,7 @@ export const Thread = Schema.Struct({
   workingDirectory: Schema.String.annotate({
     description: "Canonical directory the thread's agent session works in (immutable).",
   }),
+  settings: ThreadSettings,
   activityState: ThreadActivityState,
   unread: Schema.Boolean.annotate({
     description:
@@ -373,9 +465,11 @@ export const CreateThreadRequest = Schema.Struct({
 
 export const UpdateThreadRequest = Schema.Struct({
   name: Schema.optionalKey(Schema.String.annotate({ description: "New display label." })),
+  settings: Schema.optionalKey(ThreadSettingsPatch),
 }).annotate({
   identifier: "UpdateThreadRequest",
-  description: "Partial update; only the display label is mutable.",
+  description:
+    "Partial update of the display label and/or the settings. A settings change writes ATC state only: it takes effect at the thread's next turn (a turn in flight is never disturbed) and becomes the agent's defaults for new threads.",
 })
 
 export const ResourceChangedEvent = Schema.Struct({
@@ -1078,6 +1172,22 @@ export class InvalidRequestAnswer extends Schema.TaggedErrorClass<InvalidRequest
   }
 }
 
+/** A settings patch names a model the agent's catalog does not list, or a reasoning level the model does not support. */
+export class InvalidThreadSettings extends Schema.TaggedErrorClass<InvalidThreadSettings>()(
+  "InvalidThreadSettings",
+  { threadId: Schema.String, reason: Schema.String, message: errorMessage },
+  {
+    identifier: "InvalidThreadSettings",
+    description:
+      "The settings patch does not fit the agent's model catalog: an unknown model, or a reasoning level the model does not support.",
+    httpApiStatus: 400,
+  },
+) {
+  constructor(props: { readonly threadId: string; readonly reason: string }) {
+    super({ ...props, message: props.reason })
+  }
+}
+
 /** Unknown queued prompt id, or the prompt already started (it is a turn now). */
 export class QueuedPromptNotFound extends Schema.TaggedErrorClass<QueuedPromptNotFound>()(
   "QueuedPromptNotFound",
@@ -1280,10 +1390,13 @@ export class V1 extends HttpApiGroup.make("v1")
       params: threadIdParam,
       payload: UpdateThreadRequest,
       success: Thread,
-      error: ThreadNotFound,
+      error: [ThreadNotFound, InvalidThreadSettings, ProviderUnavailable],
     })
       .annotate(OpenApi.Identifier, "updateThread")
-      .annotate(OpenApi.Description, "Update a thread's display label (the only mutable field)."),
+      .annotate(
+        OpenApi.Description,
+        "Update a thread's display label and/or settings. A model or reasoning change is validated against the agent's model catalog (ProviderUnavailable when the catalog cannot be read); other fields never consult the provider.",
+      ),
     HttpApiEndpoint.post("archiveThread", "/threads/:threadId/archive", {
       params: threadIdParam,
       success: Thread,
@@ -1485,6 +1598,16 @@ export class V1 extends HttpApiGroup.make("v1")
     })
       .annotate(OpenApi.Identifier, "getAgent")
       .annotate(OpenApi.Description, "Fetch one built-in agent by its registry slug."),
+    HttpApiEndpoint.get("listAgentModels", "/agents/:agentId/models", {
+      params: { agentId: Schema.String },
+      success: AgentModelList,
+      error: [AgentNotFound, ProviderUnavailable],
+    })
+      .annotate(OpenApi.Identifier, "listAgentModels")
+      .annotate(
+        OpenApi.Description,
+        "The agent's model catalog as its provider reports it, cached server-side for a short while.",
+      ),
     HttpApiEndpoint.get("subscribeEvents", "/events", {
       success: HttpApiSchema.StreamSse({ data: ResourceChangedEvent }),
     })

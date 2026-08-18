@@ -4,6 +4,7 @@ import { HttpMiddleware, HttpRouter, HttpServer, HttpServerResponse } from "effe
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { Api } from "./api/contract.ts"
 import * as AdminUi from "./adminUi/adminUi.ts"
+import * as AgentDefaultsRepository from "./agents/agentDefaultsRepository.ts"
 import * as AgentRegistry from "./agents/agentRegistry.ts"
 import * as AuthToken from "./platform/authToken.ts"
 import * as ClaudeAdapter from "./agents/claudeAdapter.ts"
@@ -153,6 +154,7 @@ export const production = (options: { readonly port: number; readonly hostname?:
       TerminalRepository.layer,
       ThreadRepository.layer,
       TranscriptRepository.layer,
+      AgentDefaultsRepository.layer,
       Directories.layer,
       Zmx.layer,
       ClaudeHooks.layer,

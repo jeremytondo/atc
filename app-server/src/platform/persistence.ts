@@ -8,7 +8,9 @@ import { migrations } from "./migrations.ts"
 // directory, exposed as the `SqlClient` service with the checked-in migration
 // record already applied. `SqlClient` is the persistence boundary —
 // repositories consume it and own their row types; `sql.withTransaction` is
-// the transaction boundary. Nothing outside a repository speaks SQL.
+// the transaction boundary, and a domain module may hold the client for
+// that alone, to commit writes across repositories together (Threads'
+// settings write-through). Nothing outside a repository speaks SQL.
 //
 // Deliberate SQLite settings:
 //   journal_mode = WAL   concurrent readers during writes (driver default)
