@@ -138,7 +138,7 @@ import * as Subprocess from "../platform/subprocess.ts"
 //     working on before the turn's re-read lands.
 
 /** The Claude Code version this adapter was validated against. */
-const CLAUDE_TESTED_VERSION = "2.1.234"
+const CLAUDE_TESTED_VERSION = "2.1.235"
 
 export class ClaudeAdapter extends Context.Service<ClaudeAdapter, AgentAdapter>()(
   "app-server/ClaudeAdapter",

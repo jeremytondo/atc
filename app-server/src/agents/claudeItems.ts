@@ -34,8 +34,9 @@ import { fileChangeTitle, toolOutcome } from "./agentAdapter.ts"
 //     carries text (tool_result-only and synthetic messages never open a
 //     turn); the turn id is that message's uuid. A turn whose tool_use never
 //     got a result reads as interrupted. getSessionMessages exposes system
-//     entries without their subtype (probed 2026-08-17, SDK 0.3.220), so
-//     compaction markers come only from the live compact_boundary message.
+//     entries without their subtype (probed 2026-08-17, still true at SDK
+//     0.3.235), so compaction markers come only from the live
+//     compact_boundary message.
 //   - AskUserQuestion is a question request whose answers go back through
 //     `updatedInput.answers` keyed by question text (what the tool expects);
 //     every other canUseTool is an approval answered allow/deny, with
