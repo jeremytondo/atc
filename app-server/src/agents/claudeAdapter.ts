@@ -3,6 +3,8 @@ import type {
   HookCallbackMatcher,
   HookEvent,
   Options,
+  PermissionResult,
+  PermissionUpdate,
   SDKMessage,
   SDKUserMessage,
   SessionMessage,
@@ -31,6 +33,8 @@ import type {
   AgentProtocolError,
   AgentSessionEvent,
   AgentUnavailable,
+  ThreadItem,
+  ThreadRequest,
 } from "./agentAdapter.ts"
 import {
   AgentResumeFailed,
@@ -43,9 +47,11 @@ import {
   samePath,
   titleInstruction,
   withTitleTimeout,
+  withToolStatus,
 } from "./agentAdapter.ts"
 import * as path from "node:path"
 import * as ClaudeHooks from "./claudeHooks.ts"
+import * as ClaudeItems from "./claudeItems.ts"
 import { AppConfig } from "../platform/config.ts"
 import * as Subprocess from "../platform/subprocess.ts"
 
@@ -85,6 +91,20 @@ import * as Subprocess from "../platform/subprocess.ts"
 //     spawns the claude child itself (not via Subprocess) and the child
 //     env is built from process.env directly — the SDK owns that process,
 //     and the env must carry the user's credentials verbatim.
+//   - Conversation items (ATC-193): the query runs with
+//     includePartialMessages, so assistant text and thinking stream as
+//     content blocks — itemStarted at content_block_start (keyed by the API
+//     message id + block index), textDelta per delta, itemCompleted at
+//     content_block_stop; the SDK's per-block `assistant` messages are then
+//     used only for tool_use blocks (a message whose id never streamed still
+//     yields its text from them). tool_result user messages complete the
+//     tool items; the mapping itself is claudeItems.ts. The user's own prompt
+//     is emitted at startTurn (the SDK never echoes it): the one item this
+//     adapter keys itself, `${turnId}:prompt`.
+//   - canUseTool callbacks PARK (the promise stays pending) as
+//     ThreadRequests until `respond` resolves them; a turn's end or the
+//     session's close resolves any survivor with a deny so the SDK child
+//     never waits on a request nothing will answer.
 //   - One writer per session id, enforced here. Webhook hook activity is
 //     NOT bridged into these feeds: a TUI-driven session has no adapter
 //     connection by definition, and while ATC drives, the same vocabulary
@@ -129,6 +149,8 @@ const {
   turnStillActive,
   staleTurn,
   writerConnected,
+  unknownRequest,
+  answerKindMismatch,
 } = providerErrors("claude")
 
 /**
@@ -229,6 +251,22 @@ const transcriptLines = (messages: ReadonlyArray<SessionMessage>): Array<string>
 
 type GateError = AgentResumeFailed | AgentIdentityMismatch | AgentProtocolError
 
+/** A parked canUseTool: what the SDK asked, and how to answer it. */
+interface PendingRequest {
+  readonly request: ThreadRequest
+  readonly input: Record<string, unknown>
+  readonly suggestions: ReadonlyArray<PermissionUpdate>
+  readonly resolve: (result: PermissionResult) => void
+}
+
+/** One API message being streamed (per root/subagent lane): its id and the
+ * text/thinking blocks opened so far, by block index. */
+interface StreamingMessage {
+  readonly messageId: string
+  readonly parentItemId: string | null
+  readonly blocks: Map<number, ThreadItem>
+}
+
 interface LiveSession {
   /** The id resume promised (null for create — any id is acceptable). */
   readonly expectedSessionId: string | null
@@ -245,6 +283,17 @@ interface LiveSession {
   activity: AgentActivity
   activeTurn: string | null
   interruptRequested: boolean
+  /** The active turn's TOOL items by id (latest state): a tool_result or
+   * approval flip needs the item it completes. Text is never retained. */
+  readonly toolItems: Map<string, ThreadItem>
+  /** In-flight streamed messages by lane (parent_tool_use_id, "" = root). */
+  readonly streaming: Map<string, StreamingMessage>
+  /** API message ids whose text arrived through the stream — their
+   * `assistant` messages contribute tool_use blocks only. */
+  readonly streamedMessages: Set<string>
+  /** tool_use ids whose canUseTool landed before the tool_use block. */
+  readonly pendingTools: Set<string>
+  readonly pendingRequests: Map<string, PendingRequest>
   closed: boolean
   /** The session itself ended (terminal turn, transport, failed
    * verification) — as opposed to the caller closing its handle. */
@@ -264,7 +313,6 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
 
       /** Live sessions by verified (and, for resumes, expected) session id. */
       const sessions = new Map<string, LiveSession>()
-      let nextTurn = 1
 
       const emit = (session: LiveSession, event: AgentEvent): void =>
         emitAgentEvent(session.queue, event, protocolError)
@@ -281,8 +329,64 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
         }
       }
 
+      /** Publish an item on the feed; tool items are also retained. */
+      const emitItem = (
+        session: LiveSession,
+        type: "itemStarted" | "itemUpdated" | "itemCompleted",
+        item: ThreadItem,
+      ): void => {
+        if ("status" in item) session.toolItems.set(item.id, item)
+        emit(session, { type, item })
+      }
+
+      /** Flip a tool item pending ↔ running around its approval. */
+      const restatusItem = (
+        session: LiveSession,
+        itemId: string,
+        status: "pending" | "running",
+      ): void => {
+        const item = session.toolItems.get(itemId)
+        const updated = item === undefined ? null : withToolStatus(item, status)
+        if (updated !== null) emitItem(session, "itemUpdated", updated)
+      }
+
+      /** Answer every parked request with a deny and close it (turn end,
+       * session close): the SDK child must never wait on a request nothing
+       * will answer. */
+      const closePendingRequests = (session: LiveSession, reason: string): void => {
+        for (const [requestId, pending] of session.pendingRequests) {
+          pending.resolve({ behavior: "deny", message: reason })
+          emit(session, { type: "requestClosed", requestId })
+        }
+        session.pendingRequests.clear()
+        session.pendingTools.clear()
+      }
+
+      /** Complete every block still streaming (a lane replaced mid-block, or
+       * a turn cut short): a `complete: false` item must never outlive the
+       * evidence that could finish it. */
+      const flushStreaming = (session: LiveSession): void => {
+        for (const streaming of session.streaming.values()) {
+          for (const block of streaming.blocks.values()) {
+            if (block.type === "assistantText" || block.type === "reasoning") {
+              emitItem(session, "itemCompleted", { ...block, complete: true })
+            }
+          }
+        }
+        session.streaming.clear()
+      }
+
+      /** A turn ended: its parked requests and item bookkeeping go with it. */
+      const endTurnState = (session: LiveSession): void => {
+        closePendingRequests(session, "the turn ended")
+        flushStreaming(session)
+        session.toolItems.clear()
+        session.streamedMessages.clear()
+      }
+
       const closeSession = (session: LiveSession, failure?: AgentProtocolError): void => {
         if (session.closed) return
+        closePendingRequests(session, "the session closed")
         session.closed = true
         dropFromRegistry(session)
         if (failure !== undefined) {
@@ -302,8 +406,162 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
         closeSession(session, protocolError(error.message))
       }
 
+      const handleStreamEvent = (
+        session: LiveSession,
+        message: { readonly event: unknown; readonly parent_tool_use_id: string | null },
+      ): void => {
+        const turnId = session.activeTurn
+        if (turnId === null) return
+        const lane = message.parent_tool_use_id ?? ""
+        const event = message.event as {
+          readonly type?: unknown
+          readonly index?: unknown
+          readonly message?: { readonly id?: unknown }
+          readonly content_block?: { readonly type?: unknown }
+          readonly delta?: {
+            readonly type?: unknown
+            readonly text?: unknown
+            readonly thinking?: unknown
+          }
+        }
+        if (event.type === "message_start" && typeof event.message?.id === "string") {
+          // A lane replaced mid-block completes what it still had open.
+          const previous = session.streaming.get(lane)
+          if (previous !== undefined) {
+            for (const block of previous.blocks.values()) {
+              if (block.type === "assistantText" || block.type === "reasoning") {
+                emitItem(session, "itemCompleted", { ...block, complete: true })
+              }
+            }
+          }
+          session.streaming.set(lane, {
+            messageId: event.message.id,
+            parentItemId: message.parent_tool_use_id,
+            blocks: new Map(),
+          })
+          session.streamedMessages.add(event.message.id)
+          return
+        }
+        const streaming = session.streaming.get(lane)
+        if (streaming === undefined || typeof event.index !== "number") return
+        if (event.type === "content_block_start") {
+          const kind = event.content_block?.type
+          if (kind !== "text" && kind !== "thinking") return
+          const item = ClaudeItems.textItem(
+            `${streaming.messageId}:${event.index}`,
+            turnId,
+            kind,
+            "",
+            false,
+            streaming.parentItemId,
+          )
+          streaming.blocks.set(event.index, item)
+          emitItem(session, "itemStarted", item)
+          return
+        }
+        const block = streaming.blocks.get(event.index)
+        if (block === undefined || (block.type !== "assistantText" && block.type !== "reasoning")) {
+          return
+        }
+        if (event.type === "content_block_delta") {
+          const delta =
+            event.delta?.type === "text_delta" && typeof event.delta.text === "string"
+              ? event.delta.text
+              : event.delta?.type === "thinking_delta" && typeof event.delta.thinking === "string"
+                ? event.delta.thinking
+                : null
+          if (delta === null) return
+          streaming.blocks.set(event.index, { ...block, text: block.text + delta })
+          emit(session, { type: "textDelta", itemId: block.id, delta })
+          return
+        }
+        if (event.type === "content_block_stop") {
+          streaming.blocks.delete(event.index)
+          emitItem(session, "itemCompleted", { ...block, complete: true })
+        }
+      }
+
+      const handleAssistantMessage = (
+        session: LiveSession,
+        message: {
+          readonly uuid: string
+          readonly message: { readonly id?: unknown; readonly content?: unknown }
+          readonly parent_tool_use_id: string | null
+        },
+      ): void => {
+        const turnId = session.activeTurn
+        if (turnId === null) return
+        const streamed =
+          typeof message.message.id === "string" && session.streamedMessages.has(message.message.id)
+        ClaudeItems.contentBlocks(message.message.content).forEach((block, index) => {
+          if (block.type === "tool_use") {
+            const pending = session.pendingTools.delete(block.id)
+            emitItem(
+              session,
+              "itemStarted",
+              ClaudeItems.toolItem(
+                block,
+                turnId,
+                message.parent_tool_use_id,
+                pending ? "pending" : "running",
+              ),
+            )
+            return
+          }
+          if (streamed || block.type === "tool_result") return
+          // Already complete: one event, like a history item.
+          emitItem(
+            session,
+            "itemCompleted",
+            ClaudeItems.textItem(
+              `${message.uuid}:${index}`,
+              turnId,
+              block.type,
+              block.type === "text" ? block.text : block.thinking,
+              true,
+              message.parent_tool_use_id,
+            ),
+          )
+        })
+      }
+
+      const handleUserMessage = (
+        session: LiveSession,
+        message: {
+          readonly message: { readonly content?: unknown }
+          readonly tool_use_result?: unknown
+        },
+      ): void => {
+        for (const block of ClaudeItems.contentBlocks(message.message.content)) {
+          if (block.type !== "tool_result") continue
+          const item = session.toolItems.get(block.tool_use_id)
+          if (item === undefined) continue
+          emitItem(
+            session,
+            "itemCompleted",
+            ClaudeItems.completeToolItem(item, block, message.tool_use_result),
+          )
+        }
+      }
+
       const handleMessage = (session: LiveSession, message: SDKMessage): void => {
         if (session.closed) return
+        if (message.type === "stream_event") return handleStreamEvent(session, message)
+        if (message.type === "assistant") return handleAssistantMessage(session, message)
+        if (message.type === "user") return handleUserMessage(session, message)
+        if (message.type === "system" && message.subtype === "compact_boundary") {
+          const turnId = session.activeTurn
+          const uuid = (message as { uuid?: unknown }).uuid
+          if (turnId !== null && typeof uuid === "string") {
+            emitItem(session, "itemCompleted", {
+              type: "compaction",
+              id: uuid,
+              turnId,
+              providerMetadata: { claude: message.compact_metadata },
+            })
+          }
+          return
+        }
         if (message.type === "system" && message.subtype === "init") {
           if (
             session.expectedSessionId !== null &&
@@ -374,6 +632,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
           const turnId = session.activeTurn
           session.activeTurn = null
           session.interruptRequested = false
+          endTurnState(session)
           if (turnId !== null) {
             emit(
               session,
@@ -422,6 +681,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
               }
               const turnId = session.activeTurn
               session.activeTurn = null
+              endTurnState(session)
               if (turnId !== null) {
                 emit(session, {
                   type: "turnCompleted",
@@ -440,22 +700,36 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
 
       const makeCanUseTool =
         (session: LiveSession): CanUseTool =>
-        (toolName, _input, options) => {
-          // Activity is NOT touched here: requires_action state events carry
-          // that truthfully, and a synchronous needs_input/working round
-          // trip would clobber overlapping callbacks once responses become
-          // asynchronous (ATC-124).
-          if (!session.closed) {
-            const requestId = options.requestId
-            const kind = toolName === "AskUserQuestion" ? "question" : "approval"
-            emit(session, { type: "requestOpened", requestId, kind })
-            emit(session, { type: "requestClosed", requestId })
-          }
-          return Promise.resolve({
-            behavior: "deny",
-            message: "atc does not answer provider requests yet (native-mode work)",
+        (toolName, input, options) =>
+          new Promise<PermissionResult>((resolve) => {
+            // Activity is NOT touched here: requires_action state events
+            // carry that truthfully. The request parks until `respond`
+            // resolves it, or the turn/session ends (closePendingRequests).
+            if (session.closed || session.activeTurn === null) {
+              resolve({ behavior: "deny", message: "no turn is accepting requests" })
+              return
+            }
+            const request = ClaudeItems.mapRequest(
+              toolName,
+              input,
+              options,
+              session.activeTurn,
+              new Date().toISOString(),
+            )
+            session.pendingRequests.set(options.requestId, {
+              request,
+              input,
+              suggestions: options.suggestions ?? [],
+              resolve,
+            })
+            // The tool_use block may land before or after its permission ask.
+            if (session.toolItems.has(options.toolUseID)) {
+              restatusItem(session, options.toolUseID, "pending")
+            } else {
+              session.pendingTools.add(options.toolUseID)
+            }
+            emit(session, { type: "requestOpened", request })
           })
-        }
 
       const makeHooks = (
         session: LiveSession,
@@ -596,6 +870,11 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
             activity: "unknown",
             activeTurn: null,
             interruptRequested: false,
+            toolItems: new Map(),
+            streaming: new Map(),
+            streamedMessages: new Set(),
+            pendingTools: new Set(),
+            pendingRequests: new Map(),
             closed: false,
             over: false,
           }
@@ -631,6 +910,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
               settingSources: [],
               permissionMode: "default",
               persistSession: true,
+              includePartialMessages: true,
               canUseTool: makeCanUseTool(session),
               hooks: makeHooks(session),
             },
@@ -654,6 +934,44 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
                 closeSession(session, error)
                 return error
               }).pipe(Effect.flatMap(Effect.fail)),
+          }),
+        )
+
+      /**
+       * Open a turn on the feed: turnStarted, then the user's prompt as the
+       * turn's first item (the SDK never echoes it), then the input itself.
+       * Turn ids are uuids — the Thread runtime persists them, so a process-local
+       * counter would collide with an earlier process's turns.
+       */
+      const beginTurn = (session: LiveSession, text: string): string => {
+        const turnId = `claude-turn-${crypto.randomUUID()}`
+        session.activeTurn = turnId
+        // Emitted before anything can await: the consume fiber may deliver
+        // this turn's result on the very next microtask, and turnStarted
+        // must precede turnCompleted on the feed.
+        emit(session, { type: "turnStarted", turnId })
+        emitItem(session, "itemCompleted", {
+          type: "userMessage",
+          id: `${turnId}:prompt`,
+          turnId,
+          text,
+        })
+        session.pushInput(text)
+        return turnId
+      }
+
+      /** The bounded getSessionMessages read behind both transcript readers. */
+      const readTranscript = (
+        providerSessionId: string,
+        cwd: string,
+      ): Effect.Effect<ReadonlyArray<SessionMessage>, string> =>
+        Effect.tryPromise({
+          try: () => sessionMessagesFn(providerSessionId, { dir: cwd }),
+          catch: (error) => (error instanceof Error ? error.message : String(error)),
+        }).pipe(
+          Effect.timeoutOrElse({
+            duration: "10 seconds",
+            orElse: () => Effect.fail("the transcript read timed out"),
           }),
         )
 
@@ -682,13 +1000,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
               if (session.activeTurn !== null) {
                 return yield* Effect.fail(turnStillActive(session.activeTurn))
               }
-              const turnId = `claude-turn-${nextTurn++}`
-              session.activeTurn = turnId
-              // Emitted before anything can await: the consume fiber may
-              // deliver this turn's result on the very next microtask, and
-              // turnStarted must precede turnCompleted on the feed.
-              emit(session, { type: "turnStarted", turnId })
-              session.pushInput(text)
+              const turnId = beginTurn(session, text)
               if (session.sessionId === null) {
                 // First turn after a resume: this is where the deferred
                 // identity verification lands (see the module header).
@@ -722,6 +1034,36 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
                 ),
               )
             }),
+          respond: (requestId, answer) =>
+            Effect.gen(function* () {
+              yield* requireOpen
+              const pending = session.pendingRequests.get(requestId)
+              if (pending === undefined) return yield* Effect.fail(unknownRequest(requestId))
+              if (pending.request.kind !== answer.kind) {
+                return yield* Effect.fail(answerKindMismatch(requestId, pending.request.kind))
+              }
+              session.pendingRequests.delete(requestId)
+              // A cancel is a deny that also interrupts; the SDK carries the
+              // interrupt, and the outcome must read as interrupted.
+              if (answer.kind === "approval" && answer.decision === "cancel") {
+                session.interruptRequested = true
+              }
+              pending.resolve(
+                ClaudeItems.permissionResult(
+                  pending.request,
+                  answer,
+                  pending.input,
+                  pending.suggestions,
+                ),
+              )
+              if (pending.request.itemId !== undefined) {
+                // Answered before its tool_use block landed: the block must
+                // not start pending against a request that is already gone.
+                session.pendingTools.delete(pending.request.itemId)
+                restatusItem(session, pending.request.itemId, "running")
+              }
+              emit(session, { type: "requestClosed", requestId })
+            }),
         }
       }
 
@@ -731,10 +1073,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
         createSession: (options) =>
           Effect.gen(function* () {
             const session = yield* openSession({ cwd: options.cwd })
-            const turnId = `claude-turn-${nextTurn++}`
-            session.activeTurn = turnId
-            emit(session, { type: "turnStarted", turnId })
-            session.pushInput(options.input)
+            const turnId = beginTurn(session, options.input)
             // A create has no expected id, so AgentResumeFailed cannot
             // happen here — same rule as the codex adapter.
             yield* awaitVerified(session).pipe(
@@ -904,14 +1243,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
         // contract: any read failure — a hung read included, hence the
         // bound — is debug-logged and reads as "nothing usable".
         collectTitleContext: (options) =>
-          Effect.tryPromise({
-            try: () => sessionMessagesFn(options.providerSessionId, { dir: options.cwd }),
-            catch: (error) => (error instanceof Error ? error.message : String(error)),
-          }).pipe(
-            Effect.timeoutOrElse({
-              duration: "10 seconds",
-              orElse: () => Effect.fail("the transcript read timed out"),
-            }),
+          readTranscript(options.providerSessionId, options.cwd).pipe(
             Effect.map(transcriptLines),
             Effect.map(buildTitleContext),
             Effect.catch((reason) =>
@@ -923,6 +1255,14 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
                 Effect.as(null),
               ),
             ),
+          ),
+        // The same read, normalized (claudeItems.ts). An unknown session
+        // reads as empty — the SDK cannot tell "no such session" from "no
+        // messages yet"; only a failing read is an error.
+        readHistory: (options) =>
+          readTranscript(options.providerSessionId, options.cwd).pipe(
+            Effect.map(ClaudeItems.mapHistory),
+            Effect.mapError((reason) => protocolError(`the transcript read failed: ${reason}`)),
           ),
         // Claude offers no cheap truthful liveness query for a session it
         // is not driving; the domain's linked-terminal liveness carries

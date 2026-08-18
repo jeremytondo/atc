@@ -28,6 +28,8 @@ export type ResourceChangedEvent = typeof Contract.ResourceChangedEvent.Type
 //     down at ~60s), clients get a liveness signal for half-open sockets,
 //     and a dead subscriber is torn down by its failing write instead of
 //     holding a queue until overflow. No per-subscriber timers, no polling.
+//     Streams that ride another feed (the per-thread event stream) take the
+//     same ticks through heartbeats(), and end with close() like the rest.
 //   - close() (also the layer finalizer) ends every subscriber stream
 //     cleanly. server.ts sequences it to release BEFORE the HTTP listener's
 //     bounded graceful stop — an open SSE response would otherwise hold the
@@ -61,6 +63,12 @@ export class Events extends Context.Service<
     readonly subscribe: <E = never>(options?: {
       readonly reconcile?: Effect.Effect<unknown, E> | undefined
     }) => Effect.Effect<Stream.Stream<ResourceChangedEvent | Heartbeat>, E>
+    /**
+     * The heartbeat ticks alone — for streams that ride another feed but
+     * want the shared keepalive and the same shutdown (`close` ends these
+     * too). Resource events never enter these queues.
+     */
+    readonly heartbeats: () => Effect.Effect<Stream.Stream<Heartbeat>>
     /** Currently registered subscribers. Exists for tests and diagnostics. */
     readonly subscriberCount: () => Effect.Effect<number>
     /** End every subscriber stream, current and future. Idempotent. */
@@ -82,13 +90,16 @@ export const layerWith = (options: EventsOptions) =>
       const capacity = options.subscriberCapacity ?? 128
       const heartbeatInterval = options.heartbeatInterval ?? "25 seconds"
       const subscribers = new Set<Queue.Queue<ResourceChangedEvent | Heartbeat, Cause.Done>>()
+      const heartbeatOnly = new Set<Queue.Queue<Heartbeat, Cause.Done>>()
       let closed = false
 
       const close = () =>
         Effect.sync(() => {
           closed = true
           for (const queue of subscribers) Queue.endUnsafe(queue)
+          for (const queue of heartbeatOnly) Queue.endUnsafe(queue)
           subscribers.clear()
+          heartbeatOnly.clear()
         })
 
       // Belt and braces: the server drains explicitly before the listener
@@ -107,8 +118,17 @@ export const layerWith = (options: EventsOptions) =>
         }
       }
 
+      const tick = (): void => {
+        offer(HEARTBEAT)
+        for (const queue of heartbeatOnly) {
+          if (Queue.offerUnsafe(queue, HEARTBEAT)) continue
+          Queue.endUnsafe(queue)
+          heartbeatOnly.delete(queue)
+        }
+      }
+
       // The one shared timer; the layer scope reaps it on release.
-      yield* Effect.sync(() => offer(HEARTBEAT)).pipe(
+      yield* Effect.sync(tick).pipe(
         Effect.delay(heartbeatInterval),
         Effect.forever,
         Effect.forkScoped,
@@ -129,6 +149,20 @@ export const layerWith = (options: EventsOptions) =>
             }
             return Stream.fromQueue(queue).pipe(
               Stream.ensuring(Effect.sync(() => subscribers.delete(queue))),
+            )
+          }),
+        heartbeats: () =>
+          Effect.gen(function* () {
+            // A few ticks of slack: a consumer that cannot drain one tick
+            // in a heartbeat period is gone anyway.
+            const queue = yield* Queue.make<Heartbeat, Cause.Done>({ capacity: 4 })
+            if (closed) {
+              yield* Queue.end(queue)
+            } else {
+              heartbeatOnly.add(queue)
+            }
+            return Stream.fromQueue(queue).pipe(
+              Stream.ensuring(Effect.sync(() => heartbeatOnly.delete(queue))),
             )
           }),
         subscriberCount: () => Effect.sync(() => subscribers.size),

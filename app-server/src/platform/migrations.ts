@@ -89,4 +89,62 @@ export const migrations: Record<string, Effect.Effect<void, unknown, SqlClient.S
     yield* sql`ALTER TABLE threads ADD COLUMN last_finished_at TEXT`
     yield* sql`ALTER TABLE threads ADD COLUMN last_viewed_at TEXT`
   }),
+  // The Thread runtime's durable state (ATC-193): the normalized transcript
+  // copy — a projection of provider history, never the authority — and the
+  // prompt queue. `transcript_seq` is the thread's monotonic change counter
+  // (every item/turn write takes the next value into `updated_seq`; `ord`
+  // is the value taken at first insert, i.e. transcript order);
+  // `snapshot_version` bumps when a provider re-read replaces the copy and
+  // `snapshot_seq` records the seq that replacement took, so a subscriber
+  // rejoining from before it is told to refetch instead of replayed rows
+  // that no longer describe what was deleted.
+  // `item` is the ThreadItem JSON verbatim. `source` is internal
+  // (native | observed | history). Queue rows with a NULL started_turn_id
+  // are still waiting. CASCADE: a deleted thread takes its runtime state.
+  "0006_thread_runtime": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`ALTER TABLE threads ADD COLUMN transcript_seq INTEGER NOT NULL DEFAULT 0`
+    yield* sql`ALTER TABLE threads ADD COLUMN snapshot_version INTEGER NOT NULL DEFAULT 0`
+    yield* sql`ALTER TABLE threads ADD COLUMN snapshot_seq INTEGER NOT NULL DEFAULT 0`
+    yield* sql`
+      CREATE TABLE thread_turns (
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        turn_id TEXT NOT NULL,
+        ord INTEGER NOT NULL,
+        updated_seq INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'interrupted', 'failed')),
+        error TEXT,
+        prompt_id TEXT,
+        started_at TEXT,
+        ended_at TEXT,
+        source TEXT NOT NULL CHECK (source IN ('native', 'observed', 'history')),
+        PRIMARY KEY (thread_id, turn_id)
+      ) STRICT
+    `
+    yield* sql`
+      CREATE TABLE thread_items (
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        item_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        ord INTEGER NOT NULL,
+        updated_seq INTEGER NOT NULL,
+        item TEXT NOT NULL,
+        PRIMARY KEY (thread_id, item_id)
+      ) STRICT
+    `
+    yield* sql`CREATE INDEX thread_items_thread_ord ON thread_items(thread_id, ord)`
+    // The replay query (`updated_seq > ?` per thread) on both tables.
+    yield* sql`CREATE INDEX thread_items_thread_seq ON thread_items(thread_id, updated_seq)`
+    yield* sql`CREATE INDEX thread_turns_thread_seq ON thread_turns(thread_id, updated_seq)`
+    yield* sql`
+      CREATE TABLE thread_queue (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        prompt TEXT NOT NULL,
+        queued_at TEXT NOT NULL,
+        started_turn_id TEXT
+      ) STRICT
+    `
+    yield* sql`CREATE INDEX thread_queue_thread_id ON thread_queue(thread_id)`
+  }),
 }

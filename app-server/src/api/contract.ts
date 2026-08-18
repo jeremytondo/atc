@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Schema, SchemaTransformation } from "effect"
 import {
   HttpApi,
   HttpApiEndpoint,
@@ -70,6 +70,20 @@ export const AbsolutePath = Schema.String.check(
 /** A wire timestamp: RFC 3339 UTC with millisecond precision (`Date.toISOString()`). */
 const timestamp = (description: string) =>
   Schema.String.annotate({ format: "date-time", description })
+
+/** A decimal integer query parameter within [min, max] (query values are strings on the wire). */
+const integerParam = (description: string, min: number, max?: number) =>
+  Schema.String.check(Schema.isPattern(/^\d+$/, { description: "a decimal integer" }))
+    .annotate({ description })
+    .pipe(
+      Schema.decodeTo(
+        Schema.Int.check(
+          Schema.isGreaterThanOrEqualTo(min),
+          ...(max === undefined ? [] : [Schema.isLessThanOrEqualTo(max)]),
+        ),
+        SchemaTransformation.numberFromString,
+      ),
+    )
 
 export const ProjectName = Schema.NonEmptyString.annotate({
   description: "Human-readable project name.",
@@ -379,6 +393,423 @@ export const ResourceChangedEvent = Schema.Struct({
     "Thin invalidation event: names what changed, never carries resource state. Clients coalesce events and refetch through the corresponding GETs, which stay the single source of truth.",
 })
 
+// --- The Thread runtime vocabulary (ATC-193) ---------------------------------
+//
+// Defined once, here, and reused verbatim by the AgentAdapter seam: adapters
+// emit these values, the Thread runtime persists them, and every client decodes them.
+// Every union is `oneOf` over NAMED variants with one literal discriminant
+// (`type` / `kind`), so openapi.ts can stamp an OpenAPI discriminator and the
+// generated Swift client gets one enum per union instead of a struct of
+// optionals. Optional fields are absent keys, never null (see
+// UpdateProjectRequest).
+
+export const FileChange = Schema.Struct({
+  path: Schema.String.annotate({ description: "Path of the changed file." }),
+  kind: Schema.Literals(["add", "update", "delete"]),
+  diff: Schema.optionalKey(
+    Schema.String.annotate({ description: "Unified diff, when the provider supplies one." }),
+  ),
+}).annotate({ identifier: "FileChange", description: "One file touched by a change." })
+
+export const ToolStatus = Schema.Literals(["pending", "running", "completed", "error"]).annotate({
+  identifier: "ToolStatus",
+  description:
+    "Lifecycle of a tool item: pending (not executing yet — typically awaiting approval), running, completed, or error.",
+})
+
+// `id` is the provider's own item id when it has a stable one (Codex item id,
+// Claude tool_use id), otherwise adapter-derived — unique within a thread,
+// never ATC-minted. Items carry no position: transcript order is array order,
+// live items append at the tail, and an update re-sends the whole item
+// (upsert by id).
+const threadItemBase = {
+  id: Schema.String.annotate({ description: "Item id, unique within the thread." }),
+  turnId: Schema.String.annotate({ description: "The turn this item belongs to." }),
+  parentItemId: Schema.optionalKey(
+    Schema.String.annotate({
+      description:
+        "The enclosing item when this work happened inside a subagent or nested tool; absent at top level.",
+    }),
+  ),
+  providerMetadata: Schema.optionalKey(
+    Schema.Unknown.annotate({
+      description:
+        "Opaque provider-namespaced JSON (e.g. { codex: { phase } }). Clients never branch on it.",
+    }),
+  ),
+}
+
+const toolFields = {
+  title: Schema.String.annotate({
+    description: 'Adapter-rendered one-liner for list rows ("bun test", "Edit threads.ts").',
+  }),
+  status: ToolStatus,
+  error: Schema.optionalKey(
+    Schema.String.annotate({
+      description:
+        'Human-readable failure; present iff status is error (a declined approval is "declined").',
+    }),
+  ),
+}
+
+export const ThreadItemUserMessage = Schema.Struct({
+  type: Schema.Literal("userMessage"),
+  ...threadItemBase,
+  text: Schema.String,
+}).annotate({ identifier: "ThreadItemUserMessage", description: "A user prompt (text only)." })
+
+export const ThreadItemAssistantText = Schema.Struct({
+  type: Schema.Literal("assistantText"),
+  ...threadItemBase,
+  text: Schema.String,
+  complete: Schema.Boolean.annotate({
+    description: "False while the text is still streaming (text.delta events extend it).",
+  }),
+}).annotate({ identifier: "ThreadItemAssistantText", description: "Assistant message text." })
+
+export const ThreadItemReasoning = Schema.Struct({
+  type: Schema.Literal("reasoning"),
+  ...threadItemBase,
+  text: Schema.String,
+  complete: Schema.Boolean.annotate({
+    description: "False while the text is still streaming (text.delta events extend it).",
+  }),
+}).annotate({ identifier: "ThreadItemReasoning", description: "Model reasoning (summary) text." })
+
+export const ThreadItemCommand = Schema.Struct({
+  type: Schema.Literal("command"),
+  ...threadItemBase,
+  ...toolFields,
+  command: Schema.String,
+  cwd: Schema.optionalKey(Schema.String),
+  output: Schema.optionalKey(Schema.String.annotate({ description: "Aggregated stdout/stderr." })),
+  exitCode: Schema.optionalKey(Schema.Int),
+}).annotate({ identifier: "ThreadItemCommand", description: "A shell command the agent ran." })
+
+export const ThreadItemFileChange = Schema.Struct({
+  type: Schema.Literal("fileChange"),
+  ...threadItemBase,
+  ...toolFields,
+  changes: Schema.Array(FileChange),
+}).annotate({ identifier: "ThreadItemFileChange", description: "Files the agent changed." })
+
+export const ThreadItemMcpCall = Schema.Struct({
+  type: Schema.Literal("mcpCall"),
+  ...threadItemBase,
+  ...toolFields,
+  server: Schema.String,
+  tool: Schema.String,
+  arguments: Schema.Unknown,
+  result: Schema.optionalKey(Schema.Unknown),
+}).annotate({ identifier: "ThreadItemMcpCall", description: "An MCP tool call." })
+
+export const ThreadItemToolCall = Schema.Struct({
+  type: Schema.Literal("toolCall"),
+  ...threadItemBase,
+  ...toolFields,
+  name: Schema.String,
+  input: Schema.Unknown,
+  output: Schema.optionalKey(Schema.Unknown),
+}).annotate({
+  identifier: "ThreadItemToolCall",
+  description: "Any other tool call (file reads, searches, subagents, web fetches, …).",
+})
+
+export const ThreadItemCompaction = Schema.Struct({
+  type: Schema.Literal("compaction"),
+  ...threadItemBase,
+}).annotate({
+  identifier: "ThreadItemCompaction",
+  description: "Marker: the provider compacted the conversation context here.",
+})
+
+export const ThreadItem = Schema.Union(
+  [
+    ThreadItemUserMessage,
+    ThreadItemAssistantText,
+    ThreadItemReasoning,
+    ThreadItemCommand,
+    ThreadItemFileChange,
+    ThreadItemMcpCall,
+    ThreadItemToolCall,
+    ThreadItemCompaction,
+  ],
+  { mode: "oneOf" },
+).annotate({
+  identifier: "ThreadItem",
+  description: "One normalized transcript item, discriminated by `type`.",
+})
+
+export const ThreadTurnStatus = Schema.Literals([
+  "running",
+  "completed",
+  "interrupted",
+  "failed",
+]).annotate({ identifier: "ThreadTurnStatus", description: "Lifecycle of one turn." })
+
+export const ThreadTurn = Schema.Struct({
+  id: Schema.String.annotate({
+    description: "Provider turn id (Codex) or adapter-derived (Claude); unique within the thread.",
+  }),
+  status: ThreadTurnStatus,
+  error: Schema.optionalKey(
+    Schema.String.annotate({ description: "Failure detail; only ever present when failed." }),
+  ),
+  promptId: Schema.optionalKey(
+    Schema.String.annotate({
+      description: "The queued prompt this turn ran, when ATC started it.",
+    }),
+  ),
+  startedAt: Schema.optionalKey(timestamp("Turn start; history re-reads may lack it.")),
+  endedAt: Schema.optionalKey(timestamp("Turn end; absent while running.")),
+}).annotate({ identifier: "ThreadTurn", description: "One turn of the conversation." })
+
+export const Question = Schema.Struct({
+  id: Schema.String.annotate({ description: "Question id, the key of the answer." }),
+  header: Schema.String,
+  question: Schema.String,
+  options: Schema.Array(
+    Schema.Struct({ label: Schema.String, description: Schema.String }).annotate({
+      identifier: "QuestionOption",
+    }),
+  ),
+  multiSelect: Schema.Boolean,
+  freeform: Schema.Boolean.annotate({
+    description: "A typed answer that is not one of the options is accepted.",
+  }),
+  secret: Schema.Boolean.annotate({
+    description: "The answer is sensitive (a credential): mask it while typing and never echo it.",
+  }),
+}).annotate({ identifier: "Question", description: "One question the agent asked the user." })
+
+export const ApprovalSubjectCommand = Schema.Struct({
+  type: Schema.Literal("command"),
+  command: Schema.String,
+  cwd: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "ApprovalSubjectCommand" })
+
+export const ApprovalSubjectFileChange = Schema.Struct({
+  type: Schema.Literal("fileChange"),
+  changes: Schema.Array(FileChange),
+}).annotate({ identifier: "ApprovalSubjectFileChange" })
+
+export const ApprovalSubjectTool = Schema.Struct({
+  type: Schema.Literal("tool"),
+  name: Schema.String,
+  input: Schema.Unknown,
+}).annotate({ identifier: "ApprovalSubjectTool" })
+
+export const ApprovalSubject = Schema.Union(
+  [ApprovalSubjectCommand, ApprovalSubjectFileChange, ApprovalSubjectTool],
+  { mode: "oneOf" },
+).annotate({
+  identifier: "ApprovalSubject",
+  description: "What the agent is asking permission for, discriminated by `type`.",
+})
+
+const threadRequestBase = {
+  id: Schema.String.annotate({ description: "Request id; answer it through the API." }),
+  turnId: Schema.String,
+  itemId: Schema.optionalKey(
+    Schema.String.annotate({ description: "The item awaiting this request, when known." }),
+  ),
+  openedAt: timestamp("When the provider opened the request."),
+}
+
+export const ThreadRequestQuestion = Schema.Struct({
+  kind: Schema.Literal("question"),
+  ...threadRequestBase,
+  questions: Schema.Array(Question),
+}).annotate({ identifier: "ThreadRequestQuestion", description: "The agent asked questions." })
+
+export const ThreadRequestApproval = Schema.Struct({
+  kind: Schema.Literal("approval"),
+  ...threadRequestBase,
+  title: Schema.String.annotate({ description: "One-line prompt to show the user." }),
+  reason: Schema.optionalKey(Schema.String.annotate({ description: "Why approval is needed." })),
+  subject: ApprovalSubject,
+}).annotate({ identifier: "ThreadRequestApproval", description: "The agent asked for approval." })
+
+export const ThreadRequest = Schema.Union([ThreadRequestQuestion, ThreadRequestApproval], {
+  mode: "oneOf",
+}).annotate({
+  identifier: "ThreadRequest",
+  description:
+    "A pending provider request parked until answered — live state, not a transcript item; discriminated by `kind`.",
+})
+
+export const ThreadRequestList = Schema.Array(ThreadRequest).annotate({
+  identifier: "ThreadRequestList",
+  description: "The thread's pending requests, oldest first.",
+})
+
+export const ThreadRequestQuestionAnswer = Schema.Struct({
+  kind: Schema.Literal("question"),
+  answers: Schema.Record(Schema.String, Schema.Array(Schema.String)).annotate({
+    description:
+      "Question id → chosen option labels (exactly one unless multiSelect), or one freeform string.",
+  }),
+}).annotate({ identifier: "ThreadRequestQuestionAnswer" })
+
+export const ApprovalDecision = Schema.Literals([
+  "accept",
+  "acceptForSession",
+  "decline",
+  "cancel",
+]).annotate({
+  identifier: "ApprovalDecision",
+  description: "cancel = decline and interrupt the turn.",
+})
+
+export const ThreadRequestApprovalAnswer = Schema.Struct({
+  kind: Schema.Literal("approval"),
+  decision: ApprovalDecision,
+}).annotate({ identifier: "ThreadRequestApprovalAnswer" })
+
+export const ThreadRequestAnswer = Schema.Union(
+  [ThreadRequestQuestionAnswer, ThreadRequestApprovalAnswer],
+  { mode: "oneOf" },
+).annotate({
+  identifier: "ThreadRequestAnswer",
+  description: "The answer to a pending request; `kind` must match the request's.",
+})
+
+export const PromptThreadRequest = Schema.Struct({
+  prompt: Schema.NonEmptyString.annotate({ description: "The user's message." }),
+}).annotate({
+  identifier: "PromptThreadRequest",
+  description: "Payload for prompting a thread: text only (attachments are additive later).",
+})
+
+export const PromptThreadResponse = Schema.Struct({
+  promptId: Schema.String.annotate({ description: "The admitted prompt's id." }),
+  turnId: Schema.optionalKey(
+    Schema.String.annotate({
+      description: "Present when the prompt started a turn at once; absent when it queued.",
+    }),
+  ),
+}).annotate({
+  identifier: "PromptThreadResponse",
+  description: "A prompt was admitted: it started a turn now, or waits in the queue.",
+})
+
+export const QueuedPrompt = Schema.Struct({
+  id: Schema.String,
+  prompt: Schema.String,
+  queuedAt: timestamp("When the prompt was admitted."),
+}).annotate({
+  identifier: "QueuedPrompt",
+  description: "A prompt admitted while a turn was running; it runs at the next idle.",
+})
+
+export const QueuedPromptList = Schema.Array(QueuedPrompt).annotate({
+  identifier: "QueuedPromptList",
+  description: "Prompts still waiting, oldest first.",
+})
+
+export const ThreadTranscript = Schema.Struct({
+  items: Schema.Array(ThreadItem).annotate({ description: "Transcript order, oldest first." }),
+  turns: Schema.Array(ThreadTurn).annotate({
+    description: "Every turn referenced by `items`, plus any turn still running.",
+  }),
+  seq: Schema.Int.annotate({
+    description: "The thread's change counter at the time of the read; subscribe with after=seq.",
+  }),
+  snapshotVersion: Schema.Int.annotate({
+    description: "Bumps whenever a provider re-read replaced the copy.",
+  }),
+  hasMore: Schema.Boolean.annotate({
+    description: "Older items exist before the first one returned.",
+  }),
+}).annotate({
+  identifier: "ThreadTranscript",
+  description:
+    "ATC's normalized copy of the provider conversation — a rebuildable projection, never the authority.",
+})
+
+// `seq` is the thread's monotonic change counter: every durable change takes
+// the next value and it appears only on durable events (and as the head of a
+// transcript). Live-only events carry none and are never replayed.
+const seq = Schema.Int.annotate({ description: "Position of this durable change." })
+
+export const ThreadEventItemStarted = Schema.Struct({
+  type: Schema.Literal("item.started"),
+  seq,
+  item: ThreadItem,
+}).annotate({ identifier: "ThreadEventItemStarted" })
+export const ThreadEventItemUpdated = Schema.Struct({
+  type: Schema.Literal("item.updated"),
+  seq,
+  item: ThreadItem,
+}).annotate({ identifier: "ThreadEventItemUpdated" })
+export const ThreadEventItemCompleted = Schema.Struct({
+  type: Schema.Literal("item.completed"),
+  seq,
+  item: ThreadItem,
+}).annotate({ identifier: "ThreadEventItemCompleted" })
+export const ThreadEventTurnStarted = Schema.Struct({
+  type: Schema.Literal("turn.started"),
+  seq,
+  turn: ThreadTurn,
+}).annotate({ identifier: "ThreadEventTurnStarted" })
+export const ThreadEventTurnCompleted = Schema.Struct({
+  type: Schema.Literal("turn.completed"),
+  seq,
+  turn: ThreadTurn,
+}).annotate({ identifier: "ThreadEventTurnCompleted" })
+export const ThreadEventTextDelta = Schema.Struct({
+  type: Schema.Literal("text.delta"),
+  itemId: Schema.String,
+  delta: Schema.String,
+}).annotate({
+  identifier: "ThreadEventTextDelta",
+  description: "Live-only, never replayed: appends to a streaming assistantText or reasoning item.",
+})
+export const ThreadEventRequestOpened = Schema.Struct({
+  type: Schema.Literal("request.opened"),
+  request: ThreadRequest,
+}).annotate({ identifier: "ThreadEventRequestOpened", description: "Live-only." })
+export const ThreadEventRequestClosed = Schema.Struct({
+  type: Schema.Literal("request.closed"),
+  requestId: Schema.String,
+}).annotate({ identifier: "ThreadEventRequestClosed", description: "Live-only." })
+export const ThreadEventQueueUpdated = Schema.Struct({
+  type: Schema.Literal("queue.updated"),
+  prompts: QueuedPromptList,
+}).annotate({
+  identifier: "ThreadEventQueueUpdated",
+  description: "Live-only: the full queue, every time it changes.",
+})
+export const ThreadEventSnapshotInvalidated = Schema.Struct({
+  type: Schema.Literal("snapshot.invalidated"),
+  seq,
+  snapshotVersion: Schema.Int,
+}).annotate({
+  identifier: "ThreadEventSnapshotInvalidated",
+  description:
+    "A provider re-read replaced the copy: refetch the transcript and resubscribe after `seq`.",
+})
+
+export const ThreadEvent = Schema.Union(
+  [
+    ThreadEventItemStarted,
+    ThreadEventItemUpdated,
+    ThreadEventItemCompleted,
+    ThreadEventTurnStarted,
+    ThreadEventTurnCompleted,
+    ThreadEventTextDelta,
+    ThreadEventRequestOpened,
+    ThreadEventRequestClosed,
+    ThreadEventQueueUpdated,
+    ThreadEventSnapshotInvalidated,
+  ],
+  { mode: "oneOf" },
+).annotate({
+  identifier: "ThreadEvent",
+  description:
+    "One per-thread stream event, discriminated by `type`. Durable events carry `seq` and replay on reconnect (after=seq); live-only events do not.",
+})
+
 // Every error carries a required `message` field ON THE WIRE, computed from
 // the structured fields by the class's own constructor — the one place each
 // message rule lives. Construction sites never pass it, every consumer (the
@@ -599,6 +1030,69 @@ export class ThreadBusy extends Schema.TaggedErrorClass<ThreadBusy>()(
     super({
       ...props,
       message: `thread ${props.threadId} is working; retry once the turn completes`,
+    })
+  }
+}
+
+/** Unknown or already-answered request id on the thread. */
+export class RequestNotFound extends Schema.TaggedErrorClass<RequestNotFound>()(
+  "RequestNotFound",
+  { threadId: Schema.String, requestId: Schema.String, message: errorMessage },
+  {
+    identifier: "RequestNotFound",
+    description:
+      "No pending request with the given id on this thread (unknown, or already answered).",
+    httpApiStatus: 404,
+  },
+) {
+  constructor(props: { readonly threadId: string; readonly requestId: string }) {
+    super({
+      ...props,
+      message: `thread ${props.threadId} has no pending request ${props.requestId}`,
+    })
+  }
+}
+
+/** The answer does not fit the request (kind mismatch, unknown question, non-option answer). */
+export class InvalidRequestAnswer extends Schema.TaggedErrorClass<InvalidRequestAnswer>()(
+  "InvalidRequestAnswer",
+  {
+    threadId: Schema.String,
+    requestId: Schema.String,
+    reason: Schema.String,
+    message: errorMessage,
+  },
+  {
+    identifier: "InvalidRequestAnswer",
+    description:
+      "The answer does not fit the pending request: kind mismatch, unknown question id, or a non-option answer to a question that is not freeform.",
+    httpApiStatus: 400,
+  },
+) {
+  constructor(props: {
+    readonly threadId: string
+    readonly requestId: string
+    readonly reason: string
+  }) {
+    super({ ...props, message: props.reason })
+  }
+}
+
+/** Unknown queued prompt id, or the prompt already started (it is a turn now). */
+export class QueuedPromptNotFound extends Schema.TaggedErrorClass<QueuedPromptNotFound>()(
+  "QueuedPromptNotFound",
+  { threadId: Schema.String, promptId: Schema.String, message: errorMessage },
+  {
+    identifier: "QueuedPromptNotFound",
+    description:
+      "No waiting prompt with the given id on this thread (unknown, or already started).",
+    httpApiStatus: 404,
+  },
+) {
+  constructor(props: { readonly threadId: string; readonly promptId: string }) {
+    super({
+      ...props,
+      message: `thread ${props.threadId} has no waiting prompt ${props.promptId}`,
     })
   }
 }
@@ -864,6 +1358,108 @@ export class V1 extends HttpApiGroup.make("v1")
         "Open the thread's TUI terminal. Idempotent: a live linked terminal is returned as-is. Otherwise the provider TUI is launched in a new terminal — a confirmed session is relaunched against its exact persisted identity (ATC never adopts a different one), an unconfirmed one materializes a fresh provider session whose identity is established and persisted before this call returns. " +
           "A provider that can be probed (Codex) fails fast when the persisted session no longer exists; one that cannot (Claude) launches blind — a successful open whose terminal dies within seconds is a state clients must expect and surface.",
       ),
+    // --- The Thread runtime (ATC-193): drive a thread with no Terminal ---
+    HttpApiEndpoint.post("promptThread", "/threads/:threadId/prompt", {
+      params: threadIdParam,
+      payload: PromptThreadRequest,
+      success: PromptThreadResponse,
+      error: [ThreadNotFound, ThreadArchived, ProviderUnavailable, ProviderSessionConflict],
+    })
+      .annotate(OpenApi.Identifier, "promptThread")
+      .annotate(
+        OpenApi.Description,
+        "Prompt the thread. Always admitted: an idle thread starts a turn at once (`turnId` present) and a busy one queues the prompt to run at the next idle (`turnId` absent) — there is no busy error and no lock between surfaces. " +
+          "The turn is server-owned: the client's connection never matters to it. When the prompt would start now and the provider refuses, it is un-admitted (the error means not accepted; nothing stays queued); a prompt queued behind others is admitted regardless. Follow the turn on the per-thread event stream.",
+      ),
+    HttpApiEndpoint.get("getThreadTranscript", "/threads/:threadId/transcript", {
+      params: threadIdParam,
+      query: {
+        before: Schema.optionalKey(
+          Schema.String.annotate({
+            description:
+              "Page older: return items before this item id (a cursor from a replaced copy reads as an empty page).",
+          }),
+        ),
+        limit: Schema.optionalKey(
+          integerParam("Most items to return, 1–200 (default 200).", 1, 200),
+        ),
+      },
+      success: ThreadTranscript,
+      error: ThreadNotFound,
+    })
+      .annotate(OpenApi.Identifier, "getThreadTranscript")
+      .annotate(
+        OpenApi.Description,
+        "Read the thread's transcript: the newest `limit` items (or the page before `before`), oldest first, with every turn they reference and any running turn, plus the head `seq` to subscribe after and the `snapshotVersion`. " +
+          "The transcript is ATC's copy of the provider's conversation — a re-read from the provider replaces it wholesale (snapshotVersion bumps, `snapshot.invalidated` on the stream).",
+      ),
+    HttpApiEndpoint.get("subscribeThreadEvents", "/threads/:threadId/events", {
+      params: threadIdParam,
+      query: {
+        after: Schema.optionalKey(
+          integerParam(
+            "Replay every durable change after this seq before going live; omit for live only.",
+            0,
+          ),
+        ),
+      },
+      success: HttpApiSchema.StreamSse({ data: ThreadEvent }),
+      error: ThreadNotFound,
+    })
+      .annotate(OpenApi.Identifier, "subscribeThreadEvents")
+      // The generated 200 documents StreamSse's frame envelope; openapi.ts
+      // replaces it with the data-only wire shape (see subscribeEvents).
+      .annotate(
+        OpenApi.Description,
+        "Subscribe to one thread's live events (SSE): items as they start, stream (`text.delta`), update, and complete; turns; pending requests; the queue; and snapshot invalidations. " +
+          "Durable events carry `seq`; track the highest seen and reconnect with `after=<seq>` to replay every change you missed (current state per row, in seq order) — a rejoin from before a provider re-read gets `snapshot.invalidated` instead: refetch the transcript and resubscribe after its `seq`. " +
+          "Framed like /events (see that endpoint's response); a subscriber that falls too far behind is ended and should resubscribe with `after`.",
+      ),
+    HttpApiEndpoint.post("interruptThread", "/threads/:threadId/interrupt", {
+      params: threadIdParam,
+      error: [ThreadNotFound, ProviderUnavailable],
+    })
+      .annotate(OpenApi.Identifier, "interruptThread")
+      .annotate(
+        OpenApi.Description,
+        "Interrupt the turn the server is driving (its `turn.completed` reads interrupted). A thread with no server-driven turn is a no-op — a turn a TUI drives is interrupted from the TUI — and queued prompts stay queued; they run at the next idle.",
+      ),
+    HttpApiEndpoint.get("listThreadRequests", "/threads/:threadId/requests", {
+      params: threadIdParam,
+      success: ThreadRequestList,
+      error: ThreadNotFound,
+    })
+      .annotate(OpenApi.Identifier, "listThreadRequests")
+      .annotate(
+        OpenApi.Description,
+        "List the thread's pending provider requests (approvals and questions). Requests park until answered — no timeout — and die with their turn.",
+      ),
+    HttpApiEndpoint.post("answerThreadRequest", "/threads/:threadId/requests/:requestId/answer", {
+      params: { threadId: Schema.String, requestId: Schema.String },
+      payload: ThreadRequestAnswer,
+      error: [ThreadNotFound, RequestNotFound, InvalidRequestAnswer, ProviderUnavailable],
+    })
+      .annotate(OpenApi.Identifier, "answerThreadRequest")
+      .annotate(
+        OpenApi.Description,
+        "Answer a pending request. The answer's `kind` must match the request's; question answers must cover every question with option labels (or freeform text where allowed). An answered or unknown request is 404.",
+      ),
+    HttpApiEndpoint.get("listThreadQueue", "/threads/:threadId/queue", {
+      params: threadIdParam,
+      success: QueuedPromptList,
+      error: ThreadNotFound,
+    })
+      .annotate(OpenApi.Identifier, "listThreadQueue")
+      .annotate(OpenApi.Description, "List the prompts still waiting to run, oldest first."),
+    HttpApiEndpoint.delete("deleteQueuedPrompt", "/threads/:threadId/queue/:promptId", {
+      params: { threadId: Schema.String, promptId: Schema.String },
+      error: [ThreadNotFound, QueuedPromptNotFound],
+    })
+      .annotate(OpenApi.Identifier, "deleteQueuedPrompt")
+      .annotate(
+        OpenApi.Description,
+        "Withdraw a waiting prompt. A prompt that already started is a turn now (404); interrupt the thread instead.",
+      ),
     HttpApiEndpoint.get("listAgents", "/agents", { success: AgentList })
       .annotate(OpenApi.Identifier, "listAgents")
       .annotate(
@@ -883,7 +1479,7 @@ export class V1 extends HttpApiGroup.make("v1")
       .annotate(OpenApi.Identifier, "subscribeEvents")
       // The generated 200 for this endpoint documents StreamSse's decoded
       // frame envelope, not the data-only bytes the server actually emits —
-      // openapi.ts (withDataOnlySseResponse) replaces it with the wire-true
+      // openapi.ts (withDataOnlySseResponses) replaces it with the wire-true
       // shape, and openapi.test.ts pins that documented shape to the bytes.
       .annotate(
         OpenApi.Description,

@@ -368,6 +368,19 @@ describe("atc thread (black box)", () => {
     const fetched = await cli(["thread", "get", thread.id])
     expect(JSON.parse(fetched.stdout)).toEqual(thread)
 
+    // The runtime read commands (ATC-193) work on a thread nobody has
+    // prompted: an empty transcript at seq 0, nothing queued, nothing asked.
+    const transcript = await cli(["thread", "transcript", thread.id, "--limit", "5"])
+    expect(JSON.parse(transcript.stdout)).toEqual({
+      items: [],
+      turns: [],
+      seq: 0,
+      snapshotVersion: 0,
+      hasMore: false,
+    })
+    expect(JSON.parse((await cli(["thread", "queue", thread.id])).stdout)).toEqual([])
+    expect(JSON.parse((await cli(["thread", "requests", thread.id])).stdout)).toEqual([])
+
     const updated = await cli(["thread", "update", thread.id, "--name", "Renamed"])
     expect((JSON.parse(updated.stdout) as { name: string }).name).toBe("Renamed")
 

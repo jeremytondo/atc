@@ -8,8 +8,16 @@
 // over a stale socket file that nothing answers.
 //
 // Turn behavior is keyed off the input text: containing "HANG" leaves the
-// turn active until interrupted; containing "APPROVAL" first round-trips an
-// item/commandExecution/requestApproval server request; containing "SPAWN"
+// turn active until interrupted; containing "APPROVAL" runs a
+// commandExecution item that first round-trips an
+// item/commandExecution/requestApproval server request (the decision
+// completes or declines the item); "QUESTION" round-trips an
+// item/tool/requestUserInput and echoes the answers back as the agent
+// message; "STREAM" streams the agent message as item/agentMessage/delta
+// frames between item/started and item/completed; "COMMAND" runs a
+// completed commandExecution item; every turn broadcasts its userMessage and
+// agentMessage items and records them on the turn for thread/resume;
+// containing "SPAWN"
 // creates a descendant thread (`<threadId>-child-N`) that stays active
 // after the parent's turn completes — mirroring the probed real behavior
 // (experiments/subagent-activity): a subAgentActivity item on the parent
@@ -141,10 +149,19 @@ if (existsSync(socketPath)) {
   rmSync(socketPath, { force: true })
 }
 
+interface Turn {
+  readonly id: string
+  status: string
+  readonly items: Array<Record<string, unknown>>
+  readonly startedAt: number
+  completedAt: number | null
+  error: { message: string } | null
+}
+
 interface Thread {
   readonly id: string
   readonly cwd: string
-  readonly turns: Array<{ id: string; status: string }>
+  readonly turns: Array<Turn>
   // "Usually the first user message in the thread, if available" — set at
   // the first turn/start, like the real rollout history (ATC-155).
   preview: string
@@ -163,7 +180,7 @@ const threads = new Map<string, Thread>()
 const children = new Map<string, Child>()
 const sockets = new Set<import("bun").ServerWebSocket<unknown>>()
 const hangingTurns = new Set<string>()
-const pendingServerRequests = new Map<number, () => void>()
+const pendingServerRequests = new Map<number, (reply: unknown) => void>()
 let nextServerRequestId = 1000
 
 const broadcast = (method: string, params: unknown) => {
@@ -188,18 +205,39 @@ const childStatus = (child: Child) =>
 
 const settleTurn = (thread: Thread, turnId: string, status: string) => {
   const turn = thread.turns.find((entry) => entry.id === turnId)
-  if (turn !== undefined) turn.status = status
+  if (turn === undefined) return
+  turn.status = status
+  turn.completedAt = Math.floor(Date.now() / 1000)
+}
+
+/** Broadcast one item lifecycle notification; completed items land on the
+ * turn's history (what thread/resume replays). */
+const emitItem = (
+  thread: Thread,
+  turnId: string,
+  phase: "started" | "completed",
+  item: Record<string, unknown>,
+) => {
+  broadcast(`item/${phase}`, { threadId: thread.id, turnId, item })
+  if (phase === "completed") thread.turns.find((entry) => entry.id === turnId)?.items.push(item)
+}
+
+const agentMessage = (text: string) => ({
+  id: crypto.randomUUID(),
+  type: "agentMessage",
+  text,
+  phase: null,
+})
+
+const endTurn = (thread: Thread, turnId: string, status: "completed" | "interrupted") => {
+  broadcast("thread/status/changed", { threadId: thread.id, status: { type: "idle" } })
+  settleTurn(thread, turnId, status)
+  broadcast("turn/completed", { threadId: thread.id, turn: { id: turnId, status } })
 }
 
 const finishTurn = (thread: Thread, turnId: string, text: string) => {
-  broadcast("item/completed", {
-    threadId: thread.id,
-    turnId,
-    item: { id: crypto.randomUUID(), type: "agentMessage", text: `fake: ${text}` },
-  })
-  broadcast("thread/status/changed", { threadId: thread.id, status: { type: "idle" } })
-  settleTurn(thread, turnId, "completed")
-  broadcast("turn/completed", { threadId: thread.id, turn: { id: turnId, status: "completed" } })
+  emitItem(thread, turnId, "completed", agentMessage(`fake: ${text}`))
+  endTurn(thread, turnId, "completed")
 }
 
 const handle = (
@@ -216,13 +254,13 @@ const handle = (
   const respondError = (code: number, text: string) =>
     socket.send(JSON.stringify({ id: message.id, error: { code, message: text } }))
 
-  // Responses to our server requests (approval round trip): any answer,
-  // result or error, unblocks the pending turn.
+  // Responses to our server requests (approval/question round trips): any
+  // answer, result or error, unblocks the pending turn with its payload.
   if (message.method === undefined && message.id !== undefined) {
     const pending = pendingServerRequests.get(message.id)
     if (pending !== undefined) {
       pendingServerRequests.delete(message.id)
-      pending()
+      pending(message.result)
     }
     return
   }
@@ -255,7 +293,20 @@ const handle = (
         return respondError(-32600, `no rollout found for thread id ${threadId}`)
       }
       const reported = wrongCwd === "resume" ? `${thread.cwd}-wrong` : thread.cwd
-      return respond({ thread: threadShape(thread, reported) })
+      // Like the real reply, thread/resume carries the full turn history.
+      return respond({
+        thread: {
+          ...threadShape(thread, reported),
+          turns: thread.turns.map((turn) => ({
+            id: turn.id,
+            items: turn.items,
+            status: turn.status,
+            error: turn.error,
+            startedAt: turn.startedAt,
+            completedAt: turn.completedAt,
+          })),
+        },
+      })
     }
     case "thread/unsubscribe":
       return respond({ status: "unsubscribed" })
@@ -349,7 +400,14 @@ const handle = (
       const input = params["input"] as Array<{ text?: string }> | undefined
       const text = input?.[0]?.text ?? ""
       const turnId = crypto.randomUUID()
-      thread.turns.push({ id: turnId, status: "inProgress" })
+      thread.turns.push({
+        id: turnId,
+        status: "inProgress",
+        items: [],
+        startedAt: Math.floor(Date.now() / 1000),
+        completedAt: null,
+        error: null,
+      })
       if (thread.preview === "") {
         thread.preview = text
         const flushLag = Number.parseInt(process.env["FAKE_CODEX_PREVIEW_DELAY_MS"] ?? "0", 10)
@@ -364,14 +422,82 @@ const handle = (
       // The real server broadcasts the turn's input back as a completed
       // userMessage item — content text blocks, unlike agentMessage's
       // top-level text — the retention evidence for title refinement.
-      broadcast("item/completed", {
-        threadId,
-        turnId,
-        item: { id: crypto.randomUUID(), type: "userMessage", content: [{ type: "text", text }] },
+      emitItem(thread, turnId, "completed", {
+        id: crypto.randomUUID(),
+        type: "userMessage",
+        content: [{ type: "text", text, text_elements: [] }],
       })
       if (text.includes("HANG")) {
         hangingTurns.add(threadId)
         return
+      }
+      if (text.includes("STREAM")) {
+        const item = agentMessage("")
+        emitItem(thread, turnId, "started", item)
+        for (const delta of ["fake: ", text]) {
+          broadcast("item/agentMessage/delta", { threadId, turnId, itemId: item.id, delta })
+        }
+        emitItem(thread, turnId, "completed", { ...item, text: `fake: ${text}` })
+        return endTurn(thread, turnId, "completed")
+      }
+      if (text.includes("COMMAND")) {
+        const item = {
+          id: crypto.randomUUID(),
+          type: "commandExecution",
+          command: "pwd",
+          cwd: thread.cwd,
+          status: "inProgress",
+          aggregatedOutput: null,
+          exitCode: null,
+          durationMs: null,
+        }
+        emitItem(thread, turnId, "started", item)
+        emitItem(thread, turnId, "completed", {
+          ...item,
+          status: "completed",
+          aggregatedOutput: `${thread.cwd}\n`,
+          exitCode: 0,
+          durationMs: 12,
+        })
+        return finishTurn(thread, turnId, text)
+      }
+      if (text.includes("QUESTION")) {
+        const requestId = nextServerRequestId++
+        pendingServerRequests.set(requestId, (reply) => {
+          const answers = (reply as { answers?: unknown } | undefined)?.answers ?? "rejected"
+          emitItem(thread, turnId, "completed", agentMessage(`answers: ${JSON.stringify(answers)}`))
+          endTurn(thread, turnId, "completed")
+        })
+        socket.send(
+          JSON.stringify({
+            id: requestId,
+            method: "item/tool/requestUserInput",
+            params: {
+              threadId,
+              turnId,
+              itemId: crypto.randomUUID(),
+              questions: [
+                {
+                  id: "color",
+                  header: "Color",
+                  question: "Which color?",
+                  isOther: false,
+                  isSecret: false,
+                  options: [
+                    { label: "red", description: "warm" },
+                    { label: "blue", description: "cool" },
+                  ],
+                },
+              ],
+              isBlocking: true,
+              autoResolutionMs: null,
+            },
+          }),
+        )
+        return broadcast("thread/status/changed", {
+          threadId,
+          status: { type: "active", activeFlags: ["waitingOnUserInput"] },
+        })
       }
       if (text.includes("SPAWN")) {
         const childId = `${threadId}-child-${children.size + 1}`
@@ -397,19 +523,51 @@ const handle = (
         return finishTurn(thread, turnId, text)
       }
       if (text.includes("APPROVAL")) {
+        const item = {
+          id: crypto.randomUUID(),
+          type: "commandExecution",
+          command: "/bin/sh -c pwd",
+          cwd: thread.cwd,
+          status: "inProgress",
+          aggregatedOutput: null,
+          exitCode: null,
+          durationMs: null,
+        }
+        emitItem(thread, turnId, "started", item)
         const requestId = nextServerRequestId++
-        pendingServerRequests.set(requestId, () => {
+        pendingServerRequests.set(requestId, (reply) => {
+          const decision = (reply as { decision?: unknown } | undefined)?.decision
           broadcast("thread/status/changed", {
             threadId,
             status: { type: "active", activeFlags: [] },
           })
-          finishTurn(thread, turnId, text)
+          if (decision === "accept" || decision === "acceptForSession") {
+            emitItem(thread, turnId, "completed", {
+              ...item,
+              status: "completed",
+              aggregatedOutput: `${thread.cwd}\n`,
+              exitCode: 0,
+              durationMs: 8,
+            })
+            return finishTurn(thread, turnId, text)
+          }
+          emitItem(thread, turnId, "completed", { ...item, status: "declined" })
+          return decision === "cancel"
+            ? endTurn(thread, turnId, "interrupted")
+            : finishTurn(thread, turnId, text)
         })
         socket.send(
           JSON.stringify({
             id: requestId,
             method: "item/commandExecution/requestApproval",
-            params: { threadId, turnId, command: "/bin/sh -c pwd", cwd: thread.cwd },
+            params: {
+              threadId,
+              turnId,
+              itemId: item.id,
+              command: item.command,
+              cwd: thread.cwd,
+              reason: "needs network",
+            },
           }),
         )
         return broadcast("thread/status/changed", {

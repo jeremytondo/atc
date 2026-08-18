@@ -7,9 +7,18 @@ import type { ClaudeQueryFn } from "../../src/agents/claudeAdapter.ts"
 // the load-bearing timing fact), and mimics the SDK's throw-after-error-
 // result iterator behavior. Turn behavior keys off the input text:
 //   "HANG"       — stays running until interrupt()
-//   "PERMISSION" — invokes canUseTool (Bash) before finishing
-//   "ASK"        — invokes canUseTool (AskUserQuestion) before finishing
+//   "PERMISSION" — emits a Bash tool_use block, then invokes canUseTool for
+//                  it and AWAITS the answer (the adapter parks it): allow
+//                  runs the tool (tool_result), deny fails it (is_error)
+//   "ASK"        — invokes canUseTool (AskUserQuestion) with two questions
+//                  and awaits the answer
+//   "STREAM"     — streams the reply as stream_event frames (message_start,
+//                  content_block_start/delta/stop, message_stop) before the
+//                  per-block `assistant` message with the same message id
+//   "TOOL"       — emits a Read tool_use block and its tool_result
 //   "FAILTURN"   — ends with error_max_turns, then the iterator throws
+// Every successful turn ends with a per-block `assistant` text message
+// (`fake: <text>`) before its result, like the SDK's own output.
 
 export interface FakeClaudeQueryOptions {
   /** session_id for created sessions (resumes echo the resume id). */
@@ -29,8 +38,8 @@ export interface FakeClaudeQueryOptions {
 
 export interface FakeClaudeQuery {
   readonly queryFn: ClaudeQueryFn
-  /** Deny results canUseTool handed back, for assertions. */
-  readonly denials: Array<{ toolName: string; behavior: string }>
+  /** PermissionResults canUseTool handed back, for assertions. */
+  readonly decisions: Array<{ toolName: string; result: unknown }>
   /** Interrupt calls observed. */
   readonly interrupts: Array<string>
   /**
@@ -42,7 +51,8 @@ export interface FakeClaudeQuery {
 }
 
 export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeClaudeQuery => {
-  const denials: FakeClaudeQuery["denials"] = []
+  const decisions: FakeClaudeQuery["decisions"] = []
+  let nextMessage = 1
   const interrupts: Array<string> = []
   let lastFire: ((eventName: string, payload?: Record<string, unknown>) => Promise<void>) | null =
     null
@@ -92,6 +102,25 @@ export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeC
       }
     }
     lastFire = fireHook
+    /** One per-block assistant message, like the SDK emits (uuid + API message id). */
+    const assistant = (messageId: string, block: Record<string, unknown>): void => {
+      push({
+        type: "assistant",
+        uuid: crypto.randomUUID(),
+        session_id: sessionId,
+        parent_tool_use_id: null,
+        message: { id: messageId, type: "message", role: "assistant", content: [block] },
+      })
+    }
+    const streamEvent = (event: Record<string, unknown>): void => {
+      push({
+        type: "stream_event",
+        uuid: crypto.randomUUID(),
+        session_id: sessionId,
+        parent_tool_use_id: null,
+        event,
+      })
+    }
     const initOnce = (() => {
       let sent = false
       return () => {
@@ -123,20 +152,108 @@ export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeC
       if (hangs) hanging = text
       await fireHook("UserPromptSubmit")
       if (hangs) return
-      if (text.includes("PERMISSION") || text.includes("ASK")) {
-        const toolName = text.includes("ASK") ? "AskUserQuestion" : "Bash"
-        state("requires_action")
-        const result = await args.options.canUseTool?.(
-          toolName,
-          { command: "pwd" },
-          {
-            signal: new AbortController().signal,
-            requestId: "fake-request-1",
-            toolUseID: "fake-tool-use-1",
+      const messageId = `msg_fake_${nextMessage++}`
+      if (text.includes("STREAM")) {
+        const reply = `fake: ${text}`
+        streamEvent({ type: "message_start", message: { id: messageId, role: "assistant" } })
+        streamEvent({
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "" },
+        })
+        for (const delta of ["fake: ", text]) {
+          streamEvent({
+            type: "content_block_delta",
+            index: 0,
+            delta: { type: "text_delta", text: delta },
+          })
+        }
+        streamEvent({ type: "content_block_stop", index: 0 })
+        streamEvent({ type: "message_stop" })
+        assistant(messageId, { type: "text", text: reply })
+      }
+      if (text.includes("TOOL")) {
+        assistant(messageId, {
+          type: "tool_use",
+          id: "toolu_fake_read",
+          name: "Read",
+          input: { file_path: "/work/notes.md" },
+        })
+        push({
+          type: "user",
+          uuid: crypto.randomUUID(),
+          session_id: sessionId,
+          parent_tool_use_id: null,
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: "toolu_fake_read", content: "hello" }],
           },
-        )
-        denials.push({ toolName, behavior: (result as { behavior: string }).behavior })
+          tool_use_result: { file: { filePath: "/work/notes.md", content: "hello" } },
+        })
+      }
+      if (text.includes("PERMISSION") || text.includes("ASK")) {
+        const ask = text.includes("ASK")
+        const toolName = ask ? "AskUserQuestion" : "Bash"
+        const input = ask
+          ? {
+              questions: [
+                {
+                  question: "Which color?",
+                  header: "Color",
+                  options: [
+                    { label: "red", description: "warm" },
+                    { label: "blue", description: "cool" },
+                  ],
+                  multiSelect: false,
+                },
+                { question: "Any notes?", header: "Notes", options: [], multiSelect: false },
+              ],
+            }
+          : { command: "pwd" }
+        if (!ask)
+          assistant(messageId, { type: "tool_use", id: "fake-tool-use-1", name: toolName, input })
+        state("requires_action")
+        const result = await args.options.canUseTool?.(toolName, input, {
+          signal: new AbortController().signal,
+          requestId: "fake-request-1",
+          toolUseID: "fake-tool-use-1",
+          ...(ask
+            ? {}
+            : { title: "Claude wants to run pwd", decisionReason: "outside the allow list" }),
+        })
+        decisions.push({ toolName, result })
         state("running")
+        const denied = (result as { behavior?: string } | null)?.behavior !== "allow"
+        if (!ask) {
+          push({
+            type: "user",
+            uuid: crypto.randomUUID(),
+            session_id: sessionId,
+            parent_tool_use_id: null,
+            message: {
+              role: "user",
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "fake-tool-use-1",
+                  content: denied ? "permission denied" : "/work",
+                  is_error: denied,
+                },
+              ],
+            },
+          })
+        }
+        if ((result as { interrupt?: boolean } | null)?.interrupt === true) {
+          push({
+            type: "result",
+            subtype: "error_during_execution",
+            session_id: sessionId,
+            is_error: true,
+            errors: ["aborted_streaming"],
+          })
+          finish()
+          return
+        }
       }
       if (text.includes("FAILTURN")) {
         push({
@@ -151,6 +268,7 @@ export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeC
         return
       }
       await fireHook("Stop")
+      if (!text.includes("STREAM")) assistant(messageId, { type: "text", text: `fake: ${text}` })
       push({
         type: "result",
         subtype: "success",
@@ -216,7 +334,7 @@ export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeC
 
   return {
     queryFn,
-    denials,
+    decisions,
     interrupts,
     fireHook: (eventName, payload) => {
       if (lastFire === null) throw new Error("no query started yet")

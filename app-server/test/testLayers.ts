@@ -24,6 +24,8 @@ import type { TerminalAdapter } from "../src/terminals/terminalAdapter.ts"
 import * as TerminalRepository from "../src/terminals/terminalRepository.ts"
 import * as Terminals from "../src/terminals/terminals.ts"
 import * as ThreadRepository from "../src/threads/threadRepository.ts"
+import * as ThreadRuntime from "../src/threads/threadRuntime.ts"
+import * as TranscriptRepository from "../src/threads/transcriptRepository.ts"
 import * as Threads from "../src/threads/threads.ts"
 import * as Zmx from "../src/terminals/zmxAdapter.ts"
 import { V1Handlers } from "../src/api/handlers.ts"
@@ -112,6 +114,8 @@ export const makeTestServiceLayers = (
     | Layer.Success<ServiceLayer>
     | Terminals.Terminals
     | Threads.Threads
+    | ThreadRuntime.ThreadRuntime
+    | TranscriptRepository.TranscriptRepository
     | Projects.Projects
     | AgentRegistry.AgentRegistry
     | Events.Events
@@ -133,6 +137,7 @@ export const makeTestServiceLayers = (
     ProjectRepository.layer,
     TerminalRepository.layer,
     ThreadRepository.layer,
+    TranscriptRepository.layer,
   ).pipe(Layer.provide(Persistence.layerFile(dbFile)))
   const services = Layer.mergeAll(
     base,
@@ -150,8 +155,9 @@ export const makeTestServiceLayers = (
       Subprocess.layer.pipe(Layer.provide(BunServices.layer)),
     ]),
   )
+  const runtime = ThreadRuntime.layer.pipe(Layer.provide([services, registry, eventsLayer]))
   const threads = Threads.layerWith(threadsOptions).pipe(
-    Layer.provide([services, terminals, registry, eventsLayer]),
+    Layer.provide([services, terminals, registry, eventsLayer, runtime]),
   )
   return {
     fake,
@@ -164,6 +170,7 @@ export const makeTestServiceLayers = (
       eventsLayer,
       TestAuthTokenLayer,
       Layer.succeed(Tailscale.Tailscale)({ status: Effect.succeed(tailscaleStatus) }),
+      runtime,
       threads,
       Projects.layer.pipe(Layer.provide([services, terminals, threads, eventsLayer])),
     ),

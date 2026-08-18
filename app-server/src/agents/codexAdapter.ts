@@ -22,10 +22,13 @@ import type {
   AgentConnection,
   AgentEvent,
   AgentIdentityMismatch,
+  AgentItemEvent,
   AgentProtocolError,
   AgentSessionEvent,
   AgentUnavailable,
   EstablishedIdentity,
+  ThreadItem,
+  ThreadRequest,
 } from "./agentAdapter.ts"
 import {
   AgentResumeFailed,
@@ -41,8 +44,10 @@ import {
   titleInstruction,
   versionIsOlder,
   withTitleTimeout,
+  withToolStatus,
 } from "./agentAdapter.ts"
 import * as BuildInfo from "../platform/buildInfo.ts"
+import * as CodexItems from "./codexItems.ts"
 import * as CodexServer from "./codexServer.ts"
 import { AppConfig } from "../platform/config.ts"
 import * as Subprocess from "../platform/subprocess.ts"
@@ -64,9 +69,18 @@ import * as UnixWebSocket from "../platform/unixWebSocket.ts"
 //   - One writer per thread is enforced HERE (the app-server would accept a
 //     concurrent second writer, and concurrent writers corrupt provider
 //     turn attribution — ATC-83 evidence).
-//   - Server-initiated requests (approvals, questions) are surfaced on the
-//     feed and answered with an immediate JSON-RPC rejection — never left
-//     hanging. Real responses are ATC-124 work.
+//   - Server-initiated requests for OUR turns are parked (the JSON-RPC
+//     request stays open) and surfaced as ThreadRequests; `respond` replies
+//     on them (ATC-193). Requests of kinds the seam does not surface
+//     (permissions, MCP elicitation, tool calls) keep an immediate JSON-RPC
+//     rejection so a turn can never hang on ATC. Requests raised for a turn
+//     another writer started are never answered here.
+//   - Conversation items ride the fan-out for every thread (item/started,
+//     item/completed — probed 2026-08-10, ATC-190): a writer session's feed
+//     carries them normalized (codexItems.ts) plus text deltas; observers of
+//     TUI-driven threads get the same item events. Deltas follow the
+//     agentMessage / plan / reasoning-summary streams and always resolve to
+//     the full text on item/completed.
 //   - A lost server connection fails every live session's feed loudly; the
 //     next create/resume reconnects. Sessions never survive their socket.
 //   - Wire shapes stay private to this module; raw events are logged at
@@ -115,6 +129,8 @@ const {
   turnStillActive,
   staleTurn,
   writerConnected,
+  unknownRequest,
+  answerKindMismatch,
 } = providerErrors("codex")
 
 /** A JSON-RPC error response — mapped per call site (resume vs the rest). */
@@ -128,6 +144,8 @@ const ThreadReply = Schema.Struct({
     id: Schema.String,
     cwd: Schema.String,
     status: Schema.optional(Schema.Unknown),
+    // Populated on thread/resume only (generated schema): the history read.
+    turns: Schema.optional(Schema.Unknown),
   }),
 })
 
@@ -204,6 +222,30 @@ const messageItemText = (item: typeof MessageItemNotification.Type.item): string
   (item.content ?? [])
     .flatMap((block) => (block.type === "text" && block.text !== undefined ? [block.text] : []))
     .join("\n")
+// item/started and item/completed carry the item plus its turn; the raw
+// item is normalized by codexItems.ts (unknown types skip there).
+const ItemNotification = Schema.Struct({
+  threadId: Schema.String,
+  turnId: Schema.String,
+  item: Schema.Unknown,
+})
+// The text streams the seam forwards as deltas (see the header).
+const TextDeltaNotification = Schema.Struct({
+  threadId: Schema.String,
+  itemId: Schema.String,
+  delta: Schema.String,
+})
+const TEXT_DELTA_METHODS = new Set([
+  "item/agentMessage/delta",
+  "item/plan/delta",
+  "item/reasoning/summaryTextDelta",
+])
+// serverRequest/resolved: a request answered or cleared elsewhere (another
+// client, or lifecycle cleanup such as an interrupted turn).
+const RequestResolvedNotification = Schema.Struct({
+  threadId: Schema.String,
+  requestId: Schema.Union([Schema.String, Schema.Number]),
+})
 const StatusChangedNotification = Schema.Struct({
   threadId: Schema.String,
   status: Schema.optional(Schema.Unknown),
@@ -228,6 +270,9 @@ const ThreadStartedNotification = Schema.Struct({
 })
 const decodeSubAgentActivity = Schema.decodeUnknownOption(SubAgentActivityNotification)
 const decodeMessageItem = Schema.decodeUnknownOption(MessageItemNotification)
+const decodeItemNotification = Schema.decodeUnknownOption(ItemNotification)
+const decodeTextDelta = Schema.decodeUnknownOption(TextDeltaNotification)
+const decodeRequestResolved = Schema.decodeUnknownOption(RequestResolvedNotification)
 const decodeStatusChanged = Schema.decodeUnknownOption(StatusChangedNotification)
 const decodeTurnStarted = Schema.decodeUnknownOption(TurnStartedNotification)
 const decodeTurnCompleted = Schema.decodeUnknownOption(TurnCompletedNotification)
@@ -244,9 +289,10 @@ const statusToActivity = (status: unknown): AgentActivity => {
     : "working"
 }
 
-const SERVER_REQUEST_KINDS: Record<string, "approval" | "question"> = {
-  "item/commandExecution/requestApproval": "approval",
-  "item/tool/requestUserInput": "question",
+/** A parked server request: the JSON-RPC id to reply on plus its normalized shape. */
+interface PendingRequest {
+  readonly rpcId: number | string
+  readonly request: ThreadRequest
 }
 
 interface LiveSession {
@@ -258,6 +304,12 @@ interface LiveSession {
   /** The turn THIS client started, if any — the only one whose provider
    * requests we may answer. */
   ownTurn: string | null
+  /** The active turn's TOOL items by id (latest state), so an approval can
+   * name its item and flip it to pending; cleared at turn end. Text items
+   * are never retained — the Thread runtime owns the transcript. */
+  readonly toolItems: Map<string, ThreadItem>
+  /** Parked requests by request id, closed with their turn. */
+  readonly pendingRequests: Map<string, PendingRequest>
   /** Set when the transport died underneath the session (vs. caller close). */
   failed: boolean
 }
@@ -313,6 +365,15 @@ const decodeReply = <S extends Schema.Top>(schema: S, reply: unknown) =>
   Schema.decodeUnknownEffect(schema)(reply).pipe(
     Effect.mapError((error) => protocolError(`unexpected reply shape: ${error.message}`)),
   )
+
+/** thread/resume's error mapping: the server's invalid-request code on an
+ * unknown thread id is the fail-closed AgentResumeFailed. */
+const resumeError =
+  (providerSessionId: string) =>
+  (error: RpcError | AgentProtocolError): AgentResumeFailed | AgentProtocolError =>
+    error._tag === "RpcError" && error.code === -32600
+      ? new AgentResumeFailed({ provider: "codex", providerSessionId, reason: error.text })
+      : rpcToProtocol(error)
 
 /** The passive seam's error mapping: an RPC failure is "unavailable". */
 const rpcToUnavailable = (error: RpcError | AgentProtocolError): AgentUnavailable =>
@@ -406,10 +467,11 @@ export const layer = Layer.effect(CodexAdapter)(
     // All live writer sessions, keyed by thread id. They always belong to
     // `current`; a connection teardown fails and clears every one of them.
     const sessions = new Map<string, LiveSession>()
-    // Passive per-thread activity observers (TUI-driven sessions). Unlike
-    // sessions they survive reconnects: the map is adapter-level, and a new
-    // connection's broadcasts route to the same queues.
-    const observers = new Map<string, Set<Queue.Queue<AgentActivity, Cause.Done>>>()
+    // Passive per-thread observers (TUI-driven sessions): activity plus the
+    // fan-out's item events. Unlike sessions they survive reconnects: the
+    // map is adapter-level, and a new connection's broadcasts route to the
+    // same queues.
+    const observers = new Map<string, Set<Queue.Queue<AgentSessionEvent, Cause.Done>>>()
 
     // Descendant bookkeeping (ATC-158): each thread's own last-broadcast
     // status, the child→parent links learned from subAgentActivity items
@@ -472,15 +534,19 @@ export const layer = Layer.effect(CodexAdapter)(
 
     /** Publish the root's current aggregate to its observers and (deduped)
      * writer-session feed. */
+    /** Deliver one event to a thread's observers. Overflow ends the
+     * observation: dropping intermediate transitions would be silent
+     * evidence loss (the first busy drives the confirm marker), while an
+     * ended feed makes the consumer re-observe and re-derive. */
+    const observe = (threadId: string, event: AgentSessionEvent): void => {
+      for (const queue of observers.get(threadId) ?? []) {
+        if (!Queue.offerUnsafe(queue, event)) Queue.endUnsafe(queue)
+      }
+    }
+
     const emitAggregate = (rootId: string): void => {
       const aggregate = aggregateFor(rootId)
-      for (const queue of observers.get(rootId) ?? []) {
-        // Overflow ends the observation: dropping intermediate transitions
-        // would be silent evidence loss (the first busy drives the confirm
-        // marker), while an ended feed makes the consumer re-observe and
-        // re-derive.
-        if (!Queue.offerUnsafe(queue, aggregate)) Queue.endUnsafe(queue)
-      }
+      observe(rootId, { type: "activity", activity: aggregate })
       const session = sessions.get(rootId)
       if (session !== undefined && aggregate !== session.activity) {
         session.activity = aggregate
@@ -579,10 +645,8 @@ export const layer = Layer.effect(CodexAdapter)(
         // Observers outlive the socket, but their evidence just died with
         // it: tell them honestly rather than letting the last busy state
         // sit stale while the provider moves on unheard (ATC-158).
-        for (const set of observers.values()) {
-          for (const queue of set) {
-            if (!Queue.offerUnsafe(queue, "unknown")) Queue.endUnsafe(queue)
-          }
+        for (const threadId of observers.keys()) {
+          observe(threadId, { type: "activity", activity: "unknown" })
         }
         // An armed capture fails closed with the connection: the caller
         // abandons the launch and retries rather than adopting anything
@@ -595,6 +659,19 @@ export const layer = Layer.effect(CodexAdapter)(
       state.socket.close()
     }
 
+    /** Flip a tool item pending ↔ running around its approval. */
+    const restatusItem = (
+      session: LiveSession,
+      itemId: string | undefined,
+      status: "pending" | "running",
+    ): void => {
+      const item = itemId === undefined ? undefined : session.toolItems.get(itemId)
+      const updated = item === undefined ? null : withToolStatus(item, status)
+      if (updated === null) return
+      session.toolItems.set(updated.id, updated)
+      emit(session, { type: "itemUpdated", item: updated })
+    }
+
     const handleServerRequest = (
       state: ClientState,
       message: {
@@ -603,30 +680,44 @@ export const layer = Layer.effect(CodexAdapter)(
         params: Record<string, unknown> | undefined
       },
     ): void => {
-      const kind = SERVER_REQUEST_KINDS[message.method]
       const threadId = message.params?.["threadId"]
       const turnId = message.params?.["turnId"]
       const session = typeof threadId === "string" ? sessions.get(threadId) : undefined
       // Only answer requests for turns THIS client started: a shared-server
       // request belonging to another writer (a TUI's approval prompt) is
-      // never ours to reject. Requests for our turns are surfaced, then
-      // answered with an immediate rejection — never left hanging. Real
-      // responses are ATC-124.
+      // never ours to answer or reject.
       if (session === undefined || session.ownTurn !== turnId) return
-      if (kind !== undefined) {
-        const requestId = String(message.id)
-        emit(session, { type: "requestOpened", requestId, kind })
+      const requestId = String(message.id)
+      const itemId = message.params?.["itemId"]
+      const request = CodexItems.mapRequest(
+        message.method,
+        requestId,
+        message.params,
+        typeof itemId === "string" ? session.toolItems.get(itemId) : undefined,
+        new Date().toISOString(),
+      )
+      if (request === null) {
+        // Not a kind the seam surfaces (yet): the conservative reject, so
+        // the turn proceeds instead of hanging on ATC.
+        state.socket.send(
+          JSON.stringify({
+            id: message.id,
+            error: { code: -32601, message: "atc does not answer this kind of provider request" },
+          }),
+        )
+        return
+      }
+      session.pendingRequests.set(requestId, { rpcId: message.id, request })
+      restatusItem(session, request.itemId, "pending")
+      emit(session, { type: "requestOpened", request })
+    }
+
+    /** Close every parked request of a session (its turn ended). */
+    const closePendingRequests = (session: LiveSession): void => {
+      for (const requestId of session.pendingRequests.keys()) {
         emit(session, { type: "requestClosed", requestId })
       }
-      state.socket.send(
-        JSON.stringify({
-          id: message.id,
-          error: {
-            code: -32601,
-            message: "atc does not answer provider requests yet (native-mode work)",
-          },
-        }),
-      )
+      session.pendingRequests.clear()
     }
 
     const handleNotification = (message: {
@@ -643,10 +734,8 @@ export const layer = Layer.effect(CodexAdapter)(
         if (Option.isSome(subAgent)) {
           registerDescendant(subAgent.value.threadId, subAgent.value.item.agentThreadId)
           emitAggregate(resolveRoot(subAgent.value.threadId))
-          return
         }
-        // Completed conversation items feed the title-context retention;
-        // anything else stays the deliberate silent skip.
+        // Completed conversation items feed the title-context retention.
         if (message.method === "item/completed") {
           const item = decodeMessageItem(params)
           if (Option.isSome(item)) {
@@ -657,6 +746,46 @@ export const layer = Layer.effect(CodexAdapter)(
             )
           }
         }
+        // The normalized item reaches the thread's writer feed and its
+        // observers alike; an item type the seam does not carry, or a
+        // drifted shape, is the deliberate silent skip.
+        const decoded = decodeItemNotification(params)
+        if (Option.isNone(decoded)) return
+        const phase = message.method === "item/started" ? "started" : "completed"
+        const item = CodexItems.mapItem(decoded.value.item, decoded.value.turnId, phase)
+        if (item === null) return
+        const event: AgentItemEvent =
+          phase === "started" ? { type: "itemStarted", item } : { type: "itemCompleted", item }
+        const session = sessions.get(decoded.value.threadId)
+        if (session !== undefined) {
+          if ("status" in item) session.toolItems.set(item.id, item)
+          emit(session, event)
+        }
+        observe(decoded.value.threadId, event)
+        return
+      }
+      if (message.method === "serverRequest/resolved") {
+        // Resolved elsewhere (another client answered, or the turn's
+        // cleanup cleared it): the parked request is gone, and a later
+        // respond is the conflict it should be.
+        const decoded = decodeRequestResolved(params)
+        if (Option.isNone(decoded)) return
+        const session = sessions.get(decoded.value.threadId)
+        const requestId = String(decoded.value.requestId)
+        if (session === undefined || !session.pendingRequests.delete(requestId)) return
+        emit(session, { type: "requestClosed", requestId })
+        return
+      }
+      if (TEXT_DELTA_METHODS.has(message.method)) {
+        const decoded = decodeTextDelta(params)
+        if (Option.isNone(decoded)) return
+        const session = sessions.get(decoded.value.threadId)
+        if (session === undefined) return
+        emit(session, {
+          type: "textDelta",
+          itemId: decoded.value.itemId,
+          delta: decoded.value.delta,
+        })
         return
       }
       // Coarse status fans out for EVERY thread on the shared server
@@ -690,7 +819,13 @@ export const layer = Layer.effect(CodexAdapter)(
         if (session === undefined) return
         const { id: turnId, status } = decoded.value.turn
         if (session.activeTurn === turnId) session.activeTurn = null
-        if (session.ownTurn === turnId) session.ownTurn = null
+        if (session.ownTurn === turnId) {
+          session.ownTurn = null
+          // Requests die with their turn (an interrupted turn drops its
+          // parked approvals); a re-run turn re-asks.
+          closePendingRequests(session)
+        }
+        session.toolItems.clear()
         const outcome =
           status === "completed" ? "completed" : status === "interrupted" ? "interrupted" : "failed"
         emit(
@@ -701,7 +836,7 @@ export const layer = Layer.effect(CodexAdapter)(
         )
         return
       }
-      // Item deltas, token usage, MCP startup noise: not status facts.
+      // Output deltas, token usage, MCP startup noise: not facts the seam carries.
     }
 
     const dispatch = (state: ClientState, raw: string): void => {
@@ -874,6 +1009,8 @@ export const layer = Layer.effect(CodexAdapter)(
           activity: "unknown",
           activeTurn: null,
           ownTurn: null,
+          toolItems: new Map(),
+          pendingRequests: new Map(),
           failed: false,
         }
         const unregister = (): void => {
@@ -882,6 +1019,21 @@ export const layer = Layer.effect(CodexAdapter)(
           pruneRoot(threadId)
           Queue.endUnsafe(queue)
           if (state.alive) {
+            // Requests parked on a closing connection get the conservative
+            // reject: nothing will answer them, and an unanswered request
+            // would park the provider's turn forever.
+            for (const pending of session.pendingRequests.values()) {
+              state.socket.send(
+                JSON.stringify({
+                  id: pending.rpcId,
+                  error: {
+                    code: -32601,
+                    message: "atc closed the connection with the request pending",
+                  },
+                }),
+              )
+            }
+            session.pendingRequests.clear()
             state.socket.send(
               JSON.stringify({
                 id: state.nextId++,
@@ -963,8 +1115,24 @@ export const layer = Layer.effect(CodexAdapter)(
                 ),
               )
             }),
+          respond: (requestId, answer) =>
+            Effect.gen(function* () {
+              yield* requireLive
+              const pending = session.pendingRequests.get(requestId)
+              if (pending === undefined) return yield* Effect.fail(unknownRequest(requestId))
+              if (pending.request.kind !== answer.kind) {
+                return yield* Effect.fail(answerKindMismatch(requestId, pending.request.kind))
+              }
+              session.pendingRequests.delete(requestId)
+              state.socket.send(
+                JSON.stringify({ id: pending.rpcId, result: CodexItems.answerResult(answer) }),
+              )
+              // The item resumes (or ends declined — item/completed says so).
+              restatusItem(session, pending.request.itemId, "running")
+              emit(session, { type: "requestClosed", requestId })
+            }),
         }
-        return { connection, unregister }
+        return { connection, session, unregister }
       })
 
     /**
@@ -1092,17 +1260,7 @@ export const layer = Layer.effect(CodexAdapter)(
             const reply = yield* request(state, "thread/resume", {
               threadId: options.providerSessionId,
               cwd: options.cwd,
-            }).pipe(
-              Effect.mapError((error) =>
-                error._tag === "RpcError" && error.code === -32600
-                  ? new AgentResumeFailed({
-                      provider: "codex",
-                      providerSessionId: options.providerSessionId,
-                      reason: error.text,
-                    })
-                  : rpcToProtocol(error),
-              ),
-            )
+            }).pipe(Effect.mapError(resumeError(options.providerSessionId)))
             const decoded = yield* decodeReply(ThreadReply, reply)
             if (decoded.thread.id !== options.providerSessionId) {
               return yield* Effect.fail(
@@ -1112,12 +1270,22 @@ export const layer = Layer.effect(CodexAdapter)(
             if (!samePath(decoded.thread.cwd, options.cwd)) {
               return yield* Effect.fail(identityMismatch("cwd", options.cwd, decoded.thread.cwd))
             }
-            const { connection } = yield* registerSession(
+            const { connection, session } = yield* registerSession(
               state,
               decoded.thread.id,
               options.cwd,
               decoded.thread.status,
             )
+            // A turn still running on the shared server (ours before a
+            // restart, or a TUI's) is the interrupt target this connection
+            // may name; thread/resume's turns say which it is.
+            const running = yield* CodexItems.decodeHistoryTurns(decoded.thread.turns ?? []).pipe(
+              Effect.map((turns) => turns.findLast((turn) => turn.status === "inProgress")),
+              Effect.orElseSucceed(() => undefined),
+            )
+            if (running !== undefined && session.activeTurn === null) {
+              session.activeTurn = running.id
+            }
             return connection
           }),
         ),
@@ -1201,9 +1369,9 @@ export const layer = Layer.effect(CodexAdapter)(
         Effect.gen(function* () {
           // Ensure the shared connection exists — it is the evidence source.
           yield* getClientRetryable
-          // Bounded (overflow ends the feed — see emitAggregate); a
-          // 16-deep undrained backlog means the observer is gone.
-          const queue = yield* Queue.make<AgentActivity, Cause.Done>({ capacity: 16 })
+          // Bounded (overflow ends the feed — see observe); items arrive in
+          // bursts, so the backlog is sized for a turn's worth of them.
+          const queue = yield* Queue.make<AgentSessionEvent, Cause.Done>({ capacity: 256 })
           // Observer registration and its finalizer land atomically
           // (acquireRelease — ATC-167 M4).
           yield* Effect.acquireRelease(
@@ -1285,21 +1453,24 @@ export const layer = Layer.effect(CodexAdapter)(
               }),
             ),
           )
-          const activityEvents = Stream.fromQueue(queue).pipe(
-            Stream.mapEffect((activity): Effect.Effect<AgentSessionEvent> =>
+          const observedEvents = Stream.fromQueue(queue).pipe(
+            Stream.tap((event) =>
               Effect.gen(function* () {
                 // Any provider-evidenced transition can carry the news that
                 // history exists; `unknown` is the teardown signal, where a
                 // read could only fail and burn the attempt.
-                if (promptPhase === "pending" && activity !== "unknown") {
+                if (
+                  event.type === "activity" &&
+                  promptPhase === "pending" &&
+                  event.activity !== "unknown"
+                ) {
                   promptPhase = "reading"
                   yield* discoverPrompt.pipe(Effect.forkIn(scope))
                 }
-                return { type: "activity", activity }
               }),
             ),
           )
-          return Stream.merge(activityEvents, Stream.fromQueue(promptQueue))
+          return Stream.merge(observedEvents, Stream.fromQueue(promptQueue))
         }),
       generateTitle: (options) =>
         Effect.scoped(
@@ -1384,6 +1555,30 @@ export const layer = Layer.effect(CodexAdapter)(
         ),
       collectTitleContext: (options) =>
         Effect.sync(() => recentMessages.get(options.providerSessionId) ?? null),
+      readHistory: (options) =>
+        Effect.gen(function* () {
+          const state = yield* getClient
+          // thread/resume returns full typed turns[].items[] and is
+          // side-effect free on an already-loaded thread (probed
+          // 2026-08-17). It loads the thread when needed — which the read
+          // needs anyway — and never opens a writer or starts a turn.
+          const reply = yield* request(state, "thread/resume", {
+            threadId: options.providerSessionId,
+            cwd: options.cwd,
+          }).pipe(Effect.mapError(resumeError(options.providerSessionId)))
+          const decoded = yield* decodeReply(ThreadReply, reply)
+          if (decoded.thread.id !== options.providerSessionId) {
+            return yield* Effect.fail(
+              protocolError(
+                `thread/resume answered for ${decoded.thread.id}, not ${options.providerSessionId}`,
+              ),
+            )
+          }
+          const turns = yield* CodexItems.decodeHistoryTurns(decoded.thread.turns ?? []).pipe(
+            Effect.mapError((error) => protocolError(`unexpected turns shape: ${error.message}`)),
+          )
+          return CodexItems.mapHistory(turns)
+        }),
       checkSession: (options) =>
         Effect.gen(function* () {
           const state = yield* getClientRetryable
