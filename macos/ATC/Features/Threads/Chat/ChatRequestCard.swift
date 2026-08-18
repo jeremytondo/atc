@@ -19,8 +19,8 @@ struct ChatRequestCard: View {
             }
         }
         .padding(Spacing.lg)
-        .background(Surface.card, in: RoundedRectangle(cornerRadius: Radius.card))
-        .overlay(RoundedRectangle(cornerRadius: Radius.card).strokeBorder(Surface.cardBorder))
+        // Floats over the transcript with the composer, so glass like it.
+        .glassEffect(in: RoundedRectangle(cornerRadius: Radius.card + Spacing.xs))
     }
 }
 

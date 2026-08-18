@@ -1,5 +1,7 @@
-// The Chat mode of a thread: transcript above, pending requests, the prompt
-// queue, and the composer pinned below. The view holds the thread's Chat
+// The Chat mode of a thread: the transcript, with pending requests, the
+// prompt queue, and the composer floating over its tail as a Liquid Glass
+// bar — the transcript scrolls under the window toolbar above and that bar
+// below, fading into both. The view holds the thread's Chat
 // model for exactly as long as it is on screen (`acquireChat` / `releaseChat`
 // on the Connection's runtime), so navigating away or flipping to TUI drops
 // the subscription while a second window on the same thread keeps it.
@@ -85,12 +87,9 @@ private struct ChatPane: View {
     private var transcript: ChatTranscript { chat.transcript }
 
     var body: some View {
-        VStack(spacing: 0) {
-            transcriptList
-            bottomStack
-        }
-        .overlay(alignment: .top) { statusBanner }
-        .actionErrorAlert($actionError)
+        transcriptList
+            .overlay(alignment: .top) { statusBanner }
+            .actionErrorAlert($actionError)
     }
 
     private func run(_ operation: @escaping () async throws -> Void) {
@@ -136,14 +135,19 @@ private struct ChatPane: View {
                 .frame(maxWidth: 820)
                 .frame(maxWidth: .infinity)
             }
-            // The toolbar floats over the content; keep the first row from
-            // starting under it.
-            .contentMargins(.top, Spacing.xxl, for: .scrollContent)
+            // The transcript scrolls under the toolbar above and the
+            // composer bar below, fading into both with the system's soft
+            // edge effect.
+            .scrollEdgeEffectUnderToolbar()
+            .safeAreaBar(edge: .bottom) { bottomStack }
             // The user scrolling away from the tail stops auto-follow;
-            // returning to it resumes.
+            // returning to it resumes. The toolbar and the composer bar
+            // are content insets that the visible rect spans, so the tail
+            // is where the visible rect reaches the content's end plus the
+            // bottom inset.
             .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentOffset.y + geometry.containerSize.height
-                    >= geometry.contentSize.height - Spacing.xxl
+                geometry.visibleRect.maxY
+                    >= geometry.contentSize.height + geometry.contentInsets.bottom - Spacing.xxl
             } action: { _, atBottom in
                 isFollowingTail = atBottom
             }
@@ -203,29 +207,35 @@ private struct ChatPane: View {
 
     // MARK: - Bottom stack
 
+    /// Everything floating over the transcript's tail is Liquid Glass, and
+    /// one container renders them together (separate glass views sample
+    /// each other where they overlap).
     private var bottomStack: some View {
-        VStack(spacing: Spacing.sm) {
-            ForEach(transcript.requests, id: \.id) { request in
-                ChatRequestCard(request: request) { answer in
-                    run { try await chat.answer(requestID: request.id, answer) }
+        GlassEffectContainer {
+            VStack(spacing: Spacing.sm) {
+                ForEach(transcript.requests, id: \.id) { request in
+                    ChatRequestCard(request: request) { answer in
+                        run { try await chat.answer(requestID: request.id, answer) }
+                    }
                 }
-            }
-            if !transcript.queue.isEmpty {
-                ChatQueueStrip(prompts: transcript.queue) { prompt in
-                    run { try await chat.withdraw(promptID: prompt.id) }
+                if !transcript.queue.isEmpty {
+                    ChatQueueStrip(prompts: transcript.queue) { prompt in
+                        run { try await chat.withdraw(promptID: prompt.id) }
+                    }
                 }
+                ChatComposer(
+                    text: $draft,
+                    isSending: isSending,
+                    showsStop: transcript.runningTurn != nil,
+                    error: chat.promptError,
+                    focusRequest: focusRequest,
+                    send: send,
+                    stop: { run { try await chat.interrupt() } }
+                )
             }
-            ChatComposer(
-                text: $draft,
-                isSending: isSending,
-                showsStop: transcript.runningTurn != nil,
-                error: chat.promptError,
-                focusRequest: focusRequest,
-                send: send,
-                stop: { run { try await chat.interrupt() } }
-            )
         }
         .padding(.horizontal, Spacing.xxl)
+        .padding(.top, Spacing.md)
         .padding(.bottom, Spacing.lg)
         .frame(maxWidth: 820)
         .frame(maxWidth: .infinity)

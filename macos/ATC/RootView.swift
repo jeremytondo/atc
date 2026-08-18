@@ -32,6 +32,9 @@ struct RootView: View {
         // constant color to rest on.
         .containerBackground(AppColors.canvas, for: .window)
         .toolbar(removing: .title)
+        // The toolbar floats over a seamless canvas (ATC-41): no bar behind
+        // it, just its glass controls. Scrolling content gets the system's
+        // soft edge effect under it through `scrollEdgeEffectUnderToolbar`.
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
         .toolbar {
             // Plain text, not a control: hide the glass capsule the toolbar

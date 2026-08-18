@@ -10,7 +10,7 @@ struct ChatQueueStrip: View {
     let withdraw: (QueuedPrompt) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.xs) {
+        VStack(alignment: .leading, spacing: 0) {
             ForEach(prompts, id: \.id) { prompt in
                 HStack(spacing: Spacing.sm) {
                     Image(systemName: "clock")
@@ -30,9 +30,10 @@ struct ChatQueueStrip: View {
                 }
                 .font(.callout)
                 .padding(.horizontal, Spacing.md)
-                .padding(.vertical, Spacing.xs)
-                .background(Surface.raised, in: RoundedRectangle(cornerRadius: Radius.chip))
+                .padding(.vertical, Spacing.sm)
             }
         }
+        // One glass strip floating with the composer, not a chip per row.
+        .glassEffect(in: RoundedRectangle(cornerRadius: Radius.card + Spacing.xs))
     }
 }

@@ -26,6 +26,7 @@ struct DashboardView: View {
             .padding(Spacing.xxl)
             .frame(maxWidth: .infinity, alignment: .top)
         }
+        .scrollEdgeEffectUnderToolbar()
         .overlay {
             if appModel.hasStarted, appModel.runtimes.isEmpty {
                 noConnectionsState
