@@ -136,7 +136,7 @@ describe("ThreadRuntime", () => {
       const after = yield* threads.get(thread.id)
       assert.strictEqual(after.activityState, "idle")
       assert.isTrue(after.unread)
-      assert.isFalse(yield* runtime.isDriving(thread.id))
+      assert.isFalse(yield* runtime.hasWriter(thread.id))
     }).pipe(Effect.scoped, Effect.provide(kit.layer)),
   )
 
@@ -549,7 +549,7 @@ describe("ThreadRuntime", () => {
       )
       assert.strictEqual(failure._tag, "ProviderUnavailable")
       assert.deepStrictEqual(yield* runtime.listQueue(thread.id), [])
-      assert.isFalse(yield* runtime.isDriving(thread.id))
+      assert.isFalse(yield* runtime.hasWriter(thread.id))
     }).pipe(Effect.scoped, Effect.provide(kit.layer)),
   )
 
@@ -565,7 +565,7 @@ describe("ThreadRuntime", () => {
       const busy = yield* Effect.flip(threads.archive(thread.id))
       assert.strictEqual(busy._tag, "ThreadBusy")
       yield* threads.delete(thread.id)
-      assert.isFalse(yield* runtime.isDriving(thread.id))
+      assert.isFalse(yield* runtime.hasWriter(thread.id))
       // The fake connection was closed with the run: no writer remains.
       const resumed = yield* Effect.scoped(
         fake.adapter.resumeSession({ providerSessionId, cwd: thread.workingDirectory }),
@@ -618,7 +618,7 @@ describe("ThreadRuntime restart", () => {
         const threads = yield* Threads
         // Reattached: the run is registered, the thread reads working, the
         // queued prompt waits.
-        yield* waitFor(runtime.isDriving(threadId), (driving) => driving)
+        yield* waitFor(runtime.hasWriter(threadId), (driving) => driving)
         yield* waitFor(
           threads.get(threadId).pipe(Effect.orDie),
           (current) => current.activityState === "working",
@@ -700,7 +700,7 @@ describe("ThreadRuntime restart", () => {
           "after restart",
         ])
         assert.deepStrictEqual(yield* runtime.listQueue(threadId), [])
-        assert.isTrue(yield* runtime.isDriving(threadId))
+        assert.isTrue(yield* runtime.hasWriter(threadId))
       }).pipe(Effect.scoped, Effect.provide(second.layer))
     }),
   )

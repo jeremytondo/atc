@@ -328,7 +328,8 @@ export interface AgentAdapter {
    * memory: the hooks feed dies silently with the TUI (a busy state must
    * re-derive through checkSession), and two live processes FORK the
    * session — so the Thread runtime keeps one live process per thread
-   * (its surface-ownership rules, threadRuntime.ts).
+   * (its surface-ownership rules, threadRuntime.ts) and keeps that one
+   * process's writer connection resident across native turns (ATC-207).
    */
   readonly sharedServer: boolean
   /**

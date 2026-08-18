@@ -252,8 +252,8 @@ export const layerWith = (options: ThreadsOptions) =>
           if (record.providerSessionId === undefined) return { activity: "idle" as const, record }
           const live = (yield* runtime.activity(record.id)) ?? "unknown"
           if (!isBusy(live) || linked !== undefined) return { activity: live, record }
-          // The runtime's own turn is the evidence — never re-derived.
-          if (yield* runtime.isDriving(record.id)) return { activity: live, record }
+          // The runtime's own connection is the evidence — never re-derived.
+          if (yield* runtime.hasWriter(record.id)) return { activity: live, record }
           const adapter = adapterFor(record)
           // A live observation whose feed outlives the TUI (shared-server
           // providers) is already authoritative — it drives liveActivity —

@@ -169,9 +169,15 @@ describe("Thread TUI ownership", () => {
       const started = yield* runtime.prompt(threadId, "chat only")
       assert.isString(started.turnId)
       fake.completeTurn(sessionId, "completed")
-      yield* waitFor(runtime.isDriving(threadId), (driving) => !driving)
+      yield* waitFor(
+        runtime.transcript(threadId).pipe(Effect.orDie),
+        (transcript) => transcript.turns.at(-1)?.status === "completed",
+      )
       const after = yield* threads.get(threadId).pipe(Effect.orDie)
       assert.isUndefined(after.linkedTerminalId)
+      // The native side keeps its connection: the TUI is not wanted, so
+      // nothing takes the session over (ATC-207).
+      assert.isTrue(yield* runtime.hasWriter(threadId))
     }).pipe(Effect.provide(kit.layer)),
   )
 
@@ -206,7 +212,7 @@ describe("Thread TUI ownership", () => {
       assert.isString(started.turnId)
       assert.isTrue(terminalAlive(terminal.id))
       fake.completeTurn(sessionId, "completed")
-      yield* waitFor(runtime.isDriving(threadId), (driving) => !driving)
+      yield* waitFor(runtime.hasWriter(threadId), (driving) => !driving)
       assert.isTrue(terminalAlive(terminal.id))
       const closed = yield* threads.closeTerminal(threadId)
       assert.strictEqual(closed.linkedTerminalId, terminal.id)

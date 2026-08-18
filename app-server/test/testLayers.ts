@@ -104,7 +104,9 @@ export const testAppConfig = (overrides: Partial<AppConfig["Service"]>): Layer.L
  */
 export const makeTestServiceLayers = (
   dbFile = ":memory:",
-  threadOptions: Threads.ThreadsOptions & ThreadNaming.ThreadNamingOptions = {},
+  threadOptions: Threads.ThreadsOptions &
+    ThreadNaming.ThreadNamingOptions &
+    ThreadRuntime.ThreadRuntimeOptions = {},
   eventsOptions: Events.EventsOptions = {},
   configOverrides: Partial<AppConfig["Service"]> = {},
   tailscaleStatus: Tailscale.TailscaleStatus = { state: "disabled" },
@@ -161,7 +163,7 @@ export const makeTestServiceLayers = (
     Layer.provide([services, registry, eventsLayer]),
   )
   const threadTui = ThreadTui.layer.pipe(Layer.provide([services, terminals]))
-  const runtime = ThreadRuntime.layer.pipe(
+  const runtime = ThreadRuntime.layerWith(threadOptions).pipe(
     Layer.provide([services, registry, eventsLayer, naming, threadTui]),
   )
   const threads = Threads.layerWith(threadOptions).pipe(
