@@ -32,6 +32,21 @@ public func makeClient(baseURL: URL, bearerToken: String?) -> Client {
     )
 }
 
+/// The decoder for App Server JSON that reaches a client outside the
+/// generated operations — the SSE frames of the event streams. It decodes
+/// `format: date-time` fields exactly as `makeClient` does; a bare
+/// `JSONDecoder()` rejects every payload carrying a timestamp (request and
+/// turn events), and a stream that drops what it cannot decode would lose
+/// them silently.
+public func makeJSONDecoder() -> JSONDecoder {
+    let decoder = JSONDecoder()
+    let transcoder = ATCDateTranscoder()
+    decoder.dateDecodingStrategy = .custom { decoder in
+        try transcoder.decode(try decoder.singleValueContainer().decode(String.self))
+    }
+    return decoder
+}
+
 /// Adds `Authorization: Bearer <token>` to every request. Loopback servers
 /// ignore it today; remote bearer-token access lands additively on this seam.
 public struct BearerAuthMiddleware: ClientMiddleware {

@@ -1,6 +1,6 @@
-// The prompt composer pinned under the transcript, shaped like the Codex
-// desktop composer: one rounded card, the text growing from a single line
-// to a few, and a round send button in the corner. Return sends,
+// The prompt composer floating over the transcript's tail, shaped like the
+// Codex desktop composer: one rounded Liquid Glass card, the text growing
+// from a single line to a few, and a round send button in the corner. Return sends,
 // Shift-Return inserts a newline. Send is never disabled while connected —
 // the server admits every prompt (idle starts a turn, busy queues it) — and
 // a refused prompt keeps its text with the server's message inline. Stop
@@ -59,8 +59,9 @@ struct ChatComposer: View {
                 }
             }
             .padding(Spacing.md)
-            .background(Surface.raised, in: RoundedRectangle(cornerRadius: Radius.card + Spacing.xs))
-            .overlay(RoundedRectangle(cornerRadius: Radius.card + Spacing.xs).strokeBorder(Surface.chipBorder))
+            // The composer floats over the transcript, so it is glass like
+            // the toolbar controls, not a card on the canvas.
+            .glassEffect(in: RoundedRectangle(cornerRadius: Radius.card + Spacing.xs))
         }
         .onAppear { isFocused = true }
         .onChange(of: focusRequest) { _, _ in isFocused = true }

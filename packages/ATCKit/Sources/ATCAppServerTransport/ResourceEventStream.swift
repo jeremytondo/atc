@@ -57,7 +57,7 @@ public enum ResourceEventStream {
             case .disconnected:
                 return .disconnected
             case .data(let payload):
-                guard let change = try? JSONDecoder().decode(Change.self, from: Data(payload.utf8))
+                guard let change = try? makeJSONDecoder().decode(Change.self, from: Data(payload.utf8))
                 else { return nil }
                 return .change(change)
             }

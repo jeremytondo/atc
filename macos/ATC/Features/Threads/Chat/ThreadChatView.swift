@@ -1,5 +1,7 @@
-// The Chat mode of a thread: transcript above, pending requests, the prompt
-// queue, and the composer pinned below. The view holds the thread's Chat
+// The Chat mode of a thread: the transcript, with pending requests, the
+// prompt queue, and the composer floating over its tail as a Liquid Glass
+// bar — the transcript scrolls under the window toolbar above and that bar
+// below, fading into both. The view holds the thread's Chat
 // model for exactly as long as it is on screen (`acquireChat` / `releaseChat`
 // on the Connection's runtime), so navigating away or flipping to TUI drops
 // the subscription while a second window on the same thread keeps it.
@@ -80,17 +82,16 @@ private struct ChatPane: View {
     @State private var draft = ""
     @State private var isSending = false
     @State private var isFollowingTail = true
+    /// Bumped to jump to the tail and follow it again (a sent prompt).
+    @State private var followRequest = 0
     @State private var actionError: String?
 
     private var transcript: ChatTranscript { chat.transcript }
 
     var body: some View {
-        VStack(spacing: 0) {
-            transcriptList
-            bottomStack
-        }
-        .overlay(alignment: .top) { statusBanner }
-        .actionErrorAlert($actionError)
+        transcriptList
+            .overlay(alignment: .top) { statusBanner }
+            .actionErrorAlert($actionError)
     }
 
     private func run(_ operation: @escaping () async throws -> Void) {
@@ -136,21 +137,34 @@ private struct ChatPane: View {
                 .frame(maxWidth: 820)
                 .frame(maxWidth: .infinity)
             }
-            // The toolbar floats over the content; keep the first row from
-            // starting under it.
-            .contentMargins(.top, Spacing.xxl, for: .scrollContent)
-            // The user scrolling away from the tail stops auto-follow;
-            // returning to it resumes.
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentOffset.y + geometry.containerSize.height
-                    >= geometry.contentSize.height - Spacing.xxl
-            } action: { _, atBottom in
-                isFollowingTail = atBottom
-            }
-            .onChange(of: transcript.items) { _, _ in
+            // The transcript scrolls under the toolbar above and the
+            // composer bar below, fading into both with the system's soft
+            // edge effect.
+            .scrollEdgeEffectUnderToolbar()
+            .safeAreaBar(edge: .bottom) { bottomStack }
+            // Tail-follow, T3Code style: while following, every content
+            // or viewport size change re-pins the tail above the composer
+            // (done from the geometry change, once layout has the new
+            // sizes — a scroll issued when the model changes lands short of
+            // rows that are not measured yet). Only the user's own scroll
+            // gesture leaves follow mode: content growth moves the geometry
+            // too, so it must never be what decides. Ending a gesture at the
+            // tail resumes following.
+            .onScrollGeometryChange(for: ChatTailLayout.self, of: ChatTailLayout.init) { _, _ in
                 if isFollowingTail { proxy.scrollTo(tailAnchor, anchor: .bottom) }
             }
-            .onChange(of: transcript.isLoaded) { _, _ in
+            .onScrollPhaseChange { previous, phase, context in
+                // A gesture leaves follow mode; a gesture ending at the tail
+                // resumes it. An idle that no gesture led to (the first
+                // callback, a programmatic scroll settling) decides nothing.
+                if phase.isGesture {
+                    isFollowingTail = false
+                } else if phase == .idle, previous.isGesture {
+                    isFollowingTail = context.geometry.isAtTail
+                }
+            }
+            .onChange(of: followRequest) { _, _ in
+                isFollowingTail = true
                 proxy.scrollTo(tailAnchor, anchor: .bottom)
             }
         }
@@ -203,29 +217,35 @@ private struct ChatPane: View {
 
     // MARK: - Bottom stack
 
+    /// Everything floating over the transcript's tail is Liquid Glass, and
+    /// one container renders them together (separate glass views sample
+    /// each other where they overlap).
     private var bottomStack: some View {
-        VStack(spacing: Spacing.sm) {
-            ForEach(transcript.requests, id: \.id) { request in
-                ChatRequestCard(request: request) { answer in
-                    run { try await chat.answer(requestID: request.id, answer) }
+        GlassEffectContainer {
+            VStack(spacing: Spacing.sm) {
+                ForEach(transcript.requests, id: \.id) { request in
+                    ChatRequestCard(request: request) { answer in
+                        run { try await chat.answer(requestID: request.id, answer) }
+                    }
                 }
-            }
-            if !transcript.queue.isEmpty {
-                ChatQueueStrip(prompts: transcript.queue) { prompt in
-                    run { try await chat.withdraw(promptID: prompt.id) }
+                if !transcript.queue.isEmpty {
+                    ChatQueueStrip(prompts: transcript.queue) { prompt in
+                        run { try await chat.withdraw(promptID: prompt.id) }
+                    }
                 }
+                ChatComposer(
+                    text: $draft,
+                    isSending: isSending,
+                    showsStop: transcript.runningTurn != nil,
+                    error: chat.promptError,
+                    focusRequest: focusRequest,
+                    send: send,
+                    stop: { run { try await chat.interrupt() } }
+                )
             }
-            ChatComposer(
-                text: $draft,
-                isSending: isSending,
-                showsStop: transcript.runningTurn != nil,
-                error: chat.promptError,
-                focusRequest: focusRequest,
-                send: send,
-                stop: { run { try await chat.interrupt() } }
-            )
         }
         .padding(.horizontal, Spacing.xxl)
+        .padding(.top, Spacing.md)
         .padding(.bottom, Spacing.lg)
         .frame(maxWidth: 820)
         .frame(maxWidth: .infinity)
@@ -238,7 +258,7 @@ private struct ChatPane: View {
         Task {
             if await chat.send(prompt) {
                 draft = ""
-                isFollowingTail = true
+                followRequest += 1
             }
             isSending = false
         }
@@ -262,5 +282,47 @@ private struct ChatPane: View {
         case .live:
             EmptyView()
         }
+    }
+}
+
+/// The sizes whose change moves the tail: the content's, the viewport's (a
+/// window resize re-pins too), and the bars' — the composer growing with a
+/// draft, a request card or the queue appearing — so a change to any of them
+/// re-pins while following. Insets are tracked in their own right rather than
+/// through the container they shrink.
+struct ChatTailLayout: Equatable {
+    let content: CGFloat
+    let container: CGFloat
+    let insetTop: CGFloat
+    let insetBottom: CGFloat
+
+    init(_ geometry: ScrollGeometry) {
+        content = geometry.contentSize.height
+        container = geometry.containerSize.height
+        insetTop = geometry.contentInsets.top
+        insetBottom = geometry.contentInsets.bottom
+    }
+}
+
+extension ScrollPhase {
+    /// The user is scrolling: their finger or wheel is driving it, or its
+    /// momentum still is.
+    var isGesture: Bool {
+        switch self {
+        case .tracking, .interacting, .decelerating: true
+        case .idle, .animating: false
+        @unknown default: false
+        }
+    }
+}
+
+extension ScrollGeometry {
+    /// The toolbar and the composer bar are content insets: the container is
+    /// the area between them, so the tail is in view when the container's
+    /// bottom edge — offset plus insets plus container — reaches the
+    /// content's end plus the bottom inset (with some slack).
+    var isAtTail: Bool {
+        let viewportBottom = contentOffset.y + contentInsets.top + containerSize.height + contentInsets.bottom
+        return viewportBottom >= contentSize.height + contentInsets.bottom - Spacing.xxl
     }
 }
