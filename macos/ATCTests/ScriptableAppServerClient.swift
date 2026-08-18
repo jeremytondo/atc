@@ -27,6 +27,10 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         var threads: [ATCThread] = []
         var terminals: [Terminal] = []
         var agents: [Agent] = []
+        /// Model catalogs served by listAgentModels, by agent.
+        var models: [AgentID: [AgentModel]] = [:]
+        /// updateThread settings patches received, in order.
+        var settingsPatches: [(id: String, patch: ThreadSettingsPatch)] = []
         var shouldFail = false
         var delay: Duration?
         var directoryCheck: Components.Schemas.FsCheckResponse?
@@ -123,6 +127,15 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     var agents: [Agent] {
         get { lock.withLock { state.agents } }
         set { lock.withLock { state.agents = newValue } }
+    }
+
+    var models: [AgentID: [AgentModel]] {
+        get { lock.withLock { state.models } }
+        set { lock.withLock { state.models = newValue } }
+    }
+
+    var settingsPatches: [(id: String, patch: ThreadSettingsPatch)] {
+        lock.withLock { state.settingsPatches }
     }
 
     // MARK: - Behavior knobs
@@ -424,6 +437,7 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
                 agentId: request.agentId,
                 name: request.name,
                 workingDirectory: request.workingDirectory ?? project.defaultWorkingDirectory,
+                settings: model.agents.first { $0.id == request.agentId }?.defaults ?? Fixtures.settings(),
                 activityState: .idle,
                 unread: false,
                 createdAt: now,
@@ -449,16 +463,32 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         -> Operations.UpdateThread.Output
     {
         guard case .json(let request) = input.body else { throw StubUnimplemented("updateThread") }
-        try await gate()
         let id = input.path.threadId
-        return mutate { model -> Operations.UpdateThread.Output in
+        // Applied before the gate: a delayed response is one the server
+        // already committed, so two overlapping patches can complete out
+        // of order the way they do over a real connection.
+        let output = mutate { model -> Operations.UpdateThread.Output in
             guard let index = model.threads.firstIndex(where: { $0.id == id }) else {
                 return .notFound(.init(body: .json(threadNotFound(id))))
             }
-            model.threads[index].name = request.name
+            if let name = request.name { model.threads[index].name = name }
+            if let patch = request.settings {
+                // The server's per-model reasoning rule, as the preview
+                // client mirrors it (ThreadSettings.applying).
+                let catalog = model.models[model.threads[index].agentId] ?? []
+                let settings = model.threads[index].settings.applying(patch, catalog: catalog)
+                model.threads[index].settings = settings
+                model.settingsPatches.append((id, patch))
+                // Like the server: the change writes through to the agent's defaults.
+                if let agent = model.agents.firstIndex(where: { $0.id == model.threads[index].agentId }) {
+                    model.agents[agent].defaults = settings
+                }
+            }
             model.threads[index].updatedAt = model.tick()
             return .ok(.init(body: .json(model.threads[index])))
         }
+        try await gate()
+        return output
     }
 
     func deleteThread(_ input: Operations.DeleteThread.Input) async throws
@@ -654,6 +684,18 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         }
         try await gate()
         return .ok(.init(body: .json(payload)))
+    }
+
+    func listAgentModels(_ input: Operations.ListAgentModels.Input) async throws
+        -> Operations.ListAgentModels.Output
+    {
+        try await gate()
+        let id = input.path.agentId
+        guard let agentId = AgentID(rawValue: id) else {
+            return .notFound(
+                .init(body: .json(.init(_tag: .agentNotFound, agentId: id, message: "No agent \(id)"))))
+        }
+        return .ok(.init(body: .json(mutate { model in model.models[agentId] ?? [] })))
     }
 
     func getAgent(_ input: Operations.GetAgent.Input) async throws
@@ -953,6 +995,7 @@ enum Fixtures {
         agentId: AgentID = .codex,
         name: String? = nil,
         workingDirectory: String = "/home/dev/app",
+        settings: ThreadSettings = Fixtures.settings(),
         activityState: ThreadActivityState = .idle,
         unread: Bool = false,
         linkedTerminalId: String? = nil,
@@ -966,6 +1009,7 @@ enum Fixtures {
             agentId: agentId,
             name: name,
             workingDirectory: workingDirectory,
+            settings: settings,
             activityState: activityState,
             unread: unread,
             linkedTerminalId: linkedTerminalId,
@@ -1055,7 +1099,33 @@ enum Fixtures {
             id: id,
             available: available,
             reason: available ? nil : "Not installed",
-            detectedVersion: available ? "1.0.0" : nil
+            detectedVersion: available ? "1.0.0" : nil,
+            defaults: settings()
+        )
+    }
+
+    nonisolated static func settings(
+        model: String = "test-model",
+        reasoning: ReasoningLevel? = .high,
+        mode: ThreadMode = .chat,
+        access: ThreadAccess = .auto
+    ) -> ThreadSettings {
+        ThreadSettings(model: model, reasoning: reasoning, mode: mode, access: access)
+    }
+
+    static func model(
+        _ value: String,
+        displayName: String? = nil,
+        isDefault: Bool = false,
+        effortLevels: [ReasoningLevel] = [.low, .medium, .high]
+    ) -> AgentModel {
+        AgentModel(
+            value: value,
+            displayName: displayName ?? value,
+            description: "",
+            isDefault: isDefault,
+            supportedEffortLevels: effortLevels,
+            defaultEffortLevel: effortLevels.contains(.medium) ? .medium : effortLevels.first
         )
     }
 

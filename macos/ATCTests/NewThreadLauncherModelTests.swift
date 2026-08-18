@@ -34,7 +34,8 @@ struct NewThreadLauncherModelTests {
         Agent(
             id: id,
             available: available,
-            reason: reason
+            reason: reason,
+            defaults: Fixtures.settings()
         )
     }
 

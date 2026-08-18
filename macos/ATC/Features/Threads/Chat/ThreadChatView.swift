@@ -87,6 +87,7 @@ private struct ChatPane: View {
     @State private var actionError: String?
 
     private var transcript: ChatTranscript { chat.transcript }
+    private var agents: AgentsStore? { appModel.runtime(id: ref.connectionID)?.agents }
 
     private var draftBinding: Binding<String> {
         Binding(
@@ -99,6 +100,8 @@ private struct ChatPane: View {
         transcriptList
             .overlay(alignment: .top) { statusBanner }
             .actionErrorAlert($actionError)
+            // The composer's model chip and menu need the agent's catalog.
+            .task(id: thread.agentId) { agents?.loadModels(for: thread.agentId) }
     }
 
     private func run(_ operation: @escaping () async throws -> Void) {
@@ -242,12 +245,22 @@ private struct ChatPane: View {
                 }
                 ChatComposer(
                     text: draftBinding,
+                    thread: thread,
+                    models: agents?.models(for: thread.agentId),
+                    modelsError: agents?.modelErrors[thread.agentId],
                     isSending: isSending,
                     showsStop: transcript.runningTurn != nil,
                     error: chat.promptError,
                     focusRequest: focusRequest,
                     send: send,
-                    stop: { run { try await chat.interrupt() } }
+                    stop: { run { try await chat.interrupt() } },
+                    updateSettings: { patch in
+                        run {
+                            try await appModel.runtime(id: ref.connectionID)?.threads
+                                .updateSettings(id: ref.threadID, patch)
+                        }
+                    },
+                    reloadModels: { agents?.loadModels(for: thread.agentId) }
                 )
             }
         }

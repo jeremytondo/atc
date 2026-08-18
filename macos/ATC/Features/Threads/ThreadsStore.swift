@@ -84,10 +84,24 @@ final class ThreadsStore {
 
     @discardableResult
     func rename(id: String, name: String) async throws -> ATCThread {
+        try await update(id: id, .init(name: name))
+    }
+
+    /// Patch the thread's Chat settings (ATC-205): the server validates a
+    /// model or reasoning change against the agent's catalog and applies the
+    /// per-model reasoning rule; the change takes effect at the next turn.
+    @discardableResult
+    func updateSettings(id: String, _ patch: ThreadSettingsPatch) async throws -> ATCThread {
+        try await update(id: id, .init(settings: patch))
+    }
+
+    private func update(id: String, _ request: Components.Schemas.UpdateThreadRequest) async throws -> ATCThread {
         let thread: ATCThread
-        switch try await client.updateThread(path: .init(threadId: id), body: .json(.init(name: name))) {
+        switch try await client.updateThread(path: .init(threadId: id), body: .json(request)) {
         case .ok(let ok): thread = try ok.body.json
         case .notFound(let failure): throw ServerError(try failure.body.json)
+        case .badRequest(let failure): throw ServerError(try failure.body.json)
+        case .serviceUnavailable(let failure): throw ServerError(try failure.body.json)
         case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
         }
         merge(thread)
@@ -220,7 +234,14 @@ final class ThreadsStore {
 
     /// Places a server-returned thread into whichever list its archive state
     /// says it belongs to, preserving newest-first order by creation time.
+    /// Fold one server response into the lists. A response older than what
+    /// the store already holds (`updatedAt` — every server-side write stamps
+    /// it) is dropped: rapid settings changes overlap in flight and their
+    /// responses can land out of order, and a late one must never roll the
+    /// store back to a state a newer response or refresh has already moved
+    /// past.
     private func merge(_ thread: ATCThread) {
+        if let held = self.thread(id: thread.id), held.updatedAt > thread.updatedAt { return }
         refreshState.invalidateInFlight()
         threads.removeAll { $0.id == thread.id }
         archivedThreads.removeAll { $0.id == thread.id }

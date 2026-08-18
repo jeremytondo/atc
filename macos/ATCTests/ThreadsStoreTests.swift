@@ -165,6 +165,55 @@ struct ThreadsStoreTests {
         #expect(client.createdThreadRequests.map(\.agentId) == [.claudeCode])
     }
 
+    @Test("updateSettings sends one patch and merges the server's settings in place")
+    func updateSettingsMerges() async throws {
+        let (store, client) = await loadedStore()
+        let updated = try await store.updateSettings(id: "thr2", .init(access: .fullAccess))
+        #expect(updated.settings.access == .fullAccess)
+        #expect(store.thread(id: "thr2")?.settings.access == .fullAccess)
+        #expect(client.settingsPatches.map(\.id) == ["thr2"])
+        #expect(client.settingsPatches.first?.patch.access == .fullAccess)
+        #expect(client.settingsPatches.first?.patch.model == nil)
+        // Merge keeps the creation ordering — a settings change never reorders.
+        #expect(store.threads.map(\.id) == ["thr3", "thr2", "thr1"])
+    }
+
+    @Test("the stand-in applies the server's reasoning rule on a model change")
+    func standInReasoningRule() async throws {
+        let (store, client) = await loadedStore()
+        client.models[.codex] = [
+            Fixtures.model("big", effortLevels: [.low, .high]),
+            Fixtures.model("tiny", effortLevels: []),
+        ]
+        // thr2 starts at reasoning .high: kept by a model that supports it,
+        // dropped by one without effort support, back to the default after.
+        var thread = try await store.updateSettings(id: "thr2", .init(model: "big"))
+        #expect(thread.settings.reasoning == .high)
+        thread = try await store.updateSettings(id: "thr2", .init(model: "tiny"))
+        #expect(thread.settings.reasoning == nil)
+        thread = try await store.updateSettings(id: "thr2", .init(model: "big"))
+        #expect(thread.settings.reasoning == .low)
+    }
+
+    @Test("a settings response landing after a newer one never rolls the store back")
+    func staleSettingsResponseDoesNotClobber() async throws {
+        let (store, client) = await loadedStore()
+        client.delay = .milliseconds(200)
+        let slow = Task { try await store.updateSettings(id: "thr2", .init(access: .fullAccess)) }
+        // The scriptable server commits before it parks the response, so
+        // the second patch below is computed on top of the first.
+        await settle(until: { client.settingsPatches.count == 1 })
+        client.delay = nil
+        _ = try await store.updateSettings(id: "thr2", .init(mode: .plan))
+        #expect(store.thread(id: "thr2")?.settings.mode == .plan)
+        #expect(store.thread(id: "thr2")?.settings.access == .fullAccess)
+
+        // The older response (mode still Chat) arrives last and is dropped.
+        _ = try await slow.value
+        #expect(store.thread(id: "thr2")?.settings.mode == .plan)
+        #expect(store.thread(id: "thr2")?.settings.access == .fullAccess)
+    }
+
     @Test("a failed refresh keeps the last-loaded data and records the error")
     func failedRefreshPreservesData() async {
         let (store, client) = await loadedStore()

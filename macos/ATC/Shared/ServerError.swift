@@ -42,6 +42,7 @@ extension Components.Schemas.ProviderSessionConflictJsonEncoding: ServerErrorPay
 extension Components.Schemas.RequestNotFoundJsonEncoding: ServerErrorPayload {}
 extension Components.Schemas.InvalidRequestAnswerJsonEncoding: ServerErrorPayload {}
 extension Components.Schemas.QueuedPromptNotFoundJsonEncoding: ServerErrorPayload {}
+extension Components.Schemas.InvalidThreadSettingsJsonEncoding: ServerErrorPayload {}
 
 extension ServerError {
     /// Wrap a single-schema failure payload.

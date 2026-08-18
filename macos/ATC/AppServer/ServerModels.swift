@@ -22,6 +22,12 @@ typealias QueuedPrompt = Components.Schemas.QueuedPrompt
 typealias ThreadEvent = Components.Schemas.ThreadEvent
 typealias ThreadTranscriptPage = Components.Schemas.ThreadTranscript
 typealias ToolStatus = Components.Schemas.ToolStatus
+typealias ThreadSettings = Components.Schemas.ThreadSettings
+typealias ThreadSettingsPatch = Components.Schemas.ThreadSettingsPatch
+typealias ReasoningLevel = Components.Schemas.ReasoningLevel
+typealias ThreadMode = Components.Schemas.ThreadMode
+typealias ThreadAccess = Components.Schemas.ThreadAccess
+typealias AgentModel = Components.Schemas.AgentModel
 
 extension AgentID {
     var displayName: String {
@@ -36,6 +42,39 @@ extension AgentID {
         switch self {
         case .codex: "hexagon"
         case .claudeCode: "asterisk"
+        }
+    }
+}
+
+extension ReasoningLevel {
+    var displayName: String {
+        switch self {
+        case .low: "Low"
+        case .medium: "Medium"
+        case .high: "High"
+        case .xhigh: "Extra high"
+        case .max: "Max"
+        case .ultra: "Ultra"
+        }
+    }
+}
+
+extension ThreadMode {
+    var displayName: String {
+        switch self {
+        case .chat: "Chat"
+        case .plan: "Plan"
+        }
+    }
+}
+
+extension ThreadAccess {
+    var displayName: String {
+        switch self {
+        case .supervised: "Supervised"
+        case .autoAcceptEdits: "Auto-accept edits"
+        case .auto: "Auto"
+        case .fullAccess: "Full access"
         }
     }
 }

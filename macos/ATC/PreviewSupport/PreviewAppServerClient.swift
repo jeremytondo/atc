@@ -14,6 +14,28 @@ import OpenAPIRuntime
 // Fixtures only: previews and tests. Never compiled into a Release build.
 #if DEBUG
 
+    extension ThreadSettings {
+        /// The server's settings rule, mirrored for the stand-ins (this
+        /// client and the tests' scriptable one) so what they echo is a
+        /// contract-valid `ThreadSettings`: on a model change, reasoning
+        /// carries over when the new model supports it, else the model's
+        /// default applies — none for a model without effort support.
+        /// Production never applies patches; the server does.
+        nonisolated func applying(_ patch: ThreadSettingsPatch, catalog: [AgentModel]) -> ThreadSettings {
+            var settings = self
+            if let model = patch.model { settings.model = model }
+            if let entry = catalog.first(where: { $0.value == settings.model }), patch.model != nil {
+                settings.reasoning =
+                    settings.reasoning.map { entry.supportedEffortLevels.contains($0) } == true
+                    ? settings.reasoning : entry.defaultEffortLevel
+            }
+            if let reasoning = patch.reasoning { settings.reasoning = reasoning }
+            if let mode = patch.mode { settings.mode = mode }
+            if let access = patch.access { settings.access = access }
+            return settings
+        }
+    }
+
     extension AppModel {
         /// Preview/test fixture: an ephemeral Connection store (unique
         /// UserDefaults suite, nothing persisted to `.standard`) holding one
@@ -79,6 +101,7 @@ import OpenAPIRuntime
                     agentId: .claudeCode,
                     name: "Parser rewrite",
                     workingDirectory: Self.atelier.defaultWorkingDirectory,
+                    settings: Self.claudeSettings,
                     activityState: .working,
                     unread: false,
                     linkedTerminalId: "0192f4c0-0000-7000-8000-000000000001",
@@ -92,6 +115,7 @@ import OpenAPIRuntime
                     agentId: .codex,
                     name: "Flaky test triage",
                     workingDirectory: Self.atelier.defaultWorkingDirectory,
+                    settings: Self.codexSettings,
                     activityState: .needsInput,
                     unread: false,
                     createdAt: Date(timeIntervalSinceNow: -7_200),
@@ -102,6 +126,7 @@ import OpenAPIRuntime
                     projectId: Self.atelier.id,
                     agentId: .codex,
                     workingDirectory: "/Users/dev/Projects/atelier/packages/core",
+                    settings: Self.codexSettings,
                     activityState: .idle,
                     // The Done card: finished while nobody was looking.
                     unread: true,
@@ -114,6 +139,7 @@ import OpenAPIRuntime
                     agentId: .claudeCode,
                     name: "Spike: streaming uploads",
                     workingDirectory: Self.blazerr.defaultWorkingDirectory,
+                    settings: Self.claudeSettings,
                     activityState: .idle,
                     unread: false,
                     createdAt: Date(timeIntervalSinceNow: -90_000),
@@ -125,6 +151,7 @@ import OpenAPIRuntime
                     agentId: .codex,
                     name: "Dependency bump",
                     workingDirectory: Self.blazerr.defaultWorkingDirectory,
+                    settings: Self.codexSettings,
                     activityState: .unknown,
                     unread: false,
                     createdAt: Date(timeIntervalSinceNow: -150_000),
@@ -141,6 +168,7 @@ import OpenAPIRuntime
                     agentId: .claudeCode,
                     name: "Abandoned migration",
                     workingDirectory: Self.atelier.defaultWorkingDirectory,
+                    settings: Self.claudeSettings,
                     activityState: .unknown,
                     unread: false,
                     archivedAt: Date(timeIntervalSinceNow: -40_000),
@@ -192,15 +220,46 @@ import OpenAPIRuntime
                 Agent(
                     id: .codex,
                     available: true,
-                    detectedVersion: "0.52.0"
+                    detectedVersion: "0.52.0",
+                    defaults: Self.codexSettings
                 ),
                 Agent(
                     id: .claudeCode,
                     available: false,
-                    reason: "Install the Claude Code CLI"
+                    reason: "Install the Claude Code CLI",
+                    defaults: Self.claudeSettings
                 ),
             ]
         }
+
+        static let codexSettings = ThreadSettings(
+            model: "gpt-5.6-sol", reasoning: .high, mode: .chat, access: .auto)
+        static let claudeSettings = ThreadSettings(
+            model: "opus[1m]", reasoning: .high, mode: .chat, access: .auto)
+
+        static let codexModels: [AgentModel] = [
+            AgentModel(
+                value: "gpt-5.6-sol", displayName: "GPT-5.6-Sol", description: "Latest frontier agentic coding model.",
+                isDefault: true,
+                supportedEffortLevels: [.low, .medium, .high, .xhigh, .max, .ultra], defaultEffortLevel: .low),
+            AgentModel(
+                value: "gpt-5.6-luna", displayName: "GPT-5.6-Luna", description: "Fast and affordable.",
+                isDefault: false,
+                supportedEffortLevels: [.low, .medium, .high, .xhigh, .max], defaultEffortLevel: .medium),
+        ]
+        static let claudeModels: [AgentModel] = [
+            AgentModel(
+                value: "opus[1m]", displayName: "Opus 5 (1M context)", description: "Opus 5 with 1M context",
+                isDefault: true,
+                supportedEffortLevels: [.low, .medium, .high, .xhigh, .max], defaultEffortLevel: .high),
+            AgentModel(
+                value: "claude-fable-5[1m]", displayName: "Fable 5", description: "Fable 5",
+                isDefault: false,
+                supportedEffortLevels: [.low, .medium, .high, .xhigh, .max], defaultEffortLevel: .high),
+            AgentModel(
+                value: "haiku", displayName: "Haiku 4.5", description: "Haiku 4.5",
+                isDefault: false, supportedEffortLevels: []),
+        ]
 
         init() {}
 
@@ -374,6 +433,7 @@ import OpenAPIRuntime
                             agentId: request.agentId,
                             name: request.name,
                             workingDirectory: request.workingDirectory ?? project.defaultWorkingDirectory,
+                            settings: request.agentId == .codex ? Self.codexSettings : Self.claudeSettings,
                             activityState: .unknown,
                             unread: false,
                             createdAt: Date(),
@@ -388,7 +448,11 @@ import OpenAPIRuntime
         func updateThread(_ input: Operations.UpdateThread.Input) async throws -> Operations.UpdateThread.Output {
             guard case .json(let request) = input.body else { throw PreviewUnavailable() }
             var thread = try thread(input.path.threadId)
-            thread.name = request.name
+            if let name = request.name { thread.name = name }
+            if let patch = request.settings {
+                let catalog = thread.agentId == .codex ? Self.codexModels : Self.claudeModels
+                thread.settings = thread.settings.applying(patch, catalog: catalog)
+            }
             thread.updatedAt = Date()
             return .ok(.init(body: .json(thread)))
         }
@@ -515,6 +579,12 @@ import OpenAPIRuntime
 
         func listAgents(_ input: Operations.ListAgents.Input) async throws -> Operations.ListAgents.Output {
             .ok(.init(body: .json(agents)))
+        }
+
+        func listAgentModels(
+            _ input: Operations.ListAgentModels.Input
+        ) async throws -> Operations.ListAgentModels.Output {
+            .ok(.init(body: .json(input.path.agentId == AgentID.codex.rawValue ? Self.codexModels : Self.claudeModels)))
         }
 
         func getAgent(_ input: Operations.GetAgent.Input) async throws -> Operations.GetAgent.Output {
