@@ -31,7 +31,10 @@ import {
 // It models the EAGER-verification, connection-survives-failed-turns flavor
 // (Codex). Claude differs on both axes (verification at first turn,
 // connection ends after non-success turns) — consumers exercising those
-// paths must test against the real adapters' fixtures, not this fake.
+// paths must test against the real adapters' fixtures, not this fake;
+// `endConnection` scripts a provider-side end of the connection so a
+// consumer can still stage that shape (a non-success turn, then the feed
+// ending) against the fake.
 
 export interface FakeAgentSession {
   readonly providerSessionId: string
@@ -52,6 +55,17 @@ export interface FakeAgentAdapter {
   readonly seedRunningTurn: (providerSessionId: string, turnId: string) => void
   /** Complete the active turn of `providerSessionId` with `outcome`. */
   readonly completeTurn: (providerSessionId: string, outcome: AgentTurnOutcome) => void
+  /** End the live connection of `providerSessionId` from the provider's
+   * side (its feed ends cleanly, control calls refuse) — a Claude session
+   * ending after a non-success turn, a resident child that exited. */
+  readonly endConnection: (providerSessionId: string) => void
+  /** Whether `providerSessionId` has a live writer connection. */
+  readonly isConnected: (providerSessionId: string) => boolean
+  /** Push one activity value onto the live connection's feed (session-level
+   * evidence between turns: background work winding down, then idle). */
+  readonly emitConnectionActivity: (providerSessionId: string, activity: AgentActivity) => void
+  /** Writer connections opened (createSession/resumeSession), in order. */
+  readonly connectionsOpened: Array<string>
   /** Open a stock provider request (an approval, or a one-question ask)
    * on the active turn; activity → needs_input. */
   readonly openRequest: (providerSessionId: string, kind: "approval" | "question") => string
@@ -146,6 +160,7 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
   const answers: FakeAgentAdapter["answers"] = []
   const prunedSessions = new Set<string>()
   const prepared: FakeAgentAdapter["prepared"] = []
+  const connectionsOpened: FakeAgentAdapter["connectionsOpened"] = []
   const released: FakeAgentAdapter["released"] = []
   const titleRequests: FakeAgentAdapter["titleRequests"] = []
   const titleOutcomes: FakeAgentAdapter["titleOutcomes"] = []
@@ -180,6 +195,14 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
     emit(live, { type: "activity", activity })
   }
 
+  /** The connection ends (its scope closed, or the provider ended it):
+   * control calls refuse, the feed ends cleanly, the writer slot frees. */
+  const closeConnection = (providerSessionId: string, live: LiveConnection): void => {
+    live.closed = true
+    if (connections.get(providerSessionId) === live) connections.delete(providerSessionId)
+    Queue.endUnsafe(live.events)
+  }
+
   const requireLive = (providerSessionId: string): LiveConnection => {
     const live = connections.get(providerSessionId)
     if (live === undefined) {
@@ -209,12 +232,9 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
         openRequests: new Map(),
       }
       connections.set(session.providerSessionId, live)
+      connectionsOpened.push(session.providerSessionId)
       yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          live.closed = true
-          connections.delete(session.providerSessionId)
-          Queue.endUnsafe(events)
-        }),
+        Effect.sync(() => closeConnection(session.providerSessionId, live)),
       )
 
       const requireOpen = Effect.suspend(() =>
@@ -498,6 +518,12 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
       runningOnResume.set(providerSessionId, turnId)
     },
     completeTurn: (providerSessionId, outcome) => finishTurn(providerSessionId, outcome),
+    endConnection: (providerSessionId) =>
+      closeConnection(providerSessionId, requireLive(providerSessionId)),
+    isConnected: (providerSessionId) => connections.has(providerSessionId),
+    emitConnectionActivity: (providerSessionId, activity) =>
+      setActivity(requireLive(providerSessionId), activity),
+    connectionsOpened,
     openRequest: (providerSessionId, kind) => {
       const live = requireLive(providerSessionId)
       const requestId = `fake-request-${nextRequestId++}`
