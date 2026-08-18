@@ -24,6 +24,7 @@ import type { TerminalAdapter } from "../src/terminals/terminalAdapter.ts"
 import * as TerminalRepository from "../src/terminals/terminalRepository.ts"
 import * as Terminals from "../src/terminals/terminals.ts"
 import * as ThreadRepository from "../src/threads/threadRepository.ts"
+import * as ThreadNaming from "../src/threads/threadNaming.ts"
 import * as ThreadRuntime from "../src/threads/threadRuntime.ts"
 import * as TranscriptRepository from "../src/threads/transcriptRepository.ts"
 import * as Threads from "../src/threads/threads.ts"
@@ -102,7 +103,7 @@ export const testAppConfig = (overrides: Partial<AppConfig["Service"]>): Layer.L
  */
 export const makeTestServiceLayers = (
   dbFile = ":memory:",
-  threadsOptions: Threads.ThreadsOptions = {},
+  threadOptions: Threads.ThreadsOptions & ThreadNaming.ThreadNamingOptions = {},
   eventsOptions: Events.EventsOptions = {},
   configOverrides: Partial<AppConfig["Service"]> = {},
   tailscaleStatus: Tailscale.TailscaleStatus = { state: "disabled" },
@@ -155,9 +156,12 @@ export const makeTestServiceLayers = (
       Subprocess.layer.pipe(Layer.provide(BunServices.layer)),
     ]),
   )
-  const runtime = ThreadRuntime.layer.pipe(Layer.provide([services, registry, eventsLayer]))
-  const threads = Threads.layerWith(threadsOptions).pipe(
-    Layer.provide([services, terminals, registry, eventsLayer, runtime]),
+  const naming = ThreadNaming.layerWith(threadOptions).pipe(
+    Layer.provide([services, registry, eventsLayer]),
+  )
+  const runtime = ThreadRuntime.layer.pipe(Layer.provide([services, registry, eventsLayer, naming]))
+  const threads = Threads.layerWith(threadOptions).pipe(
+    Layer.provide([services, terminals, registry, eventsLayer, runtime, naming]),
   )
   return {
     fake,

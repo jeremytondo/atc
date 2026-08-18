@@ -23,6 +23,7 @@ import * as Projects from "./projects/projects.ts"
 import * as TerminalRepository from "./terminals/terminalRepository.ts"
 import * as Terminals from "./terminals/terminals.ts"
 import * as ThreadRepository from "./threads/threadRepository.ts"
+import * as ThreadNaming from "./threads/threadNaming.ts"
 import * as ThreadRuntime from "./threads/threadRuntime.ts"
 import * as Threads from "./threads/threads.ts"
 import * as TranscriptRepository from "./threads/transcriptRepository.ts"
@@ -131,10 +132,12 @@ export const production = (options: { readonly port: number; readonly hostname?:
     Layer.provideMerge(Tailscale.layer),
     // Projects sits above Threads (its delete cascades through them), which
     // sits above the ThreadRuntime (activity ledger, transcript, turns) and
-    // Terminals — each provide feeds everything composed so far.
+    // Terminals; ThreadNaming serves both Threads and the runtime — each
+    // provide feeds everything composed so far.
     Layer.provide(Projects.layer),
     Layer.provide(Threads.layer),
     Layer.provide([Terminals.layer, ThreadRuntime.layer]),
+    Layer.provide(ThreadNaming.layer),
     Layer.provide(AgentRegistry.layer),
     // Below Terminals (the deepest publisher) so one memoized Events instance
     // serves every domain service, the handlers, and the shutdown drain.

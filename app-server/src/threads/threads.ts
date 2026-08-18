@@ -1,6 +1,5 @@
 import {
   Context,
-  Deferred,
   Duration,
   Effect,
   Exit,
@@ -23,11 +22,7 @@ import type {
   AgentUnavailable,
   TuiLaunchSpec,
 } from "../agents/agentAdapter.ts"
-import {
-  isBusyActivity,
-  NESTED_SESSION_ENV_VARIABLES,
-  sanitizeTitle,
-} from "../agents/agentAdapter.ts"
+import { isBusyActivity, NESTED_SESSION_ENV_VARIABLES } from "../agents/agentAdapter.ts"
 import {
   isAgentId,
   ProviderSessionConflict,
@@ -50,6 +45,7 @@ import { Directories } from "../platform/directories.ts"
 import { ProjectRepository } from "../projects/projectRepository.ts"
 import { Terminals } from "../terminals/terminals.ts"
 import type { Terminal } from "../terminals/terminals.ts"
+import { ThreadNaming } from "./threadNaming.ts"
 import { ThreadRepository } from "./threadRepository.ts"
 import type { ThreadRecord } from "./threadRepository.ts"
 import { ThreadRuntime } from "./threadRuntime.ts"
@@ -99,24 +95,9 @@ export type Thread = typeof Contract.Thread.Type
 //     TUI-driven Codex thread) feed the runtime's transcript copy, and an
 //     observed busy→idle asks the runtime to re-read the provider's
 //     history — the copy for turns ATC did not drive.
-//   - Auto-naming (ATC-155): the first user prompt observed on a thread
-//     that was unnamed AND unconfirmed when its subscription started forks
-//     one fire-and-forget title generation through the adapter seam. A
-//     creation-time or manual name always wins — checked before the
-//     generation call and enforced atomically by the guarded rename — and
-//     every failure leaves the fallback name, silently.
-//   - Title refinement (ATC-190): each auto-name-eligible thread gets at
-//     most ONE bounded refinement, from the conversation the primary agent
-//     naturally produces (collectTitleContext). Armed by the first busy
-//     evidence on the subscription, it fires at the refine delay or the
-//     busy→idle turn end, whichever comes first, with one catch-up at turn
-//     end when the early collect found nothing usable. The guarded rename
-//     binds the first-pass title as its expected value (the seed), so a
-//     manual rename racing the refinement wins atomically and the guard is
-//     self-verifying; a restart between the passes loses the seed and the
-//     refinement simply does not happen. Every failure is silent — a
-//     thread never ends up worse than its first-pass name, and its name
-//     visibly changes at most once after the instant one.
+//   - Auto-naming lives in ThreadNaming (ATC-155/190/202); the drain feeds
+//     it observed user prompts and its feed's end, judged on the record at
+//     subscription start.
 //   - archived threads are never pinned: pin refuses archived records, and
 //     archive clears the pin in the same repository write so no client can
 //     observe or restore an archived pin.
@@ -146,9 +127,6 @@ export interface ThreadsOptions {
   /** Initial delay before the identity wait's first TUI-liveness check;
    * subsequent checks back off from it (see watchForEarlyDeath). */
   readonly launchWatchInterval?: Duration.Input
-  /** How far into a thread's first turn the title refinement fires when
-   * the turn has not ended yet (ATC-190). */
-  readonly titleRefineDelay?: Duration.Input
 }
 
 export class Threads extends Context.Service<
@@ -213,12 +191,12 @@ export const layerWith = (options: ThreadsOptions) =>
       const registry = yield* AgentRegistry
       const events = yield* Events
       const runtime = yield* ThreadRuntime
+      const naming = yield* ThreadNaming
       // Observation fibers outlive their originating requests; they live in
       // the service's own scope so shutdown reaps every subscription.
       const serviceScope = yield* Effect.scope
       const identityTimeout = options.identityTimeout ?? "30 seconds"
       const launchWatchInterval = options.launchWatchInterval ?? "500 millis"
-      const titleRefineDelay = options.titleRefineDelay ?? "30 seconds"
 
       /** The observed session per thread; the child scope closes it. */
       interface Observation {
@@ -262,147 +240,6 @@ export const layerWith = (options: ThreadsOptions) =>
         record.archivedAt === undefined &&
         record.lastFinishedAt !== undefined &&
         (record.lastViewedAt === undefined || record.lastViewedAt < record.lastFinishedAt)
-
-      /**
-       * Per-observation naming state (ATC-155/ATC-190), shared between the
-       * drain loop and the fire-and-forget naming fibers. In-memory only —
-       * a restart forfeits the pending refinement, never a name.
-       */
-      interface NamingState {
-        /** First observed user prompt (best-effort; Codex discovery can lag
-         * busy and even a short turn's idle edge). */
-        prompt: string | null
-        /** The adopted first-pass title — the refinement's write guard. */
-        seed: string | null
-        /** The one refinement fiber is armed (first busy evidence seen). */
-        armed: boolean
-        /** Resolved when the first prompt lands. */
-        readonly promptArrived: Deferred.Deferred<void>
-        /** Resolved at the first busy→idle edge, or when observation ends. */
-        readonly turnEnded: Deferred.Deferred<void>
-      }
-
-      /**
-       * The auto-naming transition (ATC-155): one title one-shot through
-       * the adapter seam, adopted only while the thread is still unnamed
-       * (pre-checked here, enforced atomically by the guarded rename).
-       * Every failure logs and leaves the fallback name — a missing title
-       * is never an error, so the effect itself cannot fail.
-       */
-      const generateThreadTitle = (
-        record: ThreadRecord,
-        prompt: string,
-        naming: NamingState,
-      ): Effect.Effect<void> =>
-        Effect.gen(function* () {
-          const adapter = adapterFor(record)
-          if (adapter === undefined) return
-          // A rename that landed since the prompt was captured makes the
-          // generation pointless — skip the provider call, not just the
-          // write (T3Code semantics).
-          const current = yield* repository.get(record.id)
-          if (Option.isNone(current) || current.value.name !== undefined) return
-          const raw = yield* adapter.generateTitle({
-            cwd: record.workingDirectory,
-            prompt,
-          })
-          const title = sanitizeTitle(raw)
-          if (title === null) return
-          const renamed = yield* repository.renameIfUnchanged(record.id, title, null)
-          if (Option.isNone(renamed)) return
-          naming.seed = title
-          yield* events.publish({ resource: "thread", id: record.id, change: "updated" })
-        }).pipe(
-          Effect.catch((error) =>
-            Effect.logDebug("thread auto-naming failed").pipe(
-              Effect.annotateLogs({ threadId: record.id, reason: error.message }),
-            ),
-          ),
-        )
-
-      /**
-       * One refinement attempt (ATC-190): pre-check the seed guard, collect
-       * context through the adapter seam, rerun the titler, and write
-       * through the seed-guarded rename. "noPrompt" and "noContext" report
-       * which evidence was still missing (the caller may retry once);
-       * every other outcome — success, guard mismatch, unusable title —
-       * spends the refinement.
-       */
-      const attemptRefineTitle = (
-        record: ThreadRecord,
-        naming: NamingState,
-      ): Effect.Effect<"done" | "noPrompt" | "noContext", never, never> =>
-        Effect.gen(function* () {
-          const adapter = adapterFor(record)
-          const providerSessionId = record.providerSessionId
-          if (adapter === undefined || providerSessionId === undefined) return "done" as const
-          const prompt = naming.prompt
-          if (prompt === null) return "noPrompt" as const
-          const current = yield* repository.get(record.id)
-          if (Option.isNone(current)) return "done" as const
-          // The seed check: any name the server did not seed (manual or
-          // creation-time) already won. Both null means the first pass
-          // adopted nothing (or is still in flight) — the refinement may
-          // still name the thread, guarded exactly the same way.
-          const name = current.value.name ?? null
-          if (name !== naming.seed) return "done" as const
-          const context = yield* adapter.collectTitleContext({
-            providerSessionId,
-            cwd: record.workingDirectory,
-          })
-          if (context === null) return "noContext" as const
-          const raw = yield* adapter.generateTitle({
-            cwd: record.workingDirectory,
-            prompt,
-            refine: { context, currentTitle: name },
-          })
-          const title = sanitizeTitle(raw)
-          // An unchanged title is the instructed no-churn outcome: no
-          // write, no publish, and the refinement is still spent.
-          if (title === null || title === name) return "done" as const
-          const renamed = yield* repository.renameIfUnchanged(record.id, title, name)
-          if (Option.isNone(renamed)) return "done" as const
-          yield* events.publish({ resource: "thread", id: record.id, change: "updated" })
-          return "done" as const
-        }).pipe(
-          Effect.catch((error) =>
-            Effect.logDebug("thread title refinement failed").pipe(
-              Effect.annotateLogs({ threadId: record.id, reason: error.message }),
-              Effect.as("done" as const),
-            ),
-          ),
-        )
-
-      /**
-       * The one bounded title refinement (ATC-190): wait for the refine
-       * delay or the turn's end — whichever comes first — attempt, and
-       * catch up at most once when evidence was still missing. Missing
-       * CONTEXT retries at turn end (it accrues over the turn) and gives
-       * up silently when the turn already ended. A missing PROMPT is
-       * different: Codex discovers it by polling and it can lag even a
-       * short turn's idle edge, so the catch-up waits for its arrival —
-       * bounded by the turn's end or one more refine delay, so the fiber
-       * always ends. After the catch-up the thread is spent for good.
-       */
-      const refineThreadTitle = (record: ThreadRecord, naming: NamingState): Effect.Effect<void> =>
-        Effect.gen(function* () {
-          const trigger = yield* Effect.raceFirst(
-            Effect.sleep(titleRefineDelay).pipe(Effect.as("delay" as const)),
-            Deferred.await(naming.turnEnded).pipe(Effect.as("turnEnd" as const)),
-          )
-          const outcome = yield* attemptRefineTitle(record, naming)
-          if (outcome === "done") return
-          if (outcome === "noContext" && trigger === "turnEnd") return
-          yield* outcome === "noContext"
-            ? Deferred.await(naming.turnEnded)
-            : Effect.raceFirst(
-                Deferred.await(naming.promptArrived),
-                trigger === "turnEnd"
-                  ? Effect.sleep(titleRefineDelay)
-                  : Deferred.await(naming.turnEnded),
-              )
-          yield* attemptRefineTitle(record, naming)
-        })
 
       /**
        * Start (once) the thread's normalized activity subscription. The
@@ -451,32 +288,11 @@ export const layerWith = (options: ThreadsOptions) =>
                 ),
                 Scope.provide(child),
               )
-            // Auto-name eligibility is fixed at subscription start: a name
-            // or a confirmed first turn already on the record rules the
-            // thread out (retro-naming is a non-goal), and the first prompt
-            // event spends the one attempt (`naming.prompt` set). The same
-            // eligibility governs the refinement (ATC-190).
-            const eligible = record.name === undefined && record.confirmedAt === undefined
-            const naming: NamingState = {
-              prompt: null,
-              seed: null,
-              armed: false,
-              promptArrived: Deferred.makeUnsafe<void>(),
-              turnEnded: Deferred.makeUnsafe<void>(),
-            }
             yield* stream.pipe(
               Stream.runForEach((event) =>
                 Effect.gen(function* () {
                   if (event.type === "userPrompt") {
-                    if (!eligible || naming.prompt !== null) return
-                    naming.prompt = event.text
-                    // Fire-and-forget in the SERVICE scope: the generation
-                    // outlives observation churn (a closed terminal) but
-                    // not the server.
-                    yield* generateThreadTitle(record, event.text, naming).pipe(
-                      Effect.forkIn(serviceScope),
-                    )
-                    Deferred.doneUnsafe(naming.promptArrived, Effect.void)
+                    yield* naming.notePrompt(record, event.text)
                     return
                   }
                   // Conversation items observed on the shared server feed
@@ -488,21 +304,11 @@ export const layerWith = (options: ThreadsOptions) =>
                   const activity = event.activity
                   // The ledger applies the confirm / finish / publish rules.
                   const { previous } = yield* runtime.noteActivity(record, activity)
-                  // The first busy evidence arms the one refinement fiber
-                  // (ATC-190), in the service scope for the same reason as
-                  // the generation above. Armed even before the prompt is
-                  // known (Codex prompt discovery lags busy) — the attempt
-                  // reads the state at fire time.
-                  if (eligible && !naming.armed && isBusy(activity)) {
-                    naming.armed = true
-                    yield* refineThreadTitle(record, naming).pipe(Effect.forkIn(serviceScope))
-                  }
-                  // The busy→idle drop is the turn's end: the refinement's
-                  // trigger, and — for a turn ATC did not drive — the moment
-                  // to re-read the provider's history (forked: the drain
-                  // must never wait on the provider).
+                  // The busy→idle drop is the turn's end — for a turn ATC
+                  // did not drive, the moment to re-read the provider's
+                  // history (forked: the drain must never wait on the
+                  // provider).
                   if (previous !== undefined && isBusy(previous) && activity === "idle") {
-                    Deferred.doneUnsafe(naming.turnEnded, Effect.void)
                     yield* runtime.observedIdle(record).pipe(Effect.forkIn(serviceScope))
                   }
                 }),
@@ -512,11 +318,7 @@ export const layerWith = (options: ThreadsOptions) =>
               // nor leak its child scope into the service scope. An ended
               // observation also ends the refinement's wait — its turn-end
               // evidence is gone, so the catch-up must not park forever.
-              Effect.ensuring(
-                Effect.sync(() => Deferred.doneUnsafe(naming.turnEnded, Effect.void)).pipe(
-                  Effect.andThen(releaseClaim),
-                ),
-              ),
+              Effect.ensuring(naming.noteFeedEnded(record).pipe(Effect.andThen(releaseClaim))),
               Effect.forkIn(child),
             )
           }).pipe(
@@ -942,6 +744,7 @@ export const layerWith = (options: ThreadsOptions) =>
                 .pipe(Effect.catchTag("TerminalNotFound", () => Effect.void))
             }
             yield* runtime.release(id)
+            yield* naming.release(id)
             const adapter = adapterFor(record)
             if (adapter !== undefined && record.providerSessionId !== undefined) {
               yield* adapter.releaseSession({
@@ -1056,6 +859,7 @@ export const layerWith = (options: ThreadsOptions) =>
               // observation. The provider conversation itself is untouched,
               // so unarchive + open resumes it exactly.
               yield* runtime.release(id)
+              yield* naming.release(id)
               const adapter = adapterFor(record)
               if (adapter !== undefined && record.providerSessionId !== undefined) {
                 yield* adapter.releaseSession({

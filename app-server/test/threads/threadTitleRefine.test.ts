@@ -121,6 +121,54 @@ describe("thread title refinement", () => {
     }).pipe(Effect.provide(SlowLayer)),
   )
 
+  it.live("a superseded session's observation ending never spends a native turn's refinement", () =>
+    Effect.gen(function* () {
+      const fake = slowKit.fakeAgents.codex
+      const repository = yield* ThreadRepository
+      // A TUI is open on an idle, unconfirmed session A (ATC-202's likely
+      // shape: opened in TUI, first prompt sent from Chat).
+      const { client, threadId, sessionId: sessionA } = yield* openedThread()
+      const contextsBefore = fake.contextRequests.length
+      // A's observation is live: its idle is what the thread reads.
+      fake.emitActivity(sessionA, "idle")
+      yield* eventually(
+        client.v1.getThread({ params: { threadId } }),
+        (read) => read.activityState === "idle",
+      )
+
+      fake.setTitle("Native title")
+      const started = yield* client.v1.promptThread({
+        params: { threadId },
+        payload: { prompt: "first prompt, natively" },
+      })
+      assert.isString(started.turnId)
+      yield* eventually(
+        client.v1.getThread({ params: { threadId } }),
+        (read) => read.name === "Native title",
+      )
+      // The prompt re-materialized the thread as a fresh session B; the read
+      // above swapped the observation, ending A's feed. That end belongs to
+      // A — B's refinement, armed on B, must keep waiting for B's turn end.
+      const sessionB = Option.getOrThrow(yield* repository.get(threadId)).providerSessionId ?? ""
+      assert.notStrictEqual(sessionB, sessionA)
+      yield* eventually(
+        Effect.sync(() => fake.observerCount(sessionA)),
+        (count) => count === 0,
+      )
+
+      fake.setTitleContext(sessionB, "assistant: did the native work")
+      fake.setTitle("Native title refined")
+      fake.completeTurn(sessionB, "completed")
+      yield* eventually(
+        client.v1.getThread({ params: { threadId } }),
+        (read) => read.name === "Native title refined",
+      )
+      assert.strictEqual(fake.contextRequests.length, contextsBefore + 1)
+
+      yield* client.v1.deleteThread({ params: { threadId } })
+    }).pipe(Effect.provide(SlowLayer)),
+  )
+
   it.live("an empty early collect gets exactly one catch-up at turn end", () =>
     Effect.gen(function* () {
       const fake = fastKit.fakeAgents.codex

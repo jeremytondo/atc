@@ -13,7 +13,8 @@ import { apiTestLayer, eventually, makeTestServiceLayers } from "../testLayers.t
 // Auto-naming (ATC-155) through the uniform seam contract: the first user
 // prompt observed on an unnamed, unconfirmed thread titles it via the
 // adapter's generateTitle one-shot, and a creation-time or manual name
-// always wins. All through the fake adapters — no provider knowledge.
+// always wins. A first turn driven natively (ATC-202) is named exactly the
+// same way. All through the fake adapters — no provider knowledge.
 
 const kit = makeTestServiceLayers()
 const TestLayer = apiTestLayer(kit)
@@ -40,6 +41,23 @@ const openedThread = (name?: string) =>
     const record = Option.getOrThrow(yield* repository.get(thread.id))
     return { client, threadId: thread.id, sessionId: record.providerSessionId ?? "" }
   })
+
+/** One unnamed thread with no terminal: its first turn will be native. */
+const nativeThread = Effect.gen(function* () {
+  const client = yield* HttpApiTest.groups(Api, ["v1"])
+  const repository = yield* ThreadRepository
+  const project = yield* client.v1.createProject({
+    payload: { name: `Title native ${Date.now()}`, defaultWorkingDirectory: realDir },
+  })
+  const thread = yield* client.v1.createThread({
+    payload: { projectId: project.id, agentId: "codex" },
+  })
+  /** The provider session the runtime adopted for the thread. */
+  const readSessionId = repository
+    .get(thread.id)
+    .pipe(Effect.map((record) => Option.getOrThrow(record).providerSessionId ?? ""))
+  return { client, threadId: thread.id, readSessionId }
+})
 
 describe("thread auto-naming", () => {
   it.live("titles an unnamed thread from its first prompt, once, and publishes", () =>
@@ -95,6 +113,96 @@ describe("thread auto-naming", () => {
         yield* client.v1.deleteThread({ params: { threadId } })
       }),
     ).pipe(Effect.provide(TestLayer)),
+  )
+
+  it.live("titles a thread whose first turn is native from its prompt, once", () =>
+    Effect.gen(function* () {
+      const fake = kit.fakeAgents.codex
+      const { client, threadId, readSessionId } = yield* nativeThread
+      const requestsBefore = fake.titleRequests.length
+      fake.setTitle('  "Add dark mode to settings."  ')
+
+      const started = yield* client.v1.promptThread({
+        params: { threadId },
+        payload: { prompt: "please add dark mode to the settings page" },
+      })
+      assert.isString(started.turnId)
+      yield* eventually(
+        client.v1.getThread({ params: { threadId } }),
+        (read) => read.name === "Add dark mode to settings",
+      )
+      // The generation saw the thread's cwd and the verbatim prompt — the
+      // surface that started the thread is invisible in the request.
+      assert.deepStrictEqual(fake.titleRequests[requestsBefore], {
+        cwd: realDir,
+        prompt: "please add dark mode to the settings page",
+      })
+
+      // A later native prompt on the (now confirmed) thread never re-titles.
+      fake.completeTurn(yield* readSessionId, "completed")
+      yield* eventually(
+        client.v1.getThread({ params: { threadId } }),
+        (read) => read.activityState === "idle",
+      )
+      const second = yield* client.v1.promptThread({
+        params: { threadId },
+        payload: { prompt: "now remove it again" },
+      })
+      assert.isString(second.turnId)
+      assert.strictEqual(fake.titleRequests.length, requestsBefore + 1)
+
+      fake.completeTurn(yield* readSessionId, "completed")
+      yield* client.v1.deleteThread({ params: { threadId } })
+    }).pipe(Effect.provide(TestLayer)),
+  )
+
+  it.live("a native first turn followed by a TUI turn names the thread once, not twice", () =>
+    Effect.gen(function* () {
+      const fake = kit.fakeAgents.codex
+      const { client, threadId, readSessionId } = yield* nativeThread
+      const requestsBefore = fake.titleRequests.length
+      const contextsBefore = fake.contextRequests.length
+      fake.setTitle("Native first")
+
+      yield* client.v1.promptThread({
+        params: { threadId },
+        payload: { prompt: "first, natively" },
+      })
+      yield* eventually(
+        client.v1.getThread({ params: { threadId } }),
+        (read) => read.name === "Native first",
+      )
+      // The native turn ends: its one refinement collects (nothing usable
+      // here) and is spent.
+      const providerSessionId = yield* readSessionId
+      fake.completeTurn(providerSessionId, "completed")
+      yield* eventually(
+        Effect.sync(() => fake.contextRequests.length),
+        (count) => count === contextsBefore + 1,
+      )
+
+      // The second turn runs in the TUI over the same, now confirmed,
+      // session: neither its prompt nor its busy/idle edges may name or
+      // refine again.
+      yield* client.v1.openThreadTerminal({ params: { threadId } })
+      fake.emitUserPrompt(providerSessionId, "second, in the TUI")
+      fake.emitActivity(providerSessionId, "working")
+      fake.emitActivity(providerSessionId, "idle")
+      // Barrier: a later event observed proves the edges were consumed.
+      fake.emitActivity(providerSessionId, "working")
+      yield* eventually(
+        client.v1.getThread({ params: { threadId } }),
+        (read) => read.activityState === "working",
+      )
+      assert.strictEqual(fake.titleRequests.length, requestsBefore + 1)
+      assert.strictEqual(fake.contextRequests.length, contextsBefore + 1)
+      assert.strictEqual(
+        (yield* client.v1.getThread({ params: { threadId } })).name,
+        "Native first",
+      )
+
+      yield* client.v1.deleteThread({ params: { threadId } })
+    }).pipe(Effect.provide(TestLayer)),
   )
 
   it.live("a creation-time name suppresses generation and refinement entirely", () =>
