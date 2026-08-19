@@ -1,8 +1,11 @@
 import type {
   CanUseTool,
+  EffortLevel,
   HookCallbackMatcher,
   HookEvent,
+  ModelInfo,
   Options,
+  PermissionMode,
   PermissionResult,
   PermissionUpdate,
   SDKMessage,
@@ -30,12 +33,16 @@ import type {
   AgentConnection,
   AgentEvent,
   AgentIdentityMismatch,
+  AgentModel,
   AgentProtocolError,
   AgentSessionEvent,
   AgentUnavailable,
   HistoryTurn,
+  ProviderSettings,
+  ThreadAccess,
   ThreadItem,
   ThreadRequest,
+  ThreadSettings,
 } from "./agentAdapter.ts"
 import {
   AgentResumeFailed,
@@ -51,6 +58,7 @@ import {
   withToolStatus,
 } from "./agentAdapter.ts"
 import * as path from "node:path"
+import { isReasoningLevel } from "../api/contract.ts"
 import * as ClaudeHooks from "./claudeHooks.ts"
 import * as ClaudeItems from "./claudeItems.ts"
 import { AppConfig } from "../platform/config.ts"
@@ -136,6 +144,28 @@ import * as Subprocess from "../platform/subprocess.ts"
 //     TUI's submitted prompt as an observed `userMessage` item (the seam's
 //     one hooks-carried item), so a Chat reader shows what the TUI is
 //     working on before the turn's re-read lands.
+//   - Settings (ATC-205): a fresh child is spawned with the caller's model,
+//     effort, and permission mode, so its first turn pushes nothing; later
+//     turns on the resident connection push only what changed, through the
+//     live control requests (`setModel`, `applyFlagSettings({effortLevel})`,
+//     `setPermissionMode`) before the input goes out. The ladder is ONE knob
+//     here — Supervised `default`, Auto-accept edits `acceptEdits`, Auto
+//     `auto` (the classifier mode: works within the workspace unasked and
+//     still routes borderline calls to canUseTool; `dontAsk` denies every
+//     unlisted tool outright, probed 2026-08-18), Full access
+//     `bypassPermissions` — and Plan mode is `permissionMode: "plan"`, which
+//     stands in for the access rung while planning. The child is always
+//     spawned with `allowDangerouslySkipPermissions` so Full access can be
+//     switched to mid-session; the mode itself is only ever what the caller
+//     asked for. Every `system/init` (one per turn) reports the model and
+//     permission mode the child actually applied — a model without auto
+//     support silently runs `default` — and `getSettings().applied.effort`
+//     the effort; both come back as the seam's `settings` event, the model
+//     mapped through the child's own catalog to the alias the catalog lists
+//     (init reports the wire id: `sonnet` → `claude-sonnet-5`). getSettings
+//     is undeclared on the SDK's Query type (0.3.235) but real: it is reached
+//     through a narrow local interface and schema-decoded; a decode failure
+//     keeps the caller's stored effort and warns once.
 
 /** The Claude Code version this adapter was validated against. */
 const CLAUDE_TESTED_VERSION = "2.1.235"
@@ -144,11 +174,128 @@ export class ClaudeAdapter extends Context.Service<ClaudeAdapter, AgentAdapter>(
   "app-server/ClaudeAdapter",
 ) {}
 
+/** The held query() handle: the message stream plus the control requests this adapter uses. */
+export interface ClaudeQueryHandle extends AsyncIterable<SDKMessage> {
+  readonly interrupt: () => Promise<unknown>
+  readonly setModel: (model?: string) => Promise<void>
+  readonly setPermissionMode: (mode: PermissionMode) => Promise<void>
+  readonly applyFlagSettings: (settings: { effortLevel?: EffortLevel | null }) => Promise<void>
+  readonly supportedModels: () => Promise<ReadonlyArray<ModelInfo>>
+}
+
 /** The query() seam, injectable so fixture tests can script SDK streams. */
 export type ClaudeQueryFn = (args: {
   readonly prompt: AsyncIterable<SDKUserMessage>
   readonly options: Options
-}) => AsyncIterable<SDKMessage> & { readonly interrupt: () => Promise<unknown> }
+}) => ClaudeQueryHandle
+
+// getSettings() exists at runtime but is absent from the declared Query
+// interface (see the header): reached through this narrow shape only.
+interface SettingsProbe {
+  readonly getSettings: () => Promise<unknown>
+}
+const settingsProbe = (handle: object): SettingsProbe | null =>
+  typeof (handle as Partial<SettingsProbe>).getSettings === "function"
+    ? (handle as SettingsProbe)
+    : null
+const AppliedSettings = Schema.Struct({
+  applied: Schema.Struct({ effort: Schema.optional(Schema.NullOr(Schema.String)) }),
+})
+const decodeAppliedSettings = Schema.decodeUnknownOption(AppliedSettings)
+
+// --- The access ladder, both directions (see the header) ---------------------
+
+const ACCESS_TO_PERMISSION_MODE: Record<ThreadAccess, PermissionMode> = {
+  supervised: "default",
+  autoAcceptEdits: "acceptEdits",
+  auto: "auto",
+  fullAccess: "bypassPermissions",
+}
+
+/** The permission mode a turn runs with: plan mode stands in for the rung. */
+const permissionModeFor = (settings: ThreadSettings): PermissionMode =>
+  settings.mode === "plan" ? "plan" : ACCESS_TO_PERMISSION_MODE[settings.access]
+
+/**
+ * The reverse read of a reported permission mode: `plan` is the mode (the
+ * rung is untouched); `dontAsk` — never asks — is nearest Auto; anything
+ * unrecognized reports nothing.
+ */
+const settingsFromPermissionMode = (mode: unknown): ProviderSettings => {
+  if (mode === "plan") return { mode: "plan" }
+  const access =
+    mode === "default"
+      ? "supervised"
+      : mode === "acceptEdits"
+        ? "autoAcceptEdits"
+        : mode === "auto" || mode === "dontAsk"
+          ? "auto"
+          : mode === "bypassPermissions"
+            ? "fullAccess"
+            : undefined
+  return access === undefined ? {} : { mode: "chat", access }
+}
+
+/** Claude's own effort vocabulary (no `ultra`); anything else is not pushed. */
+const CLAUDE_EFFORTS: ReadonlyArray<EffortLevel> = ["low", "medium", "high", "xhigh", "max"]
+const claudeEffort = (level: string | undefined): EffortLevel | undefined =>
+  CLAUDE_EFFORTS.find((candidate) => candidate === level)
+
+/**
+ * The CLI names models by family alone ("Opus (1M context)", "Fable"); the
+ * version lives in the wire id (`claude-opus-5[1m]`, `claude-haiku-4-5-20251001`).
+ * Fold it back in after the family word — "Opus 5 (1M context)", "Haiku
+ * 4.5" — and leave a name the id does not explain untouched.
+ */
+export const claudeDisplayName = (displayName: string, wireModel: string): string => {
+  const match = /^claude-([a-z]+)-(\d+)(?:-(\d+))?(?:-\d{8})?(?:\[1m\])?$/.exec(wireModel)
+  const family = match?.[1]
+  const major = match?.[2]
+  if (family === undefined || major === undefined) return displayName
+  const minor = match?.[3]
+  const version = minor === undefined ? major : `${major}.${minor}`
+  const prefix = new RegExp(`^${family}(?![a-z])`, "i")
+  if (!prefix.test(displayName) || displayName.includes(version)) return displayName
+  return displayName.replace(prefix, (word) => `${word} ${version}`)
+}
+
+/**
+ * The catalog as the seam lists it: the `default` meta-entry is folded into
+ * the alias it resolves to (that alias becomes the default), so every entry
+ * names a real model and the stored value round-trips.
+ */
+export const normalizeClaudeCatalog = (
+  models: ReadonlyArray<ModelInfo>,
+): ReadonlyArray<AgentModel> => {
+  const meta = models.find((model) => model.value === "default")
+  const defaultWire = meta?.resolvedModel ?? meta?.value
+  return models
+    .filter((model) => model.value !== "default")
+    .map((model) => {
+      const levels = (
+        model.supportsEffort === true ? (model.supportedEffortLevels ?? []) : []
+      ).filter(isReasoningLevel)
+      const entry: { -readonly [K in keyof AgentModel]: AgentModel[K] } = {
+        value: model.value,
+        displayName: claudeDisplayName(model.displayName, model.resolvedModel ?? model.value),
+        description: model.description,
+        isDefault:
+          defaultWire !== undefined && (model.resolvedModel ?? model.value) === defaultWire,
+        supportedEffortLevels: levels,
+      }
+      // The CLI applies `high` unless told otherwise (probed 2026-08-18),
+      // clamped to what this model lists.
+      const preferred = levels.includes("high") ? "high" : levels[0]
+      if (preferred !== undefined) entry.defaultEffortLevel = preferred
+      return entry
+    })
+}
+
+/** The catalog value for a wire model id init reported (else the id itself). */
+const catalogValueFor = (models: ReadonlyArray<ModelInfo>, wireModel: string): string =>
+  models.find(
+    (model) => model.value !== "default" && (model.resolvedModel ?? model.value) === wireModel,
+  )?.value ?? wireModel
 
 export interface ClaudeAdapterOptions {
   readonly queryFn?: ClaudeQueryFn
@@ -296,6 +443,12 @@ interface StreamingMessage {
   readonly blocks: Map<number, ThreadItem>
 }
 
+/** What one system/init said about the child's applied settings. */
+interface InitEvidence {
+  readonly model: string
+  readonly permissionMode: unknown
+}
+
 interface LiveSession {
   /** The id resume promised (null for create — any id is acceptable). */
   readonly expectedSessionId: string | null
@@ -307,7 +460,13 @@ interface LiveSession {
   readonly pushInput: (text: string) => void
   readonly closeInput: () => void
   readonly initGate: Deferred.Deferred<void, GateError>
-  interrupt: () => Promise<unknown>
+  /** The held query() handle, once opened (control requests, interrupt). */
+  handle: ClaudeQueryHandle | null
+  /** Each init's model/permission evidence, drained by the probe fiber. */
+  readonly probes: Queue.Queue<InitEvidence, Cause.Done>
+  /** The settings baseline: what the child runs with — spawned with, last
+   * pushed, or last reported by init. */
+  live: ProviderSettings
   sessionId: string | null
   activity: AgentActivity
   activeTurn: string | null
@@ -425,6 +584,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
           Queue.endUnsafe(session.queue)
         }
         session.closeInput()
+        Queue.endUnsafe(session.probes)
         session.abort.abort()
       }
 
@@ -608,6 +768,10 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
           session.sessionId = message.session_id
           if (!sessions.has(message.session_id)) sessions.set(message.session_id, session)
           Deferred.doneUnsafe(session.initGate, Effect.void)
+          Queue.offerUnsafe(session.probes, {
+            model: message.model,
+            permissionMode: message.permissionMode,
+          })
           return
         }
         if (message.type === "system" && message.subtype === "session_state_changed") {
@@ -866,7 +1030,11 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
           return { secret, settingsFile }
         })
 
-      const openSession = (options: { readonly cwd: string; readonly resume?: string }) =>
+      const openSession = (options: {
+        readonly cwd: string
+        readonly resume?: string
+        readonly settings: ThreadSettings
+      }) =>
         Effect.gen(function* () {
           const executable = yield* resolvedExecutable
           // The held query() drains this queue as its async input iterable;
@@ -882,6 +1050,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
             capacity: 256,
           })
           const initGate = yield* Deferred.make<void, GateError>()
+          const probes = yield* Queue.make<InitEvidence, Cause.Done>()
           const session: LiveSession = {
             expectedSessionId: options.resume ?? null,
             cwd: options.cwd,
@@ -895,7 +1064,14 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
               Queue.endUnsafe(inputQueue)
             },
             initGate,
-            interrupt: () => Promise.resolve(),
+            handle: null,
+            probes,
+            live: {
+              model: options.settings.model,
+              reasoning: options.settings.reasoning ?? null,
+              mode: options.settings.mode,
+              access: options.settings.access,
+            },
             sessionId: null,
             activity: "unknown",
             activeTurn: null,
@@ -929,6 +1105,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
           if (claim !== "claimed") {
             return yield* Effect.fail(writerConnected(claim.conflict))
           }
+          const effort = claudeEffort(options.settings.reasoning)
           const handle = queryFn({
             prompt: yield* Stream.toAsyncIterableEffect(Stream.fromQueue(inputQueue)),
             options: {
@@ -938,16 +1115,115 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
               pathToClaudeCodeExecutable: executable,
               ...(options.resume !== undefined ? { resume: options.resume } : {}),
               settingSources: [],
-              permissionMode: "default",
+              model: options.settings.model,
+              ...(effort !== undefined ? { effort } : {}),
+              permissionMode: permissionModeFor(options.settings),
+              allowDangerouslySkipPermissions: true,
               persistSession: true,
               includePartialMessages: true,
               canUseTool: makeCanUseTool(session),
               hooks: makeHooks(session),
             },
           })
-          session.interrupt = () => handle.interrupt()
+          session.handle = handle
           yield* consume(session, handle).pipe(Effect.forkScoped)
+          yield* Stream.fromQueue(probes).pipe(
+            Stream.runForEach((init) => reportApplied(session, init)),
+            Effect.forkScoped,
+          )
           return session
+        })
+
+      /**
+       * Push what differs between the caller's settings and the child's
+       * baseline (the header's settings bullet), each through its live
+       * control request; the baseline moves as each lands.
+       */
+      const pushSettings = (
+        session: LiveSession,
+        settings: ThreadSettings,
+      ): Effect.Effect<void, AgentProtocolError> =>
+        Effect.gen(function* () {
+          const handle = session.handle
+          if (handle === null) return
+          const control = (what: string, run: () => Promise<void>) =>
+            Effect.tryPromise({
+              try: run,
+              catch: (error) =>
+                protocolError(
+                  `${what} failed: ${error instanceof Error ? error.message : String(error)}`,
+                ),
+            })
+          if (session.live.model !== settings.model) {
+            yield* control("setModel", () => handle.setModel(settings.model))
+            session.live = { ...session.live, model: settings.model }
+          }
+          // A model with no effort support carries no reasoning: the flag
+          // layer is cleared rather than left holding the previous model's.
+          const effort = claudeEffort(settings.reasoning) ?? null
+          if (session.live.reasoning !== effort) {
+            yield* control("applyFlagSettings", () =>
+              handle.applyFlagSettings({ effortLevel: effort }),
+            )
+            session.live = { ...session.live, reasoning: effort }
+          }
+          const wanted = permissionModeFor(settings)
+          const current =
+            session.live.mode === "plan"
+              ? "plan"
+              : session.live.access === undefined
+                ? undefined
+                : ACCESS_TO_PERMISSION_MODE[session.live.access]
+          if (current !== wanted) {
+            yield* control("setPermissionMode", () => handle.setPermissionMode(wanted))
+            session.live = { ...session.live, mode: settings.mode, access: settings.access }
+          }
+        })
+
+      /**
+       * What the child actually applied, read at each init (the header's
+       * settings bullet): the catalog maps the wire model id back to the
+       * listed alias, and getSettings — reached through its narrow probe —
+       * says the effort. Runs on the session's probe fiber (openSession),
+       * never on the message loop; a session that closed meanwhile reports
+       * nothing.
+       */
+      let warnedSettingsProbe = false
+      const reportApplied = (session: LiveSession, init: InitEvidence): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          const handle = session.handle
+          if (handle === null) return
+          const probe = settingsProbe(handle)
+          const models = yield* Effect.promise(() =>
+            handle.supportedModels().catch(() => [] as ReadonlyArray<ModelInfo>),
+          )
+          const applied =
+            probe === null
+              ? undefined
+              : yield* Effect.promise(() => probe.getSettings().catch(() => undefined))
+          if (session.closed) return
+          const effort = decodeAppliedSettings(applied).pipe(
+            Option.map((decoded) => decoded.applied.effort ?? null),
+            Option.getOrUndefined,
+          )
+          if (effort === undefined && !warnedSettingsProbe) {
+            warnedSettingsProbe = true
+            yield* Effect.logWarning(
+              "claude getSettings() gave no decodable effort; keeping the stored reasoning level (re-verify the SDK's undeclared getSettings after an upgrade)",
+            )
+          }
+          // Without the catalog the wire id cannot be mapped back to a
+          // listed value, and adopting it raw would replace the stored alias
+          // with an id nothing else recognizes — so the model goes unreported.
+          const reported: ProviderSettings = {
+            ...(models.length === 0 ? {} : { model: catalogValueFor(models, init.model) }),
+            ...settingsFromPermissionMode(init.permissionMode),
+            ...(effort === undefined
+              ? {}
+              : { reasoning: effort !== null && isReasoningLevel(effort) ? effort : null }),
+          }
+          session.live = { ...session.live, ...reported }
+          emit(session, { type: "settings", settings: reported })
         })
 
       const awaitVerified = (session: LiveSession) =>
@@ -1048,8 +1324,15 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
           cwd: session.cwd,
           activity: Effect.sync(() => session.activity),
           events: Stream.fromQueue(session.queue),
-          startTurn: (text) =>
+          startTurn: (text, settings) =>
             Effect.gen(function* () {
+              yield* requireOpen
+              if (session.activeTurn !== null) {
+                return yield* Effect.fail(turnStillActive(session.activeTurn))
+              }
+              yield* pushSettings(session, settings)
+              // The pushes suspended: the seam's one-turn rule is re-checked
+              // before the input goes out.
               yield* requireOpen
               if (session.activeTurn !== null) {
                 return yield* Effect.fail(turnStillActive(session.activeTurn))
@@ -1076,7 +1359,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
               }
               session.interruptRequested = true
               yield* Effect.tryPromise({
-                try: () => session.interrupt(),
+                try: () => session.handle?.interrupt() ?? Promise.resolve(),
                 catch: (error) => protocolError(`interrupt failed: ${error}`),
               }).pipe(
                 // A failed interrupt must not relabel the turn's real
@@ -1126,7 +1409,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
         sharedServer: false,
         createSession: (options) =>
           Effect.gen(function* () {
-            const session = yield* openSession({ cwd: options.cwd })
+            const session = yield* openSession({ cwd: options.cwd, settings: options.settings })
             const turnId = beginTurn(session, options.input)
             // A create has no expected id, so AgentResumeFailed cannot
             // happen here — same rule as the codex adapter.
@@ -1140,6 +1423,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
             const session = yield* openSession({
               cwd: options.cwd,
               resume: options.providerSessionId,
+              settings: options.settings,
             })
             return makeConnection(session)
           }),
@@ -1244,6 +1528,50 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
             })
             return Stream.fromQueue(queue)
           }),
+        // The catalog is the CLI's initialize response: one child, no
+        // prompt ever sent, aborted as soon as it has answered.
+        listModels: () =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const executable = yield* resolvedExecutable
+              const abort = new AbortController()
+              yield* Effect.addFinalizer(() => Effect.sync(() => abort.abort()))
+              const prompt = yield* Stream.toAsyncIterableEffect(Stream.never)
+              const handle = yield* Effect.try({
+                try: () =>
+                  queryFn({
+                    prompt,
+                    options: {
+                      abortController: abort,
+                      cwd: config.stateDir,
+                      env: claudeEnvironment(),
+                      pathToClaudeCodeExecutable: executable,
+                      settingSources: [],
+                      strictMcpConfig: true,
+                      tools: [],
+                      persistSession: false,
+                    },
+                  }),
+                catch: (error) =>
+                  protocolError(
+                    `the model catalog read failed to start: ${error instanceof Error ? error.message : String(error)}`,
+                  ),
+              })
+              const models = yield* Effect.tryPromise({
+                try: () => handle.supportedModels(),
+                catch: (error) =>
+                  protocolError(
+                    `the model catalog read failed: ${error instanceof Error ? error.message : String(error)}`,
+                  ),
+              }).pipe(
+                Effect.timeoutOrElse({
+                  duration: "30 seconds",
+                  orElse: () => Effect.fail(protocolError("the model catalog read timed out")),
+                }),
+              )
+              return normalizeClaudeCatalog(models)
+            }),
+          ),
         generateTitle: (options) =>
           Effect.scoped(
             Effect.gen(function* () {

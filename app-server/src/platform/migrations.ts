@@ -147,4 +147,33 @@ export const migrations: Record<string, Effect.Effect<void, unknown, SqlClient.S
     `
     yield* sql`CREATE INDEX thread_queue_thread_id ON thread_queue(thread_id)`
   }),
+  // Chat mode settings (ATC-205): the thread's model / reasoning / mode /
+  // access — what its next turn runs with — and the per-agent write-through
+  // defaults a new thread inherits. Rows that predate the columns are
+  // backfilled with the seed each agent's registry entry carried when this
+  // migration shipped (the registry table is the living seed for agents
+  // with no defaults row); their next turn runs with it until the user
+  // picks another. `reasoning` is NULL for models without effort support.
+  "0007_thread_settings": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`ALTER TABLE threads ADD COLUMN model TEXT NOT NULL DEFAULT ''`
+    yield* sql`ALTER TABLE threads ADD COLUMN reasoning TEXT`
+    yield* sql`ALTER TABLE threads ADD COLUMN mode TEXT NOT NULL DEFAULT 'chat'`
+    yield* sql`ALTER TABLE threads ADD COLUMN access TEXT NOT NULL DEFAULT 'auto'`
+    yield* sql`
+      UPDATE threads SET
+        model = CASE agent_id WHEN 'claude-code' THEN 'opus[1m]' ELSE 'gpt-5.6-sol' END,
+        reasoning = 'high'
+    `
+    yield* sql`
+      CREATE TABLE agent_defaults (
+        agent_id TEXT PRIMARY KEY,
+        model TEXT NOT NULL,
+        reasoning TEXT,
+        mode TEXT NOT NULL,
+        access TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT
+    `
+  }),
 }

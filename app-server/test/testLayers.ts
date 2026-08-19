@@ -1,12 +1,14 @@
 import { assert } from "@effect/vitest"
 import { BunHttpServer, BunServices } from "@effect/platform-bun"
 import { Context, Effect, Exit, Layer, Scope, Stream } from "effect"
+import { SqlClient } from "effect/unstable/sql"
 import type { Duration } from "effect"
 import { HttpServer } from "effect/unstable/http"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { fileURLToPath } from "node:url"
+import * as AgentDefaultsRepository from "../src/agents/agentDefaultsRepository.ts"
 import * as AgentRegistry from "../src/agents/agentRegistry.ts"
 import * as AuthToken from "../src/platform/authToken.ts"
 import * as ClaudeAdapter from "../src/agents/claudeAdapter.ts"
@@ -48,9 +50,11 @@ type ServiceLayer = Layer.Layer<
   | ProjectRepository.ProjectRepository
   | TerminalRepository.TerminalRepository
   | ThreadRepository.ThreadRepository
+  | AgentDefaultsRepository.AgentDefaultsRepository
   | Directories.Directories
   | TerminalAdapter
-  | ClaudeHooks.ClaudeHooks,
+  | ClaudeHooks.ClaudeHooks
+  | SqlClient.SqlClient,
   unknown
 >
 
@@ -142,7 +146,10 @@ export const makeTestServiceLayers = (
     TerminalRepository.layer,
     ThreadRepository.layer,
     TranscriptRepository.layer,
-  ).pipe(Layer.provide(Persistence.layerFile(dbFile)))
+    AgentDefaultsRepository.layer,
+    // Merged, not just provided: Threads holds the SqlClient for its
+    // settings write-through transaction.
+  ).pipe(Layer.provideMerge(Persistence.layerFile(dbFile)))
   const services = Layer.mergeAll(
     base,
     Directories.layer.pipe(Layer.provide(testAppConfig(configOverrides))),
@@ -153,6 +160,7 @@ export const makeTestServiceLayers = (
   const terminals = Terminals.layer.pipe(Layer.provide([services, eventsLayer]))
   const registry = AgentRegistry.layer.pipe(
     Layer.provide([
+      services,
       Layer.succeed(CodexAdapter.CodexAdapter)(fakeAgents.codex.adapter),
       Layer.succeed(ClaudeAdapter.ClaudeAdapter)(fakeAgents.claude.adapter),
       testAppConfig({ codexExecutable: "/bin/echo", claudeExecutable: "/bin/echo" }),

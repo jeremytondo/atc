@@ -4,13 +4,16 @@ import type {
   AgentAdapter,
   AgentConnection,
   AgentEvent,
+  AgentModel,
   AgentSessionEvent,
   AgentTurn,
   AgentTurnOutcome,
   HistoryTurn,
+  ProviderSettings,
   ThreadItem,
   ThreadRequest,
   ThreadRequestAnswer,
+  ThreadSettings,
 } from "../../src/agents/agentAdapter.ts"
 import {
   AgentConflict,
@@ -41,6 +44,8 @@ export interface FakeAgentSession {
   readonly cwd: string
   /** Inputs received via createSession/startTurn, for assertions. */
   readonly inputs: Array<string>
+  /** Settings each turn was started with (createSession/startTurn), in order. */
+  readonly turnSettings: Array<ThreadSettings>
 }
 
 export interface FakeAgentAdapter {
@@ -133,6 +138,17 @@ export interface FakeAgentAdapter {
   readonly prepared: Array<{ providerSessionId: string; cwd: string }>
   /** releaseSession calls, in order. */
   readonly released: Array<{ providerSessionId: string; providerMetadata: string | undefined }>
+  /** Push one provider settings report onto the live connection's feed and
+   * to every observer of `providerSessionId` (a change made in the TUI). */
+  readonly emitSettings: (providerSessionId: string, settings: ProviderSettings) => void
+  /** Script what listModels returns (default: a two-model catalog). */
+  readonly setModels: (models: ReadonlyArray<AgentModel>) => void
+  /** listModels calls so far. */
+  readonly modelReads: () => number
+  /** Park every listModels (after it is counted) on `gate` — a slow
+   * catalog read, so a caller can be caught between reading a row and
+   * writing it. `Effect.void` restores the instant answer. */
+  readonly gateModels: (gate: Effect.Effect<void>) => void
 }
 
 export interface FakeAgentAdapterOptions {
@@ -175,6 +191,25 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
   let inFlightChecks = 0
   let maxInFlightChecks = 0
   let unavailableReason: string | null = null
+  let models: ReadonlyArray<AgentModel> = [
+    {
+      value: "fake-large",
+      displayName: "Fake Large",
+      description: "The default fake model",
+      isDefault: true,
+      supportedEffortLevels: ["low", "medium", "high"],
+      defaultEffortLevel: "medium",
+    },
+    {
+      value: "fake-small",
+      displayName: "Fake Small",
+      description: "No effort support",
+      isDefault: false,
+      supportedEffortLevels: [],
+    },
+  ]
+  let modelReads = 0
+  let modelsGate: Effect.Effect<void> = Effect.void
   let nextSessionId = 1
   let nextTurnId = 1
   const instance = crypto.randomUUID().slice(0, 8)
@@ -245,7 +280,7 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
           : Effect.void,
       )
 
-      const startTurn = (input: string) =>
+      const startTurn = (input: string, settings: ThreadSettings) =>
         Effect.gen(function* () {
           yield* requireAvailable
           yield* requireOpen
@@ -258,6 +293,7 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
             )
           }
           session.inputs.push(input)
+          session.turnSettings.push(settings)
           // Unique across fake instances: turn ids are persisted, and a
           // "restarted" fake must not collide with the previous one's turns.
           const turnId = `fake-turn-${nextTurnId++}-${instance}`
@@ -352,13 +388,14 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
           providerSessionId: `fake-session-${nextSessionId++}`,
           cwd: options.cwd,
           inputs: [],
+          turnSettings: [],
         }
         sessions.set(session.providerSessionId, session)
         const connection = yield* openConnection(session)
         // The fake verifies eagerly, so deferred-verification tags cannot
         // occur on its first turn.
         const turn = yield* connection
-          .startTurn(options.input)
+          .startTurn(options.input, options.settings)
           .pipe(Effect.catchTag("AgentResumeFailed", (error) => Effect.die(error)))
         return { connection, turn }
       }),
@@ -414,7 +451,12 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
         // The prepared session becomes resumable once identity resolves —
         // mirroring "a completed first interaction materializes it".
         const resolve = Effect.sync(() => {
-          sessions.set(providerSessionId, { providerSessionId, cwd: options.cwd, inputs: [] })
+          sessions.set(providerSessionId, {
+            providerSessionId,
+            cwd: options.cwd,
+            inputs: [],
+            turnSettings: [],
+          })
           return {
             providerSessionId,
             cwd: options.cwd,
@@ -448,6 +490,13 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
           }),
         )
         return Stream.fromQueue(queue)
+      }),
+    listModels: () =>
+      Effect.gen(function* () {
+        yield* requireAvailable
+        modelReads++
+        yield* modelsGate
+        return models
       }),
     generateTitle: (options) =>
       Effect.gen(function* () {
@@ -510,7 +559,7 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
       unavailableReason = reason
     },
     seed: (providerSessionId, cwd) => {
-      const session: FakeAgentSession = { providerSessionId, cwd, inputs: [] }
+      const session: FakeAgentSession = { providerSessionId, cwd, inputs: [], turnSettings: [] }
       sessions.set(providerSessionId, session)
       return session
     },
@@ -594,6 +643,20 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
       for (const queue of observers.get(providerSessionId) ?? []) {
         Queue.offerUnsafe(queue, { type: "userPrompt", text })
       }
+    },
+    emitSettings: (providerSessionId, settings) => {
+      const live = connections.get(providerSessionId)
+      if (live !== undefined) emit(live, { type: "settings", settings })
+      for (const queue of observers.get(providerSessionId) ?? []) {
+        Queue.offerUnsafe(queue, { type: "settings", settings })
+      }
+    },
+    setModels: (next) => {
+      models = next
+    },
+    modelReads: () => modelReads,
+    gateModels: (gate) => {
+      modelsGate = gate
     },
     titleRequests,
     titleOutcomes,

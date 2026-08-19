@@ -79,6 +79,7 @@ describe("/api/v1/agents", () => {
               claudeExecutable: "/definitely/not/claude",
             }),
             Subprocess.layer.pipe(Layer.provide(BunServices.layer)),
+            kit.services,
           ]),
         ),
       ),

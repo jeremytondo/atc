@@ -23,6 +23,7 @@ import type {
   AgentItemEvent,
   AgentSessionEvent,
   AgentTurn,
+  ProviderSettings,
   ThreadRequest,
   ThreadRequestAnswer,
   ThreadTurn,
@@ -45,6 +46,8 @@ import type { Terminal } from "../terminals/terminals.ts"
 import { ThreadNaming } from "./threadNaming.ts"
 import { ThreadRepository } from "./threadRepository.ts"
 import type { ThreadRecord } from "./threadRepository.ts"
+import { applyProviderSettings } from "./threadSettings.ts"
+import type { ThreadSettings } from "./threadSettings.ts"
 import { ThreadTui } from "./threadTui.ts"
 import { TranscriptRepository } from "./transcriptRepository.ts"
 import type { TranscriptChange, TurnSource } from "./transcriptRepository.ts"
@@ -130,6 +133,17 @@ export type QueuedPrompt = typeof Contract.QueuedPrompt.Type
 //     `answerRequest`; they die with their turn or the process (a re-run
 //     turn re-asks). Answers are validated against the request here, so
 //     adapters only ever see well-formed answers.
+//   - Settings (ATC-205): every turn starts with the thread's stored
+//     settings (re-read under the start lock, so a change made while a
+//     prompt waited is what the turn runs with); the adapter pushes only
+//     what differs from the live session. The provider's own word on its
+//     session settings — the seam's `settings` events, on the writer feed
+//     and the observation feed alike — is adopted into the row as it
+//     arrives (provider state wins), which is how a change made in a TUI or
+//     another provider client shows up here — except that a report merely
+//     confirming what the writer's last turn pushed is not news
+//     (applyProviderSettings): a confirmation that lands after the user
+//     changed a setting again must not roll that change back.
 //   - The activity ledger is the one place live activity lives (the
 //     observation drain and threads.ts's demand-driven re-derivation feed
 //     it too): a first busy confirms the thread, a busy→idle drop stamps
@@ -192,6 +206,9 @@ interface Writer {
   closing: Deferred.Deferred<void> | undefined
   /** The idle-close timer of a resident writer (see armIdleClose). */
   idleClose: Fiber.Fiber<void> | undefined
+  /** The settings the last turn on this connection was started with — what
+   * the provider's next report merely confirms (applyProviderSettings). */
+  pushed: ThreadSettings | undefined
 }
 
 export interface ThreadRuntimeOptions {
@@ -630,6 +647,41 @@ const make = (options: ThreadRuntimeOptions) =>
         )
       })
 
+    /**
+     * Provider state wins (the header's settings bullet): merge what the
+     * provider reported — minus what merely confirms the writer's own push
+     * — over the row as it stands NOW, never over the record the feed was
+     * opened with, which a client patch may have moved on from; publish
+     * only a real change. The write is the repository's compare-and-swap:
+     * a client patch landing between the read and the write makes it miss,
+     * and the report is re-merged on top of that patch rather than over
+     * it. A vanished row (a delete racing the feed) is a no-op.
+     */
+    const adoptSettings = (
+      record: ThreadRecord,
+      reported: ProviderSettings,
+      pushed: ThreadSettings | undefined,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        for (let attempt = 0; attempt < 8; attempt++) {
+          const current = yield* repository.get(record.id)
+          if (Option.isNone(current)) return
+          const adopted = applyProviderSettings(current.value.settings, reported, pushed)
+          if (adopted === undefined) return
+          const updated = yield* repository.setSettingsIfUnchanged(
+            record.id,
+            current.value.settings,
+            adopted,
+          )
+          if (Option.isSome(updated)) {
+            return yield* events.publish({ resource: "thread", id: record.id, change: "updated" })
+          }
+        }
+        yield* Effect.logWarning("a provider settings report never settled against the row").pipe(
+          Effect.annotateLogs({ threadId: record.id }),
+        )
+      })
+
     const handleEvent = (
       record: ThreadRecord,
       writer: Writer,
@@ -662,6 +714,8 @@ const make = (options: ThreadRuntimeOptions) =>
             if (run?.requests.delete(event.requestId) !== true) return
             publish(record.id, { type: "request.closed", requestId: event.requestId })
           })
+        case "settings":
+          return adoptSettings(record, event.settings, writer.pushed)
         case "turnStarted":
           // Another writer's turn on a connection we hold (a TUI mid-run on
           // a shared server): observed, not ours.
@@ -761,6 +815,7 @@ const make = (options: ThreadRuntimeOptions) =>
       run: undefined,
       closing: undefined,
       idleClose: undefined,
+      pushed: undefined,
     })
 
     /**
@@ -787,9 +842,14 @@ const make = (options: ThreadRuntimeOptions) =>
             const connection = yield* adapter.resumeSession({
               providerSessionId: record.providerSessionId,
               cwd,
+              settings: record.settings,
             })
-            const turn = yield* connection.startTurn(prompt)
-            return { writer: makeWriter(scope, connection), turn, record }
+            const turn = yield* connection.startTurn(prompt, record.settings)
+            return {
+              writer: { ...makeWriter(scope, connection), pushed: record.settings },
+              turn,
+              record,
+            }
           }
           // Unconfirmed (none, or zero completed turns): a fresh session,
           // as openTerminal's materialize does — there is no history to
@@ -800,7 +860,11 @@ const make = (options: ThreadRuntimeOptions) =>
               providerMetadata: record.providerMetadata,
             })
           }
-          const session = yield* adapter.createSession({ cwd, input: prompt })
+          const session = yield* adapter.createSession({
+            cwd,
+            input: prompt,
+            settings: record.settings,
+          })
           const still = yield* repository.get(record.id)
           if (Option.isNone(still)) {
             return yield* Effect.die(new Error(`thread ${record.id} vanished mid-prompt`))
@@ -813,7 +877,7 @@ const make = (options: ThreadRuntimeOptions) =>
           yield* repository.confirm(record.id)
           yield* events.publish({ resource: "thread", id: record.id, change: "updated" })
           return {
-            writer: makeWriter(scope, session.connection),
+            writer: { ...makeWriter(scope, session.connection), pushed: record.settings },
             turn: session.turn,
             record: adopted,
           }
@@ -913,7 +977,8 @@ const make = (options: ThreadRuntimeOptions) =>
       writer.lock.withPermit(
         Effect.uninterruptible(
           Effect.gen(function* () {
-            const turn = yield* writer.connection.startTurn(queued.prompt)
+            const turn = yield* writer.connection.startTurn(queued.prompt, record.settings)
+            writer.pushed = record.settings
             yield* registerRun(record, writer, queued, turn)
             return Option.some({ promptId: queued.id, turnId: turn.turnId })
           }).pipe(
@@ -1170,10 +1235,12 @@ const make = (options: ThreadRuntimeOptions) =>
       Effect.gen(function* () {
         if (event.type === "userPrompt") return yield* naming.notePrompt(record, event.text)
         // While the runtime holds a writer, its feed already carries every
-        // item and every activity edge; the observer copy of a shared
-        // server's fan-out would double the items, and a one-process
-        // provider's dead TUI can only report its own SessionEnd.
+        // item, every activity edge, and every settings report; the observer
+        // copy of a shared server's fan-out would double the items, and a
+        // one-process provider's dead TUI can only report its own SessionEnd.
         if (writers.has(record.id)) return
+        if (event.type === "settings")
+          return yield* adoptSettings(record, event.settings, undefined)
         if (event.type !== "activity") return yield* recordItem(record.id, event)
         const { previous } = yield* noteActivity(record, event.activity)
         // The busy→idle drop is the turn's end (forked: the drain must never
@@ -1265,7 +1332,11 @@ const make = (options: ThreadRuntimeOptions) =>
         if (providerSessionId === undefined) return yield* markInterrupted(record, turn)
         const scope = Scope.forkUnsafe(serviceScope)
         const connection = yield* adapter
-          .resumeSession({ providerSessionId, cwd: record.workingDirectory })
+          .resumeSession({
+            providerSessionId,
+            cwd: record.workingDirectory,
+            settings: record.settings,
+          })
           .pipe(Scope.provide(scope))
         if (!isBusy(yield* connection.activity)) {
           yield* Scope.close(scope, Exit.void)
@@ -1276,6 +1347,11 @@ const make = (options: ThreadRuntimeOptions) =>
           if (still !== undefined) yield* markInterrupted(record, still)
           return
         }
+        // The turn's own pushed baseline died with the old process, so the
+        // provider's first report after reattach is adopted as its word —
+        // right unless a setting changed mid-turn before the restart, when
+        // the row briefly follows the running turn again (accepted: the
+        // window is a server restart inside a running turn).
         const writer = makeWriter(scope, connection)
         writer.run = {
           turnId: turn.id,

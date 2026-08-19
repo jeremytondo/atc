@@ -1,10 +1,12 @@
 import { assert, describe, it } from "@effect/vitest"
+import { TEST_SETTINGS } from "./agentTestKit.ts"
 import { Deferred, Effect, Fiber, Stream } from "effect"
 import type { AgentEvent } from "../../src/agents/agentAdapter.ts"
 import {
   aggregateActivity,
   buildTitleContext,
   makeVersionGate,
+  memoizeSuccess,
   parseVersion,
   sanitizeTitle,
   titleInstruction,
@@ -161,6 +163,7 @@ describe("AgentAdapter seam semantics (fake adapter)", () => {
       const { connection, turn } = yield* fake.adapter.createSession({
         cwd: "/work",
         input: "do the thing",
+        settings: TEST_SETTINGS,
       })
       const sink = yield* collectEvents(connection.events)
       assert.strictEqual(yield* connection.activity, "working")
@@ -183,8 +186,12 @@ describe("AgentAdapter seam semantics (fake adapter)", () => {
   it.effect("a second turn while one is active is a conflict", () =>
     Effect.gen(function* () {
       const fake = makeFakeAgentAdapter()
-      const { connection } = yield* fake.adapter.createSession({ cwd: "/work", input: "one" })
-      const second = yield* Effect.flip(connection.startTurn("two"))
+      const { connection } = yield* fake.adapter.createSession({
+        cwd: "/work",
+        input: "one",
+        settings: TEST_SETTINGS,
+      })
+      const second = yield* Effect.flip(connection.startTurn("two", TEST_SETTINGS))
       assert.strictEqual(second._tag, "AgentConflict")
     }).pipe(Effect.scoped),
   )
@@ -193,7 +200,11 @@ describe("AgentAdapter seam semantics (fake adapter)", () => {
     Effect.gen(function* () {
       const fake = makeFakeAgentAdapter()
       const failure = yield* Effect.flip(
-        fake.adapter.resumeSession({ providerSessionId: "nope", cwd: "/work" }),
+        fake.adapter.resumeSession({
+          providerSessionId: "nope",
+          cwd: "/work",
+          settings: TEST_SETTINGS,
+        }),
       )
       assert.strictEqual(failure._tag, "AgentResumeFailed")
     }).pipe(Effect.scoped),
@@ -204,7 +215,11 @@ describe("AgentAdapter seam semantics (fake adapter)", () => {
       const fake = makeFakeAgentAdapter()
       fake.seed("session-1", "/original")
       const failure = yield* Effect.flip(
-        fake.adapter.resumeSession({ providerSessionId: "session-1", cwd: "/elsewhere" }),
+        fake.adapter.resumeSession({
+          providerSessionId: "session-1",
+          cwd: "/elsewhere",
+          settings: TEST_SETTINGS,
+        }),
       )
       assert.strictEqual(failure._tag, "AgentIdentityMismatch")
     }).pipe(Effect.scoped),
@@ -214,9 +229,17 @@ describe("AgentAdapter seam semantics (fake adapter)", () => {
     Effect.gen(function* () {
       const fake = makeFakeAgentAdapter()
       fake.seed("session-1", "/work")
-      yield* fake.adapter.resumeSession({ providerSessionId: "session-1", cwd: "/work" })
+      yield* fake.adapter.resumeSession({
+        providerSessionId: "session-1",
+        cwd: "/work",
+        settings: TEST_SETTINGS,
+      })
       const second = yield* Effect.flip(
-        fake.adapter.resumeSession({ providerSessionId: "session-1", cwd: "/work" }),
+        fake.adapter.resumeSession({
+          providerSessionId: "session-1",
+          cwd: "/work",
+          settings: TEST_SETTINGS,
+        }),
       )
       assert.strictEqual(second._tag, "AgentConflict")
     }).pipe(Effect.scoped),
@@ -227,12 +250,17 @@ describe("AgentAdapter seam semantics (fake adapter)", () => {
       const fake = makeFakeAgentAdapter()
       fake.seed("session-1", "/work")
       yield* Effect.scoped(
-        fake.adapter.resumeSession({ providerSessionId: "session-1", cwd: "/work" }),
+        fake.adapter.resumeSession({
+          providerSessionId: "session-1",
+          cwd: "/work",
+          settings: TEST_SETTINGS,
+        }),
       )
       // The first writer's scope closed, so a new writer may connect.
       const connection = yield* fake.adapter.resumeSession({
         providerSessionId: "session-1",
         cwd: "/work",
+        settings: TEST_SETTINGS,
       })
       assert.strictEqual(connection.providerSessionId, "session-1")
     }).pipe(Effect.scoped),
@@ -244,6 +272,7 @@ describe("AgentAdapter seam semantics (fake adapter)", () => {
       const { connection, turn } = yield* fake.adapter.createSession({
         cwd: "/work",
         input: "long task",
+        settings: TEST_SETTINGS,
       })
       const sink = yield* collectEvents(connection.events)
       yield* connection.interrupt(turn)
@@ -263,7 +292,11 @@ describe("AgentAdapter seam semantics (fake adapter)", () => {
   it.effect("a pending provider request wins: needs_input beats working", () =>
     Effect.gen(function* () {
       const fake = makeFakeAgentAdapter()
-      const { connection } = yield* fake.adapter.createSession({ cwd: "/work", input: "ask me" })
+      const { connection } = yield* fake.adapter.createSession({
+        cwd: "/work",
+        input: "ask me",
+        settings: TEST_SETTINGS,
+      })
       const sink = yield* collectEvents(connection.events)
       const requestId = fake.openRequest(connection.providerSessionId, "approval")
       yield* waitForEvent(
@@ -279,7 +312,11 @@ describe("AgentAdapter seam semantics (fake adapter)", () => {
   it.effect("respond answers a parked request; unknown or mismatched answers conflict", () =>
     Effect.gen(function* () {
       const fake = makeFakeAgentAdapter()
-      const { connection } = yield* fake.adapter.createSession({ cwd: "/work", input: "ask me" })
+      const { connection } = yield* fake.adapter.createSession({
+        cwd: "/work",
+        input: "ask me",
+        settings: TEST_SETTINGS,
+      })
       const sink = yield* collectEvents(connection.events)
       const requestId = fake.openRequest(connection.providerSessionId, "question")
       yield* waitForEvent(sink, (event) => event.type === "requestOpened")
@@ -326,7 +363,9 @@ describe("AgentAdapter seam semantics (fake adapter)", () => {
     Effect.gen(function* () {
       const fake = makeFakeAgentAdapter()
       fake.setUnavailable("fake outage")
-      const failure = yield* Effect.flip(fake.adapter.createSession({ cwd: "/work", input: "hi" }))
+      const failure = yield* Effect.flip(
+        fake.adapter.createSession({ cwd: "/work", input: "hi", settings: TEST_SETTINGS }),
+      )
       assert.strictEqual(failure._tag, "AgentUnavailable")
     }).pipe(Effect.scoped),
   )
@@ -426,6 +465,25 @@ describe("makeVersionGate", () => {
       fake.release()
       yield* gate
       assert.strictEqual(fake.spawns(), 2)
+    }),
+  )
+})
+
+describe("memoizeSuccess", () => {
+  it.effect("a failure is never served to later callers; the next success is memoized", () =>
+    Effect.gen(function* () {
+      let attempts = 0
+      const read = Effect.suspend(() => {
+        attempts++
+        return attempts === 1 ? Effect.fail("provider down") : Effect.succeed(attempts)
+      })
+      const memo = yield* memoizeSuccess(read, "1 hour")
+      assert.strictEqual(yield* Effect.flip(memo), "provider down")
+      // The failure was invalidated on the way out: this run re-reads.
+      assert.strictEqual(yield* memo, 2)
+      // The success is served from the memo.
+      assert.strictEqual(yield* memo, 2)
+      assert.strictEqual(attempts, 2)
     }),
   )
 })

@@ -13,6 +13,7 @@ import {
   makeCodexSandbox,
   openExternal,
   waitForAgentEvent,
+  TEST_SETTINGS,
 } from "./agentTestKit.ts"
 
 // Codex adapter tests against the fake app-server fixture, through the real
@@ -44,6 +45,7 @@ describe("CodexAdapter", () => {
               const { connection, turn } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
                 input: "hello",
+                settings: TEST_SETTINGS,
               })
               assert.isString(connection.providerSessionId)
               assert.strictEqual(connection.cwd, sandbox.cwd)
@@ -79,6 +81,7 @@ describe("CodexAdapter", () => {
                 const { connection, turn } = yield* adapter.createSession({
                   cwd: sandbox.cwd,
                   input: "seed",
+                  settings: TEST_SETTINGS,
                 })
                 const sink = yield* collectAgentEvents(connection.events)
                 yield* waitForAgentEvent(
@@ -94,6 +97,7 @@ describe("CodexAdapter", () => {
                 const resumed = yield* adapter.resumeSession({
                   providerSessionId: threadId,
                   cwd: sandbox.cwd,
+                  settings: TEST_SETTINGS,
                 })
                 assert.strictEqual(resumed.providerSessionId, threadId)
               }),
@@ -104,6 +108,7 @@ describe("CodexAdapter", () => {
                 adapter.resumeSession({
                   providerSessionId: "00000000-0000-7000-8000-000000000000",
                   cwd: sandbox.cwd,
+                  settings: TEST_SETTINGS,
                 }),
               ),
             )
@@ -122,7 +127,13 @@ describe("CodexAdapter", () => {
         yield* withAdapter(sandbox, (adapter) =>
           Effect.gen(function* () {
             const failure = yield* Effect.scoped(
-              Effect.flip(adapter.createSession({ cwd: sandbox.cwd, input: "hello" })),
+              Effect.flip(
+                adapter.createSession({
+                  cwd: sandbox.cwd,
+                  input: "hello",
+                  settings: TEST_SETTINGS,
+                }),
+              ),
             )
             assert.strictEqual(failure._tag, "AgentIdentityMismatch")
             if (failure._tag === "AgentIdentityMismatch") {
@@ -146,6 +157,7 @@ describe("CodexAdapter", () => {
                 const { connection, turn } = yield* adapter.createSession({
                   cwd: sandbox.cwd,
                   input: "seed",
+                  settings: TEST_SETTINGS,
                 })
                 const sink = yield* collectAgentEvents(connection.events)
                 yield* waitForAgentEvent(
@@ -156,7 +168,13 @@ describe("CodexAdapter", () => {
               }),
             )
             const failure = yield* Effect.scoped(
-              Effect.flip(adapter.resumeSession({ providerSessionId: threadId, cwd: sandbox.cwd })),
+              Effect.flip(
+                adapter.resumeSession({
+                  providerSessionId: threadId,
+                  cwd: sandbox.cwd,
+                  settings: TEST_SETTINGS,
+                }),
+              ),
             )
             assert.strictEqual(failure._tag, "AgentIdentityMismatch")
             if (failure._tag === "AgentIdentityMismatch") {
@@ -179,11 +197,13 @@ describe("CodexAdapter", () => {
               const { connection } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
                 input: "HANG on",
+                settings: TEST_SETTINGS,
               })
               const failure = yield* Effect.flip(
                 adapter.resumeSession({
                   providerSessionId: connection.providerSessionId,
                   cwd: sandbox.cwd,
+                  settings: TEST_SETTINGS,
                 }),
               )
               assert.strictEqual(failure._tag, "AgentConflict")
@@ -205,6 +225,7 @@ describe("CodexAdapter", () => {
               const { connection, turn } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
                 input: "HANG until interrupted",
+                settings: TEST_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)
               yield* waitForAgentEvent(
@@ -242,6 +263,7 @@ describe("CodexAdapter", () => {
               const { connection, turn } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
                 input: "needs APPROVAL for this",
+                settings: TEST_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)
               yield* waitForAgentEvent(sink, (event) => event.type === "requestOpened")
@@ -311,6 +333,7 @@ describe("CodexAdapter", () => {
               const { connection, turn } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
                 input: "needs APPROVAL for this",
+                settings: TEST_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)
               yield* waitForAgentEvent(sink, (event) => event.type === "requestOpened")
@@ -336,7 +359,7 @@ describe("CodexAdapter", () => {
 
               // A question round trip: answers keyed by the question id reach
               // the provider (the fixture echoes them back as its reply).
-              const asked = yield* connection.startTurn("QUESTION time")
+              const asked = yield* connection.startTurn("QUESTION time", TEST_SETTINGS)
               yield* waitForAgentEvent(
                 sink,
                 (event) => event.type === "requestOpened" && event.request.kind === "question",
@@ -386,6 +409,7 @@ describe("CodexAdapter", () => {
               const { connection, turn } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
                 input: "seed",
+                settings: TEST_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)
               yield* waitForAgentEvent(
@@ -428,7 +452,7 @@ describe("CodexAdapter", () => {
             // A session the provider actually has: the probe passes.
             const sessionId = yield* Effect.scoped(
               Effect.map(
-                adapter.createSession({ cwd: sandbox.cwd, input: "seed" }),
+                adapter.createSession({ cwd: sandbox.cwd, input: "seed", settings: TEST_SETTINGS }),
                 ({ connection }) => connection.providerSessionId,
               ),
             )
@@ -473,6 +497,7 @@ describe("CodexAdapter", () => {
               const { connection, turn } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
                 input: "STREAM me",
+                settings: TEST_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)
               yield* waitForAgentEvent(
@@ -532,6 +557,7 @@ describe("CodexAdapter", () => {
                 const { connection, turn } = yield* adapter.createSession({
                   cwd: sandbox.cwd,
                   input: "run a COMMAND",
+                  settings: TEST_SETTINGS,
                 })
                 const sink = yield* collectAgentEvents(connection.events)
                 yield* waitForAgentEvent(
@@ -588,6 +614,7 @@ describe("CodexAdapter", () => {
               const { connection, turn } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
                 input: "hello",
+                settings: TEST_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)
               yield* waitForAgentEvent(
@@ -750,7 +777,9 @@ describe("CodexAdapter TUI session plumbing", () => {
                         ? event.activity
                         : event.type === "userPrompt"
                           ? `prompt:${event.text}`
-                          : `item:${event.item.type}`,
+                          : event.type === "settings"
+                            ? "settings"
+                            : `item:${event.item.type}`,
                     ),
                   ),
                 ),
@@ -801,7 +830,9 @@ describe("CodexAdapter TUI session plumbing", () => {
                         ? event.activity
                         : event.type === "userPrompt"
                           ? `prompt:${event.text}`
-                          : `item:${event.item.type}`,
+                          : event.type === "settings"
+                            ? "settings"
+                            : `item:${event.item.type}`,
                     ),
                   ),
                 ),
@@ -902,7 +933,9 @@ describe("CodexAdapter TUI session plumbing", () => {
                         ? event.activity
                         : event.type === "userPrompt"
                           ? `prompt:${event.text}`
-                          : `item:${event.item.type}`,
+                          : event.type === "settings"
+                            ? "settings"
+                            : `item:${event.item.type}`,
                     ),
                   ),
                 ),
@@ -962,7 +995,9 @@ describe("CodexAdapter TUI session plumbing", () => {
                         ? event.activity
                         : event.type === "userPrompt"
                           ? `prompt:${event.text}`
-                          : `item:${event.item.type}`,
+                          : event.type === "settings"
+                            ? "settings"
+                            : `item:${event.item.type}`,
                     ),
                   ),
                 ),
@@ -1085,6 +1120,7 @@ describe("CodexAdapter descendant aggregation", () => {
               const { connection, turn } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
                 input: "SPAWN one worker",
+                settings: TEST_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)
               yield* waitForAgentEvent(
@@ -1123,6 +1159,7 @@ describe("CodexAdapter descendant aggregation", () => {
               const { connection, turn } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
                 input: "SPAWN NEEDSINPUT worker",
+                settings: TEST_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)
               yield* waitForAgentEvent(
@@ -1175,7 +1212,9 @@ describe("CodexAdapter descendant aggregation", () => {
                         ? event.activity
                         : event.type === "userPrompt"
                           ? `prompt:${event.text}`
-                          : `item:${event.item.type}`,
+                          : event.type === "settings"
+                            ? "settings"
+                            : `item:${event.item.type}`,
                     ),
                   ),
                 ),
@@ -1267,6 +1306,7 @@ describe("CodexAdapter descendant aggregation", () => {
               const { connection, turn } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
                 input: "SPAWN worker",
+                settings: TEST_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)
               yield* waitForAgentEvent(
@@ -1333,7 +1373,9 @@ describe("CodexAdapter descendant aggregation", () => {
                           ? event.activity
                           : event.type === "userPrompt"
                             ? `prompt:${event.text}`
-                            : `item:${event.item.type}`,
+                            : event.type === "settings"
+                              ? "settings"
+                              : `item:${event.item.type}`,
                       ),
                     ),
                   ),
@@ -1409,6 +1451,7 @@ describe("CodexAdapter collectTitleContext", () => {
                 const { connection, turn } = yield* adapter.createSession({
                   cwd: sandbox.cwd,
                   input: "seed turn",
+                  settings: TEST_SETTINGS,
                 })
                 const id = connection.providerSessionId
                 const sink = yield* collectAgentEvents(connection.events)
@@ -1427,7 +1470,7 @@ describe("CodexAdapter collectTitleContext", () => {
                   providerSessionId: id,
                   providerMetadata: undefined,
                 })
-                const second = yield* connection.startTurn("hello context")
+                const second = yield* connection.startTurn("hello context", TEST_SETTINGS)
                 yield* waitForAgentEvent(
                   sink,
                   (event) => event.type === "turnCompleted" && event.turnId === second.turnId,
@@ -1448,6 +1491,203 @@ describe("CodexAdapter collectTitleContext", () => {
                 cwd: sandbox.cwd,
               }),
             )
+          }),
+        )
+      }),
+    30_000,
+  )
+
+  // --- Chat mode settings (ATC-205) -------------------------------------------
+
+  it.live(
+    "settings: thread/start carries the ladder, turn/start pushes only the difference plus the two constants",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox()
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const settings = {
+                model: "fake-sol",
+                reasoning: "high",
+                mode: "chat",
+                access: "supervised",
+              } as const
+              const { connection, turn } = yield* adapter.createSession({
+                cwd: sandbox.cwd,
+                input: "hello",
+                settings,
+              })
+              const sink = yield* collectAgentEvents(connection.events)
+              yield* waitForAgentEvent(
+                sink,
+                (event) => event.type === "turnCompleted" && event.turnId === turn.turnId,
+              )
+              // The second turn changes access and reasoning: exactly those
+              // ride as overrides; model is unchanged and stays home.
+              const second = yield* connection.startTurn("again", {
+                ...settings,
+                reasoning: "low",
+                access: "fullAccess",
+                mode: "plan",
+              })
+              yield* waitForAgentEvent(
+                sink,
+                (event) => event.type === "turnCompleted" && event.turnId === second.turnId,
+              )
+              const external = yield* openExternal(sandbox.socketPath)
+              const resumed = yield* external.request(1, "thread/resume", {
+                threadId: connection.providerSessionId,
+              })
+              // thread/start received the Supervised knobs; the last turn's
+              // overrides moved the thread to Full access.
+              assert.strictEqual(resumed["model"], "fake-sol")
+              assert.strictEqual(resumed["reasoningEffort"], "low")
+              assert.strictEqual(resumed["approvalPolicy"], "never")
+              assert.deepStrictEqual(resumed["sandbox"], { type: "dangerFullAccess" })
+              const turns = (resumed["thread"] as { turns: Array<{ overrides: unknown }> }).turns
+              assert.deepStrictEqual(turns[0]!.overrides, {
+                // thread/start carried model + Supervised; the reply echoed the
+                // model's default effort (medium), so only effort differed.
+                effort: "high",
+                approvalsReviewer: "user",
+                collaborationMode: {
+                  mode: "default",
+                  settings: { model: "fake-sol", reasoning_effort: "high" },
+                },
+              })
+              assert.deepStrictEqual(turns[1]!.overrides, {
+                effort: "low",
+                approvalPolicy: "never",
+                sandboxPolicy: { type: "dangerFullAccess" },
+                approvalsReviewer: "user",
+                collaborationMode: {
+                  mode: "plan",
+                  settings: { model: "fake-sol", reasoning_effort: "low" },
+                },
+              })
+            }),
+          ),
+        )
+      }),
+    30_000,
+  )
+
+  it.live(
+    "settings: a change made by another client reaches the writer feed and observers as the seam's report",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox()
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const { connection, turn } = yield* adapter.createSession({
+                cwd: sandbox.cwd,
+                input: "hello",
+                settings: TEST_SETTINGS,
+              })
+              const sink = yield* collectAgentEvents(connection.events)
+              yield* waitForAgentEvent(
+                sink,
+                (event) => event.type === "turnCompleted" && event.turnId === turn.turnId,
+              )
+              const observed: Array<AgentSessionEvent> = []
+              const stream = yield* adapter.observeSession({
+                providerSessionId: connection.providerSessionId,
+                providerMetadata: undefined,
+              })
+              yield* stream.pipe(
+                Stream.runForEach((event) => Effect.sync(() => observed.push(event))),
+                Effect.forkScoped,
+              )
+              // The "TUI" switches model, effort, sandbox, and mode.
+              const external = yield* openExternal(sandbox.socketPath)
+              yield* external.request(1, "thread/settings/update", {
+                threadId: connection.providerSessionId,
+                model: "fake-luna",
+                effort: "low",
+                approvalPolicy: "on-request",
+                sandboxType: "readOnly",
+                mode: "plan",
+              })
+              yield* waitForAgentEvent(sink, (event) => event.type === "settings")
+              assert.deepStrictEqual(
+                sink.find((event) => event.type === "settings"),
+                {
+                  type: "settings",
+                  settings: {
+                    model: "fake-luna",
+                    reasoning: "low",
+                    access: "supervised",
+                    mode: "plan",
+                  },
+                },
+              )
+              yield* eventually(
+                Effect.sync(() => observed),
+                (entries) => entries.some((event) => event.type === "settings"),
+              )
+              // Codex reports the ladder as two knobs; the reverse read projects
+              // read-only onto Supervised whatever the approval policy says,
+              // and an unknown effort onto "no level".
+              yield* external.request(2, "thread/settings/update", {
+                threadId: connection.providerSessionId,
+                effort: "galactic",
+                approvalPolicy: "never",
+                sandboxType: "workspaceWrite",
+                mode: "default",
+              })
+              yield* waitForAgentEvent(
+                sink,
+                (event) => event.type === "settings" && event.settings.access === "auto",
+              )
+              assert.deepStrictEqual(
+                sink.findLast((event) => event.type === "settings"),
+                {
+                  type: "settings",
+                  settings: { model: "fake-luna", reasoning: null, access: "auto", mode: "chat" },
+                },
+              )
+            }),
+          ),
+        )
+      }),
+    30_000,
+  )
+
+  it.live(
+    "listModels: every page of the catalog, hidden entries dropped, efforts and defaults decoded",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox({ FAKE_CODEX_MODEL_PAGED: "1" })
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.gen(function* () {
+            assert.deepStrictEqual(yield* adapter.listModels(), [
+              {
+                value: "fake-sol",
+                displayName: "Fake Sol",
+                description: "the default",
+                isDefault: true,
+                supportedEffortLevels: ["low", "medium", "high", "xhigh"],
+                defaultEffortLevel: "medium",
+              },
+              {
+                value: "fake-luna",
+                displayName: "Fake Luna",
+                description: "smaller",
+                isDefault: false,
+                supportedEffortLevels: ["low", "medium"],
+                defaultEffortLevel: "low",
+              },
+              {
+                value: "fake-terra",
+                displayName: "Fake Terra",
+                description: "misreports its default",
+                isDefault: false,
+                supportedEffortLevels: ["low", "medium"],
+                defaultEffortLevel: "low",
+              },
+            ])
           }),
         )
       }),

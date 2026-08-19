@@ -3,6 +3,8 @@ import { SqlClient, SqlSchema } from "effect/unstable/sql"
 import { requireFound, rowHelpers } from "../platform/repositoryHelpers.ts"
 import { ThreadNotFound } from "../api/contract.ts"
 import type { AgentId } from "../api/contract.ts"
+import { sameSettings, settingsFromColumns, settingsToColumns } from "./threadSettings.ts"
+import type { ThreadSettings } from "./threadSettings.ts"
 
 // The Threads repository (ATC-124): the only module that speaks SQL for
 // threads. Row types stay here — the service and handlers see camelCase
@@ -13,7 +15,8 @@ import type { AgentId } from "../api/contract.ts"
 // agent_id is validated at the write boundary (the contract's AgentId) but
 // decoded permissively as a plain string: a row holding a slug this build
 // does not know (written by a newer build) must never brick reads — above
-// all delete, the recovery path.
+// all delete, the recovery path. The settings columns (ATC-205) are read
+// the same way (threadSettings.ts settingsFromColumns).
 
 export interface ThreadRecord {
   readonly id: string
@@ -21,6 +24,8 @@ export interface ThreadRecord {
   readonly agentId: string
   readonly name?: string
   readonly workingDirectory: string
+  /** What the thread's next turn runs with (ATC-205). */
+  readonly settings: ThreadSettings
   readonly providerSessionId?: string
   /** Set when the session's first turn completed (the confirmed marker). */
   readonly confirmedAt?: string
@@ -43,6 +48,10 @@ const ThreadRow = Schema.Struct({
   agent_id: Schema.String,
   name: Schema.NullOr(Schema.String),
   working_directory: Schema.String,
+  model: Schema.String,
+  reasoning: Schema.NullOr(Schema.String),
+  mode: Schema.String,
+  access: Schema.String,
   provider_session_id: Schema.NullOr(Schema.String),
   confirmed_at: Schema.NullOr(Schema.String),
   provider_metadata: Schema.NullOr(Schema.String),
@@ -60,6 +69,7 @@ const toRecord = (row: typeof ThreadRow.Type): ThreadRecord => ({
   agentId: row.agent_id,
   ...(row.name !== null ? { name: row.name } : {}),
   workingDirectory: row.working_directory,
+  settings: settingsFromColumns(row),
   ...(row.provider_session_id !== null ? { providerSessionId: row.provider_session_id } : {}),
   ...(row.confirmed_at !== null ? { confirmedAt: row.confirmed_at } : {}),
   ...(row.provider_metadata !== null ? { providerMetadata: row.provider_metadata } : {}),
@@ -80,6 +90,7 @@ export class ThreadRepository extends Context.Service<
       readonly agentId: typeof AgentId.Type
       readonly name?: string | undefined
       readonly workingDirectory: string
+      readonly settings: ThreadSettings
     }) => Effect.Effect<ThreadRecord>
     /** All records (archived included), newest first; optionally one project's. */
     readonly list: (projectId?: string) => Effect.Effect<ReadonlyArray<ThreadRecord>>
@@ -87,6 +98,19 @@ export class ThreadRepository extends Context.Service<
     readonly require: (id: string) => Effect.Effect<ThreadRecord, ThreadNotFound>
     /** Update the display label; callers hold the record — a vanished row is a bug. */
     readonly rename: (id: string, name: string) => Effect.Effect<ThreadRecord>
+    /**
+     * Replace the settings (ATC-205) ONLY while they are still exactly
+     * `expected`: the guard is in the UPDATE itself, so two writers that
+     * read the same baseline — a client patch and a provider report, or
+     * two disjoint patches — cannot silently overwrite each other; the
+     * loser sees None, re-reads, and re-applies its own change on top.
+     * None also for a vanished row (a delete racing the write).
+     */
+    readonly setSettingsIfUnchanged: (
+      id: string,
+      expected: ThreadSettings,
+      settings: ThreadSettings,
+    ) => Effect.Effect<Option.Option<ThreadRecord>>
     /**
      * Adopt a generated name ONLY while the name is still exactly
      * `expected` (null = still unnamed): the null-safe guard is in the
@@ -177,6 +201,42 @@ export const layer = Layer.effect(ThreadRepository)(
       execute: (patch) => sql`
         UPDATE threads SET name = ${patch.name}, updated_at = ${patch.updated_at}
         WHERE id = ${patch.id}
+        RETURNING *
+      `,
+    })
+
+    // The compare-and-swap guard is null-safe on reasoning (`IS`), like
+    // renameIfUnchanged's on name. It names the literals AS STORED — read
+    // just before, and compared with the caller's expectation only after
+    // decoding — because settingsFromColumns coerces a literal this build
+    // does not know, and a guard on the coerced value could never match
+    // such a row (every write to it would spin and fail).
+    const setSettingsIfUnchangedRows = SqlSchema.findAll({
+      Request: Schema.Struct({
+        id: Schema.String,
+        model: Schema.String,
+        reasoning: Schema.NullOr(Schema.String),
+        mode: Schema.String,
+        access: Schema.String,
+        expected_model: Schema.String,
+        expected_reasoning: Schema.NullOr(Schema.String),
+        expected_mode: Schema.String,
+        expected_access: Schema.String,
+        updated_at: Schema.String,
+      }),
+      Result: ThreadRow,
+      execute: (patch) => sql`
+        UPDATE threads SET
+          model = ${patch.model},
+          reasoning = ${patch.reasoning},
+          mode = ${patch.mode},
+          access = ${patch.access},
+          updated_at = ${patch.updated_at}
+        WHERE id = ${patch.id}
+          AND model = ${patch.expected_model}
+          AND reasoning IS ${patch.expected_reasoning}
+          AND mode = ${patch.expected_mode}
+          AND access = ${patch.expected_access}
         RETURNING *
       `,
     })
@@ -337,6 +397,7 @@ export const layer = Layer.effect(ThreadRepository)(
             agent_id: input.agentId,
             name: input.name ?? null,
             working_directory: input.workingDirectory,
+            ...settingsToColumns(input.settings),
             provider_session_id: null,
             confirmed_at: null,
             provider_metadata: null,
@@ -361,6 +422,23 @@ export const layer = Layer.effect(ThreadRepository)(
           Effect.orDie,
           Effect.flatMap(requireFirst("rename")),
         ),
+      setSettingsIfUnchanged: (id, expected, settings) =>
+        Effect.gen(function* () {
+          const stored = (yield* getRows(id))[0]
+          if (stored === undefined || !sameSettings(settingsFromColumns(stored), expected)) {
+            return Option.none()
+          }
+          const rows = yield* setSettingsIfUnchangedRows({
+            id,
+            ...settingsToColumns(settings),
+            expected_model: stored.model,
+            expected_reasoning: stored.reasoning,
+            expected_mode: stored.mode,
+            expected_access: stored.access,
+            updated_at: new Date().toISOString(),
+          })
+          return firstRecord(rows)
+        }).pipe(Effect.orDie),
       renameIfUnchanged: (id, name, expected) =>
         Effect.suspend(() =>
           renameIfUnchangedRows({ id, name, expected, updated_at: new Date().toISOString() }),

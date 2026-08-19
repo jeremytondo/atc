@@ -370,8 +370,10 @@ struct NewThreadSheet: View {
     private var agents: [Agent] {
         let detected = selectedRuntime?.agents.agents ?? []
         guard detected.isEmpty else { return detected }
+        // Only id/available are read here; the placeholder settings never
+        // reach a thread (creation reads the server's defaults).
         return AgentID.allCases.map {
-            Agent(id: $0, available: true)
+            Agent(id: $0, available: true, defaults: .init(model: "", mode: .chat, access: .auto))
         }
     }
 

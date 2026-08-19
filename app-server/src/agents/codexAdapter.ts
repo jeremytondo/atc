@@ -23,12 +23,16 @@ import type {
   AgentEvent,
   AgentIdentityMismatch,
   AgentItemEvent,
+  AgentModel,
   AgentProtocolError,
   AgentSessionEvent,
   AgentUnavailable,
   EstablishedIdentity,
+  ProviderSettings,
+  ThreadAccess,
   ThreadItem,
   ThreadRequest,
+  ThreadSettings,
 } from "./agentAdapter.ts"
 import {
   AgentResumeFailed,
@@ -46,6 +50,7 @@ import {
   withTitleTimeout,
   withToolStatus,
 } from "./agentAdapter.ts"
+import { isReasoningLevel } from "../api/contract.ts"
 import * as BuildInfo from "../platform/buildInfo.ts"
 import * as CodexItems from "./codexItems.ts"
 import * as CodexServer from "./codexServer.ts"
@@ -94,6 +99,21 @@ import * as UnixWebSocket from "../platform/unixWebSocket.ts"
 //     checkSession reconciles demand-driven via thread/loaded/list +
 //     per-id thread/read. Descendant bookkeeping is in-memory and pruned
 //     on teardown, root unobserve/unregister, and release.
+//   - Settings (ATC-205) ride `turn/start` as overrides, which the protocol
+//     keeps "for this turn and subsequent turns": model, effort,
+//     approvalPolicy, and sandboxPolicy go out only when they differ from
+//     what the session's `thread/start` / `thread/resume` reply echoed (the
+//     live baseline), so an unchanged turn carries none. Two things always
+//     ride: `approvalsReviewer: "user"` (omitting it keeps a previous
+//     reviewer sticky) and `collaborationMode` (the reply echoes no mode,
+//     so the caller's chat/plan is asserted every turn; the mode's
+//     model/effort mirror the turn's). The access ladder is two knobs here
+//     — Supervised is `untrusted` + `read-only` (workspace-write never asks
+//     before edits), Full access is `never` + `danger-full-access` — and
+//     the reverse read projects any (approvalPolicy, sandbox) pair onto the
+//     nearest rung. `thread/settings/updated` (a change made in the TUI or
+//     another client) reaches the thread's writer feed and its observers as
+//     the seam's `settings` event; the catalog is `model/list`.
 
 /** The codex-cli version this adapter was validated against (record + warn).
  * Gated twice: the CLI ATC resolves (TUI launches, title one-shots) and the
@@ -139,6 +159,11 @@ class RpcError extends Schema.TaggedErrorClass<RpcError>()("RpcError", {
   text: Schema.String,
 }) {}
 
+// The reply's top level echoes the session's model / effort / approval /
+// sandbox (probed live 2026-08-18) — the settings baseline (see the header).
+// Decoded loosely: an unrecognized policy shape is "not reported", never a
+// failed reply.
+const SandboxPolicy = Schema.Struct({ type: Schema.String })
 const ThreadReply = Schema.Struct({
   thread: Schema.Struct({
     id: Schema.String,
@@ -147,7 +172,143 @@ const ThreadReply = Schema.Struct({
     // Populated on thread/resume only (generated schema): the history read.
     turns: Schema.optional(Schema.Unknown),
   }),
+  model: Schema.optional(Schema.String),
+  reasoningEffort: Schema.optional(Schema.NullOr(Schema.String)),
+  approvalPolicy: Schema.optional(Schema.Unknown),
+  sandbox: Schema.optional(Schema.Unknown),
 })
+
+// model/list (verified without the experimentalApi capability, 2026-08-18).
+const ModelListReply = Schema.Struct({
+  data: Schema.Array(
+    Schema.Struct({
+      model: Schema.String,
+      displayName: Schema.String,
+      description: Schema.String,
+      hidden: Schema.Boolean,
+      isDefault: Schema.Boolean,
+      supportedReasoningEfforts: Schema.Array(Schema.Struct({ reasoningEffort: Schema.String })),
+      defaultReasoningEffort: Schema.String,
+    }),
+  ),
+  nextCursor: Schema.optional(Schema.NullOr(Schema.String)),
+})
+
+// thread/settings/updated: the thread's full settings after a change made
+// by any client. `collaborationMode.mode` is the only channel that reports
+// the plan/chat mode.
+const ThreadSettingsUpdatedNotification = Schema.Struct({
+  threadId: Schema.String,
+  threadSettings: Schema.Struct({
+    model: Schema.String,
+    effort: Schema.optional(Schema.NullOr(Schema.String)),
+    approvalPolicy: Schema.Unknown,
+    sandboxPolicy: Schema.Unknown,
+    collaborationMode: Schema.optional(Schema.Struct({ mode: Schema.String })),
+  }),
+})
+const decodeThreadSettingsUpdated = Schema.decodeUnknownOption(ThreadSettingsUpdatedNotification)
+const decodeSandboxPolicy = Schema.decodeUnknownOption(SandboxPolicy)
+
+// --- The access ladder, both directions (see the header) ---------------------
+
+/** ... and its `turn/start` knobs (sandboxPolicy as a typed object). */
+const SANDBOX_POLICY_TYPE = {
+  "read-only": "readOnly",
+  "workspace-write": "workspaceWrite",
+  "danger-full-access": "dangerFullAccess",
+} as const
+
+/** The rung's `thread/start` knobs (sandbox as a mode string) ... */
+const ACCESS_TO_THREAD_KNOBS: Record<
+  ThreadAccess,
+  { readonly approvalPolicy: string; readonly sandbox: keyof typeof SANDBOX_POLICY_TYPE }
+> = {
+  supervised: { approvalPolicy: "untrusted", sandbox: "read-only" },
+  autoAcceptEdits: { approvalPolicy: "on-request", sandbox: "workspace-write" },
+  auto: { approvalPolicy: "never", sandbox: "workspace-write" },
+  fullAccess: { approvalPolicy: "never", sandbox: "danger-full-access" },
+}
+
+const turnKnobs = (access: ThreadAccess) => {
+  const knobs = ACCESS_TO_THREAD_KNOBS[access]
+  return {
+    approvalPolicy: knobs.approvalPolicy,
+    sandboxPolicy: { type: SANDBOX_POLICY_TYPE[knobs.sandbox] },
+  }
+}
+
+/**
+ * Project a reported (approvalPolicy, sandbox type) pair onto the nearest
+ * rung: the sandbox decides the extremes (read-only is Supervised,
+ * danger-full-access is Full access, whatever the approval policy), and
+ * within workspace-write only `never` is Auto — every asking policy
+ * (on-request, untrusted, granular) is Auto-accept edits. Undefined when
+ * neither knob was reported.
+ */
+const accessFromKnobs = (
+  approvalPolicy: unknown,
+  sandboxType: string | undefined,
+): ThreadAccess | undefined => {
+  if (sandboxType === "readOnly") return "supervised"
+  if (sandboxType === "dangerFullAccess") return "fullAccess"
+  if (sandboxType === "workspaceWrite")
+    return approvalPolicy === "never" ? "auto" : "autoAcceptEdits"
+  return undefined
+}
+
+/** The baseline a thread/start or thread/resume reply establishes. */
+const echoedSettings = (reply: typeof ThreadReply.Type): ProviderSettings =>
+  reportedSettings({
+    model: reply.model,
+    effort: reply.reasoningEffort,
+    approvalPolicy: reply.approvalPolicy,
+    sandbox: reply.sandbox,
+  })
+
+/**
+ * The turn/start overrides for `settings` against the live baseline: only
+ * what differs, plus the two that always ride (see the header).
+ */
+const settingsOverrides = (live: ProviderSettings, settings: ThreadSettings) => ({
+  ...(live.model !== settings.model ? { model: settings.model } : {}),
+  ...(settings.reasoning !== undefined && live.reasoning !== settings.reasoning
+    ? { effort: settings.reasoning }
+    : {}),
+  ...(live.access !== settings.access ? turnKnobs(settings.access) : {}),
+  approvalsReviewer: "user",
+  collaborationMode: {
+    mode: settings.mode === "plan" ? "plan" : "default",
+    settings: { model: settings.model, reasoning_effort: settings.reasoning ?? null },
+  },
+})
+
+/** The seam's report from a reply or notification's echoed knobs. */
+const reportedSettings = (echo: {
+  readonly model?: string | undefined
+  readonly effort?: string | null | undefined
+  readonly approvalPolicy?: unknown
+  readonly sandbox?: unknown
+  readonly mode?: string | undefined
+}): ProviderSettings => {
+  const sandboxType = decodeSandboxPolicy(echo.sandbox).pipe(
+    Option.map((policy) => policy.type),
+    Option.getOrUndefined,
+  )
+  const access = accessFromKnobs(echo.approvalPolicy, sandboxType)
+  return {
+    ...(echo.model !== undefined ? { model: echo.model } : {}),
+    ...(echo.effort === undefined
+      ? {}
+      : { reasoning: isReasoningLevel(echo.effort) ? echo.effort : null }),
+    ...(access !== undefined ? { access } : {}),
+    ...(echo.mode === "plan"
+      ? { mode: "plan" as const }
+      : echo.mode === "default"
+        ? { mode: "chat" as const }
+        : {}),
+  }
+}
 
 const TurnReply = Schema.Struct({ turn: Schema.Struct({ id: Schema.String }) })
 
@@ -312,6 +473,9 @@ interface LiveSession {
   readonly pendingRequests: Map<string, PendingRequest>
   /** Set when the transport died underneath the session (vs. caller close). */
   failed: boolean
+  /** The settings baseline: what the session runs with, as last echoed
+   * (thread/start, thread/resume, thread/settings/updated) or pushed. */
+  live: ProviderSettings
 }
 
 /** Reserves the active-turn slot between the local check and the RPC reply. */
@@ -764,6 +928,25 @@ export const layer = Layer.effect(CodexAdapter)(
         observe(decoded.value.threadId, event)
         return
       }
+      if (message.method === "thread/settings/updated") {
+        const decoded = decodeThreadSettingsUpdated(params)
+        if (Option.isNone(decoded)) return
+        const { threadId, threadSettings } = decoded.value
+        const reported = reportedSettings({
+          model: threadSettings.model,
+          effort: threadSettings.effort,
+          approvalPolicy: threadSettings.approvalPolicy,
+          sandbox: threadSettings.sandboxPolicy,
+          mode: threadSettings.collaborationMode?.mode,
+        })
+        const session = sessions.get(threadId)
+        if (session !== undefined) {
+          session.live = { ...session.live, ...reported }
+          emit(session, { type: "settings", settings: reported })
+        }
+        observe(threadId, { type: "settings", settings: reported })
+        return
+      }
       if (message.method === "serverRequest/resolved") {
         // Resolved elsewhere (another client answered, or the turn's
         // cleanup cleared it): the parked request is gone, and a later
@@ -925,7 +1108,10 @@ export const layer = Layer.effect(CodexAdapter)(
       // eventual death, could not be told apart from the live one.
       const reply = yield* request(state, "initialize", {
         clientInfo: { name: "atc", title: "ATC App Server", version: build.version },
-        capabilities: null,
+        // turn/start's collaborationMode (the plan/chat mode) is gated behind
+        // the experimental capability (probed live 2026-08-18); T3Code opens
+        // the same way.
+        capabilities: { experimentalApi: true },
       }).pipe(
         Effect.mapError(rpcToProtocol),
         Effect.flatMap((reply) => decodeReply(InitializeReply, reply)),
@@ -996,6 +1182,7 @@ export const layer = Layer.effect(CodexAdapter)(
       threadId: string,
       cwd: string,
       initialStatus: unknown,
+      live: ProviderSettings,
     ) =>
       Effect.gen(function* () {
         // Bounded (overflow ends the stream — see emit); a session that
@@ -1012,6 +1199,7 @@ export const layer = Layer.effect(CodexAdapter)(
           toolItems: new Map(),
           pendingRequests: new Map(),
           failed: false,
+          live,
         }
         const unregister = (): void => {
           if (sessions.get(threadId) !== session) return
@@ -1072,7 +1260,7 @@ export const layer = Layer.effect(CodexAdapter)(
           cwd,
           activity: Effect.sync(() => session.activity),
           events: Stream.fromQueue(queue),
-          startTurn: (input) =>
+          startTurn: (input, settings) =>
             Effect.gen(function* () {
               yield* requireLive
               if (session.activeTurn !== null) {
@@ -1082,9 +1270,11 @@ export const layer = Layer.effect(CodexAdapter)(
               // concurrent startTurn calls would both pass the check.
               session.activeTurn = PENDING_TURN
               session.ownTurn = PENDING_TURN
+              const overrides = settingsOverrides(session.live, settings)
               const decoded = yield* request(state, "turn/start", {
                 threadId,
                 input: [{ type: "text", text: input }],
+                ...overrides,
               }).pipe(
                 Effect.mapError(rpcToProtocol),
                 Effect.flatMap((reply) => decodeReply(TurnReply, reply)),
@@ -1099,6 +1289,13 @@ export const layer = Layer.effect(CodexAdapter)(
               // turn/started may have landed first with the real id.
               if (session.activeTurn === PENDING_TURN) session.activeTurn = decoded.turn.id
               session.ownTurn = decoded.turn.id
+              // The overrides are sticky: the session now runs with them.
+              session.live = {
+                model: settings.model,
+                reasoning: settings.reasoning ?? null,
+                mode: settings.mode,
+                access: settings.access,
+              }
               return { turnId: decoded.turn.id }
             }),
           interrupt: (turn) =>
@@ -1223,8 +1420,9 @@ export const layer = Layer.effect(CodexAdapter)(
               const state = yield* getClient
               const reply = yield* request(state, "thread/start", {
                 cwd: options.cwd,
-                approvalPolicy: "never",
-                sandbox: "workspace-write",
+                model: options.settings.model,
+                ...ACCESS_TO_THREAD_KNOBS[options.settings.access],
+                approvalsReviewer: "user",
               }).pipe(Effect.mapError(rpcToProtocol))
               const decoded = yield* decodeReply(ThreadReply, reply)
               if (!samePath(decoded.thread.cwd, options.cwd)) {
@@ -1235,6 +1433,7 @@ export const layer = Layer.effect(CodexAdapter)(
                 decoded.thread.id,
                 options.cwd,
                 decoded.thread.status,
+                echoedSettings(decoded),
               )
             }),
           )
@@ -1242,7 +1441,7 @@ export const layer = Layer.effect(CodexAdapter)(
           // providers; codex verified above, so those tags are impossible.
           // A failed first turn releases the writer slot — the caller got
           // no connection handle, so nothing must stay claimed.
-          const turn = yield* connection.startTurn(options.input).pipe(
+          const turn = yield* connection.startTurn(options.input, options.settings).pipe(
             Effect.catchTag("AgentResumeFailed", (error) => Effect.die(error)),
             Effect.tapError(() => Effect.sync(unregister)),
           )
@@ -1275,6 +1474,7 @@ export const layer = Layer.effect(CodexAdapter)(
               decoded.thread.id,
               options.cwd,
               decoded.thread.status,
+              echoedSettings(decoded),
             )
             // A turn still running on the shared server (ours before a
             // restart, or a TUI's) is the interrupt target this connection
@@ -1471,6 +1671,51 @@ export const layer = Layer.effect(CodexAdapter)(
             ),
           )
           return Stream.merge(observedEvents, Stream.fromQueue(promptQueue))
+        }),
+      // model/list, every page (walkPaginated; a walk that cannot complete
+      // is a protocol error, never a partial catalog), hidden entries
+      // dropped; efforts outside the seam's ReasoningLevel vocabulary are
+      // dropped too (the model still lists).
+      listModels: () =>
+        Effect.gen(function* () {
+          const state = yield* getClient
+          const collected: Array<(typeof ModelListReply.Type.data)[number]> = []
+          const walked = yield* walkPaginated({
+            page: (cursor) =>
+              request(state, "model/list", cursor === undefined ? {} : { cursor }).pipe(
+                Effect.mapError(rpcToProtocol),
+                Effect.flatMap((reply) => decodeReply(ModelListReply, reply)),
+              ),
+            onPage: (page) => {
+              collected.push(...page.data)
+              return undefined
+            },
+            complete: () => "complete" as const,
+          })
+          if (walked !== "complete") {
+            return yield* Effect.fail(protocolError("model/list pagination did not complete"))
+          }
+          return collected
+            .filter((model) => !model.hidden)
+            .map((model) => {
+              const levels = model.supportedReasoningEfforts
+                .map((option) => option.reasoningEffort)
+                .filter(isReasoningLevel)
+              // Clamped to what the model lists: a default outside its own
+              // levels would be adopted on a model switch and then rejected.
+              const reported = model.defaultReasoningEffort
+              const defaultLevel =
+                isReasoningLevel(reported) && levels.includes(reported) ? reported : levels[0]
+              const entry: { -readonly [K in keyof AgentModel]: AgentModel[K] } = {
+                value: model.model,
+                displayName: model.displayName,
+                description: model.description,
+                isDefault: model.isDefault,
+                supportedEffortLevels: levels,
+              }
+              if (defaultLevel !== undefined) entry.defaultEffortLevel = defaultLevel
+              return entry
+            })
         }),
       generateTitle: (options) =>
         Effect.scoped(

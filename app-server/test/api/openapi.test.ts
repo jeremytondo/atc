@@ -191,6 +191,7 @@ describe("openapi document vs runtime", () => {
       "/api/v1/threads/{threadId}/queue/{promptId}",
       "/api/v1/agents",
       "/api/v1/agents/{agentId}",
+      "/api/v1/agents/{agentId}/models",
       "/api/v1/events",
       "/api/v1/fs/check",
       "/api/v1/fs/list",
@@ -552,6 +553,25 @@ describe("openapi document vs runtime", () => {
         agentId: "nope",
         message: "no agent with id nope",
       })
+
+      // The model catalog (ATC-205), over the fake adapter's stock catalog.
+      const models = yield* client.get("http://127.0.0.1/api/v1/agents/codex/models")
+      assert.strictEqual(models.status, 200)
+      const catalog = (yield* models.json) as Array<Record<string, unknown>>
+      assert.isAtLeast(catalog.length, 1, "the fake catalog lists at least one model")
+      const modelSchema = componentSchema("AgentModel")
+      for (const model of catalog) {
+        assert.includeMembers(Object.keys(modelSchema.properties), Object.keys(model))
+        assert.sameMembers(
+          [...modelSchema.required].filter((key) => !(key in model)),
+          [],
+        )
+      }
+      assert.deepStrictEqual(
+        operation("/api/v1/agents/{agentId}/models").responses["200"]!.content["application/json"]!
+          .schema,
+        { $ref: "#/components/schemas/AgentModelList" },
+      )
     }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
   )
 

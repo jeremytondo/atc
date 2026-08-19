@@ -7,10 +7,15 @@ import * as path from "node:path"
 import type { AgentSessionEvent } from "../../src/agents/agentAdapter.ts"
 import * as ClaudeAdapter from "../../src/agents/claudeAdapter.ts"
 import * as ClaudeHooks from "../../src/agents/claudeHooks.ts"
-import { claudeAdapterLayer, collectAgentEvents, waitForAgentEvent } from "./agentTestKit.ts"
+import {
+  claudeAdapterLayer,
+  collectAgentEvents,
+  waitForAgentEvent,
+  TEST_SETTINGS,
+} from "./agentTestKit.ts"
 import { eventually } from "../testLayers.ts"
 import { trackTempDir } from "../blackbox.ts"
-import { makeFakeClaudeQuery } from "./fakeClaudeQuery.ts"
+import { FAKE_CLAUDE_MODELS, makeFakeClaudeQuery } from "./fakeClaudeQuery.ts"
 import type { FakeClaudeQueryOptions } from "./fakeClaudeQuery.ts"
 
 // Claude adapter tests over the scripted query() seam (fakeClaudeQuery.ts):
@@ -37,7 +42,11 @@ describe("ClaudeAdapter", () => {
         const adapter = yield* ClaudeAdapter.ClaudeAdapter
         yield* Effect.scoped(
           Effect.gen(function* () {
-            const { connection, turn } = yield* adapter.createSession({ cwd, input: "hello" })
+            const { connection, turn } = yield* adapter.createSession({
+              cwd,
+              input: "hello",
+              settings: TEST_SETTINGS,
+            })
             assert.strictEqual(connection.providerSessionId, "session-a")
             assert.strictEqual(connection.cwd, cwd)
             const sink = yield* collectAgentEvents(connection.events)
@@ -61,7 +70,9 @@ describe("ClaudeAdapter", () => {
       yield* Effect.gen(function* () {
         const adapter = yield* ClaudeAdapter.ClaudeAdapter
         const failure = yield* Effect.scoped(
-          Effect.flip(adapter.createSession({ cwd: workDir(), input: "hello" })),
+          Effect.flip(
+            adapter.createSession({ cwd: workDir(), input: "hello", settings: TEST_SETTINGS }),
+          ),
         )
         assert.strictEqual(failure._tag, "AgentIdentityMismatch")
         if (failure._tag === "AgentIdentityMismatch") assert.strictEqual(failure.field, "cwd")
@@ -80,11 +91,12 @@ describe("ClaudeAdapter", () => {
             const connection = yield* adapter.resumeSession({
               providerSessionId: "session-b",
               cwd,
+              settings: TEST_SETTINGS,
             })
             // No identity evidence yet — the SDK sends none until a turn.
             assert.strictEqual(yield* connection.activity, "unknown")
             const sink = yield* collectAgentEvents(connection.events)
-            const turn = yield* connection.startTurn("continue please")
+            const turn = yield* connection.startTurn("continue please", TEST_SETTINGS)
             assert.strictEqual(connection.providerSessionId, "session-b")
             yield* waitForAgentEvent(
               sink,
@@ -109,8 +121,9 @@ describe("ClaudeAdapter", () => {
             const connection = yield* adapter.resumeSession({
               providerSessionId: "missing-session",
               cwd: workDir(),
+              settings: TEST_SETTINGS,
             })
-            return yield* Effect.flip(connection.startTurn("hello?"))
+            return yield* Effect.flip(connection.startTurn("hello?", TEST_SETTINGS))
           }),
         )
         assert.strictEqual(failure._tag, "AgentResumeFailed")
@@ -131,8 +144,9 @@ describe("ClaudeAdapter", () => {
             const connection = yield* adapter.resumeSession({
               providerSessionId: "session-c",
               cwd: workDir(),
+              settings: TEST_SETTINGS,
             })
-            return yield* Effect.flip(connection.startTurn("hello?"))
+            return yield* Effect.flip(connection.startTurn("hello?", TEST_SETTINGS))
           }),
         )
         assert.strictEqual(failure._tag, "AgentIdentityMismatch")
@@ -151,15 +165,25 @@ describe("ClaudeAdapter", () => {
         const adapter = yield* ClaudeAdapter.ClaudeAdapter
         yield* Effect.scoped(
           Effect.gen(function* () {
-            yield* adapter.resumeSession({ providerSessionId: "session-d", cwd })
+            yield* adapter.resumeSession({
+              providerSessionId: "session-d",
+              cwd,
+              settings: TEST_SETTINGS,
+            })
             const failure = yield* Effect.flip(
-              adapter.resumeSession({ providerSessionId: "session-d", cwd }),
+              adapter.resumeSession({
+                providerSessionId: "session-d",
+                cwd,
+                settings: TEST_SETTINGS,
+              }),
             )
             assert.strictEqual(failure._tag, "AgentConflict")
           }),
         )
         // The writer role is released with the scope.
-        yield* Effect.scoped(adapter.resumeSession({ providerSessionId: "session-d", cwd }))
+        yield* Effect.scoped(
+          adapter.resumeSession({ providerSessionId: "session-d", cwd, settings: TEST_SETTINGS }),
+        )
       }).pipe(Effect.provide(layer))
     }),
   )
@@ -175,6 +199,7 @@ describe("ClaudeAdapter", () => {
             const { connection, turn } = yield* adapter.createSession({
               cwd,
               input: "HANG until told otherwise",
+              settings: TEST_SETTINGS,
             })
             const sink = yield* collectAgentEvents(connection.events)
             const stale = yield* Effect.flip(connection.interrupt({ turnId: "wrong-turn" }))
@@ -192,7 +217,7 @@ describe("ClaudeAdapter", () => {
             // An interrupted turn ends the held query; the session is over
             // (AgentUnavailable — the seam's "resume it" signal), not a
             // caller-side handle conflict.
-            const closed = yield* Effect.flip(connection.startTurn("another"))
+            const closed = yield* Effect.flip(connection.startTurn("another", TEST_SETTINGS))
             assert.strictEqual(closed._tag, "AgentUnavailable")
           }),
         )
@@ -211,6 +236,7 @@ describe("ClaudeAdapter", () => {
             const { connection, turn } = yield* adapter.createSession({
               cwd,
               input: "FAILTURN please",
+              settings: TEST_SETTINGS,
             })
             const sink = yield* collectAgentEvents(connection.events)
             yield* waitForAgentEvent(
@@ -240,6 +266,7 @@ describe("ClaudeAdapter", () => {
             const { connection, turn } = yield* adapter.createSession({
               cwd,
               input: "needs PERMISSION for a tool",
+              settings: TEST_SETTINGS,
             })
             const sink = yield* collectAgentEvents(connection.events)
             yield* waitForAgentEvent(sink, (event) => event.type === "requestOpened")
@@ -309,6 +336,7 @@ describe("ClaudeAdapter", () => {
             const { connection, turn } = yield* adapter.createSession({
               cwd,
               input: "needs PERMISSION for a tool",
+              settings: TEST_SETTINGS,
             })
             const sink = yield* collectAgentEvents(connection.events)
             yield* waitForAgentEvent(sink, (event) => event.type === "requestOpened")
@@ -344,6 +372,7 @@ describe("ClaudeAdapter", () => {
             const { connection, turn } = yield* adapter.createSession({
               cwd,
               input: "needs PERMISSION again",
+              settings: TEST_SETTINGS,
             })
             const sink = yield* collectAgentEvents(connection.events)
             yield* waitForAgentEvent(sink, (event) => event.type === "requestOpened")
@@ -374,6 +403,7 @@ describe("ClaudeAdapter", () => {
             const { connection, turn } = yield* adapter.createSession({
               cwd,
               input: "STREAM please",
+              settings: TEST_SETTINGS,
             })
             const sink = yield* collectAgentEvents(connection.events)
             yield* waitForAgentEvent(
@@ -439,6 +469,7 @@ describe("ClaudeAdapter", () => {
             const { connection, turn } = yield* adapter.createSession({
               cwd,
               input: "use a TOOL",
+              settings: TEST_SETTINGS,
             })
             const sink = yield* collectAgentEvents(connection.events)
             yield* waitForAgentEvent(
@@ -504,7 +535,11 @@ describe("ClaudeAdapter", () => {
         const adapter = yield* ClaudeAdapter.ClaudeAdapter
         yield* Effect.scoped(
           Effect.gen(function* () {
-            const { connection, turn } = yield* adapter.createSession({ cwd, input: "hello" })
+            const { connection, turn } = yield* adapter.createSession({
+              cwd,
+              input: "hello",
+              settings: TEST_SETTINGS,
+            })
             const sink = yield* collectAgentEvents(connection.events)
             yield* waitForAgentEvent(
               sink,
@@ -531,7 +566,11 @@ describe("ClaudeAdapter", () => {
         const adapter = yield* ClaudeAdapter.ClaudeAdapter
         yield* Effect.scoped(
           Effect.gen(function* () {
-            const { connection, turn } = yield* adapter.createSession({ cwd, input: "spawn" })
+            const { connection, turn } = yield* adapter.createSession({
+              cwd,
+              input: "spawn",
+              settings: TEST_SETTINGS,
+            })
             const sink = yield* collectAgentEvents(connection.events)
             yield* waitForAgentEvent(
               sink,
@@ -584,7 +623,11 @@ describe("ClaudeAdapter", () => {
         const adapter = yield* ClaudeAdapter.ClaudeAdapter
         yield* Effect.scoped(
           Effect.gen(function* () {
-            const { connection, turn } = yield* adapter.createSession({ cwd, input: "hello" })
+            const { connection, turn } = yield* adapter.createSession({
+              cwd,
+              input: "hello",
+              settings: TEST_SETTINGS,
+            })
             const sink = yield* collectAgentEvents(connection.events)
             yield* waitForAgentEvent(
               sink,
@@ -594,7 +637,7 @@ describe("ClaudeAdapter", () => {
             assert.strictEqual(yield* connection.activity, "working")
             // A whole further turn completes (Stop without a snapshot,
             // result success, state idle): the background evidence holds.
-            const second = yield* connection.startTurn("again")
+            const second = yield* connection.startTurn("again", TEST_SETTINGS)
             yield* waitForAgentEvent(
               sink,
               (event) => event.type === "turnCompleted" && event.turnId === second.turnId,
@@ -616,7 +659,11 @@ describe("ClaudeAdapter", () => {
         const adapter = yield* ClaudeAdapter.ClaudeAdapter
         yield* Effect.scoped(
           Effect.gen(function* () {
-            const { connection, turn } = yield* adapter.createSession({ cwd, input: "hello" })
+            const { connection, turn } = yield* adapter.createSession({
+              cwd,
+              input: "hello",
+              settings: TEST_SETTINGS,
+            })
             const sink = yield* collectAgentEvents(connection.events)
             yield* waitForAgentEvent(
               sink,
@@ -650,6 +697,7 @@ describe("ClaudeAdapter", () => {
             const { connection, turn } = yield* adapter.createSession({
               cwd,
               input: "ASK me something",
+              settings: TEST_SETTINGS,
             })
             const sink = yield* collectAgentEvents(connection.events)
             yield* waitForAgentEvent(
@@ -808,9 +856,11 @@ describe("ClaudeAdapter TUI session plumbing", () => {
                 ? event.activity
                 : event.type === "userPrompt"
                   ? `prompt:${event.text}`
-                  : event.item.type === "userMessage"
-                    ? `item:userMessage:${event.item.text}`
-                    : `item:${event.item.type}`,
+                  : event.type === "settings"
+                    ? "settings"
+                    : event.item.type === "userMessage"
+                      ? `item:userMessage:${event.item.text}`
+                      : `item:${event.item.type}`,
             ),
           ),
         ),
@@ -1319,4 +1369,193 @@ describe("ClaudeAdapter collectTitleContext", () => {
       }).pipe(Effect.provide(layer))
     }),
   )
+
+  // --- Chat mode settings (ATC-205) -------------------------------------------
+
+  it.live(
+    "settings: the child spawns with the caller's settings; init reports what it applied",
+    () =>
+      Effect.gen(function* () {
+        const cwd = workDir()
+        const { fake, layer } = adapterStack({ sessionId: "session-settings" })
+        yield* Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter.ClaudeAdapter
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const { connection, turn } = yield* adapter.createSession({
+                cwd,
+                input: "hello",
+                settings: {
+                  model: "sonnet",
+                  reasoning: "low",
+                  mode: "chat",
+                  access: "autoAcceptEdits",
+                },
+              })
+              const sink = yield* collectAgentEvents(connection.events)
+              yield* waitForAgentEvent(
+                sink,
+                (event) => event.type === "turnCompleted" && event.turnId === turn.turnId,
+              )
+              // Spawn options: the ladder as one knob, effort, the alias model,
+              // and the standing allowance that lets Full access be chosen later.
+              const spawn = fake.spawns[0]!
+              assert.strictEqual(spawn["model"], "sonnet")
+              assert.strictEqual(spawn["effort"], "low")
+              assert.strictEqual(spawn["permissionMode"], "acceptEdits")
+              assert.strictEqual(spawn["allowDangerouslySkipPermissions"], true)
+              // Nothing to push on the first turn.
+              assert.deepStrictEqual(fake.controls, [])
+              // init reported the wire id and the mode; the report maps the id
+              // back to the catalog alias and reads the effort via getSettings.
+              yield* waitForAgentEvent(sink, (event) => event.type === "settings")
+              assert.deepStrictEqual(
+                sink.find((event) => event.type === "settings"),
+                {
+                  type: "settings",
+                  settings: {
+                    model: "sonnet",
+                    mode: "chat",
+                    access: "autoAcceptEdits",
+                    reasoning: "low",
+                  },
+                },
+              )
+
+              // A later turn on the resident connection pushes only what
+              // changed, and plan mode stands in for the rung.
+              const second = yield* connection.startTurn("again", {
+                model: "opus[1m]",
+                reasoning: "xhigh",
+                mode: "plan",
+                access: "autoAcceptEdits",
+              })
+              yield* waitForAgentEvent(
+                sink,
+                (event) => event.type === "turnCompleted" && event.turnId === second.turnId,
+              )
+              assert.deepStrictEqual(fake.controls, [
+                "setModel:opus[1m]",
+                "applyFlagSettings:xhigh",
+                "setPermissionMode:plan",
+              ])
+              // Unchanged settings push nothing; leaving plan restores the rung.
+              const third = yield* connection.startTurn("once more", {
+                model: "opus[1m]",
+                reasoning: "xhigh",
+                mode: "chat",
+                access: "fullAccess",
+              })
+              yield* waitForAgentEvent(
+                sink,
+                (event) => event.type === "turnCompleted" && event.turnId === third.turnId,
+              )
+              assert.deepStrictEqual(fake.controls.slice(3), [
+                "setPermissionMode:bypassPermissions",
+              ])
+              const fourth = yield* connection.startTurn("and again", {
+                model: "opus[1m]",
+                reasoning: "xhigh",
+                mode: "chat",
+                access: "fullAccess",
+              })
+              yield* waitForAgentEvent(
+                sink,
+                (event) => event.type === "turnCompleted" && event.turnId === fourth.turnId,
+              )
+              assert.strictEqual(fake.controls.length, 4)
+              // A model with no effort support clears the flag layer's effort.
+              const fifth = yield* connection.startTurn("haiku now", {
+                model: "haiku",
+                mode: "chat",
+                access: "fullAccess",
+              })
+              yield* waitForAgentEvent(
+                sink,
+                (event) => event.type === "turnCompleted" && event.turnId === fifth.turnId,
+              )
+              assert.deepStrictEqual(fake.controls.slice(4), [
+                "setModel:haiku",
+                "applyFlagSettings:null",
+              ])
+            }),
+          )
+        }).pipe(Effect.provide(layer))
+      }),
+  )
+
+  it.live(
+    "settings: a silently downgraded permission mode and a missing getSettings are reported truthfully",
+    () =>
+      Effect.gen(function* () {
+        const cwd = workDir()
+        // The CLI runs `default` when the model has no auto support; the SDK
+        // in this test also lacks getSettings, so the effort stays unreported.
+        const { layer } = adapterStack({
+          sessionId: "session-downgrade",
+          reportPermissionMode: "default",
+          withoutGetSettings: true,
+        })
+        yield* Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter.ClaudeAdapter
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const { connection } = yield* adapter.createSession({
+                cwd,
+                input: "hello",
+                settings: { model: "haiku", mode: "chat", access: "auto" },
+              })
+              const sink = yield* collectAgentEvents(connection.events)
+              yield* waitForAgentEvent(sink, (event) => event.type === "settings")
+              assert.deepStrictEqual(
+                sink.find((event) => event.type === "settings"),
+                {
+                  type: "settings",
+                  settings: { model: "haiku", mode: "chat", access: "supervised" },
+                },
+              )
+            }),
+          )
+        }).pipe(Effect.provide(layer))
+      }),
+  )
+
+  it("listModels: the default meta-entry folds into its alias; effort support per model", () => {
+    assert.deepStrictEqual(ClaudeAdapter.normalizeClaudeCatalog(FAKE_CLAUDE_MODELS), [
+      {
+        value: "opus[1m]",
+        displayName: "Opus 5 (1M context)",
+        description: "Opus 5 with 1M context",
+        isDefault: true,
+        supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+        defaultEffortLevel: "high",
+      },
+      {
+        value: "sonnet",
+        displayName: "Sonnet 5",
+        description: "Sonnet 5",
+        isDefault: false,
+        supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+        defaultEffortLevel: "high",
+      },
+      {
+        value: "haiku",
+        displayName: "Haiku 4.5",
+        description: "Haiku 4.5",
+        isDefault: false,
+        supportedEffortLevels: [],
+      },
+    ])
+  })
+
+  it("listModels: the version comes from the wire id, after the family word", () => {
+    const name = ClaudeAdapter.claudeDisplayName
+    assert.strictEqual(name("Fable", "claude-fable-5[1m]"), "Fable 5")
+    assert.strictEqual(name("Opus (1M context)", "claude-opus-5[1m]"), "Opus 5 (1M context)")
+    assert.strictEqual(name("Haiku", "claude-haiku-4-5-20251001"), "Haiku 4.5")
+    // Already versioned, or a name the id does not explain: unchanged.
+    assert.strictEqual(name("Sonnet 5", "claude-sonnet-5"), "Sonnet 5")
+    assert.strictEqual(name("Legacy", "claude-sonnet-5"), "Legacy")
+    assert.strictEqual(name("Sonnet", "some-custom-model"), "Sonnet")
+  })
 })

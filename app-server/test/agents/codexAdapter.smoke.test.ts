@@ -19,6 +19,14 @@ import { TestBuildInfoLayer } from "../testBuildInfo.ts"
 // and orphans the detached server, the next run adopts and stops it
 // (adopt-or-replace is the cleanup story, not temp-dir tracking).
 
+/** Cheap real-provider settings for the smoke turns (a real, small model). */
+const SMOKE_SETTINGS = {
+  model: "gpt-5.6-luna",
+  reasoning: "low",
+  mode: "chat",
+  access: "auto",
+} as const
+
 const enabled = process.env["ATC_SMOKE"] === "1"
 
 const stateDir = path.join(os.tmpdir(), "atc-codex-smoke-state")
@@ -54,6 +62,7 @@ describe.skipIf(!enabled)("live codex adapter smoke (opt-in)", () => {
                 const { connection, turn } = yield* adapter.createSession({
                   cwd,
                   input: "Reply with exactly: SMOKE-OK",
+                  settings: SMOKE_SETTINGS,
                 })
                 const sink = yield* collectAgentEvents(connection.events)
                 yield* waitForAgentEvent(
@@ -74,11 +83,13 @@ describe.skipIf(!enabled)("live codex adapter smoke (opt-in)", () => {
                 const connection = yield* adapter.resumeSession({
                   providerSessionId: threadId,
                   cwd,
+                  settings: SMOKE_SETTINGS,
                 })
                 assert.strictEqual(connection.providerSessionId, threadId)
                 const sink = yield* collectAgentEvents(connection.events)
                 const turn = yield* connection.startTurn(
                   "Count from 1 to 200, one number per line. Do not stop early.",
+                  SMOKE_SETTINGS,
                 )
                 yield* waitForAgentEvent(
                   sink,
@@ -103,6 +114,7 @@ describe.skipIf(!enabled)("live codex adapter smoke (opt-in)", () => {
                 const connection = yield* adapter.resumeSession({
                   providerSessionId: threadId,
                   cwd,
+                  settings: SMOKE_SETTINGS,
                 })
                 assert.strictEqual(connection.providerSessionId, threadId)
               }),

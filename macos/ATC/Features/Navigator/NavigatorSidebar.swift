@@ -482,8 +482,8 @@ struct NavigatorSidebar: View {
         }
     }
 
-    private func filterEntries(_ model: ThreadListModel) -> [NavigatorDropdownEntry] {
-        var entries: [NavigatorDropdownEntry] = [
+    private func filterEntries(_ model: ThreadListModel) -> [PopupMenuEntry] {
+        var entries: [PopupMenuEntry] = [
             .item(
                 title: "All Projects",
                 isSelected: windowState.threadFilter == .all,

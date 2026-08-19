@@ -1,5 +1,5 @@
-import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
-import type { ClaudeQueryFn } from "../../src/agents/claudeAdapter.ts"
+import type { ModelInfo, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
+import type { ClaudeQueryFn, ClaudeQueryHandle } from "../../src/agents/claudeAdapter.ts"
 
 // A scripted stand-in for the Agent SDK's query() (the ClaudeQueryFn seam):
 // consumes the streaming prompt like the real SDK, emits the message shapes
@@ -34,7 +34,54 @@ export interface FakeClaudeQueryOptions {
    * tests can prove activity flows from the in-process hook callbacks too.
    */
   readonly stateEvents?: boolean
+  /** The catalog supportedModels() answers with (default: the recorded shape). */
+  readonly models?: ReadonlyArray<ModelInfo>
+  /** Report this permission mode in init instead of the spawned one (the
+   * CLI's silent `auto` → `default` downgrade on a model without auto support). */
+  readonly reportPermissionMode?: string
+  /** Leave getSettings() undeclared on the handle (an SDK that dropped it). */
+  readonly withoutGetSettings?: boolean
 }
+
+/** The catalog shape recorded from the CLI (2026-08-18), trimmed. */
+export const FAKE_CLAUDE_MODELS: ReadonlyArray<ModelInfo> = [
+  {
+    value: "default",
+    resolvedModel: "claude-opus-5[1m]",
+    displayName: "Default (recommended)",
+    description: "Opus 5 with 1M context",
+    supportsEffort: true,
+    supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+  },
+  {
+    value: "opus[1m]",
+    resolvedModel: "claude-opus-5[1m]",
+    displayName: "Opus (1M context)",
+    description: "Opus 5 with 1M context",
+    supportsEffort: true,
+    supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+  },
+  {
+    value: "sonnet",
+    resolvedModel: "claude-sonnet-5",
+    displayName: "Sonnet",
+    description: "Sonnet 5",
+    supportsEffort: true,
+    supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+  },
+  {
+    value: "haiku",
+    resolvedModel: "claude-haiku-4-5-20251001",
+    displayName: "Haiku",
+    description: "Haiku 4.5",
+  },
+]
+
+/** The wire id the CLI reports for a catalog value (init's `model`). */
+const wireModel = (value: string | undefined): string =>
+  FAKE_CLAUDE_MODELS.find((model) => model.value === value)?.resolvedModel ??
+  value ??
+  "claude-opus-5[1m]"
 
 export interface FakeClaudeQuery {
   readonly queryFn: ClaudeQueryFn
@@ -42,6 +89,11 @@ export interface FakeClaudeQuery {
   readonly decisions: Array<{ toolName: string; result: unknown }>
   /** Interrupt calls observed. */
   readonly interrupts: Array<string>
+  /** Live control requests observed (setModel / applyFlagSettings /
+   * setPermissionMode), in order, with their argument. */
+  readonly controls: Array<string>
+  /** The query() options each spawn received, in order. */
+  readonly spawns: Array<Record<string, unknown>>
   /**
    * Fire one hook event into the most recent query's registered callbacks
    * with a scripted payload (session_id filled in) — how tests replay
@@ -54,6 +106,8 @@ export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeC
   const decisions: FakeClaudeQuery["decisions"] = []
   let nextMessage = 1
   const interrupts: Array<string> = []
+  const controls: Array<string> = []
+  const spawns: Array<Record<string, unknown>> = []
   let lastFire: ((eventName: string, payload?: Record<string, unknown>) => Promise<void>) | null =
     null
 
@@ -67,6 +121,13 @@ export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeC
     const sessionId =
       options.reportSessionId ?? resumeId ?? options.sessionId ?? "fake-claude-session"
     const cwd = (options.wrongCwd ? "/somewhere/else" : args.options.cwd) ?? "/"
+    spawns.push({ ...args.options } as unknown as Record<string, unknown>)
+    // The applied settings, as the CLI would hold them: spawned, then moved
+    // by the control requests.
+    let model = wireModel(args.options.model)
+    let permissionMode: string =
+      options.reportPermissionMode ?? args.options.permissionMode ?? "default"
+    let effort: string | null = args.options.effort ?? "high"
 
     const push = (message: Record<string, unknown>): void => {
       output.push(message as unknown as SDKMessage)
@@ -126,7 +187,7 @@ export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeC
       return () => {
         if (sent) return
         sent = true
-        push({ type: "system", subtype: "init", session_id: sessionId, cwd })
+        push({ type: "system", subtype: "init", session_id: sessionId, cwd, model, permissionMode })
       }
     })()
 
@@ -290,7 +351,25 @@ export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeC
 
     args.options.abortController?.signal.addEventListener("abort", () => finish())
 
-    const iterator: AsyncIterable<SDKMessage> & { interrupt: () => Promise<unknown> } = {
+    const getSettings = () => Promise.resolve({ applied: { model, effort } })
+    const iterator: ClaudeQueryHandle & { getSettings?: () => Promise<unknown> } = {
+      setModel: (next) => {
+        controls.push(`setModel:${next ?? ""}`)
+        model = wireModel(next)
+        return Promise.resolve()
+      },
+      setPermissionMode: (next) => {
+        controls.push(`setPermissionMode:${next}`)
+        permissionMode = next
+        return Promise.resolve()
+      },
+      applyFlagSettings: (settings) => {
+        controls.push(`applyFlagSettings:${settings.effortLevel ?? "null"}`)
+        effort = settings.effortLevel ?? null
+        return Promise.resolve()
+      },
+      supportedModels: () => Promise.resolve(options.models ?? FAKE_CLAUDE_MODELS),
+      ...(options.withoutGetSettings === true ? {} : { getSettings }),
       interrupt: () => {
         interrupts.push(hanging ?? "(no hanging turn)")
         if (hanging !== null) {
@@ -336,6 +415,8 @@ export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeC
     queryFn,
     decisions,
     interrupts,
+    controls,
+    spawns,
     fireHook: (eventName, payload) => {
       if (lastFire === null) throw new Error("no query started yet")
       return lastFire(eventName, payload)
