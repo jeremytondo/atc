@@ -3,12 +3,16 @@
 // raised card, and compact tool rows — one line of adapter `title` + status —
 // that disclose monospaced detail. Fidelity is deliberately "rows +
 // expandable detail"; polish is a later issue.
+//
+// Every row observes its own `ChatItemModel` box: a streaming delta
+// invalidates exactly one row, and disclosure expansion lives on the box so
+// LazyVStack recycling cannot reset it (ATC-214).
 
 import ATCAppServerAPI
 import SwiftUI
 
 struct ChatRowView: View {
-    let row: ChatRow
+    let row: ChatRowModel
 
     var body: some View {
         switch row {
@@ -16,15 +20,17 @@ struct ChatRowView: View {
             ChatItemView(node: node)
         case .turnEnded(let turn):
             ChatTurnEndedRow(turn: turn)
+        case .pending(let prompt):
+            ChatPendingPromptRow(prompt: prompt)
         }
     }
 }
 
 struct ChatItemView: View {
-    let node: ChatNode
+    let node: ChatNodeModel
 
-    private var item: ThreadItem { node.item }
-    private var children: [ChatNode] { node.children }
+    private var item: ThreadItem { node.box.item }
+    private var children: [ChatNodeModel] { node.children }
 
     var body: some View {
         // Tool rows keep their nested items inside the disclosure; anything
@@ -54,10 +60,11 @@ struct ChatItemView: View {
         case .assistantText(let text):
             MarkdownText(text: text.text)
         case .reasoning(let reasoning):
-            ChatThinkingRow(text: reasoning.text)
+            ChatThinkingRow(box: node.box, text: reasoning.text)
         case .command(let command):
             ChatToolRow(
-                title: command.title, status: command.status, error: command.error, children: children
+                box: node.box, title: command.title, status: command.status,
+                error: command.error, children: children
             ) {
                 DetailSection(title: command.cwd.map { "$ \(command.command)  (\($0))" } ?? "$ \(command.command)") {
                     if let output = command.output, !output.isEmpty {
@@ -71,7 +78,10 @@ struct ChatItemView: View {
                 }
             }
         case .fileChange(let change):
-            ChatToolRow(title: change.title, status: change.status, error: change.error, children: children) {
+            ChatToolRow(
+                box: node.box, title: change.title, status: change.status,
+                error: change.error, children: children
+            ) {
                 ForEach(Array(change.changes.enumerated()), id: \.offset) { _, file in
                     DetailSection(title: "\(file.kind.rawValue) \(file.path)") {
                         if let diff = file.diff, !diff.isEmpty {
@@ -81,21 +91,27 @@ struct ChatItemView: View {
                 }
             }
         case .mcpCall(let call):
-            ChatToolRow(title: call.title, status: call.status, error: call.error, children: children) {
+            ChatToolRow(
+                box: node.box, title: call.title, status: call.status,
+                error: call.error, children: children
+            ) {
                 DetailSection(title: "\(call.server) · \(call.tool) — arguments") {
-                    DetailBlock(text: PrettyJSON.string(call.arguments))
+                    DetailBlock(text: node.box.pretty("arguments", call.arguments))
                 }
                 if let result = call.result {
-                    DetailSection(title: "Result") { DetailBlock(text: PrettyJSON.string(result)) }
+                    DetailSection(title: "Result") { DetailBlock(text: node.box.pretty("result", result)) }
                 }
             }
         case .toolCall(let call):
-            ChatToolRow(title: call.title, status: call.status, error: call.error, children: children) {
+            ChatToolRow(
+                box: node.box, title: call.title, status: call.status,
+                error: call.error, children: children
+            ) {
                 DetailSection(title: "\(call.name) — input") {
-                    DetailBlock(text: PrettyJSON.string(call.input))
+                    DetailBlock(text: node.box.pretty("input", call.input))
                 }
                 if let output = call.output {
-                    DetailSection(title: "Output") { DetailBlock(text: PrettyJSON.string(output)) }
+                    DetailSection(title: "Output") { DetailBlock(text: node.box.pretty("output", output)) }
                 }
             }
         case .compaction:
@@ -112,14 +128,26 @@ struct ChatItemView: View {
     }
 }
 
+/// The optimistic echo of a prompt this client just sent: styled like the
+/// real user message it will become, so resolution is a swap, not a jump.
+private struct ChatPendingPromptRow: View {
+    let prompt: PendingPrompt
+
+    var body: some View {
+        MarkdownText(text: prompt.text)
+            .padding(Spacing.md)
+            .background(Surface.raised, in: RoundedRectangle(cornerRadius: Radius.chip))
+    }
+}
+
 /// Reasoning collapses to a "Thinking" line; the text streams while
 /// collapsed and is there when the user opens it.
 private struct ChatThinkingRow: View {
+    @Bindable var box: ChatItemModel
     let text: String
-    @State private var isExpanded = false
 
     var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
+        DisclosureGroup(isExpanded: $box.isExpanded) {
             MarkdownText(text: text)
                 .foregroundStyle(.secondary)
                 .padding(.top, Spacing.xs)
@@ -134,15 +162,15 @@ private struct ChatThinkingRow: View {
 /// A tool item: adapter title + status, disclosing detail and any nested
 /// items (subagent or nested-tool work) beneath it.
 private struct ChatToolRow<Detail: View>: View {
+    @Bindable var box: ChatItemModel
     let title: String
     let status: ToolStatus
     let error: String?
-    let children: [ChatNode]
+    let children: [ChatNodeModel]
     @ViewBuilder let detail: () -> Detail
-    @State private var isExpanded = false
 
     var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
+        DisclosureGroup(isExpanded: $box.isExpanded) {
             VStack(alignment: .leading, spacing: Spacing.sm) {
                 detail()
                 if let error {
@@ -194,7 +222,7 @@ private struct ChatToolRow<Detail: View>: View {
 /// Items that happened inside another (subagent / nested-tool work), set
 /// in from the row that spawned them.
 private struct NestedItems: View {
-    let children: [ChatNode]
+    let children: [ChatNodeModel]
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.sm) {

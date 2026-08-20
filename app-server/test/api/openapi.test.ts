@@ -779,12 +779,17 @@ describe("openapi document vs runtime", () => {
           body: JSON.stringify({ prompt: "stream me" }),
         }),
       )
-      // Frames arrive as bare `data:` lines; the first durable one is the
-      // queue update, then the turn start with its seq. Bounded: a missing
-      // frame must fail naming what was seen, not hang on heartbeats.
+      // Frames arrive as bare `data:` lines; the prompt started at once, so
+      // the first frame is its turn start (with a seq), then the queue
+      // publish — never a queue holding a prompt that is already a turn
+      // (ATC-214). Bounded: a missing frame must fail naming what was seen,
+      // not hang on heartbeats.
       let text = openingText
       yield* Effect.promise(async () => {
-        while (!text.includes('"type":"turn.started"')) {
+        while (
+          !text.includes('"type":"turn.started"') ||
+          !text.includes('"type":"queue.updated"')
+        ) {
           const chunk = await reader.read()
           if (chunk.done) break
           text += new TextDecoder().decode(chunk.value)
@@ -792,7 +797,8 @@ describe("openapi document vs runtime", () => {
       }).pipe(
         Effect.timeoutOrElse({
           duration: "10 seconds",
-          orElse: () => Effect.die(new Error(`no turn.started frame within 10s; saw: ${text}`)),
+          orElse: () =>
+            Effect.die(new Error(`no turn.started + queue.updated within 10s; saw: ${text}`)),
         }),
       )
       const frames = text.split("\n\n").filter((frame) => frame.startsWith("data: "))
@@ -803,10 +809,11 @@ describe("openapi document vs runtime", () => {
             seq?: number
           },
       )
-      assert.strictEqual(parsed[0]?.type, "queue.updated")
-      assert.isUndefined(parsed[0]?.seq)
-      const started = parsed.find((event) => event.type === "turn.started")
-      assert.isNumber(started?.seq)
+      assert.strictEqual(parsed[0]?.type, "turn.started")
+      assert.isNumber(parsed[0]?.seq)
+      const queue = parsed.find((event) => event.type === "queue.updated")
+      assert.isDefined(queue)
+      assert.isUndefined(queue?.seq)
       assert.isFalse(text.includes("\nid:"))
       assert.isFalse(text.includes("\nevent:"))
       yield* Effect.promise(() => reader.cancel())

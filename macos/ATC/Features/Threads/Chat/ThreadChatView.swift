@@ -11,6 +11,12 @@
 // "Load earlier" at the top while older pages exist. Connection loss shows a
 // floating "Reconnecting…" over a transcript that stays put — the stream
 // resumes from its seq, so nothing is refetched.
+//
+// Motion (ATC-214): the model applies structural changes inside
+// withAnimation, rows carry insert transitions, and the bottom bar's glass
+// pieces share one container and namespace so appearing cards morph out of
+// the composer instead of popping. Chat actions run through the model's
+// `perform` — gated on this thread's stream, reported inline — never a modal.
 
 import ATCAppServerAPI
 import SwiftUI
@@ -71,8 +77,7 @@ private struct Acquisition {
 }
 
 /// The Chat surface for one acquired model: transcript, requests, queue,
-/// composer. Actions run through the app's one mutation seam and report
-/// into the standard action alert.
+/// composer.
 private struct ChatPane: View {
     @Environment(AppModel.self) private var appModel
     let ref: ThreadRef
@@ -80,13 +85,16 @@ private struct ChatPane: View {
     let thread: ATCThread
     let focusRequest: UInt
 
-    @State private var isSending = false
     @State private var isFollowingTail = true
     /// Bumped to jump to the tail and follow it again (a sent prompt).
     @State private var followRequest = 0
-    @State private var actionError: String?
+    /// Measured height of the request/queue stack, capped by `cardsCap`.
+    @State private var cardsHeight: CGFloat = 0
+    @Namespace private var glassNamespace
 
-    private var transcript: ChatTranscript { chat.transcript }
+    /// The request/queue stack scrolls inside itself past this height.
+    private let cardsCap: CGFloat = 320
+
     private var agents: AgentsStore? { appModel.runtime(id: ref.connectionID)?.agents }
 
     private var draftBinding: Binding<String> {
@@ -99,13 +107,8 @@ private struct ChatPane: View {
     var body: some View {
         transcriptList
             .overlay(alignment: .top) { statusBanner }
-            .actionErrorAlert($actionError)
             // The composer's model chip and menu need the agent's catalog.
             .task(id: thread.agentId) { agents?.loadModels(for: thread.agentId) }
-    }
-
-    private func run(_ operation: @escaping () async throws -> Void) {
-        appModel.run(on: ref.connectionID, reporting: { actionError = $0 }, operation)
     }
 
     // MARK: - Transcript
@@ -114,7 +117,7 @@ private struct ChatPane: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: Spacing.md) {
-                    if transcript.hasMore {
+                    if chat.hasMore {
                         HStack {
                             Spacer()
                             Button("Load earlier") { loadOlder(proxy) }
@@ -124,14 +127,19 @@ private struct ChatPane: View {
                     }
                     if let error = chat.loadError {
                         loadFailure(error)
-                    } else if !transcript.isLoaded {
+                    } else if !chat.isLoaded {
                         loadingIndicator
-                    } else if transcript.items.isEmpty, !isWorking {
+                    } else if chat.rows.isEmpty, !isWorking {
                         emptyState
                     }
-                    ForEach(transcript.rows) { row in
+                    ForEach(chat.rows) { row in
                         ChatRowView(row: row)
                             .id(row.id)
+                            .transition(
+                                .asymmetric(
+                                    insertion: .opacity.combined(with: .offset(y: 12)),
+                                    removal: .opacity
+                                ))
                     }
                     if isWorking {
                         HStack(spacing: Spacing.sm) {
@@ -139,6 +147,7 @@ private struct ChatPane: View {
                             Text("Working…").foregroundStyle(.secondary)
                         }
                         .font(.callout)
+                        .transition(.opacity)
                     }
                     Color.clear.frame(height: 1).id(tailAnchor)
                 }
@@ -183,9 +192,9 @@ private struct ChatPane: View {
     /// Older history goes in above; the row that was first stays where the
     /// eye is instead of the tail-follow yanking the view back down.
     private func loadOlder(_ proxy: ScrollViewProxy) {
-        guard let anchor = transcript.rows.first?.id else { return }
+        guard let anchor = chat.rows.first?.id else { return }
         isFollowingTail = false
-        run {
+        chat.perform { [chat] in
             try await chat.loadOlder()
             proxy.scrollTo(anchor, anchor: .top)
         }
@@ -196,7 +205,7 @@ private struct ChatPane: View {
     /// The server drives a turn (Stop is offered), or the agent is busy under
     /// a TUI (items land at idle — the server's re-read).
     private var isWorking: Bool {
-        transcript.runningTurn != nil || thread.activityState == .working
+        chat.runningTurn != nil || thread.activityState == .working
     }
 
     private func loadFailure(_ error: String) -> some View {
@@ -227,41 +236,40 @@ private struct ChatPane: View {
 
     // MARK: - Bottom stack
 
-    /// Everything floating over the transcript's tail is Liquid Glass, and
-    /// one container renders them together (separate glass views sample
-    /// each other where they overlap).
+    /// Everything floating over the transcript's tail is Liquid Glass: one
+    /// container renders the pieces together, and a shared namespace lets an
+    /// appearing card or strip morph out of the composer's glass instead of
+    /// popping in.
     private var bottomStack: some View {
         GlassEffectContainer {
             VStack(spacing: Spacing.sm) {
-                ForEach(transcript.requests, id: \.id) { request in
-                    ChatRequestCard(request: request) { answer in
-                        run { try await chat.answer(requestID: request.id, answer) }
-                    }
+                if let actionError = chat.actionError {
+                    actionErrorBanner(actionError)
                 }
-                if !transcript.queue.isEmpty {
-                    ChatQueueStrip(prompts: transcript.queue) { prompt in
-                        run { try await chat.withdraw(promptID: prompt.id) }
-                    }
+                if !chat.requests.isEmpty || !chat.queue.isEmpty {
+                    cards
                 }
                 ChatComposer(
                     text: draftBinding,
                     thread: thread,
                     models: agents?.models(for: thread.agentId),
                     modelsError: agents?.modelErrors[thread.agentId],
-                    isSending: isSending,
-                    showsStop: transcript.runningTurn != nil,
+                    showsStop: chat.runningTurn != nil,
                     error: chat.promptError,
+                    lastSentPrompt: chat.lastSentPrompt,
+                    yieldsFocus: !chat.requests.isEmpty,
                     focusRequest: focusRequest,
                     send: send,
-                    stop: { run { try await chat.interrupt() } },
+                    stop: { chat.perform { [chat] in try await chat.interrupt() } },
                     updateSettings: { patch in
-                        run {
+                        chat.perform { [appModel] in
                             try await appModel.runtime(id: ref.connectionID)?.threads
                                 .updateSettings(id: ref.threadID, patch)
                         }
                     },
                     reloadModels: { agents?.loadModels(for: thread.agentId) }
                 )
+                .glassEffectID("composer", in: glassNamespace)
             }
         }
         .padding(.horizontal, Spacing.xxl)
@@ -271,20 +279,71 @@ private struct ChatPane: View {
         .frame(maxWidth: .infinity)
     }
 
-    private func send() {
-        let submitted = appModel.draft(for: ref)
-        let prompt = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty, !isSending else { return }
-        isSending = true
-        Task {
-            if await chat.send(prompt) {
-                // Clear only what was sent: the draft is shared, and text
-                // typed while the send was in flight (here or in another
-                // window on the thread) is never discarded.
-                if appModel.draft(for: ref) == submitted { appModel.setDraft("", for: ref) }
-                followRequest += 1
+    /// The request cards and queue strip, height-capped: past the cap the
+    /// stack scrolls inside itself instead of swallowing the transcript.
+    private var cards: some View {
+        ScrollView {
+            VStack(spacing: Spacing.sm) {
+                ForEach(chat.requests, id: \.id) { request in
+                    ChatRequestCard(request: request) { answer in
+                        chat.perform { [chat] in try await chat.answer(requestID: request.id, answer) }
+                    }
+                    .glassEffectID("request-\(request.id)", in: glassNamespace)
+                }
+                if !chat.queue.isEmpty {
+                    ChatQueueStrip(prompts: chat.queue) { prompt in
+                        chat.perform { [chat] in try await chat.withdraw(promptID: prompt.id) }
+                    }
+                    .glassEffectID("queue", in: glassNamespace)
+                }
             }
-            isSending = false
+            .onGeometryChange(for: CGFloat.self) {
+                $0.size.height
+            } action: { height in
+                // The bar's height rides this measurement: animate it so a
+                // card appearing grows the bar instead of popping it.
+                withAnimation(.snappy(duration: 0.25)) { cardsHeight = height }
+            }
+        }
+        .scrollIndicators(.never)
+        .frame(height: min(cardsHeight, cardsCap))
+    }
+
+    private func actionErrorBanner(_ message: String) -> some View {
+        HStack(spacing: Spacing.sm) {
+            Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+            Text(message).lineLimit(2).textSelection(.enabled)
+            Spacer(minLength: 0)
+            Button {
+                chat.clearActionError()
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .accessibilityLabel("Dismiss error")
+        }
+        .font(.callout)
+        .padding(.horizontal, Spacing.md)
+        .padding(.vertical, Spacing.sm)
+        .glassEffect(in: RoundedRectangle(cornerRadius: Radius.card + Spacing.xs))
+        .glassEffectID("actionError", in: glassNamespace)
+        .transition(.opacity)
+    }
+
+    /// The draft clears the moment the prompt leaves (the echo row carries
+    /// it); a refusal restores it in front of whatever was typed since, so
+    /// no text is ever lost.
+    private func send() {
+        let prompt = appModel.draft(for: ref).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else { return }
+        appModel.setDraft("", for: ref)
+        followRequest += 1
+        Task {
+            guard await !chat.send(prompt) else { return }
+            let typedSince = appModel.draft(for: ref)
+            appModel.setDraft(
+                typedSince.isEmpty ? prompt : prompt + "\n" + typedSince, for: ref)
         }
     }
 

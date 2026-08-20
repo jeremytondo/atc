@@ -1071,10 +1071,11 @@ enum Fixtures {
                 command: title, output: output, exitCode: exitCode))
     }
 
-    static func turn(_ id: String, status: Components.Schemas.ThreadTurnStatus = .running, error: String? = nil)
-        -> ThreadTurn
-    {
-        ThreadTurn(id: id, status: status, error: error)
+    static func turn(
+        _ id: String, status: Components.Schemas.ThreadTurnStatus = .running, error: String? = nil,
+        promptId: String? = nil
+    ) -> ThreadTurn {
+        ThreadTurn(id: id, status: status, error: error, promptId: promptId)
     }
 
     static func page(

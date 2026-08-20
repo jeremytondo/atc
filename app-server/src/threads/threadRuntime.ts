@@ -168,6 +168,15 @@ export type QueuedPrompt = typeof Contract.QueuedPrompt.Type
 //     in seq order. A subscriber rejoining from before the latest
 //     replacement gets snapshot.invalidated instead — the deleted rows
 //     cannot be replayed, so it refetches.
+//   - Streamed text is durable while it streams (ATC-214): deltas stay
+//     live-only, and on a throttle the writer persists the text so far as
+//     an item.updated partial (complete stays false), so a reconnect, a
+//     second window, or GET /transcript sees a mid-answer bubble instead of
+//     an empty one. The tail since the last flush is lost with the process;
+//     byte-exact resume is a non-goal. Partials cover items whose start this
+//     writer saw: a turn reattached after a restart streams live-only until
+//     the adapter re-sends the item — seeding from the stored copy could
+//     persist text with a hole where the missed deltas were.
 //   - Recovery, prompt admission, run end, and release serialize per thread
 //     behind one start lock; threads still recovering at startup queue
 //     their prompts until recovery has settled them.
@@ -184,6 +193,27 @@ interface Run {
   readonly turn: AgentTurn
   readonly requests: Map<string, ThreadRequest>
   finished: boolean
+}
+
+/** Once accumulated delta text reaches this length (UTF-16 units — close
+ * enough for a flush heuristic) the partial persists at once; the throttle
+ * timer covers the slow drip. */
+const STREAMING_FLUSH_LENGTH = 16 * 1024
+
+/**
+ * The streamed text of one open item on a writer's feed (the header's
+ * durable-partials rule): the adapter's last full item plus every delta
+ * since, and the flush bookkeeping.
+ */
+interface StreamingText {
+  /** The last full item the adapter sent (complete: false). */
+  base: typeof Contract.ThreadItemAssistantText.Type | typeof Contract.ThreadItemReasoning.Type
+  /** base.text plus every delta since. */
+  text: string
+  /** Bytes accumulated since the last persist. */
+  pending: number
+  /** The throttle timer is armed; the flush it runs disarms it. */
+  armed: boolean
 }
 
 /**
@@ -209,12 +239,17 @@ interface Writer {
   /** The settings the last turn on this connection was started with — what
    * the provider's next report merely confirms (applyProviderSettings). */
   pushed: ThreadSettings | undefined
+  /** Streaming text items open on this feed (the durable-partials rule). */
+  readonly streaming: Map<string, StreamingText>
 }
 
 export interface ThreadRuntimeOptions {
   /** How long a one-process provider's writer stays resident with no turn
    * running (the header's bounded-residency rule). */
   readonly residentIdleTimeout?: Duration.Input
+  /** How often streamed text persists as a durable partial (the header's
+   * durable-partials rule). */
+  readonly streamingFlushInterval?: Duration.Input
 }
 
 export class ThreadRuntime extends Context.Service<
@@ -335,6 +370,7 @@ const make = (options: ThreadRuntimeOptions) =>
     // releases every connection and subscription.
     const serviceScope = yield* Effect.scope
     const residentIdleTimeout = options.residentIdleTimeout ?? "10 minutes"
+    const streamingFlushInterval = options.streamingFlushInterval ?? "250 millis"
 
     const writers = new Map<string, Writer>()
     /** The turn the runtime drives on a thread, if any. */
@@ -409,14 +445,16 @@ const make = (options: ThreadRuntimeOptions) =>
 
     const recordItem = (threadId: string, event: AgentItemEvent): Effect.Effect<void> =>
       Effect.gen(function* () {
-        const seq = yield* transcripts.upsertItem(threadId, event.item)
+        // The stored item is the published one: the repository stamps
+        // timestamps, and clients must see exactly what a read serves.
+        const { seq, item } = yield* transcripts.upsertItem(threadId, event.item)
         const type =
           event.type === "itemStarted"
             ? "item.started"
             : event.type === "itemUpdated"
               ? "item.updated"
               : "item.completed"
-        publish(threadId, { type, seq, item: event.item })
+        publish(threadId, { type, seq, item })
       })
 
     /** Upsert a turn and publish the row as it now stands (an update keeps
@@ -623,6 +661,13 @@ const make = (options: ThreadRuntimeOptions) =>
         if (run.finished) return
         run.finished = true
         closeRequests(record.id, run)
+        // A turn ending mid-stream keeps the text accumulated so far: one
+        // final flush before the turn row closes, then the ledger clears —
+        // an item's final state is the adapter's to send (or a re-read's).
+        yield* Effect.forEach([...writer.streaming.keys()], (itemId) =>
+          flushStreaming(record, writer, itemId),
+        )
+        writer.streaming.clear()
         // The upsert keeps the row's promptId/startedAt (COALESCE).
         yield* recordTurn(
           record.id,
@@ -682,6 +727,71 @@ const make = (options: ThreadRuntimeOptions) =>
         )
       })
 
+    /**
+     * Keep the writer's streaming ledger current from the adapter's own
+     * item events: a text item that is not complete is (re)based — the
+     * adapter re-sends the whole item, and recordItem persists it right
+     * after — and a completed one (or any complete re-send) leaves the
+     * ledger, its final state coming from the adapter.
+     */
+    const trackStreaming = (writer: Writer, event: AgentItemEvent): void => {
+      const item = event.item
+      if (item.type !== "assistantText" && item.type !== "reasoning") return
+      if (event.type === "itemCompleted" || item.complete) {
+        writer.streaming.delete(item.id)
+        return
+      }
+      writer.streaming.set(item.id, { base: item, text: item.text, pending: 0, armed: false })
+    }
+
+    /** Persist and publish the text so far (an item.updated, complete still
+     * false). Callers hold the writer's lock. An entry that flushed early
+     * (the length cap) or completed leaves nothing to do. */
+    const flushStreaming = (record: ThreadRecord, writer: Writer, itemId: string) =>
+      Effect.suspend(() => {
+        const entry = writer.streaming.get(itemId)
+        if (entry === undefined || entry.pending === 0) return Effect.void
+        entry.pending = 0
+        return recordItem(record.id, {
+          type: "itemUpdated",
+          item: { ...entry.base, text: entry.text },
+        })
+      })
+
+    /** Every delta stays live-only on the wire; the accumulated text
+     * persists on the throttle (or at the length cap), the header's
+     * durable-partials rule. Only the timer itself disarms, so an item has
+     * at most one timer in flight. */
+    const onTextDelta = (
+      record: ThreadRecord,
+      writer: Writer,
+      event: { readonly itemId: string; readonly delta: string },
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        publish(record.id, { type: "text.delta", itemId: event.itemId, delta: event.delta })
+        const entry = writer.streaming.get(event.itemId)
+        if (entry === undefined) return
+        entry.text += event.delta
+        entry.pending += event.delta.length
+        if (entry.pending >= STREAMING_FLUSH_LENGTH) {
+          return yield* flushStreaming(record, writer, event.itemId)
+        }
+        if (entry.armed) return
+        entry.armed = true
+        yield* Effect.sleep(streamingFlushInterval).pipe(
+          Effect.andThen(
+            writer.lock.withPermit(
+              Effect.suspend(() => {
+                const armed = writer.streaming.get(event.itemId)
+                if (armed !== undefined) armed.armed = false
+                return flushStreaming(record, writer, event.itemId)
+              }),
+            ),
+          ),
+          Effect.forkIn(writer.scope),
+        )
+      })
+
     const handleEvent = (
       record: ThreadRecord,
       writer: Writer,
@@ -696,11 +806,11 @@ const make = (options: ThreadRuntimeOptions) =>
         case "itemStarted":
         case "itemUpdated":
         case "itemCompleted":
-          return recordItem(record.id, event)
-        case "textDelta":
-          return Effect.sync(() =>
-            publish(record.id, { type: "text.delta", itemId: event.itemId, delta: event.delta }),
+          return Effect.sync(() => trackStreaming(writer, event)).pipe(
+            Effect.andThen(recordItem(record.id, event)),
           )
+        case "textDelta":
+          return onTextDelta(record, writer, event)
         case "requestOpened":
           // A request belongs to a turn (the seam parks it with one); with
           // no Run of ours to hold it, nobody could answer it.
@@ -816,6 +926,7 @@ const make = (options: ThreadRuntimeOptions) =>
       closing: undefined,
       idleClose: undefined,
       pushed: undefined,
+      streaming: new Map(),
     })
 
     /**
@@ -1451,7 +1562,6 @@ const make = (options: ThreadRuntimeOptions) =>
           // Whether THIS prompt is the one an immediate start would run.
           const first = runOf(id) === undefined && Option.isNone(yield* transcripts.peek(id))
           const queued = yield* transcripts.enqueue(id, prompt)
-          yield* publishQueue(id)
           // The drain runs the OLDEST waiting prompt. When that is ours, a
           // provider that refuses un-admits it (the caller's error means
           // "not accepted"); an older prompt's failure just leaves ours
@@ -1468,10 +1578,21 @@ const make = (options: ThreadRuntimeOptions) =>
                   ),
             ),
           )
-          return Option.isSome(started) && started.value.promptId === queued.id
-            ? { promptId: queued.id, turnId: started.value.turnId }
-            : { promptId: queued.id }
-        }),
+          // The queue is published once per prompt, after startNext has
+          // decided (ATC-214): a prompt that started at once was never in a
+          // published queue — registerRun already published the queue as it
+          // stands — and one that queued is published here, waiting.
+          if (Option.isSome(started) && started.value.promptId === queued.id) {
+            return { promptId: queued.id, turnId: started.value.turnId }
+          }
+          yield* publishQueue(id)
+          return { promptId: queued.id }
+        }).pipe(
+          // A caller that vanished mid-decision (request interruption) leaves
+          // the prompt admitted and durable: publish the queue so no client
+          // is left blind to it.
+          Effect.onInterrupt(() => publishQueue(id)),
+        ),
       interrupt: (id) =>
         Effect.gen(function* () {
           const record = yield* repository.require(id)

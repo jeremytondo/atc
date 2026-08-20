@@ -226,9 +226,24 @@ const threadRequests = Cli.clientCommand(
 
 const DECISIONS = ["accept", "acceptForSession", "decline", "cancel"] as const
 
-const decodeAnswers = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Array(Schema.String))),
-)
+// The contract's answer values are arrays of labels (a freeform answer is a
+// one-element array); a bare string is the natural way to type a freeform
+// answer, so accept it too and normalize to the contract shape.
+export const decodeAnswers = (json: string) =>
+  Schema.decodeUnknownEffect(
+    Schema.fromJsonString(
+      Schema.Record(Schema.String, Schema.Union([Schema.Array(Schema.String), Schema.String])),
+    ),
+  )(json).pipe(
+    Effect.map((decoded) =>
+      Object.fromEntries(
+        Object.entries(decoded).map(([id, chosen]) => [
+          id,
+          typeof chosen === "string" ? [chosen] : chosen,
+        ]),
+      ),
+    ),
+  )
 
 const threadAnswer = Command.make(
   "answer",
@@ -245,7 +260,7 @@ const threadAnswer = Command.make(
     answers: Flag.optional(
       Flag.string("answers").pipe(
         Flag.withDescription(
-          'Question answers as JSON, question id → chosen labels or freeform text ({"q0":["blue"]}); "-" reads the JSON from stdin (use it for secret answers, which must never sit in argv)',
+          'Question answers as JSON, question id → chosen labels or freeform text ({"q0":["blue"]} or {"q0":"a freeform answer"}); "-" reads the JSON from stdin (use it for secret answers, which must never sit in argv)',
         ),
       ),
     ),

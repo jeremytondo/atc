@@ -96,10 +96,11 @@ describe("ThreadRuntime", () => {
         Effect.sync(() => events),
         (list) => list.some((event) => event.type === "turn.completed"),
       )
+      // The queue publishes once per prompt, after the start decision: a
+      // prompt that started at once never appears in a published queue.
       assert.deepStrictEqual(
         events.map((event) => event.type),
         [
-          "queue.updated",
           "turn.started",
           "queue.updated",
           "item.completed",
@@ -137,6 +138,126 @@ describe("ThreadRuntime", () => {
       assert.strictEqual(after.activityState, "idle")
       assert.isTrue(after.unread)
       assert.isFalse(yield* runtime.hasWriter(thread.id))
+    }).pipe(Effect.scoped, Effect.provide(kit.layer)),
+  )
+
+  it.live("streamed text persists as durable partials while the answer streams", () =>
+    Effect.gen(function* () {
+      const runtime = yield* ThreadRuntime
+      const thread = yield* newThread
+      const events = yield* collectEvents(runtime, thread.id)
+      const started = yield* runtime.prompt(thread.id, "stream")
+      const turnId = started.turnId ?? ""
+      const providerSessionId =
+        [...fake.sessions.values()].find((entry) => entry.inputs.includes("stream"))
+          ?.providerSessionId ?? ""
+      fake.emitItem(providerSessionId, "itemStarted", {
+        type: "assistantText",
+        id: "a1",
+        turnId,
+        text: "",
+        complete: false,
+      })
+      fake.emitTextDelta(providerSessionId, "a1", "partial ")
+      fake.emitTextDelta(providerSessionId, "a1", "answer")
+      // The throttle persists the text so far: a fresh read (a reconnect, a
+      // second window, GET /transcript) carries the mid-stream answer.
+      yield* waitFor(runtime.transcript(thread.id).pipe(Effect.orDie), (page) =>
+        page.items.some(
+          (item) =>
+            item.type === "assistantText" && item.text === "partial answer" && !item.complete,
+        ),
+      )
+      // The flush published the partial as a durable item.updated…
+      yield* waitFor(
+        Effect.sync(() => events),
+        (list) =>
+          list.some(
+            (event) =>
+              event.type === "item.updated" &&
+              event.item.type === "assistantText" &&
+              event.item.text === "partial answer",
+          ),
+      )
+      // …which a subscriber replaying the gap receives too.
+      const replay = yield* collectEvents(runtime, thread.id, 0)
+      yield* waitFor(
+        Effect.sync(() => replay),
+        (list) =>
+          list.some(
+            (event) =>
+              event.type === "item.updated" &&
+              event.item.type === "assistantText" &&
+              event.item.text === "partial answer",
+          ),
+      )
+      // The adapter's own completion stays the final word.
+      fake.emitItem(providerSessionId, "itemCompleted", {
+        type: "assistantText",
+        id: "a1",
+        turnId,
+        text: "partial answer!",
+        complete: true,
+      })
+      fake.completeTurn(providerSessionId, "completed")
+      yield* waitFor(
+        Effect.sync(() => events),
+        (list) => list.some((event) => event.type === "turn.completed"),
+      )
+      const transcript = yield* runtime.transcript(thread.id)
+      const item = transcript.items.find((entry) => entry.id === "a1")
+      assert.isTrue(item?.type === "assistantText" && item.text === "partial answer!")
+      assert.isTrue(item?.type === "assistantText" && item.complete)
+    }).pipe(Effect.scoped, Effect.provide(kit.layer)),
+  )
+
+  it.live("items are stamped: createdAt on every item, completedAt on finished tools", () =>
+    Effect.gen(function* () {
+      const runtime = yield* ThreadRuntime
+      const thread = yield* newThread
+      const started = yield* runtime.prompt(thread.id, "work")
+      const turnId = started.turnId ?? ""
+      const providerSessionId =
+        [...fake.sessions.values()].find((entry) => entry.inputs.includes("work"))
+          ?.providerSessionId ?? ""
+      fake.emitItem(providerSessionId, "itemStarted", {
+        type: "command",
+        id: "c1",
+        turnId,
+        title: "bun test",
+        status: "running",
+        command: "bun test",
+      })
+      yield* waitFor(runtime.transcript(thread.id).pipe(Effect.orDie), (page) =>
+        page.items.some((item) => item.id === "c1"),
+      )
+      const runningPage = yield* runtime.transcript(thread.id)
+      const running = runningPage.items.find((item) => item.id === "c1")
+      assert.isString(running?.createdAt)
+      assert.isUndefined(running?.type === "command" ? running.completedAt : undefined)
+      fake.emitItem(providerSessionId, "itemCompleted", {
+        type: "command",
+        id: "c1",
+        turnId,
+        title: "bun test",
+        status: "completed",
+        command: "bun test",
+        exitCode: 0,
+      })
+      yield* waitFor(runtime.transcript(thread.id).pipe(Effect.orDie), (page) =>
+        page.items.some(
+          (item) => item.id === "c1" && item.type === "command" && item.status === "completed",
+        ),
+      )
+      const page = yield* runtime.transcript(thread.id)
+      const done = page.items.find((item) => item.id === "c1")
+      // The update kept the first write's createdAt; the terminal status
+      // stamped completedAt.
+      assert.strictEqual(done?.createdAt, running?.createdAt)
+      assert.isString(done?.type === "command" ? done.completedAt : undefined)
+      // The user prompt item is dated too.
+      assert.isString(page.items.find((item) => item.type === "userMessage")?.createdAt)
+      fake.completeTurn(providerSessionId, "completed")
     }).pipe(Effect.scoped, Effect.provide(kit.layer)),
   )
 
@@ -178,11 +299,13 @@ describe("ThreadRuntime", () => {
         )
         assert.deepStrictEqual(fake.sessions.get(providerSessionId)?.inputs, ["one", "two"])
         assert.deepStrictEqual(yield* runtime.listQueue(thread.id), [])
-        // The queue events show the admission and the drain.
+        // The queue events show the started first prompt (already empty),
+        // the second's admission, and the drain — never a queue holding a
+        // prompt that is already a turn.
         const queueSizes = () =>
           events.flatMap((event) => (event.type === "queue.updated" ? [event.prompts.length] : []))
-        yield* waitFor(Effect.sync(queueSizes), (sizes) => sizes.length === 4)
-        assert.deepStrictEqual(queueSizes(), [1, 0, 1, 0])
+        yield* waitFor(Effect.sync(queueSizes), (sizes) => sizes.length === 3)
+        assert.deepStrictEqual(queueSizes(), [0, 1, 0])
         // The second turn resumed the exact session and runs the queued prompt.
         const transcript = yield* runtime.transcript(thread.id)
         assert.deepStrictEqual(

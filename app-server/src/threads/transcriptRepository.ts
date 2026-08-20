@@ -28,6 +28,15 @@ import type { HistoryTurn } from "../agents/agentAdapter.ts"
 //   - Queue rows start oldest-first: `beginTurn` stamps started_turn_id and
 //     inserts the running turn atomically, and a started prompt is no
 //     longer waiting (deleteWaiting refuses it).
+//   - Item timestamps (ATC-214) are stamped HERE, not by adapters, with one
+//     precedence: the adapter's provider time when it passes one, else the
+//     stamp the row already carries, else the write time — so an ATC
+//     approximation upgrades to the provider's truth but never re-stamps.
+//     A tool item reaching a terminal status takes completedAt the same
+//     way, and `replace` carries both forward by item id — a re-read must
+//     not re-date what ATC already dated. The stamped values live in the
+//     item JSON (and mirrored in columns for the carry-forward lookup), so
+//     every read serves them.
 
 export type ThreadTurnRecord = typeof ThreadTurn.Type
 export type ThreadItemRecord = typeof ThreadItem.Type
@@ -65,6 +74,13 @@ const ItemRow = Schema.Struct({
   ord: Schema.Number,
   updated_seq: Schema.Number,
   item: Schema.String,
+  created_at: Schema.NullOr(Schema.String),
+  completed_at: Schema.NullOr(Schema.String),
+})
+
+const ItemTimestamps = Schema.Struct({
+  created_at: Schema.NullOr(Schema.String),
+  completed_at: Schema.NullOr(Schema.String),
 })
 
 const QueueRow = Schema.Struct({
@@ -96,6 +112,51 @@ const toQueued = (row: typeof QueueRow.Type): QueuedPromptRecord => ({
   queuedAt: row.queued_at,
 })
 
+/** The stamped finish of a tool item; undefined for non-tool items. */
+const itemCompletedAt = (item: ThreadItemRecord): string | undefined => {
+  switch (item.type) {
+    case "command":
+    case "fileChange":
+    case "mcpCall":
+    case "toolCall":
+      return item.completedAt
+    case "userMessage":
+    case "assistantText":
+    case "reasoning":
+    case "compaction":
+      return undefined
+  }
+}
+
+/** The header's timestamp rule: first write dates the item, a terminal tool
+ * status dates the finish, and existing stamps always win over `now`. */
+const stampItem = (
+  item: ThreadItemRecord,
+  existing: typeof ItemTimestamps.Type | undefined,
+  now: string,
+): ThreadItemRecord => {
+  const createdAt = item.createdAt ?? existing?.created_at ?? now
+  switch (item.type) {
+    case "command":
+    case "fileChange":
+    case "mcpCall":
+    case "toolCall": {
+      const completedAt =
+        item.completedAt ??
+        existing?.completed_at ??
+        (item.status === "completed" || item.status === "error" ? now : undefined)
+      return completedAt === undefined
+        ? { ...item, createdAt }
+        : { ...item, createdAt, completedAt }
+    }
+    case "userMessage":
+    case "assistantText":
+    case "reasoning":
+    case "compaction":
+      return { ...item, createdAt }
+  }
+}
+
 export interface TranscriptPage {
   readonly items: ReadonlyArray<ThreadItemRecord>
   readonly turns: ReadonlyArray<ThreadTurnRecord>
@@ -115,8 +176,13 @@ export interface TranscriptCounters {
 export class TranscriptRepository extends Context.Service<
   TranscriptRepository,
   {
-    /** Insert or update one item (upsert by id); returns the seq it took. */
-    readonly upsertItem: (threadId: string, item: ThreadItemRecord) => Effect.Effect<number>
+    /** Insert or update one item (upsert by id); returns the seq it took and
+     * the item as stored — with createdAt (and completedAt on a finished
+     * tool item) stamped, so callers publish exactly what a read serves. */
+    readonly upsertItem: (
+      threadId: string,
+      item: ThreadItemRecord,
+    ) => Effect.Effect<{ readonly seq: number; readonly item: ThreadItemRecord }>
     /** Insert or update one turn (upsert by id); returns the seq it took and
      * the row as it now stands (an update keeps promptId/startedAt). */
     readonly upsertTurn: (
@@ -203,7 +269,30 @@ export const layer = Layer.effect(TranscriptRepository)(
         ON CONFLICT (thread_id, item_id) DO UPDATE SET
           turn_id = excluded.turn_id,
           updated_seq = excluded.updated_seq,
-          item = excluded.item
+          item = excluded.item,
+          created_at = excluded.created_at,
+          completed_at = excluded.completed_at
+      `,
+    })
+
+    const itemTimestampRows = SqlSchema.findAll({
+      Request: Schema.Struct({ thread_id: Schema.String, item_id: Schema.String }),
+      Result: ItemTimestamps,
+      execute: (request) => sql`
+        SELECT created_at, completed_at FROM thread_items
+        WHERE thread_id = ${request.thread_id} AND item_id = ${request.item_id}
+      `,
+    })
+
+    const allItemTimestampRows = SqlSchema.findAll({
+      Request: Schema.String,
+      Result: Schema.Struct({
+        item_id: Schema.String,
+        created_at: Schema.NullOr(Schema.String),
+        completed_at: Schema.NullOr(Schema.String),
+      }),
+      execute: (threadId) => sql`
+        SELECT item_id, created_at, completed_at FROM thread_items WHERE thread_id = ${threadId}
       `,
     })
 
@@ -396,14 +485,18 @@ export const layer = Layer.effect(TranscriptRepository)(
       ord: seq,
       updated_seq: seq,
       item: encodeItem(item),
+      created_at: item.createdAt ?? null,
+      completed_at: itemCompletedAt(item) ?? null,
     })
 
     const upsertItem = (threadId: string, item: ThreadItemRecord) =>
       sql.withTransaction(
         Effect.gen(function* () {
+          const existing = (yield* itemTimestampRows({ thread_id: threadId, item_id: item.id }))[0]
+          const stamped = stampItem(item, existing, new Date().toISOString())
           const seq = yield* nextSeq(threadId)
-          yield* upsertItemRow(itemRow(threadId, item, seq))
-          return seq
+          yield* upsertItemRow(itemRow(threadId, stamped, seq))
+          return { seq, item: stamped }
         }),
       )
 
@@ -522,6 +615,15 @@ export const layer = Layer.effect(TranscriptRepository)(
         sql
           .withTransaction(
             Effect.gen(function* () {
+              // Timestamps carry forward by item id: a re-read must not
+              // re-stamp items ATC already dated.
+              const carried = new Map(
+                (yield* allItemTimestampRows(threadId)).map((row) => [
+                  row.item_id,
+                  { created_at: row.created_at, completed_at: row.completed_at },
+                ]),
+              )
+              const now = new Date().toISOString()
               yield* clearItems(threadId)
               yield* clearTurns(threadId)
               for (const entry of history) {
@@ -529,7 +631,8 @@ export const layer = Layer.effect(TranscriptRepository)(
                 yield* upsertTurnRows(turnRow(threadId, entry.turn, turnSeq, "history"))
                 for (const item of entry.items) {
                   const itemSeq = yield* nextSeq(threadId)
-                  yield* upsertItemRow(itemRow(threadId, item, itemSeq))
+                  const stamped = stampItem(item, carried.get(item.id), now)
+                  yield* upsertItemRow(itemRow(threadId, stamped, itemSeq))
                 }
               }
               const rows = yield* bumpSnapshotRows(threadId)

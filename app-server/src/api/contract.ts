@@ -531,6 +531,11 @@ const threadItemBase = {
         "Opaque provider-namespaced JSON (e.g. { codex: { phase } }). Clients never branch on it.",
     }),
   ),
+  createdAt: Schema.optionalKey(
+    timestamp(
+      "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Items stored before ATC stamped timestamps can omit it; adapters may omit it.",
+    ),
+  ),
 }
 
 const toolFields = {
@@ -543,6 +548,11 @@ const toolFields = {
       description:
         'Human-readable failure; present iff status is error (a declined approval is "declined").',
     }),
+  ),
+  completedAt: Schema.optionalKey(
+    timestamp(
+      "When the tool finished (status completed or error): the provider's time when it gives one, otherwise when ATC recorded the finish.",
+    ),
   ),
 }
 

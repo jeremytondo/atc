@@ -2719,6 +2719,11 @@
             "description": "The enclosing item when this work happened inside a subagent or nested tool; absent at top level."
           },
           "providerMetadata": {},
+          "createdAt": {
+            "type": "string",
+            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Items stored before ATC stamped timestamps can omit it; adapters may omit it.",
+            "format": "date-time"
+          },
           "text": {
             "type": "string"
           }
@@ -2754,6 +2759,11 @@
             "description": "The enclosing item when this work happened inside a subagent or nested tool; absent at top level."
           },
           "providerMetadata": {},
+          "createdAt": {
+            "type": "string",
+            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Items stored before ATC stamped timestamps can omit it; adapters may omit it.",
+            "format": "date-time"
+          },
           "text": {
             "type": "string"
           },
@@ -2794,6 +2804,11 @@
             "description": "The enclosing item when this work happened inside a subagent or nested tool; absent at top level."
           },
           "providerMetadata": {},
+          "createdAt": {
+            "type": "string",
+            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Items stored before ATC stamped timestamps can omit it; adapters may omit it.",
+            "format": "date-time"
+          },
           "text": {
             "type": "string"
           },
@@ -2844,6 +2859,11 @@
             "description": "The enclosing item when this work happened inside a subagent or nested tool; absent at top level."
           },
           "providerMetadata": {},
+          "createdAt": {
+            "type": "string",
+            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Items stored before ATC stamped timestamps can omit it; adapters may omit it.",
+            "format": "date-time"
+          },
           "title": {
             "type": "string",
             "description": "Adapter-rendered one-liner for list rows (\"bun test\", \"Edit threads.ts\")."
@@ -2854,6 +2874,11 @@
           "error": {
             "type": "string",
             "description": "Human-readable failure; present iff status is error (a declined approval is \"declined\")."
+          },
+          "completedAt": {
+            "type": "string",
+            "description": "When the tool finished (status completed or error): the provider's time when it gives one, otherwise when ATC recorded the finish.",
+            "format": "date-time"
           },
           "command": {
             "type": "string"
@@ -2929,6 +2954,11 @@
             "description": "The enclosing item when this work happened inside a subagent or nested tool; absent at top level."
           },
           "providerMetadata": {},
+          "createdAt": {
+            "type": "string",
+            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Items stored before ATC stamped timestamps can omit it; adapters may omit it.",
+            "format": "date-time"
+          },
           "title": {
             "type": "string",
             "description": "Adapter-rendered one-liner for list rows (\"bun test\", \"Edit threads.ts\")."
@@ -2939,6 +2969,11 @@
           "error": {
             "type": "string",
             "description": "Human-readable failure; present iff status is error (a declined approval is \"declined\")."
+          },
+          "completedAt": {
+            "type": "string",
+            "description": "When the tool finished (status completed or error): the provider's time when it gives one, otherwise when ATC recorded the finish.",
+            "format": "date-time"
           },
           "changes": {
             "type": "array",
@@ -2980,6 +3015,11 @@
             "description": "The enclosing item when this work happened inside a subagent or nested tool; absent at top level."
           },
           "providerMetadata": {},
+          "createdAt": {
+            "type": "string",
+            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Items stored before ATC stamped timestamps can omit it; adapters may omit it.",
+            "format": "date-time"
+          },
           "title": {
             "type": "string",
             "description": "Adapter-rendered one-liner for list rows (\"bun test\", \"Edit threads.ts\")."
@@ -2990,6 +3030,11 @@
           "error": {
             "type": "string",
             "description": "Human-readable failure; present iff status is error (a declined approval is \"declined\")."
+          },
+          "completedAt": {
+            "type": "string",
+            "description": "When the tool finished (status completed or error): the provider's time when it gives one, otherwise when ATC recorded the finish.",
+            "format": "date-time"
           },
           "server": {
             "type": "string"
@@ -3035,6 +3080,11 @@
             "description": "The enclosing item when this work happened inside a subagent or nested tool; absent at top level."
           },
           "providerMetadata": {},
+          "createdAt": {
+            "type": "string",
+            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Items stored before ATC stamped timestamps can omit it; adapters may omit it.",
+            "format": "date-time"
+          },
           "title": {
             "type": "string",
             "description": "Adapter-rendered one-liner for list rows (\"bun test\", \"Edit threads.ts\")."
@@ -3045,6 +3095,11 @@
           "error": {
             "type": "string",
             "description": "Human-readable failure; present iff status is error (a declined approval is \"declined\")."
+          },
+          "completedAt": {
+            "type": "string",
+            "description": "When the tool finished (status completed or error): the provider's time when it gives one, otherwise when ATC recorded the finish.",
+            "format": "date-time"
           },
           "name": {
             "type": "string"
@@ -3085,7 +3140,12 @@
             "type": "string",
             "description": "The enclosing item when this work happened inside a subagent or nested tool; absent at top level."
           },
-          "providerMetadata": {}
+          "providerMetadata": {},
+          "createdAt": {
+            "type": "string",
+            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Items stored before ATC stamped timestamps can omit it; adapters may omit it.",
+            "format": "date-time"
+          }
         },
         "required": [
           "type",

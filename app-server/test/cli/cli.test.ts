@@ -3,6 +3,7 @@ import { BunServices } from "@effect/platform-bun"
 import { Effect, Option } from "effect"
 import { CliError, Command } from "effect/unstable/cli"
 import { port } from "../../src/cli/serve.ts"
+import { decodeAnswers } from "../../src/cli/threads.ts"
 
 // Parse the real --port flag against a probe command so validation is tested
 // without starting a server.
@@ -57,6 +58,25 @@ describe("serve --port validation", () => {
           assert.strictEqual(result.failure.errors[0]?._tag, "InvalidValue")
         }
       }
+    }),
+  )
+})
+
+// `thread answer --answers` takes the full contract shape — arrays of chosen
+// labels — plus the natural freeform form, a bare string per question, which
+// normalizes to the contract's one-element array (ATC-214).
+describe("thread answer --answers decoding", () => {
+  it.effect("accepts chosen labels and bare freeform strings", () =>
+    Effect.gen(function* () {
+      const decoded = yield* decodeAnswers('{"q0":["blue"],"q1":"a freeform answer"}')
+      assert.deepStrictEqual(decoded, { q0: ["blue"], q1: ["a freeform answer"] })
+    }),
+  )
+
+  it.effect("rejects values that are neither labels nor a string", () =>
+    Effect.gen(function* () {
+      assert.strictEqual((yield* Effect.result(decodeAnswers('{"q0":42}')))._tag, "Failure")
+      assert.strictEqual((yield* Effect.result(decodeAnswers("nope")))._tag, "Failure")
     }),
   )
 })

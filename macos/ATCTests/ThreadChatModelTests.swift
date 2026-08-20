@@ -169,7 +169,7 @@ struct ThreadChatModelTests {
         #expect(client.transcriptReads.map(\.before) == [nil, "u5"])
     }
 
-    @Test("send goes to the server and reports refusal without touching the copy")
+    @Test("send echoes a pending row that resolves at the real userMessage; a refusal removes it")
     func send() async throws {
         let harness = try await acquired()
         let chat = harness.chat
@@ -178,12 +178,66 @@ struct ThreadChatModelTests {
         #expect(await chat.send("do it"))
         #expect(client.prompts.map(\.prompt) == ["do it"])
         #expect(chat.promptError == nil)
+        #expect(chat.lastSentPrompt == "do it")
+        // The echo is up (the response named its turn); the real userMessage
+        // resolves it.
+        #expect(chat.transcript.pendingPrompts.count == 1)
+        #expect(chat.rows.last.map { $0.id.hasPrefix("pending:") } == true)
+        let turnID = try #require(chat.transcript.pendingPrompts.first?.turnId)
+        harness.streams.send(
+            "thr1",
+            .item_completed(
+                .init(
+                    _type: .item_completed, seq: 11,
+                    item: Fixtures.userMessage("m1", turn: turnID, text: "do it"))))
+        await settle(until: { chat.transcript.pendingPrompts.isEmpty })
+        #expect(!chat.rows.contains { $0.id.hasPrefix("pending:") })
 
         client.promptThreadFailure = .init(
             _tag: .providerUnavailable, agentId: "codex", reason: "not-installed", message: "Codex is not installed")
         #expect(await chat.send("again") == false)
         #expect(chat.promptError == "Codex is not installed")
-        #expect(chat.transcript.items.count == 2)
+        #expect(chat.transcript.pendingPrompts.isEmpty)
+        #expect(chat.transcript.items.count == 3)
+    }
+
+    @Test("perform refuses off-live inline and routes failures into actionError, never a throw")
+    func performGatesAndReportsInline() async throws {
+        let harness = try await acquired()
+        let chat = harness.chat
+
+        harness.streams.disconnect("thr1")
+        await settle(until: { chat.connection == .reconnecting })
+        chat.perform { Issue.record("must not run while reconnecting") }
+        let refusal = chat.actionError
+        #expect(refusal != nil)
+
+        harness.streams.connect("thr1")
+        await settle(until: { chat.connection == .live })
+        chat.perform { [chat] in try await chat.withdraw(promptID: "gone") }
+        await settle(until: { chat.actionError != nil && chat.actionError != refusal })
+        chat.clearActionError()
+        #expect(chat.actionError == nil)
+    }
+
+    @Test("a delta updates its item's box in place; the row keeps its identity")
+    func deltaUpdatesBoxOnly() async throws {
+        let harness = try await acquired()
+        let chat = harness.chat
+        guard case .item(let node) = chat.rows[1] else {
+            Issue.record("expected the assistant row")
+            return
+        }
+        harness.streams.send("thr1", .text_delta(.init(_type: .text_delta, itemId: "a1", delta: "lo")))
+        await settle(until: {
+            if case .assistantText(let text) = node.box.item { return text.text == "Hello" }
+            return false
+        })
+        guard case .item(let after) = chat.rows[1] else {
+            Issue.record("expected the assistant row")
+            return
+        }
+        #expect(after.box === node.box)
     }
 
     @Test("stop, answer, and withdraw reach the server as the contract's operations")
