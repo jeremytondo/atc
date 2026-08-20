@@ -10,7 +10,7 @@
       "type": "assistantText",
       "id": "3801de0e-9417-4a96-96fe-9c5123b36f1b:0",
       "turnId": "41dc1081-cf4b-49bd-9254-ed1f8ef5a453",
-      "text": "Hi! 👋 What can I help you with?",
+      "text": "Hi! \ud83d\udc4b What can I help you with?",
       "complete": true
     },
     {
@@ -23,7 +23,7 @@
       "type": "assistantText",
       "id": "36926157-e5ca-4c85-95da-d9e7a0d104bc:0",
       "turnId": "bbcab71b-1986-4df8-be2d-1b2bab61ae1b",
-      "text": "Hi again! 👋",
+      "text": "Hi again! \ud83d\udc4b",
       "complete": true
     },
     {
@@ -36,7 +36,7 @@
       "type": "assistantText",
       "id": "4083bc28-d557-48d7-9ae6-9bdef11a3b11:0",
       "turnId": "45e4ad45-fde7-4001-9366-40b602f3b778",
-      "text": "I'd say hi again. No tools, no files touched — just a greeting.",
+      "text": "I'd say hi again. No tools, no files touched \u2014 just a greeting.",
       "complete": true
     },
     {
@@ -49,7 +49,7 @@
       "type": "assistantText",
       "id": "c1680985-3237-491b-9764-17963a981ff0:0",
       "turnId": "ea80d7ef-5617-46c5-bd6c-4f071e502707",
-      "text": "Hi! 👋",
+      "text": "Hi! \ud83d\udc4b",
       "complete": true
     },
     {
@@ -72,26 +72,26 @@
       "title": "sleep 10",
       "status": "completed",
       "command": "sleep 10",
-      "output": "Command running in background with ID: bje1brt4a. Output is being written to: /private/tmp/claude-501/-Users-jeremytondo-Projects-ATC-atc/b755639a-5293-47bf-a685-1d658a8988c9/tasks/bje1brt4a.output. You will be notified when it completes. To check interim output, use Read on that file path."
+      "output": "Command running in background with ID: bje1brt4a. Output is being written to: /private/tmp/claude-501/-Users-dev-Projects-ATC-atc/b755639a-5293-47bf-a685-1d658a8988c9/tasks/bje1brt4a.output. You will be notified when it completes. To check interim output, use Read on that file path."
     },
     {
       "type": "assistantText",
       "id": "a3d7429a-fab4-486c-81c9-265885ef2ec6:0",
       "turnId": "68fe4b9f-4ea7-488f-9f89-bc76c85b6f89",
-      "text": "Waiting 10 seconds — I'll say it when the timer's up.",
+      "text": "Waiting 10 seconds \u2014 I'll say it when the timer's up.",
       "complete": true
     },
     {
       "type": "userMessage",
       "id": "99210bf2-16d8-4d89-b588-514ce17c6787:0",
       "turnId": "99210bf2-16d8-4d89-b588-514ce17c6787",
-      "text": "<task-notification>\n<task-id>bje1brt4a</task-id>\n<tool-use-id>toolu_01HicjwtwoHXeARJKrgTaKme</tool-use-id>\n<output-file>/private/tmp/claude-501/-Users-jeremytondo-Projects-ATC-atc/b755639a-5293-47bf-a685-1d658a8988c9/tasks/bje1brt4a.output</output-file>\n<status>completed</status>\n<summary>Background command \"Wait 10 seconds\" completed (exit code 0)</summary>\n</task-notification>"
+      "text": "<task-notification>\n<task-id>bje1brt4a</task-id>\n<tool-use-id>toolu_01HicjwtwoHXeARJKrgTaKme</tool-use-id>\n<output-file>/private/tmp/claude-501/-Users-dev-Projects-ATC-atc/b755639a-5293-47bf-a685-1d658a8988c9/tasks/bje1brt4a.output</output-file>\n<status>completed</status>\n<summary>Background command \"Wait 10 seconds\" completed (exit code 0)</summary>\n</task-notification>"
     },
     {
       "type": "assistantText",
       "id": "5546d7ae-7a88-455a-baa9-2313b8be3c61:0",
       "turnId": "99210bf2-16d8-4d89-b588-514ce17c6787",
-      "text": "Aloha! 🌺",
+      "text": "Aloha! \ud83c\udf3a",
       "complete": true
     },
     {
@@ -111,14 +111,14 @@
       "type": "assistantText",
       "id": "cf0de8fc-3d89-4c6a-909b-f7ccd03557ba:0",
       "turnId": "bf8f2de9-9a4c-466a-a824-e29d77c994c1",
-      "text": "I'm Claude Opus 5. I don't have reliable visibility into the session's reasoning-effort setting from inside the conversation — `/config` (or the status line) would show it.",
+      "text": "I'm Claude Opus 5. I don't have reliable visibility into the session's reasoning-effort setting from inside the conversation \u2014 `/config` (or the status line) would show it.",
       "complete": true
     },
     {
       "type": "userMessage",
       "id": "0c138e8a-eb5c-4472-975a-3495307fcfdb:0",
       "turnId": "0c138e8a-eb5c-4472-975a-3495307fcfdb",
-      "text": "As a test is it possible for you to ask for access to something that would require showing a request for access card? I’m trying to test some UI here and want to see how it looks."
+      "text": "As a test is it possible for you to ask for access to something that would require showing a request for access card? I\u2019m trying to test some UI here and want to see how it looks."
     },
     {
       "type": "reasoning",
@@ -147,11 +147,11 @@
       "type": "command",
       "id": "toolu_01DmeN38ZTownUy38ghGugb8",
       "turnId": "0c138e8a-eb5c-4472-975a-3495307fcfdb",
-      "title": "touch /Users/jeremytondo/permission-ui-test.txt && ls -l /Users/jeremytondo/permission-ui-test.txt",
+      "title": "touch /Users/dev/permission-ui-test.txt && ls -l /Users/dev/permission-ui-test.txt",
       "status": "error",
-      "error": "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.\n\nNote: The user's next message may contain a correction or preference. Pay close attention — if they explain what went wrong or how they'd prefer you to work, consider saving that to memory for future sessions.",
-      "command": "touch /Users/jeremytondo/permission-ui-test.txt && ls -l /Users/jeremytondo/permission-ui-test.txt",
-      "output": "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.\n\nNote: The user's next message may contain a correction or preference. Pay close attention — if they explain what went wrong or how they'd prefer you to work, consider saving that to memory for future sessions."
+      "error": "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.\n\nNote: The user's next message may contain a correction or preference. Pay close attention \u2014 if they explain what went wrong or how they'd prefer you to work, consider saving that to memory for future sessions.",
+      "command": "touch /Users/dev/permission-ui-test.txt && ls -l /Users/dev/permission-ui-test.txt",
+      "output": "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.\n\nNote: The user's next message may contain a correction or preference. Pay close attention \u2014 if they explain what went wrong or how they'd prefer you to work, consider saving that to memory for future sessions."
     },
     {
       "type": "userMessage",
@@ -170,13 +170,13 @@
       "type": "userMessage",
       "id": "1402e890-73a5-490b-bcb8-2244f5a04572:0",
       "turnId": "1402e890-73a5-490b-bcb8-2244f5a04572",
-      "text": "What are you doing that’s taking so long?"
+      "text": "What are you doing that\u2019s taking so long?"
     },
     {
       "type": "assistantText",
       "id": "2f93174c-47c7-4369-a2a1-53dbf4f4c2db:0",
       "turnId": "1402e890-73a5-490b-bcb8-2244f5a04572",
-      "text": "Nothing — I'm idle. The last thing I did was try to trigger a permission card by touching a file in your home dir with the sandbox off; you rejected it, and I stopped there. Waiting on you.",
+      "text": "Nothing \u2014 I'm idle. The last thing I did was try to trigger a permission card by touching a file in your home dir with the sandbox off; you rejected it, and I stopped there. Waiting on you.",
       "complete": true
     },
     {
@@ -196,7 +196,7 @@
       "type": "userMessage",
       "id": "0119da8c-d6b3-4fa5-b02f-309c6e73fbc6:0",
       "turnId": "0119da8c-d6b3-4fa5-b02f-309c6e73fbc6",
-      "text": "As a test is it possible for you to ask for access to something that would require showing a request for access card? I’m trying to test some UI here and want to see how it looks."
+      "text": "As a test is it possible for you to ask for access to something that would require showing a request for access card? I\u2019m trying to test some UI here and want to see how it looks."
     },
     {
       "type": "reasoning",
@@ -209,17 +209,17 @@
       "type": "command",
       "id": "toolu_01PsGt8ksBXeiKUkz95Y4vmQ",
       "turnId": "0119da8c-d6b3-4fa5-b02f-309c6e73fbc6",
-      "title": "touch /Users/jeremytondo/permission-ui-test.txt",
+      "title": "touch /Users/dev/permission-ui-test.txt",
       "status": "error",
       "error": "declined",
-      "command": "touch /Users/jeremytondo/permission-ui-test.txt",
+      "command": "touch /Users/dev/permission-ui-test.txt",
       "output": "declined"
     },
     {
       "type": "assistantText",
       "id": "2926afba-4fb3-453b-a18e-cf400151cce9:0",
       "turnId": "0119da8c-d6b3-4fa5-b02f-309c6e73fbc6",
-      "text": "That should have surfaced the permission card — it came back declined. Let me know if you want me to fire another one (or a different kind, like a file-write or an MCP tool) to see how those render.",
+      "text": "That should have surfaced the permission card \u2014 it came back declined. Let me know if you want me to fire another one (or a different kind, like a file-write or an MCP tool) to see how those render.",
       "complete": true
     },
     {
@@ -235,7 +235,7 @@
       "title": "sleep 5",
       "status": "completed",
       "command": "sleep 5",
-      "output": "Command running in background with ID: bas6xyxuu. Output is being written to: /private/tmp/claude-501/-Users-jeremytondo-Projects-ATC-atc/b755639a-5293-47bf-a685-1d658a8988c9/tasks/bas6xyxuu.output. You will be notified when it completes. To check interim output, use Read on that file path."
+      "output": "Command running in background with ID: bas6xyxuu. Output is being written to: /private/tmp/claude-501/-Users-dev-Projects-ATC-atc/b755639a-5293-47bf-a685-1d658a8988c9/tasks/bas6xyxuu.output. You will be notified when it completes. To check interim output, use Read on that file path."
     },
     {
       "type": "assistantText",
@@ -263,7 +263,7 @@
       "title": "sleep 5",
       "status": "completed",
       "command": "sleep 5",
-      "output": "Command running in background with ID: banwo5vss. Output is being written to: /private/tmp/claude-501/-Users-jeremytondo-Projects-ATC-atc/b755639a-5293-47bf-a685-1d658a8988c9/tasks/banwo5vss.output. You will be notified when it completes. To check interim output, use Read on that file path."
+      "output": "Command running in background with ID: banwo5vss. Output is being written to: /private/tmp/claude-501/-Users-dev-Projects-ATC-atc/b755639a-5293-47bf-a685-1d658a8988c9/tasks/banwo5vss.output. You will be notified when it completes. To check interim output, use Read on that file path."
     },
     {
       "type": "assistantText",
@@ -291,7 +291,7 @@
       "title": "sleep 10",
       "status": "completed",
       "command": "sleep 10",
-      "output": "Command running in background with ID: bg2zumral. Output is being written to: /private/tmp/claude-501/-Users-jeremytondo-Projects-ATC-atc/b755639a-5293-47bf-a685-1d658a8988c9/tasks/bg2zumral.output. You will be notified when it completes. To check interim output, use Read on that file path."
+      "output": "Command running in background with ID: bg2zumral. Output is being written to: /private/tmp/claude-501/-Users-dev-Projects-ATC-atc/b755639a-5293-47bf-a685-1d658a8988c9/tasks/bg2zumral.output. You will be notified when it completes. To check interim output, use Read on that file path."
     },
     {
       "type": "assistantText",
@@ -316,7 +316,7 @@
       "type": "assistantText",
       "id": "msg_011CeBCV5NBhnypX2cDiqC7o:0",
       "turnId": "claude-turn-11f0f679-bee3-4255-b609-5dc4d61e855d",
-      "text": "Hi! 👋",
+      "text": "Hi! \ud83d\udc4b",
       "complete": true
     },
     {
@@ -329,7 +329,7 @@
       "type": "assistantText",
       "id": "msg_011CeBKsSXb1Ub4q8tNPQCTS:0",
       "turnId": "claude-turn-28d3d767-76cc-47a8-89a6-d678976acfb7",
-      "text": "Hi! 👋",
+      "text": "Hi! \ud83d\udc4b",
       "complete": true
     },
     {
@@ -342,7 +342,7 @@
       "type": "assistantText",
       "id": "msg_011CeBKtEhDq2DJc393cQoAC:0",
       "turnId": "claude-turn-836ff1f6-4aab-4411-81b5-7a3d461193cf",
-      "text": "Hi! 👋",
+      "text": "Hi! \ud83d\udc4b",
       "complete": true
     },
     {
@@ -355,7 +355,7 @@
       "type": "assistantText",
       "id": "msg_011CeBL1QTJ7oUvV3JWy4AMz:0",
       "turnId": "claude-turn-e37f4e1b-bc66-4151-9ef1-d171d184b9f3",
-      "text": "Hola! 👋",
+      "text": "Hola! \ud83d\udc4b",
       "complete": true
     }
   ],

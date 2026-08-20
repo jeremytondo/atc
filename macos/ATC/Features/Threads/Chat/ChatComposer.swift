@@ -130,7 +130,9 @@ struct ChatComposer: View {
                 }
                 .onKeyPress(.upArrow, phases: .down) { press in
                     guard press.modifiers.contains(.command) else { return .ignored }
-                    guard text.isEmpty, let lastSentPrompt else { return .handled }
+                    // Recall only into an empty composer; otherwise the text
+                    // view keeps its standard ⌘↑ (caret to start).
+                    guard text.isEmpty, let lastSentPrompt else { return .ignored }
                     text = lastSentPrompt
                     return .handled
                 }

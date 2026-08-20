@@ -2721,7 +2721,7 @@
           "providerMetadata": {},
           "createdAt": {
             "type": "string",
-            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Always present on items ATC serves; adapters may omit it.",
+            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Items stored before ATC stamped timestamps can omit it; adapters may omit it.",
             "format": "date-time"
           },
           "text": {
@@ -2761,7 +2761,7 @@
           "providerMetadata": {},
           "createdAt": {
             "type": "string",
-            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Always present on items ATC serves; adapters may omit it.",
+            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Items stored before ATC stamped timestamps can omit it; adapters may omit it.",
             "format": "date-time"
           },
           "text": {
@@ -2806,7 +2806,7 @@
           "providerMetadata": {},
           "createdAt": {
             "type": "string",
-            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Always present on items ATC serves; adapters may omit it.",
+            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Items stored before ATC stamped timestamps can omit it; adapters may omit it.",
             "format": "date-time"
           },
           "text": {
@@ -2861,7 +2861,7 @@
           "providerMetadata": {},
           "createdAt": {
             "type": "string",
-            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Always present on items ATC serves; adapters may omit it.",
+            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Items stored before ATC stamped timestamps can omit it; adapters may omit it.",
             "format": "date-time"
           },
           "title": {
@@ -2956,7 +2956,7 @@
           "providerMetadata": {},
           "createdAt": {
             "type": "string",
-            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Always present on items ATC serves; adapters may omit it.",
+            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Items stored before ATC stamped timestamps can omit it; adapters may omit it.",
             "format": "date-time"
           },
           "title": {
@@ -3017,7 +3017,7 @@
           "providerMetadata": {},
           "createdAt": {
             "type": "string",
-            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Always present on items ATC serves; adapters may omit it.",
+            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Items stored before ATC stamped timestamps can omit it; adapters may omit it.",
             "format": "date-time"
           },
           "title": {
@@ -3082,7 +3082,7 @@
           "providerMetadata": {},
           "createdAt": {
             "type": "string",
-            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Always present on items ATC serves; adapters may omit it.",
+            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Items stored before ATC stamped timestamps can omit it; adapters may omit it.",
             "format": "date-time"
           },
           "title": {
@@ -3143,7 +3143,7 @@
           "providerMetadata": {},
           "createdAt": {
             "type": "string",
-            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Always present on items ATC serves; adapters may omit it.",
+            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Items stored before ATC stamped timestamps can omit it; adapters may omit it.",
             "format": "date-time"
           }
         },

@@ -2,8 +2,10 @@
 // thread, captured verbatim from `GET /transcript` on a live server. They
 // drive the Chat `#Preview`s and the layout tests, so rendering work is
 // reviewable without a live server. Re-record by piping
-// `atc thread transcript <id>` over a fixture file — never hand-edit the
-// JSON, it is a wire sample.
+// `atc thread transcript <id>` over a fixture file, then scrub personal
+// paths (a scripted `/Users/<name>` → `/Users/dev` substitution over the
+// JSON string values). Beyond that scrub, never hand-edit the JSON — it is
+// a wire sample.
 
 import ATCAppServerAPI
 import Foundation

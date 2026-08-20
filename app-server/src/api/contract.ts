@@ -533,7 +533,7 @@ const threadItemBase = {
   ),
   createdAt: Schema.optionalKey(
     timestamp(
-      "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Always present on items ATC serves; adapters may omit it.",
+      "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Items stored before ATC stamped timestamps can omit it; adapters may omit it.",
     ),
   ),
 }
