@@ -129,7 +129,11 @@ struct ChatComposer: View {
                     return .handled
                 }
                 .onKeyPress(.upArrow, phases: .down) { press in
-                    guard press.modifiers.contains(.command) else { return .ignored }
+                    // Exactly ⌘↑ — ⌘⇧↑ and friends keep their standard text
+                    // behavior (extend selection to start, …).
+                    guard press.modifiers.subtracting(.capsLock) == .command else {
+                        return .ignored
+                    }
                     // Recall only into an empty composer; otherwise the text
                     // view keeps its standard ⌘↑ (caret to start).
                     guard text.isEmpty, let lastSentPrompt else { return .ignored }
