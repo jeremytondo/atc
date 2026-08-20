@@ -13,6 +13,9 @@
 //   transcript read can never roll a row back.
 // - `text.delta` is live-only and extends the named item; a delta for an
 //   item never seen is dropped (its `item.completed` carries the whole text).
+// - The server persists streamed text on a throttle (durable partials), so a
+//   durable update can lag the deltas already applied here: an incomplete
+//   text item never rolls back to a prefix of what it already shows.
 // - `snapshot.invalidated` means a provider re-read replaced the copy: the
 //   caller must refetch (`apply` says so); nothing here can repair it, and
 //   it does not move `seq` — only a page that actually landed may, so a
@@ -23,15 +26,48 @@
 // - Requests and the queue are live state, never transcript rows: the
 //   queue is replaced wholesale on every `queue.updated`; requests open and
 //   close by id.
+// - Pending prompts (the optimistic echo) are client-local rows at the tail:
+//   one is added the instant a send leaves, learns its promptId (and turnId)
+//   from the send response and the turn events, and resolves — removed —
+//   when the queue lists its prompt or the real userMessage item lands.
+//
+// `apply` reports what kind of change happened (`ChatMutation`) so the model
+// rebuilds its row models only on structural change, never per delta.
 
 import ATCAppServerAPI
 import Foundation
+
+/// What one reducer step changed, for the model's row bookkeeping.
+enum ChatMutation: Equatable {
+    /// Nothing visible (a dropped stale event).
+    case none
+    /// Rows changed shape: items added/removed, a turn marker, a pending
+    /// prompt added or resolved.
+    case structure
+    /// One item's content changed in place (a delta, an in-place update).
+    case item(String)
+    /// Live state only: requests, queue, or a turn's status.
+    case liveState
+    /// The copy was replaced server-side; the caller must refetch.
+    case invalidated
+}
+
+/// A prompt sent from this client that the transcript does not carry yet.
+struct PendingPrompt: Identifiable, Equatable {
+    let id: String
+    let text: String
+    /// The admitted prompt's id, once the send response arrived.
+    var promptId: String?
+    /// The turn the prompt started, once known (response or turn event).
+    var turnId: String?
+}
 
 struct ChatTranscript: Equatable {
     private(set) var items: [ThreadItem] = []
     private(set) var turns: [ThreadTurn] = []
     private(set) var requests: [ThreadRequest] = []
     private(set) var queue: [QueuedPrompt] = []
+    private(set) var pendingPrompts: [PendingPrompt] = []
     /// The highest durable `seq` applied; subscribe `after` it.
     private(set) var seq: Int?
     /// The provider copy the loaded pages came from.
@@ -59,6 +95,7 @@ struct ChatTranscript: Equatable {
         snapshotVersion = page.snapshotVersion
         hasMore = page.hasMore
         isLoaded = true
+        settlePending()
     }
 
     /// Prepends an older page (`before` the first item). Its turns merge;
@@ -79,41 +116,94 @@ struct ChatTranscript: Equatable {
 
     mutating func replaceQueue(_ prompts: [QueuedPrompt]) {
         queue = prompts
+        settlePending()
     }
 
-    /// Applies one stream event. Returns true when the copy is invalid and
-    /// must be refetched (`snapshot.invalidated`).
-    mutating func apply(_ event: ThreadEvent) -> Bool {
+    // MARK: - Pending prompts
+
+    /// A send left for the server: echo it at the tail immediately.
+    mutating func addPending(_ text: String) -> String {
+        let pending = PendingPrompt(id: UUID().uuidString, text: text)
+        pendingPrompts.append(pending)
+        return pending.id
+    }
+
+    /// The send failed; the echo goes (the composer restores the text).
+    mutating func removePending(id: String) {
+        pendingPrompts.removeAll { $0.id == id }
+    }
+
+    /// The send response arrived: record the ids and settle — the matching
+    /// queue entry or userMessage may already be here (a fast stream).
+    mutating func resolvePending(id: String, promptId: String, turnId: String?) {
+        guard let index = pendingPrompts.firstIndex(where: { $0.id == id }) else { return }
+        pendingPrompts[index].promptId = promptId
+        pendingPrompts[index].turnId = turnId
+        settlePending()
+    }
+
+    /// A pending prompt resolves when the server shows it somewhere real:
+    /// the queue lists its promptId (the strip takes over), or the turn it
+    /// started (matched promptId → turnId) has its userMessage item.
+    private mutating func settlePending() {
+        guard !pendingPrompts.isEmpty else { return }
+        for index in pendingPrompts.indices where pendingPrompts[index].turnId == nil {
+            guard let promptId = pendingPrompts[index].promptId else { continue }
+            pendingPrompts[index].turnId = turns.first { $0.promptId == promptId }?.id
+        }
+        pendingPrompts.removeAll { pending in
+            if let promptId = pending.promptId, queue.contains(where: { $0.id == promptId }) {
+                return true
+            }
+            guard let turnId = pending.turnId else { return false }
+            return items.contains { item in
+                guard case .userMessage(let message) = item else { return false }
+                return message.turnId == turnId
+            }
+        }
+    }
+
+    // MARK: - Events
+
+    /// Applies one stream event and reports what changed.
+    mutating func apply(_ event: ThreadEvent) -> ChatMutation {
         switch event {
         case .item_started(let event):
-            guard advance(to: event.seq) else { return false }
-            upsert(event.item)
+            guard advance(to: event.seq) else { return .none }
+            return upsert(event.item)
         case .item_updated(let event):
-            guard advance(to: event.seq) else { return false }
-            upsert(event.item)
+            guard advance(to: event.seq) else { return .none }
+            return upsert(event.item)
         case .item_completed(let event):
-            guard advance(to: event.seq) else { return false }
-            upsert(event.item)
+            guard advance(to: event.seq) else { return .none }
+            return upsert(event.item)
         case .turn_started(let event):
-            guard advance(to: event.seq) else { return false }
-            upsert(event.turn)
+            guard advance(to: event.seq) else { return .none }
+            return upsert(event.turn)
         case .turn_completed(let event):
-            guard advance(to: event.seq) else { return false }
-            upsert(event.turn)
+            guard advance(to: event.seq) else { return .none }
+            return upsert(event.turn)
         case .text_delta(let event):
-            guard let index = items.firstIndex(where: { $0.id == event.itemId }) else { return false }
+            guard let index = items.firstIndex(where: { $0.id == event.itemId }) else {
+                return .none
+            }
             items[index].appendText(event.delta)
+            return .item(event.itemId)
         case .request_opened(let event):
             requests.removeAll { $0.id == event.request.id }
             requests.append(event.request)
+            return .liveState
         case .request_closed(let event):
             requests.removeAll { $0.id == event.requestId }
+            return .liveState
         case .queue_updated(let event):
             queue = event.prompts
+            let pendingBefore = pendingPrompts.count
+            settlePending()
+            return pendingPrompts.count == pendingBefore ? .liveState : .structure
         case .snapshot_invalidated:
-            return true
+            return .invalidated
         }
-        return false
     }
 
     /// Moves the durable cursor forward; false when the change is already
@@ -124,19 +214,55 @@ struct ChatTranscript: Equatable {
         return true
     }
 
-    private mutating func upsert(_ item: ThreadItem) {
+    private mutating func upsert(_ item: ThreadItem) -> ChatMutation {
         if let index = items.firstIndex(where: { $0.id == item.id }) {
-            items[index] = item
-            return
+            let previous = items[index]
+            items[index] = merged(item, over: previous)
+            // Reparenting would move the row; anything else changed in place.
+            return previous.parentItemId == item.parentItemId ? .item(item.id) : .structure
         }
         items.append(item)
+        settlePending()
+        return .structure
     }
 
-    private mutating func upsert(_ turn: ThreadTurn) {
-        if let index = turns.firstIndex(where: { $0.id == turn.id }) {
-            turns[index] = turn
-            return
+    /// The durable-partials guard (see the header): the server's throttled
+    /// persist can lag the deltas already applied, so an incomplete text
+    /// item keeps the longer text it already shows when the incoming text
+    /// is a strict prefix of it.
+    private func merged(_ incoming: ThreadItem, over current: ThreadItem) -> ThreadItem {
+        switch (incoming, current) {
+        case (.assistantText(var new), .assistantText(let old)):
+            guard !new.complete, old.text.count > new.text.count, old.text.hasPrefix(new.text)
+            else { return incoming }
+            new.text = old.text
+            return .assistantText(new)
+        case (.reasoning(var new), .reasoning(let old)):
+            guard !new.complete, old.text.count > new.text.count, old.text.hasPrefix(new.text)
+            else { return incoming }
+            new.text = old.text
+            return .reasoning(new)
+        default:
+            return incoming
         }
-        turns.append(turn)
+    }
+
+    private mutating func upsert(_ turn: ThreadTurn) -> ChatMutation {
+        let previous: ThreadTurn?
+        if let index = turns.firstIndex(where: { $0.id == turn.id }) {
+            previous = turns[index]
+            turns[index] = turn
+        } else {
+            previous = nil
+            turns.append(turn)
+        }
+        let pendingBefore = pendingPrompts.count
+        settlePending()
+        if pendingPrompts.count != pendingBefore { return .structure }
+        // A turn marker row appears only for failed/interrupted ends.
+        func marked(_ turn: ThreadTurn?) -> Bool {
+            turn.map { $0.status == .failed || $0.status == .interrupted } ?? false
+        }
+        return marked(turn) != marked(previous) ? .structure : .liveState
     }
 }

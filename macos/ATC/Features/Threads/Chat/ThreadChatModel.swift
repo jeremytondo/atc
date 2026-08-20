@@ -26,15 +26,26 @@
 //   Reads happen at the server after any change already applied here, so
 //   `page.seq` is never behind the cursor.
 //
-// Mutations go straight to the server and never touch the copy: what the
-// user did comes back through the stream like anyone else's action. Their
-// failures throw to the caller (the view's shared action alert); only a
-// prompt refusal is kept here, because the composer shows it inline.
+// Rendering state (ATC-214): the reducer's copy is deliberately NOT observed
+// — a streamed delta arrives many times a second, and invalidating the whole
+// pane per delta is the jank ATC-212 complained about. What views observe
+// are the projections here: `rows` (rebuilt inside withAnimation on
+// structural change only, boxes reused so disclosure state survives),
+// per-item `ChatItemModel` boxes (a delta touches exactly one), and the
+// small live-state mirrors (requests, queue, runningTurn…).
+//
+// Mutations go straight to the server and never touch the copy — what the
+// user did comes back through the stream like anyone else's action — except
+// the one optimistic touch: a sent prompt echoes as a pending row instantly
+// and resolves when the server shows it somewhere real. `perform` is the
+// action seam: gated on this stream being live (not the app-wide connection
+// dot) and reporting failures inline (`actionError`), never as a modal.
 
 import ATCAppServerAPI
 import ATCAppServerTransport
 import Foundation
 import Observation
+import SwiftUI
 
 @Observable
 final class ThreadChatModel {
@@ -51,7 +62,9 @@ final class ThreadChatModel {
     var liveStateRetryDelay: Duration = .seconds(2)
 
     let threadID: String
-    private(set) var transcript = ChatTranscript()
+    /// The reducer's copy — the source the projections below derive from.
+    /// Unobserved on purpose (see the header's rendering-state rules).
+    @ObservationIgnored private(set) var transcript = ChatTranscript()
     private(set) var connection: ConnectionPhase = .connecting
     /// The last newest-page read failed; the copy shown is empty (never
     /// loaded) or invalid (a provider re-read replaced it) until it succeeds.
@@ -59,10 +72,23 @@ final class ThreadChatModel {
     private(set) var isLoadingOlder = false
     /// The last `promptThread` refusal, cleared by the next send.
     private(set) var promptError: String?
+    /// The last chat action's failure, shown inline above the composer.
+    private(set) var actionError: String?
+    /// The last prompt this client sent (⌘↑ recalls it into the composer).
+    private(set) var lastSentPrompt: String?
+
+    // What the views observe, projected from `transcript` after each change.
+    private(set) var rows: [ChatRowModel] = []
+    private(set) var requests: [ThreadRequest] = []
+    private(set) var queue: [QueuedPrompt] = []
+    private(set) var runningTurn: ThreadTurn?
+    private(set) var hasMore = false
+    private(set) var isLoaded = false
 
     private let client: any APIProtocol
     private let makeStream: StreamFactory
     private let cursor = SeqCursor()
+    @ObservationIgnored private var boxes: [String: ChatItemModel] = [:]
     private var streamTask: Task<Void, Never>?
     private var pageLoad: Task<Void, Never>?
     private var liveStateRefresh: Task<Void, Never>?
@@ -120,12 +146,45 @@ final class ThreadChatModel {
                 await loadNewest()
                 return
             }
-            if transcript.apply(event) {
+            let mutation = transcript.apply(event)
+            if mutation == .invalidated {
                 needsResync = true
                 await loadNewest()
+                return
             }
+            project(mutation)
             cursor.seq = transcript.seq
         }
+    }
+
+    // MARK: - Projection
+
+    /// Applies one reducer outcome to the observed state. Structural and
+    /// live-state changes animate (rows slide in, the bottom bar resizes);
+    /// a delta only touches its item's box — never animated, never a rebuild.
+    private func project(_ mutation: ChatMutation) {
+        switch mutation {
+        case .none, .invalidated:
+            return
+        case .item(let id):
+            guard let item = transcript.items.first(where: { $0.id == id }) else { return }
+            boxes[id]?.update(item)
+        case .structure:
+            withAnimation(.snappy(duration: 0.25)) {
+                rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes)
+                projectLiveState()
+            }
+        case .liveState:
+            withAnimation(.snappy(duration: 0.25)) { projectLiveState() }
+        }
+    }
+
+    private func projectLiveState() {
+        if requests != transcript.requests { requests = transcript.requests }
+        if queue != transcript.queue { queue = transcript.queue }
+        if runningTurn != transcript.runningTurn { runningTurn = transcript.runningTurn }
+        if hasMore != transcript.hasMore { hasMore = transcript.hasMore }
+        if isLoaded != transcript.isLoaded { isLoaded = transcript.isLoaded }
     }
 
     // MARK: - Reads
@@ -145,6 +204,7 @@ final class ThreadChatModel {
                 cursor.seq = page.seq
                 needsResync = false
                 loadError = nil
+                project(.structure)
             } catch {
                 guard !Task.isCancelled else { return }
                 loadError = error.localizedDescription
@@ -163,6 +223,7 @@ final class ThreadChatModel {
         isLoadingOlder = true
         defer { isLoadingOlder = false }
         transcript.prependOlder(try await fetchTranscript(before: first.id))
+        project(.structure)
     }
 
     /// Requests and the queue are live-only (never replayed): refetched on
@@ -183,6 +244,8 @@ final class ThreadChatModel {
             guard !Task.isCancelled else { return }
             if let readRequests { transcript.replaceRequests(readRequests) }
             if let readQueue { transcript.replaceQueue(readQueue) }
+            // The queue read may have settled a pending echo: rebuild rows too.
+            project(.structure)
             guard readRequests == nil || readQueue == nil else { return }
             liveStateRetry = Task { [weak self] in
                 try? await Task.sleep(for: self?.liveStateRetryDelay ?? .seconds(2))
@@ -205,14 +268,46 @@ final class ThreadChatModel {
 
     // MARK: - Actions
 
-    /// Prompts the thread. Returns false when the server refused (the error
-    /// is in `promptError`) so the composer keeps the text.
+    /// The one seam chat actions run through: refused inline while this
+    /// thread's stream is not live (the app-wide dot says nothing about this
+    /// stream), and failures land in `actionError` — never a modal.
+    func perform(_ operation: @escaping () async throws -> Void) {
+        guard connection == .live else {
+            actionError =
+                "Not connected — the thread's stream is still \(connection == .connecting ? "connecting" : "reconnecting")."
+            return
+        }
+        actionError = nil
+        Task {
+            do {
+                try await operation()
+            } catch {
+                actionError = error.localizedDescription
+            }
+        }
+    }
+
+    func clearActionError() {
+        actionError = nil
+    }
+
+    /// Prompts the thread, echoing the prompt as a pending row at once.
+    /// Returns false when the server refused (the error is in `promptError`)
+    /// so the composer restores the text.
     @discardableResult
     func send(_ prompt: String) async -> Bool {
         promptError = nil
+        lastSentPrompt = prompt
+        let pendingID = transcript.addPending(prompt)
+        project(.structure)
         do {
             switch try await client.promptThread(path: .init(threadId: threadID), body: .json(.init(prompt: prompt))) {
-            case .ok: return true
+            case .ok(let ok):
+                let response = try ok.body.json
+                transcript.resolvePending(
+                    id: pendingID, promptId: response.promptId, turnId: response.turnId)
+                project(.structure)
+                return true
             case .notFound(let failure): throw ServerError(try failure.body.json)
             case .conflict(let failure):
                 let payload = try failure.body.json
@@ -221,6 +316,8 @@ final class ThreadChatModel {
             case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
             }
         } catch {
+            transcript.removePending(id: pendingID)
+            project(.structure)
             promptError = error.localizedDescription
             return false
         }

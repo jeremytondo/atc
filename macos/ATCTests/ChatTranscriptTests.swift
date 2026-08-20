@@ -33,14 +33,14 @@ struct ChatTranscriptTests {
     @Test("items upsert by id in place; unknown ids append; turns likewise")
     func upsert() {
         var transcript = loaded()
-        var needsReload = transcript.apply(
+        var mutation = transcript.apply(
             .item_updated(
                 .init(_type: .item_updated, seq: 11, item: Fixtures.assistantText("a1", text: "Hello", complete: true)))
         )
-        #expect(!needsReload)
-        needsReload = transcript.apply(
+        #expect(mutation == .item("a1"))
+        mutation = transcript.apply(
             .item_started(.init(_type: .item_started, seq: 12, item: Fixtures.command("c1"))))
-        #expect(!needsReload)
+        #expect(mutation == .structure)
         _ = transcript.apply(
             .turn_completed(.init(_type: .turn_completed, seq: 13, turn: Fixtures.turn("turn1", status: .completed))))
 
@@ -101,9 +101,9 @@ struct ChatTranscriptTests {
     @Test("snapshot.invalidated asks for a reload and leaves the cursor where the copy is")
     func snapshotInvalidated() {
         var transcript = loaded()
-        let invalidated = transcript.apply(
+        let mutation = transcript.apply(
             .snapshot_invalidated(.init(_type: .snapshot_invalidated, seq: 14, snapshotVersion: 2)))
-        #expect(invalidated)
+        #expect(mutation == .invalidated)
         #expect(transcript.seq == 10)
         #expect(transcript.snapshotVersion == 1)
     }
@@ -175,5 +175,159 @@ struct ChatTranscriptTests {
         }
         #expect(node.children.map(\.id) == ["c2"])
         #expect(node.children.first?.children.map(\.id) == ["c3"])
+    }
+
+    // MARK: - Pending prompts (the optimistic echo)
+
+    @Test("a pending prompt echoes at the tail and resolves when the queue lists it")
+    func pendingResolvesViaQueue() {
+        var transcript = loaded()
+        let id = transcript.addPending("do it")
+        #expect(transcript.rows.last?.id == "pending:\(id)")
+        transcript.resolvePending(id: id, promptId: "p9", turnId: nil)
+        #expect(transcript.pendingPrompts.count == 1)
+        let mutation = transcript.apply(
+            .queue_updated(.init(_type: .queue_updated, prompts: [Fixtures.queued("p9")])))
+        #expect(mutation == .structure)
+        #expect(transcript.pendingPrompts.isEmpty)
+    }
+
+    @Test("a pending prompt resolves when its turn's userMessage lands")
+    func pendingResolvesViaUserMessage() {
+        var transcript = loaded()
+        let id = transcript.addPending("go")
+        transcript.resolvePending(id: id, promptId: "p1", turnId: "t9")
+        let mutation = transcript.apply(
+            .item_completed(
+                .init(_type: .item_completed, seq: 11, item: Fixtures.userMessage("m9", turn: "t9", text: "go"))))
+        #expect(mutation == .structure)
+        #expect(transcript.pendingPrompts.isEmpty)
+    }
+
+    @Test("a queued pending learns its turn from the turn event's promptId")
+    func pendingLearnsTurnFromPromptId() {
+        var transcript = loaded()
+        let id = transcript.addPending("later")
+        transcript.resolvePending(id: id, promptId: "p2", turnId: nil)
+        _ = transcript.apply(
+            .turn_started(.init(_type: .turn_started, seq: 11, turn: Fixtures.turn("t2", promptId: "p2"))))
+        #expect(transcript.pendingPrompts.first?.turnId == "t2")
+        _ = transcript.apply(
+            .item_completed(
+                .init(_type: .item_completed, seq: 12, item: Fixtures.userMessage("m2", turn: "t2", text: "later"))))
+        #expect(transcript.pendingPrompts.isEmpty)
+    }
+
+    @Test("resolvePending settles against state that already arrived (a fast stream)")
+    func pendingResolvesLate() {
+        var transcript = loaded()
+        let id = transcript.addPending("fast")
+        _ = transcript.apply(
+            .turn_started(.init(_type: .turn_started, seq: 11, turn: Fixtures.turn("t3", promptId: "p3"))))
+        _ = transcript.apply(
+            .item_completed(
+                .init(_type: .item_completed, seq: 12, item: Fixtures.userMessage("m3", turn: "t3", text: "fast"))))
+        transcript.resolvePending(id: id, promptId: "p3", turnId: nil)
+        #expect(transcript.pendingPrompts.isEmpty)
+    }
+
+    @Test("a failed send removes its pending echo")
+    func pendingRemovedOnFailure() {
+        var transcript = loaded()
+        let id = transcript.addPending("nope")
+        transcript.removePending(id: id)
+        #expect(transcript.pendingPrompts.isEmpty)
+        #expect(!transcript.rows.map(\.id).contains("pending:\(id)"))
+    }
+
+    // MARK: - Durable streaming partials
+
+    @Test("a durable partial never rolls streamed text back; a completed item always wins")
+    func durablePartialPrefixGuard() {
+        var transcript = loaded()
+        _ = transcript.apply(.text_delta(.init(_type: .text_delta, itemId: "a1", delta: "lo there")))
+        let mutation = transcript.apply(
+            .item_updated(
+                .init(_type: .item_updated, seq: 11, item: Fixtures.assistantText("a1", text: "Hello"))))
+        #expect(mutation == .item("a1"))
+        guard case .assistantText(let partial) = transcript.items[1] else {
+            Issue.record("expected assistant text")
+            return
+        }
+        #expect(partial.text == "Hello there")
+        _ = transcript.apply(
+            .item_completed(
+                .init(
+                    _type: .item_completed, seq: 12,
+                    item: Fixtures.assistantText("a1", text: "Hello!", complete: true))))
+        guard case .assistantText(let final) = transcript.items[1] else {
+            Issue.record("expected assistant text")
+            return
+        }
+        #expect(final.text == "Hello!")
+        #expect(final.complete)
+    }
+}
+
+/// The render-model layer: boxes reused by id so view identity — and the
+/// disclosure state living on them — survives structural rebuilds.
+@Suite("ChatRowBuilder")
+@MainActor
+struct ChatRowBuilderTests {
+    @Test("boxes are reused across rebuilds, expansion survives, stale boxes drop")
+    func boxReuse() {
+        var transcript = ChatTranscript()
+        transcript.load(
+            Fixtures.page(
+                items: [Fixtures.userMessage("u1"), Fixtures.command("c1")],
+                turns: [Fixtures.turn("turn1")],
+                seq: 1
+            ))
+        var boxes: [String: ChatItemModel] = [:]
+        var rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes)
+        guard case .item(let node) = rows[1] else {
+            Issue.record("expected the command row")
+            return
+        }
+        node.box.isExpanded = true
+        _ = transcript.apply(
+            .item_started(.init(_type: .item_started, seq: 2, item: Fixtures.command("c2"))))
+        rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes)
+        guard case .item(let again) = rows[1] else {
+            Issue.record("expected the command row")
+            return
+        }
+        #expect(again.box === node.box)
+        #expect(again.box.isExpanded)
+        transcript.load(Fixtures.page(items: [Fixtures.userMessage("u1")], seq: 3))
+        _ = ChatRowBuilder.rows(from: transcript, reusing: &boxes)
+        #expect(boxes["c1"] == nil)
+        #expect(boxes["u1"] != nil)
+    }
+}
+
+/// The recorded real transcripts (one Claude thread, one Codex thread) that
+/// drive the Chat previews: they must keep decoding and laying out.
+@Suite("Chat fixtures")
+@MainActor
+struct ChatFixturesTests {
+    @Test("the recorded transcripts decode and build rows")
+    func fixturesBuildRows() {
+        for page in [ChatFixtures.claude, ChatFixtures.codex] {
+            var transcript = ChatTranscript()
+            transcript.load(page)
+            #expect(!transcript.items.isEmpty)
+            var boxes: [String: ChatItemModel] = [:]
+            let rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes)
+            #expect(!rows.isEmpty)
+            #expect(boxes.count == transcript.items.count)
+        }
+        // The Claude recording is the rich one: many turns, commands with
+        // output, reasoning.
+        var claude = ChatTranscript()
+        claude.load(ChatFixtures.claude)
+        #expect(claude.turns.count > 10)
+        #expect(claude.items.contains { if case .command = $0 { true } else { false } })
+        #expect(claude.items.contains { if case .reasoning = $0 { true } else { false } })
     }
 }

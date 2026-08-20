@@ -1,0 +1,34 @@
+{
+  "items": [
+    {
+      "type": "userMessage",
+      "id": "01a017cc-67ea-7f30-b552-4efc29793cc4",
+      "turnId": "01a017cc-646a-7730-8fa5-22ac961b4d8d",
+      "text": "Say hi"
+    },
+    {
+      "type": "assistantText",
+      "id": "msg_0d13c2354e9b06f7016a851185481c87d18b1b9dd9daba3772",
+      "turnId": "01a017cc-646a-7730-8fa5-22ac961b4d8d",
+      "providerMetadata": {
+        "codex": {
+          "phase": "final_answer"
+        }
+      },
+      "text": "Hi! 👋",
+      "complete": true
+    }
+  ],
+  "turns": [
+    {
+      "id": "01a017cc-646a-7730-8fa5-22ac961b4d8d",
+      "status": "completed",
+      "promptId": "01a017cc-6403-7000-b6e6-99c16b82288b",
+      "startedAt": "2026-08-19T02:14:26.157Z",
+      "endedAt": "2026-08-19T02:14:29.401Z"
+    }
+  ],
+  "seq": 6,
+  "snapshotVersion": 0,
+  "hasMore": false
+}

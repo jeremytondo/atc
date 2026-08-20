@@ -1,8 +1,9 @@
 // The transcript as rows: what the Chat list actually renders. Items nest
 // under their `parentItemId` (subagent / nested-tool work shows under the
-// row that spawned it), and a turn that failed or was interrupted gets one
-// marker after its last item — the only place a turn boundary is visible.
-// Pure so the shape can be tested without views.
+// row that spawned it), a turn that failed or was interrupted gets one
+// marker after its last item — the only place a turn boundary is visible —
+// and pending prompts (the optimistic echo) sit at the tail until the server
+// shows them somewhere real. Pure so the shape can be tested without views.
 
 import ATCAppServerAPI
 import Foundation
@@ -19,11 +20,14 @@ enum ChatRow: Identifiable, Equatable {
     case item(ChatNode)
     /// A turn that ended abnormally, placed after its last item.
     case turnEnded(ThreadTurn)
+    /// A prompt sent from this client that the transcript does not carry yet.
+    case pending(PendingPrompt)
 
     var id: String {
         switch self {
         case .item(let node): "item:\(node.id)"
         case .turnEnded(let turn): "turn:\(turn.id)"
+        case .pending(let prompt): "pending:\(prompt.id)"
         }
     }
 }
@@ -53,6 +57,6 @@ extension ChatTranscript {
             }
             rows.insert(.turnEnded(turn), at: last.map { $0 + 1 } ?? rows.endIndex)
         }
-        return rows
+        return rows + pendingPrompts.map { .pending($0) }
     }
 }

@@ -1,0 +1,509 @@
+{
+  "items": [
+    {
+      "type": "userMessage",
+      "id": "41dc1081-cf4b-49bd-9254-ed1f8ef5a453:0",
+      "turnId": "41dc1081-cf4b-49bd-9254-ed1f8ef5a453",
+      "text": "say hi"
+    },
+    {
+      "type": "assistantText",
+      "id": "3801de0e-9417-4a96-96fe-9c5123b36f1b:0",
+      "turnId": "41dc1081-cf4b-49bd-9254-ed1f8ef5a453",
+      "text": "Hi! 👋 What can I help you with?",
+      "complete": true
+    },
+    {
+      "type": "userMessage",
+      "id": "bbcab71b-1986-4df8-be2d-1b2bab61ae1b:0",
+      "turnId": "bbcab71b-1986-4df8-be2d-1b2bab61ae1b",
+      "text": "just say hi again"
+    },
+    {
+      "type": "assistantText",
+      "id": "36926157-e5ca-4c85-95da-d9e7a0d104bc:0",
+      "turnId": "bbcab71b-1986-4df8-be2d-1b2bab61ae1b",
+      "text": "Hi again! 👋",
+      "complete": true
+    },
+    {
+      "type": "userMessage",
+      "id": "45e4ad45-fde7-4001-9366-40b602f3b778:0",
+      "turnId": "45e4ad45-fde7-4001-9366-40b602f3b778",
+      "text": "What would happen if I asked you to say hi again?"
+    },
+    {
+      "type": "assistantText",
+      "id": "4083bc28-d557-48d7-9ae6-9bdef11a3b11:0",
+      "turnId": "45e4ad45-fde7-4001-9366-40b602f3b778",
+      "text": "I'd say hi again. No tools, no files touched — just a greeting.",
+      "complete": true
+    },
+    {
+      "type": "userMessage",
+      "id": "ea80d7ef-5617-46c5-bd6c-4f071e502707:0",
+      "turnId": "ea80d7ef-5617-46c5-bd6c-4f071e502707",
+      "text": "I'm just testing going back and forth between this tui mode and chat mode. so, just want you to not use a lot of tokens and give me a greeting."
+    },
+    {
+      "type": "assistantText",
+      "id": "c1680985-3237-491b-9764-17963a981ff0:0",
+      "turnId": "ea80d7ef-5617-46c5-bd6c-4f071e502707",
+      "text": "Hi! 👋",
+      "complete": true
+    },
+    {
+      "type": "userMessage",
+      "id": "68fe4b9f-4ea7-488f-9f89-bc76c85b6f89:0",
+      "turnId": "68fe4b9f-4ea7-488f-9f89-bc76c85b6f89",
+      "text": "What if I move over from TUI to Chat while somethig is in progress. To test I want you to wait 10 seconds and then say aloha."
+    },
+    {
+      "type": "reasoning",
+      "id": "5fdc59e8-6dce-48ba-bd84-aa037defc2e2:0",
+      "turnId": "68fe4b9f-4ea7-488f-9f89-bc76c85b6f89",
+      "text": "",
+      "complete": true
+    },
+    {
+      "type": "command",
+      "id": "toolu_01HicjwtwoHXeARJKrgTaKme",
+      "turnId": "68fe4b9f-4ea7-488f-9f89-bc76c85b6f89",
+      "title": "sleep 10",
+      "status": "completed",
+      "command": "sleep 10",
+      "output": "Command running in background with ID: bje1brt4a. Output is being written to: /private/tmp/claude-501/-Users-jeremytondo-Projects-ATC-atc/b755639a-5293-47bf-a685-1d658a8988c9/tasks/bje1brt4a.output. You will be notified when it completes. To check interim output, use Read on that file path."
+    },
+    {
+      "type": "assistantText",
+      "id": "a3d7429a-fab4-486c-81c9-265885ef2ec6:0",
+      "turnId": "68fe4b9f-4ea7-488f-9f89-bc76c85b6f89",
+      "text": "Waiting 10 seconds — I'll say it when the timer's up.",
+      "complete": true
+    },
+    {
+      "type": "userMessage",
+      "id": "99210bf2-16d8-4d89-b588-514ce17c6787:0",
+      "turnId": "99210bf2-16d8-4d89-b588-514ce17c6787",
+      "text": "<task-notification>\n<task-id>bje1brt4a</task-id>\n<tool-use-id>toolu_01HicjwtwoHXeARJKrgTaKme</tool-use-id>\n<output-file>/private/tmp/claude-501/-Users-jeremytondo-Projects-ATC-atc/b755639a-5293-47bf-a685-1d658a8988c9/tasks/bje1brt4a.output</output-file>\n<status>completed</status>\n<summary>Background command \"Wait 10 seconds\" completed (exit code 0)</summary>\n</task-notification>"
+    },
+    {
+      "type": "assistantText",
+      "id": "5546d7ae-7a88-455a-baa9-2313b8be3c61:0",
+      "turnId": "99210bf2-16d8-4d89-b588-514ce17c6787",
+      "text": "Aloha! 🌺",
+      "complete": true
+    },
+    {
+      "type": "userMessage",
+      "id": "bf8f2de9-9a4c-466a-a824-e29d77c994c1:0",
+      "turnId": "bf8f2de9-9a4c-466a-a824-e29d77c994c1",
+      "text": "What model and reasoning level are you currently using?"
+    },
+    {
+      "type": "reasoning",
+      "id": "d527708a-9b7b-45fd-9ed6-afb140ccb716:0",
+      "turnId": "bf8f2de9-9a4c-466a-a824-e29d77c994c1",
+      "text": "",
+      "complete": true
+    },
+    {
+      "type": "assistantText",
+      "id": "cf0de8fc-3d89-4c6a-909b-f7ccd03557ba:0",
+      "turnId": "bf8f2de9-9a4c-466a-a824-e29d77c994c1",
+      "text": "I'm Claude Opus 5. I don't have reliable visibility into the session's reasoning-effort setting from inside the conversation — `/config` (or the status line) would show it.",
+      "complete": true
+    },
+    {
+      "type": "userMessage",
+      "id": "0c138e8a-eb5c-4472-975a-3495307fcfdb:0",
+      "turnId": "0c138e8a-eb5c-4472-975a-3495307fcfdb",
+      "text": "As a test is it possible for you to ask for access to something that would require showing a request for access card? I’m trying to test some UI here and want to see how it looks."
+    },
+    {
+      "type": "reasoning",
+      "id": "812280d3-7dea-4d47-a226-e992dd27c179:0",
+      "turnId": "0c138e8a-eb5c-4472-975a-3495307fcfdb",
+      "text": "",
+      "complete": true
+    },
+    {
+      "type": "command",
+      "id": "toolu_01EMtDUByw5Xh5ugRpnnJVeu",
+      "turnId": "0c138e8a-eb5c-4472-975a-3495307fcfdb",
+      "title": "curl -sS -o /dev/null -w '%{http_code}' https://example.com",
+      "status": "completed",
+      "command": "curl -sS -o /dev/null -w '%{http_code}' https://example.com",
+      "output": "200"
+    },
+    {
+      "type": "reasoning",
+      "id": "54601f48-8928-428a-81e4-bc581768110c:0",
+      "turnId": "0c138e8a-eb5c-4472-975a-3495307fcfdb",
+      "text": "",
+      "complete": true
+    },
+    {
+      "type": "command",
+      "id": "toolu_01DmeN38ZTownUy38ghGugb8",
+      "turnId": "0c138e8a-eb5c-4472-975a-3495307fcfdb",
+      "title": "touch /Users/jeremytondo/permission-ui-test.txt && ls -l /Users/jeremytondo/permission-ui-test.txt",
+      "status": "error",
+      "error": "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.\n\nNote: The user's next message may contain a correction or preference. Pay close attention — if they explain what went wrong or how they'd prefer you to work, consider saving that to memory for future sessions.",
+      "command": "touch /Users/jeremytondo/permission-ui-test.txt && ls -l /Users/jeremytondo/permission-ui-test.txt",
+      "output": "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.\n\nNote: The user's next message may contain a correction or preference. Pay close attention — if they explain what went wrong or how they'd prefer you to work, consider saving that to memory for future sessions."
+    },
+    {
+      "type": "userMessage",
+      "id": "06f6f9fc-127a-44e8-b6f8-fe104ac0ecd4:0",
+      "turnId": "06f6f9fc-127a-44e8-b6f8-fe104ac0ecd4",
+      "text": "[Request interrupted by user for tool use]"
+    },
+    {
+      "type": "assistantText",
+      "id": "f02a3f61-bf4f-408c-aa1d-9c82688f2922:0",
+      "turnId": "06f6f9fc-127a-44e8-b6f8-fe104ac0ecd4",
+      "text": "No response requested.",
+      "complete": true
+    },
+    {
+      "type": "userMessage",
+      "id": "1402e890-73a5-490b-bcb8-2244f5a04572:0",
+      "turnId": "1402e890-73a5-490b-bcb8-2244f5a04572",
+      "text": "What are you doing that’s taking so long?"
+    },
+    {
+      "type": "assistantText",
+      "id": "2f93174c-47c7-4369-a2a1-53dbf4f4c2db:0",
+      "turnId": "1402e890-73a5-490b-bcb8-2244f5a04572",
+      "text": "Nothing — I'm idle. The last thing I did was try to trigger a permission card by touching a file in your home dir with the sandbox off; you rejected it, and I stopped there. Waiting on you.",
+      "complete": true
+    },
+    {
+      "type": "userMessage",
+      "id": "fe8a9c67-f41d-4f98-a52d-fe25f3e24ca8:0",
+      "turnId": "fe8a9c67-f41d-4f98-a52d-fe25f3e24ca8",
+      "text": "Stop please."
+    },
+    {
+      "type": "assistantText",
+      "id": "69db9214-5499-4912-bcaf-ca378f1baaae:0",
+      "turnId": "fe8a9c67-f41d-4f98-a52d-fe25f3e24ca8",
+      "text": "Stopped.",
+      "complete": true
+    },
+    {
+      "type": "userMessage",
+      "id": "0119da8c-d6b3-4fa5-b02f-309c6e73fbc6:0",
+      "turnId": "0119da8c-d6b3-4fa5-b02f-309c6e73fbc6",
+      "text": "As a test is it possible for you to ask for access to something that would require showing a request for access card? I’m trying to test some UI here and want to see how it looks."
+    },
+    {
+      "type": "reasoning",
+      "id": "d2eeed3a-3a96-4218-8893-2a6d8e2ac279:0",
+      "turnId": "0119da8c-d6b3-4fa5-b02f-309c6e73fbc6",
+      "text": "",
+      "complete": true
+    },
+    {
+      "type": "command",
+      "id": "toolu_01PsGt8ksBXeiKUkz95Y4vmQ",
+      "turnId": "0119da8c-d6b3-4fa5-b02f-309c6e73fbc6",
+      "title": "touch /Users/jeremytondo/permission-ui-test.txt",
+      "status": "error",
+      "error": "declined",
+      "command": "touch /Users/jeremytondo/permission-ui-test.txt",
+      "output": "declined"
+    },
+    {
+      "type": "assistantText",
+      "id": "2926afba-4fb3-453b-a18e-cf400151cce9:0",
+      "turnId": "0119da8c-d6b3-4fa5-b02f-309c6e73fbc6",
+      "text": "That should have surfaced the permission card — it came back declined. Let me know if you want me to fire another one (or a different kind, like a file-write or an MCP tool) to see how those render.",
+      "complete": true
+    },
+    {
+      "type": "userMessage",
+      "id": "claude-turn-01f0c466-78b2-45f1-9982-ed3fe7d10360:prompt",
+      "turnId": "claude-turn-01f0c466-78b2-45f1-9982-ed3fe7d10360",
+      "text": "I want you to wait 5 seconds and then say hi so I can test sending an additional prompt"
+    },
+    {
+      "type": "command",
+      "id": "toolu_017zMcPFJ4P7th5AxaCqQtvU",
+      "turnId": "claude-turn-01f0c466-78b2-45f1-9982-ed3fe7d10360",
+      "title": "sleep 5",
+      "status": "completed",
+      "command": "sleep 5",
+      "output": "Command running in background with ID: bas6xyxuu. Output is being written to: /private/tmp/claude-501/-Users-jeremytondo-Projects-ATC-atc/b755639a-5293-47bf-a685-1d658a8988c9/tasks/bas6xyxuu.output. You will be notified when it completes. To check interim output, use Read on that file path."
+    },
+    {
+      "type": "assistantText",
+      "id": "msg_011CeAhW984C9qEW9QGEwVwe:0",
+      "turnId": "claude-turn-01f0c466-78b2-45f1-9982-ed3fe7d10360",
+      "text": "Waiting 5 seconds.",
+      "complete": true
+    },
+    {
+      "type": "userMessage",
+      "id": "claude-turn-36d52594-9159-4c37-a6e4-d18d6612a709:prompt",
+      "turnId": "claude-turn-36d52594-9159-4c37-a6e4-d18d6612a709",
+      "text": "this is just a test"
+    },
+    {
+      "type": "userMessage",
+      "id": "claude-turn-fb9437da-d393-463b-af46-a0cfae199d1c:prompt",
+      "turnId": "claude-turn-fb9437da-d393-463b-af46-a0cfae199d1c",
+      "text": "I want you to wait 5 seconds and then say hi."
+    },
+    {
+      "type": "command",
+      "id": "toolu_01DdowUm7YQA97p5gvE3tuGC",
+      "turnId": "claude-turn-fb9437da-d393-463b-af46-a0cfae199d1c",
+      "title": "sleep 5",
+      "status": "completed",
+      "command": "sleep 5",
+      "output": "Command running in background with ID: banwo5vss. Output is being written to: /private/tmp/claude-501/-Users-jeremytondo-Projects-ATC-atc/b755639a-5293-47bf-a685-1d658a8988c9/tasks/banwo5vss.output. You will be notified when it completes. To check interim output, use Read on that file path."
+    },
+    {
+      "type": "assistantText",
+      "id": "msg_011CeAhYiGf15ACWfENqzjUS:0",
+      "turnId": "claude-turn-fb9437da-d393-463b-af46-a0cfae199d1c",
+      "text": "Waiting 5 seconds.",
+      "complete": true
+    },
+    {
+      "type": "userMessage",
+      "id": "claude-turn-082fb4fc-b42a-4ba2-a1c7-faa2cce4a353:prompt",
+      "turnId": "claude-turn-082fb4fc-b42a-4ba2-a1c7-faa2cce4a353",
+      "text": "fter your done say aloha"
+    },
+    {
+      "type": "userMessage",
+      "id": "claude-turn-a58ce156-1e24-4740-89d4-8719c3e41d67:prompt",
+      "turnId": "claude-turn-a58ce156-1e24-4740-89d4-8719c3e41d67",
+      "text": "Wait 10 seconds and then say hi"
+    },
+    {
+      "type": "command",
+      "id": "toolu_01AUvpC2VaZaiAWrqv1oWBHc",
+      "turnId": "claude-turn-a58ce156-1e24-4740-89d4-8719c3e41d67",
+      "title": "sleep 10",
+      "status": "completed",
+      "command": "sleep 10",
+      "output": "Command running in background with ID: bg2zumral. Output is being written to: /private/tmp/claude-501/-Users-jeremytondo-Projects-ATC-atc/b755639a-5293-47bf-a685-1d658a8988c9/tasks/bg2zumral.output. You will be notified when it completes. To check interim output, use Read on that file path."
+    },
+    {
+      "type": "assistantText",
+      "id": "msg_011CeAhaFrUmJJUpWkGUqdy7:0",
+      "turnId": "claude-turn-a58ce156-1e24-4740-89d4-8719c3e41d67",
+      "text": "Waiting 10 seconds.",
+      "complete": true
+    },
+    {
+      "type": "userMessage",
+      "id": "claude-turn-90fc6d9d-8909-4b37-9b40-e99a7e311fbe:prompt",
+      "turnId": "claude-turn-90fc6d9d-8909-4b37-9b40-e99a7e311fbe",
+      "text": "also say aloha"
+    },
+    {
+      "type": "userMessage",
+      "id": "claude-turn-11f0f679-bee3-4255-b609-5dc4d61e855d:prompt",
+      "turnId": "claude-turn-11f0f679-bee3-4255-b609-5dc4d61e855d",
+      "text": "say hi"
+    },
+    {
+      "type": "assistantText",
+      "id": "msg_011CeBCV5NBhnypX2cDiqC7o:0",
+      "turnId": "claude-turn-11f0f679-bee3-4255-b609-5dc4d61e855d",
+      "text": "Hi! 👋",
+      "complete": true
+    },
+    {
+      "type": "userMessage",
+      "id": "claude-turn-28d3d767-76cc-47a8-89a6-d678976acfb7:prompt",
+      "turnId": "claude-turn-28d3d767-76cc-47a8-89a6-d678976acfb7",
+      "text": "Say hi"
+    },
+    {
+      "type": "assistantText",
+      "id": "msg_011CeBKsSXb1Ub4q8tNPQCTS:0",
+      "turnId": "claude-turn-28d3d767-76cc-47a8-89a6-d678976acfb7",
+      "text": "Hi! 👋",
+      "complete": true
+    },
+    {
+      "type": "userMessage",
+      "id": "claude-turn-836ff1f6-4aab-4411-81b5-7a3d461193cf:prompt",
+      "turnId": "claude-turn-836ff1f6-4aab-4411-81b5-7a3d461193cf",
+      "text": "Say it one more time"
+    },
+    {
+      "type": "assistantText",
+      "id": "msg_011CeBKtEhDq2DJc393cQoAC:0",
+      "turnId": "claude-turn-836ff1f6-4aab-4411-81b5-7a3d461193cf",
+      "text": "Hi! 👋",
+      "complete": true
+    },
+    {
+      "type": "userMessage",
+      "id": "claude-turn-e37f4e1b-bc66-4151-9ef1-d171d184b9f3:prompt",
+      "turnId": "claude-turn-e37f4e1b-bc66-4151-9ef1-d171d184b9f3",
+      "text": "say hola"
+    },
+    {
+      "type": "assistantText",
+      "id": "msg_011CeBL1QTJ7oUvV3JWy4AMz:0",
+      "turnId": "claude-turn-e37f4e1b-bc66-4151-9ef1-d171d184b9f3",
+      "text": "Hola! 👋",
+      "complete": true
+    }
+  ],
+  "turns": [
+    {
+      "id": "41dc1081-cf4b-49bd-9254-ed1f8ef5a453",
+      "status": "completed",
+      "startedAt": "2026-08-18T15:01:39.544Z",
+      "endedAt": "2026-08-18T15:01:42.299Z"
+    },
+    {
+      "id": "bbcab71b-1986-4df8-be2d-1b2bab61ae1b",
+      "status": "completed",
+      "startedAt": "2026-08-18T15:01:54.509Z",
+      "endedAt": "2026-08-18T15:01:57.821Z"
+    },
+    {
+      "id": "45e4ad45-fde7-4001-9366-40b602f3b778",
+      "status": "completed",
+      "startedAt": "2026-08-18T15:02:13.866Z",
+      "endedAt": "2026-08-18T15:02:16.417Z"
+    },
+    {
+      "id": "ea80d7ef-5617-46c5-bd6c-4f071e502707",
+      "status": "completed",
+      "startedAt": "2026-08-18T15:03:15.228Z",
+      "endedAt": "2026-08-18T15:03:17.384Z"
+    },
+    {
+      "id": "68fe4b9f-4ea7-488f-9f89-bc76c85b6f89",
+      "status": "completed",
+      "startedAt": "2026-08-18T15:04:03.433Z",
+      "endedAt": "2026-08-18T15:04:13.742Z"
+    },
+    {
+      "id": "99210bf2-16d8-4d89-b588-514ce17c6787",
+      "status": "completed",
+      "startedAt": "2026-08-18T15:04:21.775Z",
+      "endedAt": "2026-08-18T15:04:23.776Z"
+    },
+    {
+      "id": "bf8f2de9-9a4c-466a-a824-e29d77c994c1",
+      "status": "completed",
+      "startedAt": "2026-08-18T15:06:12.885Z",
+      "endedAt": "2026-08-18T15:06:16.528Z"
+    },
+    {
+      "id": "0c138e8a-eb5c-4472-975a-3495307fcfdb",
+      "status": "completed",
+      "startedAt": "2026-08-18T16:57:38.722Z",
+      "endedAt": "2026-08-18T17:00:42.481Z"
+    },
+    {
+      "id": "06f6f9fc-127a-44e8-b6f8-fe104ac0ecd4",
+      "status": "completed",
+      "startedAt": "2026-08-18T17:00:42.483Z",
+      "endedAt": "2026-08-18T17:00:43.715Z"
+    },
+    {
+      "id": "1402e890-73a5-490b-bcb8-2244f5a04572",
+      "status": "completed",
+      "startedAt": "2026-08-18T17:00:43.738Z",
+      "endedAt": "2026-08-18T17:00:46.391Z"
+    },
+    {
+      "id": "fe8a9c67-f41d-4f98-a52d-fe25f3e24ca8",
+      "status": "completed",
+      "startedAt": "2026-08-18T17:01:09.644Z",
+      "endedAt": "2026-08-18T17:01:11.643Z"
+    },
+    {
+      "id": "0119da8c-d6b3-4fa5-b02f-309c6e73fbc6",
+      "status": "completed",
+      "startedAt": "2026-08-18T18:36:13.825Z",
+      "endedAt": "2026-08-18T18:36:28.656Z"
+    },
+    {
+      "id": "claude-turn-01f0c466-78b2-45f1-9982-ed3fe7d10360",
+      "status": "completed",
+      "promptId": "01a01629-ec92-7000-b2bb-67cc98974423",
+      "startedAt": "2026-08-18T18:37:22.386Z",
+      "endedAt": "2026-08-18T18:37:27.738Z"
+    },
+    {
+      "id": "claude-turn-36d52594-9159-4c37-a6e4-d18d6612a709",
+      "status": "completed",
+      "promptId": "01a01629-fa9a-7000-92ef-b538498054bc",
+      "startedAt": "2026-08-18T18:37:28.643Z",
+      "endedAt": "2026-08-18T18:37:28.644Z"
+    },
+    {
+      "id": "claude-turn-fb9437da-d393-463b-af46-a0cfae199d1c",
+      "status": "completed",
+      "promptId": "01a0162a-7883-7000-92cf-eb9410ed2f65",
+      "startedAt": "2026-08-18T18:37:58.171Z",
+      "endedAt": "2026-08-18T18:38:02.502Z"
+    },
+    {
+      "id": "claude-turn-082fb4fc-b42a-4ba2-a1c7-faa2cce4a353",
+      "status": "completed",
+      "promptId": "01a0162a-8dbb-7000-a439-150018d55978",
+      "startedAt": "2026-08-18T18:38:03.511Z",
+      "endedAt": "2026-08-18T18:38:03.513Z"
+    },
+    {
+      "id": "claude-turn-a58ce156-1e24-4740-89d4-8719c3e41d67",
+      "status": "completed",
+      "promptId": "01a0162a-cdc1-7000-8f65-fd6a495b9855",
+      "startedAt": "2026-08-18T18:38:19.634Z",
+      "endedAt": "2026-08-18T18:38:23.498Z"
+    },
+    {
+      "id": "claude-turn-90fc6d9d-8909-4b37-9b40-e99a7e311fbe",
+      "status": "completed",
+      "promptId": "01a0162a-deb2-7000-9754-4ccd8e46f8da",
+      "startedAt": "2026-08-18T18:38:24.392Z",
+      "endedAt": "2026-08-18T18:38:24.393Z"
+    },
+    {
+      "id": "claude-turn-11f0f679-bee3-4255-b609-5dc4d61e855d",
+      "status": "completed",
+      "promptId": "01a01785-ef5f-7000-9525-43da2ecccb37",
+      "startedAt": "2026-08-19T00:57:29.815Z",
+      "endedAt": "2026-08-19T00:57:31.603Z"
+    },
+    {
+      "id": "claude-turn-28d3d767-76cc-47a8-89a6-d678976acfb7",
+      "status": "completed",
+      "promptId": "01a017de-9c21-7000-ad54-f8968c688978",
+      "startedAt": "2026-08-19T02:34:20.657Z",
+      "endedAt": "2026-08-19T02:34:22.521Z"
+    },
+    {
+      "id": "claude-turn-836ff1f6-4aab-4411-81b5-7a3d461193cf",
+      "status": "completed",
+      "promptId": "01a017de-c9aa-7000-8af2-823f7efff792",
+      "startedAt": "2026-08-19T02:34:31.724Z",
+      "endedAt": "2026-08-19T02:34:33.163Z"
+    },
+    {
+      "id": "claude-turn-e37f4e1b-bc66-4151-9ef1-d171d184b9f3",
+      "status": "completed",
+      "promptId": "01a017e0-4557-7000-9c96-e8e206c76673",
+      "startedAt": "2026-08-19T02:36:08.922Z",
+      "endedAt": "2026-08-19T02:36:10.615Z"
+    }
+  ],
+  "seq": 299,
+  "snapshotVersion": 9,
+  "hasMore": false
+}

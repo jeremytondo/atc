@@ -4,11 +4,16 @@
 // leading the bottom row (ChatSettingsControls, taking every point the send
 // button leaves so they fold only when the row truly is too narrow), and a
 // round send button in the corner.
-// Return sends, Shift-Return inserts a newline. Send is never disabled while
-// connected — the server admits every prompt (idle starts a turn, busy
-// queues it) — and a refused prompt keeps its text with the server's message
-// inline. Stop shows only while the server is driving a turn.
+// Return sends (never mid-IME-composition — a marked-text Return commits the
+// composition), Shift-Return inserts a newline, Escape stops a running turn,
+// and ⌘↑ recalls the last sent prompt into an empty composer. Send is never
+// disabled while connected — the server admits every prompt (idle starts a
+// turn, busy queues it) — and a refused prompt keeps its text with the
+// server's message inline. Stop shows only while the server is driving a
+// turn. The composer autofocuses on appear unless a request card is up —
+// answering the agent owns the keyboard until it is done.
 
+import AppKit
 import SwiftUI
 
 struct ChatComposer: View {
@@ -17,9 +22,12 @@ struct ChatComposer: View {
     /// The agent's model catalog, nil until read (the chip shows the raw id).
     let models: [AgentModel]?
     let modelsError: String?
-    let isSending: Bool
     let showsStop: Bool
     let error: String?
+    /// ⌘↑ recalls this into an empty composer.
+    let lastSentPrompt: String?
+    /// A request card is up: don't steal focus from it on appear.
+    let yieldsFocus: Bool
     /// Advances whenever the window wants the composer focused.
     let focusRequest: UInt
     let send: () -> Void
@@ -56,7 +64,8 @@ struct ChatComposer: View {
                         .padding(.horizontal, Spacing.md)
                         .padding(.vertical, Spacing.xs)
                         .background(Surface.raised, in: Capsule())
-                        .help("Stop the running turn")
+                        .help("Stop the running turn (Esc)")
+                        .transition(.opacity)
                     }
                     Button(action: send) {
                         Image(systemName: "arrow.up")
@@ -76,7 +85,9 @@ struct ChatComposer: View {
             // the toolbar controls, not a card on the canvas.
             .glassEffect(in: RoundedRectangle(cornerRadius: Radius.card + Spacing.xs))
         }
-        .onAppear { isFocused = true }
+        .onAppear {
+            if !yieldsFocus { isFocused = true }
+        }
         .onChange(of: focusRequest) { _, _ in isFocused = true }
     }
 
@@ -106,8 +117,21 @@ struct ChatComposer: View {
                 .frame(height: editorHeight)
                 .onKeyPress(.return, phases: .down) { press in
                     guard !press.modifiers.contains(.shift) else { return .ignored }
+                    // Mid-IME composition, Return commits the marked text.
+                    guard !isComposing else { return .ignored }
                     guard canSend else { return .handled }
                     send()
+                    return .handled
+                }
+                .onKeyPress(.escape, phases: .down) { _ in
+                    guard showsStop else { return .ignored }
+                    stop()
+                    return .handled
+                }
+                .onKeyPress(.upArrow, phases: .down) { press in
+                    guard press.modifiers.contains(.command) else { return .ignored }
+                    guard text.isEmpty, let lastSentPrompt else { return .handled }
+                    text = lastSentPrompt
                     return .handled
                 }
             if text.isEmpty {
@@ -121,6 +145,12 @@ struct ChatComposer: View {
     }
 
     private var canSend: Bool {
-        !isSending && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// The focused editor holds uncommitted IME marked text.
+    private var isComposing: Bool {
+        guard let view = NSApp.keyWindow?.firstResponder as? NSTextView else { return false }
+        return view.hasMarkedText()
     }
 }
