@@ -14,6 +14,7 @@
 
 import ATCAppServerAPI
 import ATCAppServerTransport
+import ATCDesign
 import SwiftUI
 
 struct ThreadContentView: View {

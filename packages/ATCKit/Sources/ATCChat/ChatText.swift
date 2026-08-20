@@ -1,9 +1,10 @@
-// Text rendering shared by the Chat rows: inline markdown for message text,
-// and monospaced detail blocks (command output, diffs, JSON) for the
-// expandable tool rows. Deliberately small — rendered code blocks and
-// syntax-highlighted diffs are a later issue.
+// Text rendering shared by the Chat rows: inline markdown for the short
+// texts (user prompts, request questions), and monospaced detail blocks
+// (command output, diffs, JSON) for the expandable tool rows. Assistant
+// prose renders through the block model in Markdown/ instead.
 
 import ATCAppServerAPI
+import ATCDesign
 import OpenAPIRuntime
 import SwiftUI
 

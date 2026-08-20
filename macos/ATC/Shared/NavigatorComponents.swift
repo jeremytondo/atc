@@ -1,3 +1,4 @@
+import ATCDesign
 import SwiftUI
 
 /// Shared geometry for every Navigator. Sidebar-specific values live here so

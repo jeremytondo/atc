@@ -10,9 +10,12 @@
 // disabled while connected — the server admits every prompt (idle starts a
 // turn, busy queues it) — and a refused prompt keeps its text with the
 // server's message inline. Stop shows only while the server is driving a
-// turn. The composer autofocuses on appear unless a request card is up —
-// answering the agent owns the keyboard until it is done.
+// turn. The composer autofocuses on appear unless a request is pending (a
+// bar card or an inline row) — answering the agent owns the keyboard until
+// it is done.
 
+import ATCAppServerAPI
+import ATCDesign
 import AppKit
 import SwiftUI
 

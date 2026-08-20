@@ -13,6 +13,7 @@
 // selected model up in the agent's catalog.
 
 import ATCAppServerAPI
+import ATCDesign
 import SwiftUI
 
 struct ChatSettingsControls: View {

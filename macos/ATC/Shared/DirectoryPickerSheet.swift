@@ -5,6 +5,7 @@
 // Folder, no file selection.
 
 import ATCAppServerAPI
+import ATCDesign
 import SwiftUI
 
 @MainActor @Observable

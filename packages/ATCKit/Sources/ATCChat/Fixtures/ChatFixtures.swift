@@ -20,8 +20,8 @@ import Foundation
         static var codex: ThreadTranscriptPage { load("chat-fixture-codex") }
 
         private static func load(_ name: String) -> ThreadTranscriptPage {
-            guard let url = Bundle(for: ChatItemModel.self).url(forResource: name, withExtension: "json")
-            else { fatalError("chat fixture \(name).json is not in the app bundle") }
+            guard let url = Bundle.module.url(forResource: name, withExtension: "json")
+            else { fatalError("chat fixture \(name).json is not in the module bundle") }
             do {
                 return try makeJSONDecoder().decode(ThreadTranscriptPage.self, from: Data(contentsOf: url))
             } catch {

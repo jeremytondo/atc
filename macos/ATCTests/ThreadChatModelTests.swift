@@ -3,6 +3,7 @@ import Foundation
 import Testing
 
 @testable import ATC
+@testable import ATCChat
 
 /// The Chat model's I/O around the reducer: load-on-connect, the resume
 /// cursor, snapshot invalidation, live-state refetch, the runtime's

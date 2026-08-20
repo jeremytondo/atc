@@ -48,11 +48,11 @@ import Observation
 import SwiftUI
 
 @Observable
-final class ThreadChatModel {
-    typealias StreamFactory =
+public final class ThreadChatModel {
+    public typealias StreamFactory =
         (_ after: @escaping @Sendable () -> Int?) -> AsyncStream<ThreadEventStream.Event>
 
-    enum ConnectionPhase: Equatable {
+    public enum ConnectionPhase: Equatable {
         case connecting
         case live
         case reconnecting
@@ -65,30 +65,37 @@ final class ThreadChatModel {
     /// The reducer's copy — the source the projections below derive from.
     /// Unobserved on purpose (see the header's rendering-state rules).
     @ObservationIgnored private(set) var transcript = ChatTranscript()
-    private(set) var connection: ConnectionPhase = .connecting
+    public private(set) var connection: ConnectionPhase = .connecting
     /// The last newest-page read failed; the copy shown is empty (never
     /// loaded) or invalid (a provider re-read replaced it) until it succeeds.
-    private(set) var loadError: String?
-    private(set) var isLoadingOlder = false
+    public private(set) var loadError: String?
+    public private(set) var isLoadingOlder = false
     /// The last `promptThread` refusal, cleared by the next send.
-    private(set) var promptError: String?
+    public private(set) var promptError: String?
     /// The last chat action's failure, shown inline above the composer.
-    private(set) var actionError: String?
+    public private(set) var actionError: String?
     /// The last prompt this client sent (⌘↑ recalls it into the composer).
-    private(set) var lastSentPrompt: String?
+    public private(set) var lastSentPrompt: String?
 
     // What the views observe, projected from `transcript` after each change.
     private(set) var rows: [ChatRowModel] = []
-    private(set) var requests: [ThreadRequest] = []
-    private(set) var queue: [QueuedPrompt] = []
-    private(set) var runningTurn: ThreadTurn?
-    private(set) var hasMore = false
-    private(set) var isLoaded = false
+    public private(set) var requests: [ThreadRequest] = []
+    /// Requests not rendered inline on an item row: cards for the bar.
+    public private(set) var barRequests: [ThreadRequest] = []
+    /// Requests rendered inline on the row they block ("N pending · jump").
+    public private(set) var inlineRequests: [ThreadRequest] = []
+    public private(set) var queue: [QueuedPrompt] = []
+    public private(set) var runningTurn: ThreadTurn?
+    public private(set) var hasMore = false
+    public private(set) var isLoaded = false
 
     private let client: any APIProtocol
     private let makeStream: StreamFactory
     private let cursor = SeqCursor()
     @ObservationIgnored private var boxes: [String: ChatItemModel] = [:]
+    @ObservationIgnored private var folds: [String: ChatWorkModel] = [:]
+    /// Request ids the last row build attached inline.
+    @ObservationIgnored private var attachedRequestIDs: Set<String> = []
     private var streamTask: Task<Void, Never>?
     private var pageLoad: Task<Void, Never>?
     private var liveStateRefresh: Task<Void, Never>?
@@ -96,7 +103,7 @@ final class ThreadChatModel {
     /// A `snapshot.invalidated` has not yet been answered by a landed page.
     private var needsResync = false
 
-    init(threadID: String, client: any APIProtocol, makeStream: @escaping StreamFactory) {
+    public init(threadID: String, client: any APIProtocol, makeStream: @escaping StreamFactory) {
         self.threadID = threadID
         self.client = client
         self.makeStream = makeStream
@@ -104,7 +111,7 @@ final class ThreadChatModel {
 
     // MARK: - Lifecycle
 
-    func start() {
+    public func start() {
         guard streamTask == nil else { return }
         let stream = makeStream { [cursor] in cursor.ask() }
         streamTask = Task { [weak self] in
@@ -115,7 +122,7 @@ final class ThreadChatModel {
         }
     }
 
-    func stop() {
+    public func stop() {
         for task in [streamTask, pageLoad, liveStateRefresh, liveStateRetry] {
             task?.cancel()
         }
@@ -172,18 +179,28 @@ final class ThreadChatModel {
             guard let item = transcript.items.first(where: { $0.id == id }) else { return }
             boxes[id]?.update(item)
         case .handoff:
-            rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes)
+            rebuildRows()
             projectLiveState()
         case .structure:
             withAnimation(.snappy(duration: 0.25)) {
-                rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes)
+                rebuildRows()
                 projectLiveState()
             }
         }
     }
 
+    private func rebuildRows() {
+        let result = ChatRowBuilder.rows(from: transcript, reusing: &boxes, folds: &folds)
+        rows = result.rows
+        attachedRequestIDs = result.attachedRequestIDs
+    }
+
     private func projectLiveState() {
         if requests != transcript.requests { requests = transcript.requests }
+        let bar = transcript.requests.filter { !attachedRequestIDs.contains($0.id) }
+        if barRequests != bar { barRequests = bar }
+        let inline = transcript.requests.filter { attachedRequestIDs.contains($0.id) }
+        if inlineRequests != inline { inlineRequests = inline }
         if queue != transcript.queue { queue = transcript.queue }
         if runningTurn != transcript.runningTurn { runningTurn = transcript.runningTurn }
         if hasMore != transcript.hasMore { hasMore = transcript.hasMore }
@@ -194,7 +211,7 @@ final class ThreadChatModel {
 
     /// (Re)reads the newest page. Concurrent callers share one read; on
     /// failure the previous copy (if any) stays and `loadError` is set.
-    func loadNewest() async {
+    public func loadNewest() async {
         if let pageLoad {
             await pageLoad.value
             return
@@ -221,7 +238,7 @@ final class ThreadChatModel {
     /// The page before the oldest item on screen. A cursor from a replaced
     /// copy reads as an empty page (or is discarded by the reducer when the
     /// copy changed under it), which simply ends paging.
-    func loadOlder() async throws {
+    public func loadOlder() async throws {
         guard transcript.hasMore, !isLoadingOlder, let first = transcript.items.first else { return }
         isLoadingOlder = true
         defer { isLoadingOlder = false }
@@ -274,7 +291,7 @@ final class ThreadChatModel {
     /// The one seam chat actions run through: refused inline while this
     /// thread's stream is not live (the app-wide dot says nothing about this
     /// stream), and failures land in `actionError` — never a modal.
-    func perform(_ operation: @escaping () async throws -> Void) {
+    public func perform(_ operation: @escaping () async throws -> Void) {
         guard connection == .live else {
             actionError =
                 "Not connected — the thread's stream is still \(connection == .connecting ? "connecting" : "reconnecting")."
@@ -290,7 +307,7 @@ final class ThreadChatModel {
         }
     }
 
-    func clearActionError() {
+    public func clearActionError() {
         actionError = nil
     }
 
@@ -298,7 +315,7 @@ final class ThreadChatModel {
     /// Returns false when the server refused (the error is in `promptError`)
     /// so the composer restores the text.
     @discardableResult
-    func send(_ prompt: String) async -> Bool {
+    public func send(_ prompt: String) async -> Bool {
         promptError = nil
         lastSentPrompt = prompt
         let pendingID = transcript.addPending(prompt)
@@ -328,7 +345,7 @@ final class ThreadChatModel {
 
     /// Interrupts the server-driven turn; a TUI-driven turn is a server
     /// no-op, and queued prompts stay queued.
-    func interrupt() async throws {
+    public func interrupt() async throws {
         switch try await client.interruptThread(path: .init(threadId: threadID)) {
         case .noContent: break
         case .notFound(let failure): throw ServerError(try failure.body.json)
@@ -337,7 +354,7 @@ final class ThreadChatModel {
         }
     }
 
-    func answer(requestID: String, _ answer: ThreadRequestAnswer) async throws {
+    public func answer(requestID: String, _ answer: ThreadRequestAnswer) async throws {
         switch try await client.answerThreadRequest(
             path: .init(threadId: threadID, requestId: requestID), body: .json(answer))
         {
@@ -351,7 +368,7 @@ final class ThreadChatModel {
         }
     }
 
-    func withdraw(promptID: String) async throws {
+    public func withdraw(promptID: String) async throws {
         switch try await client.deleteQueuedPrompt(path: .init(threadId: threadID, promptId: promptID)) {
         case .noContent: break
         case .notFound(let failure):

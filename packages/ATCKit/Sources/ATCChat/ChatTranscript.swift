@@ -23,9 +23,10 @@
 //   again instead of silently resuming a dead copy.
 // - Every page names the `snapshotVersion` it was read from; an older page
 //   from a copy that has since been replaced is discarded.
-// - Requests and the queue are live state, never transcript rows: the
-//   queue is replaced wholesale on every `queue.updated`; requests open and
-//   close by id.
+// - Requests and the queue are live state, never transcript items (the
+//   row builder renders a request beside the item it blocks): the queue is
+//   replaced wholesale on every `queue.updated`; requests open and close
+//   by id.
 // - Pending prompts (the optimistic echo) are client-local rows at the tail:
 //   one is added the instant a send leaves, learns its promptId (and turnId)
 //   from the send response and the turn events, and resolves — removed —

@@ -1,10 +1,21 @@
 // swift-tools-version: 6.2
 import PackageDescription
 
+// The UI targets compile with the same concurrency posture as the app
+// targets that host them (MainActor default isolation + approachable
+// concurrency), so moving a view or model between app and package never
+// changes its meaning.
+let uiTargetSwiftSettings: [SwiftSetting] = [
+    .defaultIsolation(MainActor.self),
+    .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
+    .enableUpcomingFeature("InferIsolatedConformances"),
+]
+
 let package = Package(
     name: "ATCKit",
     platforms: [
-        .macOS(.v26)
+        .macOS(.v26),
+        .iOS(.v26),
     ],
     products: [
         // Client generated from the App Server OpenAPI contract
@@ -13,6 +24,12 @@ let package = Package(
         // Hand-written App Server transports the OpenAPI document cannot
         // express: the terminal-attach WebSocket and the SSE event stream.
         .library(name: "ATCAppServerTransport", targets: ["ATCAppServerTransport"]),
+        // The app-wide design tokens every client surface shares.
+        .library(name: "ATCDesign", targets: ["ATCDesign"]),
+        // The Chat feature: transcript reducer, thread chat model, and the
+        // SwiftUI row/renderer views — package-hosted so a future iOS client
+        // reuses them instead of copying.
+        .library(name: "ATCChat", targets: ["ATCChat"]),
     ],
     dependencies: [
         // Exact pins: generated code and the contract artifact are coupled,
@@ -21,6 +38,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-openapi-runtime", exact: "1.12.0"),
         .package(url: "https://github.com/apple/swift-openapi-urlsession", exact: "1.3.1"),
         .package(url: "https://github.com/apple/swift-http-types", exact: "1.6.0"),
+        .package(url: "https://github.com/swiftlang/swift-markdown", exact: "0.8.0"),
     ],
     targets: [
         .target(
@@ -37,6 +55,30 @@ let package = Package(
         .target(
             name: "ATCAppServerTransport",
             dependencies: ["ATCAppServerAPI"]
+        ),
+        .target(
+            name: "ATCDesign",
+            swiftSettings: uiTargetSwiftSettings
+        ),
+        .target(
+            name: "ATCChat",
+            dependencies: [
+                "ATCAppServerAPI",
+                "ATCAppServerTransport",
+                "ATCDesign",
+                .product(name: "Markdown", package: "swift-markdown"),
+            ],
+            resources: [
+                // Recorded wire samples driving the Chat previews.
+                .process("Fixtures/chat-fixture-claude.json"),
+                .process("Fixtures/chat-fixture-codex.json"),
+            ],
+            swiftSettings: uiTargetSwiftSettings
+        ),
+        .testTarget(
+            name: "ATCChatTests",
+            dependencies: ["ATCChat"],
+            swiftSettings: uiTargetSwiftSettings
         ),
         .testTarget(
             name: "ATCAppServerTransportTests",

@@ -15,6 +15,10 @@
 		DEC8867630264F5C006D3531 /* ATCAppServerTransport in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A8 /* ATCAppServerTransport */; };
 		DEC8867730264F5C006D3531 /* ATCAppServerAPI in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000A9 /* ATCAppServerAPI */; };
 		DEC8867830264F5C006D3531 /* ATCAppServerTransport in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000AA /* ATCAppServerTransport */; };
+		DEC88E5130378829006D3531 /* ATCChat in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000AB /* ATCChat */; };
+		DEC88E5230378829006D3531 /* ATCDesign in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000AC /* ATCDesign */; };
+		DEC88E5330378829006D3531 /* ATCChat in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000AD /* ATCChat */; };
+		DEC88E5430378829006D3531 /* ATCDesign in Frameworks */ = {isa = PBXBuildFile; productRef = AC00000000000000000000AE /* ATCDesign */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -50,6 +54,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DEC88E5430378829006D3531 /* ATCDesign in Frameworks */,
+				DEC88E5330378829006D3531 /* ATCChat in Frameworks */,
 				DEC8867830264F5C006D3531 /* ATCAppServerTransport in Frameworks */,
 				DEC8867730264F5C006D3531 /* ATCAppServerAPI in Frameworks */,
 			);
@@ -59,6 +65,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DEC88E5230378829006D3531 /* ATCDesign in Frameworks */,
+				DEC88E5130378829006D3531 /* ATCChat in Frameworks */,
 				DEC8867630264F5C006D3531 /* ATCAppServerTransport in Frameworks */,
 				AC00000000000000000000B7 /* ATCAppServerAPI in Frameworks */,
 				AC00000000000000000000B2 /* GhosttyKit in Frameworks */,
@@ -111,6 +119,8 @@
 			packageProductDependencies = (
 				AC00000000000000000000A9 /* ATCAppServerAPI */,
 				AC00000000000000000000AA /* ATCAppServerTransport */,
+				AC00000000000000000000AD /* ATCChat */,
+				AC00000000000000000000AE /* ATCDesign */,
 			);
 			productName = ATCTests;
 			productReference = AC00000000000000000000D3 /* ATCTests.xctest */;
@@ -135,6 +145,8 @@
 			packageProductDependencies = (
 				AC00000000000000000000A7 /* ATCAppServerAPI */,
 				AC00000000000000000000A8 /* ATCAppServerTransport */,
+				AC00000000000000000000AB /* ATCChat */,
+				AC00000000000000000000AC /* ATCDesign */,
 				AC00000000000000000000A2 /* GhosttyKit */,
 				AC00000000000000000000A3 /* GhosttyTerminal */,
 				AC00000000000000000000A4 /* GhosttyTheme */,
@@ -550,6 +562,22 @@
 		AC00000000000000000000AA /* ATCAppServerTransport */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = ATCAppServerTransport;
+		};
+		AC00000000000000000000AB /* ATCChat */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ATCChat;
+		};
+		AC00000000000000000000AC /* ATCDesign */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ATCDesign;
+		};
+		AC00000000000000000000AD /* ATCChat */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ATCChat;
+		};
+		AC00000000000000000000AE /* ATCDesign */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ATCDesign;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

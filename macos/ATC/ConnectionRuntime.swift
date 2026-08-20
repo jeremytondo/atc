@@ -18,6 +18,7 @@
 
 import ATCAppServerAPI
 import ATCAppServerTransport
+import ATCChat
 import Foundation
 import Observation
 

@@ -1,3 +1,4 @@
+import ATCDesign
 import GhosttyTerminal
 import GhosttyTheme
 

@@ -1,24 +1,26 @@
-// The Chat mode of a thread: the transcript, with pending requests, the
-// prompt queue, and the composer floating over its tail as a Liquid Glass
-// bar — the transcript scrolls under the window toolbar above and that bar
-// below, fading into both. The view holds the thread's Chat
-// model for exactly as long as it is on screen (`acquireChat` / `releaseChat`
-// on the Connection's runtime), so navigating away or flipping to TUI drops
-// the subscription while a second window on the same thread keeps it.
-// The composer draft lives on `AppModel`, so it survives leaving Chat.
+// The Chat mode of a thread: the shared transcript (`ChatTranscriptView`,
+// from ATCChat) with pending requests, the prompt queue, and the composer
+// floating over its tail as a Liquid Glass bar — the transcript scrolls
+// under the window toolbar above and that bar below, fading into both. The
+// view holds the thread's Chat model for exactly as long as it is on screen
+// (`acquireChat` / `releaseChat` on the Connection's runtime), so navigating
+// away or flipping to TUI drops the subscription while a second window on
+// the same thread keeps it. The composer draft lives on `AppModel`, so it
+// survives leaving Chat.
 //
-// The transcript follows the tail until the user scrolls up, and offers
-// "Load earlier" at the top while older pages exist. Connection loss shows a
-// floating "Reconnecting…" over a transcript that stays put — the stream
-// resumes from its seq, so nothing is refetched.
-//
-// Motion (ATC-214): the model applies structural changes inside
+// Requests split by where they render: one blocked on a transcript item
+// shows inline on that row, and the bar keeps only a compact
+// "pending · jump" chip for it; requests without an item stay cards in the
+// bar. Motion (ATC-214): the model applies structural changes inside
 // withAnimation, rows carry insert transitions, and the bottom bar's glass
 // pieces share one container and namespace so appearing cards morph out of
 // the composer instead of popping. Chat actions run through the model's
-// `perform` — gated on this thread's stream, reported inline — never a modal.
+// `perform` — gated on this thread's stream, reported inline — never a
+// modal.
 
 import ATCAppServerAPI
+import ATCChat
+import ATCDesign
 import SwiftUI
 
 struct ThreadChatView: View {
@@ -85,9 +87,10 @@ private struct ChatPane: View {
     let thread: ATCThread
     let focusRequest: UInt
 
-    @State private var isFollowingTail = true
     /// Bumped to jump to the tail and follow it again (a sent prompt).
     @State private var followRequest = 0
+    /// The bar chip's one-shot scroll to an inline request's row.
+    @State private var jumpRequest: ChatJumpRequest?
     /// Measured height of the request/queue stack, capped by `cardsCap`.
     @State private var cardsHeight: CGFloat = 0
     @Namespace private var glassNamespace
@@ -105,133 +108,20 @@ private struct ChatPane: View {
     }
 
     var body: some View {
-        transcriptList
-            .overlay(alignment: .top) { statusBanner }
-            // The composer's model chip and menu need the agent's catalog.
-            .task(id: thread.agentId) { agents?.loadModels(for: thread.agentId) }
-    }
-
-    // MARK: - Transcript
-
-    private var transcriptList: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: Spacing.md) {
-                    if chat.hasMore {
-                        HStack {
-                            Spacer()
-                            Button("Load earlier") { loadOlder(proxy) }
-                                .disabled(chat.isLoadingOlder)
-                            Spacer()
-                        }
-                    }
-                    if let error = chat.loadError {
-                        loadFailure(error)
-                    } else if !chat.isLoaded {
-                        loadingIndicator
-                    } else if chat.rows.isEmpty, !isWorking {
-                        emptyState
-                    }
-                    ForEach(chat.rows) { row in
-                        ChatRowView(row: row)
-                            .id(row.id)
-                            .transition(
-                                .asymmetric(
-                                    insertion: .opacity.combined(with: .offset(y: 12)),
-                                    removal: .opacity
-                                ))
-                    }
-                    if isWorking {
-                        HStack(spacing: Spacing.sm) {
-                            ProgressView().controlSize(.small)
-                            Text("Working…").foregroundStyle(.secondary)
-                        }
-                        .font(.callout)
-                        .transition(.opacity)
-                    }
-                    Color.clear.frame(height: 1).id(tailAnchor)
-                }
-                .padding(.horizontal, Spacing.xxl)
-                .padding(.vertical, Spacing.lg)
-                .frame(maxWidth: 820)
-                .frame(maxWidth: .infinity)
-            }
-            // The transcript scrolls under the toolbar above and the
-            // composer bar below, fading into both with the system's soft
-            // edge effect.
-            .scrollEdgeEffectUnderToolbar()
-            .safeAreaBar(edge: .bottom) { bottomStack }
-            // Tail-follow, T3Code style: while following, every content
-            // or viewport size change re-pins the tail above the composer
-            // (done from the geometry change, once layout has the new
-            // sizes — a scroll issued when the model changes lands short of
-            // rows that are not measured yet). Only the user's own scroll
-            // gesture leaves follow mode: content growth moves the geometry
-            // too, so it must never be what decides. Ending a gesture at the
-            // tail resumes following.
-            .onScrollGeometryChange(for: ChatTailLayout.self, of: ChatTailLayout.init) { _, _ in
-                if isFollowingTail { proxy.scrollTo(tailAnchor, anchor: .bottom) }
-            }
-            .onScrollPhaseChange { previous, phase, context in
-                // A gesture leaves follow mode; a gesture ending at the tail
-                // resumes it. An idle that no gesture led to (the first
-                // callback, a programmatic scroll settling) decides nothing.
-                if phase.isGesture {
-                    isFollowingTail = false
-                } else if phase == .idle, previous.isGesture {
-                    isFollowingTail = context.geometry.isAtTail
-                }
-            }
-            .onChange(of: followRequest) { _, _ in
-                isFollowingTail = true
-                proxy.scrollTo(tailAnchor, anchor: .bottom)
-            }
-        }
-    }
-
-    /// Older history goes in above; the row that was first stays where the
-    /// eye is instead of the tail-follow yanking the view back down.
-    private func loadOlder(_ proxy: ScrollViewProxy) {
-        guard let anchor = chat.rows.first?.id else { return }
-        isFollowingTail = false
-        chat.perform { [chat] in
-            try await chat.loadOlder()
-            proxy.scrollTo(anchor, anchor: .top)
-        }
-    }
-
-    private let tailAnchor = "tail"
-
-    /// The server drives a turn (Stop is offered), or the agent is busy under
-    /// a TUI (items land at idle — the server's re-read).
-    private var isWorking: Bool {
-        chat.runningTurn != nil || thread.activityState == .working
-    }
-
-    private func loadFailure(_ error: String) -> some View {
-        HStack(spacing: Spacing.sm) {
-            Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
-            Text(error).lineLimit(2)
-            Button("Retry") { Task { await chat.loadNewest() } }
-        }
-        .font(.callout)
-    }
-
-    private var loadingIndicator: some View {
-        HStack(spacing: Spacing.sm) {
-            ProgressView().controlSize(.small)
-            Text("Loading transcript…").foregroundStyle(.secondary)
-        }
-        .font(.callout)
-    }
-
-    private var emptyState: some View {
-        VStack(alignment: .leading, spacing: Spacing.xs) {
-            Text(thread.displayName).font(.title3.weight(.semibold))
-            Text("Send a message to start the conversation.")
-                .foregroundStyle(.secondary)
-        }
-        .padding(.top, Spacing.xxl)
+        ChatTranscriptView(
+            chat: chat,
+            emptyTitle: thread.displayName,
+            isBusyOutside: thread.activityState == .working,
+            followRequest: followRequest,
+            jumpRequest: jumpRequest
+        )
+        // The transcript scrolls under the toolbar above and the composer
+        // bar below, fading into both with the system's soft edge effect.
+        .scrollEdgeEffectUnderToolbar()
+        .safeAreaBar(edge: .bottom) { bottomStack }
+        .overlay(alignment: .top) { statusBanner }
+        // The composer's model chip and menu need the agent's catalog.
+        .task(id: thread.agentId) { agents?.loadModels(for: thread.agentId) }
     }
 
     // MARK: - Bottom stack
@@ -246,7 +136,10 @@ private struct ChatPane: View {
                 if let actionError = chat.actionError {
                     actionErrorBanner(actionError)
                 }
-                if !chat.requests.isEmpty || !chat.queue.isEmpty {
+                if !chat.inlineRequests.isEmpty {
+                    inlineRequestsChip
+                }
+                if !chat.barRequests.isEmpty || !chat.queue.isEmpty {
                     cards
                 }
                 ChatComposer(
@@ -279,12 +172,53 @@ private struct ChatPane: View {
         .frame(maxWidth: .infinity)
     }
 
+    /// "1 approval pending" when every inline request is an approval;
+    /// questions blocked on an item read as requests.
+    private var chipLabel: String {
+        let count = chat.inlineRequests.count
+        let allApprovals = chat.inlineRequests.allSatisfy { request in
+            if case .approval = request { return true }
+            return false
+        }
+        let noun = allApprovals ? "approval" : "request"
+        return "\(count) \(noun)\(count == 1 ? "" : "s") pending"
+    }
+
+    /// Requests answered in place keep the bar quiet: one compact chip that
+    /// scrolls the transcript to the first blocked row.
+    private var inlineRequestsChip: some View {
+        HStack {
+            Spacer()
+            Button {
+                guard let itemID = chat.inlineRequests.first?.itemId else { return }
+                jumpRequest = ChatJumpRequest(itemID: itemID)
+            } label: {
+                HStack(spacing: Spacing.xs) {
+                    Image(systemName: "questionmark.bubble")
+                    Text(chipLabel)
+                    Text("·").foregroundStyle(.tertiary)
+                    Text("Jump")
+                }
+                .font(.callout)
+                .padding(.horizontal, Spacing.md)
+                .padding(.vertical, Spacing.xs)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.orange)
+            .glassEffect(in: Capsule())
+            .glassEffectID("inlineRequests", in: glassNamespace)
+            .help("Scroll to the pending approval")
+            Spacer()
+        }
+        .transition(.opacity)
+    }
+
     /// The request cards and queue strip, height-capped: past the cap the
     /// stack scrolls inside itself instead of swallowing the transcript.
     private var cards: some View {
         ScrollView {
             VStack(spacing: Spacing.sm) {
-                ForEach(chat.requests, id: \.id) { request in
+                ForEach(chat.barRequests, id: \.id) { request in
                     ChatRequestCard(request: request) { answer in
                         chat.perform { [chat] in try await chat.answer(requestID: request.id, answer) }
                     }
@@ -365,47 +299,5 @@ private struct ChatPane: View {
         case .live:
             EmptyView()
         }
-    }
-}
-
-/// The sizes whose change moves the tail: the content's, the viewport's (a
-/// window resize re-pins too), and the bars' — the composer growing with a
-/// draft, a request card or the queue appearing — so a change to any of them
-/// re-pins while following. Insets are tracked in their own right rather than
-/// through the container they shrink.
-struct ChatTailLayout: Equatable {
-    let content: CGFloat
-    let container: CGFloat
-    let insetTop: CGFloat
-    let insetBottom: CGFloat
-
-    init(_ geometry: ScrollGeometry) {
-        content = geometry.contentSize.height
-        container = geometry.containerSize.height
-        insetTop = geometry.contentInsets.top
-        insetBottom = geometry.contentInsets.bottom
-    }
-}
-
-extension ScrollPhase {
-    /// The user is scrolling: their finger or wheel is driving it, or its
-    /// momentum still is.
-    var isGesture: Bool {
-        switch self {
-        case .tracking, .interacting, .decelerating: true
-        case .idle, .animating: false
-        @unknown default: false
-        }
-    }
-}
-
-extension ScrollGeometry {
-    /// The toolbar and the composer bar are content insets: the container is
-    /// the area between them, so the tail is in view when the container's
-    /// bottom edge — offset plus insets plus container — reaches the
-    /// content's end plus the bottom inset (with some slack).
-    var isAtTail: Bool {
-        let viewportBottom = contentOffset.y + contentInsets.top + containerSize.height + contentInsets.bottom
-        return viewportBottom >= contentSize.height + contentInsets.bottom - Spacing.xxl
     }
 }

@@ -1,3 +1,4 @@
+import ATCDesign
 import SwiftUI
 
 /// The ⌘N / ⌥⌘N chip shown while the exact modifier combo is held. Matches

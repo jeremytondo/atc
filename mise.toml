@@ -33,7 +33,7 @@ echo "installed $dir/atc ($("$dir/atc" --version))"
 
 [tasks.check]
 description = "All gates: App Server, Swift lint+format, Kit/macOS tests, release tooling"
-depends = ["app-server:check", "swift:lint", "swift:fmt:check", "kit:test", "macos:test", "release:check"]
+depends = ["app-server:check", "swift:lint", "swift:fmt:check", "kit:test", "kit:build:ios", "macos:test", "release:check"]
 
 [tasks.build]
 description = "Build the local App Server binary and developer macOS app"
@@ -95,6 +95,20 @@ run = "swift format lint --strict --recursive macos packages/ATCKit/Sources pack
 # our targets only — SPM suppresses dependency warnings. Local runs stay
 # permissive so an Xcode upgrade that newly deprecates an API cannot block
 # iteration mid-refactor.
+[tasks."kit:build:ios"]
+description = "Build the ATCKit package for iOS (the shared UI targets must stay portable; ATC_STRICT_WARNINGS=1 fails on compiler warnings)"
+dir = "packages/ATCKit"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+flags=()
+if [ "${ATC_STRICT_WARNINGS:-0}" = "1" ]; then
+  flags+=(-Xswiftc -warnings-as-errors)
+fi
+swift build --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
+  --triple "arm64-apple-ios26.0-simulator" ${flags[@]+"${flags[@]}"}
+"""
+
 [tasks."kit:test"]
 description = "ATCKit package tests (ATC_STRICT_WARNINGS=1 fails on compiler warnings)"
 dir = "packages/ATCKit"
@@ -139,12 +153,16 @@ if [ -n "${ATC_XCODE_SPM_DIR:-}" ]; then
 fi
 
 scripts/prepare-xcode-openapi.sh "$derived_data_path"
+# -enableCodeCoverage NO: nothing consumes the coverage data, and the
+# instrumentation breaks linking swift-markdown's cmark-gfm C targets
+# (their framework products miss the profile runtime).
 xcodebuild test \
   -project macos/atc.xcodeproj \
   -scheme atc \
   -destination platform=macOS \
   -derivedDataPath "$derived_data_path" \
   -skipPackagePluginValidation \
+  -enableCodeCoverage NO \
   CODE_SIGNING_ALLOWED=NO ${extra[@]+"${extra[@]}"}
 """
 
