@@ -299,8 +299,10 @@ private struct ChatPane: View {
             }
             .onGeometryChange(for: CGFloat.self) {
                 $0.size.height
-            } action: {
-                cardsHeight = $0
+            } action: { height in
+                // The bar's height rides this measurement: animate it so a
+                // card appearing grows the bar instead of popping it.
+                withAnimation(.snappy(duration: 0.25)) { cardsHeight = height }
             }
         }
         .scrollIndicators(.never)

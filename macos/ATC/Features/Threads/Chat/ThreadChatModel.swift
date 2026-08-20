@@ -159,9 +159,9 @@ final class ThreadChatModel {
 
     // MARK: - Projection
 
-    /// Applies one reducer outcome to the observed state. Structural and
-    /// live-state changes animate (rows slide in, the bottom bar resizes);
-    /// a delta only touches its item's box — never animated, never a rebuild.
+    /// Applies one reducer outcome to the observed state. Structural changes
+    /// animate (rows slide in, the bottom bar resizes); a delta only touches
+    /// its item's box — never animated, never a rebuild.
     private func project(_ mutation: ChatMutation) {
         switch mutation {
         case .none, .invalidated:
@@ -174,8 +174,6 @@ final class ThreadChatModel {
                 rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes)
                 projectLiveState()
             }
-        case .liveState:
-            withAnimation(.snappy(duration: 0.25)) { projectLiveState() }
         }
     }
 

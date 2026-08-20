@@ -78,8 +78,8 @@ struct ChatTranscriptTests {
         _ = transcript.apply(.text_delta(.init(_type: .text_delta, itemId: "ghost", delta: "!")))
         _ = transcript.apply(.text_delta(.init(_type: .text_delta, itemId: "u1", delta: "!")))
         // A delta replayed behind the page that completed its item is
-        // already in the text (deltas are never persisted; the completed
-        // item carries the whole text).
+        // already in the text (a completed item carries its whole text and
+        // ignores later live deltas).
         _ = transcript.apply(
             .item_completed(
                 .init(
@@ -152,6 +152,7 @@ struct ChatTranscriptTests {
     }
 
     @Test("rows nest children under their parent to any depth and mark abnormal turn ends after their last item")
+    @MainActor
     func rows() {
         var transcript = ChatTranscript()
         transcript.load(
@@ -167,7 +168,8 @@ struct ChatTranscriptTests {
                 turns: [Fixtures.turn("t1", status: .failed, error: "boom"), Fixtures.turn("t2")],
                 seq: 5
             ))
-        let rows = transcript.rows
+        var boxes: [String: ChatItemModel] = [:]
+        let rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes)
         #expect(rows.map(\.id) == ["item:u1", "item:c1", "item:orphan", "turn:t1", "item:u2"])
         guard case .item(let node) = rows[1] else {
             Issue.record("expected the command row")
@@ -183,7 +185,7 @@ struct ChatTranscriptTests {
     func pendingResolvesViaQueue() {
         var transcript = loaded()
         let id = transcript.addPending("do it")
-        #expect(transcript.rows.last?.id == "pending:\(id)")
+        #expect(transcript.pendingPrompts.map(\.text) == ["do it"])
         transcript.resolvePending(id: id, promptId: "p9", turnId: nil)
         #expect(transcript.pendingPrompts.count == 1)
         let mutation = transcript.apply(
@@ -231,13 +233,25 @@ struct ChatTranscriptTests {
         #expect(transcript.pendingPrompts.isEmpty)
     }
 
+    @Test("fresh queue evidence tombstones a queued pending withdrawn elsewhere, never an unanswered send")
+    func pendingTombstonedByFreshQueue() {
+        var transcript = loaded()
+        let unanswered = transcript.addPending("in flight")
+        let queued = transcript.addPending("later")
+        transcript.resolvePending(id: queued, promptId: "p5", turnId: nil)
+        // A fresh queue read that no longer lists the queued prompt (another
+        // client withdrew it) drops its echo; the send still awaiting its
+        // response keeps its echo.
+        transcript.replaceQueue([])
+        #expect(transcript.pendingPrompts.map(\.id) == [unanswered])
+    }
+
     @Test("a failed send removes its pending echo")
     func pendingRemovedOnFailure() {
         var transcript = loaded()
         let id = transcript.addPending("nope")
         transcript.removePending(id: id)
         #expect(transcript.pendingPrompts.isEmpty)
-        #expect(!transcript.rows.map(\.id).contains("pending:\(id)"))
     }
 
     // MARK: - Durable streaming partials
@@ -303,6 +317,16 @@ struct ChatRowBuilderTests {
         _ = ChatRowBuilder.rows(from: transcript, reusing: &boxes)
         #expect(boxes["c1"] == nil)
         #expect(boxes["u1"] != nil)
+    }
+
+    @Test("pending prompts render at the tail")
+    func pendingAtTail() {
+        var transcript = ChatTranscript()
+        transcript.load(Fixtures.page(items: [Fixtures.userMessage("u1")], seq: 1))
+        let id = transcript.addPending("sent")
+        var boxes: [String: ChatItemModel] = [:]
+        let rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes)
+        #expect(rows.map(\.id) == ["item:u1", "pending:\(id)"])
     }
 }
 

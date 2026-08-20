@@ -37,17 +37,17 @@
 import ATCAppServerAPI
 import Foundation
 
-/// What one reducer step changed, for the model's row bookkeeping.
+/// What one reducer step changed, for the model's row bookkeeping. Only the
+/// hot path (a streaming item's content) gets its own case; every other
+/// accepted change is `.structure` — a rebuild is cheap and impossible to
+/// misclassify.
 enum ChatMutation: Equatable {
     /// Nothing visible (a dropped stale event).
     case none
-    /// Rows changed shape: items added/removed, a turn marker, a pending
-    /// prompt added or resolved.
-    case structure
     /// One item's content changed in place (a delta, an in-place update).
     case item(String)
-    /// Live state only: requests, queue, or a turn's status.
-    case liveState
+    /// Anything else the copy accepted: rebuild rows, re-project live state.
+    case structure
     /// The copy was replaced server-side; the caller must refetch.
     case invalidated
 }
@@ -108,6 +108,7 @@ struct ChatTranscript: Equatable {
         items = page.items.filter { !knownItems.contains($0.id) } + items
         turns = page.turns.filter { !knownTurns.contains($0.id) } + turns
         hasMore = page.hasMore
+        settlePending()
     }
 
     mutating func replaceRequests(_ requests: [ThreadRequest]) {
@@ -116,7 +117,7 @@ struct ChatTranscript: Equatable {
 
     mutating func replaceQueue(_ prompts: [QueuedPrompt]) {
         queue = prompts
-        settlePending()
+        settlePending(queueIsFresh: true)
     }
 
     // MARK: - Pending prompts
@@ -144,22 +145,27 @@ struct ChatTranscript: Equatable {
 
     /// A pending prompt resolves when the server shows it somewhere real:
     /// the queue lists its promptId (the strip takes over), or the turn it
-    /// started (matched promptId → turnId) has its userMessage item.
-    private mutating func settlePending() {
+    /// started (matched promptId → turnId) has its userMessage item. With
+    /// fresh queue evidence, a prompt the server queued (a promptId, no
+    /// turn) that the queue no longer lists was withdrawn — by another
+    /// client — and the echo goes too.
+    private mutating func settlePending(queueIsFresh: Bool = false) {
         guard !pendingPrompts.isEmpty else { return }
         for index in pendingPrompts.indices where pendingPrompts[index].turnId == nil {
             guard let promptId = pendingPrompts[index].promptId else { continue }
             pendingPrompts[index].turnId = turns.first { $0.promptId == promptId }?.id
         }
         pendingPrompts.removeAll { pending in
-            if let promptId = pending.promptId, queue.contains(where: { $0.id == promptId }) {
-                return true
+            // No response yet: nothing to match against, keep the echo.
+            guard let promptId = pending.promptId else { return false }
+            if queue.contains(where: { $0.id == promptId }) { return true }
+            if let turnId = pending.turnId {
+                return items.contains { item in
+                    guard case .userMessage(let message) = item else { return false }
+                    return message.turnId == turnId
+                }
             }
-            guard let turnId = pending.turnId else { return false }
-            return items.contains { item in
-                guard case .userMessage(let message) = item else { return false }
-                return message.turnId == turnId
-            }
+            return queueIsFresh
         }
     }
 
@@ -192,15 +198,14 @@ struct ChatTranscript: Equatable {
         case .request_opened(let event):
             requests.removeAll { $0.id == event.request.id }
             requests.append(event.request)
-            return .liveState
+            return .structure
         case .request_closed(let event):
             requests.removeAll { $0.id == event.requestId }
-            return .liveState
+            return .structure
         case .queue_updated(let event):
             queue = event.prompts
-            let pendingBefore = pendingPrompts.count
-            settlePending()
-            return pendingPrompts.count == pendingBefore ? .liveState : .structure
+            settlePending(queueIsFresh: true)
+            return .structure
         case .snapshot_invalidated:
             return .invalidated
         }
@@ -248,21 +253,12 @@ struct ChatTranscript: Equatable {
     }
 
     private mutating func upsert(_ turn: ThreadTurn) -> ChatMutation {
-        let previous: ThreadTurn?
         if let index = turns.firstIndex(where: { $0.id == turn.id }) {
-            previous = turns[index]
             turns[index] = turn
         } else {
-            previous = nil
             turns.append(turn)
         }
-        let pendingBefore = pendingPrompts.count
         settlePending()
-        if pendingPrompts.count != pendingBefore { return .structure }
-        // A turn marker row appears only for failed/interrupted ends.
-        func marked(_ turn: ThreadTurn?) -> Bool {
-            turn.map { $0.status == .failed || $0.status == .interrupted } ?? false
-        }
-        return marked(turn) != marked(previous) ? .structure : .liveState
+        return .structure
     }
 }

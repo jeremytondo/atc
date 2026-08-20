@@ -28,13 +28,15 @@ import type { HistoryTurn } from "../agents/agentAdapter.ts"
 //   - Queue rows start oldest-first: `beginTurn` stamps started_turn_id and
 //     inserts the running turn atomically, and a started prompt is no
 //     longer waiting (deleteWaiting refuses it).
-//   - Item timestamps (ATC-214) are stamped HERE, not by adapters: an item
-//     keeps the createdAt it was first written with (the adapter's provider
-//     time when it passed one, else the write time), a tool item reaching a
-//     terminal status takes completedAt the same way, and `replace` carries
-//     both forward by item id — a re-read must not re-stamp what ATC
-//     already dated. The stamped values live in the item JSON (and mirrored
-//     in columns for the carry-forward lookup), so every read serves them.
+//   - Item timestamps (ATC-214) are stamped HERE, not by adapters, with one
+//     precedence: the adapter's provider time when it passes one, else the
+//     stamp the row already carries, else the write time — so an ATC
+//     approximation upgrades to the provider's truth but never re-stamps.
+//     A tool item reaching a terminal status takes completedAt the same
+//     way, and `replace` carries both forward by item id — a re-read must
+//     not re-date what ATC already dated. The stamped values live in the
+//     item JSON (and mirrored in columns for the carry-forward lookup), so
+//     every read serves them.
 
 export type ThreadTurnRecord = typeof ThreadTurn.Type
 export type ThreadItemRecord = typeof ThreadItem.Type

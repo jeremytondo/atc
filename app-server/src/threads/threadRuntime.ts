@@ -173,7 +173,10 @@ export type QueuedPrompt = typeof Contract.QueuedPrompt.Type
 //     an item.updated partial (complete stays false), so a reconnect, a
 //     second window, or GET /transcript sees a mid-answer bubble instead of
 //     an empty one. The tail since the last flush is lost with the process;
-//     byte-exact resume is a non-goal.
+//     byte-exact resume is a non-goal. Partials cover items whose start this
+//     writer saw: a turn reattached after a restart streams live-only until
+//     the adapter re-sends the item — seeding from the stored copy could
+//     persist text with a hole where the missed deltas were.
 //   - Recovery, prompt admission, run end, and release serialize per thread
 //     behind one start lock; threads still recovering at startup queue
 //     their prompts until recovery has settled them.
@@ -192,9 +195,10 @@ interface Run {
   finished: boolean
 }
 
-/** Once accumulated deltas reach this size the partial persists at once
- * (the throttle timer covers the slow-drip case). */
-const STREAMING_FLUSH_BYTES = 16 * 1024
+/** Once accumulated delta text reaches this length (UTF-16 units — close
+ * enough for a flush heuristic) the partial persists at once; the throttle
+ * timer covers the slow drip. */
+const STREAMING_FLUSH_LENGTH = 16 * 1024
 
 /**
  * The streamed text of one open item on a writer's feed (the header's
@@ -741,14 +745,12 @@ const make = (options: ThreadRuntimeOptions) =>
     }
 
     /** Persist and publish the text so far (an item.updated, complete still
-     * false). Callers hold the writer's lock. A fired timer whose entry
-     * flushed early (the byte cap) or completed finds nothing to do. */
+     * false). Callers hold the writer's lock. An entry that flushed early
+     * (the length cap) or completed leaves nothing to do. */
     const flushStreaming = (record: ThreadRecord, writer: Writer, itemId: string) =>
       Effect.suspend(() => {
         const entry = writer.streaming.get(itemId)
-        if (entry === undefined) return Effect.void
-        entry.armed = false
-        if (entry.pending === 0) return Effect.void
+        if (entry === undefined || entry.pending === 0) return Effect.void
         entry.pending = 0
         return recordItem(record.id, {
           type: "itemUpdated",
@@ -757,8 +759,9 @@ const make = (options: ThreadRuntimeOptions) =>
       })
 
     /** Every delta stays live-only on the wire; the accumulated text
-     * persists on the throttle (or at the byte cap), the header's
-     * durable-partials rule. */
+     * persists on the throttle (or at the length cap), the header's
+     * durable-partials rule. Only the timer itself disarms, so an item has
+     * at most one timer in flight. */
     const onTextDelta = (
       record: ThreadRecord,
       writer: Writer,
@@ -770,13 +773,21 @@ const make = (options: ThreadRuntimeOptions) =>
         if (entry === undefined) return
         entry.text += event.delta
         entry.pending += event.delta.length
-        if (entry.pending >= STREAMING_FLUSH_BYTES) {
+        if (entry.pending >= STREAMING_FLUSH_LENGTH) {
           return yield* flushStreaming(record, writer, event.itemId)
         }
         if (entry.armed) return
         entry.armed = true
         yield* Effect.sleep(streamingFlushInterval).pipe(
-          Effect.andThen(writer.lock.withPermit(flushStreaming(record, writer, event.itemId))),
+          Effect.andThen(
+            writer.lock.withPermit(
+              Effect.suspend(() => {
+                const armed = writer.streaming.get(event.itemId)
+                if (armed !== undefined) armed.armed = false
+                return flushStreaming(record, writer, event.itemId)
+              }),
+            ),
+          ),
           Effect.forkIn(writer.scope),
         )
       })
@@ -1576,7 +1587,12 @@ const make = (options: ThreadRuntimeOptions) =>
           }
           yield* publishQueue(id)
           return { promptId: queued.id }
-        }),
+        }).pipe(
+          // A caller that vanished mid-decision (request interruption) leaves
+          // the prompt admitted and durable: publish the queue so no client
+          // is left blind to it.
+          Effect.onInterrupt(() => publishQueue(id)),
+        ),
       interrupt: (id) =>
         Effect.gen(function* () {
           const record = yield* repository.require(id)
