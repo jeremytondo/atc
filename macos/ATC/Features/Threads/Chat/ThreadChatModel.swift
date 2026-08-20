@@ -161,7 +161,9 @@ final class ThreadChatModel {
 
     /// Applies one reducer outcome to the observed state. Structural changes
     /// animate (rows slide in, the bottom bar resizes); a delta only touches
-    /// its item's box — never animated, never a rebuild.
+    /// its item's box — never animated, never a rebuild; a pending→real
+    /// handoff rebuilds unanimated so the identical-looking swap cannot
+    /// flash.
     private func project(_ mutation: ChatMutation) {
         switch mutation {
         case .none, .invalidated:
@@ -169,6 +171,9 @@ final class ThreadChatModel {
         case .item(let id):
             guard let item = transcript.items.first(where: { $0.id == id }) else { return }
             boxes[id]?.update(item)
+        case .handoff:
+            rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes)
+            projectLiveState()
         case .structure:
             withAnimation(.snappy(duration: 0.25)) {
                 rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes)

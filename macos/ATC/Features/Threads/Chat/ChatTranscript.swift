@@ -29,7 +29,11 @@
 // - Pending prompts (the optimistic echo) are client-local rows at the tail:
 //   one is added the instant a send leaves, learns its promptId (and turnId)
 //   from the send response and the turn events, and resolves — removed —
-//   when the queue lists its prompt or the real userMessage item lands.
+//   when the queue lists its prompt or the real userMessage item lands. A
+//   landing userMessage settles its echo in the same step — matched by turn,
+//   or by exact text while the send response is still in flight (the stream
+//   can outrun it) — reported as `.handoff` so the visually identical row
+//   swap renders unanimated instead of flashing.
 //
 // `apply` reports what kind of change happened (`ChatMutation`) so the model
 // rebuilds its row models only on structural change, never per delta.
@@ -48,6 +52,11 @@ enum ChatMutation: Equatable {
     case item(String)
     /// Anything else the copy accepted: rebuild rows, re-project live state.
     case structure
+    /// A real userMessage replaced its pending echo in one step. The two
+    /// rows render identically, so the projection must rebuild without
+    /// animation — animated, SwiftUI fades one row out while sliding the
+    /// other in, and the prompt visibly flashes.
+    case handoff
     /// The copy was replaced server-side; the caller must refetch.
     case invalidated
 }
@@ -151,10 +160,7 @@ struct ChatTranscript: Equatable {
     /// client — and the echo goes too.
     private mutating func settlePending(queueIsFresh: Bool = false) {
         guard !pendingPrompts.isEmpty else { return }
-        for index in pendingPrompts.indices where pendingPrompts[index].turnId == nil {
-            guard let promptId = pendingPrompts[index].promptId else { continue }
-            pendingPrompts[index].turnId = turns.first { $0.promptId == promptId }?.id
-        }
+        matchPendingTurns()
         pendingPrompts.removeAll { pending in
             // No response yet: nothing to match against, keep the echo.
             guard let promptId = pending.promptId else { return false }
@@ -166,6 +172,33 @@ struct ChatTranscript: Equatable {
                 }
             }
             return queueIsFresh
+        }
+    }
+
+    /// A landing userMessage settles the echo it confirms in the same step:
+    /// matched through its turn once the send response arrived, or by exact
+    /// text while the send is still unanswered — the stream can hand over
+    /// the real item before the response carries the promptId. Reports
+    /// whether an echo settled so the caller can mark the mutation a
+    /// handoff (rendered as an unanimated swap).
+    private mutating func settle(byAppended item: ThreadItem) -> Bool {
+        guard case .userMessage(let message) = item, !pendingPrompts.isEmpty else { return false }
+        matchPendingTurns()
+        let index = pendingPrompts.firstIndex { pending in
+            if let turnId = pending.turnId { return turnId == message.turnId }
+            return pending.promptId == nil && pending.text == message.text
+        }
+        guard let index else { return false }
+        pendingPrompts.remove(at: index)
+        return true
+    }
+
+    /// Fills in the turn a resolved pending started, once that turn's event
+    /// (carrying the promptId) has arrived.
+    private mutating func matchPendingTurns() {
+        for index in pendingPrompts.indices where pendingPrompts[index].turnId == nil {
+            guard let promptId = pendingPrompts[index].promptId else { continue }
+            pendingPrompts[index].turnId = turns.first { $0.promptId == promptId }?.id
         }
     }
 
@@ -227,8 +260,7 @@ struct ChatTranscript: Equatable {
             return previous.parentItemId == item.parentItemId ? .item(item.id) : .structure
         }
         items.append(item)
-        settlePending()
-        return .structure
+        return settle(byAppended: item) ? .handoff : .structure
     }
 
     /// The durable-partials guard (see the header): the server's throttled

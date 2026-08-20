@@ -194,7 +194,7 @@ struct ChatTranscriptTests {
         #expect(transcript.pendingPrompts.isEmpty)
     }
 
-    @Test("a pending prompt resolves when its turn's userMessage lands")
+    @Test("a pending prompt settles as a handoff when its turn's userMessage lands")
     func pendingResolvesViaUserMessage() {
         var transcript = loaded()
         let id = transcript.addPending("go")
@@ -202,7 +202,7 @@ struct ChatTranscriptTests {
         let mutation = transcript.apply(
             .item_completed(
                 .init(_type: .item_completed, seq: 11, item: Fixtures.userMessage("m9", turn: "t9", text: "go"))))
-        #expect(mutation == .structure)
+        #expect(mutation == .handoff)
         #expect(transcript.pendingPrompts.isEmpty)
     }
 
@@ -220,17 +220,57 @@ struct ChatTranscriptTests {
         #expect(transcript.pendingPrompts.isEmpty)
     }
 
+    @Test("a userMessage that outruns the send response settles the echo by text, as a handoff")
+    func pendingSettlesByTextBeforeResponse() {
+        var transcript = loaded()
+        let id = transcript.addPending("fast")
+        _ = transcript.apply(
+            .turn_started(.init(_type: .turn_started, seq: 11, turn: Fixtures.turn("t3", promptId: "p3"))))
+        let mutation = transcript.apply(
+            .item_completed(
+                .init(_type: .item_completed, seq: 12, item: Fixtures.userMessage("m3", turn: "t3", text: "fast"))))
+        #expect(mutation == .handoff)
+        #expect(transcript.pendingPrompts.isEmpty)
+        // The late response is a no-op: the echo already settled.
+        transcript.resolvePending(id: id, promptId: "p3", turnId: nil)
+        #expect(transcript.pendingPrompts.isEmpty)
+    }
+
     @Test("resolvePending settles against state that already arrived (a fast stream)")
     func pendingResolvesLate() {
         var transcript = loaded()
         let id = transcript.addPending("fast")
         _ = transcript.apply(
             .turn_started(.init(_type: .turn_started, seq: 11, turn: Fixtures.turn("t3", promptId: "p3"))))
+        // The provider re-rendered the prompt, so text cannot match; the
+        // turn does once the response names the promptId.
         _ = transcript.apply(
             .item_completed(
-                .init(_type: .item_completed, seq: 12, item: Fixtures.userMessage("m3", turn: "t3", text: "fast"))))
+                .init(_type: .item_completed, seq: 12, item: Fixtures.userMessage("m3", turn: "t3", text: "FAST"))))
+        #expect(transcript.pendingPrompts.count == 1)
         transcript.resolvePending(id: id, promptId: "p3", turnId: nil)
         #expect(transcript.pendingPrompts.isEmpty)
+    }
+
+    @Test("text never settles someone else's prompt or an already-answered send")
+    func pendingTextMatchScope() {
+        var transcript = loaded()
+        _ = transcript.addPending("mine")
+        // Another client's prompt does not settle the unanswered echo.
+        var mutation = transcript.apply(
+            .item_completed(
+                .init(_type: .item_completed, seq: 11, item: Fixtures.userMessage("m8", turn: "t8", text: "theirs"))))
+        #expect(mutation == .structure)
+        #expect(transcript.pendingPrompts.map(\.text) == ["mine"])
+        // An answered (queued) echo settles only through its own promptId /
+        // turn, even when a coincident text lands.
+        let queued = transcript.addPending("later")
+        transcript.resolvePending(id: queued, promptId: "p5", turnId: nil)
+        mutation = transcript.apply(
+            .item_completed(
+                .init(_type: .item_completed, seq: 12, item: Fixtures.userMessage("m9", turn: "t9", text: "later"))))
+        #expect(mutation == .structure)
+        #expect(transcript.pendingPrompts.map(\.text) == ["mine", "later"])
     }
 
     @Test("fresh queue evidence tombstones a queued pending withdrawn elsewhere, never an unanswered send")
