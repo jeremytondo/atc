@@ -176,4 +176,14 @@ export const migrations: Record<string, Effect.Effect<void, unknown, SqlClient.S
       ) STRICT
     `
   }),
+  // Item timestamps (ATC-214): when an item was created and when a tool item
+  // finished. Stamped by the transcript repository (provider time when the
+  // adapter passes one) and preserved across provider re-reads by item id.
+  // Rows that predate the columns stay NULL — their stored item JSON carries
+  // no timestamps either, and the contract fields are optional.
+  "0008_thread_item_timestamps": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`ALTER TABLE thread_items ADD COLUMN created_at TEXT`
+    yield* sql`ALTER TABLE thread_items ADD COLUMN completed_at TEXT`
+  }),
 }
