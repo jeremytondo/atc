@@ -2,6 +2,8 @@
 // exactly as ChatPane lays it out, without a server. This is where later
 // rendering work is reviewed.
 
+import ATCAppServerAPI
+import ATCDesign
 import SwiftUI
 
 #if DEBUG

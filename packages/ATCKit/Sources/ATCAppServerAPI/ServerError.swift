@@ -1,4 +1,3 @@
-import ATCAppServerAPI
 import Foundation
 
 /// A contract-modeled server failure rendered for alerts: the payload's
@@ -7,12 +6,16 @@ import Foundation
 /// generated `Output` enum, pull `message` out of each documented failure
 /// case through the `ServerError(...)` initializers below, and throw this;
 /// `undocumented(status:)` covers the enum's catch-all case.
-struct ServerError: LocalizedError {
+public struct ServerError: LocalizedError {
     let message: String
 
-    var errorDescription: String? { message }
+    init(message: String) {
+        self.message = message
+    }
 
-    static func undocumented(status: Int) -> ServerError {
+    public var errorDescription: String? { message }
+
+    public static func undocumented(status: Int) -> ServerError {
         ServerError(message: "Unexpected server response (\(status)).")
     }
 }
@@ -24,7 +27,7 @@ struct ServerError: LocalizedError {
 /// the variadic initializer below cannot see a `valueN` a call site forgot
 /// to pass, so contract changes to anyOf statuses need their unwrap sites
 /// re-checked by hand.)
-nonisolated protocol ServerErrorPayload {
+public protocol ServerErrorPayload {
     var message: String { get }
 }
 
@@ -46,20 +49,15 @@ extension Components.Schemas.InvalidThreadSettingsJsonEncoding: ServerErrorPaylo
 
 extension ServerError {
     /// Wrap a single-schema failure payload.
-    init(_ payload: some ServerErrorPayload) {
+    public init(_ payload: some ServerErrorPayload) {
         self.init(message: payload.message)
     }
 
     /// Wrap an anyOf failure payload (a status documented with several
     /// tagged errors): the first populated branch's message. The generated
     /// decoder guarantees at least one branch is populated.
-    init(anyOf first: (any ServerErrorPayload)?, _ rest: (any ServerErrorPayload)?...) {
+    public init(anyOf first: (any ServerErrorPayload)?, _ rest: (any ServerErrorPayload)?...) {
         let branches = [first] + rest
         self.init(message: branches.compactMap { $0?.message }.first ?? "Unknown server error.")
     }
 }
-
-/// openThreadTerminal's ThreadBusy refusal (ATC-203): the server is driving
-/// a turn on a one-process provider and launches the TUI itself when the
-/// turn ends — a wait, not a failure to alert on.
-struct ThreadTerminalBusy: Error {}

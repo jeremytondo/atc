@@ -15,6 +15,7 @@
 // place the user learns what to install.
 
 import ATCAppServerAPI
+import ATCDesign
 import SwiftUI
 
 struct NewThreadSheet: View {

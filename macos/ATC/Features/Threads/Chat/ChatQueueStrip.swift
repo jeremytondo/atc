@@ -3,6 +3,7 @@
 // withdraw it. Queued prompts are live state, never transcript items.
 
 import ATCAppServerAPI
+import ATCDesign
 import SwiftUI
 
 struct ChatQueueStrip: View {

@@ -3,6 +3,8 @@
 // stream reports the request closed — by this client or any other.
 
 import ATCAppServerAPI
+import ATCChat
+import ATCDesign
 import SwiftUI
 
 struct ChatRequestCard: View {

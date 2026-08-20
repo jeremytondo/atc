@@ -13,6 +13,7 @@
 // refresh is what reorders it.
 
 import ATCAppServerAPI
+import ATCDesign
 import SwiftUI
 
 struct NavigatorSidebar: View {

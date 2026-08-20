@@ -9,12 +9,17 @@
 // LazyVStack recycling cannot reset it (ATC-214).
 
 import ATCAppServerAPI
+import ATCDesign
 import SwiftUI
 
-struct ChatRowView: View {
+public struct ChatRowView: View {
     let row: ChatRowModel
 
-    var body: some View {
+    public init(row: ChatRowModel) {
+        self.row = row
+    }
+
+    public var body: some View {
         switch row {
         case .item(let node):
             ChatItemView(node: node)

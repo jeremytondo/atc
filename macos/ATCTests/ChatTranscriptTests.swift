@@ -3,6 +3,7 @@ import Foundation
 import Testing
 
 @testable import ATC
+@testable import ATCChat
 
 /// The Chat reducer: the contract's merge rules for items, turns, deltas,
 /// live state, and the seq cursor — pure, no server.

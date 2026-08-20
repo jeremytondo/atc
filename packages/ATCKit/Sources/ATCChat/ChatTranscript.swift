@@ -62,8 +62,8 @@ enum ChatMutation: Equatable {
 }
 
 /// A prompt sent from this client that the transcript does not carry yet.
-struct PendingPrompt: Identifiable, Equatable {
-    let id: String
+public struct PendingPrompt: Identifiable, Equatable {
+    public let id: String
     let text: String
     /// The admitted prompt's id, once the send response arrived.
     var promptId: String?

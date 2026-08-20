@@ -13,6 +13,8 @@
 // turn. The composer autofocuses on appear unless a request card is up —
 // answering the agent owns the keyboard until it is done.
 
+import ATCAppServerAPI
+import ATCDesign
 import AppKit
 import SwiftUI
 

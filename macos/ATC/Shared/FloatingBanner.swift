@@ -1,3 +1,4 @@
+import ATCDesign
 import SwiftUI
 
 /// The content area's floating status pill: a glass capsule pinned to the

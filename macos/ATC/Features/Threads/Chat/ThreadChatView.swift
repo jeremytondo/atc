@@ -19,6 +19,8 @@
 // `perform` — gated on this thread's stream, reported inline — never a modal.
 
 import ATCAppServerAPI
+import ATCChat
+import ATCDesign
 import SwiftUI
 
 struct ThreadChatView: View {

@@ -12,6 +12,7 @@
 // validation, never the picker, is what makes a path trustworthy.
 
 import ATCAppServerAPI
+import ATCDesign
 import SwiftUI
 
 enum DirectoryCheckState: Equatable {

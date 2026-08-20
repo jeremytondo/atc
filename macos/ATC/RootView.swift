@@ -1,4 +1,5 @@
 import ATCAppServerAPI
+import ATCDesign
 import SwiftUI
 
 /// One stable window-root split view. The sidebar rebuilds freely while the

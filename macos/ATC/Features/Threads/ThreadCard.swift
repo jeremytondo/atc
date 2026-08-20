@@ -1,4 +1,5 @@
 import ATCAppServerAPI
+import ATCDesign
 import SwiftUI
 
 /// One thread in the sidebar. The whole card opens the thread; Pin and

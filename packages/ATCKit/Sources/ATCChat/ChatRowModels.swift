@@ -18,7 +18,7 @@ import Observation
 import OpenAPIRuntime
 
 @Observable
-final class ChatItemModel: Identifiable {
+public final class ChatItemModel: Identifiable {
     private(set) var item: ThreadItem
     /// Tool-row / Thinking disclosure, here so scrolling cannot reset it.
     var isExpanded = false
@@ -30,7 +30,7 @@ final class ChatItemModel: Identifiable {
         self.item = item
     }
 
-    var id: String { item.id }
+    public var id: String { item.id }
 
     func update(_ item: ThreadItem) {
         guard self.item != item else { return }
@@ -49,21 +49,21 @@ final class ChatItemModel: Identifiable {
 }
 
 /// One rendered node: the observed box plus its nested children.
-struct ChatNodeModel: Identifiable {
+public struct ChatNodeModel: Identifiable {
     let box: ChatItemModel
     let children: [ChatNodeModel]
 
-    var id: String { box.id }
+    public var id: String { box.id }
 }
 
-enum ChatRowModel: Identifiable {
+public enum ChatRowModel: Identifiable {
     case item(ChatNodeModel)
     /// A turn that ended abnormally, placed after its last item.
     case turnEnded(ThreadTurn)
     /// A prompt sent from this client that the transcript does not carry yet.
     case pending(PendingPrompt)
 
-    var id: String {
+    public var id: String {
         switch self {
         case .item(let node): "item:\(node.id)"
         case .turnEnded(let turn): "turn:\(turn.id)"
