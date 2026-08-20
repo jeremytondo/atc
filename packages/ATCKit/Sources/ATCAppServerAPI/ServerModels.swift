@@ -187,6 +187,14 @@ extension ThreadRequest {
         case .approval(let request): request.id
         }
     }
+
+    /// The transcript item this request blocks, when the provider names one.
+    public var itemId: String? {
+        switch self {
+        case .question(let request): request.itemId
+        case .approval(let request): request.itemId
+        }
+    }
 }
 
 extension ThreadEvent {

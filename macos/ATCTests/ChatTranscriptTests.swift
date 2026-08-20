@@ -152,14 +152,14 @@ struct ChatTranscriptTests {
         #expect(!transcript.hasMore)
     }
 
-    @Test("rows nest children under their parent to any depth and mark abnormal turn ends after their last item")
+    @Test("rows fold a turn's steps behind one work row, nest children, and mark abnormal turn ends")
     @MainActor
     func rows() {
         var transcript = ChatTranscript()
         transcript.load(
             Fixtures.page(
                 items: [
-                    Fixtures.userMessage("u1", turn: "t1"),
+                    Fixtures.userMessage("u1", turn: "t1", text: "run the tests"),
                     Fixtures.command("c1", turn: "t1"),
                     Fixtures.command("c2", turn: "t1", parent: "c1"),
                     Fixtures.command("c3", turn: "t1", parent: "c2"),
@@ -170,14 +170,21 @@ struct ChatTranscriptTests {
                 seq: 5
             ))
         var boxes: [String: ChatItemModel] = [:]
-        let rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes)
-        #expect(rows.map(\.id) == ["item:u1", "item:c1", "item:orphan", "turn:t1", "item:u2"])
-        guard case .item(let node) = rows[1] else {
-            Issue.record("expected the command row")
+        var folds: [String: ChatWorkModel] = [:]
+        let rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes, folds: &folds).rows
+        #expect(rows.map(\.id) == ["item:u1", "work:t1", "turn:t1", "item:u2"])
+        guard case .work(let work) = rows[1] else {
+            Issue.record("expected the turn's work fold")
             return
         }
-        #expect(node.children.map(\.id) == ["c2"])
-        #expect(node.children.first?.children.map(\.id) == ["c3"])
+        #expect(work.steps.map(\.id) == ["c1", "orphan"])
+        #expect(work.steps.first?.children.map(\.id) == ["c2"])
+        #expect(work.steps.first?.children.first?.children.map(\.id) == ["c3"])
+        guard case .turnEnded(let ended) = rows[2] else {
+            Issue.record("expected the failed turn's marker")
+            return
+        }
+        #expect(ended.retryPrompt == "run the tests")
     }
 
     // MARK: - Pending prompts (the optimistic echo)
@@ -329,7 +336,7 @@ struct ChatTranscriptTests {
 @Suite("ChatRowBuilder")
 @MainActor
 struct ChatRowBuilderTests {
-    @Test("boxes are reused across rebuilds, expansion survives, stale boxes drop")
+    @Test("boxes and folds are reused across rebuilds, expansion survives, stale ones drop")
     func boxReuse() {
         var transcript = ChatTranscript()
         transcript.load(
@@ -339,24 +346,30 @@ struct ChatRowBuilderTests {
                 seq: 1
             ))
         var boxes: [String: ChatItemModel] = [:]
-        var rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes)
-        guard case .item(let node) = rows[1] else {
-            Issue.record("expected the command row")
+        var folds: [String: ChatWorkModel] = [:]
+        var rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes, folds: &folds).rows
+        guard case .work(let work) = rows[1], let step = work.steps.first else {
+            Issue.record("expected the turn's work fold")
             return
         }
-        node.box.isExpanded = true
+        step.box.isExpanded = true
+        work.isExpanded = true
         _ = transcript.apply(
             .item_started(.init(_type: .item_started, seq: 2, item: Fixtures.command("c2"))))
-        rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes)
-        guard case .item(let again) = rows[1] else {
-            Issue.record("expected the command row")
+        rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes, folds: &folds).rows
+        guard case .work(let again) = rows[1] else {
+            Issue.record("expected the work fold")
             return
         }
-        #expect(again.box === node.box)
-        #expect(again.box.isExpanded)
+        #expect(again === work)
+        #expect(again.isExpanded)
+        #expect(again.steps.map(\.id) == ["c1", "c2"])
+        #expect(again.steps.first?.box === step.box)
+        #expect(again.steps.first?.box.isExpanded == true)
         transcript.load(Fixtures.page(items: [Fixtures.userMessage("u1")], seq: 3))
-        _ = ChatRowBuilder.rows(from: transcript, reusing: &boxes)
+        _ = ChatRowBuilder.rows(from: transcript, reusing: &boxes, folds: &folds)
         #expect(boxes["c1"] == nil)
+        #expect(folds["turn1"] == nil)
         #expect(boxes["u1"] != nil)
     }
 
@@ -366,7 +379,8 @@ struct ChatRowBuilderTests {
         transcript.load(Fixtures.page(items: [Fixtures.userMessage("u1")], seq: 1))
         let id = transcript.addPending("sent")
         var boxes: [String: ChatItemModel] = [:]
-        let rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes)
+        var folds: [String: ChatWorkModel] = [:]
+        let rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes, folds: &folds).rows
         #expect(rows.map(\.id) == ["item:u1", "pending:\(id)"])
     }
 }
@@ -383,7 +397,8 @@ struct ChatFixturesTests {
             transcript.load(page)
             #expect(!transcript.items.isEmpty)
             var boxes: [String: ChatItemModel] = [:]
-            let rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes)
+            var folds: [String: ChatWorkModel] = [:]
+            let rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes, folds: &folds).rows
             #expect(!rows.isEmpty)
             #expect(boxes.count == transcript.items.count)
         }

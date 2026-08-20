@@ -1,7 +1,7 @@
-// Text rendering shared by the Chat rows: inline markdown for message text,
-// and monospaced detail blocks (command output, diffs, JSON) for the
-// expandable tool rows. Deliberately small — rendered code blocks and
-// syntax-highlighted diffs are a later issue.
+// Text rendering shared by the Chat rows: inline markdown for the short
+// texts (user prompts, request questions), and monospaced detail blocks
+// (command output, diffs, JSON) for the expandable tool rows. Assistant
+// prose renders through the block model in Markdown/ instead.
 
 import ATCAppServerAPI
 import ATCDesign
@@ -11,14 +11,10 @@ import SwiftUI
 /// Message text with inline markdown (emphasis, code spans, links); block
 /// structure is kept as plain paragraphs. Text that fails to parse renders
 /// verbatim.
-public struct MarkdownText: View {
+struct MarkdownText: View {
     let text: String
 
-    public init(text: String) {
-        self.text = text
-    }
-
-    public var body: some View {
+    var body: some View {
         Text(attributed)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -33,14 +29,10 @@ public struct MarkdownText: View {
 }
 
 /// A monospaced detail block: selectable, wrapping, on a raised surface.
-public struct DetailBlock: View {
+struct DetailBlock: View {
     let text: String
 
-    public init(text: String) {
-        self.text = text
-    }
-
-    public var body: some View {
+    var body: some View {
         Text(text)
             .font(.callout.monospaced())
             .textSelection(.enabled)
@@ -51,16 +43,11 @@ public struct DetailBlock: View {
 }
 
 /// A labelled detail block (e.g. "Arguments", "Output").
-public struct DetailSection<Content: View>: View {
+struct DetailSection<Content: View>: View {
     let title: String
     @ViewBuilder let content: () -> Content
 
-    public init(title: String, @ViewBuilder content: @escaping () -> Content) {
-        self.title = title
-        self.content = content
-    }
-
-    public var body: some View {
+    var body: some View {
         VStack(alignment: .leading, spacing: Spacing.xs) {
             Text(title)
                 .font(.caption.weight(.semibold))
@@ -70,10 +57,10 @@ public struct DetailSection<Content: View>: View {
     }
 }
 
-public enum PrettyJSON {
+enum PrettyJSON {
     /// Any provider JSON (tool input/output, MCP arguments/result) as
     /// indented text; a value that cannot be re-encoded reads as `null`.
-    public static func string(_ value: OpenAPIValueContainer?) -> String {
+    static func string(_ value: OpenAPIValueContainer?) -> String {
         guard let value else { return "null" }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]

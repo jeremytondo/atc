@@ -78,8 +78,12 @@ public final class ThreadChatModel {
     public private(set) var lastSentPrompt: String?
 
     // What the views observe, projected from `transcript` after each change.
-    public private(set) var rows: [ChatRowModel] = []
+    private(set) var rows: [ChatRowModel] = []
     public private(set) var requests: [ThreadRequest] = []
+    /// Requests not rendered inline on an item row: cards for the bar.
+    public private(set) var barRequests: [ThreadRequest] = []
+    /// Requests rendered inline on the row they block ("N pending · jump").
+    public private(set) var inlineRequests: [ThreadRequest] = []
     public private(set) var queue: [QueuedPrompt] = []
     public private(set) var runningTurn: ThreadTurn?
     public private(set) var hasMore = false
@@ -89,6 +93,9 @@ public final class ThreadChatModel {
     private let makeStream: StreamFactory
     private let cursor = SeqCursor()
     @ObservationIgnored private var boxes: [String: ChatItemModel] = [:]
+    @ObservationIgnored private var folds: [String: ChatWorkModel] = [:]
+    /// Request ids the last row build attached inline.
+    @ObservationIgnored private var attachedRequestIDs: Set<String> = []
     private var streamTask: Task<Void, Never>?
     private var pageLoad: Task<Void, Never>?
     private var liveStateRefresh: Task<Void, Never>?
@@ -172,18 +179,28 @@ public final class ThreadChatModel {
             guard let item = transcript.items.first(where: { $0.id == id }) else { return }
             boxes[id]?.update(item)
         case .handoff:
-            rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes)
+            rebuildRows()
             projectLiveState()
         case .structure:
             withAnimation(.snappy(duration: 0.25)) {
-                rows = ChatRowBuilder.rows(from: transcript, reusing: &boxes)
+                rebuildRows()
                 projectLiveState()
             }
         }
     }
 
+    private func rebuildRows() {
+        let result = ChatRowBuilder.rows(from: transcript, reusing: &boxes, folds: &folds)
+        rows = result.rows
+        attachedRequestIDs = result.attachedRequestIDs
+    }
+
     private func projectLiveState() {
         if requests != transcript.requests { requests = transcript.requests }
+        let bar = transcript.requests.filter { !attachedRequestIDs.contains($0.id) }
+        if barRequests != bar { barRequests = bar }
+        let inline = transcript.requests.filter { attachedRequestIDs.contains($0.id) }
+        if inlineRequests != inline { inlineRequests = inline }
         if queue != transcript.queue { queue = transcript.queue }
         if runningTurn != transcript.runningTurn { runningTurn = transcript.runningTurn }
         if hasMore != transcript.hasMore { hasMore = transcript.hasMore }

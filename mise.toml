@@ -153,12 +153,16 @@ if [ -n "${ATC_XCODE_SPM_DIR:-}" ]; then
 fi
 
 scripts/prepare-xcode-openapi.sh "$derived_data_path"
+# -enableCodeCoverage NO: nothing consumes the coverage data, and the
+# instrumentation breaks linking swift-markdown's cmark-gfm C targets
+# (their framework products miss the profile runtime).
 xcodebuild test \
   -project macos/atc.xcodeproj \
   -scheme atc \
   -destination platform=macOS \
   -derivedDataPath "$derived_data_path" \
   -skipPackagePluginValidation \
+  -enableCodeCoverage NO \
   CODE_SIGNING_ALLOWED=NO ${extra[@]+"${extra[@]}"}
 """
 

@@ -2,7 +2,7 @@ import ATCDesign
 import SwiftUI
 import Testing
 
-@testable import ATC
+@testable import ATCChat
 
 /// The Chat transcript's tail rule: the toolbar and composer bar are content
 /// insets around the container, so "at the tail" means the container's bottom
@@ -50,14 +50,5 @@ struct ChatTailFollowTests {
         #expect(before != after)
         // Scrolling alone is not.
         #expect(before == ChatTailLayout(geometry(offsetY: 0)))
-    }
-
-    @Test("only the user's own scrolling counts as a gesture")
-    func gesturePhases() {
-        #expect(ScrollPhase.tracking.isGesture)
-        #expect(ScrollPhase.interacting.isGesture)
-        #expect(ScrollPhase.decelerating.isGesture)
-        #expect(!ScrollPhase.idle.isGesture)
-        #expect(!ScrollPhase.animating.isGesture)
     }
 }

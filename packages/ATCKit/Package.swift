@@ -38,6 +38,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-openapi-runtime", exact: "1.12.0"),
         .package(url: "https://github.com/apple/swift-openapi-urlsession", exact: "1.3.1"),
         .package(url: "https://github.com/apple/swift-http-types", exact: "1.6.0"),
+        .package(url: "https://github.com/swiftlang/swift-markdown", exact: "0.8.0"),
     ],
     targets: [
         .target(
@@ -65,12 +66,18 @@ let package = Package(
                 "ATCAppServerAPI",
                 "ATCAppServerTransport",
                 "ATCDesign",
+                .product(name: "Markdown", package: "swift-markdown"),
             ],
             resources: [
                 // Recorded wire samples driving the Chat previews.
                 .process("Fixtures/chat-fixture-claude.json"),
                 .process("Fixtures/chat-fixture-codex.json"),
             ],
+            swiftSettings: uiTargetSwiftSettings
+        ),
+        .testTarget(
+            name: "ATCChatTests",
+            dependencies: ["ATCChat"],
             swiftSettings: uiTargetSwiftSettings
         ),
         .testTarget(
