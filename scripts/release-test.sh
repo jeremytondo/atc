@@ -410,8 +410,64 @@ set -e
 [[ $verbose_status -eq 1 ]]
 [[ "$verbose_output" == *"Archive atc.app failed"* ]]
 grep -Fq -- \
-  "<-authenticationKeyPath> <$api_key_path> <-authenticationKeyID> <KEY123> <-authenticationKeyIssuerID> <ISSUER123>" \
+  "<CODE_SIGN_STYLE=Manual> <CODE_SIGN_IDENTITY=Developer ID Application: Test (337D6CNU4E)>" \
   "$tool_log"
+if grep -Eq -- '-allowProvisioningUpdates|-authenticationKey(Path|ID|IssuerID)' "$tool_log"; then
+  echo "release builds must not let Xcode create or update signing assets" >&2
+  exit 1
+fi
+grep -Fq '<key>signingStyle</key>' "$REPO_ROOT/scripts/ExportOptions.DeveloperID.plist"
+grep -Fq '<string>manual</string>' "$REPO_ROOT/scripts/ExportOptions.DeveloperID.plist"
+grep -Fq '<key>signingCertificate</key>' "$REPO_ROOT/scripts/ExportOptions.DeveloperID.plist"
+grep -Fq '<string>Developer ID Application</string>' "$REPO_ROOT/scripts/ExportOptions.DeveloperID.plist"
+
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  '{ printf '\''xcodebuild'\''; for arg in "$@"; do printf '\'' <%s>'\'' "$arg"; done; printf '\''\n'\''; } >> "$TOOL_LOG"' \
+  'if [[ "$1" == "-exportArchive" ]]; then' \
+  '  while [[ $# -gt 0 ]]; do' \
+  '    if [[ "$1" == "-exportPath" ]]; then mkdir -p "$2/atc.app/Contents"; exit; fi' \
+  '    shift' \
+  '  done' \
+  'fi' > "$fake_bin/xcodebuild"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'case "$2" in' \
+  '  *CFBundleIdentifier) printf '\''ElevenIdeas.atc.dev\n'\'' ;;' \
+  '  *CFBundleShortVersionString) printf '\''1.2.3\n'\'' ;;' \
+  '  *CFBundleVersion) printf '\''2\n'\'' ;;' \
+  '  *ATCBuildVersion) printf '\''1.2.3-dev.2\n'\'' ;;' \
+  '  *ATCBuildCommit) printf '\''%s\n'\'' "$EXPECTED_COMMIT" ;;' \
+  '  *ATCBuildBuiltAt) printf '\''2026-08-15T12:34:56Z\n'\'' ;;' \
+  '  *) exit 1 ;;' \
+  'esac' > "$fake_bin/PlistBuddy"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'if [[ "$1" == "--display" ]]; then' \
+  '  printf '\''Authority=Developer ID Application: Test (337D6CNU4E)\nTeamIdentifier=337D6CNU4E\n'\'' >&2' \
+  'fi' > "$fake_bin/codesign"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'for path in "$@"; do :; done' \
+  'touch "$path"' > "$fake_bin/hdiutil"
+chmod +x "$fake_bin/xcodebuild" "$fake_bin/PlistBuddy" "$fake_bin/codesign" "$fake_bin/hdiutil"
+
+: > "$tool_log"
+PATH="$fake_bin:$PATH" \
+  SECURITY_LOG="$security_log" \
+  TOOL_LOG="$tool_log" \
+  EXPECTED_COMMIT="$commit" \
+  ATC_APP_STORE_CONNECT_KEY_PATH="$api_key_path" \
+  ATC_APP_STORE_CONNECT_KEY_ID="KEY123" \
+  ATC_APP_STORE_CONNECT_ISSUER_ID="ISSUER123" \
+  run_macos_release_test "$TEST_ROOT/successful-release-artifacts" "$TEST_ROOT/successful-release-logs"
+[[ -f "$TEST_ROOT/atc.dmg" ]]
+grep -Fq '<-exportArchive>' "$tool_log"
+if grep -Eq -- '-allowProvisioningUpdates|-authenticationKey(Path|ID|IssuerID)' "$tool_log"; then
+  echo "successful release build mutated Xcode signing assets" >&2
+  exit 1
+fi
 
 missing_key_path="$TEST_ROOT/missing-key.p8"
 missing_key_log_dir="$TEST_ROOT/missing-key-logs"
