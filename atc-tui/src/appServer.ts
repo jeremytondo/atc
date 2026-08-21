@@ -12,6 +12,8 @@ export type Project = typeof Contract.Project.Type
 export type Thread = typeof Contract.Thread.Type
 export type Terminal = typeof Contract.Terminal.Type
 export type Agent = typeof Contract.Agent.Type
+export type DirectoryListing = typeof Contract.FsListResponse.Type
+export type DirectoryEntry = typeof Contract.FsListEntry.Type
 
 export interface Snapshot {
   readonly projects: ReadonlyArray<Project>
@@ -29,6 +31,7 @@ export class AppServer extends Context.Service<
   {
     readonly config: Config.ClientConfig["Service"]
     readonly snapshot: Effect.Effect<Snapshot, unknown>
+    readonly listDirectory: (path?: string) => Effect.Effect<DirectoryListing, unknown>
     readonly createProject: (input: CreateProjectInput) => Effect.Effect<Project, unknown>
     readonly updateProject: (
       projectId: string,
@@ -62,6 +65,7 @@ const make = Effect.gen(function* () {
   return AppServer.of({
     config,
     snapshot,
+    listDirectory: (path) => client.v1.listDirectory({ query: path === undefined ? {} : { path } }),
     createProject: (input) => client.v1.createProject({ payload: input }),
     updateProject: (projectId, input) =>
       client.v1.updateProject({ params: { projectId }, payload: input }),

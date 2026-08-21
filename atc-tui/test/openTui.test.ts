@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest"
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing"
-import { Effect, Fiber, Queue, Ref } from "effect"
+import { Deferred, Effect, Fiber, Queue, Ref } from "effect"
 import type * as AppServer from "../src/appServer.ts"
 import * as OpenTui from "../src/openTui.ts"
 import type * as View from "../src/view.ts"
@@ -82,10 +82,22 @@ interface ManagerHarness {
   readonly snapshotRef: Ref.Ref<AppServer.Snapshot | undefined>
 }
 
+const defaultListDirectory = (
+  requestedPath?: string,
+): Effect.Effect<AppServer.DirectoryListing> => {
+  const path = requestedPath ?? "/work"
+  return Effect.succeed({
+    path,
+    ...(path === "/" ? {} : { parent: "/" }),
+    entries: path === "/work" ? [{ name: "gamma", path: "/work/gamma" }] : [],
+  })
+}
+
 const runManager = (
   initialSnapshot: AppServer.Snapshot | undefined,
   initial: OpenTui.ManagerState,
   drive: (harness: ManagerHarness) => Effect.Effect<void, unknown>,
+  listDirectory = defaultListDirectory,
 ): Effect.Effect<OpenTui.ManagerResult, unknown> =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -111,6 +123,7 @@ const runManager = (
       const resultFiber = yield* Effect.forkScoped(
         OpenTui.runWithRenderer(setup.renderer, {
           endpoint: new URL("http://127.0.0.1:4242"),
+          listDirectory,
           snapshotRef,
           reachabilityRef,
           backgroundStatusRef,
@@ -154,7 +167,7 @@ describe("OpenTUI manager", () => {
     }),
   )
 
-  it.effect("creates a Project after validating its server-host directory", () =>
+  it.effect("validates and completes a Project directory from the server home", () =>
     Effect.gen(function* () {
       const result = yield* runManager(snapshot, { selectedThreadId: "t1" }, ({ setup }) =>
         Effect.gen(function* () {
@@ -166,9 +179,12 @@ describe("OpenTUI manager", () => {
           yield* waitForFrame(setup, "New Project · Directory")
           yield* Effect.promise(() => setup.mockInput.typeText("relative"))
           setup.mockInput.pressEnter()
-          yield* waitForFrame(setup, "Enter an absolute path beginning with /.")
+          yield* waitForFrame(setup, "Enter an absolute path beginning with / or ~/.")
           "relative".split("").forEach(() => setup.mockInput.pressBackspace())
-          yield* Effect.promise(() => setup.mockInput.typeText("/work/gamma"))
+          yield* Effect.promise(() => setup.mockInput.typeText("~/ga"))
+          yield* waitForFrame(setup, "gamma/")
+          setup.mockInput.pressTab()
+          yield* waitForFrame(setup, "~/gamma/")
           setup.mockInput.pressEnter()
         }),
       )
@@ -176,6 +192,126 @@ describe("OpenTUI manager", () => {
       assert.deepStrictEqual(result, {
         type: "createProject",
         input: { name: "Gamma", defaultWorkingDirectory: "/work/gamma" },
+        state: {
+          selectedThreadId: "t1",
+          section: "threads",
+          status: undefined,
+        },
+      })
+    }),
+  )
+
+  it.effect("navigates directory suggestions without moving focus from the input", () =>
+    Effect.gen(function* () {
+      const listDirectory = (requestedPath?: string) =>
+        Effect.succeed<AppServer.DirectoryListing>({
+          path: requestedPath ?? "/srv/home",
+          parent: "/srv",
+          entries:
+            requestedPath === undefined
+              ? [
+                  { name: "Alpha", path: "/srv/home/Alpha" },
+                  { name: "Beta", path: "/srv/home/Beta" },
+                ]
+              : [],
+        })
+      const result = yield* runManager(
+        snapshot,
+        { selectedThreadId: "t1" },
+        ({ setup }) =>
+          Effect.gen(function* () {
+            yield* waitForFrame(setup, "Alpha  ›  First")
+            setup.mockInput.pressKey("p", { ctrl: true })
+            yield* waitForFrame(setup, "New Project · Name")
+            yield* Effect.promise(() => setup.mockInput.typeText("Beta"))
+            setup.mockInput.pressEnter()
+            yield* waitForFrame(setup, "Alpha/")
+            yield* waitForFrame(setup, "Beta/")
+            setup.mockInput.pressArrow("down")
+            setup.mockInput.pressTab()
+            yield* waitForFrame(setup, "~/Beta/")
+            setup.mockInput.pressEnter()
+          }),
+        listDirectory,
+      )
+
+      assert.deepStrictEqual(result, {
+        type: "createProject",
+        input: { name: "Beta", defaultWorkingDirectory: "/srv/home/Beta" },
+        state: {
+          selectedThreadId: "t1",
+          section: "threads",
+          status: undefined,
+        },
+      })
+    }),
+  )
+
+  it.effect("keeps stale directory responses from replacing current suggestions", () =>
+    Effect.gen(function* () {
+      const pendingAlpha = yield* Deferred.make<AppServer.DirectoryListing>()
+      const listDirectory = (requestedPath?: string): Effect.Effect<AppServer.DirectoryListing> => {
+        if (requestedPath === "/srv/home/alpha") return Deferred.await(pendingAlpha)
+        if (requestedPath === undefined) {
+          return Effect.succeed({
+            path: "/srv/home",
+            parent: "/srv",
+            entries: [
+              { name: "alpha", path: "/srv/home/alpha" },
+              { name: "other", path: "/srv/home/other" },
+            ],
+          })
+        }
+        if (requestedPath === "/srv/home/other") {
+          return Effect.succeed({
+            path: requestedPath,
+            parent: "/srv/home",
+            entries: [{ name: "fresh", path: requestedPath + "/fresh" }],
+          })
+        }
+        return Effect.succeed({ path: requestedPath, parent: "/srv/home", entries: [] })
+      }
+
+      const result = yield* runManager(
+        snapshot,
+        { selectedThreadId: "t1" },
+        ({ setup }) =>
+          Effect.gen(function* () {
+            yield* waitForFrame(setup, "Alpha  ›  First")
+            setup.mockInput.pressKey("p", { ctrl: true })
+            yield* waitForFrame(setup, "New Project · Name")
+            yield* Effect.promise(() => setup.mockInput.typeText("Out of order"))
+            setup.mockInput.pressEnter()
+            yield* waitForFrame(setup, "alpha/")
+            yield* Effect.promise(() => setup.mockInput.typeText("~/alpha/"))
+            yield* waitForFrame(setup, "Loading /srv/home/alpha…")
+            "~/alpha/".split("").forEach(() => setup.mockInput.pressBackspace())
+            yield* Effect.promise(() => setup.mockInput.typeText("~/other/"))
+            yield* waitForFrame(setup, "fresh/")
+            yield* Effect.promise(() => setup.waitForVisualIdle())
+            const frameId = setup.renderer.frameId
+            yield* Deferred.succeed(pendingAlpha, {
+              path: "/srv/home/alpha",
+              parent: "/srv/home",
+              entries: [{ name: "stale", path: "/srv/home/alpha/stale" }],
+            })
+            yield* Effect.promise(() => setup.waitFor(() => setup.renderer.frameId > frameId))
+            const frame = setup.captureCharFrame()
+            assert.include(frame, "fresh/")
+            assert.notInclude(frame, "stale/")
+            setup.mockInput.pressTab()
+            yield* waitForFrame(setup, "~/other/fresh/")
+            setup.mockInput.pressEnter()
+          }),
+        listDirectory,
+      )
+
+      assert.deepStrictEqual(result, {
+        type: "createProject",
+        input: {
+          name: "Out of order",
+          defaultWorkingDirectory: "/srv/home/other/fresh",
+        },
         state: {
           selectedThreadId: "t1",
           section: "threads",

@@ -7,13 +7,14 @@ import {
 } from "@opentui/core"
 import { Effect, Queue, Ref } from "effect"
 import * as AppServer from "./appServer.ts"
+import * as DirectoryPrompt from "./directoryPrompt.ts"
 import * as OpenTuiApp from "./openTuiApp.ts"
 import * as View from "./view.ts"
 
 // OpenTUI owns only the interactive manager surface. Callbacks publish typed
-// events into Effect queues; API work remains in the application coordinator.
-// Each manager run owns a renderer scope that is destroyed before zmx inherits
-// the real TTY.
+// events into Effect queues, and the read-only directory browser receives its
+// API capability from the application coordinator. Each manager run owns a
+// renderer scope that is destroyed before zmx inherits the real TTY.
 
 export type ManagerSection = "threads" | "archived" | "projects"
 
@@ -50,6 +51,7 @@ export type ManagerResult =
 
 export interface ManagerOptions {
   readonly endpoint: URL
+  readonly listDirectory: DirectoryPrompt.ListDirectory
   readonly snapshotRef: Ref.Ref<AppServer.Snapshot | undefined>
   readonly reachabilityRef: Ref.Ref<View.Reachability>
   readonly backgroundStatusRef: Ref.Ref<string | undefined>
@@ -539,7 +541,10 @@ type ProjectWizardResult =
   | { readonly type: "cancel"; readonly status: string }
   | { readonly type: "quit" }
 
-const runCreateProjectWizard = (shell: OpenTuiApp.AppShell): Effect.Effect<ProjectWizardResult> =>
+const runCreateProjectWizard = (
+  shell: OpenTuiApp.AppShell,
+  listDirectory: DirectoryPrompt.ListDirectory,
+): Effect.Effect<ProjectWizardResult> =>
   Effect.gen(function* () {
     const name = yield* textPrompt(shell, {
       title: "New Project · Name",
@@ -552,13 +557,7 @@ const runCreateProjectWizard = (shell: OpenTuiApp.AppShell): Effect.Effect<Proje
       return { type: "cancel", status: "Project creation cancelled." } as const
     }
 
-    const directory = yield* textPrompt(shell, {
-      title: "New Project · Directory",
-      label: "Absolute directory on the App Server host",
-      placeholder: "/path/to/project",
-      validate: (value) =>
-        value.startsWith("/") ? undefined : "Enter an absolute path beginning with /.",
-    })
+    const directory = yield* DirectoryPrompt.run(shell, listDirectory)
     if (directory.type === "quit") return directory
     if (directory.type === "cancel") {
       return { type: "cancel", status: "Project creation cancelled." } as const
@@ -595,7 +594,7 @@ export const runWithRenderer = (
               return Effect.succeed(result)
             }
             if (result.type === "newProject") {
-              return runCreateProjectWizard(shell).pipe(
+              return runCreateProjectWizard(shell, options.listDirectory).pipe(
                 Effect.flatMap((created): Effect.Effect<ManagerResult, unknown> => {
                   if (created.type === "quit") return Effect.succeed({ type: "quit" } as const)
                   if (created.type === "cancel") {

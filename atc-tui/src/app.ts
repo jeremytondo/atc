@@ -83,6 +83,7 @@ export const run = Effect.scoped(
     const manager = (initial: OpenTui.ManagerState) =>
       OpenTui.run({
         endpoint: server.config.endpoint,
+        listDirectory: server.listDirectory,
         snapshotRef,
         reachabilityRef,
         backgroundStatusRef,
