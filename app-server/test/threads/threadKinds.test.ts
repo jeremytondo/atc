@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest"
 import { BunHttpServer } from "@effect/platform-bun"
-import { Effect, Layer, Option, Stream } from "effect"
+import { Effect, Layer, Stream } from "effect"
 import { HttpApiTest } from "effect/unstable/httpapi"
 import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -15,7 +15,6 @@ import { ThreadRepository } from "../../src/threads/threadRepository.ts"
 import { TranscriptRepository } from "../../src/threads/transcriptRepository.ts"
 import { ThreadRuntime } from "../../src/threads/threadRuntime.ts"
 import type { ThreadEvent } from "../../src/threads/threadRuntime.ts"
-import { Threads } from "../../src/threads/threads.ts"
 import { TestBuildInfoLayer } from "../testBuildInfo.ts"
 import { eventually, makeTestServiceLayers } from "../testLayers.ts"
 
@@ -363,31 +362,6 @@ describe("thread kinds", () => {
       const started = yield* runtime.prompt(thread.id, { prompt: "now" })
       assert.isString(started.turnId)
       fake.completeTurn(sessionId, "completed")
-    }).pipe(Effect.provide(TestLayer)),
-  )
-
-  it.live("a tui thread is observed and re-read as before", () =>
-    Effect.gen(function* () {
-      const { client, create } = yield* setup
-      const threads = yield* Threads
-      const repository = yield* ThreadRepository
-      const tui = yield* create("tui")
-      const terminal = yield* client.v1.openThreadTerminal({ params: { threadId: tui.id } })
-      const sessionId = Option.getOrThrow(yield* repository.get(tui.id)).providerSessionId ?? ""
-      assert.strictEqual(fake.observerCount(sessionId), 1)
-      fake.emitActivity(sessionId, "working")
-      yield* waitFor(
-        threads.get(tui.id).pipe(Effect.orDie),
-        (current) => current.activityState === "working",
-      )
-      const read = yield* client.v1.getThread({ params: { threadId: tui.id } })
-      assert.strictEqual(read.linkedTerminalId, terminal.id)
-      fake.emitActivity(sessionId, "idle")
-      yield* waitFor(
-        threads.get(tui.id).pipe(Effect.orDie),
-        (current) => current.activityState === "idle" && current.unread,
-      )
-      yield* client.v1.deleteThread({ params: { threadId: tui.id } })
     }).pipe(Effect.provide(TestLayer)),
   )
 })

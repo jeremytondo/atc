@@ -30,7 +30,7 @@ struct TerminalPane: View {
 
 /// Phase-driven banner floating over the terminal. An authoritative end is
 /// deliberately quiet here — the thread content area owns that state, because
-/// only it can offer the relaunch.
+/// only it can offer Reopen.
 struct TerminalStatusBanner: View {
     let controller: TerminalSessionController
 

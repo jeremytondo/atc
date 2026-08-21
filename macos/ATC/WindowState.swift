@@ -351,8 +351,8 @@ final class WindowState {
     }
 
     /// Keeps the displayed tui thread's terminal mapping and attach current:
-    /// adopt the server's linked terminal when it differs (a relaunch made
-    /// a new one), and reattach a live terminal that lost its controller.
+    /// adopt the server's linked terminal when it differs (another client
+    /// reopened it), and reattach a live terminal that lost its controller.
     /// A chat thread has no terminal (the server never links one).
     private func reconcileThreadTerminal(_ ref: ThreadRef, thread: ATCThread, in appModel: AppModel) {
         guard thread.kind == .tui else {
@@ -373,8 +373,8 @@ final class WindowState {
             }
             return
         }
-        // No live linked terminal server-side. Keep an ended controller's
-        // final frame (the relaunch affordance renders over it); drop the
+        // No live linked terminal server-side. Keep an ended controller
+        // registered (the Reopen empty state stands in for it); drop the
         // mapping only when nothing is retained for it anymore.
         if let terminalRef = threadTerminals[ref], appModel.terminals[terminalRef] == nil {
             threadTerminals[ref] = nil

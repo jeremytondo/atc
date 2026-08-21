@@ -49,7 +49,7 @@ extension AgentID {
 }
 
 extension ThreadKind {
-    /// The user-facing names are the two thread views' (ATC-224).
+    /// The user-facing names of the two thread kinds (ATC-224).
     public var displayName: String {
         switch self {
         case .chat: "Chat"

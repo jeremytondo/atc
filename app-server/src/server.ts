@@ -28,6 +28,7 @@ import * as AttachmentRepository from "./threads/attachmentRepository.ts"
 import * as Attachments from "./threads/attachments.ts"
 import * as ThreadRepository from "./threads/threadRepository.ts"
 import * as ThreadNaming from "./threads/threadNaming.ts"
+import * as ThreadObserver from "./threads/threadObserver.ts"
 import * as ThreadRuntime from "./threads/threadRuntime.ts"
 import * as Threads from "./threads/threads.ts"
 import * as ThreadTui from "./threads/threadTui.ts"
@@ -140,12 +141,14 @@ export const production = (options: { readonly port: number; readonly hostname?:
     // server-info handler and the optional trust allowlist read one instance.
     Layer.provideMerge(Tailscale.layer),
     // Projects sits above Threads (its delete cascades through them), which
-    // sits above the ThreadRuntime (activity ledger, transcript, turns,
-    // observation, TUI ownership); ThreadTui and Terminals serve both, and
-    // ThreadNaming serves Threads and the runtime — each provide feeds
+    // sits above the ThreadObserver (tui threads' feeds) and the
+    // ThreadRuntime (activity ledger, transcript, turns) the observer feeds;
+    // ThreadTui and Terminals serve all of them, and ThreadNaming serves
+    // Threads, the observer, and the runtime — each provide feeds
     // everything composed so far.
     Layer.provide(Projects.layer),
     Layer.provide(Threads.layer),
+    Layer.provide(ThreadObserver.layer),
     Layer.provide(ThreadRuntime.layer),
     Layer.provide(ThreadTui.layer),
     Layer.provide(Terminals.layer),

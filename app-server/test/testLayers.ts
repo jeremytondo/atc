@@ -30,6 +30,7 @@ import * as AttachmentRepository from "../src/threads/attachmentRepository.ts"
 import * as Attachments from "../src/threads/attachments.ts"
 import * as ThreadRepository from "../src/threads/threadRepository.ts"
 import * as ThreadNaming from "../src/threads/threadNaming.ts"
+import * as ThreadObserver from "../src/threads/threadObserver.ts"
 import * as ThreadRuntime from "../src/threads/threadRuntime.ts"
 import * as ThreadTui from "../src/threads/threadTui.ts"
 import * as TranscriptRepository from "../src/threads/transcriptRepository.ts"
@@ -130,6 +131,7 @@ export const makeTestServiceLayers = (
     | Terminals.Terminals
     | Threads.Threads
     | ThreadRuntime.ThreadRuntime
+    | ThreadObserver.ThreadObserver
     | Attachments.Attachments
     | FileSearch.FileSearch
     | TranscriptRepository.TranscriptRepository
@@ -187,10 +189,22 @@ export const makeTestServiceLayers = (
   )
   const threadTui = ThreadTui.layer.pipe(Layer.provide([services, terminals]))
   const runtime = ThreadRuntime.layerWith(threadOptions).pipe(
-    Layer.provide([services, registry, eventsLayer, naming, threadTui]),
+    Layer.provide([services, registry, eventsLayer, naming]),
+  )
+  const observer = ThreadObserver.layer.pipe(
+    Layer.provide([services, registry, naming, threadTui, runtime]),
   )
   const threads = Threads.layerWith(threadOptions).pipe(
-    Layer.provide([services, terminals, registry, eventsLayer, runtime, naming, threadTui]),
+    Layer.provide([
+      services,
+      terminals,
+      registry,
+      eventsLayer,
+      runtime,
+      observer,
+      naming,
+      threadTui,
+    ]),
   )
   return {
     fake,
@@ -204,6 +218,7 @@ export const makeTestServiceLayers = (
       TestAuthTokenLayer,
       Layer.succeed(Tailscale.Tailscale)({ status: Effect.succeed(tailscaleStatus) }),
       runtime,
+      observer,
       threads,
       Projects.layer.pipe(Layer.provide([services, terminals, threads, eventsLayer])),
     ),

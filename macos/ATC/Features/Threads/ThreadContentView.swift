@@ -3,9 +3,8 @@
 // sidebar navigation; every other state draws over it.
 //
 // A thread's `kind` decides what it shows (ATC-224): a chat thread draws
-// `ThreadChatView` over the pane (its terminal, if a stale one is linked,
-// stays hidden); a tui thread shows its terminal with the status banners
-// over it. A tui thread whose terminal ended shows an empty state with a
+// `ThreadChatView` over the pane; a tui thread shows its terminal with the
+// status banners over it. A tui thread whose terminal ended shows an empty state with a
 // Reopen button as the whole view — never a relaunch on its own; reopening
 // is just `openThread` again, and the server's open is idempotent.
 

@@ -15,8 +15,8 @@ import { eventually, makeTestServiceLayers } from "../testLayers.ts"
 // uniform seam only: on a one-process provider the connection a native
 // turn opened outlives the turn — the next prompt starts on it, its feed
 // keeps driving the ledger between turns — and closes only at a lifecycle
-// boundary (TUI hand-off, the provider ending it, release, the idle
-// timeout). A shared-server provider still holds nothing between turns.
+// boundary (the provider ending it, release, the idle timeout). A
+// shared-server provider still holds nothing between turns.
 
 const scratch = mkdtempSync(join(tmpdir(), "atc-residency-"))
 afterAll(() => rmSync(scratch, { recursive: true, force: true }))

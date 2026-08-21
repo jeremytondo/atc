@@ -1,4 +1,4 @@
-import { Context, Duration, Effect, Layer, Option, Schedule, Semaphore } from "effect"
+import { Context, Duration, Effect, Layer, Option, Schedule } from "effect"
 import { AgentRegistry } from "../agents/agentRegistry.ts"
 import type {
   AgentActivity,
@@ -34,11 +34,13 @@ import type {
 import { SqlClient } from "effect/unstable/sql"
 import { Events } from "../events/events.ts"
 import { Directories } from "../platform/directories.ts"
+import { makeKeyedLock } from "../platform/keyedLock.ts"
 import { ProjectRepository } from "../projects/projectRepository.ts"
 import { Terminals } from "../terminals/terminals.ts"
 import type { Terminal } from "../terminals/terminals.ts"
 import { ThreadNaming } from "./threadNaming.ts"
 import { Attachments } from "./attachments.ts"
+import { ThreadObserver } from "./threadObserver.ts"
 import { requireKind, ThreadRepository } from "./threadRepository.ts"
 import type { ThreadRecord } from "./threadRepository.ts"
 import { ThreadRuntime } from "./threadRuntime.ts"
@@ -56,10 +58,10 @@ export type Thread = typeof Contract.Thread.Type
 //     registry's adapterFor). Every provider difference is translated
 //     inside adapters; the same columns are persisted at the same points
 //     in the same flow for every agent.
-//   - `create` is local-only: the durable row, no provider call. Identity
-//     establishment is one internal transition (`materialize`, below) with
-//     openTerminal as its first caller; the runtime's first prompt is the
-//     second caller, with identical persistence.
+//   - `create` is local-only: the durable row, no provider call. A tui
+//     thread's identity is established by `materialize` (below) during
+//     openTerminal; a chat thread's by the runtime's first prompt, with
+//     the same persistence.
 //   - A thread has one driver for life — its `kind` (ATC-224): a chat
 //     thread is driven by the runtime's own process and has no terminal
 //     (openTerminal / closeTerminal refuse ThreadKindMismatch, and a read
@@ -75,26 +77,21 @@ export type Thread = typeof Contract.Thread.Type
 //     no history to protect yet. A terminal that ended is never relaunched
 //     by the server: the next open relaunches it.
 //   - workingDirectory is validated, canonicalized, and immutable.
-//   - activityState is in-memory evidence, never persisted, and lives in
-//     the ThreadRuntime's activity ledger — fed by its observation of a
-//     TUI-driven session (started here on demand: `runtime.observe`
-//     whenever a read finds a live linked TUI, or an open launches one) and
-//     by its native turns, one set of rules (first busy confirms, busy→idle
-//     stamps the finish, every transition publishes). `unknown` when there
-//     is no evidence; a busy state whose driver is gone re-derives
-//     demand-driven from the adapter's reconciliation check on read, unless
-//     the runtime is driving the thread (its evidence is authoritative) or a
-//     shared-server observation still covers it. The confirmed marker is
-//     persisted at the FIRST busy signal — a submitted prompt is already
-//     durable provider history worth protecting — the same signal for every
-//     provider.
+//   - activityState is in-memory evidence, never persisted: the
+//     ThreadRuntime's ledger, fed by the runtime's own turns and by the
+//     ThreadObserver (observation starts here on demand — `observer.observe`
+//     whenever a read finds a live linked TUI, or an open launches one).
+//     `unknown` when there is no evidence; a busy state whose driver is gone
+//     re-derives demand-driven from the adapter's reconciliation check on
+//     read, unless the runtime is driving the thread (its evidence is
+//     authoritative) or a shared-server observation still covers it.
 //   - The unread overlay (ATC-160) is derived, never stored as a flag:
 //     last_finished_at is stamped at the observed busy→idle drop — the
 //     ledger and the driver-gone re-derivation alike — last_viewed_at by
 //     markViewed, and archived rows are never unread. The activity
 //     vocabulary is untouched; "Done" is client-side display translation.
 //   - Auto-naming lives in ThreadNaming (ATC-155/190/202), fed by the
-//     runtime's observation and turns.
+//     observer's feed and the runtime's turns.
 //   - Settings (ATC-205) are stored state the runtime hands to the adapter
 //     at every turn start; a change here never touches a provider — it
 //     takes effect at the next turn, and a turn in flight is never
@@ -107,8 +104,8 @@ export type Thread = typeof Contract.Thread.Type
 //   - archived threads are never pinned: pin refuses archived records, and
 //     archive clears the pin in the same repository write so no client can
 //     observe or restore an archived pin.
-//   - archive suspends the thread's runtime (ATC-157): the live linked TUI
-//     terminal is killed (the terminals confirmed-kill rules) and
+//   - archive suspends the thread's runtime and observation (ATC-157): the
+//     live linked TUI terminal is killed (the terminals confirmed-kill rules) and
 //     adapter-owned session resources are released before archivedAt is
 //     written, so an archived thread consumes no zmx session while the
 //     provider conversation survives for an exact resume after unarchive.
@@ -194,7 +191,7 @@ export class Threads extends Context.Service<
       | TerminalLaunchFailed
     >
     /** End a tui thread's terminal: at once when idle, at its observed
-     * idle when busy (`runtime.closeTui`). */
+     * idle when busy (`observer.closeTui`). */
     readonly closeTerminal: (
       id: string,
     ) => Effect.Effect<
@@ -219,34 +216,22 @@ export const layerWith = (options: ThreadsOptions) =>
       const registry = yield* AgentRegistry
       const events = yield* Events
       const runtime = yield* ThreadRuntime
+      const observer = yield* ThreadObserver
       const naming = yield* ThreadNaming
       const tui = yield* ThreadTui
       // No SQL is written here: the client is held for `withTransaction`
       // alone, so the settings write and its defaults write-through commit
       // together (both repositories run on this one client).
       const sql = yield* SqlClient.SqlClient
-      // Forked work (a discovered finish's re-read) outlives its request;
-      // it lives in the service's own scope.
-      const serviceScope = yield* Effect.scope
       const identityTimeout = options.identityTimeout ?? "30 seconds"
       const launchWatchInterval = options.launchWatchInterval ?? "500 millis"
 
       /** Threads with an openTerminal in flight — the one-open guard. */
       const opening = new Set<string>()
-      /**
-       * Per-thread lifecycle serialization (the header's serialization
-       * bullet). Entries are dropped when the thread row is deleted; a
-       * waiter still queued on a dropped semaphore just finds the row gone.
-       */
-      const lifecycleLocks = new Map<string, Semaphore.Semaphore>()
-      const withLifecycleLock =
-        (id: string) =>
-        <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
-          Effect.suspend(() => {
-            const lock = lifecycleLocks.get(id) ?? Semaphore.makeUnsafe(1)
-            lifecycleLocks.set(id, lock)
-            return lock.withPermit(effect)
-          })
+      /** Per-thread lifecycle serialization (the header's serialization
+       * bullet); a deleted thread's entry is dropped. */
+      const lifecycleLock = makeKeyedLock()
+      const withLifecycleLock = lifecycleLock.withLock
 
       const adapterFor = (record: ThreadRecord): AgentAdapter | undefined =>
         isAgentId(record.agentId) ? registry.adapterFor(record.agentId) : undefined
@@ -296,7 +281,7 @@ export const layerWith = (options: ThreadsOptions) =>
           // so their busy states must still re-derive below (for Codex the
           // re-derivation costs paginated provider walks; skipping it here
           // is what keeps the listing hot path off the provider).
-          if (adapter?.sharedServer === true && (yield* runtime.observing(record))) {
+          if (adapter?.sharedServer === true && (yield* observer.observing(record))) {
             return { activity: live, record }
           }
           const providerSessionId = record.providerSessionId
@@ -308,17 +293,14 @@ export const layerWith = (options: ThreadsOptions) =>
                   .pipe(Effect.orElseSucceed(() => "unknown" as const))
           // The ledger stamps a finish discovered here (the busy snapshot
           // was real evidence and the check says the turn is over) and
-          // publishes the change to every subscriber. Loop-safe: the busy
-          // snapshot is gone, so the next event-triggered read returns at
-          // the short-circuit above without publishing. The record is
-          // re-read so the discovering response itself presents the thread
-          // unread — never a stale `unread: false` racing the refetch.
-          yield* runtime.noteActivity(record, checked)
-          if (checked === "idle") {
-            // A turn ended under observation, discovered here: the same
-            // moment the drain loop reports (re-read, drain the queue).
-            yield* runtime.observedIdle(record).pipe(Effect.forkIn(serviceScope))
-          }
+          // publishes the change to every subscriber — through the
+          // observer, whose idle rule (the re-read) applies to a discovered
+          // idle as to a reported one. Loop-safe: the busy snapshot is
+          // gone, so the next event-triggered read returns at the
+          // short-circuit above without publishing. The record is re-read
+          // so the discovering response itself presents the thread unread —
+          // never a stale `unread: false` racing the refetch.
+          yield* observer.noteActivity(record, checked)
           const current =
             checked === "idle"
               ? yield* repository.get(record.id).pipe(Effect.map(Option.getOrElse(() => record)))
@@ -366,7 +348,7 @@ export const layerWith = (options: ThreadsOptions) =>
           // the superseded session, and a read subscribing to it could
           // confirm a session the thread no longer references — the open's
           // own observe covers the fresh identity.
-          if (linked !== undefined && !opening.has(record.id)) yield* runtime.observe(record)
+          if (linked !== undefined && !opening.has(record.id)) yield* observer.observe(record)
           const resolved = yield* resolveActivity(record, linked?.id)
           return toThread(resolved.record, linked?.id, resolved.activity)
         })
@@ -451,7 +433,7 @@ export const layerWith = (options: ThreadsOptions) =>
             // feed (it must never confirm the successor) and release its
             // adapter resources before minting the replacement.
             if (record.providerSessionId !== undefined) {
-              yield* runtime.unobserve(record.id)
+              yield* observer.unobserve(record.id)
               yield* adapter.releaseSession({
                 providerSessionId: record.providerSessionId,
                 providerMetadata: record.providerMetadata,
@@ -492,7 +474,7 @@ export const layerWith = (options: ThreadsOptions) =>
                       identity.providerMetadata ?? null,
                     )
                     adopted = true
-                    yield* runtime.observe(updated)
+                    yield* observer.observe(updated)
                   }),
                 ).pipe(
                   Effect.onExit((exit) =>
@@ -520,7 +502,7 @@ export const layerWith = (options: ThreadsOptions) =>
       const reopen = (record: ThreadRecord, adapter: AgentAdapter) =>
         Effect.gen(function* () {
           const launched = yield* tui.reopen(record, adapter)
-          yield* runtime.observe(launched.record)
+          yield* observer.observe(launched.record)
           return launched.terminal
         })
 
@@ -565,13 +547,9 @@ export const layerWith = (options: ThreadsOptions) =>
                       ),
                   }),
                 )
-          // The runtime's ownership rules wrap the launch (the header) —
-          // including the last "already live" check, so a relaunch the
-          // runtime made while this caller waited is returned, never
-          // doubled.
-          return yield* runtime.openTui(record, launch).pipe(
-            // The open changed the thread (linked terminal, and possibly
-            // provider identity); the idempotent return above changed nothing.
+          // The open changed the thread (linked terminal, and possibly
+          // provider identity); the idempotent return above changed nothing.
+          return yield* launch.pipe(
             Effect.tap(() => events.publish({ resource: "thread", id, change: "updated" })),
           )
         })
@@ -587,12 +565,13 @@ export const layerWith = (options: ThreadsOptions) =>
             return yield* Effect.fail(new ThreadArchived({ threadId: id }))
           }
           yield* requireKind(record, "tui")
+          // A close waiting on the idle is called off by any open, and its
+          // in-flight idle work settles before the linked check below.
+          yield* observer.cancelPendingClose(id)
           const linked = yield* tui.linked(record)
           if (linked !== undefined) {
-            if (!opening.has(id)) yield* runtime.observe(record)
-            // Already live — still an open: the TUI is wanted again (a
-            // pending Chat hand-off is called off).
-            return yield* runtime.openTui(record, Effect.succeed(linked))
+            if (!opening.has(id)) yield* observer.observe(record)
+            return linked
           }
           if (opening.has(id)) {
             return yield* Effect.fail(
@@ -617,7 +596,7 @@ export const layerWith = (options: ThreadsOptions) =>
           Effect.gen(function* () {
             const record = yield* repository.require(id)
             yield* requireKind(record, "tui")
-            yield* runtime.closeTui(record)
+            yield* observer.closeTui(record)
             return yield* assembleAlone(record)
           }),
         )
@@ -626,10 +605,11 @@ export const layerWith = (options: ThreadsOptions) =>
         withLifecycleLock(id)(
           Effect.gen(function* () {
             const record = yield* repository.require(id)
-            // The runtime first: it waits out a TUI relaunch in flight and
-            // forbids another, so the kill below sees every terminal.
-            // Confirmed-kill rules live in Terminals.delete; a terminal that
-            // vanished since the lookup is already the goal state.
+            // Observation and run first, so nothing reports on the thread
+            // while it goes. Confirmed-kill rules live in Terminals.delete;
+            // a terminal that vanished since the lookup is already the goal
+            // state.
+            yield* observer.unobserve(id)
             yield* runtime.release(id)
             const linked = yield* tui.linked(record)
             if (linked !== undefined) yield* tui.end(linked.id)
@@ -651,7 +631,7 @@ export const layerWith = (options: ThreadsOptions) =>
             // The rows cascaded with the thread; the bytes on disk are ours
             // to remove (ATC-216).
             yield* attachments.purge(id)
-            lifecycleLocks.delete(id)
+            lifecycleLock.release(id)
             yield* events.publish({ resource: "thread", id, change: "deleted" })
             yield* Effect.forEach(orphaned, (terminal) =>
               events.publish({ resource: "terminal", id: terminal.id, change: "updated" }),
@@ -834,10 +814,8 @@ export const layerWith = (options: ThreadsOptions) =>
               if (isBusy((yield* resolveActivity(record, linked?.id)).activity)) {
                 return yield* Effect.fail(new ThreadBusy({ threadId: id }))
               }
-              // Suspend the runtime first: it waits out a TUI relaunch in
-              // flight and forbids another, so the kill sees every terminal
-              // (its run and observation are gone either way — the busy
-              // check above already found nothing running). Then the
+              // Suspend observation and the runtime first (the busy check
+              // above already found nothing running). Then the
               // confirmed-kill rules of Terminals.delete: a kill that cannot
               // verify death fails ZmxUnavailable and the thread stays
               // active (a re-archive converges); a terminal that vanished
@@ -846,6 +824,7 @@ export const layerWith = (options: ThreadsOptions) =>
               // plumbing; the next tuiLaunch recreates it). The provider
               // conversation itself is untouched, so unarchive + open
               // resumes it exactly.
+              yield* observer.unobserve(id)
               yield* runtime.release(id)
               const live = yield* tui.linked(record)
               if (live !== undefined) yield* tui.end(live.id)

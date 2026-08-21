@@ -457,9 +457,9 @@ final class AppModel {
     }
 
     /// Stops interaction for terminals the latest successful refresh says
-    /// are ended, keeping the controller and its surface registered — the
-    /// final frame stays visible under the relaunch affordance, and only
-    /// LRU eviction or teardown releases it. A terminal deleted outright is
+    /// are ended, keeping the controller and its surface registered (a
+    /// standalone terminal keeps its final frame; a tui thread shows its
+    /// Reopen empty state) — only LRU eviction or teardown releases it. A terminal deleted outright is
     /// fully disconnected. Failed refreshes are deliberately ignored so
     /// connection loss never manufactures a lifecycle transition.
     func reconcileTerminalLifecycle() {

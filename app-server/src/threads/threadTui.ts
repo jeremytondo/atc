@@ -13,11 +13,10 @@ import type { Terminal } from "../terminals/terminals.ts"
 import { ThreadRepository } from "./threadRepository.ts"
 import type { ThreadRecord } from "./threadRepository.ts"
 
-// A thread's TUI terminal (ATC-124 / ATC-203): the one place a Terminal is
-// found, launched, or ended on a thread's behalf, shared by the Threads
-// domain (open, archive, delete) and the ThreadRuntime (the one-process
-// hand-off between a TUI and a native turn) so both launch and end a TUI
-// the same way. Invariants:
+// A tui thread's terminal (ATC-124): the one place a Terminal is found,
+// launched, or ended on a thread's behalf, shared by the Threads domain
+// (open, archive, delete) and the ThreadObserver (ending a TUI at its
+// observed idle) so both launch and end a TUI the same way. Invariants:
 //
 //   - Every launch scrubs the nested-session markers uniformly
 //     (agentAdapter.ts NESTED_SESSION_ENV_VARIABLES): inherited from a
