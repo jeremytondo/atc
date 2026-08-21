@@ -78,7 +78,7 @@ struct CommandSequenceHintView: View {
             if case .unavailable(let reason) = availability {
                 Text(reason)
                     .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
             }
         }
         .foregroundStyle(availability.isAvailable ? .primary : .secondary)

@@ -35,6 +35,7 @@ struct DetailBlock: View {
     var body: some View {
         Text(text)
             .font(.callout.monospaced())
+            .foregroundStyle(.secondary)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(Spacing.sm)

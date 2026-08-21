@@ -50,6 +50,7 @@ private struct MarkdownBlockView: View {
         case .heading(_, let level, let text):
             Text(text)
                 .font(headingFont(level))
+                .foregroundStyle(.primary)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, level <= 2 ? Spacing.xs : 0)

@@ -406,7 +406,7 @@ struct ChatComposer: View {
             if completion.truncated {
                 Text("More files than the index holds — type more of the name.")
                     .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .padding(.horizontal, Spacing.sm)
             }
         }
@@ -507,7 +507,7 @@ struct ChatComposer: View {
                 }
             if text.isEmpty {
                 Text(attachments.isEmpty ? "Message the agent…" : "Add a message, or send the images…")
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .padding(.vertical, Spacing.xs)
                     .padding(.horizontal, Spacing.xs + 1)
                     .allowsHitTesting(false)

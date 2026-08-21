@@ -81,6 +81,11 @@ let package = Package(
             swiftSettings: uiTargetSwiftSettings
         ),
         .testTarget(
+            name: "ATCDesignTests",
+            dependencies: ["ATCDesign"],
+            swiftSettings: uiTargetSwiftSettings
+        ),
+        .testTarget(
             name: "ATCAppServerTransportTests",
             dependencies: ["ATCAppServerTransport"]
         ),

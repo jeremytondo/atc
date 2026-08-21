@@ -242,7 +242,7 @@ struct CommandPaletteView: View {
         if case .unavailable(let reason) = availability {
             Text(reason)
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
         }
     }
 
