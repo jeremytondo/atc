@@ -24,7 +24,6 @@ export class AppServer extends Context.Service<
     readonly config: Config.ClientConfig["Service"]
     readonly snapshot: Effect.Effect<Snapshot, unknown>
     readonly openThread: (threadId: string) => Effect.Effect<Terminal, unknown>
-    readonly getTerminal: (terminalId: string) => Effect.Effect<Terminal, unknown>
     readonly subscribe: (
       publish: (signal: Sse.ResourceSignal) => Effect.Effect<void>,
     ) => Effect.Effect<never>
@@ -48,7 +47,6 @@ const make = Effect.gen(function* () {
     config,
     snapshot,
     openThread: (threadId) => client.v1.openThreadTerminal({ params: { threadId } }),
-    getTerminal: (terminalId) => client.v1.getTerminal({ params: { terminalId } }),
     subscribe: (publish) => Sse.subscribe(config, publish),
   })
 })

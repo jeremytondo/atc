@@ -2,12 +2,12 @@ import { BunTerminal } from "@effect/platform-bun"
 import { Effect, Queue, Ref } from "effect"
 import type * as Terminal from "effect/Terminal"
 import * as AppServer from "./appServer.ts"
-import * as Attachment from "./attachment.ts"
+import * as Zmx from "./zmx.ts"
 import * as View from "./view.ts"
 
 // Application coordinator: one scoped SSE subscription maintains an
-// authoritative snapshot, while the manager and raw attachment take turns
-// owning stdin. Closing either scope restores the caller's terminal.
+// authoritative snapshot. The manager releases its terminal scope before a
+// direct zmx client inherits the TTY, then starts fresh when zmx returns.
 
 interface ManagerState {
   readonly selectedThreadId?: string | undefined
@@ -229,7 +229,7 @@ export const run = Effect.scoped(
     }
 
     const server = yield* AppServer.AppServer
-    const attachment = yield* Attachment.Attachment
+    const zmx = yield* Zmx.Zmx
     const snapshotRef = yield* Ref.make<AppServer.Snapshot | undefined>(undefined)
     const reachabilityRef = yield* Ref.make<View.Reachability>("connecting")
     const backgroundStatusRef = yield* Ref.make<string | undefined>(undefined)
@@ -261,12 +261,8 @@ export const run = Effect.scoped(
           if (result.type === "quit") return Effect.void
 
           return server.openThread(result.threadId).pipe(
-            Effect.flatMap((terminal) => attachment.run(terminal)),
-            Effect.map((outcome) =>
-              outcome.type === "detached"
-                ? "Detached; the session keeps running."
-                : "The terminal ended.",
-            ),
+            Effect.flatMap((terminal) => zmx.attach(terminal)),
+            Effect.as("Returned from zmx; session state refreshed."),
             Effect.catch((error) => Effect.succeed(`Could not attach: ${describeError(error)}`)),
             Effect.tap(() => Queue.offer(refreshRequests, void 0)),
             Effect.flatMap((nextStatus) => loop(result.threadId, nextStatus)),

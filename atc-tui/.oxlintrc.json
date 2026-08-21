@@ -21,6 +21,10 @@
   "ignorePatterns": ["dist"],
   "overrides": [
     {
+      "files": ["src/zmx.ts"],
+      "rules": { "atc/no-adhoc-spawn": "off" }
+    },
+    {
       "files": ["src/config.ts"],
       "rules": { "atc/no-process-env": "off" }
     },

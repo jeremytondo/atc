@@ -3,8 +3,8 @@ import { Console, Effect, Layer, Option, Runtime, Schema } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
 import * as App from "./app.ts"
 import * as AppServer from "./appServer.ts"
-import * as Attachment from "./attachment.ts"
 import * as Config from "./config.ts"
+import * as Zmx from "./zmx.ts"
 
 // Temporary standalone entrypoint for the prototype. The production atc
 // command remains unchanged.
@@ -23,11 +23,29 @@ const endpoint = Flag.optional(
   ),
 )
 
-const command = Command.make("atc-tui", { endpoint }, ({ endpoint }) =>
+const zmxBin = Flag.optional(
+  Flag.string("zmx-bin").pipe(
+    Flag.withDescription("zmx executable (defaults to ATC_ZMX_EXECUTABLE, then zmx)"),
+  ),
+)
+
+const zmxDir = Flag.optional(
+  Flag.string("zmx-dir").pipe(
+    Flag.withDescription("ATC's local zmx socket directory (defaults from XDG_STATE_HOME)"),
+  ),
+)
+
+const command = Command.make("atc-tui", { endpoint, zmxBin, zmxDir }, (options) =>
   App.run.pipe(
-    Effect.provide(Attachment.layer),
+    Effect.provide(Zmx.layer),
     Effect.provide(AppServer.layer),
-    Effect.provide(Config.layer(Option.getOrUndefined(endpoint))),
+    Effect.provide(
+      Config.layer({
+        endpoint: Option.getOrUndefined(options.endpoint),
+        zmxExecutable: Option.getOrUndefined(options.zmxBin),
+        zmxDir: Option.getOrUndefined(options.zmxDir),
+      }),
+    ),
     Effect.catch((error) => {
       const message =
         error instanceof Config.ConfigError
