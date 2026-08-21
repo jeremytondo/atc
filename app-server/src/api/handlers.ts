@@ -6,6 +6,7 @@ import { AgentRegistry } from "../agents/agentRegistry.ts"
 import { Events, HEARTBEAT } from "../events/events.ts"
 import { BuildInfo } from "../platform/buildInfo.ts"
 import { Directories } from "../platform/directories.ts"
+import { FileSearch } from "../platform/fileSearch.ts"
 import * as Tailscale from "../platform/tailscale.ts"
 import { Projects } from "../projects/projects.ts"
 import { attachTerminal } from "../terminals/terminalAttach.ts"
@@ -42,6 +43,7 @@ export const V1Handlers = HttpApiBuilder.group(
     const tailscale = yield* Tailscale.Tailscale
     const projects = yield* Projects
     const directories = yield* Directories
+    const fileSearch = yield* FileSearch
     const terminals = yield* Terminals
     const threads = yield* Threads
     const runtime = yield* ThreadRuntime
@@ -76,6 +78,7 @@ export const V1Handlers = HttpApiBuilder.group(
         .handle("deleteProject", ({ params }) => projects.delete(params.projectId))
         .handle("checkDirectory", ({ query }) => directories.check(query.path))
         .handle("listDirectory", ({ query }) => directories.list(query.path))
+        .handle("searchFiles", ({ query }) => fileSearch.search(query))
         .handle("listTerminals", ({ query }) =>
           terminals.list({ projectId: query.projectId, threadId: query.threadId }),
         )
@@ -132,6 +135,9 @@ export const V1Handlers = HttpApiBuilder.group(
         .handle("listAgents", () => agents.list())
         .handle("getAgent", ({ params }) => agents.get(params.agentId))
         .handle("listAgentModels", ({ params }) => agents.models(params.agentId))
+        .handle("listAgentCommands", ({ params, query }) =>
+          agents.commands(params.agentId, query.dir),
+        )
         // handleRaw instead of the typed handler for one reason: this stream
         // emits nothing until the first change, and Bun's fetch (every Bun
         // client, the contract TS client included) does not resolve a

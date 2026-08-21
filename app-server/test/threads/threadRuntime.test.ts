@@ -214,6 +214,101 @@ describe("ThreadRuntime", () => {
     }).pipe(Effect.scoped, Effect.provide(kit.layer)),
   )
 
+  it.live(
+    "`when: now` joins the running turn as its next message; queues once the turn ended",
+    () =>
+      Effect.gen(function* () {
+        const runtime = yield* ThreadRuntime
+        const threads = yield* Threads
+        const thread = yield* newThread
+        const started = yield* runtime.prompt(thread.id, { prompt: "begin" })
+        const turnId = started.turnId ?? ""
+        const session = [...fake.sessions.values()].find((entry) => entry.inputs.includes("begin"))
+        const providerSessionId = session?.providerSessionId ?? ""
+
+        // Joined: the same turn id, the adapter took the text mid-turn, the
+        // transcript shows it under the running turn, and nothing waits.
+        const joined = yield* runtime.prompt(thread.id, { prompt: "also this", when: "now" })
+        assert.strictEqual(joined.turnId, turnId)
+        assert.deepStrictEqual(session?.inputs, ["begin", "also this"])
+        const page = yield* waitFor(
+          runtime.transcript(thread.id).pipe(Effect.orDie),
+          (current) => current.items.filter((item) => item.type === "userMessage").length === 2,
+        )
+        assert.deepStrictEqual(
+          page.items.flatMap((item) => (item.type === "userMessage" ? [item.turnId] : [])),
+          [turnId, turnId],
+        )
+        assert.deepStrictEqual(yield* runtime.listQueue(thread.id), [])
+
+        // A plain prompt still queues behind the running turn.
+        const queued = yield* runtime.prompt(thread.id, { prompt: "later" })
+        assert.isUndefined(queued.turnId)
+
+        // Once the turn is over, "now" is an ordinary prompt: it queues behind
+        // the waiting one (and starts when the drain reaches it).
+        fake.completeTurn(providerSessionId, "completed")
+        yield* waitFor(
+          Effect.sync(() => session?.inputs ?? []),
+          (inputs) => inputs.includes("later"),
+        )
+        fake.completeTurn(providerSessionId, "completed")
+        // Idle on the ledger, not just a completed turn row: the activity
+        // event trails the turn's end on the feed, and a busy ledger queues.
+        yield* waitFor(
+          threads.get(thread.id).pipe(Effect.orDie),
+          (current) => current.activityState === "idle",
+        )
+        const fresh = yield* runtime.prompt(thread.id, { prompt: "after all", when: "now" })
+        assert.isString(fresh.turnId)
+        assert.notStrictEqual(fresh.turnId, turnId)
+      }).pipe(Effect.scoped, Effect.provide(kit.layer)),
+  )
+
+  it.live("a re-read keeps a steered prompt's images on that prompt, not the turn's first", () =>
+    Effect.gen(function* () {
+      const runtime = yield* ThreadRuntime
+      const attachments = yield* Attachments
+      const thread = yield* newThread
+      const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
+      const shot = yield* attachments.create(thread.id, { bytes: png, mediaType: "image/png" })
+      const started = yield* runtime.prompt(thread.id, { prompt: "start" })
+      const turnId = started.turnId ?? ""
+      const session = [...fake.sessions.values()].find((entry) => entry.inputs.includes("start"))
+      const providerSessionId = session?.providerSessionId ?? ""
+      const joined = yield* runtime.prompt(thread.id, {
+        prompt: "and look",
+        attachments: [shot.id],
+        when: "now",
+      })
+      assert.strictEqual(joined.turnId, turnId)
+      yield* waitFor(
+        runtime.transcript(thread.id).pipe(Effect.orDie),
+        (current) => current.items.filter((item) => item.type === "userMessage").length === 2,
+      )
+      fake.completeTurn(providerSessionId, "completed")
+      yield* waitFor(runtime.transcript(thread.id).pipe(Effect.orDie), (current) =>
+        current.turns.every((turn) => turn.status === "completed"),
+      )
+      // History re-numbers both prompts and carries no attachments.
+      fake.setHistory(providerSessionId, [
+        {
+          turn: { id: turnId, status: "completed" },
+          items: [
+            { type: "userMessage", id: "item-1", turnId, text: "start" },
+            { type: "userMessage", id: "item-2", turnId, text: "and look" },
+          ],
+        },
+      ])
+      yield* runtime.reread(thread.id)
+      const page = yield* runtime.transcript(thread.id)
+      const messages = page.items.flatMap((item) =>
+        item.type === "userMessage" ? [item.attachments] : [],
+      )
+      assert.deepStrictEqual(messages, [undefined, [shot]])
+    }).pipe(Effect.scoped, Effect.provide(kit.layer)),
+  )
+
   it.live("a provider re-read keeps a prompt's images where its turn id is stable", () =>
     Effect.gen(function* () {
       const runtime = yield* ThreadRuntime

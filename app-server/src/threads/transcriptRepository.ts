@@ -136,10 +136,13 @@ type AttachmentList = NonNullable<UserMessageRecord["attachments"]>
  * holds them — what a re-read must not lose (ATC-216, the header). */
 const attachmentsByTurn = (
   items: ReadonlyArray<ThreadItemRecord>,
-): Map<string, Array<AttachmentList>> => {
-  const byTurn = new Map<string, Array<AttachmentList>>()
+): Map<string, Array<AttachmentList | undefined>> => {
+  // Every prompt of the turn takes a slot, images or not: a turn holds
+  // several prompts once one is steered in ("now"), and the ordinal must
+  // count them all or a later prompt's images land on an earlier one.
+  const byTurn = new Map<string, Array<AttachmentList | undefined>>()
   for (const item of items) {
-    if (item.type !== "userMessage" || item.attachments === undefined) continue
+    if (item.type !== "userMessage") continue
     byTurn.set(item.turnId, [...(byTurn.get(item.turnId) ?? []), item.attachments])
   }
   return byTurn
@@ -265,6 +268,14 @@ export class TranscriptRepository extends Context.Service<
       prompt: string,
       attachmentIds: ReadonlyArray<string>,
     ) => Effect.Effect<QueuedPromptRecord>
+    /** A WAITING prompt the running turn `turnId` took mid-flight (ATC-216
+     * "now"): stamped started against that turn; false when it was not
+     * waiting (unknown, or started meanwhile). */
+    readonly startWaiting: (
+      threadId: string,
+      promptId: string,
+      turnId: string,
+    ) => Effect.Effect<boolean>
     /** Prompts still waiting, oldest first. */
     readonly listWaiting: (threadId: string) => Effect.Effect<ReadonlyArray<QueuedPromptRecord>>
     /** The oldest waiting prompt (None when nothing waits). */
@@ -333,14 +344,13 @@ export const layer = Layer.effect(TranscriptRepository)(
       `,
     })
 
-    // The userMessage items carrying attachments, in transcript order, for
-    // replace's carry-forward.
+    // The stored prompts in transcript order, for replace's carry-forward.
     const attachedItemRows = SqlSchema.findAll({
       Request: Schema.String,
       Result: Schema.Struct({ item: Schema.String }),
       execute: (threadId) => sql`
         SELECT item FROM thread_items
-        WHERE thread_id = ${threadId} AND json_extract(item, '$.attachments') IS NOT NULL
+        WHERE thread_id = ${threadId} AND json_extract(item, '$.type') = 'userMessage'
         ORDER BY ord ASC
       `,
     })
@@ -477,6 +487,20 @@ export const layer = Layer.effect(TranscriptRepository)(
     const insertQueueRow = SqlSchema.void({
       Request: QueueRow,
       execute: (row) => sql`INSERT INTO thread_queue ${sql.insert(row)}`,
+    })
+
+    const startWaitingRows = SqlSchema.findAll({
+      Request: Schema.Struct({
+        thread_id: Schema.String,
+        id: Schema.String,
+        turn_id: Schema.String,
+      }),
+      Result: Schema.Struct({ id: Schema.String }),
+      execute: (request) => sql`
+        UPDATE thread_queue SET started_turn_id = ${request.turn_id}
+        WHERE thread_id = ${request.thread_id} AND id = ${request.id} AND started_turn_id IS NULL
+        RETURNING id
+      `,
     })
 
     const waitingRows = SqlSchema.findAll({
@@ -719,6 +743,11 @@ export const layer = Layer.effect(TranscriptRepository)(
           }
           return insertQueueRow(row).pipe(Effect.as(toQueued(row)))
         }).pipe(Effect.orDie),
+      startWaiting: (threadId, promptId, turnId) =>
+        startWaitingRows({ thread_id: threadId, id: promptId, turn_id: turnId }).pipe(
+          Effect.map((rows) => rows.length > 0),
+          Effect.orDie,
+        ),
       listWaiting: (threadId) =>
         waitingRows(threadId).pipe(
           Effect.map((rows) => rows.map(toQueued)),

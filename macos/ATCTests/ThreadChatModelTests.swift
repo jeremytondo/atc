@@ -179,7 +179,6 @@ struct ThreadChatModelTests {
         #expect(await chat.send("do it"))
         #expect(client.prompts.map(\.prompt) == ["do it"])
         #expect(chat.promptError == nil)
-        #expect(chat.lastSentPrompt == "do it")
         // The echo is up (the response named its turn); the real userMessage
         // resolves it.
         #expect(chat.transcript.pendingPrompts.count == 1)
@@ -227,6 +226,24 @@ struct ThreadChatModelTests {
         #expect(await chat.send("again", attachments: [images[0]]) == false)
         #expect(chat.promptError != nil)
         #expect(chat.transcript.pendingPrompts.count == 2)
+    }
+
+    @Test("send passes the when choice through, and the prompt history lists sent prompts newest first")
+    func sendWhenAndHistory() async throws {
+        let harness = try await acquired()
+        let chat = harness.chat
+        let client = harness.test.client
+
+        #expect(await chat.send("nudge", when: .now))
+        #expect(client.prompts.last?.when == .now)
+        #expect(await chat.send("later", when: .queue))
+        #expect(client.prompts.last?.when == .queue)
+        #expect(await chat.send("plain"))
+        #expect(client.prompts.last?.when == nil)
+        // The echoes lead the history (newest first), ahead of the
+        // transcript's user messages; nothing repeats.
+        #expect(Array(chat.promptHistory.prefix(3)) == ["plain", "later", "nudge"])
+        #expect(Set(chat.promptHistory).count == chat.promptHistory.count)
     }
 
     @Test("perform refuses off-live inline and routes failures into actionError, never a throw")

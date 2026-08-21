@@ -82,8 +82,10 @@ public final class ThreadChatModel {
     public private(set) var promptError: String?
     /// The last chat action's failure, shown inline above the composer.
     public private(set) var actionError: String?
-    /// The last prompt this client sent (⌘↑ recalls it into the composer).
-    public private(set) var lastSentPrompt: String?
+    /// The thread's previous prompts, newest first and without repeats —
+    /// what ⌘↑/⌘↓ walk in the composer (ATC-216): the echoes still pending,
+    /// then the transcript's user messages.
+    public private(set) var promptHistory: [String] = []
 
     // What the views observe, projected from `transcript` after each change.
     private(set) var rows: [ChatRowModel] = []
@@ -215,6 +217,18 @@ public final class ThreadChatModel {
         if runningTurn != transcript.runningTurn { runningTurn = transcript.runningTurn }
         if hasMore != transcript.hasMore { hasMore = transcript.hasMore }
         if isLoaded != transcript.isLoaded { isLoaded = transcript.isLoaded }
+        let history = Self.history(of: transcript)
+        if promptHistory != history { promptHistory = history }
+    }
+
+    private static func history(of transcript: ChatTranscript) -> [String] {
+        let pending = transcript.pendingPrompts.reversed().map(\.text)
+        let sent = transcript.items.reversed().compactMap { item -> String? in
+            guard case .userMessage(let message) = item else { return nil }
+            return message.text
+        }
+        var seen: Set<String> = []
+        return (pending + sent).filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
     // MARK: - Reads
@@ -323,12 +337,15 @@ public final class ThreadChatModel {
 
     /// Prompts the thread, echoing the prompt (and its images) as a pending
     /// row at once. Images upload first; the prompt carries their ids.
+    /// `when` is the server's choice between queueing and joining the
+    /// running turn (ATC-216); nil leaves it to the server's default.
     /// Returns false when the server refused (the error is in `promptError`)
     /// so the composer restores text and images.
     @discardableResult
-    public func send(_ prompt: String, attachments: [PendingAttachment] = []) async -> Bool {
+    public func send(
+        _ prompt: String, attachments: [PendingAttachment] = [], when: PromptWhen? = nil
+    ) async -> Bool {
         promptError = nil
-        if !prompt.isEmpty { lastSentPrompt = prompt }
         let pendingID = transcript.addPending(prompt, attachments: attachments)
         project(.structure)
         do {
@@ -337,7 +354,7 @@ public final class ThreadChatModel {
                 ids.append(try await upload(attachment).id)
             }
             let request = Components.Schemas.PromptThreadRequest(
-                prompt: prompt, attachments: ids.isEmpty ? nil : ids)
+                prompt: prompt, attachments: ids.isEmpty ? nil : ids, when: when)
             switch try await client.promptThread(path: .init(threadId: threadID), body: .json(request)) {
             case .ok(let ok):
                 let response = try ok.body.json

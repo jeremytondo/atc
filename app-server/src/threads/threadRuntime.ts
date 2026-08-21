@@ -75,7 +75,10 @@ export type QueuedPrompt = typeof Contract.QueuedPrompt.Type
 //     a provider that refuses that immediate start, which un-admits the
 //     prompt so the caller's error means "not accepted". A thread busy
 //     under a TUI (the ledger says so) queues the prompt and drains at the
-//     observed idle: no busy error, no lock between surfaces. A turn runs
+//     observed idle: no busy error, no lock between surfaces. A prompt
+//     marked `now` (ATC-216) is instead handed to the turn running on our
+//     writer — the seam's `steer` — and recorded against that turn; with no
+//     such turn, or one that ended first, it is an ordinary prompt. A turn runs
 //     on a writer connection the runtime holds; client connections never
 //     matter to a run's lifetime. A closing writer stays registered until
 //     its connection has closed, so the next prompt never races it.
@@ -259,14 +262,16 @@ export interface ThreadRuntimeOptions {
 export class ThreadRuntime extends Context.Service<
   ThreadRuntime,
   {
-    /** Admit a prompt; `turnId` present ⇒ it started at once, else queued.
-     * `attachments` are ids of the thread's own uploads (ATC-216); a foreign
-     * or unknown id refuses the prompt before it is admitted. */
+    /** Admit a prompt; `turnId` present ⇒ it started at once (or, with
+     * `when: "now"`, joined the running turn), else queued. `attachments`
+     * are ids of the thread's own uploads (ATC-216); a foreign or unknown
+     * id refuses the prompt before it is admitted. */
     readonly prompt: (
       id: string,
       input: {
         readonly prompt: string
         readonly attachments?: ReadonlyArray<string> | undefined
+        readonly when?: "queue" | "now" | undefined
       },
     ) => Effect.Effect<
       { readonly promptId: string; readonly turnId?: string },
@@ -517,6 +522,44 @@ const make = (options: ThreadRuntimeOptions) =>
           ),
         ),
       )
+
+    /**
+     * Hand an admitted (waiting) prompt to the turn running on the thread's
+     * writer (ATC-216 "now"): the seam's `steer`, under the writer's lock so
+     * the item it produces lands after the Run that owns it, and — in one
+     * uninterruptible step with it — the row stamped started against that
+     * turn, so a provider that took the message never has it delivered
+     * again by the drain. Undefined when no turn of ours runs (a TUI-driven
+     * turn has no writer to hand to) or the turn ended first: the prompt
+     * stays waiting for the ordinary drain.
+     */
+    const steerRunning = (
+      id: string,
+      queued: QueuedPromptRecord,
+      input: TurnInput,
+    ): Effect.Effect<{ readonly promptId: string; readonly turnId: string } | undefined> =>
+      Effect.gen(function* () {
+        const writer = writers.get(id)
+        const run = writer?.run
+        if (writer === undefined || run === undefined || run.finished) return undefined
+        const joined = yield* writer.lock
+          .withPermit(
+            Effect.uninterruptible(
+              writer.connection
+                .steer(input, run.turn)
+                .pipe(Effect.andThen(transcripts.startWaiting(id, queued.id, run.turnId))),
+            ),
+          )
+          .pipe(
+            Effect.catch((error) =>
+              Effect.logDebug("the running turn did not take the prompt; it queues").pipe(
+                Effect.annotateLogs({ threadId: id, reason: error.message }),
+                Effect.as(false),
+              ),
+            ),
+          )
+        return joined ? { promptId: queued.id, turnId: run.turnId } : undefined
+      })
 
     const publishQueue = (threadId: string): Effect.Effect<void> =>
       queuedPrompts(threadId).pipe(
@@ -1610,10 +1653,17 @@ const make = (options: ThreadRuntimeOptions) =>
           // admitted — an unknown id is the caller's error, not a queued
           // prompt that can never start.
           const attachmentIds = input.attachments ?? []
-          yield* attachments.resolve(id, attachmentIds)
+          const resolved = yield* attachments.resolve(id, attachmentIds)
           // Whether THIS prompt is the one an immediate start would run.
           const first = runOf(id) === undefined && Option.isNone(yield* transcripts.peek(id))
           const queued = yield* transcripts.enqueue(id, input.prompt, attachmentIds)
+          if (input.when === "now") {
+            const joined = yield* steerRunning(id, queued, {
+              text: input.prompt,
+              attachments: resolved,
+            })
+            if (joined !== undefined) return joined
+          }
           // The drain runs the OLDEST waiting prompt. When that is ours, a
           // provider that refuses un-admits it (the caller's error means
           // "not accepted"); an older prompt's failure just leaves ours

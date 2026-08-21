@@ -115,6 +115,56 @@ describe("CodexAdapter", () => {
   )
 
   it.live(
+    "steer rides turn/steer into the running turn and echoes as its next item; a stale turn is a conflict",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox()
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const { connection, turn } = yield* adapter.createSession({
+                cwd: sandbox.cwd,
+                input: { text: "HANG on", attachments: [] },
+                settings: TEST_SETTINGS,
+              })
+              const sink = yield* collectAgentEvents(connection.events)
+              yield* connection.steer({ text: "and this too", attachments: [] }, turn)
+              yield* waitForAgentEvent(
+                sink,
+                (event) =>
+                  event.type === "itemCompleted" &&
+                  event.item.type === "userMessage" &&
+                  event.item.text === "and this too" &&
+                  event.item.turnId === turn.turnId,
+              )
+              const stale = yield* Effect.flip(
+                connection.steer({ text: "nope", attachments: [] }, { turnId: "other-turn" }),
+              )
+              assert.strictEqual(stale._tag, "AgentConflict")
+              yield* connection.interrupt(turn)
+            }),
+          ),
+        )
+      }),
+    30_000,
+  )
+
+  it.live(
+    "listCommands lists the shared server's enabled skills for the directory",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox()
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.gen(function* () {
+            const commands = yield* adapter.listCommands({ cwd: sandbox.cwd })
+            assert.deepStrictEqual(commands, [{ name: "review", description: "Review the diff" }])
+          }),
+        )
+      }),
+    30_000,
+  )
+
+  it.live(
     "resume: exact identity round trip; unknown id fails closed",
     () =>
       Effect.gen(function* () {

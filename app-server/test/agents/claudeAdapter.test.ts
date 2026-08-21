@@ -131,6 +131,83 @@ describe("ClaudeAdapter", () => {
     }),
   )
 
+  it.live(
+    "steer pushes a message into the running turn and mints its item; a stale turn is a conflict",
+    () =>
+      Effect.gen(function* () {
+        const cwd = workDir()
+        const { fake, layer } = adapterStack({ sessionId: "session-steer" })
+        yield* Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter.ClaudeAdapter
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const { connection, turn } = yield* adapter.createSession({
+                cwd,
+                input: { text: "HANG until told otherwise", attachments: [] },
+                settings: TEST_SETTINGS,
+              })
+              const sink = yield* collectAgentEvents(connection.events)
+              yield* connection.steer({ text: "also check the tests", attachments: [] }, turn)
+              // The SDK child took the message while the first turn still runs.
+              yield* eventually(
+                Effect.sync(() => fake.prompts),
+                (prompts) => prompts.length === 2,
+              )
+              assert.deepStrictEqual(fake.prompts, [
+                "HANG until told otherwise",
+                "also check the tests",
+              ])
+              const messages = sink.filter(
+                (event) => event.type === "itemCompleted" && event.item.type === "userMessage",
+              )
+              assert.lengthOf(messages, 2)
+              assert.isTrue(
+                messages.every(
+                  (event) => event.type === "itemCompleted" && event.item.turnId === turn.turnId,
+                ),
+              )
+              const stale = yield* Effect.flip(
+                connection.steer({ text: "nope", attachments: [] }, { turnId: "some-other-turn" }),
+              )
+              assert.strictEqual(stale._tag, "AgentConflict")
+              yield* connection.interrupt(turn)
+            }),
+          )
+        }).pipe(Effect.provide(layer))
+      }),
+  )
+
+  it.live(
+    "listCommands probes a throwaway child in the directory and reads its initialization",
+    () =>
+      Effect.gen(function* () {
+        const cwd = workDir()
+        const { fake, layer } = adapterStack({
+          commands: [
+            { name: "review", description: "Review the diff", argumentHint: "" },
+            { name: "commit", description: "Commit staged work", argumentHint: "<message>" },
+          ],
+        })
+        yield* Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter.ClaudeAdapter
+          const commands = yield* adapter.listCommands({ cwd })
+          assert.deepStrictEqual(commands, [
+            { name: "review", description: "Review the diff" },
+            { name: "commit", description: "Commit staged work", argumentHint: "<message>" },
+          ])
+          // The probe ran in the asked directory with the project's settings,
+          // sent no prompt, and was aborted.
+          const spawn = fake.spawns.at(-1) as {
+            cwd?: string
+            settingSources?: ReadonlyArray<string>
+          }
+          assert.strictEqual(spawn.cwd, cwd)
+          assert.deepStrictEqual(spawn.settingSources, ["user", "project", "local"])
+          assert.lengthOf(fake.prompts, 0)
+        }).pipe(Effect.provide(layer))
+      }),
+  )
+
   it.live("create with a lying cwd fails closed", () =>
     Effect.gen(function* () {
       const { layer } = adapterStack({ wrongCwd: true })

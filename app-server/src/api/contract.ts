@@ -191,6 +191,27 @@ export const FsListResponse = Schema.Struct({
   description: "A directory listing for the server-backed folder browser. Never persisted.",
 })
 
+export const FsFileEntry = Schema.Struct({
+  path: Schema.String.annotate({ description: "Path relative to `dir`, `/`-separated." }),
+  name: Schema.String.annotate({ description: "The file's basename." }),
+}).annotate({ identifier: "FsFileEntry", description: "One file under a searched directory." })
+
+export const FsFilesResponse = Schema.Struct({
+  dir: Schema.String.annotate({
+    description: "Canonical (symlink-resolved) absolute path of the searched directory.",
+  }),
+  entries: Schema.Array(FsFileEntry).annotate({
+    description: "Best matches first; an empty query lists files in path order.",
+  }),
+  truncated: Schema.Boolean.annotate({
+    description:
+      "True when the tree holds more files than the index walks, so a file may be missing from every query of this directory.",
+  }),
+}).annotate({
+  identifier: "FsFilesResponse",
+  description: "A ranked filename search over one directory tree (`@` mentions). Never persisted.",
+})
+
 export const TerminalStatus = Schema.Literals(["live", "ended"]).annotate({
   identifier: "TerminalStatus",
   description:
@@ -362,6 +383,22 @@ export const AgentModel = Schema.Struct({
   identifier: "AgentModel",
   description:
     "One entry of an agent's model catalog, as the provider itself reports it. `defaultEffortLevel` is the level a thread gets on switching to this model when its current level is unsupported; absent for a model with no effort support.",
+})
+
+export const AgentCommand = Schema.Struct({
+  name: Schema.String.annotate({ description: "Command name, without the leading slash." }),
+  description: Schema.String,
+  argumentHint: Schema.optionalKey(
+    Schema.String.annotate({ description: "Placeholder for the arguments the command takes." }),
+  ),
+}).annotate({
+  identifier: "AgentCommand",
+  description: "A slash command or skill the agent offers in a directory (`/` completions).",
+})
+
+export const AgentCommandList = Schema.Array(AgentCommand).annotate({
+  identifier: "AgentCommandList",
+  description: "The agent's commands for a directory, as its provider lists them.",
 })
 
 export const AgentModelList = Schema.Array(AgentModel).annotate({
@@ -836,6 +873,12 @@ export const PromptThreadRequest = Schema.Struct({
           "Ids of attachments previously uploaded to THIS thread (createThreadAttachment), in display order. An id the thread does not own is a 404.",
       }),
   ),
+  when: Schema.optionalKey(
+    Schema.Literals(["queue", "now"]).annotate({
+      description:
+        '"queue" (the default) runs the prompt at the next idle. "now" hands it to the turn ATC is running as a mid-turn message — the provider folds it into the work in progress and it lands in the transcript as that turn\'s next user message — and queues only when no turn of ATC\'s is running (a TUI-driven turn included) or the turn ended first. The response says which: `turnId` present is the turn it joined or started.',
+    }),
+  ),
 })
   .check(
     Schema.makeFilter(
@@ -855,7 +898,8 @@ export const PromptThreadResponse = Schema.Struct({
   promptId: Schema.String.annotate({ description: "The admitted prompt's id." }),
   turnId: Schema.optionalKey(
     Schema.String.annotate({
-      description: "Present when the prompt started a turn at once; absent when it queued.",
+      description:
+        'Present when the prompt started a turn at once or joined the running one (`when: "now"`); absent when it queued.',
     }),
   ),
 }).annotate({
@@ -1644,7 +1688,7 @@ export class V1 extends HttpApiGroup.make("v1")
       .annotate(OpenApi.Identifier, "promptThread")
       .annotate(
         OpenApi.Description,
-        "Prompt the thread. Always admitted: an idle thread starts a turn at once (`turnId` present) and a busy one queues the prompt to run at the next idle (`turnId` absent) — there is no busy error and no lock between surfaces. On a one-process provider (Claude Code) a prompt while the TUI is live takes the thread over: the TUI ends once idle, the turn runs natively, and the TUI relaunches when the queue drains (see openThreadTerminal). " +
+        'Prompt the thread. Always admitted: an idle thread starts a turn at once and a busy one queues the prompt for the next idle — or hands it to the running turn with `when: "now"` (see PromptThreadRequest); `turnId` tells which. There is no busy error and no lock between surfaces. On a one-process provider (Claude Code) a prompt while the TUI is live takes the thread over: the TUI ends once idle, the turn runs natively, and the TUI relaunches when the queue drains (see openThreadTerminal). ' +
           "The turn is server-owned: the client's connection never matters to it. When the prompt would start now and the provider refuses, it is un-admitted (the error means not accepted; nothing stays queued); a prompt queued behind others is admitted regardless. Follow the turn on the per-thread event stream.",
       ),
     HttpApiEndpoint.get("getThreadTranscript", "/threads/:threadId/transcript", {
@@ -1788,6 +1832,21 @@ export class V1 extends HttpApiGroup.make("v1")
         OpenApi.Description,
         "The agent's model catalog as its provider reports it, cached server-side for a short while.",
       ),
+    HttpApiEndpoint.get("listAgentCommands", "/agents/:agentId/commands", {
+      params: { agentId: Schema.String },
+      query: {
+        dir: AbsolutePath.annotate({
+          description: "Directory the commands are resolved in (project and user scopes).",
+        }),
+      },
+      success: AgentCommandList,
+      error: [AgentNotFound, ProviderUnavailable, DirectoryUnavailable, DirectoryCheckTimedOut],
+    })
+      .annotate(OpenApi.Identifier, "listAgentCommands")
+      .annotate(
+        OpenApi.Description,
+        "The slash commands and skills the agent offers in `dir` — answerable with no thread and no live session, so a cold thread and a thread not yet created complete alike. Cached server-side per agent and directory for a short while; an empty list is a real answer. Commands are inserted into a prompt as plain text.",
+      ),
     HttpApiEndpoint.get("subscribeEvents", "/events", {
       success: HttpApiSchema.StreamSse({ data: ResourceChangedEvent }),
     })
@@ -1836,6 +1895,27 @@ export class V1 extends HttpApiGroup.make("v1")
           "dotfolders excluded, symlinks included when they resolve to directories, sorted " +
           "case-insensitively. Omitting `path` lists the server's home directory. Same bounded " +
           "timeout and tagged errors as the health check; nothing is persisted.",
+      ),
+    HttpApiEndpoint.get("searchFiles", "/fs/files", {
+      query: {
+        dir: AbsolutePath.annotate({ description: "Directory tree to search." }),
+        query: Schema.optionalKey(
+          Schema.String.annotate({
+            description:
+              "Filename query (case-insensitive); omitted or empty lists files in path order.",
+          }),
+        ),
+        limit: Schema.optionalKey(
+          integerParam("Entries to return (default 25, at most 200).", 1, 200),
+        ),
+      },
+      success: FsFilesResponse,
+      error: [DirectoryUnavailable, DirectoryCheckTimedOut],
+    })
+      .annotate(OpenApi.Identifier, "searchFiles")
+      .annotate(
+        OpenApi.Description,
+        "Search the files under `dir` by name (`@` mentions): best matches first, with `.git` and every `.gitignore`'s exclusions skipped and the tree capped (see `truncated`). Directory-driven, not project-scoped: pass a thread's working directory, a worktree, or the directory a new thread will use. Same validation and tagged errors as /fs/list; nothing is persisted.",
       ),
   )
   // .prefix only applies to endpoints added above it — add new endpoints

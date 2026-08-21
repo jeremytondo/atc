@@ -16,6 +16,7 @@ import * as ClaudeHooks from "../src/agents/claudeHooks.ts"
 import * as CodexAdapter from "../src/agents/codexAdapter.ts"
 import { AppConfig } from "../src/platform/config.ts"
 import * as Directories from "../src/platform/directories.ts"
+import * as FileSearch from "../src/platform/fileSearch.ts"
 import * as Events from "../src/events/events.ts"
 import * as Persistence from "../src/platform/persistence.ts"
 import * as ProjectRepository from "../src/projects/projectRepository.ts"
@@ -73,9 +74,10 @@ export const TestTailscaleLayer = Layer.succeed(Tailscale.Tailscale)({
   status: Effect.succeed({ state: "disabled" }),
 })
 
-/** A settled AppConfig for tests that only need a few fields overridden. */
 /** One scratch data directory per test process: attachments write under it. */
 const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "atc-test-data-"))
+
+/** A settled AppConfig for tests that only need a few fields overridden. */
 
 export const testAppConfig = (overrides: Partial<AppConfig["Service"]>): Layer.Layer<AppConfig> =>
   Layer.succeed(AppConfig)({
@@ -129,6 +131,7 @@ export const makeTestServiceLayers = (
     | Threads.Threads
     | ThreadRuntime.ThreadRuntime
     | Attachments.Attachments
+    | FileSearch.FileSearch
     | TranscriptRepository.TranscriptRepository
     | Projects.Projects
     | AgentRegistry.AgentRegistry
@@ -157,9 +160,11 @@ export const makeTestServiceLayers = (
     // Merged, not just provided: Threads holds the SqlClient for its
     // settings write-through transaction.
   ).pipe(Layer.provideMerge(Persistence.layerFile(dbFile)))
+  const directories = Directories.layer.pipe(Layer.provide(testAppConfig(configOverrides)))
   const services = Layer.mergeAll(
     base,
-    Directories.layer.pipe(Layer.provide(testAppConfig(configOverrides))),
+    directories,
+    FileSearch.layer.pipe(Layer.provide(directories)),
     Attachments.layer.pipe(
       Layer.provide([base, testAppConfig(configOverrides), BunServices.layer]),
     ),

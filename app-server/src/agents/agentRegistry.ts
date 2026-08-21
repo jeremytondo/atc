@@ -1,10 +1,11 @@
-import { Context, Duration, Effect, Layer, Option } from "effect"
+import { Cache, Context, Duration, Effect, Exit, Layer, Option } from "effect"
 import { AGENT_IDS, AgentNotFound, isAgentId, ProviderUnavailable } from "../api/contract.ts"
 import type * as Contract from "../api/contract.ts"
-import type { AgentId } from "../api/contract.ts"
+import type { AgentId, DirectoryCheckTimedOut, DirectoryUnavailable } from "../api/contract.ts"
 import { AppConfig } from "../platform/config.ts"
+import { Directories } from "../platform/directories.ts"
 import * as Subprocess from "../platform/subprocess.ts"
-import type { AgentAdapter, AgentModel, ThreadSettings } from "./agentAdapter.ts"
+import type { AgentAdapter, AgentCommand, AgentModel, ThreadSettings } from "./agentAdapter.ts"
 import {
   memoizeSuccess,
   PROVIDER_FOR_AGENT,
@@ -25,10 +26,13 @@ export type Agent = typeof Contract.Agent.Type
 // Record types make a missed entry a compile error, and threads/ never
 // changes.
 //
-// It also owns the two per-agent facts the Chat settings need (ATC-205):
-//   - the model catalog, read from the adapter and cached for a short while
-//     (Claude's read spawns a process; Codex's is a socket call) — a failed
-//     read is never cached, so a provider that comes up later is seen;
+// It also owns the per-agent facts the Chat settings and composer need:
+//   - the model catalog (ATC-205), read from the adapter and cached for a
+//     short while (Claude's read spawns a process; Codex's is a socket call)
+//     — a failed read is never cached, so a provider that comes up later is
+//     seen;
+//   - the command list per directory (ATC-216), read the same way and cached
+//     per agent and canonical directory — the probe is the freshness model;
 //   - the write-through defaults a new thread inherits: the agent_defaults
 //     row when one exists, else the entry's seed here. The seed is a
 //     starting point only (the first change any thread makes replaces it);
@@ -36,6 +40,9 @@ export type Agent = typeof Contract.Agent.Type
 
 /** How long one catalog read is served before the provider is asked again. */
 const MODEL_CATALOG_TTL: Duration.Input = "10 minutes"
+
+/** How long one command listing (per agent and directory) is served. */
+const COMMANDS_TTL: Duration.Input = "1 minute"
 
 export class AgentRegistry extends Context.Service<
   AgentRegistry,
@@ -48,6 +55,14 @@ export class AgentRegistry extends Context.Service<
     readonly models: (
       id: string,
     ) => Effect.Effect<ReadonlyArray<AgentModel>, AgentNotFound | ProviderUnavailable>
+    /** The agent's commands in `dir` (validated and canonicalized here; see the header). */
+    readonly commands: (
+      id: string,
+      dir: string,
+    ) => Effect.Effect<
+      ReadonlyArray<AgentCommand>,
+      AgentNotFound | ProviderUnavailable | DirectoryUnavailable | DirectoryCheckTimedOut
+    >
     /** What a new thread of this agent starts with (see the header). */
     readonly defaults: (id: typeof AgentId.Type) => Effect.Effect<ThreadSettings>
     /** Write-through: the settings the last changed thread ended up with. */
@@ -58,6 +73,7 @@ export class AgentRegistry extends Context.Service<
 export const layer = Layer.effect(AgentRegistry)(
   Effect.gen(function* () {
     const config = yield* AppConfig
+    const directories = yield* Directories
     const subprocess = yield* Subprocess.Subprocess
     const defaultsRepository = yield* AgentDefaultsRepository
     const codex = yield* CodexAdapter
@@ -102,6 +118,25 @@ export const layer = Layer.effect(AgentRegistry)(
       ).pipe(Effect.map((models) => [id, models] as const)),
     ).pipe(Effect.map((pairs) => new Map(pairs)))
 
+    // One command cache per agent, keyed by canonical directory; a failed
+    // probe has zero time to live, so the next ask retries.
+    const commandLists = yield* Effect.forEach(AGENT_IDS, (id) =>
+      Cache.makeWith(
+        (dir: string) =>
+          entries[id].adapter
+            .listCommands({ cwd: dir })
+            .pipe(
+              Effect.mapError(
+                (error) => new ProviderUnavailable({ agentId: id, reason: error.message }),
+              ),
+            ),
+        {
+          capacity: 32,
+          timeToLive: (exit) => (Exit.isSuccess(exit) ? COMMANDS_TTL : Duration.zero),
+        },
+      ).pipe(Effect.map((cache) => [id, cache] as const)),
+    ).pipe(Effect.map((pairs) => new Map(pairs)))
+
     const describe = (id: typeof AgentId.Type): Effect.Effect<Agent> =>
       Effect.gen(function* () {
         const availability: Omit<Agent, "id" | "defaults"> = yield* resolveProviderExecutable(
@@ -129,6 +164,12 @@ export const layer = Layer.effect(AgentRegistry)(
       adapterFor: (id) => entries[id].adapter,
       models: (id) =>
         isAgentId(id) ? catalogs.get(id)! : Effect.fail(new AgentNotFound({ agentId: id })),
+      commands: (id, dir) =>
+        isAgentId(id)
+          ? directories
+              .canonicalize(dir)
+              .pipe(Effect.flatMap((canonical) => Cache.get(commandLists.get(id)!, canonical)))
+          : Effect.fail(new AgentNotFound({ agentId: id })),
       defaults,
       setDefaults: (id, settings) => defaultsRepository.set(id, settings),
     }

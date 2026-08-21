@@ -54,7 +54,13 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         /// While set, promptThread fails 503 with this payload.
         var promptThreadFailure: Components.Schemas.ProviderUnavailableJsonEncoding?
         var transcriptReads: [(threadID: String, before: String?)] = []
-        var prompts: [(threadID: String, prompt: String, attachments: [String]?)] = []
+        var prompts: [(threadID: String, prompt: String, attachments: [String]?, when: PromptWhen?)] = []
+        /// What searchFiles answers with (filtered by the query) and the queries asked.
+        var fileSearchEntries: [Components.Schemas.FsFileEntry] = []
+        var fileSearches: [(dir: String, query: String?)] = []
+        /// Command lists by agent, and the (agent, dir) pairs asked for.
+        var agentCommands: [AgentID: [Components.Schemas.AgentCommand]] = [:]
+        var commandListings: [(agentID: String, dir: String)] = []
         /// Uploads received, in order, with the bytes as sent.
         var uploads: [(threadID: String, attachment: Components.Schemas.ThreadAttachment, bytes: Data)] = []
         var answers: [(threadID: String, requestID: String, answer: ThreadRequestAnswer)] = []
@@ -227,7 +233,19 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     var openThreadTerminalCount: Int { lock.withLock { state.openThreadTerminalCount } }
     var markThreadViewedCount: Int { lock.withLock { state.markThreadViewedCount } }
     var transcriptReads: [(threadID: String, before: String?)] { lock.withLock { state.transcriptReads } }
-    var prompts: [(threadID: String, prompt: String, attachments: [String]?)] { lock.withLock { state.prompts } }
+    var prompts: [(threadID: String, prompt: String, attachments: [String]?, when: PromptWhen?)] {
+        lock.withLock { state.prompts }
+    }
+    var fileSearchEntries: [Components.Schemas.FsFileEntry] {
+        get { lock.withLock { state.fileSearchEntries } }
+        set { lock.withLock { state.fileSearchEntries = newValue } }
+    }
+    var fileSearches: [(dir: String, query: String?)] { lock.withLock { state.fileSearches } }
+    var agentCommands: [AgentID: [Components.Schemas.AgentCommand]] {
+        get { lock.withLock { state.agentCommands } }
+        set { lock.withLock { state.agentCommands = newValue } }
+    }
+    var commandListings: [(agentID: String, dir: String)] { lock.withLock { state.commandListings } }
     var uploads: [(threadID: String, attachment: Components.Schemas.ThreadAttachment, bytes: Data)] {
         lock.withLock { state.uploads }
     }
@@ -693,6 +711,32 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         return .ok(.init(body: .json(payload)))
     }
 
+    func searchFiles(_ input: Operations.SearchFiles.Input) async throws -> Operations.SearchFiles.Output {
+        try await gate()
+        let dir = input.query.dir
+        let needle = (input.query.query ?? "").lowercased()
+        return mutate { model -> Operations.SearchFiles.Output in
+            model.fileSearches.append((dir, input.query.query))
+            let entries = model.fileSearchEntries.filter { needle.isEmpty || $0.path.lowercased().contains(needle) }
+            return .ok(.init(body: .json(.init(dir: dir, entries: entries, truncated: false))))
+        }
+    }
+
+    func listAgentCommands(_ input: Operations.ListAgentCommands.Input) async throws
+        -> Operations.ListAgentCommands.Output
+    {
+        try await gate()
+        let id = input.path.agentId
+        guard let agentId = AgentID(rawValue: id) else {
+            return .notFound(
+                .init(body: .json(.init(_tag: .agentNotFound, agentId: id, message: "No agent \(id)"))))
+        }
+        return mutate { model -> Operations.ListAgentCommands.Output in
+            model.commandListings.append((id, input.query.dir))
+            return .ok(.init(body: .json(model.agentCommands[agentId] ?? [])))
+        }
+    }
+
     func listAgentModels(_ input: Operations.ListAgentModels.Input) async throws
         -> Operations.ListAgentModels.Output
     {
@@ -794,7 +838,7 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
             guard model.threads.contains(where: { $0.id == id }) else {
                 return .notFound(.init(body: .json(.init(value1: threadNotFound(id)))))
             }
-            model.prompts.append((id, request.prompt, request.attachments))
+            model.prompts.append((id, request.prompt, request.attachments, request.when))
             return .ok(.init(body: .json(.init(promptId: model.nextID("prm"), turnId: model.nextID("turn")))))
         }
     }

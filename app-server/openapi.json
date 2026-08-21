@@ -1258,7 +1258,7 @@
             }
           }
         },
-        "description": "Prompt the thread. Always admitted: an idle thread starts a turn at once (`turnId` present) and a busy one queues the prompt to run at the next idle (`turnId` absent) — there is no busy error and no lock between surfaces. On a one-process provider (Claude Code) a prompt while the TUI is live takes the thread over: the TUI ends once idle, the turn runs natively, and the TUI relaunches when the queue drains (see openThreadTerminal). The turn is server-owned: the client's connection never matters to it. When the prompt would start now and the provider refuses, it is un-admitted (the error means not accepted; nothing stays queued); a prompt queued behind others is admitted regardless. Follow the turn on the per-thread event stream.",
+        "description": "Prompt the thread. Always admitted: an idle thread starts a turn at once and a busy one queues the prompt for the next idle — or hands it to the running turn with `when: \"now\"` (see PromptThreadRequest); `turnId` tells which. There is no busy error and no lock between surfaces. On a one-process provider (Claude Code) a prompt while the TUI is live takes the thread over: the TUI ends once idle, the turn runs natively, and the TUI relaunches when the queue drains (see openThreadTerminal). The turn is server-owned: the client's connection never matters to it. When the prompt would start now and the provider refuses, it is un-admitted (the error means not accepted; nothing stays queued); a prompt queued behind others is admitted regardless. Follow the turn on the per-thread event stream.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1919,6 +1919,84 @@
         "description": "The agent's model catalog as its provider reports it, cached server-side for a short while."
       }
     },
+    "/api/v1/agents/{agentId}/commands": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "listAgentCommands",
+        "parameters": [
+          {
+            "name": "agentId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "name": "dir",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "pattern": "^\\/",
+              "description": "Directory the commands are resolved in (project and user scopes)."
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The agent's commands for a directory, as its provider lists them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCommandList"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No built-in agent exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentNotFoundJsonEncoding"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The directory does not exist, is not a directory, or cannot be read/traversed. | The directory check did not complete within its bounded timeout. Retryable — a timeout is not proof the path is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/DirectoryUnavailableJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DirectoryCheckTimedOutJsonEncoding"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The thread's agent provider cannot be used right now (not installed, not ready, or unreachable). Retryable once the cause is fixed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderUnavailableJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "The slash commands and skills the agent offers in `dir` — answerable with no thread and no live session, so a cold thread and a thread not yet created complete alike. Cached server-side per agent and directory for a short while; an empty list is a real answer. Commands are inserted into a prompt as plain text."
+      }
+    },
     "/api/v1/events": {
       "get": {
         "tags": [
@@ -2022,6 +2100,75 @@
           }
         },
         "description": "List a directory's subdirectories for the server-backed folder browser: non-recursive, dotfolders excluded, symlinks included when they resolve to directories, sorted case-insensitively. Omitting `path` lists the server's home directory. Same bounded timeout and tagged errors as the health check; nothing is persisted."
+      }
+    },
+    "/api/v1/fs/files": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "searchFiles",
+        "parameters": [
+          {
+            "name": "dir",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "pattern": "^\\/",
+              "description": "Directory tree to search."
+            },
+            "required": true
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "description": "Filename query (case-insensitive); omitted or empty lists files in path order."
+            },
+            "required": false
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d+$",
+              "description": "Entries to return (default 25, at most 200)."
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A ranked filename search over one directory tree (`@` mentions). Never persisted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FsFilesResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The directory does not exist, is not a directory, or cannot be read/traversed. | The directory check did not complete within its bounded timeout. Retryable — a timeout is not proof the path is missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/DirectoryUnavailableJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DirectoryCheckTimedOutJsonEncoding"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "Search the files under `dir` by name (`@` mentions): best matches first, with `.git` and every `.gitignore`'s exclusions skipped and the tree capped (see `truncated`). Directory-driven, not project-scoped: pass a thread's working directory, a worktree, or the directory a new thread will use. Same validation and tagged errors as /fs/list; nothing is persisted."
       }
     }
   },
@@ -2854,6 +3001,14 @@
             },
             "maxItems": 10,
             "description": "Ids of attachments previously uploaded to THIS thread (createThreadAttachment), in display order. An id the thread does not own is a 404."
+          },
+          "when": {
+            "type": "string",
+            "enum": [
+              "queue",
+              "now"
+            ],
+            "description": "\"queue\" (the default) runs the prompt at the next idle. \"now\" hands it to the turn ATC is running as a mid-turn message — the provider folds it into the work in progress and it lands in the transcript as that turn's next user message — and queues only when no turn of ATC's is running (a TUI-driven turn included) or the turn ended first. The response says which: `turnId` present is the turn it joined or started."
           }
         },
         "required": [
@@ -2870,7 +3025,7 @@
           },
           "turnId": {
             "type": "string",
-            "description": "Present when the prompt started a turn at once; absent when it queued."
+            "description": "Present when the prompt started a turn at once or joined the running one (`when: \"now\"`); absent when it queued."
           }
         },
         "required": [
@@ -4179,6 +4334,35 @@
         },
         "description": "An agent's model catalog, in the provider's order."
       },
+      "AgentCommand": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Command name, without the leading slash."
+          },
+          "description": {
+            "type": "string"
+          },
+          "argumentHint": {
+            "type": "string",
+            "description": "Placeholder for the arguments the command takes."
+          }
+        },
+        "required": [
+          "name",
+          "description"
+        ],
+        "additionalProperties": false,
+        "description": "A slash command or skill the agent offers in a directory (`/` completions)."
+      },
+      "AgentCommandList": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/AgentCommand"
+        },
+        "description": "The agent's commands for a directory, as its provider lists them."
+      },
       "ResourceChangedEventJsonEncoding": {
         "type": "string",
         "contentMediaType": "application/json"
@@ -4266,6 +4450,52 @@
         ],
         "additionalProperties": false,
         "description": "A directory listing for the server-backed folder browser. Never persisted."
+      },
+      "FsFileEntry": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path relative to `dir`, `/`-separated."
+          },
+          "name": {
+            "type": "string",
+            "description": "The file's basename."
+          }
+        },
+        "required": [
+          "path",
+          "name"
+        ],
+        "additionalProperties": false,
+        "description": "One file under a searched directory."
+      },
+      "FsFilesResponse": {
+        "type": "object",
+        "properties": {
+          "dir": {
+            "type": "string",
+            "description": "Canonical (symlink-resolved) absolute path of the searched directory."
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FsFileEntry"
+            },
+            "description": "Best matches first; an empty query lists files in path order."
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when the tree holds more files than the index walks, so a file may be missing from every query of this directory."
+          }
+        },
+        "required": [
+          "dir",
+          "entries",
+          "truncated"
+        ],
+        "additionalProperties": false,
+        "description": "A ranked filename search over one directory tree (`@` mentions). Never persisted."
       },
       "ResourceChangedEvent": {
         "type": "object",

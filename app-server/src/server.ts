@@ -12,6 +12,7 @@ import * as ClaudeHooks from "./agents/claudeHooks.ts"
 import * as CodexAdapter from "./agents/codexAdapter.ts"
 import * as CodexServer from "./agents/codexServer.ts"
 import * as Directories from "./platform/directories.ts"
+import * as FileSearch from "./platform/fileSearch.ts"
 import * as Events from "./events/events.ts"
 import { V1Handlers } from "./api/handlers.ts"
 import * as LocalTrust from "./api/localTrust.ts"
@@ -152,6 +153,7 @@ export const production = (options: { readonly port: number; readonly hostname?:
     // Attachments serve the handlers, Threads (delete purges blobs), and the
     // runtime (a prompt's images), so it sits below all three.
     Layer.provide(Attachments.layer),
+    Layer.provide(FileSearch.layer),
     Layer.provide(AgentRegistry.layer),
     // Below Terminals (the deepest publisher) so one memoized Events instance
     // serves every domain service, the handlers, and the shutdown drain.

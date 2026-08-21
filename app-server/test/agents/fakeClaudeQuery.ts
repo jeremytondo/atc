@@ -1,4 +1,9 @@
-import type { ModelInfo, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
+import type {
+  ModelInfo,
+  SDKMessage,
+  SDKUserMessage,
+  SlashCommand,
+} from "@anthropic-ai/claude-agent-sdk"
 import type { ClaudeQueryFn, ClaudeQueryHandle } from "../../src/agents/claudeAdapter.ts"
 
 // A scripted stand-in for the Agent SDK's query() (the ClaudeQueryFn seam):
@@ -19,8 +24,16 @@ import type { ClaudeQueryFn, ClaudeQueryHandle } from "../../src/agents/claudeAd
 //   "FAILTURN"   — ends with error_max_turns, then the iterator throws
 // Every successful turn ends with a per-block `assistant` text message
 // (`fake: <text>`) before its result, like the SDK's own output.
+//
+// Input is taken off the prompt stream as it arrives (`prompts` records
+// every message, mid-turn ones included — a steer, ATC-216) and runs one
+// turn at a time; a hanging turn holds later input until interrupt() ends
+// it, as the real CLI folds a steer into the model call in progress.
+// initializationResult() answers with the scripted `commands`.
 
 export interface FakeClaudeQueryOptions {
+  /** What initializationResult() lists as slash commands (default []). */
+  readonly commands?: ReadonlyArray<SlashCommand>
   /** session_id for created sessions (resumes echo the resume id). */
   readonly sessionId?: string
   /** Session ids that resume finds; anything else fails closed. */
@@ -343,18 +356,43 @@ export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeC
       state("idle")
     }
 
-    // Drain the prompt stream like the real SDK does.
+    // Drain the prompt stream like the real SDK does: input is taken as it
+    // arrives — mid-turn too (a steer, ATC-216) — and runs one turn at a time.
+    const inbox: Array<string> = []
+    let inboxClosed = false
+    // An object field, not a `let`: TypeScript would narrow a let to null in
+    // the closures below.
+    const runner: { wake: (() => void) | null } = { wake: null }
     void (async () => {
       for await (const message of args.prompt) {
         const content = (message as SDKUserMessage).message.content
         prompts.push(content)
         // Keyword behavior keys off the text blocks; image blocks ride along.
-        const text =
+        inbox.push(
           typeof content === "string"
             ? content
-            : content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n")
-        await runTurn(text)
+            : content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n"),
+        )
+        runner.wake?.()
+      }
+      inboxClosed = true
+      runner.wake?.()
+    })()
+    // A hanging turn holds later input (the real CLI folds a steer into the
+    // model call in progress) until interrupt() ends it.
+    void (async () => {
+      for (;;) {
         if (done) return
+        const next = hanging === null ? inbox.shift() : undefined
+        if (next !== undefined) {
+          await runTurn(next)
+          continue
+        }
+        if (inboxClosed && hanging === null) return
+        await new Promise<void>((resolve) => {
+          runner.wake = resolve
+        })
+        runner.wake = null
       }
     })()
 
@@ -378,6 +416,7 @@ export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeC
         return Promise.resolve()
       },
       supportedModels: () => Promise.resolve(options.models ?? FAKE_CLAUDE_MODELS),
+      initializationResult: () => Promise.resolve({ commands: [...(options.commands ?? [])] }),
       ...(options.withoutGetSettings === true ? {} : { getSettings }),
       interrupt: () => {
         interrupts.push(hanging ?? "(no hanging turn)")
@@ -391,6 +430,7 @@ export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeC
             errors: ["aborted_streaming"],
           })
           finish()
+          runner.wake?.()
         }
         return Promise.resolve({ still_queued: [] })
       },

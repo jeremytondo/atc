@@ -600,6 +600,25 @@ import OpenAPIRuntime
             .ok(.init(body: .json(agents)))
         }
 
+        func listAgentCommands(
+            _ input: Operations.ListAgentCommands.Input
+        ) async throws -> Operations.ListAgentCommands.Output {
+            .ok(
+                .init(
+                    body: .json([
+                        .init(name: "review", description: "Review the current diff"),
+                        .init(name: "commit", description: "Commit staged changes", argumentHint: "<message>"),
+                    ])))
+        }
+
+        func searchFiles(_ input: Operations.SearchFiles.Input) async throws -> Operations.SearchFiles.Output {
+            let files = ["Package.swift", "Sources/App/Main.swift", "Sources/App/Model.swift", "README.md"]
+            let needle = (input.query.query ?? "").lowercased()
+            let entries = files.filter { needle.isEmpty || $0.lowercased().contains(needle) }
+                .map { Components.Schemas.FsFileEntry(path: $0, name: ($0 as NSString).lastPathComponent) }
+            return .ok(.init(body: .json(.init(dir: input.query.dir, entries: entries, truncated: false))))
+        }
+
         func listAgentModels(
             _ input: Operations.ListAgentModels.Input
         ) async throws -> Operations.ListAgentModels.Output {

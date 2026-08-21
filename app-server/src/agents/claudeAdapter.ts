@@ -8,6 +8,7 @@ import type {
   PermissionMode,
   PermissionResult,
   PermissionUpdate,
+  SDKControlInitializeResponse,
   SDKMessage,
   SDKUserMessage,
   SessionMessage,
@@ -182,6 +183,7 @@ export interface ClaudeQueryHandle extends AsyncIterable<SDKMessage> {
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>
   readonly applyFlagSettings: (settings: { effortLevel?: EffortLevel | null }) => Promise<void>
   readonly supportedModels: () => Promise<ReadonlyArray<ModelInfo>>
+  readonly initializationResult: () => Promise<Pick<SDKControlInitializeResponse, "commands">>
 }
 
 /** The query() seam, injectable so fixture tests can script SDK streams. */
@@ -1389,6 +1391,30 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
               }
               return { turnId }
             }),
+          steer: (input, turn) =>
+            Effect.gen(function* () {
+              yield* requireOpen
+              if (session.activeTurn !== turn.turnId) {
+                return yield* Effect.fail(staleTurn(turn.turnId))
+              }
+              const content = yield* readUserContent(input)
+              // The read suspended: the turn may have ended meanwhile.
+              yield* requireOpen
+              if (session.activeTurn !== turn.turnId) {
+                return yield* Effect.fail(staleTurn(turn.turnId))
+              }
+              // The held query() takes the message mid-turn (the CLI folds
+              // it into the next model call); the SDK never echoes it, so it
+              // is minted here like the turn's first prompt.
+              emitItem(session, "itemCompleted", {
+                type: "userMessage",
+                id: `${turn.turnId}:steer:${crypto.randomUUID()}`,
+                turnId: turn.turnId,
+                text: input.text,
+                ...(input.attachments.length > 0 ? { attachments: input.attachments } : {}),
+              })
+              session.pushInput(userMessage(content))
+            }),
           interrupt: (turn) =>
             Effect.gen(function* () {
               yield* requireOpen
@@ -1609,6 +1635,60 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
                 }),
               )
               return normalizeClaudeCatalog(models)
+            }),
+          ),
+        // T3Code's probe: a child in `cwd` with a prompt that never yields,
+        // read for its initialization (the command and skill list the CLI
+        // resolved from the user and project scopes), then aborted — no API
+        // request is ever made.
+        listCommands: (options) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const executable = yield* resolvedExecutable
+              const abort = new AbortController()
+              yield* Effect.addFinalizer(() => Effect.sync(() => abort.abort()))
+              const prompt = yield* Stream.toAsyncIterableEffect(Stream.never)
+              const handle = yield* Effect.try({
+                try: () =>
+                  queryFn({
+                    prompt,
+                    options: {
+                      abortController: abort,
+                      cwd: options.cwd,
+                      env: claudeEnvironment(),
+                      pathToClaudeCodeExecutable: executable,
+                      settingSources: ["user", "project", "local"],
+                      strictMcpConfig: true,
+                      tools: [],
+                      persistSession: false,
+                    },
+                  }),
+                catch: (error) =>
+                  protocolError(
+                    `the command list read failed to start: ${error instanceof Error ? error.message : String(error)}`,
+                  ),
+              })
+              const initialized = yield* Effect.tryPromise({
+                try: () => handle.initializationResult(),
+                catch: (error) =>
+                  protocolError(
+                    `the command list read failed: ${error instanceof Error ? error.message : String(error)}`,
+                  ),
+              }).pipe(
+                Effect.timeoutOrElse({
+                  duration: "30 seconds",
+                  orElse: () => Effect.fail(protocolError("the command list read timed out")),
+                }),
+              )
+              return initialized.commands.map((command) =>
+                command.argumentHint === ""
+                  ? { name: command.name, description: command.description }
+                  : {
+                      name: command.name,
+                      description: command.description,
+                      argumentHint: command.argumentHint,
+                    },
+              )
             }),
           ),
         generateTitle: (options) =>

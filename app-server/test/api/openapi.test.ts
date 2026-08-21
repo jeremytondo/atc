@@ -11,6 +11,9 @@ import {
   HttpServerResponse,
 } from "effect/unstable/http"
 import { HttpApi, OpenApi } from "effect/unstable/httpapi"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { Api, DEFAULT_PORT } from "../../src/api/contract.ts"
 import * as ClaudeHooks from "../../src/agents/claudeHooks.ts"
 import { openApiDocument, openApiJson } from "../../src/api/openapi.ts"
@@ -202,9 +205,11 @@ describe("openapi document vs runtime", () => {
       "/api/v1/agents",
       "/api/v1/agents/{agentId}",
       "/api/v1/agents/{agentId}/models",
+      "/api/v1/agents/{agentId}/commands",
       "/api/v1/events",
       "/api/v1/fs/check",
       "/api/v1/fs/list",
+      "/api/v1/fs/files",
     ])
     // The WebSocket attach endpoint is contract-declared but excluded from
     // the document — REST clients cannot represent an upgrade.
@@ -1056,6 +1061,59 @@ describe("openapi document vs runtime", () => {
       // reason is optional (absent when conclusive) — and deliberately not a
       // nullable required field, which the pinned Swift generator would drop.
       assert.sameMembers([...schema.required], ["path", "state", "checkedAt"])
+    }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
+  )
+
+  it.effect("GET /api/v1/fs/files returns the documented ranked listing", () =>
+    Effect.gen(function* () {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "atc-openapi-files-"))
+      fs.mkdirSync(path.join(dir, "src"))
+      fs.writeFileSync(path.join(dir, "src", "main.ts"), "")
+      fs.writeFileSync(path.join(dir, "notes.md"), "")
+      const response = yield* (yield* rawClient).get(
+        `http://127.0.0.1/api/v1/fs/files?dir=${encodeURIComponent(dir)}&query=main&limit=5`,
+      )
+      assert.strictEqual(response.status, 200)
+      const body = (yield* response.json) as Record<string, unknown>
+      assert.strictEqual(body["dir"], fs.realpathSync(dir))
+      assert.deepStrictEqual(body["entries"], [{ path: "src/main.ts", name: "main.ts" }])
+      assert.strictEqual(body["truncated"], false)
+      const ref =
+        operation("/api/v1/fs/files").responses["200"]!.content["application/json"]!.schema
+      assert.deepStrictEqual(ref, { $ref: "#/components/schemas/FsFilesResponse" })
+      const schema = componentSchema("FsFilesResponse")
+      assert.sameMembers([...schema.required], ["dir", "entries", "truncated"])
+      const missing = yield* (yield* rawClient).get(
+        "http://127.0.0.1/api/v1/fs/files?dir=/definitely/not/here",
+      )
+      assert.strictEqual(missing.status, 422)
+      fs.rmSync(dir, { recursive: true, force: true })
+    }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
+  )
+
+  it.effect("GET /api/v1/agents/{agentId}/commands returns the documented list", () =>
+    Effect.gen(function* () {
+      const response = yield* (yield* rawClient).get(
+        "http://127.0.0.1/api/v1/agents/codex/commands?dir=/tmp",
+      )
+      assert.strictEqual(response.status, 200)
+      // The fake adapter lists nothing by default: an empty list is an answer.
+      assert.deepStrictEqual(yield* response.json, [])
+      const ref = operation("/api/v1/agents/{agentId}/commands").responses["200"]!.content[
+        "application/json"
+      ]!.schema
+      assert.deepStrictEqual(ref, { $ref: "#/components/schemas/AgentCommandList" })
+      const command = componentSchema("AgentCommand")
+      assert.sameMembers(Object.keys(command.properties), ["name", "description", "argumentHint"])
+      assert.sameMembers([...command.required], ["name", "description"])
+      const unknown = yield* (yield* rawClient).get(
+        "http://127.0.0.1/api/v1/agents/nope/commands?dir=/tmp",
+      )
+      assert.strictEqual(unknown.status, 404)
+      const badDir = yield* (yield* rawClient).get(
+        "http://127.0.0.1/api/v1/agents/codex/commands?dir=/definitely/not/here",
+      )
+      assert.strictEqual(badDir.status, 422)
     }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
   )
 

@@ -148,11 +148,14 @@ private struct ChatPane: View {
                     thread: thread,
                     models: agents?.models(for: thread.agentId),
                     modelsError: agents?.modelErrors[thread.agentId],
-                    showsStop: chat.runningTurn != nil,
+                    isTurnRunning: chat.runningTurn != nil,
                     error: chat.promptError,
-                    lastSentPrompt: chat.lastSentPrompt,
+                    history: chat.promptHistory,
+                    commands: agents?.commands(for: thread.agentId, dir: thread.workingDirectory),
                     yieldsFocus: !chat.requests.isEmpty,
                     focusRequest: focusRequest,
+                    searchFiles: searchFiles,
+                    loadCommands: { agents?.loadCommands(for: thread.agentId, dir: thread.workingDirectory) },
                     send: send,
                     stop: { chat.perform { [chat] in try await chat.interrupt() } },
                     updateSettings: { patch in
@@ -268,15 +271,16 @@ private struct ChatPane: View {
 
     /// The draft (text and images) clears the moment the prompt leaves (the
     /// echo row carries it); a refusal restores it in front of whatever was
-    /// typed or attached since, so nothing is ever lost.
-    private func send() {
+    /// typed or attached since, so nothing is ever lost. `when` is the
+    /// composer's choice while a turn runs (now / queue), nil when idle.
+    private func send(when: PromptWhen?) {
         let draft = appModel.draft(for: ref)
         let prompt = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty || !draft.attachments.isEmpty else { return }
         appModel.setDraft(ComposerDraft(), for: ref)
         followRequest += 1
         Task {
-            guard await !chat.send(prompt, attachments: draft.attachments) else { return }
+            guard await !chat.send(prompt, attachments: draft.attachments, when: when) else { return }
             let since = appModel.draft(for: ref)
             appModel.setDraft(
                 ComposerDraft(
@@ -284,6 +288,16 @@ private struct ChatPane: View {
                     attachments: draft.attachments + since.attachments),
                 for: ref)
         }
+    }
+
+    /// The `@` completion's source: the server's ranking of the thread
+    /// directory's files, a dozen at a time; nil when the read fails (the
+    /// list simply stays empty).
+    private func searchFiles(_ query: String) async -> Components.Schemas.FsFilesResponse? {
+        guard let client = appModel.runtime(id: ref.connectionID)?.client else { return nil }
+        return try? await client.searchFiles(
+            query: .init(dir: thread.workingDirectory, query: query, limit: "12")
+        ).ok.body.json
     }
 
     // MARK: - Status

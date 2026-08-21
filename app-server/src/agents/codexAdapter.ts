@@ -483,6 +483,22 @@ interface LiveSession {
   live: ProviderSettings
 }
 
+/** skills/list, decoded to what a command listing needs. */
+const SkillsListReply = Schema.Struct({
+  data: Schema.Array(
+    Schema.Struct({
+      skills: Schema.Array(
+        Schema.Struct({
+          name: Schema.String,
+          description: Schema.String,
+          enabled: Schema.Boolean,
+          shortDescription: Schema.optional(Schema.NullOr(Schema.String)),
+        }),
+      ),
+    }),
+  ),
+})
+
 /** Reserves the active-turn slot between the local check and the RPC reply. */
 const PENDING_TURN = "(pending)"
 
@@ -1319,6 +1335,29 @@ export const layer = Layer.effect(CodexAdapter)(
               }
               return { turnId: decoded.turn.id }
             }),
+          steer: (input, turn) =>
+            Effect.gen(function* () {
+              yield* requireLive
+              if (session.activeTurn !== turn.turnId) {
+                return yield* Effect.fail(staleTurn(turn.turnId))
+              }
+              for (const attachment of input.attachments) {
+                session.attachmentsByPath.set(attachment.path, attachment)
+              }
+              // expectedTurnId is the server's own precondition; its
+              // rejection means the turn ended in flight — a conflict, as
+              // for interrupt. The server echoes the message as the turn's
+              // next userMessage item on the fan-out.
+              yield* request(state, "turn/steer", {
+                threadId,
+                expectedTurnId: turn.turnId,
+                input: turnInputBlocks(input),
+              }).pipe(
+                Effect.mapError((error) =>
+                  error._tag === "RpcError" ? conflict(error.text) : error,
+                ),
+              )
+            }),
           interrupt: (turn) =>
             Effect.gen(function* () {
               yield* requireLive
@@ -1692,6 +1731,24 @@ export const layer = Layer.effect(CodexAdapter)(
             ),
           )
           return Stream.merge(observedEvents, Stream.fromQueue(promptQueue))
+        }),
+      // The shared server's skill index for the directory (the protocol
+      // lists skills only — custom prompts have no listing); disabled
+      // skills are not offered.
+      listCommands: (options) =>
+        Effect.gen(function* () {
+          const state = yield* getClient
+          const reply = yield* request(state, "skills/list", { cwds: [options.cwd] }).pipe(
+            Effect.mapError(rpcToProtocol),
+            Effect.flatMap((raw) => decodeReply(SkillsListReply, raw)),
+          )
+          return reply.data
+            .flatMap((entry) => entry.skills)
+            .filter((skill) => skill.enabled)
+            .map((skill) => ({
+              name: skill.name,
+              description: skill.shortDescription ?? skill.description,
+            }))
         }),
       // model/list, every page (walkPaginated; a walk that cannot complete
       // is a protocol error, never a partial catalog), hidden entries
