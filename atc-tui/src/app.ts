@@ -158,6 +158,29 @@ export const run = Effect.scoped(
         )
       }
 
+      if (action.type === "updateThread") {
+        return refreshAfter(
+          server.updateThread(action.threadId, action.input).pipe(
+            Effect.map((thread) =>
+              continueWith({
+                ...action.state,
+                section: "threads",
+                selectedThreadId: thread.id,
+                status: `Renamed Thread to “${View.threadLabel(thread)}”.`,
+              }),
+            ),
+            Effect.catch((error) =>
+              Effect.succeed(
+                continueWith({
+                  ...action.state,
+                  status: `Could not rename Thread: ${describeError(error)}`,
+                }),
+              ),
+            ),
+          ),
+        )
+      }
+
       if (action.type === "unarchiveThread") {
         return refreshAfter(
           server.unarchiveThread(action.threadId).pipe(

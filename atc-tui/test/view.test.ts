@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type * as AppServer from "../src/appServer.ts"
 import {
+  activeThreadSummary,
   connectionLabel,
   normalizeProjectSelection,
   normalizeSelection,
@@ -68,25 +69,49 @@ describe("manager view model", () => {
 
     expect(threadOptions(archivedSnapshot)).toEqual([
       {
-        threadId: "t1",
-        name: "Alpha  ›  t1",
-        description: "idle · unread  ·  codex  ·  /work/p1",
+        threadId: "t2",
+        marker: "●",
+        tone: "running",
+        name: "Beta   │  t2",
+        description: "codex  ·  /work/p2",
       },
       {
-        threadId: "t2",
-        name: "Beta  ›  t2",
-        description: "working · terminal  ·  codex  ·  /work/p2",
+        threadId: "t1",
+        marker: "●",
+        tone: "new",
+        name: "Alpha  │  t1",
+        description: "codex  ·  /work/p1",
       },
     ])
     expect(threadOptions(archivedSnapshot, true)).toEqual([
       {
         threadId: "t3",
-        name: "Alpha  ›  t3",
-        description: "archived  ·  codex  ·  /work/p1",
+        marker: " ",
+        tone: "idle",
+        name: "Alpha  │  t3",
+        description: "ARCHIVED  ·  codex  ·  /work/p1",
       },
     ])
+    expect(activeThreadSummary(archivedSnapshot)).toBe("Active Threads (2)  ·  1 running  ·  1 new")
     expect(normalizeSelection(archivedSnapshot, undefined, true)).toBe("t3")
     expect(connectionLabel("disconnected")).toBe("reconnecting…")
+  })
+
+  it("uses the status position to distinguish new and idle Threads", () => {
+    const idleSnapshot = {
+      ...snapshot,
+      threads: snapshot.threads.map((item) =>
+        item.id === "t1" ? { ...item, unread: false } : item,
+      ),
+    }
+
+    expect(threadOptions(idleSnapshot)[1]).toEqual({
+      threadId: "t1",
+      marker: "○",
+      tone: "idle",
+      name: "Alpha  │  t1",
+      description: "codex  ·  /work/p1",
+    })
   })
 
   it("describes Projects with active and archived Thread counts", () => {

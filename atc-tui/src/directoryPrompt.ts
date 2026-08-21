@@ -5,7 +5,7 @@ import type * as AppServer from "./appServer.ts"
 import * as DirectoryCompletion from "./directoryCompletion.ts"
 import * as OpenTuiApp from "./openTuiApp.ts"
 
-// The picker keeps text editing focused while a SelectRenderable presents
+// The picker keeps text editing focused while the shared list presents
 // server-host directory completions. Listings are cached per parent and stale
 // responses only populate the cache; the current input always chooses what is
 // rendered.

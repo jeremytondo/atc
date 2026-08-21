@@ -1,15 +1,17 @@
 import {
   BoxRenderable,
+  fg,
   InputRenderable,
-  SelectRenderable,
+  StyledText,
   TextRenderable,
   type CliRenderer,
   type Renderable,
 } from "@opentui/core"
 import { Effect } from "effect"
+import { StyledSelectRenderable } from "./styledSelect.ts"
 
-// One persistent application frame owns the ATC header, content panel, status,
-// help, and visual tokens. Individual workflows replace only the panel body,
+// One persistent application frame owns the content panel, status, help, and
+// visual tokens. Individual workflows replace only the panel body,
 // so the Thread list and creation steps remain screens of the same TUI.
 
 const colors = {
@@ -19,14 +21,51 @@ const colors = {
   muted: "#64748b",
   description: "#94a3b8",
   status: "#fbbf24",
-  selection: "#293241",
+  selection: "#73737340",
   selectedDescription: "#dbeafe",
+  threadNew: "#2dd4bf",
+  threadIdle: "#64748b",
+  threadAttention: "#fb7185",
+  threadUnknown: "#94a3b8",
 } as const
+
+const runningPulseColors = [
+  "#b45309",
+  "#c26708",
+  "#d17b07",
+  "#e08f09",
+  "#efa414",
+  "#fbbf24",
+  "#efa414",
+  "#e08f09",
+  "#d17b07",
+  "#c26708",
+] as const
+
+export type ThreadStatusTone = "attention" | "running" | "new" | "idle" | "unknown"
+
+const threadStatusColor = (tone: ThreadStatusTone, animationFrame: number): string => {
+  if (tone === "attention") return colors.threadAttention
+  if (tone === "new") return colors.threadNew
+  if (tone === "idle") return colors.threadIdle
+  if (tone === "unknown") return colors.threadUnknown
+  return runningPulseColors[animationFrame % runningPulseColors.length] ?? colors.status
+}
+
+export const styledThreadName = (
+  marker: string,
+  tone: ThreadStatusTone,
+  name: string,
+  animationFrame: number,
+): StyledText =>
+  new StyledText([
+    fg(threadStatusColor(tone, animationFrame))(marker),
+    fg(colors.text)(`  ${name}`),
+  ])
 
 export interface AppShell {
   readonly renderer: CliRenderer
   readonly screen: BoxRenderable
-  readonly header: TextRenderable
   readonly panel: BoxRenderable
   readonly status: TextRenderable
   readonly help: TextRenderable
@@ -40,12 +79,6 @@ export const make = (renderer: CliRenderer): AppShell => {
     padding: 1,
     gap: 1,
     flexDirection: "column",
-  })
-  const header = new TextRenderable(renderer, {
-    id: "atc-header",
-    height: 2,
-    content: "ATC",
-    fg: colors.text,
   })
   const panel = new BoxRenderable(renderer, {
     id: "atc-panel",
@@ -71,11 +104,10 @@ export const make = (renderer: CliRenderer): AppShell => {
     fg: colors.muted,
     visible: false,
   })
-  screen.add(header)
   screen.add(panel)
   screen.add(status)
   screen.add(help)
-  return { renderer, screen, header, panel, status, help }
+  return { renderer, screen, panel, status, help }
 }
 
 export const mount = (shell: AppShell) =>
@@ -160,8 +192,8 @@ export const makeSelect = (
     readonly selectedIndex?: number | undefined
     readonly wrapSelection?: boolean | undefined
   },
-): SelectRenderable =>
-  new SelectRenderable(shell.renderer, {
+): StyledSelectRenderable =>
+  new StyledSelectRenderable(shell.renderer, {
     id: options.id,
     width: "100%",
     height: "100%",
@@ -199,13 +231,11 @@ export const setHelp = (shell: AppShell, help: string): void => {
 export const update = (
   shell: AppShell,
   content: {
-    readonly subtitle?: string | undefined
     readonly title: string
     readonly status?: string | undefined
     readonly help: string
   },
 ): void => {
-  if (content.subtitle !== undefined) shell.header.content = `ATC\n${content.subtitle}`
   shell.panel.title = ` ${content.title} `
   setStatus(shell, content.status ?? "")
   setHelp(shell, content.help)

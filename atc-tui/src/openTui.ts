@@ -16,7 +16,7 @@ import * as View from "./view.ts"
 // API capability from the application coordinator. One renderer spans manager
 // actions and is destroyed only before zmx inherits the real TTY.
 
-export type ManagerSection = "threads" | "archived" | "projects"
+export type ManagerSection = "threads" | "archived" | "projects" | "settings"
 
 export interface ManagerState {
   readonly section?: ManagerSection | undefined
@@ -41,6 +41,12 @@ export type ManagerResult =
     }
   | { readonly type: "archiveThread"; readonly threadId: string; readonly state: ManagerState }
   | { readonly type: "unarchiveThread"; readonly threadId: string; readonly state: ManagerState }
+  | {
+      readonly type: "updateThread"
+      readonly threadId: string
+      readonly input: AppServer.UpdateThreadInput
+      readonly state: ManagerState
+    }
   | {
       readonly type: "updateProject"
       readonly projectId: string
@@ -87,6 +93,7 @@ type MainResult =
   | { readonly type: "newProject"; readonly state: ManagerState }
   | { readonly type: "archiveThread"; readonly threadId: string; readonly state: ManagerState }
   | { readonly type: "unarchiveThread"; readonly threadId: string; readonly state: ManagerState }
+  | { readonly type: "renameThread"; readonly threadId: string; readonly state: ManagerState }
   | { readonly type: "renameProject"; readonly projectId: string; readonly state: ManagerState }
   | { readonly type: "deleteProject"; readonly projectId: string; readonly state: ManagerState }
 
@@ -129,22 +136,38 @@ type MainEvent =
   | { readonly type: "newProject" }
   | { readonly type: "archiveThread"; readonly id: string }
   | { readonly type: "unarchiveThread"; readonly id: string }
+  | { readonly type: "renameThread"; readonly id: string }
   | { readonly type: "renameProject"; readonly id: string }
   | { readonly type: "deleteProject"; readonly id: string }
   | { readonly type: "switchSection"; readonly section: ManagerSection }
   | { readonly type: "refresh" }
   | { readonly type: "quit" }
 
-const sectionForPrefix = (name: string): ManagerSection | undefined =>
-  name === "t" ? "threads" : name === "p" ? "projects" : undefined
+const sectionForGlobalKey = (name: string): ManagerSection | undefined =>
+  name === "t"
+    ? "threads"
+    : name === "p"
+      ? "projects"
+      : name === "a"
+        ? "archived"
+        : name === "s"
+          ? "settings"
+          : undefined
 
-const prefixHelp = (section: ManagerSection): string => {
-  const navigation = "[t] Threads  ·  [p] Projects"
-  if (section === "threads") return `${navigation}  ·  [n] New thread  ·  [a] Archive`
-  if (section === "projects") {
-    return `${navigation}  ·  [n] New project  ·  [e] Rename  ·  [d] Delete`
+const globalHelp = "[t] Threads  ·  [p] Projects  ·  [a] Archived  ·  [s] Settings\n[Esc] Back"
+
+const contextHelp = (section: ManagerSection): string => {
+  const global = "[Ctrl-Space] Global"
+  if (section === "threads") {
+    return `[Enter] Open  ·  [r] Rename  ·  [n] New thread  ·  [a] Archive\n${global}`
   }
-  return `${navigation}  ·  [u] Unarchive`
+  if (section === "projects") {
+    return `[Enter/r] Rename  ·  [n] New project  ·  [d] Delete\n${global}`
+  }
+  if (section === "settings") {
+    return "[Ctrl-S] Settings  ·  [Ctrl-Space] Global  ·  [Ctrl-R] Refresh"
+  }
+  return `[Enter/u] Restore  ·  ${global}`
 }
 
 const runMainScreen = (
@@ -165,7 +188,7 @@ const runMainScreen = (
       view.add(empty)
       yield* OpenTuiApp.mountView(shell, view)
 
-      let prefixActive = false
+      let globalKeysActive = false
 
       const selectedId = () => itemIdsByIndex[list.getSelectedIndex()]
       const selectionState = (
@@ -182,7 +205,8 @@ const runMainScreen = (
         return { ...state, section, selectedThreadId: id, status }
       }
       const offerSelected = (
-        type: "archiveThread" | "unarchiveThread" | "renameProject" | "deleteProject",
+        type:
+          "archiveThread" | "unarchiveThread" | "renameThread" | "renameProject" | "deleteProject",
       ) => {
         const id = selectedId()
         if (id !== undefined) Queue.offerUnsafe(events, { type, id })
@@ -193,39 +217,23 @@ const runMainScreen = (
           return
         }
         if (key.ctrl && key.name === "space") {
-          prefixActive = !prefixActive
-          OpenTuiApp.setHelp(shell, prefixActive ? prefixHelp(section) : "")
+          globalKeysActive = !globalKeysActive
+          OpenTuiApp.setHelp(shell, globalKeysActive ? globalHelp : contextHelp(section))
           return
         }
-        if (prefixActive) {
-          prefixActive = false
-          OpenTuiApp.setHelp(shell, "")
-          const target = sectionForPrefix(key.name)
+        if (key.ctrl && key.name.toLowerCase() === "s") {
+          if (section !== "settings") {
+            Queue.offerUnsafe(events, { type: "switchSection", section: "settings" })
+          }
+          return
+        }
+        if (globalKeysActive) {
+          globalKeysActive = false
+          OpenTuiApp.setHelp(shell, contextHelp(section))
+          const target = sectionForGlobalKey(key.name)
           if (target !== undefined && target !== section) {
             Queue.offerUnsafe(events, { type: "switchSection", section: target })
-            return
           }
-          if (section === "threads" && key.name === "n") {
-            Queue.offerUnsafe(events, { type: "newThread" })
-            return
-          }
-          if (section === "threads" && key.name === "a") {
-            offerSelected("archiveThread")
-            return
-          }
-          if (section === "projects" && key.name === "n") {
-            Queue.offerUnsafe(events, { type: "newProject" })
-            return
-          }
-          if (section === "projects" && key.name === "e") {
-            offerSelected("renameProject")
-            return
-          }
-          if (section === "projects" && key.name === "d") {
-            offerSelected("deleteProject")
-            return
-          }
-          if (section === "archived" && key.name === "u") offerSelected("unarchiveThread")
           return
         }
         if (key.ctrl && key.name === "n") {
@@ -236,16 +244,32 @@ const runMainScreen = (
           Queue.offerUnsafe(events, { type: "newProject" })
           return
         }
+        if (key.ctrl && key.name === "r") {
+          Queue.offerUnsafe(events, { type: "refresh" })
+          return
+        }
+        if (section === "threads" && key.name === "n") {
+          Queue.offerUnsafe(events, { type: "newThread" })
+          return
+        }
         if (section === "threads" && key.name === "a") {
           offerSelected("archiveThread")
+          return
+        }
+        if (section === "threads" && key.name === "r") {
+          offerSelected("renameThread")
           return
         }
         if (section === "archived" && key.name === "u") {
           offerSelected("unarchiveThread")
           return
         }
-        if (section === "projects" && key.name === "e") {
+        if (section === "projects" && key.name === "r") {
           offerSelected("renameProject")
+          return
+        }
+        if (section === "projects" && key.name === "n") {
+          Queue.offerUnsafe(events, { type: "newProject" })
           return
         }
         if (section === "projects" && key.name === "d") {
@@ -256,7 +280,6 @@ const runMainScreen = (
           Queue.offerUnsafe(events, { type: "quit" })
           return
         }
-        if (key.name === "r") Queue.offerUnsafe(events, { type: "refresh" })
       }
       const onItemSelected = (index: number) => {
         const id = itemIdsByIndex[index]
@@ -281,31 +304,44 @@ const runMainScreen = (
       )
       list.focus()
 
-      const render = (state: ManagerState): Effect.Effect<void> =>
+      const render = (state: ManagerState, animationFrame: number): Effect.Effect<boolean> =>
         Effect.gen(function* () {
           const snapshot = yield* Ref.get(options.snapshotRef)
           const reachability = yield* Ref.get(options.reachabilityRef)
           const backgroundStatus = yield* Ref.get(options.backgroundStatusRef)
           const items =
-            section === "projects"
-              ? View.projectOptions(snapshot).map((item) => ({
-                  id: item.projectId,
-                  name: item.name,
-                  description: item.description,
-                }))
-              : View.threadOptions(snapshot, section === "archived").map((item) => ({
-                  id: item.threadId,
-                  name: item.name,
-                  description: item.description,
-                }))
+            section === "settings"
+              ? []
+              : section === "projects"
+                ? View.projectOptions(snapshot).map((item) => ({
+                    id: item.projectId,
+                    name: item.name,
+                    description: item.description,
+                    descriptionIndent: 0,
+                  }))
+                : View.threadOptions(snapshot, section === "archived").map((item) => ({
+                    id: item.threadId,
+                    name: OpenTuiApp.styledThreadName(
+                      item.marker,
+                      item.tone,
+                      item.name,
+                      animationFrame,
+                    ),
+                    description: item.description,
+                    descriptionIndent: 3,
+                  }))
           const selected =
-            section === "projects"
-              ? View.normalizeProjectSelection(snapshot, state.selectedProjectId)
-              : View.normalizeSelection(
-                  snapshot,
-                  section === "archived" ? state.selectedArchivedThreadId : state.selectedThreadId,
-                  section === "archived",
-                )
+            section === "settings"
+              ? undefined
+              : section === "projects"
+                ? View.normalizeProjectSelection(snapshot, state.selectedProjectId)
+                : View.normalizeSelection(
+                    snapshot,
+                    section === "archived"
+                      ? state.selectedArchivedThreadId
+                      : state.selectedThreadId,
+                    section === "archived",
+                  )
           const selectedIndex = Math.max(
             0,
             items.findIndex((item) => item.id === selected),
@@ -315,50 +351,73 @@ const runMainScreen = (
           list.options = items.map((item) => ({
             name: item.name,
             description: item.description,
+            descriptionIndent: item.descriptionIndent,
           }))
           if (items.length > 0 && list.getSelectedIndex() !== selectedIndex) {
             list.setSelectedIndex(selectedIndex)
           }
-          list.visible = items.length > 0
-          empty.visible = items.length === 0
+          list.visible = section !== "settings" && items.length > 0
+          empty.visible = section === "settings" || items.length === 0
           if (items.length > 0 && renderer.currentFocusedRenderable !== list) list.focus()
           empty.content =
-            snapshot === undefined
-              ? "Waiting for the App Server…"
-              : section === "projects"
-                ? "No Projects yet. Press Ctrl-P to create one."
-                : section === "archived"
-                  ? "No archived Threads."
-                  : snapshot.projects.length === 0
-                    ? "No Projects yet. Press Ctrl-P to create one."
-                    : "No active Threads. Press Ctrl-N to create one."
-          const fetched =
-            snapshot === undefined ? "" : `  ·  synced ${snapshot.fetchedAt.toLocaleTimeString()}`
+            section === "settings"
+              ? [
+                  `App Server    ${options.endpoint.origin}`,
+                  `Connection    ${View.connectionLabel(reachability)}`,
+                  `Last synced   ${snapshot?.fetchedAt.toLocaleTimeString() ?? "Never"}`,
+                ].join("\n")
+              : snapshot === undefined
+                ? "Waiting for the App Server…"
+                : section === "projects"
+                  ? "No Projects yet. Press Ctrl-P to create one."
+                  : section === "archived"
+                    ? "No archived Threads."
+                    : snapshot.projects.length === 0
+                      ? "No Projects yet. Press Ctrl-P to create one."
+                      : "No active Threads. Press Ctrl-N to create one."
           const title =
             section === "threads"
-              ? `Active Threads (${items.length})`
+              ? View.activeThreadSummary(snapshot)
               : section === "archived"
                 ? `Archived Threads (${items.length})`
-                : `Projects (${items.length})`
+                : section === "projects"
+                  ? `Projects (${items.length})`
+                  : "Settings"
           OpenTuiApp.update(shell, {
-            subtitle:
-              options.endpoint.origin + `  ·  ${View.connectionLabel(reachability)}` + fetched,
             title,
             status: state.status ?? backgroundStatus,
-            help: prefixActive ? prefixHelp(section) : "",
+            help: globalKeysActive ? globalHelp : contextHelp(section),
           })
+          return (
+            section === "threads" &&
+            (snapshot?.threads.some(
+              (thread) => thread.archivedAt === undefined && thread.activityState === "working",
+            ) ??
+              false)
+          )
         })
 
-      const loop = (state: ManagerState): Effect.Effect<MainResult, unknown> =>
-        render(state).pipe(
-          Effect.andThen(
-            Effect.race(
-              Queue.take(events),
-              Queue.take(options.uiUpdates).pipe(Effect.as({ type: "update" as const })),
-            ),
+      const loop = (state: ManagerState, animationFrame = 0): Effect.Effect<MainResult, unknown> =>
+        render(state, animationFrame).pipe(
+          Effect.flatMap((hasRunningThread) =>
+            hasRunningThread
+              ? Effect.race(
+                  Effect.race(
+                    Queue.take(events),
+                    Queue.take(options.uiUpdates).pipe(Effect.as({ type: "update" as const })),
+                  ),
+                  Effect.sleep("200 millis").pipe(Effect.as({ type: "animate" as const })),
+                )
+              : Effect.race(
+                  Queue.take(events),
+                  Queue.take(options.uiUpdates).pipe(Effect.as({ type: "update" as const })),
+                ),
           ),
           Effect.flatMap((event): Effect.Effect<MainResult, unknown> => {
             if (event.type === "update") return loop(selectionState(state, selectedId()))
+            if (event.type === "animate") {
+              return loop(selectionState(state, selectedId()), animationFrame + 1)
+            }
             if (event.type === "refresh") {
               return Queue.offer(options.refreshRequests, void 0).pipe(
                 Effect.andThen(loop(selectionState(state, selectedId(), "Refreshing…"))),
@@ -636,6 +695,36 @@ const runManager = (
         if (result.type === "archiveThread" || result.type === "unarchiveThread") {
           return Effect.succeed(result)
         }
+        if (result.type === "renameThread") {
+          return Ref.get(options.snapshotRef).pipe(
+            Effect.flatMap((snapshot): Effect.Effect<ManagerResult, unknown> => {
+              const thread = snapshot?.threads.find((item) => item.id === result.threadId)
+              if (thread === undefined) {
+                return loop({ ...result.state, status: "That Thread is no longer available." })
+              }
+              const currentName = View.threadLabel(thread)
+              return textPrompt(shell, {
+                title: `Rename Thread · ${currentName}`,
+                label: "New thread name",
+                placeholder: currentName,
+                validate: (value) => (value === "" ? "Thread name is required." : undefined),
+              }).pipe(
+                Effect.flatMap((renamed): Effect.Effect<ManagerResult, unknown> => {
+                  if (renamed.type === "quit") return Effect.succeed({ type: "quit" } as const)
+                  if (renamed.type === "cancel") {
+                    return loop({ ...result.state, status: "Thread rename cancelled." })
+                  }
+                  return Effect.succeed({
+                    type: "updateThread",
+                    threadId: result.threadId,
+                    input: { name: renamed.value },
+                    state: result.state,
+                  } as const)
+                }),
+              )
+            }),
+          )
+        }
         if (result.type === "newProject") {
           return runCreateProjectWizard(shell, options.listDirectory).pipe(
             Effect.flatMap((created): Effect.Effect<ManagerResult, unknown> => {
@@ -772,6 +861,8 @@ const pendingStatus = (action: ManagerAction): string => {
       return "Archiving Thread…"
     case "unarchiveThread":
       return "Restoring Thread…"
+    case "updateThread":
+      return "Renaming Thread…"
     case "updateProject":
       return "Renaming Project…"
     case "deleteProject":

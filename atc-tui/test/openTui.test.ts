@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest"
 import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing"
 import { Deferred, Effect, Fiber, Queue, Ref } from "effect"
+import { TestClock } from "effect/testing"
 import type * as AppServer from "../src/appServer.ts"
 import * as OpenTui from "../src/openTui.ts"
 import type * as View from "../src/view.ts"
@@ -160,12 +161,32 @@ const waitForFrame = (setup: TestRendererSetup, text: string) =>
   Effect.promise(() => setup.waitForFrame((frame) => frame.includes(text)))
 
 describe("OpenTUI manager", () => {
+  it.effect("moves App Server status into Settings", () =>
+    Effect.gen(function* () {
+      const result = yield* runManager(snapshot, {}, ({ setup }) =>
+        Effect.gen(function* () {
+          yield* waitForFrame(setup, "Active Threads (2)")
+          assert.notInclude(setup.captureCharFrame(), "http://127.0.0.1:4242")
+
+          setup.mockInput.pressKey("s", { ctrl: true })
+          yield* waitForFrame(setup, "App Server    http://127.0.0.1:4242")
+          const settings = setup.captureCharFrame()
+          assert.include(settings, "Connection    connected")
+          assert.include(settings, "Last synced")
+          setup.mockInput.pressKey("q")
+        }),
+      )
+
+      assert.deepStrictEqual(result, { type: "quit" })
+    }),
+  )
+
   it.effect("creates an unnamed Thread in the selected Project with the preferred agent", () =>
     Effect.gen(function* () {
       const result = yield* runManager(snapshot, { selectedThreadId: "t2" }, ({ setup }) =>
         Effect.gen(function* () {
-          yield* waitForFrame(setup, "Beta  ›  Second")
-          setup.mockInput.pressKey("n", { ctrl: true })
+          yield* waitForFrame(setup, "Beta   │  Second")
+          setup.mockInput.pressKey("n")
           yield* waitForFrame(setup, "New Thread · Project")
           setup.mockInput.pressEnter()
           yield* waitForFrame(setup, "New Thread · Agent")
@@ -189,7 +210,7 @@ describe("OpenTUI manager", () => {
     Effect.gen(function* () {
       const result = yield* runManager(snapshot, { selectedThreadId: "t1" }, ({ setup }) =>
         Effect.gen(function* () {
-          yield* waitForFrame(setup, "Alpha  ›  First")
+          yield* waitForFrame(setup, "Alpha  │  First")
           setup.mockInput.pressKey("p", { ctrl: true })
           yield* waitForFrame(setup, "New Project · Name")
           yield* Effect.promise(() => setup.mockInput.typeText("Gamma"))
@@ -238,7 +259,7 @@ describe("OpenTUI manager", () => {
         { selectedThreadId: "t1" },
         ({ setup }) =>
           Effect.gen(function* () {
-            yield* waitForFrame(setup, "Alpha  ›  First")
+            yield* waitForFrame(setup, "Alpha  │  First")
             setup.mockInput.pressKey("p", { ctrl: true })
             yield* waitForFrame(setup, "New Project · Name")
             yield* Effect.promise(() => setup.mockInput.typeText("Beta"))
@@ -295,7 +316,7 @@ describe("OpenTUI manager", () => {
         { selectedThreadId: "t1" },
         ({ setup }) =>
           Effect.gen(function* () {
-            yield* waitForFrame(setup, "Alpha  ›  First")
+            yield* waitForFrame(setup, "Alpha  │  First")
             setup.mockInput.pressKey("p", { ctrl: true })
             yield* waitForFrame(setup, "New Project · Name")
             yield* Effect.promise(() => setup.mockInput.typeText("Out of order"))
@@ -339,13 +360,16 @@ describe("OpenTUI manager", () => {
     }),
   )
 
-  it.effect("archives the selected Thread from the contextual prefix bar", () =>
+  it.effect("always shows and runs the current view's contextual commands", () =>
     Effect.gen(function* () {
       const result = yield* runManager(snapshot, { selectedThreadId: "t1" }, ({ setup }) =>
         Effect.gen(function* () {
-          yield* waitForFrame(setup, "Alpha  ›  First")
-          setup.mockInput.pressKey(" ", { ctrl: true })
-          yield* waitForFrame(setup, "[a] Archive")
+          yield* waitForFrame(setup, "[Enter] Open")
+          const frame = setup.captureCharFrame()
+          assert.include(frame, "Alpha  │  First")
+          assert.include(frame, "[Enter] Open")
+          assert.include(frame, "[a] Archive")
+          assert.include(frame, "[Ctrl-Space] Global")
           setup.mockInput.pressKey("a")
         }),
       )
@@ -370,7 +394,7 @@ describe("OpenTUI manager", () => {
         ({ setup }) =>
           Effect.gen(function* () {
             yield* waitForFrame(setup, "Archived Threads (1)")
-            yield* waitForFrame(setup, "Alpha  ›  Archived First")
+            yield* waitForFrame(setup, "Alpha  │  Archived First")
             setup.mockInput.pressKey("u")
           }),
       )
@@ -388,26 +412,21 @@ describe("OpenTUI manager", () => {
     }),
   )
 
-  it.effect("shows a view-dependent prefix bar and switches between top-level views", () =>
+  it.effect("temporarily replaces contextual commands with global navigation", () =>
     Effect.gen(function* () {
       const result = yield* runManager(snapshot, { selectedThreadId: "t1" }, ({ setup }) =>
         Effect.gen(function* () {
-          yield* Effect.promise(() =>
-            setup.waitForFrame(
-              (frame) => frame.includes("Active Threads (2)") && !frame.includes("[t] Threads"),
-            ),
-          )
+          yield* waitForFrame(setup, "[n] New thread")
           setup.mockInput.pressKey(" ", { ctrl: true })
-          yield* waitForFrame(
-            setup,
-            "[t] Threads  ·  [p] Projects  ·  [n] New thread  ·  [a] Archive",
-          )
+          yield* waitForFrame(setup, "[a] Archived")
+          yield* waitForFrame(setup, "[Esc] Back")
+          setup.mockInput.pressKey("a")
+          yield* waitForFrame(setup, "Archived Threads (1)")
+          yield* waitForFrame(setup, "[Enter/u] Restore")
+          setup.mockInput.pressKey(" ", { ctrl: true })
           setup.mockInput.pressKey("p")
           yield* waitForFrame(setup, "╭─ Projects (2)")
-          setup.mockInput.pressKey(" ", { ctrl: true })
-          yield* waitForFrame(setup, "[n] New project  ·  [e] Rename  ·  [d] Delete")
-          setup.mockInput.pressKey("t")
-          yield* waitForFrame(setup, "Active Threads (2)")
+          yield* waitForFrame(setup, "[n] New project")
           setup.mockInput.pressKey("q")
         }),
       )
@@ -416,7 +435,7 @@ describe("OpenTUI manager", () => {
     }),
   )
 
-  it.effect("cancels the prefix menu without changing selection", () =>
+  it.effect("cancels global navigation and restores contextual commands", () =>
     Effect.gen(function* () {
       const result = yield* runManager(snapshot, { selectedThreadId: "t2" }, ({ setup }) =>
         Effect.gen(function* () {
@@ -424,11 +443,7 @@ describe("OpenTUI manager", () => {
           setup.mockInput.pressKey(" ", { ctrl: true })
           yield* waitForFrame(setup, "[t] Threads")
           setup.mockInput.pressEscape()
-          yield* Effect.promise(() =>
-            setup.waitForFrame(
-              (frame) => frame.includes("Active Threads (2)") && !frame.includes("[t] Threads"),
-            ),
-          )
+          yield* waitForFrame(setup, "[n] New thread")
           setup.mockInput.pressKey("a")
         }),
       )
@@ -445,7 +460,7 @@ describe("OpenTUI manager", () => {
     }),
   )
 
-  it.effect("leaves prefix keys unbound without the prefix", () =>
+  it.effect("leaves global navigation keys unbound outside global mode", () =>
     Effect.gen(function* () {
       const result = yield* runManager(snapshot, { selectedThreadId: "t1" }, ({ setup }) =>
         Effect.gen(function* () {
@@ -475,11 +490,11 @@ describe("OpenTUI manager", () => {
           setup.mockInput.pressKey(" ", { ctrl: true })
           setup.mockInput.pressKey("p")
           yield* waitForFrame(setup, "╭─ Projects (2)")
+          const frameId = setup.renderer.frameId
           setup.mockInput.pressArrow("down")
-          yield* waitForFrame(setup, "/work/beta  ·  1 active  ·  0 archived")
-          setup.mockInput.pressKey(" ", { ctrl: true })
-          yield* waitForFrame(setup, "[e] Rename")
-          setup.mockInput.pressKey("e")
+          yield* Effect.promise(() => setup.waitFor(() => setup.renderer.frameId > frameId))
+          yield* waitForFrame(setup, "[Enter/r] Rename")
+          setup.mockInput.pressKey("r")
           yield* waitForFrame(setup, "Rename Project · Beta")
           yield* Effect.promise(() => setup.mockInput.typeText("Beta Prime"))
           setup.mockInput.pressEnter()
@@ -495,6 +510,32 @@ describe("OpenTUI manager", () => {
           section: "projects",
           status: undefined,
           selectedProjectId: "p2",
+        },
+      })
+    }),
+  )
+
+  it.effect("renames an active Thread", () =>
+    Effect.gen(function* () {
+      const result = yield* runManager(snapshot, { selectedThreadId: "t1" }, ({ setup }) =>
+        Effect.gen(function* () {
+          yield* waitForFrame(setup, "Alpha  │  First")
+          yield* waitForFrame(setup, "[r] Rename")
+          setup.mockInput.pressKey("r")
+          yield* waitForFrame(setup, "Rename Thread · First")
+          yield* Effect.promise(() => setup.mockInput.typeText("First Prime"))
+          setup.mockInput.pressEnter()
+        }),
+      )
+
+      assert.deepStrictEqual(result, {
+        type: "updateThread",
+        threadId: "t1",
+        input: { name: "First Prime" },
+        state: {
+          selectedThreadId: "t1",
+          section: "threads",
+          status: undefined,
         },
       })
     }),
@@ -550,7 +591,7 @@ describe("OpenTUI manager", () => {
             yield* waitForFrame(setup, "Deleting Project…")
             const action = yield* Deferred.await(actionStarted)
             assert.strictEqual(action.projectId, "p1")
-            assert.include(setup.captureCharFrame(), "ATC")
+            assert.include(setup.captureCharFrame(), "Working")
             yield* Deferred.succeed(actionFinished, {
               type: "continue",
               state: {
@@ -588,12 +629,12 @@ describe("OpenTUI manager", () => {
             yield* waitForFrame(setup, "Waiting for the App Server…")
             yield* Ref.set(snapshotRef, snapshot)
             yield* Queue.offer(uiUpdates, void 0)
-            yield* waitForFrame(setup, "Alpha  ›  First")
-            yield* waitForFrame(setup, "Beta  ›  Second")
+            yield* waitForFrame(setup, "Alpha  │  First")
+            yield* waitForFrame(setup, "Beta   │  Second")
             setup.mockInput.pressArrow("down")
             yield* Queue.offer(uiUpdates, void 0)
             yield* Effect.promise(() =>
-              setup.waitForFrame((frame) => frame.includes("▶ Beta  ›  Second")),
+              setup.waitForFrame((frame) => frame.includes("○  Beta   │  Second")),
             )
             setup.mockInput.pressEnter()
           }),
@@ -611,6 +652,54 @@ describe("OpenTUI manager", () => {
     }),
   )
 
+  it.effect("keeps selection stable while a running Thread animates", () =>
+    Effect.gen(function* () {
+      const activeSnapshot: AppServer.Snapshot = {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === "t2"
+            ? { ...thread, activityState: "working", linkedTerminalId: "terminal-t2" }
+            : thread,
+        ),
+      }
+      const result = yield* runManager(activeSnapshot, { selectedThreadId: "t1" }, ({ setup }) =>
+        Effect.gen(function* () {
+          const runningMarkerColor = () =>
+            setup
+              .captureSpans()
+              .lines.flatMap((line) => line.spans)
+              .find((span) => span.text === "●")
+              ?.fg.toInts()
+
+          yield* waitForFrame(setup, "●  Beta   │  Second")
+          assert.deepStrictEqual(runningMarkerColor(), [180, 83, 9, 255])
+          yield* TestClock.adjust("200 millis")
+          yield* Effect.promise(() => setup.waitFor(() => runningMarkerColor()?.[0] === 194))
+          assert.deepStrictEqual(runningMarkerColor(), [194, 103, 8, 255])
+          const frame = setup.captureCharFrame()
+          assert.include(frame, "○  Alpha  │  First")
+          const lines = frame.split("\n")
+          const threadLine = lines.findIndex((line) => line.includes("Alpha  │  First"))
+          assert.strictEqual(
+            lines[threadLine + 1]?.indexOf("codex"),
+            lines[threadLine]?.indexOf("Alpha"),
+          )
+          setup.mockInput.pressEnter()
+        }),
+      )
+
+      assert.deepStrictEqual(result, {
+        type: "attach",
+        threadId: "t1",
+        state: {
+          selectedThreadId: "t1",
+          section: "threads",
+          status: undefined,
+        },
+      })
+    }),
+  )
+
   it.effect("clears the refresh status after the live snapshot updates", () =>
     Effect.gen(function* () {
       const result = yield* runManager(
@@ -618,15 +707,15 @@ describe("OpenTUI manager", () => {
         { selectedThreadId: "t1" },
         ({ setup, uiUpdates, refreshRequests }) =>
           Effect.gen(function* () {
-            yield* waitForFrame(setup, "Alpha  ›  First")
-            setup.mockInput.pressKey("r")
+            yield* waitForFrame(setup, "Alpha  │  First")
+            setup.mockInput.pressKey("r", { ctrl: true })
             yield* waitForFrame(setup, "Refreshing…")
             yield* Queue.take(refreshRequests)
             yield* Queue.offer(uiUpdates, void 0)
             yield* Effect.promise(() =>
               setup.waitForFrame((frame) =>
                 Promise.resolve(
-                  frame.includes("Alpha  ›  First") && !frame.includes("Refreshing…"),
+                  frame.includes("Alpha  │  First") && !frame.includes("Refreshing…"),
                 ),
               ),
             )

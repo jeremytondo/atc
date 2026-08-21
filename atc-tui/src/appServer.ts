@@ -25,6 +25,7 @@ export interface Snapshot {
 export type CreateProjectInput = typeof Contract.CreateProjectRequest.Type
 export type UpdateProjectInput = typeof Contract.UpdateProjectRequest.Type
 export type CreateThreadInput = typeof Contract.CreateThreadRequest.Type
+export type UpdateThreadInput = typeof Contract.UpdateThreadRequest.Type
 
 export class AppServer extends Context.Service<
   AppServer,
@@ -39,6 +40,10 @@ export class AppServer extends Context.Service<
     ) => Effect.Effect<Project, unknown>
     readonly deleteProject: (projectId: string) => Effect.Effect<void, unknown>
     readonly createThread: (input: CreateThreadInput) => Effect.Effect<Thread, unknown>
+    readonly updateThread: (
+      threadId: string,
+      input: UpdateThreadInput,
+    ) => Effect.Effect<Thread, unknown>
     readonly archiveThread: (threadId: string) => Effect.Effect<Thread, unknown>
     readonly unarchiveThread: (threadId: string) => Effect.Effect<Thread, unknown>
     readonly openThread: (threadId: string) => Effect.Effect<Terminal, unknown>
@@ -71,9 +76,14 @@ const make = Effect.gen(function* () {
       client.v1.updateProject({ params: { projectId }, payload: input }),
     deleteProject: (projectId) => client.v1.deleteProject({ params: { projectId } }),
     createThread: (input) => client.v1.createThread({ payload: input }),
+    updateThread: (threadId, input) =>
+      client.v1.updateThread({ params: { threadId }, payload: input }),
     archiveThread: (threadId) => client.v1.archiveThread({ params: { threadId } }),
     unarchiveThread: (threadId) => client.v1.unarchiveThread({ params: { threadId } }),
-    openThread: (threadId) => client.v1.openThreadTerminal({ params: { threadId } }),
+    openThread: (threadId) =>
+      client.v1
+        .openThreadTerminal({ params: { threadId } })
+        .pipe(Effect.tap(() => client.v1.markThreadViewed({ params: { threadId } }))),
     subscribe: (publish) => Sse.subscribe(config, publish),
   })
 })

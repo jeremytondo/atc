@@ -10,9 +10,8 @@ Run from source with `mise run -C atc-tui dev`, or build the standalone
 namespace use the App Server defaults; `atc-tui --help` documents overrides
 for installations using different local settings.
 
-Tab cycles through active Threads, archived Threads, and Projects. Enter opens an
-active Thread, restores an archived Thread, or renames a Project. Ctrl-N creates
-and immediately attaches a Thread; Ctrl-P creates a Project. The contextual help
-bar documents archive, restore, delete, refresh, and exit keys. zmx owns the
+The footer shows the keys available in the current view. Ctrl-Space temporarily
+replaces them with global navigation keys for active Threads, archived Threads,
+and Projects. Enter performs the selected item's primary action. zmx owns the
 attached terminal, so its native Ctrl-\ binding returns directly to the Thread
 list.
