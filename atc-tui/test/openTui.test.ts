@@ -93,12 +93,16 @@ const defaultListDirectory = (
   })
 }
 
-const runManager = (
+const runWithManagerRenderer = <Result>(
   initialSnapshot: AppServer.Snapshot | undefined,
   initial: OpenTui.ManagerState,
   drive: (harness: ManagerHarness) => Effect.Effect<void, unknown>,
+  start: (
+    setup: TestRendererSetup,
+    options: OpenTui.ManagerOptions,
+  ) => Effect.Effect<Result, unknown>,
   listDirectory = defaultListDirectory,
-): Effect.Effect<OpenTui.ManagerResult, unknown> =>
+): Effect.Effect<Result, unknown> =>
   Effect.scoped(
     Effect.gen(function* () {
       const setup = yield* Effect.acquireRelease(
@@ -121,7 +125,7 @@ const runManager = (
       const uiUpdates = yield* Queue.unbounded<void>()
       const refreshRequests = yield* Queue.unbounded<void>()
       const resultFiber = yield* Effect.forkScoped(
-        OpenTui.runWithRenderer(setup.renderer, {
+        start(setup, {
           endpoint: new URL("http://127.0.0.1:4242"),
           listDirectory,
           snapshotRef,
@@ -136,6 +140,20 @@ const runManager = (
       yield* drive({ setup, uiUpdates, refreshRequests, snapshotRef })
       return yield* Fiber.join(resultFiber)
     }),
+  )
+
+const runManager = (
+  initialSnapshot: AppServer.Snapshot | undefined,
+  initial: OpenTui.ManagerState,
+  drive: (harness: ManagerHarness) => Effect.Effect<void, unknown>,
+  listDirectory = defaultListDirectory,
+): Effect.Effect<OpenTui.ManagerResult, unknown> =>
+  runWithManagerRenderer(
+    initialSnapshot,
+    initial,
+    drive,
+    (setup, options) => OpenTui.runWithRenderer(setup.renderer, options),
+    listDirectory,
   )
 
 const waitForFrame = (setup: TestRendererSetup, text: string) =>
@@ -427,6 +445,53 @@ describe("OpenTUI manager", () => {
           status: undefined,
         },
       })
+    }),
+  )
+
+  it.effect("keeps the renderer mounted while Project deletion runs", () =>
+    Effect.gen(function* () {
+      const actionStarted =
+        yield* Deferred.make<Extract<OpenTui.ManagerAction, { readonly type: "deleteProject" }>>()
+      const actionFinished = yield* Deferred.make<OpenTui.ManagerTransition>()
+
+      const result = yield* runWithManagerRenderer(
+        snapshot,
+        { section: "projects", selectedProjectId: "p1" },
+        ({ setup }) =>
+          Effect.gen(function* () {
+            yield* waitForFrame(setup, "Projects (2)")
+            setup.mockInput.pressKey("d")
+            yield* waitForFrame(setup, "Delete Project · Alpha")
+            setup.mockInput.pressArrow("down")
+            setup.mockInput.pressEnter()
+            yield* waitForFrame(setup, "Deleting Project…")
+            const action = yield* Deferred.await(actionStarted)
+            assert.strictEqual(action.projectId, "p1")
+            assert.include(setup.captureCharFrame(), "ATC")
+            yield* Deferred.succeed(actionFinished, {
+              type: "continue",
+              state: {
+                ...action.state,
+                selectedProjectId: undefined,
+                status: "Project deleted.",
+              },
+            })
+            yield* waitForFrame(setup, "Project deleted.")
+            yield* waitForFrame(setup, "Projects (2)")
+            setup.mockInput.pressKey("q")
+          }),
+        (setup, options) =>
+          OpenTui.runSessionWithRenderer(setup.renderer, options, (action) => {
+            if (action.type !== "deleteProject") {
+              return Effect.die(new Error(`unexpected action: ${action.type}`))
+            }
+            return Deferred.succeed(actionStarted, action).pipe(
+              Effect.andThen(Deferred.await(actionFinished)),
+            )
+          }),
+      )
+
+      assert.deepStrictEqual(result, { type: "quit" })
     }),
   )
 

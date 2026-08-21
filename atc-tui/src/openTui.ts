@@ -13,8 +13,8 @@ import * as View from "./view.ts"
 
 // OpenTUI owns only the interactive manager surface. Callbacks publish typed
 // events into Effect queues, and the read-only directory browser receives its
-// API capability from the application coordinator. Each manager run owns a
-// renderer scope that is destroyed before zmx inherits the real TTY.
+// API capability from the application coordinator. One renderer spans manager
+// actions and is destroyed only before zmx inherits the real TTY.
 
 export type ManagerSection = "threads" | "archived" | "projects"
 
@@ -48,6 +48,21 @@ export type ManagerResult =
       readonly state: ManagerState
     }
   | { readonly type: "deleteProject"; readonly projectId: string; readonly state: ManagerState }
+
+export type ManagerAction = Exclude<ManagerResult, { readonly type: "quit" }>
+
+type ManagerAttachExit = {
+  readonly type: "attach"
+  readonly terminal: AppServer.Terminal
+  readonly state: ManagerState
+}
+
+export type ManagerExit = { readonly type: "quit" } | ManagerAttachExit
+
+export type ManagerTransition =
+  { readonly type: "continue"; readonly state: ManagerState } | ManagerAttachExit
+
+export type RunAction = (action: ManagerAction) => Effect.Effect<ManagerTransition, never>
 
 export interface ManagerOptions {
   readonly endpoint: URL
@@ -572,6 +587,185 @@ const runCreateProjectWizard = (
     }
   })
 
+const runManager = (
+  shell: OpenTuiApp.AppShell,
+  options: ManagerOptions,
+  initial: ManagerState,
+): Effect.Effect<ManagerResult, unknown> => {
+  const loop = (state: ManagerState): Effect.Effect<ManagerResult, unknown> =>
+    runMainScreen(shell, options, state).pipe(
+      Effect.flatMap((result): Effect.Effect<ManagerResult, unknown> => {
+        if (result.type === "quit" || result.type === "attach") {
+          return Effect.succeed(result)
+        }
+        if (result.type === "switchSection") {
+          return loop({ ...result.state, section: result.section, status: undefined })
+        }
+        if (result.type === "archiveThread" || result.type === "unarchiveThread") {
+          return Effect.succeed(result)
+        }
+        if (result.type === "newProject") {
+          return runCreateProjectWizard(shell, options.listDirectory).pipe(
+            Effect.flatMap((created): Effect.Effect<ManagerResult, unknown> => {
+              if (created.type === "quit") return Effect.succeed({ type: "quit" } as const)
+              if (created.type === "cancel") {
+                return loop({ ...result.state, status: created.status })
+              }
+              return Effect.succeed({
+                type: "createProject",
+                input: created.input,
+                state: result.state,
+              } as const)
+            }),
+          )
+        }
+        if (result.type === "renameProject") {
+          return Ref.get(options.snapshotRef).pipe(
+            Effect.flatMap((snapshot): Effect.Effect<ManagerResult, unknown> => {
+              const project = snapshot?.projects.find((item) => item.id === result.projectId)
+              if (project === undefined) {
+                return loop({ ...result.state, status: "That Project is no longer available." })
+              }
+              return textPrompt(shell, {
+                title: `Rename Project · ${project.name}`,
+                label: "New project name",
+                placeholder: project.name,
+                validate: (value) => (value === "" ? "Project name is required." : undefined),
+              }).pipe(
+                Effect.flatMap((renamed): Effect.Effect<ManagerResult, unknown> => {
+                  if (renamed.type === "quit") return Effect.succeed({ type: "quit" } as const)
+                  if (renamed.type === "cancel") {
+                    return loop({ ...result.state, status: "Project rename cancelled." })
+                  }
+                  return Effect.succeed({
+                    type: "updateProject",
+                    projectId: result.projectId,
+                    input: { name: renamed.value },
+                    state: result.state,
+                  } as const)
+                }),
+              )
+            }),
+          )
+        }
+        if (result.type === "deleteProject") {
+          return Ref.get(options.snapshotRef).pipe(
+            Effect.flatMap((snapshot): Effect.Effect<ManagerResult, unknown> => {
+              const project = snapshot?.projects.find((item) => item.id === result.projectId)
+              if (project === undefined) {
+                return loop({ ...result.state, status: "That Project is no longer available." })
+              }
+              const threadCount =
+                snapshot?.threads.filter((thread) => thread.projectId === project.id).length ?? 0
+              const threadNoun = threadCount === 1 ? "Thread" : "Threads"
+              return selectPrompt(
+                shell,
+                `Delete Project · ${project.name}`,
+                [
+                  {
+                    name: "Cancel",
+                    description: "Keep this Project and everything it owns",
+                    value: false,
+                  },
+                  {
+                    name: "Delete permanently",
+                    description: `Delete ${threadCount} ${threadNoun} and their Terminals; keep the directory`,
+                    value: true,
+                  },
+                ],
+                0,
+              ).pipe(
+                Effect.flatMap((confirmed): Effect.Effect<ManagerResult, unknown> => {
+                  if (confirmed.type === "quit") return Effect.succeed({ type: "quit" } as const)
+                  if (confirmed.type === "cancel" || !confirmed.value) {
+                    return loop({ ...result.state, status: "Project deletion cancelled." })
+                  }
+                  return Effect.succeed({
+                    type: "deleteProject",
+                    projectId: result.projectId,
+                    state: result.state,
+                  } as const)
+                }),
+              )
+            }),
+          )
+        }
+
+        return Ref.get(options.snapshotRef).pipe(
+          Effect.flatMap((snapshot): Effect.Effect<ManagerResult, unknown> => {
+            if (snapshot === undefined) {
+              return loop({
+                ...result.state,
+                status: "Wait for the App Server before creating.",
+              })
+            }
+            const selectedThreadId =
+              result.state.section === "archived"
+                ? result.state.selectedArchivedThreadId
+                : result.state.selectedThreadId
+            const preferredProjectId =
+              result.state.section === "projects"
+                ? result.state.selectedProjectId
+                : View.projectIdForSelection(snapshot, selectedThreadId)
+            return runCreateThreadWizard(shell, snapshot, preferredProjectId).pipe(
+              Effect.flatMap((created): Effect.Effect<ManagerResult, unknown> => {
+                if (created.type === "quit") return Effect.succeed({ type: "quit" } as const)
+                if (created.type === "cancel") {
+                  return loop({ ...result.state, status: created.status })
+                }
+                return Effect.succeed({
+                  type: "createThread",
+                  input: created.input,
+                  state: result.state,
+                } as const)
+              }),
+            )
+          }),
+        )
+      }),
+    )
+
+  return loop(initial)
+}
+
+const pendingStatus = (action: ManagerAction): string => {
+  switch (action.type) {
+    case "attach":
+      return "Opening Thread…"
+    case "createThread":
+      return "Creating Thread…"
+    case "createProject":
+      return "Creating Project…"
+    case "archiveThread":
+      return "Archiving Thread…"
+    case "unarchiveThread":
+      return "Restoring Thread…"
+    case "updateProject":
+      return "Renaming Project…"
+    case "deleteProject":
+      return "Deleting Project…"
+  }
+}
+
+const runPendingAction = (
+  shell: OpenTuiApp.AppShell,
+  status: string,
+  action: Effect.Effect<ManagerTransition>,
+): Effect.Effect<ManagerTransition> =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const message = OpenTuiApp.makeMessage(shell, "manager-pending")
+      message.content = status
+      yield* OpenTuiApp.mountView(shell, message)
+      OpenTuiApp.update(shell, {
+        title: "Working",
+        status,
+        help: "Please wait…",
+      })
+      return yield* action
+    }),
+  )
+
 export const runWithRenderer = (
   renderer: CliRenderer,
   options: ManagerOptions,
@@ -580,138 +774,30 @@ export const runWithRenderer = (
     Effect.gen(function* () {
       const shell = OpenTuiApp.make(renderer)
       yield* OpenTuiApp.mount(shell)
+      return yield* runManager(shell, options, options.initial)
+    }),
+  )
 
-      const loop = (state: ManagerState): Effect.Effect<ManagerResult, unknown> =>
-        runMainScreen(shell, options, state).pipe(
-          Effect.flatMap((result): Effect.Effect<ManagerResult, unknown> => {
-            if (result.type === "quit" || result.type === "attach") {
-              return Effect.succeed(result)
-            }
-            if (result.type === "switchSection") {
-              return loop({ ...result.state, section: result.section, status: undefined })
-            }
-            if (result.type === "archiveThread" || result.type === "unarchiveThread") {
-              return Effect.succeed(result)
-            }
-            if (result.type === "newProject") {
-              return runCreateProjectWizard(shell, options.listDirectory).pipe(
-                Effect.flatMap((created): Effect.Effect<ManagerResult, unknown> => {
-                  if (created.type === "quit") return Effect.succeed({ type: "quit" } as const)
-                  if (created.type === "cancel") {
-                    return loop({ ...result.state, status: created.status })
-                  }
-                  return Effect.succeed({
-                    type: "createProject",
-                    input: created.input,
-                    state: result.state,
-                  } as const)
-                }),
-              )
-            }
-            if (result.type === "renameProject") {
-              return Ref.get(options.snapshotRef).pipe(
-                Effect.flatMap((snapshot): Effect.Effect<ManagerResult, unknown> => {
-                  const project = snapshot?.projects.find((item) => item.id === result.projectId)
-                  if (project === undefined) {
-                    return loop({ ...result.state, status: "That Project is no longer available." })
-                  }
-                  return textPrompt(shell, {
-                    title: `Rename Project · ${project.name}`,
-                    label: "New project name",
-                    placeholder: project.name,
-                    validate: (value) => (value === "" ? "Project name is required." : undefined),
-                  }).pipe(
-                    Effect.flatMap((renamed): Effect.Effect<ManagerResult, unknown> => {
-                      if (renamed.type === "quit") return Effect.succeed({ type: "quit" } as const)
-                      if (renamed.type === "cancel") {
-                        return loop({ ...result.state, status: "Project rename cancelled." })
-                      }
-                      return Effect.succeed({
-                        type: "updateProject",
-                        projectId: result.projectId,
-                        input: { name: renamed.value },
-                        state: result.state,
-                      } as const)
-                    }),
-                  )
-                }),
-              )
-            }
-            if (result.type === "deleteProject") {
-              return Ref.get(options.snapshotRef).pipe(
-                Effect.flatMap((snapshot): Effect.Effect<ManagerResult, unknown> => {
-                  const project = snapshot?.projects.find((item) => item.id === result.projectId)
-                  if (project === undefined) {
-                    return loop({ ...result.state, status: "That Project is no longer available." })
-                  }
-                  const threadCount =
-                    snapshot?.threads.filter((thread) => thread.projectId === project.id).length ??
-                    0
-                  const threadNoun = threadCount === 1 ? "Thread" : "Threads"
-                  return selectPrompt(
-                    shell,
-                    `Delete Project · ${project.name}`,
-                    [
-                      {
-                        name: "Cancel",
-                        description: "Keep this Project and everything it owns",
-                        value: false,
-                      },
-                      {
-                        name: "Delete permanently",
-                        description: `Delete ${threadCount} ${threadNoun} and their Terminals; keep the directory`,
-                        value: true,
-                      },
-                    ],
-                    0,
-                  ).pipe(
-                    Effect.flatMap((confirmed): Effect.Effect<ManagerResult, unknown> => {
-                      if (confirmed.type === "quit")
-                        return Effect.succeed({ type: "quit" } as const)
-                      if (confirmed.type === "cancel" || !confirmed.value) {
-                        return loop({ ...result.state, status: "Project deletion cancelled." })
-                      }
-                      return Effect.succeed({
-                        type: "deleteProject",
-                        projectId: result.projectId,
-                        state: result.state,
-                      } as const)
-                    }),
-                  )
-                }),
-              )
-            }
+export const runSessionWithRenderer = (
+  renderer: CliRenderer,
+  options: ManagerOptions,
+  runAction: RunAction,
+): Effect.Effect<ManagerExit, unknown> =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const shell = OpenTuiApp.make(renderer)
+      yield* OpenTuiApp.mount(shell)
 
-            return Ref.get(options.snapshotRef).pipe(
-              Effect.flatMap((snapshot): Effect.Effect<ManagerResult, unknown> => {
-                if (snapshot === undefined) {
-                  return loop({
-                    ...result.state,
-                    status: "Wait for the App Server before creating.",
-                  })
-                }
-                const selectedThreadId =
-                  result.state.section === "archived"
-                    ? result.state.selectedArchivedThreadId
-                    : result.state.selectedThreadId
-                const preferredProjectId =
-                  result.state.section === "projects"
-                    ? result.state.selectedProjectId
-                    : View.projectIdForSelection(snapshot, selectedThreadId)
-                return runCreateThreadWizard(shell, snapshot, preferredProjectId).pipe(
-                  Effect.flatMap((created): Effect.Effect<ManagerResult, unknown> => {
-                    if (created.type === "quit") return Effect.succeed({ type: "quit" } as const)
-                    if (created.type === "cancel") {
-                      return loop({ ...result.state, status: created.status })
-                    }
-                    return Effect.succeed({
-                      type: "createThread",
-                      input: created.input,
-                      state: result.state,
-                    } as const)
-                  }),
-                )
-              }),
+      const loop = (state: ManagerState): Effect.Effect<ManagerExit, unknown> =>
+        runManager(shell, options, state).pipe(
+          Effect.flatMap((result): Effect.Effect<ManagerExit, unknown> => {
+            if (result.type === "quit") return Effect.succeed(result)
+            return runPendingAction(shell, pendingStatus(result), runAction(result)).pipe(
+              Effect.flatMap((transition) =>
+                transition.type === "continue"
+                  ? loop(transition.state)
+                  : Effect.succeed(transition),
+              ),
             )
           }),
         )
@@ -720,10 +806,13 @@ export const runWithRenderer = (
     }),
   )
 
-export const run = (options: ManagerOptions): Effect.Effect<ManagerResult, unknown> =>
+export const run = (
+  options: ManagerOptions,
+  runAction: RunAction,
+): Effect.Effect<ManagerExit, unknown> =>
   Effect.scoped(
     Effect.gen(function* () {
       const renderer = yield* acquireRenderer
-      return yield* runWithRenderer(renderer, options)
+      return yield* runSessionWithRenderer(renderer, options, runAction)
     }),
   )

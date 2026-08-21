@@ -5,8 +5,8 @@ import * as Zmx from "./zmx.ts"
 import * as View from "./view.ts"
 
 // Application coordinator: one scoped SSE subscription maintains an
-// authoritative snapshot. The manager releases its terminal scope before a
-// direct zmx client inherits the TTY, then starts fresh when zmx returns.
+// authoritative snapshot. The manager keeps its renderer across server
+// interactions and releases it only while a direct zmx client owns the TTY.
 
 const describeError = (error: unknown): string =>
   error instanceof Error && error.message !== "" ? error.message : String(error)
@@ -80,169 +80,218 @@ export const run = Effect.scoped(
       uiUpdates,
     )
 
-    const manager = (initial: OpenTui.ManagerState) =>
-      OpenTui.run({
-        endpoint: server.config.endpoint,
-        listDirectory: server.listDirectory,
-        snapshotRef,
-        reachabilityRef,
-        backgroundStatusRef,
-        uiUpdates,
-        refreshRequests,
-        initial,
-      })
+    const continueWith = (state: OpenTui.ManagerState): OpenTui.ManagerTransition => ({
+      type: "continue",
+      state,
+    })
 
-    const attach = (threadId: string) =>
-      server.openThread(threadId).pipe(
-        Effect.flatMap((terminal) => zmx.attach(terminal)),
-        Effect.as("Returned from zmx; session state refreshed."),
-      )
+    const refreshAfter = (transition: Effect.Effect<OpenTui.ManagerTransition, never>) =>
+      transition.pipe(Effect.tap(() => Queue.offer(refreshRequests, void 0)))
 
-    const loop = (state: OpenTui.ManagerState): Effect.Effect<void, unknown> => {
-      const resume = (next: Effect.Effect<OpenTui.ManagerState, never>) =>
-        next.pipe(
-          Effect.tap(() => Queue.offer(refreshRequests, void 0)),
-          Effect.flatMap(loop),
-        )
-
-      return manager(state).pipe(
-        Effect.flatMap((result) => {
-          if (result.type === "quit") return Effect.void
-
-          if (result.type === "attach") {
-            return attach(result.threadId).pipe(
-              Effect.catch((error) => Effect.succeed(`Could not attach: ${describeError(error)}`)),
-              Effect.tap(() => Queue.offer(refreshRequests, void 0)),
-              Effect.flatMap((status) =>
-                loop({
-                  ...result.state,
-                  section: "threads",
-                  selectedThreadId: result.threadId,
-                  status,
-                }),
-              ),
-            )
-          }
-
-          if (result.type === "createProject") {
-            return resume(
-              server.createProject(result.input).pipe(
-                Effect.map((project) => ({
-                  ...result.state,
-                  section: "projects" as const,
-                  selectedProjectId: project.id,
-                  status: `Project “${project.name}” created.`,
-                })),
-                Effect.catch((error) =>
-                  Effect.succeed({
-                    ...result.state,
-                    status: `Could not create Project: ${describeError(error)}`,
-                  }),
-                ),
-              ),
-            )
-          }
-
-          if (result.type === "archiveThread") {
-            return resume(
-              server.archiveThread(result.threadId).pipe(
-                Effect.map((thread) => ({
-                  ...result.state,
-                  selectedThreadId: undefined,
-                  status: `Archived “${thread.name}”.`,
-                })),
-                Effect.catch((error) =>
-                  Effect.succeed({
-                    ...result.state,
-                    status: `Could not archive Thread: ${describeError(error)}`,
-                  }),
-                ),
-              ),
-            )
-          }
-
-          if (result.type === "unarchiveThread") {
-            return resume(
-              server.unarchiveThread(result.threadId).pipe(
-                Effect.map((thread) => ({
-                  ...result.state,
-                  selectedArchivedThreadId: undefined,
-                  status: `Restored “${thread.name}”.`,
-                })),
-                Effect.catch((error) =>
-                  Effect.succeed({
-                    ...result.state,
-                    status: `Could not restore Thread: ${describeError(error)}`,
-                  }),
-                ),
-              ),
-            )
-          }
-
-          if (result.type === "updateProject") {
-            return resume(
-              server.updateProject(result.projectId, result.input).pipe(
-                Effect.map((project) => ({
-                  ...result.state,
-                  section: "projects" as const,
-                  selectedProjectId: project.id,
-                  status: `Renamed Project to “${project.name}”.`,
-                })),
-                Effect.catch((error) =>
-                  Effect.succeed({
-                    ...result.state,
-                    status: `Could not rename Project: ${describeError(error)}`,
-                  }),
-                ),
-              ),
-            )
-          }
-
-          if (result.type === "deleteProject") {
-            return resume(
-              server.deleteProject(result.projectId).pipe(
-                Effect.as({
-                  ...result.state,
-                  section: "projects" as const,
-                  selectedProjectId: undefined,
-                  status: "Project deleted.",
-                }),
-                Effect.catch((error) =>
-                  Effect.succeed({
-                    ...result.state,
-                    status: `Could not delete Project: ${describeError(error)}`,
-                  }),
-                ),
-              ),
-            )
-          }
-
-          return resume(
-            server.createThread(result.input).pipe(
-              Effect.flatMap((thread) =>
-                attach(thread.id).pipe(
-                  Effect.catch((error) =>
-                    Effect.succeed(`Thread created, but could not attach: ${describeError(error)}`),
-                  ),
-                  Effect.map((status) => ({
-                    ...result.state,
-                    section: "threads" as const,
-                    selectedThreadId: thread.id,
-                    status,
-                  })),
-                ),
-              ),
-              Effect.catch((error) =>
-                Effect.succeed({
-                  ...result.state,
-                  status: `Could not create Thread: ${describeError(error)}`,
+    const runAction: OpenTui.RunAction = (action) => {
+      if (action.type === "attach") {
+        return refreshAfter(
+          server.openThread(action.threadId).pipe(
+            Effect.map((terminal) => ({
+              type: "attach" as const,
+              terminal,
+              state: {
+                ...action.state,
+                section: "threads" as const,
+                selectedThreadId: action.threadId,
+              },
+            })),
+            Effect.catch((error) =>
+              Effect.succeed(
+                continueWith({
+                  ...action.state,
+                  status: `Could not open Thread: ${describeError(error)}`,
                 }),
               ),
             ),
+          ),
+        )
+      }
+
+      if (action.type === "createProject") {
+        return refreshAfter(
+          server.createProject(action.input).pipe(
+            Effect.map((project) =>
+              continueWith({
+                ...action.state,
+                section: "projects",
+                selectedProjectId: project.id,
+                status: `Project “${project.name}” created.`,
+              }),
+            ),
+            Effect.catch((error) =>
+              Effect.succeed(
+                continueWith({
+                  ...action.state,
+                  status: `Could not create Project: ${describeError(error)}`,
+                }),
+              ),
+            ),
+          ),
+        )
+      }
+
+      if (action.type === "archiveThread") {
+        return refreshAfter(
+          server.archiveThread(action.threadId).pipe(
+            Effect.map((thread) =>
+              continueWith({
+                ...action.state,
+                selectedThreadId: undefined,
+                status: `Archived “${thread.name}”.`,
+              }),
+            ),
+            Effect.catch((error) =>
+              Effect.succeed(
+                continueWith({
+                  ...action.state,
+                  status: `Could not archive Thread: ${describeError(error)}`,
+                }),
+              ),
+            ),
+          ),
+        )
+      }
+
+      if (action.type === "unarchiveThread") {
+        return refreshAfter(
+          server.unarchiveThread(action.threadId).pipe(
+            Effect.map((thread) =>
+              continueWith({
+                ...action.state,
+                selectedArchivedThreadId: undefined,
+                status: `Restored “${thread.name}”.`,
+              }),
+            ),
+            Effect.catch((error) =>
+              Effect.succeed(
+                continueWith({
+                  ...action.state,
+                  status: `Could not restore Thread: ${describeError(error)}`,
+                }),
+              ),
+            ),
+          ),
+        )
+      }
+
+      if (action.type === "updateProject") {
+        return refreshAfter(
+          server.updateProject(action.projectId, action.input).pipe(
+            Effect.map((project) =>
+              continueWith({
+                ...action.state,
+                section: "projects",
+                selectedProjectId: project.id,
+                status: `Renamed Project to “${project.name}”.`,
+              }),
+            ),
+            Effect.catch((error) =>
+              Effect.succeed(
+                continueWith({
+                  ...action.state,
+                  status: `Could not rename Project: ${describeError(error)}`,
+                }),
+              ),
+            ),
+          ),
+        )
+      }
+
+      if (action.type === "deleteProject") {
+        return refreshAfter(
+          server.deleteProject(action.projectId).pipe(
+            Effect.as(
+              continueWith({
+                ...action.state,
+                section: "projects",
+                selectedProjectId: undefined,
+                status: "Project deleted.",
+              }),
+            ),
+            Effect.catch((error) =>
+              Effect.succeed(
+                continueWith({
+                  ...action.state,
+                  status: `Could not delete Project: ${describeError(error)}`,
+                }),
+              ),
+            ),
+          ),
+        )
+      }
+
+      return refreshAfter(
+        server.createThread(action.input).pipe(
+          Effect.flatMap((thread) =>
+            server.openThread(thread.id).pipe(
+              Effect.map((terminal) => ({
+                type: "attach" as const,
+                terminal,
+                state: {
+                  ...action.state,
+                  section: "threads" as const,
+                  selectedThreadId: thread.id,
+                },
+              })),
+              Effect.catch((error) =>
+                Effect.succeed(
+                  continueWith({
+                    ...action.state,
+                    section: "threads",
+                    selectedThreadId: thread.id,
+                    status: `Thread created, but could not open: ${describeError(error)}`,
+                  }),
+                ),
+              ),
+            ),
+          ),
+          Effect.catch((error) =>
+            Effect.succeed(
+              continueWith({
+                ...action.state,
+                status: `Could not create Thread: ${describeError(error)}`,
+              }),
+            ),
+          ),
+        ),
+      )
+    }
+
+    const manager = (initial: OpenTui.ManagerState) =>
+      OpenTui.run(
+        {
+          endpoint: server.config.endpoint,
+          listDirectory: server.listDirectory,
+          snapshotRef,
+          reachabilityRef,
+          backgroundStatusRef,
+          uiUpdates,
+          refreshRequests,
+          initial,
+        },
+        runAction,
+      )
+
+    const attach = (terminal: AppServer.Terminal) =>
+      zmx.attach(terminal).pipe(Effect.as("Returned from zmx; session state refreshed."))
+
+    const loop = (state: OpenTui.ManagerState): Effect.Effect<void, unknown> =>
+      manager(state).pipe(
+        Effect.flatMap((result) => {
+          if (result.type === "quit") return Effect.void
+          return attach(result.terminal).pipe(
+            Effect.catch((error) => Effect.succeed(`Could not attach: ${describeError(error)}`)),
+            Effect.tap(() => Queue.offer(refreshRequests, void 0)),
+            Effect.flatMap((status) => loop({ ...result.state, status })),
           )
         }),
       )
-    }
 
     yield* loop({})
   }),
