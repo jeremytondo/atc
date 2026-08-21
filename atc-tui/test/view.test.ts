@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest"
 import type * as AppServer from "../src/appServer.ts"
 import {
   connectionLabel,
+  normalizeProjectSelection,
   normalizeSelection,
+  projectOptions,
   projectIdForSelection,
   threadOptions,
 } from "../src/view.ts"
@@ -55,8 +57,16 @@ describe("manager view model", () => {
     expect(projectIdForSelection(snapshot, "missing")).toBe("p1")
   })
 
-  it("makes every Thread a Project-labelled OpenTUI option", () => {
-    expect(threadOptions(snapshot)).toEqual([
+  it("makes active and archived Threads separate Project-labelled options", () => {
+    const archivedSnapshot = {
+      ...snapshot,
+      threads: [
+        ...snapshot.threads,
+        { ...thread("t3", "p1"), archivedAt: "2026-08-21T00:00:00.000Z" },
+      ],
+    }
+
+    expect(threadOptions(archivedSnapshot)).toEqual([
       {
         threadId: "t1",
         name: "Alpha  ›  t1",
@@ -68,6 +78,38 @@ describe("manager view model", () => {
         description: "working · terminal  ·  codex  ·  /work/p2",
       },
     ])
+    expect(threadOptions(archivedSnapshot, true)).toEqual([
+      {
+        threadId: "t3",
+        name: "Alpha  ›  t3",
+        description: "archived  ·  codex  ·  /work/p1",
+      },
+    ])
+    expect(normalizeSelection(archivedSnapshot, undefined, true)).toBe("t3")
     expect(connectionLabel("disconnected")).toBe("reconnecting…")
+  })
+
+  it("describes Projects with active and archived Thread counts", () => {
+    const archivedSnapshot = {
+      ...snapshot,
+      threads: [
+        ...snapshot.threads,
+        { ...thread("t3", "p1"), archivedAt: "2026-08-21T00:00:00.000Z" },
+      ],
+    }
+
+    expect(normalizeProjectSelection(archivedSnapshot, "missing")).toBe("p1")
+    expect(projectOptions(archivedSnapshot)).toEqual([
+      {
+        projectId: "p1",
+        name: "Alpha",
+        description: "/work/p1  ·  1 active  ·  1 archived",
+      },
+      {
+        projectId: "p2",
+        name: "Beta",
+        description: "/work/p2  ·  1 active  ·  0 archived",
+      },
+    ])
   })
 })

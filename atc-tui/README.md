@@ -10,8 +10,9 @@ Run from source with `mise run -C atc-tui dev`, or build the standalone
 namespace use the App Server defaults; `atc-tui --help` documents overrides
 for installations using different local settings.
 
-Use the arrow keys or `j`/`k` to select a Thread, Enter to open and attach its
-terminal, Ctrl-N to create and immediately attach a Thread, Ctrl-P to create a
-Project, `a` to archive the selected Thread, `r` to refetch, and `q` or Ctrl-C
-to exit. zmx owns the attached terminal, so its native Ctrl-\
-binding returns directly to the Thread list.
+Tab cycles through active Threads, archived Threads, and Projects. Enter opens an
+active Thread, restores an archived Thread, or renames a Project. Ctrl-N creates
+and immediately attaches a Thread; Ctrl-P creates a Project. The contextual help
+bar documents archive, restore, delete, refresh, and exit keys. zmx owns the
+attached terminal, so its native Ctrl-\ binding returns directly to the Thread
+list.

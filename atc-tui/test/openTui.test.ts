@@ -54,6 +54,19 @@ const snapshot: AppServer.Snapshot = {
       createdAt: "2026-08-20T00:00:00.000Z",
       updatedAt: "2026-08-20T00:00:00.000Z",
     },
+    {
+      id: "t3",
+      projectId: "p1",
+      agentId: "codex",
+      name: "Archived First",
+      workingDirectory: "/work/alpha",
+      settings: defaults,
+      activityState: "idle",
+      unread: false,
+      archivedAt: "2026-08-21T00:00:00.000Z",
+      createdAt: "2026-08-19T00:00:00.000Z",
+      updatedAt: "2026-08-21T00:00:00.000Z",
+    },
   ],
   agents: [
     { id: "claude-code", available: true, detectedVersion: "1.0.0", defaults },
@@ -132,7 +145,11 @@ describe("OpenTUI manager", () => {
       assert.deepStrictEqual(result, {
         type: "createThread",
         input: { projectId: "p2", agentId: "codex" },
-        selectedThreadId: "t2",
+        state: {
+          selectedThreadId: "t2",
+          section: "threads",
+          status: undefined,
+        },
       })
     }),
   )
@@ -159,28 +176,121 @@ describe("OpenTUI manager", () => {
       assert.deepStrictEqual(result, {
         type: "createProject",
         input: { name: "Gamma", defaultWorkingDirectory: "/work/gamma" },
-        selectedThreadId: "t1",
+        state: {
+          selectedThreadId: "t1",
+          section: "threads",
+          status: undefined,
+        },
       })
     }),
   )
 
-  it.effect("defaults archive confirmation to cancel", () =>
+  it.effect("archives the selected Thread immediately", () =>
     Effect.gen(function* () {
       const result = yield* runManager(snapshot, { selectedThreadId: "t1" }, ({ setup }) =>
         Effect.gen(function* () {
           yield* waitForFrame(setup, "Alpha  ›  First")
           setup.mockInput.pressKey("a")
-          yield* waitForFrame(setup, "Archive · First")
-          setup.mockInput.pressEnter()
-          yield* waitForFrame(setup, "Archive cancelled.")
-          setup.mockInput.pressKey("a")
-          yield* waitForFrame(setup, "Archive · First")
+        }),
+      )
+
+      assert.deepStrictEqual(result, {
+        type: "archiveThread",
+        threadId: "t1",
+        state: {
+          selectedThreadId: "t1",
+          section: "threads",
+          status: undefined,
+        },
+      })
+    }),
+  )
+
+  it.effect("lists and restores archived Threads", () =>
+    Effect.gen(function* () {
+      const result = yield* runManager(snapshot, { selectedThreadId: "t1" }, ({ setup }) =>
+        Effect.gen(function* () {
+          yield* waitForFrame(setup, "Active Threads (2)")
+          setup.mockInput.pressTab()
+          yield* waitForFrame(setup, "Archived Threads (1)")
+          yield* waitForFrame(setup, "Alpha  ›  Archived First")
+          setup.mockInput.pressKey("u")
+        }),
+      )
+
+      assert.deepStrictEqual(result, {
+        type: "unarchiveThread",
+        threadId: "t3",
+        state: {
+          selectedThreadId: "t1",
+          section: "archived",
+          selectedArchivedThreadId: "t3",
+          status: undefined,
+        },
+      })
+    }),
+  )
+
+  it.effect("renames a Project from the Projects view", () =>
+    Effect.gen(function* () {
+      const result = yield* runManager(snapshot, { selectedThreadId: "t1" }, ({ setup }) =>
+        Effect.gen(function* () {
+          yield* waitForFrame(setup, "Active Threads (2)")
+          setup.mockInput.pressTab()
+          yield* waitForFrame(setup, "Archived Threads (1)")
+          setup.mockInput.pressTab()
+          yield* waitForFrame(setup, "Projects (2)")
           setup.mockInput.pressArrow("down")
+          yield* waitForFrame(setup, "/work/beta  ·  1 active  ·  0 archived")
+          setup.mockInput.pressKey("e")
+          yield* waitForFrame(setup, "Rename Project · Beta")
+          yield* Effect.promise(() => setup.mockInput.typeText("Beta Prime"))
           setup.mockInput.pressEnter()
         }),
       )
 
-      assert.deepStrictEqual(result, { type: "archiveThread", threadId: "t1" })
+      assert.deepStrictEqual(result, {
+        type: "updateProject",
+        projectId: "p2",
+        input: { name: "Beta Prime" },
+        state: {
+          selectedThreadId: "t1",
+          section: "projects",
+          status: undefined,
+          selectedProjectId: "p2",
+        },
+      })
+    }),
+  )
+
+  it.effect("guards permanent Project deletion", () =>
+    Effect.gen(function* () {
+      const result = yield* runManager(
+        snapshot,
+        { section: "projects", selectedProjectId: "p1" },
+        ({ setup }) =>
+          Effect.gen(function* () {
+            yield* waitForFrame(setup, "Projects (2)")
+            setup.mockInput.pressKey("d")
+            yield* waitForFrame(setup, "Delete Project · Alpha")
+            setup.mockInput.pressEnter()
+            yield* waitForFrame(setup, "Project deletion cancelled.")
+            setup.mockInput.pressKey("d")
+            yield* waitForFrame(setup, "Delete 2 Threads and their Terminals")
+            setup.mockInput.pressArrow("down")
+            setup.mockInput.pressEnter()
+          }),
+      )
+
+      assert.deepStrictEqual(result, {
+        type: "deleteProject",
+        projectId: "p1",
+        state: {
+          section: "projects",
+          selectedProjectId: "p1",
+          status: undefined,
+        },
+      })
     }),
   )
 
@@ -205,7 +315,15 @@ describe("OpenTUI manager", () => {
           }),
       )
 
-      assert.deepStrictEqual(result, { type: "attach", threadId: "t2" })
+      assert.deepStrictEqual(result, {
+        type: "attach",
+        threadId: "t2",
+        state: {
+          selectedThreadId: "t2",
+          section: "threads",
+          status: undefined,
+        },
+      })
     }),
   )
 
@@ -232,7 +350,7 @@ describe("OpenTUI manager", () => {
           }),
       )
 
-      assert.deepStrictEqual(result, { type: "quit", selectedThreadId: "t1" })
+      assert.deepStrictEqual(result, { type: "quit" })
     }),
   )
 })

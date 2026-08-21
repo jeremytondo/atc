@@ -21,6 +21,7 @@ export interface Snapshot {
 }
 
 export type CreateProjectInput = typeof Contract.CreateProjectRequest.Type
+export type UpdateProjectInput = typeof Contract.UpdateProjectRequest.Type
 export type CreateThreadInput = typeof Contract.CreateThreadRequest.Type
 
 export class AppServer extends Context.Service<
@@ -29,8 +30,14 @@ export class AppServer extends Context.Service<
     readonly config: Config.ClientConfig["Service"]
     readonly snapshot: Effect.Effect<Snapshot, unknown>
     readonly createProject: (input: CreateProjectInput) => Effect.Effect<Project, unknown>
+    readonly updateProject: (
+      projectId: string,
+      input: UpdateProjectInput,
+    ) => Effect.Effect<Project, unknown>
+    readonly deleteProject: (projectId: string) => Effect.Effect<void, unknown>
     readonly createThread: (input: CreateThreadInput) => Effect.Effect<Thread, unknown>
     readonly archiveThread: (threadId: string) => Effect.Effect<Thread, unknown>
+    readonly unarchiveThread: (threadId: string) => Effect.Effect<Thread, unknown>
     readonly openThread: (threadId: string) => Effect.Effect<Terminal, unknown>
     readonly subscribe: (
       publish: (signal: Sse.ResourceSignal) => Effect.Effect<void>,
@@ -47,7 +54,7 @@ const make = Effect.gen(function* () {
 
   const snapshot = Effect.gen(function* () {
     const projects = yield* client.v1.listProjects()
-    const threads = yield* client.v1.listThreads({ query: {} })
+    const threads = yield* client.v1.listThreads({ query: { archived: "all" } })
     const agents = yield* client.v1.listAgents()
     return { projects, threads, agents, fetchedAt: new Date() }
   })
@@ -56,8 +63,12 @@ const make = Effect.gen(function* () {
     config,
     snapshot,
     createProject: (input) => client.v1.createProject({ payload: input }),
+    updateProject: (projectId, input) =>
+      client.v1.updateProject({ params: { projectId }, payload: input }),
+    deleteProject: (projectId) => client.v1.deleteProject({ params: { projectId } }),
     createThread: (input) => client.v1.createThread({ payload: input }),
     archiveThread: (threadId) => client.v1.archiveThread({ params: { threadId } }),
+    unarchiveThread: (threadId) => client.v1.unarchiveThread({ params: { threadId } }),
     openThread: (threadId) => client.v1.openThreadTerminal({ params: { threadId } }),
     subscribe: (publish) => Sse.subscribe(config, publish),
   })

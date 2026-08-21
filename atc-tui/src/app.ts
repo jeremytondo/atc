@@ -112,7 +112,14 @@ export const run = Effect.scoped(
             return attach(result.threadId).pipe(
               Effect.catch((error) => Effect.succeed(`Could not attach: ${describeError(error)}`)),
               Effect.tap(() => Queue.offer(refreshRequests, void 0)),
-              Effect.flatMap((status) => loop({ selectedThreadId: result.threadId, status })),
+              Effect.flatMap((status) =>
+                loop({
+                  ...result.state,
+                  section: "threads",
+                  selectedThreadId: result.threadId,
+                  status,
+                }),
+              ),
             )
           }
 
@@ -120,12 +127,14 @@ export const run = Effect.scoped(
             return resume(
               server.createProject(result.input).pipe(
                 Effect.map((project) => ({
-                  selectedThreadId: result.selectedThreadId,
+                  ...result.state,
+                  section: "projects" as const,
+                  selectedProjectId: project.id,
                   status: `Project “${project.name}” created.`,
                 })),
                 Effect.catch((error) =>
                   Effect.succeed({
-                    selectedThreadId: result.selectedThreadId,
+                    ...result.state,
                     status: `Could not create Project: ${describeError(error)}`,
                   }),
                 ),
@@ -136,11 +145,71 @@ export const run = Effect.scoped(
           if (result.type === "archiveThread") {
             return resume(
               server.archiveThread(result.threadId).pipe(
-                Effect.map((thread) => ({ status: `Archived “${thread.name}”.` })),
+                Effect.map((thread) => ({
+                  ...result.state,
+                  selectedThreadId: undefined,
+                  status: `Archived “${thread.name}”.`,
+                })),
                 Effect.catch((error) =>
                   Effect.succeed({
-                    selectedThreadId: result.threadId,
+                    ...result.state,
                     status: `Could not archive Thread: ${describeError(error)}`,
+                  }),
+                ),
+              ),
+            )
+          }
+
+          if (result.type === "unarchiveThread") {
+            return resume(
+              server.unarchiveThread(result.threadId).pipe(
+                Effect.map((thread) => ({
+                  ...result.state,
+                  selectedArchivedThreadId: undefined,
+                  status: `Restored “${thread.name}”.`,
+                })),
+                Effect.catch((error) =>
+                  Effect.succeed({
+                    ...result.state,
+                    status: `Could not restore Thread: ${describeError(error)}`,
+                  }),
+                ),
+              ),
+            )
+          }
+
+          if (result.type === "updateProject") {
+            return resume(
+              server.updateProject(result.projectId, result.input).pipe(
+                Effect.map((project) => ({
+                  ...result.state,
+                  section: "projects" as const,
+                  selectedProjectId: project.id,
+                  status: `Renamed Project to “${project.name}”.`,
+                })),
+                Effect.catch((error) =>
+                  Effect.succeed({
+                    ...result.state,
+                    status: `Could not rename Project: ${describeError(error)}`,
+                  }),
+                ),
+              ),
+            )
+          }
+
+          if (result.type === "deleteProject") {
+            return resume(
+              server.deleteProject(result.projectId).pipe(
+                Effect.as({
+                  ...result.state,
+                  section: "projects" as const,
+                  selectedProjectId: undefined,
+                  status: "Project deleted.",
+                }),
+                Effect.catch((error) =>
+                  Effect.succeed({
+                    ...result.state,
+                    status: `Could not delete Project: ${describeError(error)}`,
                   }),
                 ),
               ),
@@ -154,12 +223,17 @@ export const run = Effect.scoped(
                   Effect.catch((error) =>
                     Effect.succeed(`Thread created, but could not attach: ${describeError(error)}`),
                   ),
-                  Effect.map((status) => ({ selectedThreadId: thread.id, status })),
+                  Effect.map((status) => ({
+                    ...result.state,
+                    section: "threads" as const,
+                    selectedThreadId: thread.id,
+                    status,
+                  })),
                 ),
               ),
               Effect.catch((error) =>
                 Effect.succeed({
-                  selectedThreadId: result.selectedThreadId,
+                  ...result.state,
                   status: `Could not create Thread: ${describeError(error)}`,
                 }),
               ),
