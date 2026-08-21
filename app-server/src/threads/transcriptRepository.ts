@@ -280,6 +280,11 @@ export class TranscriptRepository extends Context.Service<
     readonly listWaiting: (threadId: string) => Effect.Effect<ReadonlyArray<QueuedPromptRecord>>
     /** The oldest waiting prompt (None when nothing waits). */
     readonly peek: (threadId: string) => Effect.Effect<Option.Option<QueuedPromptRecord>>
+    /** The turn a prompt was started against (None while it waits, or unknown). */
+    readonly startedTurn: (
+      threadId: string,
+      promptId: string,
+    ) => Effect.Effect<Option.Option<string>>
     /** Remove a WAITING prompt; false when unknown or already started. */
     readonly deleteWaiting: (threadId: string, promptId: string) => Effect.Effect<boolean>
   }
@@ -510,6 +515,15 @@ export const layer = Layer.effect(TranscriptRepository)(
         SELECT * FROM thread_queue
         WHERE thread_id = ${threadId} AND started_turn_id IS NULL
         ORDER BY queued_at ASC, id ASC
+      `,
+    })
+
+    const startedTurnRows = SqlSchema.findAll({
+      Request: Schema.Struct({ thread_id: Schema.String, id: Schema.String }),
+      Result: Schema.Struct({ started_turn_id: Schema.String }),
+      execute: (request) => sql`
+        SELECT started_turn_id FROM thread_queue
+        WHERE thread_id = ${request.thread_id} AND id = ${request.id} AND started_turn_id IS NOT NULL
       `,
     })
 
@@ -756,6 +770,11 @@ export const layer = Layer.effect(TranscriptRepository)(
       peek: (threadId) =>
         waitingRows(threadId).pipe(
           Effect.map((rows) => Option.fromNullishOr(rows[0]).pipe(Option.map(toQueued))),
+          Effect.orDie,
+        ),
+      startedTurn: (threadId, promptId) =>
+        startedTurnRows({ thread_id: threadId, id: promptId }).pipe(
+          Effect.map((rows) => Option.fromNullishOr(rows[0]?.started_turn_id)),
           Effect.orDie,
         ),
       deleteWaiting: (threadId, promptId) =>

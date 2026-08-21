@@ -91,6 +91,13 @@ export type QueuedPrompt = typeof Contract.QueuedPrompt.Type
 //     and shutdown, and idle residency is bounded (`armIdleClose`). A
 //     shared-server provider's connection is a cheap subscription that
 //     coexists with its TUI: it holds nothing between turns, as before.
+//     A turn the provider starts by itself on a held one-process
+//     connection (Claude's root loop woken by a finished background task)
+//     is ATC's run: adopted at its turnStarted, ended by `finish` like a
+//     prompted turn, its requests answerable; a prompt admitted meanwhile
+//     waits for it (the connection refuses a second turn) and drains at
+//     its end. On a shared server the same event is another writer's turn
+//     and stays observed.
 //   - One live process per thread (ATC-203), on a provider whose sessions
 //     live in one process at a time (`sharedServer: false` — Claude; two
 //     live processes fork the session). The native side owns the thread by
@@ -641,7 +648,7 @@ const make = (options: ThreadRuntimeOptions) =>
      * latch its close completes: the scope closes in the service scope —
      * the drain fiber, the connection, the process behind it — and the
      * writer deregisters once that is done (a prompt admitted meanwhile
-     * queues rather than racing the connection). One close per writer,
+     * waits out the latch rather than racing the connection). One close per writer,
      * shared by every caller: a second Scope.close of a closing scope
      * returns before the first's finalizers are done, and a TUI must not
      * launch on a process still shutting down.
@@ -914,16 +921,22 @@ const make = (options: ThreadRuntimeOptions) =>
           })
         case "settings":
           return adoptSettings(record, event.settings, writer.pushed)
-        case "turnStarted":
-          // Another writer's turn on a connection we hold (a TUI mid-run on
-          // a shared server): observed, not ours.
-          return event.turnId === run?.turnId
-            ? Effect.void
-            : recordTurn(
-                record.id,
-                { id: event.turnId, status: "running", startedAt: new Date().toISOString() },
-                "observed",
-              )
+        case "turnStarted": {
+          if (event.turnId === run?.turnId) return Effect.void
+          // A turn ATC did not start. On a one-process provider the held
+          // connection IS the session's only process, so the turn is ours
+          // to run (the provider woke itself: the header's provider-started
+          // bullet); on a shared server it is another writer's — a TUI
+          // mid-run — and only observed.
+          if (run === undefined && oneProcess(record)) {
+            return adoptTurn(record, writer, { turnId: event.turnId })
+          }
+          return recordTurn(
+            record.id,
+            { id: event.turnId, status: "running", startedAt: new Date().toISOString() },
+            "observed",
+          )
+        }
         case "turnCompleted":
           return run !== undefined && event.turnId === run.turnId
             ? finish(record, writer, run, event.outcome, event.detail)
@@ -1109,10 +1122,15 @@ const make = (options: ThreadRuntimeOptions) =>
     > =>
       withStartLock(id)(
         Effect.gen(function* () {
-          const held = writers.get(id)
-          if (held?.run !== undefined || held?.closing !== undefined || recovering.has(id)) {
-            return Option.none()
-          }
+          const registered = writers.get(id)
+          if (registered?.run !== undefined || recovering.has(id)) return Option.none()
+          // A writer mid-close (a shared-server turn just ended, the idle
+          // timer fired): wait out its latch here, under the lock, and
+          // resume afresh — so the caller's own call starts its prompt and
+          // is answered with the turn, rather than "queued" for a start the
+          // close's continuation makes moments later.
+          if (registered?.closing !== undefined) yield* Deferred.await(registered.closing)
+          const held = registered?.closing === undefined ? registered : undefined
           const found = yield* repository.get(id)
           if (Option.isNone(found) || found.value.archivedAt !== undefined) return Option.none()
           const record = found.value
@@ -1125,6 +1143,7 @@ const make = (options: ThreadRuntimeOptions) =>
           const input = yield* turnInputOf(record.id, next.value)
           if (held !== undefined) {
             const reused = yield* startOnWriter(record, held, next.value, input)
+            if (reused === "busy") return Option.none()
             if (Option.isSome(reused)) {
               yield* naming.notePrompt(record, prompt)
               return reused
@@ -1164,17 +1183,22 @@ const make = (options: ThreadRuntimeOptions) =>
      * Start the prompt on a resident writer. Under the writer's lock (the
      * drain waits) and uninterruptibly: the turn's first events must find
      * its Run registered, and a turn started with no Run to end it would
-     * hold the connection for good. `none` when the connection would not
-     * take the turn — the provider ended it since (the seam: a closed or
-     * over connection refuses control calls) — so the caller closes it and
-     * resumes afresh.
+     * hold the connection for good. "busy" when the connection is in a
+     * turn of its own we have not seen yet (AgentConflict: the provider
+     * woke itself — its turnStarted is behind this lock and will be
+     * adopted next, and its end drains the queue), so the prompt simply
+     * waits. `none` when the connection would not take the turn — the
+     * provider ended it since (the seam: a closed or over connection
+     * refuses control calls) — so the caller closes it and resumes afresh.
      */
     const startOnWriter = (
       record: ThreadRecord,
       writer: Writer,
       queued: QueuedPromptRecord,
       input: TurnInput,
-    ): Effect.Effect<Option.Option<{ readonly promptId: string; readonly turnId: string }>> =>
+    ): Effect.Effect<
+      Option.Option<{ readonly promptId: string; readonly turnId: string }> | "busy"
+    > =>
       writer.lock.withPermit(
         Effect.uninterruptible(
           Effect.gen(function* () {
@@ -1183,6 +1207,14 @@ const make = (options: ThreadRuntimeOptions) =>
             yield* registerRun(record, writer, queued, turn)
             return Option.some({ promptId: queued.id, turnId: turn.turnId })
           }).pipe(
+            Effect.catchTag("AgentConflict", (error) =>
+              Effect.logDebug(
+                "the resident connection is mid-turn on its own; the prompt waits",
+              ).pipe(
+                Effect.annotateLogs({ threadId: record.id, reason: error.reason }),
+                Effect.as("busy" as const),
+              ),
+            ),
             Effect.catch((error) =>
               Effect.logDebug("the resident connection refused the turn; resuming afresh").pipe(
                 Effect.annotateLogs({ threadId: record.id, reason: error.message }),
@@ -1213,6 +1245,31 @@ const make = (options: ThreadRuntimeOptions) =>
         const seq = yield* transcripts.beginTurn(record.id, queued.id, row)
         publish(record.id, { type: "turn.started", seq, turn: row })
         yield* publishQueue(record.id)
+        yield* holdRun(writer, turn)
+      })
+
+    /**
+     * A turn the provider started on a held one-process connection (the
+     * header's provider-started bullet) becomes ATC's Run: no prompt of
+     * ours behind it, so only the turn row is recorded, then it is held
+     * like any other — its requests park here, `finish` ends it and
+     * drains the queue. Under the writer's lock (the drain is), so it
+     * never races a start on this connection.
+     */
+    const adoptTurn = (
+      record: ThreadRecord,
+      writer: Writer,
+      turn: AgentTurn,
+    ): Effect.Effect<void> =>
+      recordTurn(
+        record.id,
+        { id: turn.turnId, status: "running", startedAt: new Date().toISOString() },
+        "native",
+      ).pipe(Effect.andThen(holdRun(writer, turn)))
+
+    /** The Run on the writer, its row already recorded. */
+    const holdRun = (writer: Writer, turn: AgentTurn): Effect.Effect<void> =>
+      Effect.gen(function* () {
         // A resident writer's idle timer stands down: the turn is what it
         // was waiting for (interruptible while it waits for the start lock
         // this caller may hold, so this never deadlocks).
@@ -1686,6 +1743,13 @@ const make = (options: ThreadRuntimeOptions) =>
           // stands — and one that queued is published here, waiting.
           if (Option.isSome(started) && started.value.promptId === queued.id) {
             return { promptId: queued.id, turnId: started.value.turnId }
+          }
+          // A turn's end forks its own drain (finish); when that drain won
+          // the start lock with this very prompt, the prompt has started —
+          // answer with its turn rather than a wait that is already over.
+          const startedMeanwhile = yield* transcripts.startedTurn(id, queued.id)
+          if (Option.isSome(startedMeanwhile)) {
+            return { promptId: queued.id, turnId: startedMeanwhile.value }
           }
           yield* publishQueue(id)
           return { promptId: queued.id }

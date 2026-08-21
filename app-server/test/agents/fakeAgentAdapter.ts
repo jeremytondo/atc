@@ -65,6 +65,11 @@ export interface FakeAgentAdapter {
   readonly seedRunningTurn: (providerSessionId: string, turnId: string) => void
   /** Complete the active turn of `providerSessionId` with `outcome`. */
   readonly completeTurn: (providerSessionId: string, outcome: AgentTurnOutcome) => void
+  /** The provider starts a turn by itself on the live connection (a Claude
+   * root loop woken by a finished background task): turnStarted and the
+   * notification as its first userMessage, no startTurn. Returns the turn id;
+   * `completeTurn` ends it like any other. */
+  readonly startProviderTurn: (providerSessionId: string, text: string) => string
   /** End the live connection of `providerSessionId` from the provider's
    * side (its feed ends cleanly, control calls refuse) — a Claude session
    * ending after a non-success turn, a resident child that exited. */
@@ -626,6 +631,21 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
       runningOnResume.set(providerSessionId, turnId)
     },
     completeTurn: (providerSessionId, outcome) => finishTurn(providerSessionId, outcome),
+    startProviderTurn: (providerSessionId, text) => {
+      const live = requireLive(providerSessionId)
+      if (live.activeTurn !== null) {
+        throw new Error(`fake adapter: turn ${live.activeTurn} is still active`)
+      }
+      const turnId = `fake-wake-${nextTurnId++}-${instance}`
+      live.activeTurn = turnId
+      emit(live, { type: "turnStarted", turnId })
+      emit(live, {
+        type: "itemCompleted",
+        item: { type: "userMessage", id: `${turnId}:prompt`, turnId, text },
+      })
+      setActivity(live, "working")
+      return turnId
+    },
     endConnection: (providerSessionId) =>
       closeConnection(providerSessionId, requireLive(providerSessionId)),
     isConnected: (providerSessionId) => connections.has(providerSessionId),

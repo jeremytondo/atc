@@ -300,4 +300,55 @@ describe("Resident writer connections", () => {
         }).pipe(Effect.provide(fastKit.layer))
       }),
   )
+
+  it.live("a turn the provider starts on a resident connection is ATC's run", () =>
+    Effect.gen(function* () {
+      const runtime = yield* ThreadRuntime
+      const threads = yield* Threads
+      const { threadId, sessionId } = yield* settledThread(kit, "claude-code")
+      const transcript = runtime.transcript(threadId).pipe(Effect.orDie)
+
+      // The provider wakes itself: the turn lands as ours, with its prompt.
+      const wakeId = claude.startProviderTurn(
+        sessionId,
+        "<task-notification>done</task-notification>",
+      )
+      yield* waitFor(transcript, (current) =>
+        current.turns.some((turn) => turn.id === wakeId && turn.status === "running"),
+      )
+      const midway = yield* transcript
+      assert.deepStrictEqual(
+        midway.items.filter((item) => item.turnId === wakeId).map((item) => item.type),
+        ["userMessage"],
+      )
+      assert.strictEqual((yield* threads.get(threadId)).activityState, "working")
+
+      // Its requests park with the run and are answerable.
+      const requestId = claude.openRequest(sessionId, "question")
+      yield* waitFor(runtime.listRequests(threadId).pipe(Effect.orDie), (list) =>
+        list.some((request) => request.id === requestId),
+      )
+      // A prompt admitted meanwhile waits: the connection is mid-turn.
+      const later = yield* runtime.prompt(threadId, { prompt: "after" })
+      assert.isUndefined(later.turnId)
+      assert.deepStrictEqual(claude.sessions.get(sessionId)?.inputs, ["first"])
+
+      yield* runtime.answerRequest(threadId, requestId, {
+        kind: "question",
+        answers: { q0: ["A"] },
+      })
+      assert.deepStrictEqual(claude.answers.at(-1)?.requestId, requestId)
+      claude.completeTurn(sessionId, "completed")
+      yield* waitFor(transcript, (current) =>
+        current.turns.some((turn) => turn.id === wakeId && turn.status === "completed"),
+      )
+      // Its end drains the queue onto the same connection.
+      yield* waitFor(
+        Effect.sync(() => claude.sessions.get(sessionId)?.inputs ?? []),
+        (inputs) => inputs.includes("after"),
+      )
+      assert.strictEqual(opened(claude, sessionId), 1)
+      claude.completeTurn(sessionId, "completed")
+    }).pipe(Effect.provide(kit.layer)),
+  )
 })
