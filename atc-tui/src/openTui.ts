@@ -1,5 +1,6 @@
 import {
   createCliRenderer,
+  InputRenderableEvents,
   SelectRenderableEvents,
   type CliRenderer,
   type KeyEvent,
@@ -23,10 +24,16 @@ export type ManagerResult =
   | { readonly type: "quit"; readonly selectedThreadId?: string | undefined }
   | { readonly type: "attach"; readonly threadId: string }
   | {
-      readonly type: "create"
+      readonly type: "createThread"
       readonly input: AppServer.CreateThreadInput
       readonly selectedThreadId?: string | undefined
     }
+  | {
+      readonly type: "createProject"
+      readonly input: AppServer.CreateProjectInput
+      readonly selectedThreadId?: string | undefined
+    }
+  | { readonly type: "archiveThread"; readonly threadId: string }
 
 export interface ManagerOptions {
   readonly endpoint: URL
@@ -39,11 +46,11 @@ export interface ManagerOptions {
 }
 
 type MainResult =
-  | ManagerResult
-  | {
-      readonly type: "new"
-      readonly state: ManagerState
-    }
+  | { readonly type: "quit"; readonly selectedThreadId?: string | undefined }
+  | { readonly type: "attach"; readonly threadId: string }
+  | { readonly type: "newThread"; readonly state: ManagerState }
+  | { readonly type: "newProject"; readonly state: ManagerState }
+  | { readonly type: "archive"; readonly threadId: string; readonly state: ManagerState }
 
 type PromptResult<Value> =
   | { readonly type: "value"; readonly value: Value }
@@ -80,7 +87,9 @@ const acquireRenderer = Effect.acquireRelease(
 
 type MainEvent =
   | { readonly type: "attach"; readonly threadId: string }
-  | { readonly type: "new"; readonly selectedThreadId?: string | undefined }
+  | { readonly type: "newThread"; readonly selectedThreadId?: string | undefined }
+  | { readonly type: "newProject"; readonly selectedThreadId?: string | undefined }
+  | { readonly type: "archive"; readonly threadId: string }
   | { readonly type: "refresh"; readonly selectedThreadId?: string | undefined }
   | { readonly type: "quit"; readonly selectedThreadId?: string | undefined }
 
@@ -111,7 +120,16 @@ const runMainScreen = (
           return
         }
         if (key.ctrl && key.name === "n") {
-          Queue.offerUnsafe(events, { type: "new", selectedThreadId: selectedThreadId() })
+          Queue.offerUnsafe(events, { type: "newThread", selectedThreadId: selectedThreadId() })
+          return
+        }
+        if (key.ctrl && key.name === "p") {
+          Queue.offerUnsafe(events, { type: "newProject", selectedThreadId: selectedThreadId() })
+          return
+        }
+        if (key.name === "a") {
+          const threadId = selectedThreadId()
+          if (threadId !== undefined) Queue.offerUnsafe(events, { type: "archive", threadId })
           return
         }
         if (key.name === "q") {
@@ -165,7 +183,7 @@ const runMainScreen = (
             snapshot === undefined
               ? "Waiting for the App Server…"
               : snapshot.projects.length === 0
-                ? "No Projects yet. Create one before starting a Thread."
+                ? "No Projects yet. Press Ctrl-P to create one."
                 : "No active Threads. Press Ctrl-N to create one."
           const fetched =
             snapshot === undefined ? "" : `  ·  synced ${snapshot.fetchedAt.toLocaleTimeString()}`
@@ -175,8 +193,8 @@ const runMainScreen = (
             title: `Threads (${items.length})`,
             status: state.status ?? backgroundStatus,
             help:
-              "↑/↓ or j/k navigate  ·  Enter attach  ·  Ctrl-N new  ·  r refresh  ·  q quit\n" +
-              "Inside zmx, Ctrl-\\ returns here",
+              "↑/↓ or j/k navigate  ·  Enter attach  ·  Ctrl-N thread  ·  Ctrl-P project\n" +
+              "a archive  ·  r refresh  ·  q quit  ·  zmx Ctrl-\\ returns here",
           })
         })
 
@@ -206,10 +224,17 @@ const runMainScreen = (
                 ),
               )
             }
-            if (event.type === "new") {
+            if (event.type === "newThread" || event.type === "newProject") {
               return Effect.succeed({
-                type: "new",
+                type: event.type,
                 state: { selectedThreadId: event.selectedThreadId },
+              } as const)
+            }
+            if (event.type === "archive") {
+              return Effect.succeed({
+                type: "archive",
+                threadId: event.threadId,
+                state: { selectedThreadId: event.threadId },
               } as const)
             }
             if (event.type === "quit") {
@@ -276,16 +301,76 @@ const selectPrompt = <Value>(
     }),
   )
 
-type WizardResult =
+interface TextPromptOptions {
+  readonly title: string
+  readonly label: string
+  readonly placeholder: string
+  readonly validate: (value: string) => string | undefined
+}
+
+const textPrompt = (
+  shell: OpenTuiApp.AppShell,
+  options: TextPromptOptions,
+): Effect.Effect<PromptResult<string>> =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const renderer = shell.renderer
+      const results = yield* Queue.unbounded<PromptResult<string>>()
+      const view = OpenTuiApp.makeFormView(shell, "text-prompt-view")
+      const label = OpenTuiApp.makePromptLabel(shell, "text-prompt-label", options.label)
+      const input = OpenTuiApp.makeInput(shell, {
+        id: "text-prompt-input",
+        placeholder: options.placeholder,
+      })
+      view.add(label)
+      view.add(input)
+      yield* OpenTuiApp.mountView(shell, view)
+      OpenTuiApp.update(shell, {
+        title: options.title,
+        status: "",
+        help: "Enter continue  ·  Esc cancel  ·  Ctrl-C quit",
+      })
+
+      const onEnter = (value: string) => {
+        const normalized = value.trim()
+        const problem = options.validate(normalized)
+        if (problem !== undefined) {
+          shell.status.content = problem
+          return
+        }
+        Queue.offerUnsafe(results, { type: "value", value: normalized })
+      }
+      const onKey = (key: KeyEvent) => {
+        if (key.ctrl && key.name === "c") {
+          Queue.offerUnsafe(results, { type: "quit" })
+          return
+        }
+        if (key.name === "escape") Queue.offerUnsafe(results, { type: "cancel" })
+      }
+      input.on(InputRenderableEvents.ENTER, onEnter)
+      renderer.keyInput.on("keypress", onKey)
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          input.off(InputRenderableEvents.ENTER, onEnter)
+          renderer.keyInput.off("keypress", onKey)
+        }),
+      )
+      input.focus()
+
+      return yield* Queue.take(results)
+    }),
+  )
+
+type ThreadWizardResult =
   | { readonly type: "create"; readonly input: AppServer.CreateThreadInput }
   | { readonly type: "cancel"; readonly status: string }
   | { readonly type: "quit" }
 
-const runCreateWizard = (
+const runCreateThreadWizard = (
   shell: OpenTuiApp.AppShell,
   snapshot: AppServer.Snapshot,
   preferredProjectId: string | undefined,
-): Effect.Effect<WizardResult> =>
+): Effect.Effect<ThreadWizardResult> =>
   Effect.gen(function* () {
     if (snapshot.projects.length === 0) {
       return { type: "cancel", status: "Create a Project before creating a Thread." } as const
@@ -345,6 +430,45 @@ const runCreateWizard = (
     }
   })
 
+type ProjectWizardResult =
+  | { readonly type: "create"; readonly input: AppServer.CreateProjectInput }
+  | { readonly type: "cancel"; readonly status: string }
+  | { readonly type: "quit" }
+
+const runCreateProjectWizard = (shell: OpenTuiApp.AppShell): Effect.Effect<ProjectWizardResult> =>
+  Effect.gen(function* () {
+    const name = yield* textPrompt(shell, {
+      title: "New Project · Name",
+      label: "Project name",
+      placeholder: "e.g. ATC",
+      validate: (value) => (value === "" ? "Project name is required." : undefined),
+    })
+    if (name.type === "quit") return name
+    if (name.type === "cancel") {
+      return { type: "cancel", status: "Project creation cancelled." } as const
+    }
+
+    const directory = yield* textPrompt(shell, {
+      title: "New Project · Directory",
+      label: "Absolute directory on the App Server host",
+      placeholder: "/path/to/project",
+      validate: (value) =>
+        value.startsWith("/") ? undefined : "Enter an absolute path beginning with /.",
+    })
+    if (directory.type === "quit") return directory
+    if (directory.type === "cancel") {
+      return { type: "cancel", status: "Project creation cancelled." } as const
+    }
+
+    return {
+      type: "create",
+      input: {
+        name: name.value,
+        defaultWorkingDirectory: directory.value,
+      },
+    }
+  })
+
 export const runWithRenderer = (
   renderer: CliRenderer,
   options: ManagerOptions,
@@ -357,7 +481,72 @@ export const runWithRenderer = (
       const loop = (state: ManagerState): Effect.Effect<ManagerResult, unknown> =>
         runMainScreen(shell, options, state).pipe(
           Effect.flatMap((result) => {
-            if (result.type !== "new") return Effect.succeed(result)
+            if (result.type === "quit" || result.type === "attach") {
+              return Effect.succeed(result)
+            }
+            if (result.type === "newProject") {
+              return runCreateProjectWizard(shell).pipe(
+                Effect.flatMap((created) => {
+                  if (created.type === "quit") {
+                    return Effect.succeed({
+                      type: "quit",
+                      selectedThreadId: result.state.selectedThreadId,
+                    } as const)
+                  }
+                  if (created.type === "cancel") {
+                    return loop({ ...result.state, status: created.status })
+                  }
+                  return Effect.succeed({
+                    type: "createProject",
+                    input: created.input,
+                    selectedThreadId: result.state.selectedThreadId,
+                  } as const)
+                }),
+              )
+            }
+            if (result.type === "archive") {
+              return Ref.get(options.snapshotRef).pipe(
+                Effect.flatMap((snapshot) => {
+                  const thread = snapshot?.threads.find((item) => item.id === result.threadId)
+                  if (thread === undefined) {
+                    return loop({ ...result.state, status: "That Thread is no longer available." })
+                  }
+                  return selectPrompt(
+                    shell,
+                    `Archive · ${thread.name}`,
+                    [
+                      {
+                        name: "Cancel",
+                        description: "Keep this Thread active",
+                        value: false,
+                      },
+                      {
+                        name: "Archive",
+                        description: "Stop its terminal and move it out of the active list",
+                        value: true,
+                      },
+                    ],
+                    0,
+                  ).pipe(
+                    Effect.flatMap((confirmed) => {
+                      if (confirmed.type === "quit") {
+                        return Effect.succeed({
+                          type: "quit",
+                          selectedThreadId: result.threadId,
+                        } as const)
+                      }
+                      if (confirmed.type === "cancel" || !confirmed.value) {
+                        return loop({ ...result.state, status: "Archive cancelled." })
+                      }
+                      return Effect.succeed({
+                        type: "archiveThread",
+                        threadId: result.threadId,
+                      } as const)
+                    }),
+                  )
+                }),
+              )
+            }
 
             return Ref.get(options.snapshotRef).pipe(
               Effect.flatMap((snapshot) => {
@@ -371,7 +560,7 @@ export const runWithRenderer = (
                   snapshot,
                   result.state.selectedThreadId,
                 )
-                return runCreateWizard(shell, snapshot, preferredProjectId).pipe(
+                return runCreateThreadWizard(shell, snapshot, preferredProjectId).pipe(
                   Effect.flatMap((created) => {
                     if (created.type === "quit") {
                       return Effect.succeed({
@@ -383,9 +572,10 @@ export const runWithRenderer = (
                       return loop({ ...result.state, status: created.status })
                     }
                     return Effect.succeed({
-                      ...created,
+                      type: "createThread",
+                      input: created.input,
                       selectedThreadId: result.state.selectedThreadId,
-                    })
+                    } as const)
                   }),
                 )
               }),

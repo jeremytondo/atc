@@ -97,8 +97,14 @@ export const run = Effect.scoped(
         Effect.as("Returned from zmx; session state refreshed."),
       )
 
-    const loop = (state: OpenTui.ManagerState): Effect.Effect<void, unknown> =>
-      manager(state).pipe(
+    const loop = (state: OpenTui.ManagerState): Effect.Effect<void, unknown> => {
+      const resume = (next: Effect.Effect<OpenTui.ManagerState, never>) =>
+        next.pipe(
+          Effect.tap(() => Queue.offer(refreshRequests, void 0)),
+          Effect.flatMap(loop),
+        )
+
+      return manager(state).pipe(
         Effect.flatMap((result) => {
           if (result.type === "quit") return Effect.void
 
@@ -110,26 +116,58 @@ export const run = Effect.scoped(
             )
           }
 
-          return server.createThread(result.input).pipe(
-            Effect.flatMap((thread) =>
-              attach(thread.id).pipe(
+          if (result.type === "createProject") {
+            return resume(
+              server.createProject(result.input).pipe(
+                Effect.map((project) => ({
+                  selectedThreadId: result.selectedThreadId,
+                  status: `Project “${project.name}” created.`,
+                })),
                 Effect.catch((error) =>
-                  Effect.succeed(`Thread created, but could not attach: ${describeError(error)}`),
+                  Effect.succeed({
+                    selectedThreadId: result.selectedThreadId,
+                    status: `Could not create Project: ${describeError(error)}`,
+                  }),
                 ),
-                Effect.map((status) => ({ selectedThreadId: thread.id, status })),
+              ),
+            )
+          }
+
+          if (result.type === "archiveThread") {
+            return resume(
+              server.archiveThread(result.threadId).pipe(
+                Effect.map((thread) => ({ status: `Archived “${thread.name}”.` })),
+                Effect.catch((error) =>
+                  Effect.succeed({
+                    selectedThreadId: result.threadId,
+                    status: `Could not archive Thread: ${describeError(error)}`,
+                  }),
+                ),
+              ),
+            )
+          }
+
+          return resume(
+            server.createThread(result.input).pipe(
+              Effect.flatMap((thread) =>
+                attach(thread.id).pipe(
+                  Effect.catch((error) =>
+                    Effect.succeed(`Thread created, but could not attach: ${describeError(error)}`),
+                  ),
+                  Effect.map((status) => ({ selectedThreadId: thread.id, status })),
+                ),
+              ),
+              Effect.catch((error) =>
+                Effect.succeed({
+                  selectedThreadId: result.selectedThreadId,
+                  status: `Could not create Thread: ${describeError(error)}`,
+                }),
               ),
             ),
-            Effect.catch((error) =>
-              Effect.succeed({
-                selectedThreadId: result.selectedThreadId,
-                status: `Could not create Thread: ${describeError(error)}`,
-              }),
-            ),
-            Effect.tap(() => Queue.offer(refreshRequests, void 0)),
-            Effect.flatMap(loop),
           )
         }),
       )
+    }
 
     yield* loop({})
   }),

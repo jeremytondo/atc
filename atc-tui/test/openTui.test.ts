@@ -130,10 +130,57 @@ describe("OpenTUI manager", () => {
       )
 
       assert.deepStrictEqual(result, {
-        type: "create",
+        type: "createThread",
         input: { projectId: "p2", agentId: "codex" },
         selectedThreadId: "t2",
       })
+    }),
+  )
+
+  it.effect("creates a Project after validating its server-host directory", () =>
+    Effect.gen(function* () {
+      const result = yield* runManager(snapshot, { selectedThreadId: "t1" }, ({ setup }) =>
+        Effect.gen(function* () {
+          yield* waitForFrame(setup, "Alpha  ›  First")
+          setup.mockInput.pressKey("p", { ctrl: true })
+          yield* waitForFrame(setup, "New Project · Name")
+          yield* Effect.promise(() => setup.mockInput.typeText("Gamma"))
+          setup.mockInput.pressEnter()
+          yield* waitForFrame(setup, "New Project · Directory")
+          yield* Effect.promise(() => setup.mockInput.typeText("relative"))
+          setup.mockInput.pressEnter()
+          yield* waitForFrame(setup, "Enter an absolute path beginning with /.")
+          "relative".split("").forEach(() => setup.mockInput.pressBackspace())
+          yield* Effect.promise(() => setup.mockInput.typeText("/work/gamma"))
+          setup.mockInput.pressEnter()
+        }),
+      )
+
+      assert.deepStrictEqual(result, {
+        type: "createProject",
+        input: { name: "Gamma", defaultWorkingDirectory: "/work/gamma" },
+        selectedThreadId: "t1",
+      })
+    }),
+  )
+
+  it.effect("defaults archive confirmation to cancel", () =>
+    Effect.gen(function* () {
+      const result = yield* runManager(snapshot, { selectedThreadId: "t1" }, ({ setup }) =>
+        Effect.gen(function* () {
+          yield* waitForFrame(setup, "Alpha  ›  First")
+          setup.mockInput.pressKey("a")
+          yield* waitForFrame(setup, "Archive · First")
+          setup.mockInput.pressEnter()
+          yield* waitForFrame(setup, "Archive cancelled.")
+          setup.mockInput.pressKey("a")
+          yield* waitForFrame(setup, "Archive · First")
+          setup.mockInput.pressArrow("down")
+          setup.mockInput.pressEnter()
+        }),
+      )
+
+      assert.deepStrictEqual(result, { type: "archiveThread", threadId: "t1" })
     }),
   )
 

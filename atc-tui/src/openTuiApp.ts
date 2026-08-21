@@ -1,5 +1,6 @@
 import {
   BoxRenderable,
+  InputRenderable,
   SelectRenderable,
   TextRenderable,
   type CliRenderer,
@@ -96,6 +97,41 @@ export const makeView = (shell: AppShell, id: string): BoxRenderable =>
     id,
     width: "100%",
     height: "100%",
+  })
+
+export const makeFormView = (shell: AppShell, id: string): BoxRenderable =>
+  new BoxRenderable(shell.renderer, {
+    id,
+    width: "100%",
+    height: "100%",
+    flexDirection: "column",
+    gap: 1,
+  })
+
+export const makePromptLabel = (shell: AppShell, id: string, content: string): TextRenderable =>
+  new TextRenderable(shell.renderer, {
+    id,
+    height: 2,
+    content,
+    fg: colors.description,
+  })
+
+export const makeInput = (
+  shell: AppShell,
+  options: {
+    readonly id: string
+    readonly placeholder: string
+    readonly value?: string | undefined
+  },
+): InputRenderable =>
+  new InputRenderable(shell.renderer, {
+    id: options.id,
+    width: "100%",
+    value: options.value ?? "",
+    placeholder: options.placeholder,
+    textColor: colors.text,
+    focusedTextColor: colors.text,
+    placeholderColor: colors.muted,
   })
 
 export const mountView = (shell: AppShell, view: Renderable) =>

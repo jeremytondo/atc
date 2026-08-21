@@ -20,6 +20,7 @@ export interface Snapshot {
   readonly fetchedAt: Date
 }
 
+export type CreateProjectInput = typeof Contract.CreateProjectRequest.Type
 export type CreateThreadInput = typeof Contract.CreateThreadRequest.Type
 
 export class AppServer extends Context.Service<
@@ -27,7 +28,9 @@ export class AppServer extends Context.Service<
   {
     readonly config: Config.ClientConfig["Service"]
     readonly snapshot: Effect.Effect<Snapshot, unknown>
+    readonly createProject: (input: CreateProjectInput) => Effect.Effect<Project, unknown>
     readonly createThread: (input: CreateThreadInput) => Effect.Effect<Thread, unknown>
+    readonly archiveThread: (threadId: string) => Effect.Effect<Thread, unknown>
     readonly openThread: (threadId: string) => Effect.Effect<Terminal, unknown>
     readonly subscribe: (
       publish: (signal: Sse.ResourceSignal) => Effect.Effect<void>,
@@ -52,7 +55,9 @@ const make = Effect.gen(function* () {
   return AppServer.of({
     config,
     snapshot,
+    createProject: (input) => client.v1.createProject({ payload: input }),
     createThread: (input) => client.v1.createThread({ payload: input }),
+    archiveThread: (threadId) => client.v1.archiveThread({ params: { threadId } }),
     openThread: (threadId) => client.v1.openThreadTerminal({ params: { threadId } }),
     subscribe: (publish) => Sse.subscribe(config, publish),
   })
