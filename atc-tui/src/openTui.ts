@@ -135,11 +135,6 @@ type MainEvent =
   | { readonly type: "refresh" }
   | { readonly type: "quit" }
 
-const nextSection = (section: ManagerSection): ManagerSection =>
-  section === "threads" ? "archived" : section === "archived" ? "projects" : "threads"
-
-const sections: ReadonlyArray<ManagerSection> = ["threads", "archived", "projects"]
-
 const sectionForNumber = (name: string): ManagerSection | undefined =>
   name === "1" ? "threads" : name === "2" ? "archived" : name === "3" ? "projects" : undefined
 
@@ -154,21 +149,13 @@ const runMainScreen = (
       const section = initial.section ?? "threads"
       const events = yield* Queue.unbounded<MainEvent>()
       const itemIdsByIndex: Array<string> = []
-      const view = OpenTuiApp.makeFormView(shell, "manager-view")
-      const tabs = OpenTuiApp.makeTabs(shell, {
-        id: "manager-tabs",
-        items: [{ name: "1 Threads" }, { name: "2 Archived" }, { name: "3 Projects" }],
-        selectedIndex: sections.indexOf(section),
-      })
-      const content = OpenTuiApp.makeView(shell, "manager-content")
-      content.height = "auto"
-      content.flexGrow = 1
+      const view = OpenTuiApp.makeView(shell, "manager-view")
       const list = OpenTuiApp.makeSelect(shell, { id: "manager-list", items: [] })
       const empty = OpenTuiApp.makeMessage(shell, "manager-empty")
-      content.add(list)
-      content.add(empty)
-      view.add(tabs)
-      view.add(content)
+      const commandMenu = OpenTuiApp.makeCommandMenu(shell, "manager-command-menu")
+      view.add(list)
+      view.add(empty)
+      view.add(commandMenu.box)
       yield* OpenTuiApp.mountView(shell, view)
 
       let prefixActive = false
@@ -200,21 +187,21 @@ const runMainScreen = (
           return
         }
         if (key.ctrl && key.name === "space") {
-          prefixActive = true
-          shell.status.content = "Prefix: 1 Threads  ·  2 Archived  ·  3 Projects"
+          prefixActive = !prefixActive
+          commandMenu.box.visible = prefixActive
+          shell.status.content = prefixActive
+            ? "Command: press 1, 2, or 3  ·  Esc cancel"
+            : baseStatus
           return
         }
         if (prefixActive) {
           prefixActive = false
+          commandMenu.box.visible = false
           shell.status.content = baseStatus
           const target = sectionForNumber(key.name)
           if (target !== undefined && target !== section) {
             Queue.offerUnsafe(events, { type: "switchSection", section: target })
           }
-          return
-        }
-        if (key.name === "tab") {
-          Queue.offerUnsafe(events, { type: "switchSection", section: nextSection(section) })
           return
         }
         if (key.ctrl && key.name === "n") {
@@ -326,12 +313,15 @@ const runMainScreen = (
           const activeCount =
             snapshot?.threads.filter((thread) => thread.archivedAt === undefined).length ?? 0
           const archivedCount = (snapshot?.threads.length ?? 0) - activeCount
-          tabs.options = [
-            { name: `1 Threads (${activeCount})`, description: "" },
-            { name: `2 Archived (${archivedCount})`, description: "" },
-            { name: `3 Projects (${snapshot?.projects.length ?? 0})`, description: "" },
-          ]
-          tabs.setSelectedIndex(sections.indexOf(section))
+          const current = (candidate: ManagerSection) =>
+            candidate === section ? "  ← current" : ""
+          commandMenu.content.content = [
+            `1  Threads (${activeCount})${current("threads")}`,
+            `2  Archived Threads (${archivedCount})${current("archived")}`,
+            `3  Projects (${snapshot?.projects.length ?? 0})${current("projects")}`,
+            "",
+            "Esc  Cancel",
+          ].join("\n")
           const title =
             section === "threads"
               ? `Active Threads (${items.length})`
@@ -340,16 +330,16 @@ const runMainScreen = (
                 : `Projects (${items.length})`
           const help =
             section === "threads"
-              ? "Tab cycle views  ·  Ctrl-Space 1-3 switch  ·  ↑/↓ navigate  ·  Enter attach  ·  a archive\nCtrl-N new  ·  Ctrl-P new project  ·  r refresh  ·  q quit  ·  zmx Ctrl-\\ returns"
+              ? "Ctrl-Space commands  ·  ↑/↓ navigate  ·  Enter attach  ·  a archive\nCtrl-N new  ·  Ctrl-P new project  ·  r refresh  ·  q quit  ·  zmx Ctrl-\\ returns"
               : section === "archived"
-                ? "Tab cycle views  ·  Ctrl-Space 1-3 switch  ·  ↑/↓ navigate  ·  Enter or u unarchive\nCtrl-N new thread  ·  Ctrl-P new project  ·  r refresh  ·  q quit"
-                : "Tab cycle views  ·  Ctrl-Space 1-3 switch  ·  ↑/↓ navigate  ·  Enter or e rename\nd delete  ·  Ctrl-P new project  ·  Ctrl-N new thread  ·  r refresh  ·  q quit"
+                ? "Ctrl-Space commands  ·  ↑/↓ navigate  ·  Enter or u unarchive\nCtrl-N new thread  ·  Ctrl-P new project  ·  r refresh  ·  q quit"
+                : "Ctrl-Space commands  ·  ↑/↓ navigate  ·  Enter or e rename  ·  d delete\nCtrl-P new project  ·  Ctrl-N new thread  ·  r refresh  ·  q quit"
           baseStatus = state.status ?? backgroundStatus ?? ""
           OpenTuiApp.update(shell, {
             subtitle:
               options.endpoint.origin + `  ·  ${View.connectionLabel(reachability)}` + fetched,
             title,
-            status: prefixActive ? "Prefix: 1 Threads  ·  2 Archived  ·  3 Projects" : baseStatus,
+            status: prefixActive ? "Command: press 1, 2, or 3  ·  Esc cancel" : baseStatus,
             help,
           })
         })

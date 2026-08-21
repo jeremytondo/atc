@@ -365,7 +365,9 @@ describe("OpenTUI manager", () => {
       const result = yield* runManager(snapshot, { selectedThreadId: "t1" }, ({ setup }) =>
         Effect.gen(function* () {
           yield* waitForFrame(setup, "Active Threads (2)")
-          setup.mockInput.pressTab()
+          setup.mockInput.pressKey(" ", { ctrl: true })
+          yield* waitForFrame(setup, "2  Archived Threads (1)")
+          setup.mockInput.pressKey("2")
           yield* waitForFrame(setup, "Archived Threads (1)")
           yield* waitForFrame(setup, "Alpha  ›  Archived First")
           setup.mockInput.pressKey("u")
@@ -385,15 +387,17 @@ describe("OpenTUI manager", () => {
     }),
   )
 
-  it.effect("switches numbered tabs after the Ctrl-Space prefix", () =>
+  it.effect("switches views from the Ctrl-Space command menu", () =>
     Effect.gen(function* () {
       const result = yield* runManager(snapshot, { selectedThreadId: "t1" }, ({ setup }) =>
         Effect.gen(function* () {
-          yield* waitForFrame(setup, "1 Threads (2)")
-          yield* waitForFrame(setup, "2 Archived (1)")
-          yield* waitForFrame(setup, "3 Projects (2)")
+          yield* waitForFrame(setup, "Active Threads (2)")
           setup.mockInput.pressKey(" ", { ctrl: true })
-          yield* waitForFrame(setup, "Prefix: 1 Threads  ·  2 Archived  ·  3 Projects")
+          yield* waitForFrame(setup, "Commands · Ctrl-Space")
+          yield* waitForFrame(setup, "1  Threads (2)  ← current")
+          yield* waitForFrame(setup, "2  Archived Threads (1)")
+          yield* waitForFrame(setup, "3  Projects (2)")
+          yield* waitForFrame(setup, "Esc  Cancel")
           setup.mockInput.pressKey("3")
           yield* waitForFrame(setup, "╭─ Projects (2)")
           setup.mockInput.pressKey("q")
@@ -401,6 +405,35 @@ describe("OpenTUI manager", () => {
       )
 
       assert.deepStrictEqual(result, { type: "quit" })
+    }),
+  )
+
+  it.effect("cancels the prefix menu without changing selection", () =>
+    Effect.gen(function* () {
+      const result = yield* runManager(snapshot, { selectedThreadId: "t2" }, ({ setup }) =>
+        Effect.gen(function* () {
+          yield* waitForFrame(setup, "Active Threads (2)")
+          setup.mockInput.pressKey(" ", { ctrl: true })
+          yield* waitForFrame(setup, "Esc  Cancel")
+          setup.mockInput.pressEscape()
+          yield* Effect.promise(() =>
+            setup.waitForFrame(
+              (frame) => frame.includes("Active Threads (2)") && !frame.includes("Esc  Cancel"),
+            ),
+          )
+          setup.mockInput.pressKey("a")
+        }),
+      )
+
+      assert.deepStrictEqual(result, {
+        type: "archiveThread",
+        threadId: "t2",
+        state: {
+          selectedThreadId: "t2",
+          section: "threads",
+          status: undefined,
+        },
+      })
     }),
   )
 
@@ -431,9 +464,11 @@ describe("OpenTUI manager", () => {
       const result = yield* runManager(snapshot, { selectedThreadId: "t1" }, ({ setup }) =>
         Effect.gen(function* () {
           yield* waitForFrame(setup, "Active Threads (2)")
-          setup.mockInput.pressTab()
+          setup.mockInput.pressKey(" ", { ctrl: true })
+          setup.mockInput.pressKey("2")
           yield* waitForFrame(setup, "Archived Threads (1)")
-          setup.mockInput.pressTab()
+          setup.mockInput.pressKey(" ", { ctrl: true })
+          setup.mockInput.pressKey("3")
           yield* waitForFrame(setup, "╭─ Projects (2)")
           setup.mockInput.pressArrow("down")
           yield* waitForFrame(setup, "/work/beta  ·  1 active  ·  0 archived")

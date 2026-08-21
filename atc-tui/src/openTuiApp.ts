@@ -2,7 +2,6 @@ import {
   BoxRenderable,
   InputRenderable,
   SelectRenderable,
-  TabSelectRenderable,
   TextRenderable,
   type CliRenderer,
   type Renderable,
@@ -22,6 +21,7 @@ const colors = {
   status: "#fbbf24",
   selection: "#293241",
   selectedDescription: "#dbeafe",
+  overlay: "#0f172a",
 } as const
 
 export interface AppShell {
@@ -175,30 +175,38 @@ export const makeSelect = (
     descriptionColor: colors.description,
   })
 
-export const makeTabs = (
-  shell: AppShell,
-  options: {
-    readonly id: string
-    readonly items: ReadonlyArray<{ readonly name: string }>
-    readonly selectedIndex: number
-  },
-): TabSelectRenderable => {
-  const tabs = new TabSelectRenderable(shell.renderer, {
-    id: options.id,
-    width: "100%",
-    options: options.items.map((item) => ({ ...item, description: "" })),
-    tabWidth: 20,
-    backgroundColor: "transparent",
-    textColor: colors.description,
-    selectedBackgroundColor: colors.selection,
-    selectedTextColor: "#ffffff",
-    showDescription: false,
-    showScrollArrows: false,
-    showUnderline: true,
+export interface CommandMenu {
+  readonly box: BoxRenderable
+  readonly content: TextRenderable
+}
+
+export const makeCommandMenu = (shell: AppShell, id: string): CommandMenu => {
+  const box = new BoxRenderable(shell.renderer, {
+    id,
+    position: "absolute",
+    left: "20%",
+    top: "20%",
+    width: "60%",
+    height: 9,
+    zIndex: 100,
+    title: " Commands · Ctrl-Space ",
+    titleColor: colors.title,
+    border: true,
+    borderStyle: "rounded",
+    borderColor: colors.title,
+    backgroundColor: colors.overlay,
+    padding: 1,
+    visible: false,
   })
-  tabs.focusable = false
-  tabs.setSelectedIndex(options.selectedIndex)
-  return tabs
+  const content = new TextRenderable(shell.renderer, {
+    id: `${id}-content`,
+    width: "100%",
+    height: "100%",
+    content: "",
+    fg: colors.text,
+  })
+  box.add(content)
+  return { box, content }
 }
 
 export const makeMessage = (shell: AppShell, id: string): TextRenderable =>
