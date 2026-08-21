@@ -11,11 +11,20 @@ import * as Sse from "./sse.ts"
 export type Project = typeof Contract.Project.Type
 export type Thread = typeof Contract.Thread.Type
 export type Terminal = typeof Contract.Terminal.Type
+export type Agent = typeof Contract.Agent.Type
+export type AgentId = typeof Contract.AgentId.Type
 
 export interface Snapshot {
   readonly projects: ReadonlyArray<Project>
   readonly threads: ReadonlyArray<Thread>
+  readonly agents: ReadonlyArray<Agent>
   readonly fetchedAt: Date
+}
+
+export interface CreateThreadInput {
+  readonly projectId: Project["id"]
+  readonly agentId: AgentId
+  readonly name: string
 }
 
 export class AppServer extends Context.Service<
@@ -23,6 +32,7 @@ export class AppServer extends Context.Service<
   {
     readonly config: Config.ClientConfig["Service"]
     readonly snapshot: Effect.Effect<Snapshot, unknown>
+    readonly createThread: (input: CreateThreadInput) => Effect.Effect<Thread, unknown>
     readonly openThread: (threadId: string) => Effect.Effect<Terminal, unknown>
     readonly subscribe: (
       publish: (signal: Sse.ResourceSignal) => Effect.Effect<void>,
@@ -40,12 +50,14 @@ const make = Effect.gen(function* () {
   const snapshot = Effect.gen(function* () {
     const projects = yield* client.v1.listProjects()
     const threads = yield* client.v1.listThreads({ query: {} })
-    return { projects, threads, fetchedAt: new Date() }
+    const agents = yield* client.v1.listAgents()
+    return { projects, threads, agents, fetchedAt: new Date() }
   })
 
   return AppServer.of({
     config,
     snapshot,
+    createThread: (input) => client.v1.createThread({ payload: input }),
     openThread: (threadId) => client.v1.openThreadTerminal({ params: { threadId } }),
     subscribe: (publish) => Sse.subscribe(config, publish),
   })

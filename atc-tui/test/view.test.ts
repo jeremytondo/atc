@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type * as AppServer from "../src/appServer.ts"
-import { moveSelection, normalizeSelection, render } from "../src/view.ts"
+import { moveSelection, normalizeSelection, projectIdForSelection, render } from "../src/view.ts"
 
 const project = (id: string, name: string): AppServer.Project => ({
   id,
@@ -36,6 +36,14 @@ const thread = (
 const snapshot: AppServer.Snapshot = {
   projects: [project("p1", "Alpha"), project("p2", "Beta")],
   threads: [thread("t1", "p1"), thread("t2", "p1", "working")],
+  agents: [
+    {
+      id: "codex",
+      available: true,
+      detectedVersion: "1.0.0",
+      defaults: { model: "gpt-5", reasoning: "medium", mode: "chat", access: "auto" },
+    },
+  ],
   fetchedAt: new Date("2026-08-20T00:00:00.000Z"),
 }
 
@@ -45,6 +53,8 @@ describe("navigation", () => {
     expect(moveSelection(snapshot, "t1", 1)).toBe("t2")
     expect(moveSelection(snapshot, "t2", 1)).toBe("t2")
     expect(moveSelection(snapshot, "t1", -1)).toBe("t1")
+    expect(projectIdForSelection(snapshot, "t2")).toBe("p1")
+    expect(projectIdForSelection(snapshot, "missing")).toBe("p1")
   })
 })
 
@@ -63,6 +73,8 @@ describe("render", () => {
     expect(output).toContain("Beta  (0)")
     expect(output).toContain("t1  [idle · unread]  codex")
     expect(output).toContain("t2  [working · terminal]  codex")
-    expect(output).toContain("\u001b[7m")
+    expect(output).toContain("›   t2")
+    expect(output).toContain("Ctrl-N new")
+    expect(output).not.toContain("\u001b")
   })
 })

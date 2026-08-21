@@ -41,6 +41,13 @@ export const moveSelection = (
   return ids[next]
 }
 
+export const projectIdForSelection = (
+  snapshot: AppServer.Snapshot,
+  selectedThreadId: string | undefined,
+): AppServer.Project["id"] | undefined =>
+  snapshot.threads.find((thread) => thread.id === selectedThreadId)?.projectId ??
+  snapshot.projects[0]?.id
+
 const threadLabel = (thread: AppServer.Thread): string =>
   thread.name ?? path.posix.basename(thread.workingDirectory) ?? thread.id
 
@@ -140,23 +147,22 @@ export const render = (options: {
       const selected = line.threadId !== undefined && line.threadId === selection
       const prefix = selected ? "› " : "  "
       const content = truncate(prefix + line.text, width)
-      return selected ? `\x1b[7m${content}\x1b[0m` : content
+      return content
     })
-    .join("\r\n")
+    .join("\n")
   const fetched =
     options.snapshot === undefined
       ? ""
       : ` · synced ${options.snapshot.fetchedAt.toLocaleTimeString()}`
   const status =
-    options.state.status === undefined ? "" : `\r\n${truncate(options.state.status, width)}`
+    options.state.status === undefined ? "" : `\n${truncate(options.state.status, width)}`
 
   return (
-    "\x1b[2J\x1b[H\x1b[?25l" +
-    `ATC · ${options.endpoint.origin}\r\n` +
-    `${connection}${fetched}\r\n\r\n` +
+    `ATC · ${options.endpoint.origin}\n` +
+    `${connection}${fetched}\n\n` +
     body +
     status +
-    "\r\n\r\n↑/↓ or j/k select · Enter attach · r refetch · q quit\r\n" +
-    "Ctrl-\\ returns from the zmx session to this list\r\n"
+    "\n\n↑/↓ or j/k select · Enter attach · Ctrl-N new · r refetch · q quit\n" +
+    "Ctrl-\\ returns from the zmx session to this list\n"
   )
 }

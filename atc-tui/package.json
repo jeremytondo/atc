@@ -10,9 +10,11 @@
   },
   "dependencies": {
     "@effect/platform-bun": "4.0.0-beta.102",
+    "@opentui/core": "0.4.5",
     "effect": "4.0.0-beta.102"
   },
   "devDependencies": {
+    "@effect/vitest": "4.0.0-beta.102",
     "@oxlint/plugins": "1.78.0",
     "@types/bun": "1.3.14",
     "oxlint": "1.78.0",
