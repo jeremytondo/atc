@@ -556,11 +556,53 @@ const toolFields = {
   ),
 }
 
+/** The image types an attachment may be (ATC-216); anything else is refused at upload. */
+export const ATTACHMENT_MEDIA_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+] as const
+
+export const AttachmentMediaType = Schema.Literals(ATTACHMENT_MEDIA_TYPES).annotate({
+  identifier: "AttachmentMediaType",
+  description: "The image type of an attachment; the accepted set of the upload endpoint.",
+})
+
+/** Per-attachment byte cap and per-prompt count cap, enforced server-side. */
+export const ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024
+export const ATTACHMENTS_PER_PROMPT = 10
+
+export const ThreadAttachment = Schema.Struct({
+  id: Schema.String.annotate({ description: "UUIDv7 attachment id, unique within the thread." }),
+  name: Schema.String.annotate({ description: "Display filename (the uploader's, sanitized)." }),
+  mediaType: AttachmentMediaType,
+  byteSize: Schema.Int.annotate({ description: "Size of the stored bytes." }),
+  path: Schema.String.annotate({
+    description:
+      "Server-host absolute path of the stored bytes — stable for the attachment's life, so an agent on that machine (a TUI, a script) can be pointed at it.",
+  }),
+  createdAt: timestamp("Upload time."),
+}).annotate({
+  identifier: "ThreadAttachment",
+  description:
+    "An image a client uploaded to a thread for a prompt. Attachments live with their thread and die with it; the bytes come back from getThreadAttachment.",
+})
+
 export const ThreadItemUserMessage = Schema.Struct({
   type: Schema.Literal("userMessage"),
   ...threadItemBase,
   text: Schema.String,
-}).annotate({ identifier: "ThreadItemUserMessage", description: "A user prompt (text only)." })
+  attachments: Schema.optionalKey(
+    Schema.Array(ThreadAttachment).annotate({
+      description:
+        "Images sent with the prompt; absent when none. Present for prompts ATC sent natively; a provider re-read keeps them where the provider's turn ids are stable (Codex), and loses them where they are not (Claude) — the bytes stay fetchable by id either way.",
+    }),
+  ),
+}).annotate({
+  identifier: "ThreadItemUserMessage",
+  description: "A user prompt: text plus any image attachments.",
+})
 
 export const ThreadItemAssistantText = Schema.Struct({
   type: Schema.Literal("assistantText"),
@@ -779,11 +821,35 @@ export const ThreadRequestAnswer = Schema.Union(
 })
 
 export const PromptThreadRequest = Schema.Struct({
-  prompt: Schema.NonEmptyString.annotate({ description: "The user's message." }),
-}).annotate({
-  identifier: "PromptThreadRequest",
-  description: "Payload for prompting a thread: text only (attachments are additive later).",
+  prompt: Schema.String.annotate({
+    description: "The user's message; may be empty only when attachments are present.",
+  }),
+  attachments: Schema.optionalKey(
+    Schema.Array(Schema.String)
+      .check(
+        Schema.isMaxLength(ATTACHMENTS_PER_PROMPT, {
+          description: `at most ${ATTACHMENTS_PER_PROMPT} attachments per prompt`,
+        }),
+      )
+      .annotate({
+        description:
+          "Ids of attachments previously uploaded to THIS thread (createThreadAttachment), in display order. An id the thread does not own is a 404.",
+      }),
+  ),
 })
+  .check(
+    Schema.makeFilter(
+      (request) =>
+        request.prompt.trim() !== "" || (request.attachments?.length ?? 0) > 0
+          ? undefined
+          : "a prompt needs text or at least one attachment",
+      { description: "text or at least one attachment" },
+    ),
+  )
+  .annotate({
+    identifier: "PromptThreadRequest",
+    description: "Payload for prompting a thread: text, and optionally uploaded image attachments.",
+  })
 
 export const PromptThreadResponse = Schema.Struct({
   promptId: Schema.String.annotate({ description: "The admitted prompt's id." }),
@@ -800,6 +866,9 @@ export const PromptThreadResponse = Schema.Struct({
 export const QueuedPrompt = Schema.Struct({
   id: Schema.String,
   prompt: Schema.String,
+  attachments: Schema.optionalKey(
+    Schema.Array(ThreadAttachment).annotate({ description: "Images waiting with the prompt." }),
+  ),
   queuedAt: timestamp("When the prompt was admitted."),
 }).annotate({
   identifier: "QueuedPrompt",
@@ -1217,9 +1286,75 @@ export class QueuedPromptNotFound extends Schema.TaggedErrorClass<QueuedPromptNo
   }
 }
 
+/** Unknown attachment id on this thread (attachments never cross threads). */
+export class AttachmentNotFound extends Schema.TaggedErrorClass<AttachmentNotFound>()(
+  "AttachmentNotFound",
+  { threadId: Schema.String, attachmentId: Schema.String, message: errorMessage },
+  {
+    identifier: "AttachmentNotFound",
+    description: "No attachment with the given id on this thread.",
+    httpApiStatus: 404,
+  },
+) {
+  constructor(props: { readonly threadId: string; readonly attachmentId: string }) {
+    super({
+      ...props,
+      message: `thread ${props.threadId} has no attachment ${props.attachmentId}`,
+    })
+  }
+}
+
+/** The upload exceeds the per-attachment byte cap. */
+export class AttachmentTooLarge extends Schema.TaggedErrorClass<AttachmentTooLarge>()(
+  "AttachmentTooLarge",
+  { threadId: Schema.String, byteSize: Schema.Int, limit: Schema.Int, message: errorMessage },
+  {
+    identifier: "AttachmentTooLarge",
+    description: `The upload exceeds the per-attachment cap (${ATTACHMENT_MAX_BYTES} bytes); downscale the image and retry.`,
+    httpApiStatus: 413,
+  },
+) {
+  constructor(props: {
+    readonly threadId: string
+    readonly byteSize: number
+    readonly limit: number
+  }) {
+    super({
+      ...props,
+      message: `attachment of ${props.byteSize} bytes exceeds the ${props.limit}-byte limit`,
+    })
+  }
+}
+
+/** The uploaded bytes are not the image the request declared (or are empty). */
+export class AttachmentInvalid extends Schema.TaggedErrorClass<AttachmentInvalid>()(
+  "AttachmentInvalid",
+  { threadId: Schema.String, reason: Schema.String, message: errorMessage },
+  {
+    identifier: "AttachmentInvalid",
+    description:
+      "The body is not a usable image of the declared Content-Type: empty, or its bytes do not carry that format's signature.",
+    httpApiStatus: 422,
+  },
+) {
+  constructor(props: { readonly threadId: string; readonly reason: string }) {
+    super({ ...props, message: props.reason })
+  }
+}
+
 const projectIdParam = { projectId: Schema.String }
 const terminalIdParam = { terminalId: Schema.String }
 const threadIdParam = { threadId: Schema.String }
+const attachmentIdParam = { threadId: Schema.String, attachmentId: Schema.String }
+
+/**
+ * One raw-bytes payload per accepted image type: the router dispatches on the
+ * request's Content-Type, so an unsupported type is a 415 before any byte is
+ * read, and the document lists exactly what the endpoint takes.
+ */
+const attachmentPayloads = ATTACHMENT_MEDIA_TYPES.map((contentType) =>
+  Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array({ contentType })),
+)
 
 export class V1 extends HttpApiGroup.make("v1")
   .add(
@@ -1498,7 +1633,13 @@ export class V1 extends HttpApiGroup.make("v1")
       params: threadIdParam,
       payload: PromptThreadRequest,
       success: PromptThreadResponse,
-      error: [ThreadNotFound, ThreadArchived, ProviderUnavailable, ProviderSessionConflict],
+      error: [
+        ThreadNotFound,
+        ThreadArchived,
+        AttachmentNotFound,
+        ProviderUnavailable,
+        ProviderSessionConflict,
+      ],
     })
       .annotate(OpenApi.Identifier, "promptThread")
       .annotate(
@@ -1594,6 +1735,35 @@ export class V1 extends HttpApiGroup.make("v1")
       .annotate(
         OpenApi.Description,
         "Withdraw a waiting prompt. A prompt that already started is a turn now (404); interrupt the thread instead.",
+      ),
+    // --- Attachments (ATC-216): images a prompt carries ---
+    HttpApiEndpoint.post("createThreadAttachment", "/threads/:threadId/attachments", {
+      params: threadIdParam,
+      query: {
+        name: Schema.optionalKey(
+          Schema.String.annotate({
+            description: 'Display filename; omitted derives one from the type ("image.png").',
+          }),
+        ),
+      },
+      payload: attachmentPayloads,
+      success: ThreadAttachment,
+      error: [ThreadNotFound, ThreadArchived, AttachmentTooLarge, AttachmentInvalid],
+    })
+      .annotate(OpenApi.Identifier, "createThreadAttachment")
+      .annotate(
+        OpenApi.Description,
+        `Upload one image for a later prompt on this thread: the raw bytes as the body, the image type as Content-Type (PNG, JPEG, GIF, or WebP — anything else is 415), at most ${ATTACHMENT_MAX_BYTES} bytes (413 beyond). The bytes are held under the server's data directory for the thread's life and deleted with it; the returned path is stable and readable by any process on the server host. Reference the id in promptThread's attachments (up to ${ATTACHMENTS_PER_PROMPT} per prompt). Nothing is garbage-collected before the thread goes: upload at send time, not ahead of it.`,
+      ),
+    HttpApiEndpoint.get("getThreadAttachment", "/threads/:threadId/attachments/:attachmentId", {
+      params: attachmentIdParam,
+      success: HttpApiSchema.StreamUint8Array(),
+      error: [ThreadNotFound, AttachmentNotFound],
+    })
+      .annotate(OpenApi.Identifier, "getThreadAttachment")
+      .annotate(
+        OpenApi.Description,
+        "The attachment's bytes, as uploaded (served as application/octet-stream; the image type is in the attachment's metadata on the item or queue entry that carries it).",
       ),
     HttpApiEndpoint.get("listAgents", "/agents", { success: AgentList })
       .annotate(OpenApi.Identifier, "listAgents")

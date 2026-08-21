@@ -31,8 +31,8 @@ import { fileChangeTitle, toolOutcome } from "./agentAdapter.ts"
 //     `tool_use_result` (live only — history drops it) supplies the Write
 //     create-vs-update kind and the structured patch rendered as a diff.
 //   - History is grouped into turns at each top-level user message that
-//     carries text (tool_result-only and synthetic messages never open a
-//     turn); the turn id is that message's uuid. A turn whose tool_use never
+//     carries text or an image (tool_result-only and synthetic messages
+//     never open a turn); the turn id is that message's uuid. A turn whose tool_use never
 //     got a result reads as interrupted. getSessionMessages exposes system
 //     entries without their subtype (probed 2026-08-17, still true at SDK
 //     0.3.235), so compaction markers come only from the live
@@ -46,6 +46,9 @@ const FILE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"])
 const MCP_PREFIX = /^mcp__([^_]+(?:_[^_]+)*)__(.+)$/
 
 const TextBlock = Schema.Struct({ type: Schema.Literal("text"), text: Schema.String })
+// An inlined prompt image (ATC-216): history carries no ATC attachment id,
+// so the block only marks a user message as a prompt.
+const ImageBlock = Schema.Struct({ type: Schema.Literal("image") })
 const ThinkingBlock = Schema.Struct({ type: Schema.Literal("thinking"), thinking: Schema.String })
 const ToolUseBlock = Schema.Struct({
   type: Schema.Literal("tool_use"),
@@ -59,7 +62,13 @@ const ToolResultBlock = Schema.Struct({
   content: Schema.optional(Schema.Unknown),
   is_error: Schema.optional(Schema.Boolean),
 })
-const ContentBlock = Schema.Union([TextBlock, ThinkingBlock, ToolUseBlock, ToolResultBlock])
+const ContentBlock = Schema.Union([
+  TextBlock,
+  ImageBlock,
+  ThinkingBlock,
+  ToolUseBlock,
+  ToolResultBlock,
+])
 type ContentBlock = typeof ContentBlock.Type
 const decodeBlock = Schema.decodeUnknownOption(ContentBlock)
 
@@ -380,10 +389,13 @@ export const permissionResult = (
 // --- History ----------------------------------------------------------------
 
 /** The user-text test that opens a turn: string content, or a text block. */
+/** The prompt of a top-level user message: its text, "" for an image-only
+ * prompt, null when it is no prompt at all (tool results, synthetic). */
 const userText = (content: unknown): string | null => {
   const blocks = contentBlocks(content)
   const texts = blocks.flatMap((block) => (block.type === "text" ? [block.text] : []))
-  return texts.length === 0 ? null : texts.join("\n")
+  if (texts.length > 0) return texts.join("\n")
+  return blocks.some((block) => block.type === "image") ? "" : null
 }
 
 const messageTimestamp = (message: SessionMessage): string | undefined => {

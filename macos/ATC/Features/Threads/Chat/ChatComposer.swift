@@ -13,14 +13,23 @@
 // turn. The composer autofocuses on appear unless a request is pending (a
 // bar card or an inline row) — answering the agent owns the keyboard until
 // it is done.
+//
+// Images (ATC-216) arrive by paste (the text view declines an image-only
+// pasteboard, so the paste command reaches us), drop, or the Attach button
+// (⌘⇧A); each is fitted to the server's caps at once
+// (`ImageAttachmentEncoder`) and held as bytes until send. A prompt may be
+// images alone.
 
 import ATCAppServerAPI
+import ATCChat
 import ATCDesign
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ChatComposer: View {
     @Binding var text: String
+    @Binding var attachments: [PendingAttachment]
     let thread: ATCThread
     /// The agent's model catalog, nil until read (the chip shows the raw id).
     let models: [AgentModel]?
@@ -40,18 +49,41 @@ struct ChatComposer: View {
 
     @FocusState private var isFocused: Bool
     @State private var editorHeight: CGFloat = 24
+    /// The last image that could not be attached (unreadable, too many).
+    @State private var attachmentError: String?
+    @State private var isPicking = false
+    @State private var isDropTargeted = false
+
+    private static let imageTypes: [UTType] = [.image, .fileURL]
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.sm) {
-            if let error {
+            if let error = error ?? attachmentError {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .font(.callout)
                     .foregroundStyle(.orange)
                     .textSelection(.enabled)
             }
             VStack(alignment: .leading, spacing: Spacing.sm) {
+                if !attachments.isEmpty {
+                    AttachmentStrip(images: attachments.map { .local($0) }) { image in
+                        attachments.removeAll { $0.id.uuidString == image.id }
+                    }
+                }
                 editor
                 HStack(spacing: Spacing.sm) {
+                    Button {
+                        isPicking = true
+                    } label: {
+                        Image(systemName: "paperclip")
+                            .font(.body.weight(.medium))
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .keyboardShortcut("a", modifiers: [.command, .shift])
+                    .help("Attach image… (⌘⇧A)")
+                    .accessibilityLabel("Attach image")
                     ChatSettingsControls(
                         thread: thread, models: models, modelsError: modelsError,
                         update: updateSettings, reloadModels: reloadModels
@@ -87,11 +119,55 @@ struct ChatComposer: View {
             // The composer floats over the transcript, so it is glass like
             // the toolbar controls, not a card on the canvas.
             .glassEffect(in: RoundedRectangle(cornerRadius: Radius.card + Spacing.xs))
+            .overlay {
+                if isDropTargeted {
+                    RoundedRectangle(cornerRadius: Radius.card + Spacing.xs)
+                        .strokeBorder(Color.accentColor, lineWidth: 2)
+                }
+            }
         }
+        .onDrop(of: Self.imageTypes, isTargeted: $isDropTargeted) { providers in
+            Task { attach(await ImagePasteboard.images(from: providers)) }
+            return true
+        }
+        .fileImporter(
+            isPresented: $isPicking, allowedContentTypes: [.image], allowsMultipleSelection: true,
+            onCompletion: attachPicked
+        )
         .onAppear {
             if !yieldsFocus { isFocused = true }
         }
         .onChange(of: focusRequest) { _, _ in isFocused = true }
+    }
+
+    private func attachPicked(_ result: Result<[URL], any Error>) {
+        guard case .success(let urls) = result else { return }
+        Task { attach(await Task.detached { urls.compactMap(ImagePasteboard.image(at:)) }.value) }
+    }
+
+    /// Fits each image to the caps — off the main actor, since a large
+    /// image decodes and re-encodes for a while — and appends it, up to the
+    /// per-prompt limit; the first failure is reported inline and the rest
+    /// still land.
+    private func attach(_ images: [ImagePasteboard.Image]) {
+        guard !images.isEmpty else { return }
+        attachmentError = nil
+        Task {
+            for image in images {
+                guard attachments.count < ImageAttachmentEncoder.maxPerPrompt else {
+                    attachmentError = "At most \(ImageAttachmentEncoder.maxPerPrompt) images per message."
+                    return
+                }
+                do {
+                    let prepared = try await Task.detached {
+                        try ImageAttachmentEncoder.prepare(image.data, name: image.name)
+                    }.value
+                    attachments.append(prepared)
+                } catch {
+                    attachmentError = "\(image.name ?? "Image"): \(error.localizedDescription)"
+                }
+            }
+        }
     }
 
     /// A TextEditor sized by the text behind it: it starts three lines tall
@@ -118,6 +194,11 @@ struct ChatComposer: View {
                 .scrollIndicators(.never)
                 .focused($isFocused)
                 .frame(height: editorHeight)
+                // The text view handles any paste it can read (text); an
+                // image-only pasteboard falls through to this.
+                .onPasteCommand(of: Self.imageTypes) { _ in
+                    attach(ImagePasteboard.images(from: .general))
+                }
                 .onKeyPress(.return, phases: .down) { press in
                     guard !press.modifiers.contains(.shift) else { return .ignored }
                     // Mid-IME composition, Return commits the marked text.
@@ -144,7 +225,7 @@ struct ChatComposer: View {
                     return .handled
                 }
             if text.isEmpty {
-                Text("Message the agent…")
+                Text(attachments.isEmpty ? "Message the agent…" : "Add a message, or send the images…")
                     .foregroundStyle(.tertiary)
                     .padding(.vertical, Spacing.xs)
                     .padding(.horizontal, Spacing.xs + 1)
@@ -154,7 +235,7 @@ struct ChatComposer: View {
     }
 
     private var canSend: Bool {
-        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
     }
 
     /// The focused editor holds uncommitted IME marked text.

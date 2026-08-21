@@ -25,6 +25,8 @@ import * as Tailscale from "../src/platform/tailscale.ts"
 import type { TerminalAdapter } from "../src/terminals/terminalAdapter.ts"
 import * as TerminalRepository from "../src/terminals/terminalRepository.ts"
 import * as Terminals from "../src/terminals/terminals.ts"
+import * as AttachmentRepository from "../src/threads/attachmentRepository.ts"
+import * as Attachments from "../src/threads/attachments.ts"
 import * as ThreadRepository from "../src/threads/threadRepository.ts"
 import * as ThreadNaming from "../src/threads/threadNaming.ts"
 import * as ThreadRuntime from "../src/threads/threadRuntime.ts"
@@ -72,6 +74,9 @@ export const TestTailscaleLayer = Layer.succeed(Tailscale.Tailscale)({
 })
 
 /** A settled AppConfig for tests that only need a few fields overridden. */
+/** One scratch data directory per test process: attachments write under it. */
+const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "atc-test-data-"))
+
 export const testAppConfig = (overrides: Partial<AppConfig["Service"]>): Layer.Layer<AppConfig> =>
   Layer.succeed(AppConfig)({
     port: 0,
@@ -82,7 +87,7 @@ export const testAppConfig = (overrides: Partial<AppConfig["Service"]>): Layer.L
     logLevel: "Info",
     configFile: "/dev/null",
     home: os.homedir(),
-    dataDir: "/tmp",
+    dataDir: testDataDir,
     stateDir: "/tmp",
     dbFile: "/tmp/atc.db",
     tokenFile: "/tmp/atc-auth-token",
@@ -123,6 +128,7 @@ export const makeTestServiceLayers = (
     | Terminals.Terminals
     | Threads.Threads
     | ThreadRuntime.ThreadRuntime
+    | Attachments.Attachments
     | TranscriptRepository.TranscriptRepository
     | Projects.Projects
     | AgentRegistry.AgentRegistry
@@ -146,6 +152,7 @@ export const makeTestServiceLayers = (
     TerminalRepository.layer,
     ThreadRepository.layer,
     TranscriptRepository.layer,
+    AttachmentRepository.layer,
     AgentDefaultsRepository.layer,
     // Merged, not just provided: Threads holds the SqlClient for its
     // settings write-through transaction.
@@ -153,6 +160,9 @@ export const makeTestServiceLayers = (
   const services = Layer.mergeAll(
     base,
     Directories.layer.pipe(Layer.provide(testAppConfig(configOverrides))),
+    Attachments.layer.pipe(
+      Layer.provide([base, testAppConfig(configOverrides), BunServices.layer]),
+    ),
     fake.layer,
     ClaudeHooks.layer,
   )

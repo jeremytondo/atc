@@ -1,5 +1,7 @@
 import ATCAppServerAPI
+import ATCChat
 import Foundation
+import OpenAPIRuntime
 
 @testable import ATC
 
@@ -52,7 +54,9 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         /// While set, promptThread fails 503 with this payload.
         var promptThreadFailure: Components.Schemas.ProviderUnavailableJsonEncoding?
         var transcriptReads: [(threadID: String, before: String?)] = []
-        var prompts: [(threadID: String, prompt: String)] = []
+        var prompts: [(threadID: String, prompt: String, attachments: [String]?)] = []
+        /// Uploads received, in order, with the bytes as sent.
+        var uploads: [(threadID: String, attachment: Components.Schemas.ThreadAttachment, bytes: Data)] = []
         var answers: [(threadID: String, requestID: String, answer: ThreadRequestAnswer)] = []
         var withdrawnPrompts: [(threadID: String, promptID: String)] = []
         var interruptCount = 0
@@ -223,7 +227,10 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
     var openThreadTerminalCount: Int { lock.withLock { state.openThreadTerminalCount } }
     var markThreadViewedCount: Int { lock.withLock { state.markThreadViewedCount } }
     var transcriptReads: [(threadID: String, before: String?)] { lock.withLock { state.transcriptReads } }
-    var prompts: [(threadID: String, prompt: String)] { lock.withLock { state.prompts } }
+    var prompts: [(threadID: String, prompt: String, attachments: [String]?)] { lock.withLock { state.prompts } }
+    var uploads: [(threadID: String, attachment: Components.Schemas.ThreadAttachment, bytes: Data)] {
+        lock.withLock { state.uploads }
+    }
     var answers: [(threadID: String, requestID: String, answer: ThreadRequestAnswer)] {
         lock.withLock { state.answers }
     }
@@ -785,11 +792,69 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         let id = input.path.threadId
         return mutate { model -> Operations.PromptThread.Output in
             guard model.threads.contains(where: { $0.id == id }) else {
-                return .notFound(.init(body: .json(threadNotFound(id))))
+                return .notFound(.init(body: .json(.init(value1: threadNotFound(id)))))
             }
-            model.prompts.append((id, request.prompt))
+            model.prompts.append((id, request.prompt, request.attachments))
             return .ok(.init(body: .json(.init(promptId: model.nextID("prm"), turnId: model.nextID("turn")))))
         }
+    }
+
+    func createThreadAttachment(_ input: Operations.CreateThreadAttachment.Input) async throws
+        -> Operations.CreateThreadAttachment.Output
+    {
+        let (mediaType, body): (Components.Schemas.AttachmentMediaType, HTTPBody) =
+            switch input.body {
+            case .png(let body): (.imagePng, body)
+            case .jpeg(let body): (.imageJpeg, body)
+            case .imageGif(let body): (.imageGif, body)
+            case .imageWebp(let body): (.imageWebp, body)
+            }
+        // Collect just past the server's cap so an oversized body is the
+        // documented 413, never a stored upload.
+        let cap = ImageAttachmentEncoder.maxBytes
+        let bytes = try await Data(collecting: body, upTo: cap + 1)
+        try await gate()
+        let id = input.path.threadId
+        return mutate { model -> Operations.CreateThreadAttachment.Output in
+            guard model.threads.contains(where: { $0.id == id }) else {
+                return .notFound(.init(body: .json(threadNotFound(id))))
+            }
+            guard bytes.count <= cap else {
+                return .contentTooLarge(
+                    .init(
+                        body: .json(
+                            .init(
+                                _tag: .attachmentTooLarge, threadId: id, byteSize: bytes.count, limit: cap,
+                                message: "attachment of \(bytes.count) bytes exceeds the \(cap)-byte limit"))))
+            }
+            let attachmentID = model.nextID("att")
+            let attachment = Components.Schemas.ThreadAttachment(
+                id: attachmentID, name: input.query.name ?? "image", mediaType: mediaType,
+                byteSize: bytes.count, path: "/data/attachments/\(id)/\(attachmentID)", createdAt: model.tick())
+            model.uploads.append((id, attachment, bytes))
+            return .ok(.init(body: .json(attachment)))
+        }
+    }
+
+    func getThreadAttachment(_ input: Operations.GetThreadAttachment.Input) async throws
+        -> Operations.GetThreadAttachment.Output
+    {
+        try await gate()
+        let upload = mutate { model in
+            model.uploads.first {
+                $0.threadID == input.path.threadId && $0.attachment.id == input.path.attachmentId
+            }
+        }
+        guard let upload else {
+            return .notFound(
+                .init(
+                    body: .json(
+                        .init(
+                            value2: .init(
+                                _tag: .attachmentNotFound, threadId: input.path.threadId,
+                                attachmentId: input.path.attachmentId, message: "No attachment")))))
+        }
+        return .ok(.init(body: .binary(HTTPBody(upload.bytes))))
     }
 
     /// Serves the seeded page for the thread; a `before` cursor reads as an

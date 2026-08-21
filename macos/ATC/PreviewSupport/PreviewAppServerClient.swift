@@ -541,6 +541,25 @@ import OpenAPIRuntime
             .ok(.init(body: .json(.init(items: [], turns: [], seq: 0, snapshotVersion: 0, hasMore: false))))
         }
 
+        func createThreadAttachment(
+            _ input: Operations.CreateThreadAttachment.Input
+        ) async throws -> Operations.CreateThreadAttachment.Output {
+            .ok(
+                .init(
+                    body: .json(
+                        .init(
+                            id: "0192f4c0-0000-7000-8000-00000000a001", name: input.query.name ?? "image.png",
+                            mediaType: .imagePng, byteSize: 0,
+                            path: "/Users/dev/.local/share/atc/attachments/\(input.path.threadId)/a001.png",
+                            createdAt: Date()))))
+        }
+
+        func getThreadAttachment(
+            _ input: Operations.GetThreadAttachment.Input
+        ) async throws -> Operations.GetThreadAttachment.Output {
+            throw PreviewUnavailable()
+        }
+
         func subscribeThreadEvents(
             _ input: Operations.SubscribeThreadEvents.Input
         ) async throws -> Operations.SubscribeThreadEvents.Output {

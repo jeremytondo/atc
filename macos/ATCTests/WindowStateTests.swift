@@ -517,13 +517,13 @@ struct WindowStateTests {
         let ref = test.threadRef("thr1")
         let other = test.threadRef("thr2")
 
-        test.model.setDraft("unfinished prompt", for: ref)
-        #expect(test.model.draft(for: ref) == "unfinished prompt")
-        #expect(test.model.draft(for: other) == "")
+        test.model.setDraft(ComposerDraft(text: "unfinished prompt"), for: ref)
+        #expect(test.model.draft(for: ref).text == "unfinished prompt")
+        #expect(test.model.draft(for: other).isEmpty)
         test.model.setViewMode(.tui, for: ref)
         test.model.setViewMode(.chat, for: ref)
-        #expect(test.model.draft(for: ref) == "unfinished prompt")
-        test.model.setDraft("", for: ref)
+        #expect(test.model.draft(for: ref).text == "unfinished prompt")
+        test.model.setDraft(ComposerDraft(), for: ref)
         #expect(test.model.threadDrafts[ref] == nil)
     }
 

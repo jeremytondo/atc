@@ -228,6 +228,19 @@ struct ChatTranscriptTests {
         #expect(transcript.pendingPrompts.isEmpty)
     }
 
+    @Test("two image-only echoes are never told apart by their empty text")
+    func imageOnlyEchoesWaitForIds() {
+        var transcript = loaded()
+        let image = PendingAttachment(data: Data([1, 2, 3]), mediaType: .imagePng, name: "a.png")
+        _ = transcript.addPending("", attachments: [image])
+        _ = transcript.addPending("", attachments: [image])
+        let mutation = transcript.apply(
+            .item_completed(
+                .init(_type: .item_completed, seq: 11, item: Fixtures.userMessage("m1", turn: "t1", text: ""))))
+        #expect(mutation == .structure)
+        #expect(transcript.pendingPrompts.count == 2)
+    }
+
     @Test("a userMessage that outruns the send response settles the echo by text, as a handoff")
     func pendingSettlesByTextBeforeResponse() {
         var transcript = loaded()

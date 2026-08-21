@@ -1,6 +1,5 @@
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import { SqlClient, SqlSchema } from "effect/unstable/sql"
-import type * as Contract from "../api/contract.ts"
 import { ThreadItem, ThreadTurn } from "../api/contract.ts"
 import type { HistoryTurn } from "../agents/agentAdapter.ts"
 
@@ -36,11 +35,23 @@ import type { HistoryTurn } from "../agents/agentAdapter.ts"
 //     way, and `replace` carries both forward by item id — a re-read must
 //     not re-date what ATC already dated. The stamped values live in the
 //     item JSON (and mirrored in columns for the carry-forward lookup), so
-//     every read serves them.
+//     every read serves them. A prompt's attachments (ATC-216) carry
+//     forward too, keyed by TURN id and the prompt's ordinal within the
+//     turn: providers re-number items on a history read (Codex
+//     positionally, Claude per message) and none echoes ATC's attachment
+//     ids, but Codex turn ids are stable — Claude's are not, so its re-read
+//     loses them (documented on the contract).
 
 export type ThreadTurnRecord = typeof ThreadTurn.Type
 export type ThreadItemRecord = typeof ThreadItem.Type
-export type QueuedPromptRecord = typeof Contract.QueuedPrompt.Type
+/** A waiting prompt as stored: the attachment ids, not the attachments —
+ * the runtime resolves them (attachments.ts) when it lists or starts one. */
+export interface QueuedPromptRecord {
+  readonly id: string
+  readonly prompt: string
+  readonly attachmentIds: ReadonlyArray<string>
+  readonly queuedAt: string
+}
 export type TurnSource = "native" | "observed" | "history"
 
 /** One replayable change: the row's current state at the seq that last touched it. */
@@ -87,9 +98,14 @@ const QueueRow = Schema.Struct({
   id: Schema.String,
   thread_id: Schema.String,
   prompt: Schema.String,
+  /** JSON array of attachment ids ('[]' for none). */
+  attachments: Schema.String,
   queued_at: Schema.String,
   started_turn_id: Schema.NullOr(Schema.String),
 })
+const AttachmentIds = Schema.fromJsonString(Schema.Array(Schema.String))
+const decodeAttachmentIds = Schema.decodeSync(AttachmentIds)
+const encodeAttachmentIds = Schema.encodeSync(AttachmentIds)
 
 const CountersRow = Schema.Struct({
   transcript_seq: Schema.Number,
@@ -109,8 +125,25 @@ const toTurn = (row: typeof TurnRow.Type): ThreadTurnRecord => ({
 const toQueued = (row: typeof QueueRow.Type): QueuedPromptRecord => ({
   id: row.id,
   prompt: row.prompt,
+  attachmentIds: decodeAttachmentIds(row.attachments),
   queuedAt: row.queued_at,
 })
+
+type UserMessageRecord = Extract<ThreadItemRecord, { type: "userMessage" }>
+type AttachmentList = NonNullable<UserMessageRecord["attachments"]>
+
+/** The images ATC attached, per turn in prompt order, as the stored copy
+ * holds them — what a re-read must not lose (ATC-216, the header). */
+const attachmentsByTurn = (
+  items: ReadonlyArray<ThreadItemRecord>,
+): Map<string, Array<AttachmentList>> => {
+  const byTurn = new Map<string, Array<AttachmentList>>()
+  for (const item of items) {
+    if (item.type !== "userMessage" || item.attachments === undefined) continue
+    byTurn.set(item.turnId, [...(byTurn.get(item.turnId) ?? []), item.attachments])
+  }
+  return byTurn
+}
 
 /** The stamped finish of a tool item; undefined for non-tool items. */
 const itemCompletedAt = (item: ThreadItemRecord): string | undefined => {
@@ -226,8 +259,12 @@ export class TranscriptRepository extends Context.Service<
       threadId: string,
       history: ReadonlyArray<HistoryTurn>,
     ) => Effect.Effect<TranscriptCounters>
-    /** Admit a prompt to the queue. */
-    readonly enqueue: (threadId: string, prompt: string) => Effect.Effect<QueuedPromptRecord>
+    /** Admit a prompt to the queue, with the ids of the attachments it carries. */
+    readonly enqueue: (
+      threadId: string,
+      prompt: string,
+      attachmentIds: ReadonlyArray<string>,
+    ) => Effect.Effect<QueuedPromptRecord>
     /** Prompts still waiting, oldest first. */
     readonly listWaiting: (threadId: string) => Effect.Effect<ReadonlyArray<QueuedPromptRecord>>
     /** The oldest waiting prompt (None when nothing waits). */
@@ -293,6 +330,18 @@ export const layer = Layer.effect(TranscriptRepository)(
       }),
       execute: (threadId) => sql`
         SELECT item_id, created_at, completed_at FROM thread_items WHERE thread_id = ${threadId}
+      `,
+    })
+
+    // The userMessage items carrying attachments, in transcript order, for
+    // replace's carry-forward.
+    const attachedItemRows = SqlSchema.findAll({
+      Request: Schema.String,
+      Result: Schema.Struct({ item: Schema.String }),
+      execute: (threadId) => sql`
+        SELECT item FROM thread_items
+        WHERE thread_id = ${threadId} AND json_extract(item, '$.attachments') IS NOT NULL
+        ORDER BY ord ASC
       `,
     })
 
@@ -623,15 +672,30 @@ export const layer = Layer.effect(TranscriptRepository)(
                   { created_at: row.created_at, completed_at: row.completed_at },
                 ]),
               )
+              const attached = attachmentsByTurn(
+                (yield* attachedItemRows(threadId)).map((row) => decodeItem(row.item)),
+              )
               const now = new Date().toISOString()
               yield* clearItems(threadId)
               yield* clearTurns(threadId)
               for (const entry of history) {
                 const turnSeq = yield* nextSeq(threadId)
                 yield* upsertTurnRows(turnRow(threadId, entry.turn, turnSeq, "history"))
+                // The turn's prompts, oldest first, take back the stored
+                // images in the same order (history names no ATC ids).
+                const turnAttachments = attached.get(entry.turn.id) ?? []
+                let promptIndex = 0
                 for (const item of entry.items) {
                   const itemSeq = yield* nextSeq(threadId)
-                  const stamped = stampItem(item, carried.get(item.id), now)
+                  const restore =
+                    item.type === "userMessage" && item.attachments === undefined
+                      ? turnAttachments[promptIndex++]
+                      : undefined
+                  const restored: ThreadItemRecord =
+                    item.type === "userMessage" && restore !== undefined
+                      ? { ...item, attachments: restore }
+                      : item
+                  const stamped = stampItem(restored, carried.get(item.id), now)
                   yield* upsertItemRow(itemRow(threadId, stamped, itemSeq))
                 }
               }
@@ -643,12 +707,13 @@ export const layer = Layer.effect(TranscriptRepository)(
             }),
           )
           .pipe(Effect.orDie),
-      enqueue: (threadId, prompt) =>
+      enqueue: (threadId, prompt, attachmentIds) =>
         Effect.suspend(() => {
           const row: typeof QueueRow.Type = {
             id: Bun.randomUUIDv7(),
             thread_id: threadId,
             prompt,
+            attachments: encodeAttachmentIds(attachmentIds),
             queued_at: new Date().toISOString(),
             started_turn_id: null,
           }

@@ -48,7 +48,7 @@ const settledThread = (layerKit: typeof kit, agentId: "claude-code" | "codex", p
     const fake = agentId === "claude-code" ? layerKit.fakeAgents.claude : layerKit.fakeAgents.codex
     const project = yield* projects.create({ name: "Residency", defaultWorkingDirectory: realDir })
     const thread = yield* threads.create({ projectId: project.id, agentId })
-    const started = yield* runtime.prompt(thread.id, prompt)
+    const started = yield* runtime.prompt(thread.id, { prompt: prompt })
     assert.isString(started.turnId)
     const record = yield* repository.require(thread.id)
     const sessionId = record.providerSessionId ?? ""
@@ -71,7 +71,7 @@ describe("Resident writer connections", () => {
       assert.isTrue(yield* runtime.hasWriter(threadId))
       assert.strictEqual(opened(claude, sessionId), 1)
 
-      const second = yield* runtime.prompt(threadId, "second")
+      const second = yield* runtime.prompt(threadId, { prompt: "second" })
       assert.isString(second.turnId)
       // startTurn twice on the same connection: no resume, no new process.
       assert.deepStrictEqual(claude.sessions.get(sessionId)?.inputs, ["first", "second"])
@@ -92,9 +92,9 @@ describe("Resident writer connections", () => {
     Effect.gen(function* () {
       const runtime = yield* ThreadRuntime
       const { threadId, sessionId } = yield* settledThread(kit, "claude-code")
-      const running = yield* runtime.prompt(threadId, "running")
+      const running = yield* runtime.prompt(threadId, { prompt: "running" })
       assert.isString(running.turnId)
-      const queued = yield* runtime.prompt(threadId, "queued")
+      const queued = yield* runtime.prompt(threadId, { prompt: "queued" })
       assert.isUndefined(queued.turnId)
       claude.completeTurn(sessionId, "completed")
       yield* waitFor(
@@ -124,7 +124,7 @@ describe("Resident writer connections", () => {
         )
         // Our own connection's busy is not "another surface": a prompt
         // starts on it at once rather than queueing behind it.
-        const started = yield* runtime.prompt(threadId, "while background runs")
+        const started = yield* runtime.prompt(threadId, { prompt: "while background runs" })
         assert.isString(started.turnId)
         claude.completeTurn(sessionId, "completed")
         yield* waitFor(
@@ -163,7 +163,7 @@ describe("Resident writer connections", () => {
         // same session — the writer count on that session was 1 until now.
         yield* threads.closeTerminal(threadId)
         assert.isFalse(terminalAlive(terminal.id))
-        const started = yield* runtime.prompt(threadId, "back to chat")
+        const started = yield* runtime.prompt(threadId, { prompt: "back to chat" })
         assert.isString(started.turnId)
         assert.strictEqual(opened(claude, sessionId), 2)
         assert.deepStrictEqual(claude.sessions.get(sessionId)?.inputs, ["first", "back to chat"])
@@ -187,7 +187,7 @@ describe("Resident writer connections", () => {
       // Native wins: the prompt ends the TUI and resumes; the TUI comes back
       // at the run's end because it is still wanted, so the resident
       // connection does not survive this turn.
-      const started = yield* runtime.prompt(threadId, "native again")
+      const started = yield* runtime.prompt(threadId, { prompt: "native again" })
       assert.isString(started.turnId)
       assert.isFalse(terminalAlive(terminal.id))
       claude.completeTurn(sessionId, "completed")
@@ -209,9 +209,9 @@ describe("Resident writer connections", () => {
       // the connection closes and the feed ends — synchronously, before
       // the runtime has seen either — with a prompt already queued behind
       // the turn.
-      const started = yield* runtime.prompt(threadId, "stop me")
+      const started = yield* runtime.prompt(threadId, { prompt: "stop me" })
       assert.isString(started.turnId)
-      const queued = yield* runtime.prompt(threadId, "and again")
+      const queued = yield* runtime.prompt(threadId, { prompt: "and again" })
       assert.isUndefined(queued.turnId)
       claude.completeTurn(sessionId, "interrupted")
       claude.endConnection(sessionId)
@@ -244,7 +244,7 @@ describe("Resident writer connections", () => {
       claude.endConnection(sessionId)
       yield* waitFor(runtime.hasWriter(threadId), (held) => !held)
       assert.strictEqual((yield* threads.get(threadId)).activityState, "idle")
-      const again = yield* runtime.prompt(threadId, "once more")
+      const again = yield* runtime.prompt(threadId, { prompt: "once more" })
       assert.isString(again.turnId)
       assert.strictEqual(opened(claude, sessionId), 3)
       claude.completeTurn(sessionId, "completed")
@@ -269,7 +269,7 @@ describe("Resident writer connections", () => {
       const { threadId, sessionId } = yield* settledThread(kit, "codex")
       yield* waitFor(runtime.hasWriter(threadId), (driving) => !driving)
       assert.isFalse(codex.isConnected(sessionId))
-      const second = yield* runtime.prompt(threadId, "second")
+      const second = yield* runtime.prompt(threadId, { prompt: "second" })
       assert.isString(second.turnId)
       assert.strictEqual(opened(codex, sessionId), 2)
       codex.completeTurn(sessionId, "completed")
@@ -289,7 +289,7 @@ describe("Resident writer connections", () => {
             (connected) => !connected,
           )
           assert.isFalse(yield* runtime.hasWriter(threadId))
-          const started = yield* runtime.prompt(threadId, "after the timeout")
+          const started = yield* runtime.prompt(threadId, { prompt: "after the timeout" })
           assert.isString(started.turnId)
           assert.strictEqual(opened(fake, sessionId), 2)
           assert.deepStrictEqual(fake.sessions.get(sessionId)?.inputs, [

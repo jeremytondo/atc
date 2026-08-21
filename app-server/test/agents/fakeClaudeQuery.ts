@@ -94,6 +94,8 @@ export interface FakeClaudeQuery {
   readonly controls: Array<string>
   /** The query() options each spawn received, in order. */
   readonly spawns: Array<Record<string, unknown>>
+  /** The user message content each prompt pushed (string, or content blocks). */
+  readonly prompts: Array<unknown>
   /**
    * Fire one hook event into the most recent query's registered callbacks
    * with a scripted payload (session_id filled in) — how tests replay
@@ -108,6 +110,7 @@ export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeC
   const interrupts: Array<string> = []
   const controls: Array<string> = []
   const spawns: Array<Record<string, unknown>> = []
+  const prompts: Array<unknown> = []
   let lastFire: ((eventName: string, payload?: Record<string, unknown>) => Promise<void>) | null =
     null
 
@@ -344,7 +347,13 @@ export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeC
     void (async () => {
       for await (const message of args.prompt) {
         const content = (message as SDKUserMessage).message.content
-        await runTurn(typeof content === "string" ? content : JSON.stringify(content))
+        prompts.push(content)
+        // Keyword behavior keys off the text blocks; image blocks ride along.
+        const text =
+          typeof content === "string"
+            ? content
+            : content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n")
+        await runTurn(text)
         if (done) return
       }
     })()
@@ -416,6 +425,7 @@ export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeC
     decisions,
     interrupts,
     controls,
+    prompts,
     spawns,
     fireHook: (eventName, payload) => {
       if (lastFire === null) throw new Error("no query started yet")

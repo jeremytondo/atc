@@ -69,7 +69,12 @@ import SwiftUI
                     .userMessage(
                         .init(
                             _type: .userMessage, id: "u1", turnId: "t1",
-                            createdAt: date(0), text: "Render **markdown** properly, please.")),
+                            createdAt: date(0), text: "Render **markdown** properly, please.",
+                            attachments: [
+                                .init(
+                                    id: "a1", name: "comp.png", mediaType: .imagePng, byteSize: 2048,
+                                    path: "/Users/dev/.local/share/atc/attachments/t/a1.png", createdAt: date(0))
+                            ])),
                     .reasoning(
                         .init(
                             _type: .reasoning, id: "r1", turnId: "t1",

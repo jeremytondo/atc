@@ -2,7 +2,7 @@ import { BunHttpServer } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
 import { HttpMiddleware, HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
-import { Api } from "./api/contract.ts"
+import { Api, ATTACHMENT_MAX_BYTES } from "./api/contract.ts"
 import * as AdminUi from "./adminUi/adminUi.ts"
 import * as AgentDefaultsRepository from "./agents/agentDefaultsRepository.ts"
 import * as AgentRegistry from "./agents/agentRegistry.ts"
@@ -23,6 +23,8 @@ import * as ProjectRepository from "./projects/projectRepository.ts"
 import * as Projects from "./projects/projects.ts"
 import * as TerminalRepository from "./terminals/terminalRepository.ts"
 import * as Terminals from "./terminals/terminals.ts"
+import * as AttachmentRepository from "./threads/attachmentRepository.ts"
+import * as Attachments from "./threads/attachments.ts"
 import * as ThreadRepository from "./threads/threadRepository.ts"
 import * as ThreadNaming from "./threads/threadNaming.ts"
 import * as ThreadRuntime from "./threads/threadRuntime.ts"
@@ -111,6 +113,10 @@ export const layer = (options: { readonly port: number; readonly hostname?: stri
         // long grace period turns every shutdown after a terminal attach
         // into a hang. Requests are local and short; two seconds is plenty.
         gracefulShutdownTimeout: "2 seconds",
+        // The largest body the API takes is one attachment (ATC-216); Bun
+        // refuses anything far beyond it before a byte is buffered, while
+        // the typed 413 still answers uploads just over the cap.
+        maxRequestBodySize: 2 * ATTACHMENT_MAX_BYTES,
         // Bun's default idleTimeout (10 s) counts a request that has not yet
         // written response bytes as idle, which severs openThreadTerminal
         // mid-materialization — a cold provider launch legitimately runs up
@@ -143,6 +149,9 @@ export const production = (options: { readonly port: number; readonly hostname?:
     Layer.provide(ThreadTui.layer),
     Layer.provide(Terminals.layer),
     Layer.provide(ThreadNaming.layer),
+    // Attachments serve the handlers, Threads (delete purges blobs), and the
+    // runtime (a prompt's images), so it sits below all three.
+    Layer.provide(Attachments.layer),
     Layer.provide(AgentRegistry.layer),
     // Below Terminals (the deepest publisher) so one memoized Events instance
     // serves every domain service, the handlers, and the shutdown drain.
@@ -154,6 +163,7 @@ export const production = (options: { readonly port: number; readonly hostname?:
       TerminalRepository.layer,
       ThreadRepository.layer,
       TranscriptRepository.layer,
+      AttachmentRepository.layer,
       AgentDefaultsRepository.layer,
       Directories.layer,
       Zmx.layer,

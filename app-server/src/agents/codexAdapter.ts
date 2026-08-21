@@ -30,9 +30,11 @@ import type {
   EstablishedIdentity,
   ProviderSettings,
   ThreadAccess,
+  ThreadAttachment,
   ThreadItem,
   ThreadRequest,
   ThreadSettings,
+  TurnInput,
 } from "./agentAdapter.ts"
 import {
   AgentResumeFailed,
@@ -471,6 +473,9 @@ interface LiveSession {
   readonly toolItems: Map<string, ThreadItem>
   /** Parked requests by request id, closed with their turn. */
   readonly pendingRequests: Map<string, PendingRequest>
+  /** The attachments this client sent, by the localImage path it named, so
+   * the provider's echo of the prompt maps back to them (ATC-216). */
+  readonly attachmentsByPath: Map<string, ThreadAttachment>
   /** Set when the transport died underneath the session (vs. caller close). */
   failed: boolean
   /** The settings baseline: what the session runs with, as last echoed
@@ -480,6 +485,16 @@ interface LiveSession {
 
 /** Reserves the active-turn slot between the local check and the RPC reply. */
 const PENDING_TURN = "(pending)"
+
+/** The turn input in the protocol's shape: the text, then each image as a
+ * `localImage` the app-server reads from the shared host (ATC-216). */
+const turnInputBlocks = (input: TurnInput) => [
+  ...(input.text === "" ? [] : [{ type: "text" as const, text: input.text }]),
+  ...input.attachments.map((attachment) => ({
+    type: "localImage" as const,
+    path: attachment.path,
+  })),
+]
 
 interface PendingReply {
   readonly succeed: (result: unknown) => void
@@ -916,11 +931,13 @@ export const layer = Layer.effect(CodexAdapter)(
         const decoded = decodeItemNotification(params)
         if (Option.isNone(decoded)) return
         const phase = message.method === "item/started" ? "started" : "completed"
-        const item = CodexItems.mapItem(decoded.value.item, decoded.value.turnId, phase)
+        const session = sessions.get(decoded.value.threadId)
+        const item = CodexItems.mapItem(decoded.value.item, decoded.value.turnId, phase, (path) =>
+          session?.attachmentsByPath.get(path),
+        )
         if (item === null) return
         const event: AgentItemEvent =
           phase === "started" ? { type: "itemStarted", item } : { type: "itemCompleted", item }
-        const session = sessions.get(decoded.value.threadId)
         if (session !== undefined) {
           if ("status" in item) session.toolItems.set(item.id, item)
           emit(session, event)
@@ -1198,6 +1215,7 @@ export const layer = Layer.effect(CodexAdapter)(
           ownTurn: null,
           toolItems: new Map(),
           pendingRequests: new Map(),
+          attachmentsByPath: new Map(),
           failed: false,
           live,
         }
@@ -1271,9 +1289,12 @@ export const layer = Layer.effect(CodexAdapter)(
               session.activeTurn = PENDING_TURN
               session.ownTurn = PENDING_TURN
               const overrides = settingsOverrides(session.live, settings)
+              for (const attachment of input.attachments) {
+                session.attachmentsByPath.set(attachment.path, attachment)
+              }
               const decoded = yield* request(state, "turn/start", {
                 threadId,
-                input: [{ type: "text", text: input }],
+                input: turnInputBlocks(input),
                 ...overrides,
               }).pipe(
                 Effect.mapError(rpcToProtocol),

@@ -281,7 +281,7 @@ describe("thread settings", () => {
         params: { threadId: thread.id },
         payload: { settings: { access: "autoAcceptEdits" } },
       })
-      const started = yield* runtime.prompt(thread.id, "hello")
+      const started = yield* runtime.prompt(thread.id, { prompt: "hello" })
       assert.isString(started.turnId)
       const session = [...fake.sessions.values()].find((entry) => entry.inputs.includes("hello"))
       assert.isDefined(session)
@@ -301,7 +301,7 @@ describe("thread settings", () => {
         client.v1.getThread({ params: { threadId: thread.id } }),
         (current) => current.activityState === "idle",
       )
-      yield* runtime.prompt(thread.id, "again")
+      yield* runtime.prompt(thread.id, { prompt: "again" })
       yield* eventually(
         Effect.sync(() => session!.turnSettings.length),
         (count) => count === 2,

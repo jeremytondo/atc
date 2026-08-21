@@ -36,6 +36,7 @@ import { ProjectRepository } from "../projects/projectRepository.ts"
 import { Terminals } from "../terminals/terminals.ts"
 import type { Terminal } from "../terminals/terminals.ts"
 import { ThreadNaming } from "./threadNaming.ts"
+import { Attachments } from "./attachments.ts"
 import { ThreadRepository } from "./threadRepository.ts"
 import type { ThreadRecord } from "./threadRepository.ts"
 import { ThreadRuntime } from "./threadRuntime.ts"
@@ -200,6 +201,7 @@ export const layerWith = (options: ThreadsOptions) =>
   Layer.effect(Threads)(
     Effect.gen(function* () {
       const repository = yield* ThreadRepository
+      const attachments = yield* Attachments
       const projects = yield* ProjectRepository
       const directories = yield* Directories
       const terminals = yield* Terminals
@@ -631,6 +633,9 @@ export const layerWith = (options: ThreadsOptions) =>
               (terminal) => terminal.threadId === id,
             )
             yield* repository.delete(id)
+            // The rows cascaded with the thread; the bytes on disk are ours
+            // to remove (ATC-216).
+            yield* attachments.purge(id)
             lifecycleLocks.delete(id)
             yield* events.publish({ resource: "thread", id, change: "deleted" })
             yield* Effect.forEach(orphaned, (terminal) =>

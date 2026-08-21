@@ -24,12 +24,15 @@ import type {
   AgentSessionEvent,
   AgentTurn,
   ProviderSettings,
+  ThreadAttachment,
   ThreadRequest,
   ThreadRequestAnswer,
   ThreadTurn,
+  TurnInput,
 } from "../agents/agentAdapter.ts"
 import type * as Contract from "../api/contract.ts"
 import {
+  AttachmentNotFound,
   InvalidRequestAnswer,
   isAgentId,
   ProviderSessionConflict,
@@ -43,6 +46,7 @@ import {
 import type { ZmxUnavailable } from "../api/contract.ts"
 import { Events } from "../events/events.ts"
 import type { Terminal } from "../terminals/terminals.ts"
+import { Attachments } from "./attachments.ts"
 import { ThreadNaming } from "./threadNaming.ts"
 import { ThreadRepository } from "./threadRepository.ts"
 import type { ThreadRecord } from "./threadRepository.ts"
@@ -50,7 +54,7 @@ import { applyProviderSettings } from "./threadSettings.ts"
 import type { ThreadSettings } from "./threadSettings.ts"
 import { ThreadTui } from "./threadTui.ts"
 import { TranscriptRepository } from "./transcriptRepository.ts"
-import type { TranscriptChange, TurnSource } from "./transcriptRepository.ts"
+import type { QueuedPromptRecord, TranscriptChange, TurnSource } from "./transcriptRepository.ts"
 
 export type ThreadEvent = typeof Contract.ThreadEvent.Type
 export type ThreadTranscript = typeof Contract.ThreadTranscript.Type
@@ -255,13 +259,22 @@ export interface ThreadRuntimeOptions {
 export class ThreadRuntime extends Context.Service<
   ThreadRuntime,
   {
-    /** Admit a prompt; `turnId` present ⇒ it started at once, else queued. */
+    /** Admit a prompt; `turnId` present ⇒ it started at once, else queued.
+     * `attachments` are ids of the thread's own uploads (ATC-216); a foreign
+     * or unknown id refuses the prompt before it is admitted. */
     readonly prompt: (
       id: string,
-      prompt: string,
+      input: {
+        readonly prompt: string
+        readonly attachments?: ReadonlyArray<string> | undefined
+      },
     ) => Effect.Effect<
       { readonly promptId: string; readonly turnId?: string },
-      ThreadNotFound | ThreadArchived | ProviderUnavailable | ProviderSessionConflict
+      | ThreadNotFound
+      | ThreadArchived
+      | AttachmentNotFound
+      | ProviderUnavailable
+      | ProviderSessionConflict
     >
     /** Interrupt the running turn; an idle thread is a no-op. Queued prompts stay. */
     readonly interrupt: (id: string) => Effect.Effect<void, ThreadNotFound | ProviderUnavailable>
@@ -361,6 +374,7 @@ const make = (options: ThreadRuntimeOptions) =>
   Effect.gen(function* () {
     const repository = yield* ThreadRepository
     const transcripts = yield* TranscriptRepository
+    const attachments = yield* Attachments
     const registry = yield* AgentRegistry
     const events = yield* Events
     const naming = yield* ThreadNaming
@@ -473,10 +487,41 @@ const make = (options: ThreadRuntimeOptions) =>
         })
       })
 
+    /** A waiting prompt's attachments (ATC-216). The ids are the thread's
+     * own and cascade with it, so a miss here is a defect, not a 404. */
+    const attachmentsOf = (
+      threadId: string,
+      queued: QueuedPromptRecord,
+    ): Effect.Effect<ReadonlyArray<ThreadAttachment>> =>
+      attachments.resolve(threadId, queued.attachmentIds).pipe(Effect.orDie)
+
+    /** What the turn starts with: the prompt and its resolved images. */
+    const turnInputOf = (threadId: string, queued: QueuedPromptRecord): Effect.Effect<TurnInput> =>
+      attachmentsOf(threadId, queued).pipe(
+        Effect.map((resolved) => ({ text: queued.prompt, attachments: resolved })),
+      )
+
+    /** The waiting prompts in the contract's shape, oldest first. */
+    const queuedPrompts = (threadId: string): Effect.Effect<ReadonlyArray<QueuedPrompt>> =>
+      transcripts.listWaiting(threadId).pipe(
+        Effect.flatMap(
+          Effect.forEach((queued) =>
+            attachmentsOf(threadId, queued).pipe(
+              Effect.map((resolved): QueuedPrompt => ({
+                id: queued.id,
+                prompt: queued.prompt,
+                queuedAt: queued.queuedAt,
+                ...(resolved.length > 0 ? { attachments: resolved } : {}),
+              })),
+            ),
+          ),
+        ),
+      )
+
     const publishQueue = (threadId: string): Effect.Effect<void> =>
-      transcripts
-        .listWaiting(threadId)
-        .pipe(Effect.map((prompts) => publish(threadId, { type: "queue.updated", prompts })))
+      queuedPrompts(threadId).pipe(
+        Effect.map((prompts) => publish(threadId, { type: "queue.updated", prompts })),
+      )
 
     const replayEvent = (change: TranscriptChange): ThreadEvent =>
       change.change.kind === "item"
@@ -940,7 +985,7 @@ const make = (options: ThreadRuntimeOptions) =>
     const openWriter = (
       record: ThreadRecord,
       adapter: AgentAdapter,
-      prompt: string,
+      input: TurnInput,
     ): Effect.Effect<
       { readonly writer: Writer; readonly turn: AgentTurn; readonly record: ThreadRecord },
       ProviderUnavailable | ProviderSessionConflict
@@ -955,7 +1000,7 @@ const make = (options: ThreadRuntimeOptions) =>
               cwd,
               settings: record.settings,
             })
-            const turn = yield* connection.startTurn(prompt, record.settings)
+            const turn = yield* connection.startTurn(input, record.settings)
             return {
               writer: { ...makeWriter(scope, connection), pushed: record.settings },
               turn,
@@ -973,7 +1018,7 @@ const make = (options: ThreadRuntimeOptions) =>
           }
           const session = yield* adapter.createSession({
             cwd,
-            input: prompt,
+            input,
             settings: record.settings,
           })
           const still = yield* repository.get(record.id)
@@ -1034,8 +1079,9 @@ const make = (options: ThreadRuntimeOptions) =>
           if (Option.isNone(next)) return Option.none()
           const adapter = yield* requireAdapter(record)
           const prompt = next.value.prompt
+          const input = yield* turnInputOf(record.id, next.value)
           if (held !== undefined) {
-            const reused = yield* startOnWriter(record, held, next.value)
+            const reused = yield* startOnWriter(record, held, next.value, input)
             if (Option.isSome(reused)) {
               yield* naming.notePrompt(record, prompt)
               return reused
@@ -1049,7 +1095,7 @@ const make = (options: ThreadRuntimeOptions) =>
           if (!adapter.sharedServer && (yield* takeOverTui(record)) === "busy") {
             return Option.none()
           }
-          const opened = yield* openWriter(record, adapter, prompt)
+          const opened = yield* openWriter(record, adapter, input)
           // The adopted record predates this turn's confirm (a fresh
           // session is unconfirmed by construction), which is what makes a
           // native first prompt eligible for naming (ATC-202).
@@ -1083,12 +1129,13 @@ const make = (options: ThreadRuntimeOptions) =>
     const startOnWriter = (
       record: ThreadRecord,
       writer: Writer,
-      queued: QueuedPrompt,
+      queued: QueuedPromptRecord,
+      input: TurnInput,
     ): Effect.Effect<Option.Option<{ readonly promptId: string; readonly turnId: string }>> =>
       writer.lock.withPermit(
         Effect.uninterruptible(
           Effect.gen(function* () {
-            const turn = yield* writer.connection.startTurn(queued.prompt, record.settings)
+            const turn = yield* writer.connection.startTurn(input, record.settings)
             writer.pushed = record.settings
             yield* registerRun(record, writer, queued, turn)
             return Option.some({ promptId: queued.id, turnId: turn.turnId })
@@ -1110,7 +1157,7 @@ const make = (options: ThreadRuntimeOptions) =>
     const registerRun = (
       record: ThreadRecord,
       writer: Writer,
-      queued: QueuedPrompt,
+      queued: QueuedPromptRecord,
       turn: AgentTurn,
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
@@ -1552,16 +1599,21 @@ const make = (options: ThreadRuntimeOptions) =>
     }
 
     const service: ThreadRuntime["Service"] = {
-      prompt: (id, prompt) =>
+      prompt: (id, input) =>
         Effect.gen(function* () {
           const record = yield* repository.require(id)
           if (record.archivedAt !== undefined) {
             return yield* Effect.fail(new ThreadArchived({ threadId: id }))
           }
           yield* requireAdapter(record)
+          // The attachments must be this thread's own before the prompt is
+          // admitted — an unknown id is the caller's error, not a queued
+          // prompt that can never start.
+          const attachmentIds = input.attachments ?? []
+          yield* attachments.resolve(id, attachmentIds)
           // Whether THIS prompt is the one an immediate start would run.
           const first = runOf(id) === undefined && Option.isNone(yield* transcripts.peek(id))
-          const queued = yield* transcripts.enqueue(id, prompt)
+          const queued = yield* transcripts.enqueue(id, input.prompt, attachmentIds)
           // The drain runs the OLDEST waiting prompt. When that is ours, a
           // provider that refuses un-admits it (the caller's error means
           // "not accepted"); an older prompt's failure just leaves ours
@@ -1640,7 +1692,7 @@ const make = (options: ThreadRuntimeOptions) =>
             }),
           )
         }),
-      listQueue: (id) => repository.require(id).pipe(Effect.andThen(transcripts.listWaiting(id))),
+      listQueue: (id) => repository.require(id).pipe(Effect.andThen(queuedPrompts(id))),
       deleteQueued: (id, promptId) =>
         withStartLock(id)(
           Effect.gen(function* () {

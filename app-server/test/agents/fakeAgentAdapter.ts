@@ -10,10 +10,12 @@ import type {
   AgentTurnOutcome,
   HistoryTurn,
   ProviderSettings,
+  ThreadAttachment,
   ThreadItem,
   ThreadRequest,
   ThreadRequestAnswer,
   ThreadSettings,
+  TurnInput,
 } from "../../src/agents/agentAdapter.ts"
 import {
   AgentConflict,
@@ -42,8 +44,10 @@ import {
 export interface FakeAgentSession {
   readonly providerSessionId: string
   readonly cwd: string
-  /** Inputs received via createSession/startTurn, for assertions. */
+  /** Input texts received via createSession/startTurn, for assertions. */
   readonly inputs: Array<string>
+  /** The attachments each input carried, aligned with `inputs`. */
+  readonly attachments: Array<ReadonlyArray<ThreadAttachment>>
   /** Settings each turn was started with (createSession/startTurn), in order. */
   readonly turnSettings: Array<ThreadSettings>
 }
@@ -280,7 +284,7 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
           : Effect.void,
       )
 
-      const startTurn = (input: string, settings: ThreadSettings) =>
+      const startTurn = (input: TurnInput, settings: ThreadSettings) =>
         Effect.gen(function* () {
           yield* requireAvailable
           yield* requireOpen
@@ -292,7 +296,8 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
               }),
             )
           }
-          session.inputs.push(input)
+          session.inputs.push(input.text)
+          session.attachments.push(input.attachments)
           session.turnSettings.push(settings)
           // Unique across fake instances: turn ids are persisted, and a
           // "restarted" fake must not collide with the previous one's turns.
@@ -303,7 +308,13 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
           // first item (Codex via the fan-out, Claude explicitly).
           emit(live, {
             type: "itemCompleted",
-            item: { type: "userMessage", id: `${turnId}:prompt`, turnId, text: input },
+            item: {
+              type: "userMessage",
+              id: `${turnId}:prompt`,
+              turnId,
+              text: input.text,
+              ...(input.attachments.length > 0 ? { attachments: input.attachments } : {}),
+            },
           })
           setActivity(live, "working")
           return { turnId }
@@ -388,6 +399,7 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
           providerSessionId: `fake-session-${nextSessionId++}`,
           cwd: options.cwd,
           inputs: [],
+          attachments: [],
           turnSettings: [],
         }
         sessions.set(session.providerSessionId, session)
@@ -455,6 +467,7 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
             providerSessionId,
             cwd: options.cwd,
             inputs: [],
+            attachments: [],
             turnSettings: [],
           })
           return {
@@ -559,7 +572,13 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
       unavailableReason = reason
     },
     seed: (providerSessionId, cwd) => {
-      const session: FakeAgentSession = { providerSessionId, cwd, inputs: [], turnSettings: [] }
+      const session: FakeAgentSession = {
+        providerSessionId,
+        cwd,
+        inputs: [],
+        attachments: [],
+        turnSettings: [],
+      }
       sessions.set(providerSessionId, session)
       return session
     },

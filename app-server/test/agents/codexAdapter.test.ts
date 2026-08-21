@@ -44,7 +44,7 @@ describe("CodexAdapter", () => {
             Effect.gen(function* () {
               const { connection, turn } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
-                input: "hello",
+                input: { text: "hello", attachments: [] },
                 settings: TEST_SETTINGS,
               })
               assert.isString(connection.providerSessionId)
@@ -70,6 +70,51 @@ describe("CodexAdapter", () => {
   )
 
   it.live(
+    "a turn's images go out as localImage paths and map back onto the prompt's item",
+    () =>
+      Effect.gen(function* () {
+        const sandbox = makeCodexSandbox()
+        const shot = {
+          id: "att-1",
+          name: "shot.png",
+          mediaType: "image/png" as const,
+          byteSize: 11,
+          path: path.join(sandbox.cwd, "shot.png"),
+          createdAt: "2026-08-20T00:00:00.000Z",
+        }
+        yield* withAdapter(sandbox, (adapter) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const { connection, turn } = yield* adapter.createSession({
+                cwd: sandbox.cwd,
+                input: { text: "", attachments: [shot] },
+                settings: TEST_SETTINGS,
+              })
+              const sink = yield* collectAgentEvents(connection.events)
+              yield* waitForAgentEvent(
+                sink,
+                (event) => event.type === "turnCompleted" && event.turnId === turn.turnId,
+              )
+              // The fixture echoes the input back as the real server does —
+              // a localImage block — and the adapter names our attachment.
+              const message = sink.find(
+                (event) => event.type === "itemCompleted" && event.item.type === "userMessage",
+              )
+              assert.isTrue(
+                message?.type === "itemCompleted" && message.item.type === "userMessage",
+              )
+              if (message?.type === "itemCompleted" && message.item.type === "userMessage") {
+                assert.strictEqual(message.item.text, "")
+                assert.deepStrictEqual(message.item.attachments, [shot])
+              }
+            }),
+          ),
+        )
+      }),
+    30_000,
+  )
+
+  it.live(
     "resume: exact identity round trip; unknown id fails closed",
     () =>
       Effect.gen(function* () {
@@ -80,7 +125,7 @@ describe("CodexAdapter", () => {
               Effect.gen(function* () {
                 const { connection, turn } = yield* adapter.createSession({
                   cwd: sandbox.cwd,
-                  input: "seed",
+                  input: { text: "seed", attachments: [] },
                   settings: TEST_SETTINGS,
                 })
                 const sink = yield* collectAgentEvents(connection.events)
@@ -130,7 +175,7 @@ describe("CodexAdapter", () => {
               Effect.flip(
                 adapter.createSession({
                   cwd: sandbox.cwd,
-                  input: "hello",
+                  input: { text: "hello", attachments: [] },
                   settings: TEST_SETTINGS,
                 }),
               ),
@@ -156,7 +201,7 @@ describe("CodexAdapter", () => {
               Effect.gen(function* () {
                 const { connection, turn } = yield* adapter.createSession({
                   cwd: sandbox.cwd,
-                  input: "seed",
+                  input: { text: "seed", attachments: [] },
                   settings: TEST_SETTINGS,
                 })
                 const sink = yield* collectAgentEvents(connection.events)
@@ -196,7 +241,7 @@ describe("CodexAdapter", () => {
             Effect.gen(function* () {
               const { connection } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
-                input: "HANG on",
+                input: { text: "HANG on", attachments: [] },
                 settings: TEST_SETTINGS,
               })
               const failure = yield* Effect.flip(
@@ -224,7 +269,7 @@ describe("CodexAdapter", () => {
             Effect.gen(function* () {
               const { connection, turn } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
-                input: "HANG until interrupted",
+                input: { text: "HANG until interrupted", attachments: [] },
                 settings: TEST_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)
@@ -262,7 +307,7 @@ describe("CodexAdapter", () => {
             Effect.gen(function* () {
               const { connection, turn } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
-                input: "needs APPROVAL for this",
+                input: { text: "needs APPROVAL for this", attachments: [] },
                 settings: TEST_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)
@@ -332,7 +377,7 @@ describe("CodexAdapter", () => {
             Effect.gen(function* () {
               const { connection, turn } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
-                input: "needs APPROVAL for this",
+                input: { text: "needs APPROVAL for this", attachments: [] },
                 settings: TEST_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)
@@ -359,7 +404,10 @@ describe("CodexAdapter", () => {
 
               // A question round trip: answers keyed by the question id reach
               // the provider (the fixture echoes them back as its reply).
-              const asked = yield* connection.startTurn("QUESTION time", TEST_SETTINGS)
+              const asked = yield* connection.startTurn(
+                { text: "QUESTION time", attachments: [] },
+                TEST_SETTINGS,
+              )
               yield* waitForAgentEvent(
                 sink,
                 (event) => event.type === "requestOpened" && event.request.kind === "question",
@@ -408,7 +456,7 @@ describe("CodexAdapter", () => {
             Effect.gen(function* () {
               const { connection, turn } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
-                input: "seed",
+                input: { text: "seed", attachments: [] },
                 settings: TEST_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)
@@ -452,7 +500,11 @@ describe("CodexAdapter", () => {
             // A session the provider actually has: the probe passes.
             const sessionId = yield* Effect.scoped(
               Effect.map(
-                adapter.createSession({ cwd: sandbox.cwd, input: "seed", settings: TEST_SETTINGS }),
+                adapter.createSession({
+                  cwd: sandbox.cwd,
+                  input: { text: "seed", attachments: [] },
+                  settings: TEST_SETTINGS,
+                }),
                 ({ connection }) => connection.providerSessionId,
               ),
             )
@@ -496,7 +548,7 @@ describe("CodexAdapter", () => {
             Effect.gen(function* () {
               const { connection, turn } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
-                input: "STREAM me",
+                input: { text: "STREAM me", attachments: [] },
                 settings: TEST_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)
@@ -556,7 +608,7 @@ describe("CodexAdapter", () => {
               Effect.gen(function* () {
                 const { connection, turn } = yield* adapter.createSession({
                   cwd: sandbox.cwd,
-                  input: "run a COMMAND",
+                  input: { text: "run a COMMAND", attachments: [] },
                   settings: TEST_SETTINGS,
                 })
                 const sink = yield* collectAgentEvents(connection.events)
@@ -613,7 +665,7 @@ describe("CodexAdapter", () => {
             Effect.gen(function* () {
               const { connection, turn } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
-                input: "hello",
+                input: { text: "hello", attachments: [] },
                 settings: TEST_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)
@@ -1119,7 +1171,7 @@ describe("CodexAdapter descendant aggregation", () => {
             Effect.gen(function* () {
               const { connection, turn } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
-                input: "SPAWN one worker",
+                input: { text: "SPAWN one worker", attachments: [] },
                 settings: TEST_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)
@@ -1158,7 +1210,7 @@ describe("CodexAdapter descendant aggregation", () => {
             Effect.gen(function* () {
               const { connection, turn } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
-                input: "SPAWN NEEDSINPUT worker",
+                input: { text: "SPAWN NEEDSINPUT worker", attachments: [] },
                 settings: TEST_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)
@@ -1305,7 +1357,7 @@ describe("CodexAdapter descendant aggregation", () => {
               // Live broadcasts teach the adapter about the child...
               const { connection, turn } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
-                input: "SPAWN worker",
+                input: { text: "SPAWN worker", attachments: [] },
                 settings: TEST_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)
@@ -1450,7 +1502,7 @@ describe("CodexAdapter collectTitleContext", () => {
               Effect.gen(function* () {
                 const { connection, turn } = yield* adapter.createSession({
                   cwd: sandbox.cwd,
-                  input: "seed turn",
+                  input: { text: "seed turn", attachments: [] },
                   settings: TEST_SETTINGS,
                 })
                 const id = connection.providerSessionId
@@ -1470,7 +1522,10 @@ describe("CodexAdapter collectTitleContext", () => {
                   providerSessionId: id,
                   providerMetadata: undefined,
                 })
-                const second = yield* connection.startTurn("hello context", TEST_SETTINGS)
+                const second = yield* connection.startTurn(
+                  { text: "hello context", attachments: [] },
+                  TEST_SETTINGS,
+                )
                 yield* waitForAgentEvent(
                   sink,
                   (event) => event.type === "turnCompleted" && event.turnId === second.turnId,
@@ -1515,7 +1570,7 @@ describe("CodexAdapter collectTitleContext", () => {
               } as const
               const { connection, turn } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
-                input: "hello",
+                input: { text: "hello", attachments: [] },
                 settings,
               })
               const sink = yield* collectAgentEvents(connection.events)
@@ -1525,12 +1580,15 @@ describe("CodexAdapter collectTitleContext", () => {
               )
               // The second turn changes access and reasoning: exactly those
               // ride as overrides; model is unchanged and stays home.
-              const second = yield* connection.startTurn("again", {
-                ...settings,
-                reasoning: "low",
-                access: "fullAccess",
-                mode: "plan",
-              })
+              const second = yield* connection.startTurn(
+                { text: "again", attachments: [] },
+                {
+                  ...settings,
+                  reasoning: "low",
+                  access: "fullAccess",
+                  mode: "plan",
+                },
+              )
               yield* waitForAgentEvent(
                 sink,
                 (event) => event.type === "turnCompleted" && event.turnId === second.turnId,
@@ -1583,7 +1641,7 @@ describe("CodexAdapter collectTitleContext", () => {
             Effect.gen(function* () {
               const { connection, turn } = yield* adapter.createSession({
                 cwd: sandbox.cwd,
-                input: "hello",
+                input: { text: "hello", attachments: [] },
                 settings: TEST_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)

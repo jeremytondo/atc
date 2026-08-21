@@ -537,8 +537,14 @@ const handle = (
       const threadId = String(params["threadId"] ?? "")
       const thread = threads.get(threadId)
       if (thread === undefined) return respondError(-32600, `unknown thread ${threadId}`)
-      const input = params["input"] as Array<{ text?: string }> | undefined
-      const text = input?.[0]?.text ?? ""
+      const input = (params["input"] ?? []) as Array<{
+        type: string
+        text?: string
+        path?: string
+      }>
+      const text = input
+        .flatMap((block) => (block.type === "text" && block.text !== undefined ? [block.text] : []))
+        .join("\n")
       const turnId = crypto.randomUUID()
       // Overrides are sticky for this and subsequent turns, like the real server.
       if (typeof params["model"] === "string") thread.settings.model = params["model"]
@@ -572,10 +578,15 @@ const handle = (
       // The real server broadcasts the turn's input back as a completed
       // userMessage item — content text blocks, unlike agentMessage's
       // top-level text — the retention evidence for title refinement.
+      // Image inputs come back as localImage blocks, like the real server.
       emitItem(thread, turnId, "completed", {
         id: crypto.randomUUID(),
         type: "userMessage",
-        content: [{ type: "text", text, text_elements: [] }],
+        content: input.map((block) =>
+          block.type === "localImage"
+            ? { type: "localImage", path: block.path }
+            : { type: "text", text: block.text ?? "", text_elements: [] },
+        ),
       })
       if (text.includes("HANG")) {
         hangingTurns.add(threadId)

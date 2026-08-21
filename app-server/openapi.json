@@ -1214,11 +1214,18 @@
             }
           },
           "404": {
-            "description": "No thread exists with the given id.",
+            "description": "No thread exists with the given id. | No attachment with the given id on this thread.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ThreadNotFoundJsonEncoding"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ThreadNotFoundJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AttachmentNotFoundJsonEncoding"
+                    }
+                  ]
                 }
               }
             }
@@ -1627,6 +1634,175 @@
           }
         },
         "description": "Withdraw a waiting prompt. A prompt that already started is a turn now (404); interrupt the thread instead."
+      }
+    },
+    "/api/v1/threads/{threadId}/attachments": {
+      "post": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "createThreadAttachment",
+        "parameters": [
+          {
+            "name": "threadId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "description": "Display filename; omitted derives one from the type (\"image.png\")."
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "An image a client uploaded to a thread for a prompt. Attachments live with their thread and die with it; the bytes come back from getThreadAttachment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadAttachment"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No thread exists with the given id.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadNotFoundJsonEncoding"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The thread is archived; unarchive it first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadArchivedJsonEncoding"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The upload exceeds the per-attachment cap (8388608 bytes); downscale the image and retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttachmentTooLargeJsonEncoding"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body is not a usable image of the declared Content-Type: empty, or its bytes do not carry that format's signature.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttachmentInvalidJsonEncoding"
+                }
+              }
+            }
+          }
+        },
+        "description": "Upload one image for a later prompt on this thread: the raw bytes as the body, the image type as Content-Type (PNG, JPEG, GIF, or WebP — anything else is 415), at most 8388608 bytes (413 beyond). The bytes are held under the server's data directory for the thread's life and deleted with it; the returned path is stable and readable by any process on the server host. Reference the id in promptThread's attachments (up to 10 per prompt). Nothing is garbage-collected before the thread goes: upload at send time, not ahead of it.",
+        "requestBody": {
+          "content": {
+            "image/png": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/jpeg": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/gif": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/webp": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/api/v1/threads/{threadId}/attachments/{attachmentId}": {
+      "get": {
+        "tags": [
+          "v1"
+        ],
+        "operationId": "getThreadAttachment",
+        "parameters": [
+          {
+            "name": "threadId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "name": "attachmentId",
+            "in": "path",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                },
+                "x-effect-stream": {
+                  "encoding": "uint8array"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No thread exists with the given id. | No attachment with the given id on this thread.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ThreadNotFoundJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AttachmentNotFoundJsonEncoding"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "The attachment's bytes, as uploaded (served as application/octet-stream; the image type is in the attachment's metadata on the item or queue entry that carries it)."
       }
     },
     "/api/v1/agents": {
@@ -2669,15 +2845,21 @@
         "properties": {
           "prompt": {
             "type": "string",
-            "minLength": 1,
-            "description": "The user's message."
+            "description": "The user's message; may be empty only when attachments are present."
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 10,
+            "description": "Ids of attachments previously uploaded to THIS thread (createThreadAttachment), in display order. An id the thread does not own is a 404."
           }
         },
         "required": [
           "prompt"
         ],
-        "additionalProperties": false,
-        "description": "Payload for prompting a thread: text only (attachments are additive later)."
+        "additionalProperties": false
       },
       "PromptThreadResponse": {
         "type": "object",
@@ -2696,6 +2878,83 @@
         ],
         "additionalProperties": false,
         "description": "A prompt was admitted: it started a turn now, or waits in the queue."
+      },
+      "AttachmentNotFoundJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "AttachmentNotFound"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "attachmentId": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
+          }
+        },
+        "required": [
+          "_tag",
+          "threadId",
+          "attachmentId",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "AttachmentMediaType": {
+        "type": "string",
+        "enum": [
+          "image/png",
+          "image/jpeg",
+          "image/gif",
+          "image/webp"
+        ],
+        "description": "The image type of an attachment; the accepted set of the upload endpoint."
+      },
+      "ThreadAttachment": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "UUIDv7 attachment id, unique within the thread."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display filename (the uploader's, sanitized)."
+          },
+          "mediaType": {
+            "$ref": "#/components/schemas/AttachmentMediaType"
+          },
+          "byteSize": {
+            "type": "integer",
+            "description": "Size of the stored bytes."
+          },
+          "path": {
+            "type": "string",
+            "description": "Server-host absolute path of the stored bytes — stable for the attachment's life, so an agent on that machine (a TUI, a script) can be pointed at it."
+          },
+          "createdAt": {
+            "type": "string",
+            "description": "Upload time.",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "mediaType",
+          "byteSize",
+          "path",
+          "createdAt"
+        ],
+        "additionalProperties": false,
+        "description": "An image a client uploaded to a thread for a prompt. Attachments live with their thread and die with it; the bytes come back from getThreadAttachment."
       },
       "ThreadItemUserMessage": {
         "type": "object",
@@ -2726,6 +2985,13 @@
           },
           "text": {
             "type": "string"
+          },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ThreadAttachment"
+            },
+            "description": "Images sent with the prompt; absent when none. Present for prompts ATC sent natively; a provider re-read keeps them where the provider's turn ids are stable (Codex), and loses them where they are not (Claude) — the bytes stay fetchable by id either way."
           }
         },
         "required": [
@@ -2735,7 +3001,7 @@
           "text"
         ],
         "additionalProperties": false,
-        "description": "A user prompt (text only)."
+        "description": "A user prompt: text plus any image attachments."
       },
       "ThreadItemAssistantText": {
         "type": "object",
@@ -3690,6 +3956,13 @@
           "prompt": {
             "type": "string"
           },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ThreadAttachment"
+            },
+            "description": "Images waiting with the prompt."
+          },
           "queuedAt": {
             "type": "string",
             "description": "When the prompt was admitted.",
@@ -3735,6 +4008,66 @@
           "_tag",
           "threadId",
           "promptId",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "AttachmentTooLargeJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "AttachmentTooLarge"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "byteSize": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
+          }
+        },
+        "required": [
+          "_tag",
+          "threadId",
+          "byteSize",
+          "limit",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "AttachmentInvalidJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "AttachmentInvalid"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
+          }
+        },
+        "required": [
+          "_tag",
+          "threadId",
+          "reason",
           "message"
         ],
         "additionalProperties": false

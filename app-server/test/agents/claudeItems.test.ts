@@ -279,6 +279,32 @@ describe("ClaudeItems.mapHistory", () => {
       ...extra,
     }) as SessionMessage
 
+  it("an image-only prompt opens a turn with empty text (ATC-216)", () => {
+    const history = ClaudeItems.mapHistory([
+      message("user", "look", "u1"),
+      message("assistant", [{ type: "text", text: "ok" }], "a1"),
+      message(
+        "user",
+        [{ type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } }],
+        "u2",
+      ),
+      message("assistant", [{ type: "text", text: "a picture" }], "a2"),
+    ])
+    assert.deepStrictEqual(
+      history.map((turn) => ({ id: turn.turn.id, items: turn.items.map((item) => item.id) })),
+      [
+        { id: "u1", items: ["u1:0", "a1:0"] },
+        { id: "u2", items: ["u2:0", "a2:0"] },
+      ],
+    )
+    assert.deepStrictEqual(history[1]?.items[0], {
+      type: "userMessage",
+      id: "u2:0",
+      turnId: "u2",
+      text: "",
+    })
+  })
+
   it("groups at each user text message, links tool results, and reads incomplete turns as interrupted", () => {
     const history = ClaudeItems.mapHistory([
       message("user", "first prompt", "u1", { timestamp: "2026-08-17T10:00:00.000Z" }),

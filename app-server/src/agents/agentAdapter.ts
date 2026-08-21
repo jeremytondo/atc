@@ -133,6 +133,20 @@ export type ReasoningLevel = typeof Contract.ReasoningLevel.Type
 export type ThreadAccess = typeof Contract.ThreadAccess.Type
 export type ThreadMode = typeof Contract.ThreadMode.Type
 export type AgentModel = typeof Contract.AgentModel.Type
+export type ThreadAttachment = typeof Contract.ThreadAttachment.Type
+
+/**
+ * What a turn is started with (ATC-216): the user's text and the images it
+ * carries, each stored at `path` on this host (attachments.ts). Adapters
+ * hand the images to the provider in its own shape — bytes read here and
+ * inlined (Claude), or the path for the provider to read (Codex) — and put
+ * them on the prompt's `userMessage` item, so the transcript shows what the
+ * provider saw.
+ */
+export interface TurnInput {
+  readonly text: string
+  readonly attachments: ReadonlyArray<ThreadAttachment>
+}
 
 /**
  * What a provider reported about its session's settings (ATC-205): only the
@@ -280,7 +294,7 @@ export interface AgentConnection {
    * `AgentIdentityMismatch` can surface fail-closed.
    */
   readonly startTurn: (
-    input: string,
+    input: TurnInput,
     settings: ThreadSettings,
   ) => Effect.Effect<
     AgentTurn,
@@ -375,7 +389,7 @@ export interface AgentAdapter {
    */
   readonly createSession: (options: {
     readonly cwd: string
-    readonly input: string
+    readonly input: TurnInput
     readonly settings: ThreadSettings
   }) => Effect.Effect<
     AgentSessionStart,

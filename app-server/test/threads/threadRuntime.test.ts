@@ -1,10 +1,11 @@
 import { assert, describe, it } from "@effect/vitest"
 import { Effect, Stream } from "effect"
-import { mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { afterAll } from "vitest"
 import type { ThreadEvent } from "../../src/threads/threadRuntime.ts"
+import { Attachments } from "../../src/threads/attachments.ts"
 import { ThreadRuntime } from "../../src/threads/threadRuntime.ts"
 import { ThreadRepository } from "../../src/threads/threadRepository.ts"
 import { TranscriptRepository } from "../../src/threads/transcriptRepository.ts"
@@ -56,7 +57,7 @@ describe("ThreadRuntime", () => {
       const thread = yield* newThread
       const events = yield* collectEvents(runtime, thread.id)
 
-      const started = yield* runtime.prompt(thread.id, "hello")
+      const started = yield* runtime.prompt(thread.id, { prompt: "hello" })
       assert.isString(started.turnId)
       const turnId = started.turnId ?? ""
       // A fresh session was created with the prompt, and identity persisted
@@ -141,12 +142,120 @@ describe("ThreadRuntime", () => {
     }).pipe(Effect.scoped, Effect.provide(kit.layer)),
   )
 
+  it.live("a prompt's images reach the adapter, its item, and the queue; delete purges them", () =>
+    Effect.gen(function* () {
+      const runtime = yield* ThreadRuntime
+      const attachments = yield* Attachments
+      const threads = yield* Threads
+      const thread = yield* newThread
+      const events = yield* collectEvents(runtime, thread.id)
+      const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
+      const shot = yield* attachments.create(thread.id, {
+        bytes: png,
+        mediaType: "image/png",
+        name: "shot.png",
+      })
+      assert.isTrue(existsSync(shot.path))
+
+      // The turn starts with the image resolved; the fake, like both real
+      // adapters, puts it on the prompt's item.
+      const started = yield* runtime.prompt(thread.id, { prompt: "look", attachments: [shot.id] })
+      assert.isString(started.turnId)
+      const session = [...fake.sessions.values()].find((entry) => entry.inputs.includes("look"))
+      assert.deepStrictEqual(session?.attachments, [[shot]])
+      const page = yield* waitFor(runtime.transcript(thread.id).pipe(Effect.orDie), (current) =>
+        current.items.some((item) => item.type === "userMessage"),
+      )
+      const message = page.items.find((item) => item.type === "userMessage")
+      assert.deepStrictEqual(message?.type === "userMessage" ? message.attachments : undefined, [
+        shot,
+      ])
+
+      // A prompt queued behind the running turn lists its images, on the
+      // queue and on its event; a foreign id is refused before admission.
+      const second = yield* attachments.create(thread.id, { bytes: png, mediaType: "image/png" })
+      assert.strictEqual(second.name, "image.png")
+      const queued = yield* runtime.prompt(thread.id, {
+        prompt: "and this",
+        attachments: [second.id],
+      })
+      assert.isUndefined(queued.turnId)
+      assert.deepStrictEqual(
+        (yield* runtime.listQueue(thread.id)).map((entry) => entry.attachments),
+        [[second]],
+      )
+      const published = yield* waitFor(
+        Effect.sync(() => events.findLast((event) => event.type === "queue.updated")),
+        (event) => event?.type === "queue.updated" && event.prompts.length === 1,
+      )
+      assert.deepStrictEqual(
+        published?.type === "queue.updated" ? published.prompts[0]?.attachments : undefined,
+        [second],
+      )
+      const other = yield* newThread
+      const elsewhere = yield* attachments.create(other.id, { bytes: png, mediaType: "image/png" })
+      const refused = yield* Effect.flip(
+        runtime.prompt(thread.id, { prompt: "x", attachments: [elsewhere.id] }),
+      )
+      assert.strictEqual(refused._tag, "AttachmentNotFound")
+      assert.lengthOf(yield* runtime.listQueue(thread.id), 1)
+
+      // The queued prompt drains at the turn's end with its image resolved.
+      fake.completeTurn(session?.providerSessionId ?? "", "completed")
+      yield* waitFor(
+        Effect.sync(() => session?.inputs ?? []),
+        (inputs) => inputs.includes("and this"),
+      )
+      assert.deepStrictEqual(session?.attachments.at(-1), [second])
+
+      // The thread's bytes go with the thread.
+      yield* threads.delete(thread.id)
+      assert.isFalse(existsSync(dirname(shot.path)))
+    }).pipe(Effect.scoped, Effect.provide(kit.layer)),
+  )
+
+  it.live("a provider re-read keeps a prompt's images where its turn id is stable", () =>
+    Effect.gen(function* () {
+      const runtime = yield* ThreadRuntime
+      const attachments = yield* Attachments
+      const thread = yield* newThread
+      const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
+      const shot = yield* attachments.create(thread.id, { bytes: png, mediaType: "image/png" })
+      const started = yield* runtime.prompt(thread.id, { prompt: "keep", attachments: [shot.id] })
+      const turnId = started.turnId ?? ""
+      const session = [...fake.sessions.values()].find((entry) => entry.inputs.includes("keep"))
+      const providerSessionId = session?.providerSessionId ?? ""
+      yield* waitFor(runtime.transcript(thread.id).pipe(Effect.orDie), (current) =>
+        current.items.some((item) => item.type === "userMessage"),
+      )
+      fake.completeTurn(providerSessionId, "completed")
+      yield* waitFor(runtime.transcript(thread.id).pipe(Effect.orDie), (current) =>
+        current.turns.every((turn) => turn.status === "completed"),
+      )
+      // The provider's history keeps the turn id but re-numbers items and
+      // knows nothing of ATC's attachments (Codex echoes localImage paths).
+      fake.setHistory(providerSessionId, [
+        {
+          turn: { id: turnId, status: "completed" },
+          items: [{ type: "userMessage", id: "item-1", turnId, text: "keep" }],
+        },
+      ])
+      yield* runtime.reread(thread.id)
+      const page = yield* runtime.transcript(thread.id)
+      assert.strictEqual(page.snapshotVersion, 1)
+      const message = page.items.find((item) => item.type === "userMessage")
+      assert.deepStrictEqual(message?.type === "userMessage" ? message.attachments : undefined, [
+        shot,
+      ])
+    }).pipe(Effect.scoped, Effect.provide(kit.layer)),
+  )
+
   it.live("streamed text persists as durable partials while the answer streams", () =>
     Effect.gen(function* () {
       const runtime = yield* ThreadRuntime
       const thread = yield* newThread
       const events = yield* collectEvents(runtime, thread.id)
-      const started = yield* runtime.prompt(thread.id, "stream")
+      const started = yield* runtime.prompt(thread.id, { prompt: "stream" })
       const turnId = started.turnId ?? ""
       const providerSessionId =
         [...fake.sessions.values()].find((entry) => entry.inputs.includes("stream"))
@@ -215,7 +324,7 @@ describe("ThreadRuntime", () => {
     Effect.gen(function* () {
       const runtime = yield* ThreadRuntime
       const thread = yield* newThread
-      const started = yield* runtime.prompt(thread.id, "work")
+      const started = yield* runtime.prompt(thread.id, { prompt: "work" })
       const turnId = started.turnId ?? ""
       const providerSessionId =
         [...fake.sessions.values()].find((entry) => entry.inputs.includes("work"))
@@ -268,12 +377,12 @@ describe("ThreadRuntime", () => {
         const runtime = yield* ThreadRuntime
         const thread = yield* newThread
         const events = yield* collectEvents(runtime, thread.id)
-        const first = yield* runtime.prompt(thread.id, "one")
+        const first = yield* runtime.prompt(thread.id, { prompt: "one" })
         const providerSessionId =
           [...fake.sessions.values()].find((entry) => entry.inputs.includes("one"))
             ?.providerSessionId ?? ""
 
-        const second = yield* runtime.prompt(thread.id, "two")
+        const second = yield* runtime.prompt(thread.id, { prompt: "two" })
         assert.isUndefined(second.turnId)
         const queued = yield* runtime.listQueue(thread.id)
         assert.deepStrictEqual(
@@ -323,9 +432,9 @@ describe("ThreadRuntime", () => {
         )
         yield* runtime.interrupt(thread.id)
         // A waiting prompt can be withdrawn.
-        const third = yield* runtime.prompt(thread.id, "three")
+        const third = yield* runtime.prompt(thread.id, { prompt: "three" })
         assert.isString(third.turnId)
-        const fourth = yield* runtime.prompt(thread.id, "four")
+        const fourth = yield* runtime.prompt(thread.id, { prompt: "four" })
         yield* runtime.deleteQueued(thread.id, fourth.promptId)
         assert.deepStrictEqual(yield* runtime.listQueue(thread.id), [])
         fake.completeTurn(providerSessionId, "completed")
@@ -338,7 +447,7 @@ describe("ThreadRuntime", () => {
       const threads = yield* Threads
       const thread = yield* newThread
       const events = yield* collectEvents(runtime, thread.id)
-      yield* runtime.prompt(thread.id, "ask")
+      yield* runtime.prompt(thread.id, { prompt: "ask" })
       const providerSessionId =
         [...fake.sessions.values()].find((entry) => entry.inputs.includes("ask"))
           ?.providerSessionId ?? ""
@@ -415,7 +524,7 @@ describe("ThreadRuntime", () => {
       const runtime = yield* ThreadRuntime
       const thread = yield* newThread
       const live = yield* collectEvents(runtime, thread.id)
-      const started = yield* runtime.prompt(thread.id, "replay me")
+      const started = yield* runtime.prompt(thread.id, { prompt: "replay me" })
       const turnId = started.turnId ?? ""
       const providerSessionId =
         [...fake.sessions.values()].find((entry) => entry.inputs.includes("replay me"))
@@ -483,7 +592,7 @@ describe("ThreadRuntime", () => {
         const runtime = yield* ThreadRuntime
         const transcripts = yield* TranscriptRepository
         const thread = yield* newThread
-        const started = yield* runtime.prompt(thread.id, "order")
+        const started = yield* runtime.prompt(thread.id, { prompt: "order" })
         const turnId = started.turnId ?? ""
         const providerSessionId =
           [...fake.sessions.values()].find((entry) => entry.inputs.includes("order"))
@@ -569,7 +678,7 @@ describe("ThreadRuntime", () => {
       const confirmed = yield* repo.require(record.id)
       // The TUI is mid-turn: the observation drain reports busy.
       yield* runtime.noteActivity(confirmed, "working")
-      const queued = yield* runtime.prompt(thread.id, "after the tui")
+      const queued = yield* runtime.prompt(thread.id, { prompt: "after the tui" })
       assert.isUndefined(queued.turnId)
       assert.deepStrictEqual(seeded.inputs, [])
       assert.deepStrictEqual(
@@ -609,7 +718,7 @@ describe("ThreadRuntime", () => {
       const runtime = yield* ThreadRuntime
       const thread = yield* newThread
       const events = yield* collectEvents(runtime, thread.id)
-      const started = yield* runtime.prompt(thread.id, "history")
+      const started = yield* runtime.prompt(thread.id, { prompt: "history" })
       const providerSessionId =
         [...fake.sessions.values()].find((entry) => entry.inputs.includes("history"))
           ?.providerSessionId ?? ""
@@ -667,7 +776,7 @@ describe("ThreadRuntime", () => {
       const runtime = yield* ThreadRuntime
       const thread = yield* newThread
       fake.setUnavailable("provider down")
-      const failure = yield* Effect.flip(runtime.prompt(thread.id, "nothing")).pipe(
+      const failure = yield* Effect.flip(runtime.prompt(thread.id, { prompt: "nothing" })).pipe(
         Effect.ensuring(Effect.sync(() => fake.setUnavailable(null))),
       )
       assert.strictEqual(failure._tag, "ProviderUnavailable")
@@ -681,7 +790,7 @@ describe("ThreadRuntime", () => {
       const runtime = yield* ThreadRuntime
       const threads = yield* Threads
       const thread = yield* newThread
-      yield* runtime.prompt(thread.id, "busy")
+      yield* runtime.prompt(thread.id, { prompt: "busy" })
       const providerSessionId =
         [...fake.sessions.values()].find((entry) => entry.inputs.includes("busy"))
           ?.providerSessionId ?? ""
@@ -717,8 +826,8 @@ describe("ThreadRuntime restart", () => {
             defaultWorkingDirectory: scratch,
           })
           const thread = yield* threads.create({ projectId: project.id, agentId: "codex" })
-          const started = yield* runtime.prompt(thread.id, "long running")
-          yield* runtime.prompt(thread.id, "afterwards")
+          const started = yield* runtime.prompt(thread.id, { prompt: "long running" })
+          yield* runtime.prompt(thread.id, { prompt: "afterwards" })
           yield* waitFor(
             runtime.transcript(thread.id).pipe(Effect.orDie),
             (transcript) => transcript.items.length === 1,
@@ -788,8 +897,8 @@ describe("ThreadRuntime restart", () => {
           defaultWorkingDirectory: scratch,
         })
         const thread = yield* threads.create({ projectId: project.id, agentId: "codex" })
-        yield* runtime.prompt(thread.id, "before restart")
-        yield* runtime.prompt(thread.id, "after restart")
+        yield* runtime.prompt(thread.id, { prompt: "before restart" })
+        yield* runtime.prompt(thread.id, { prompt: "after restart" })
         // The prompt item has landed before the "crash".
         yield* waitFor(
           runtime.transcript(thread.id).pipe(Effect.orDie),

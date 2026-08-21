@@ -607,9 +607,9 @@ describe("atc api / context / capabilities (black box)", () => {
     expect(JSON.parse(result.stdout)).toEqual({
       capabilitiesVersion: 1,
       api: {
-        command: "atc api <method> <path> [--input <file|->]",
+        command: "atc api <method> <path> [--input <file|->] [--content-type <type>]",
         description:
-          "Complete access to the canonical App Server HTTP API: every operation via GET, POST, PUT, PATCH, or DELETE, JSON body from a file or stdin, the raw JSON response on stdout.",
+          "Complete access to the canonical App Server HTTP API: every operation via GET, POST, PUT, PATCH, or DELETE, a body from a file or stdin (JSON by default, any Content-Type via --content-type), the response on stdout (JSON as text, anything else byte for byte).",
         example: "atc api GET /api/v1/projects",
       },
       openapi: {

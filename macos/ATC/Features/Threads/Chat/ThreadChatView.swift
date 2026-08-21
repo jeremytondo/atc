@@ -100,7 +100,7 @@ private struct ChatPane: View {
 
     private var agents: AgentsStore? { appModel.runtime(id: ref.connectionID)?.agents }
 
-    private var draftBinding: Binding<String> {
+    private var draftBinding: Binding<ComposerDraft> {
         Binding(
             get: { appModel.draft(for: ref) },
             set: { appModel.setDraft($0, for: ref) }
@@ -143,7 +143,8 @@ private struct ChatPane: View {
                     cards
                 }
                 ChatComposer(
-                    text: draftBinding,
+                    text: draftBinding.text,
+                    attachments: draftBinding.attachments,
                     thread: thread,
                     models: agents?.models(for: thread.agentId),
                     modelsError: agents?.modelErrors[thread.agentId],
@@ -265,19 +266,23 @@ private struct ChatPane: View {
         .transition(.opacity)
     }
 
-    /// The draft clears the moment the prompt leaves (the echo row carries
-    /// it); a refusal restores it in front of whatever was typed since, so
-    /// no text is ever lost.
+    /// The draft (text and images) clears the moment the prompt leaves (the
+    /// echo row carries it); a refusal restores it in front of whatever was
+    /// typed or attached since, so nothing is ever lost.
     private func send() {
-        let prompt = appModel.draft(for: ref).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty else { return }
-        appModel.setDraft("", for: ref)
+        let draft = appModel.draft(for: ref)
+        let prompt = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty || !draft.attachments.isEmpty else { return }
+        appModel.setDraft(ComposerDraft(), for: ref)
         followRequest += 1
         Task {
-            guard await !chat.send(prompt) else { return }
-            let typedSince = appModel.draft(for: ref)
+            guard await !chat.send(prompt, attachments: draft.attachments) else { return }
+            let since = appModel.draft(for: ref)
             appModel.setDraft(
-                typedSince.isEmpty ? prompt : prompt + "\n" + typedSince, for: ref)
+                ComposerDraft(
+                    text: since.text.isEmpty ? prompt : prompt + "\n" + since.text,
+                    attachments: draft.attachments + since.attachments),
+                for: ref)
         }
     }
 

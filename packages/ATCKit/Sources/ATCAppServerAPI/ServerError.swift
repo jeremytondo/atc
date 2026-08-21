@@ -46,6 +46,9 @@ extension Components.Schemas.RequestNotFoundJsonEncoding: ServerErrorPayload {}
 extension Components.Schemas.InvalidRequestAnswerJsonEncoding: ServerErrorPayload {}
 extension Components.Schemas.QueuedPromptNotFoundJsonEncoding: ServerErrorPayload {}
 extension Components.Schemas.InvalidThreadSettingsJsonEncoding: ServerErrorPayload {}
+extension Components.Schemas.AttachmentNotFoundJsonEncoding: ServerErrorPayload {}
+extension Components.Schemas.AttachmentTooLargeJsonEncoding: ServerErrorPayload {}
+extension Components.Schemas.AttachmentInvalidJsonEncoding: ServerErrorPayload {}
 
 extension ServerError {
     /// Wrap a single-schema failure payload.

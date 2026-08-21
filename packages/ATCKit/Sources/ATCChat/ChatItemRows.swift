@@ -22,6 +22,8 @@ import SwiftUI
 struct ChatRowActions {
     var retry: (String) -> Void = { _ in }
     var answer: (String, ThreadRequestAnswer) -> Void = { _, _ in }
+    /// The bytes of an attachment on a user row, decoded (nil = unreadable).
+    var loadAttachment: (Components.Schemas.ThreadAttachment) async -> CGImage? = { _ in nil }
 }
 
 extension EnvironmentValues {
@@ -76,10 +78,15 @@ struct ChatNodeView: View {
         switch node.box.item {
         case .userMessage(let message):
             VStack(alignment: .trailing, spacing: Spacing.xs) {
-                MarkdownText(text: message.text)
-                    .padding(Spacing.md)
-                    .background(Surface.raised, in: RoundedRectangle(cornerRadius: Radius.chip))
-                    .copyable(message.text)
+                if let attachments = message.attachments, !attachments.isEmpty {
+                    AttachmentStrip(images: attachments.map { .remote($0) })
+                }
+                if !message.text.isEmpty {
+                    MarkdownText(text: message.text)
+                        .padding(Spacing.md)
+                        .background(Surface.raised, in: RoundedRectangle(cornerRadius: Radius.chip))
+                        .copyable(message.text)
+                }
                 if node.turnIsSettled, let createdAt = message.createdAt {
                     TimestampCaption(date: createdAt)
                 }
@@ -178,9 +185,16 @@ private struct ChatPendingPromptRow: View {
     let prompt: PendingPrompt
 
     var body: some View {
-        MarkdownText(text: prompt.text)
-            .padding(Spacing.md)
-            .background(Surface.raised, in: RoundedRectangle(cornerRadius: Radius.chip))
+        VStack(alignment: .trailing, spacing: Spacing.xs) {
+            if !prompt.attachments.isEmpty {
+                AttachmentStrip(images: prompt.attachments.map { .local($0) })
+            }
+            if !prompt.text.isEmpty {
+                MarkdownText(text: prompt.text)
+                    .padding(Spacing.md)
+                    .background(Surface.raised, in: RoundedRectangle(cornerRadius: Radius.chip))
+            }
+        }
     }
 }
 

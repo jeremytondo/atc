@@ -141,7 +141,8 @@ public struct ChatTranscriptView: View {
                     },
                     answer: { [chat] requestID, answer in
                         chat.perform { try await chat.answer(requestID: requestID, answer) }
-                    }
+                    },
+                    loadAttachment: { [chat] attachment in await chat.image(for: attachment) }
                 )
             )
             .onScrollGeometryChange(for: ChatFollowSignal.self, of: ChatFollowSignal.init) { old, new in

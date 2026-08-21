@@ -10,6 +10,7 @@ import * as Tailscale from "../platform/tailscale.ts"
 import { Projects } from "../projects/projects.ts"
 import { attachTerminal } from "../terminals/terminalAttach.ts"
 import { Terminals } from "../terminals/terminals.ts"
+import { Attachments } from "../threads/attachments.ts"
 import { ThreadRuntime } from "../threads/threadRuntime.ts"
 import { Threads } from "../threads/threads.ts"
 
@@ -44,6 +45,7 @@ export const V1Handlers = HttpApiBuilder.group(
     const terminals = yield* Terminals
     const threads = yield* Threads
     const runtime = yield* ThreadRuntime
+    const attachments = yield* Attachments
     const agents = yield* AgentRegistry
     const events = yield* Events
     // Attach bridges outlive their originating requests (Bun aborts the
@@ -101,9 +103,7 @@ export const V1Handlers = HttpApiBuilder.group(
         .handle("deleteThread", ({ params }) => threads.delete(params.threadId))
         .handle("openThreadTerminal", ({ params }) => threads.openTerminal(params.threadId))
         .handle("closeThreadTerminal", ({ params }) => threads.closeTerminal(params.threadId))
-        .handle("promptThread", ({ params, payload }) =>
-          runtime.prompt(params.threadId, payload.prompt),
-        )
+        .handle("promptThread", ({ params, payload }) => runtime.prompt(params.threadId, payload))
         .handle("getThreadTranscript", ({ params, query }) =>
           runtime.transcript(params.threadId, { before: query.before, limit: query.limit }),
         )
@@ -115,6 +115,19 @@ export const V1Handlers = HttpApiBuilder.group(
         .handle("listThreadQueue", ({ params }) => runtime.listQueue(params.threadId))
         .handle("deleteQueuedPrompt", ({ params }) =>
           runtime.deleteQueued(params.threadId, params.promptId),
+        )
+        // The router already matched the Content-Type to one of the accepted
+        // image types (anything else was a 415); the service re-reads it for
+        // the stored media type.
+        .handle("createThreadAttachment", ({ params, query, payload, request }) =>
+          attachments.create(params.threadId, {
+            bytes: payload,
+            mediaType: request.headers["content-type"] ?? "",
+            name: query.name,
+          }),
+        )
+        .handle("getThreadAttachment", ({ params }) =>
+          attachments.stream(params.threadId, params.attachmentId),
         )
         .handle("listAgents", () => agents.list())
         .handle("getAgent", ({ params }) => agents.get(params.agentId))
