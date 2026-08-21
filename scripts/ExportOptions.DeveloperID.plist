@@ -9,7 +9,9 @@
 	<key>method</key>
 	<string>developer-id</string>
 	<key>signingStyle</key>
-	<string>automatic</string>
+	<string>manual</string>
+	<key>signingCertificate</key>
+	<string>Developer ID Application</string>
 	<key>stripSwiftSymbols</key>
 	<true/>
 	<key>teamID</key>

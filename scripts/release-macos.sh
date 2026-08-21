@@ -126,7 +126,6 @@ fi
 
 DEVELOPER_ID_IDENTITY=""
 NOTARY_ARGS=()
-XCODE_AUTH_ARGS=(-allowProvisioningUpdates)
 
 find_developer_id_identity() {
   local identities line
@@ -165,16 +164,6 @@ configure_notary_credentials() {
       --key-id "$ATC_APP_STORE_CONNECT_KEY_ID"
       --issuer "$ATC_APP_STORE_CONNECT_ISSUER_ID"
     )
-    # The ephemeral runner imports only the long-lived Developer ID identity.
-    # Automatic archive signing can use the same App Store Connect API key to
-    # obtain its short-lived development signing assets; export then selects
-    # the locally imported Developer ID certificate.
-    XCODE_AUTH_ARGS=(
-      -authenticationKeyPath "$ATC_APP_STORE_CONNECT_KEY_PATH"
-      -authenticationKeyID "$ATC_APP_STORE_CONNECT_KEY_ID"
-      -authenticationKeyIssuerID "$ATC_APP_STORE_CONNECT_ISSUER_ID"
-      -allowProvisioningUpdates
-    )
     return
   fi
   report_error "configure ATC_NOTARY_PROFILE or the three ATC_APP_STORE_CONNECT_KEY_* credentials"
@@ -209,6 +198,21 @@ validate_exported_app() {
   assert_plist_value ATCBuildVersion "$VERSION"
   assert_plist_value ATCBuildCommit "$COMMIT"
   assert_plist_value ATCBuildBuiltAt "$BUILT_AT"
+}
+
+verify_exported_app_signature() {
+  local details
+  codesign --verify --deep --strict --verbose=2 "$APP_PATH" || return
+  details="$(codesign --display --verbose=4 "$APP_PATH" 2>&1)" || {
+    printf '%s\n' "$details" >&2
+    return 1
+  }
+  if [[ "$details" != *"Authority=Developer ID Application:"*"($ATC_TEAM_ID)"* ||
+    "$details" != *"TeamIdentifier=$ATC_TEAM_ID"* ]]; then
+    printf '%s\n' "$details" >&2
+    report_error "exported app is not signed with Team $ATC_TEAM_ID's Developer ID identity"
+    return 1
+  fi
 }
 
 assert_plist_value() {
@@ -309,7 +313,10 @@ XCODE_OVERRIDES=(
   "PRODUCT_NAME=$APP_NAME"
   "PRODUCT_BUNDLE_IDENTIFIER=$BUNDLE_ID"
   "DEVELOPMENT_TEAM=$ATC_TEAM_ID"
-  "CODE_SIGN_STYLE=Automatic"
+  # Release CI imports this long-lived identity into an isolated keychain.
+  # Manual signing keeps Xcode from creating per-run development certificates.
+  "CODE_SIGN_STYLE=Manual"
+  "CODE_SIGN_IDENTITY=$DEVELOPER_ID_IDENTITY"
   "MARKETING_VERSION=$MARKETING_VERSION"
   "CURRENT_PROJECT_VERSION=$BUILD_NUMBER"
   "ATC_BUILD_VERSION=$VERSION"
@@ -327,18 +334,15 @@ run_step "Archive $APP_NAME.app" "02-archive" xcodebuild archive \
   -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_PATH" \
   -skipPackagePluginValidation \
   -skipMacroValidation \
-  "${XCODE_AUTH_ARGS[@]}" \
   "${XCODE_OVERRIDES[@]}"
 
 run_step "Export Developer ID app" "03-export" xcodebuild -exportArchive \
   -archivePath "$ARCHIVE_PATH" \
   -exportPath "$EXPORT_PATH" \
-  -exportOptionsPlist "$EXPORT_OPTIONS_PLIST" \
-  "${XCODE_AUTH_ARGS[@]}"
+  -exportOptionsPlist "$EXPORT_OPTIONS_PLIST"
 
 run_step "Validate exported app identity" "04-validate-app" validate_exported_app
-run_step "Verify exported app signature" "05-verify-app" \
-  codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+run_step "Verify exported app signature" "05-verify-app" verify_exported_app_signature
 run_step "Create DMG" "06-create-dmg" create_dmg
 run_step "Sign and verify DMG" "07-sign-dmg" sign_dmg
 run_step "Submit DMG for notarization" "08-notarize" \
