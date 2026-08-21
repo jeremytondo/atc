@@ -385,6 +385,47 @@ describe("OpenTUI manager", () => {
     }),
   )
 
+  it.effect("switches numbered tabs after the Ctrl-Space prefix", () =>
+    Effect.gen(function* () {
+      const result = yield* runManager(snapshot, { selectedThreadId: "t1" }, ({ setup }) =>
+        Effect.gen(function* () {
+          yield* waitForFrame(setup, "1 Threads (2)")
+          yield* waitForFrame(setup, "2 Archived (1)")
+          yield* waitForFrame(setup, "3 Projects (2)")
+          setup.mockInput.pressKey(" ", { ctrl: true })
+          yield* waitForFrame(setup, "Prefix: 1 Threads  ·  2 Archived  ·  3 Projects")
+          setup.mockInput.pressKey("3")
+          yield* waitForFrame(setup, "╭─ Projects (2)")
+          setup.mockInput.pressKey("q")
+        }),
+      )
+
+      assert.deepStrictEqual(result, { type: "quit" })
+    }),
+  )
+
+  it.effect("leaves number keys unbound without the prefix", () =>
+    Effect.gen(function* () {
+      const result = yield* runManager(snapshot, { selectedThreadId: "t1" }, ({ setup }) =>
+        Effect.gen(function* () {
+          yield* waitForFrame(setup, "Active Threads (2)")
+          setup.mockInput.pressKey("3")
+          setup.mockInput.pressKey("a")
+        }),
+      )
+
+      assert.deepStrictEqual(result, {
+        type: "archiveThread",
+        threadId: "t1",
+        state: {
+          selectedThreadId: "t1",
+          section: "threads",
+          status: undefined,
+        },
+      })
+    }),
+  )
+
   it.effect("renames a Project from the Projects view", () =>
     Effect.gen(function* () {
       const result = yield* runManager(snapshot, { selectedThreadId: "t1" }, ({ setup }) =>
@@ -393,7 +434,7 @@ describe("OpenTUI manager", () => {
           setup.mockInput.pressTab()
           yield* waitForFrame(setup, "Archived Threads (1)")
           setup.mockInput.pressTab()
-          yield* waitForFrame(setup, "Projects (2)")
+          yield* waitForFrame(setup, "╭─ Projects (2)")
           setup.mockInput.pressArrow("down")
           yield* waitForFrame(setup, "/work/beta  ·  1 active  ·  0 archived")
           setup.mockInput.pressKey("e")
@@ -424,7 +465,7 @@ describe("OpenTUI manager", () => {
         { section: "projects", selectedProjectId: "p1" },
         ({ setup }) =>
           Effect.gen(function* () {
-            yield* waitForFrame(setup, "Projects (2)")
+            yield* waitForFrame(setup, "╭─ Projects (2)")
             setup.mockInput.pressKey("d")
             yield* waitForFrame(setup, "Delete Project · Alpha")
             setup.mockInput.pressEnter()
@@ -459,7 +500,7 @@ describe("OpenTUI manager", () => {
         { section: "projects", selectedProjectId: "p1" },
         ({ setup }) =>
           Effect.gen(function* () {
-            yield* waitForFrame(setup, "Projects (2)")
+            yield* waitForFrame(setup, "╭─ Projects (2)")
             setup.mockInput.pressKey("d")
             yield* waitForFrame(setup, "Delete Project · Alpha")
             setup.mockInput.pressArrow("down")
@@ -477,7 +518,7 @@ describe("OpenTUI manager", () => {
               },
             })
             yield* waitForFrame(setup, "Project deleted.")
-            yield* waitForFrame(setup, "Projects (2)")
+            yield* waitForFrame(setup, "╭─ Projects (2)")
             setup.mockInput.pressKey("q")
           }),
         (setup, options) =>

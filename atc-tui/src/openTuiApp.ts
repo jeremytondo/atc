@@ -2,6 +2,7 @@ import {
   BoxRenderable,
   InputRenderable,
   SelectRenderable,
+  TabSelectRenderable,
   TextRenderable,
   type CliRenderer,
   type Renderable,
@@ -173,6 +174,32 @@ export const makeSelect = (
     selectedDescriptionColor: colors.selectedDescription,
     descriptionColor: colors.description,
   })
+
+export const makeTabs = (
+  shell: AppShell,
+  options: {
+    readonly id: string
+    readonly items: ReadonlyArray<{ readonly name: string }>
+    readonly selectedIndex: number
+  },
+): TabSelectRenderable => {
+  const tabs = new TabSelectRenderable(shell.renderer, {
+    id: options.id,
+    width: "100%",
+    options: options.items.map((item) => ({ ...item, description: "" })),
+    tabWidth: 20,
+    backgroundColor: "transparent",
+    textColor: colors.description,
+    selectedBackgroundColor: colors.selection,
+    selectedTextColor: "#ffffff",
+    showDescription: false,
+    showScrollArrows: false,
+    showUnderline: true,
+  })
+  tabs.focusable = false
+  tabs.setSelectedIndex(options.selectedIndex)
+  return tabs
+}
 
 export const makeMessage = (shell: AppShell, id: string): TextRenderable =>
   new TextRenderable(shell.renderer, {

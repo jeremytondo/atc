@@ -138,6 +138,11 @@ type MainEvent =
 const nextSection = (section: ManagerSection): ManagerSection =>
   section === "threads" ? "archived" : section === "archived" ? "projects" : "threads"
 
+const sections: ReadonlyArray<ManagerSection> = ["threads", "archived", "projects"]
+
+const sectionForNumber = (name: string): ManagerSection | undefined =>
+  name === "1" ? "threads" : name === "2" ? "archived" : name === "3" ? "projects" : undefined
+
 const runMainScreen = (
   shell: OpenTuiApp.AppShell,
   options: ManagerOptions,
@@ -149,12 +154,25 @@ const runMainScreen = (
       const section = initial.section ?? "threads"
       const events = yield* Queue.unbounded<MainEvent>()
       const itemIdsByIndex: Array<string> = []
-      const view = OpenTuiApp.makeView(shell, "manager-view")
+      const view = OpenTuiApp.makeFormView(shell, "manager-view")
+      const tabs = OpenTuiApp.makeTabs(shell, {
+        id: "manager-tabs",
+        items: [{ name: "1 Threads" }, { name: "2 Archived" }, { name: "3 Projects" }],
+        selectedIndex: sections.indexOf(section),
+      })
+      const content = OpenTuiApp.makeView(shell, "manager-content")
+      content.height = "auto"
+      content.flexGrow = 1
       const list = OpenTuiApp.makeSelect(shell, { id: "manager-list", items: [] })
       const empty = OpenTuiApp.makeMessage(shell, "manager-empty")
-      view.add(list)
-      view.add(empty)
+      content.add(list)
+      content.add(empty)
+      view.add(tabs)
+      view.add(content)
       yield* OpenTuiApp.mountView(shell, view)
+
+      let prefixActive = false
+      let baseStatus = ""
 
       const selectedId = () => itemIdsByIndex[list.getSelectedIndex()]
       const selectionState = (
@@ -181,13 +199,22 @@ const runMainScreen = (
           Queue.offerUnsafe(events, { type: "quit" })
           return
         }
-        if (key.name === "tab") {
-          Queue.offerUnsafe(events, { type: "switchSection", section: nextSection(section) })
+        if (key.ctrl && key.name === "space") {
+          prefixActive = true
+          shell.status.content = "Prefix: 1 Threads  ·  2 Archived  ·  3 Projects"
           return
         }
-        if (key.name === "1" || key.name === "2" || key.name === "3") {
-          const target = key.name === "1" ? "threads" : key.name === "2" ? "archived" : "projects"
-          Queue.offerUnsafe(events, { type: "switchSection", section: target })
+        if (prefixActive) {
+          prefixActive = false
+          shell.status.content = baseStatus
+          const target = sectionForNumber(key.name)
+          if (target !== undefined && target !== section) {
+            Queue.offerUnsafe(events, { type: "switchSection", section: target })
+          }
+          return
+        }
+        if (key.name === "tab") {
+          Queue.offerUnsafe(events, { type: "switchSection", section: nextSection(section) })
           return
         }
         if (key.ctrl && key.name === "n") {
@@ -296,6 +323,15 @@ const runMainScreen = (
                     : "No active Threads. Press Ctrl-N to create one."
           const fetched =
             snapshot === undefined ? "" : `  ·  synced ${snapshot.fetchedAt.toLocaleTimeString()}`
+          const activeCount =
+            snapshot?.threads.filter((thread) => thread.archivedAt === undefined).length ?? 0
+          const archivedCount = (snapshot?.threads.length ?? 0) - activeCount
+          tabs.options = [
+            { name: `1 Threads (${activeCount})`, description: "" },
+            { name: `2 Archived (${archivedCount})`, description: "" },
+            { name: `3 Projects (${snapshot?.projects.length ?? 0})`, description: "" },
+          ]
+          tabs.setSelectedIndex(sections.indexOf(section))
           const title =
             section === "threads"
               ? `Active Threads (${items.length})`
@@ -304,15 +340,16 @@ const runMainScreen = (
                 : `Projects (${items.length})`
           const help =
             section === "threads"
-              ? "Tab/1-3 views  ·  ↑/↓ navigate  ·  Enter attach  ·  a archive  ·  Ctrl-N new\nCtrl-P new project  ·  r refresh  ·  q quit  ·  zmx Ctrl-\\ returns"
+              ? "Tab cycle views  ·  Ctrl-Space 1-3 switch  ·  ↑/↓ navigate  ·  Enter attach  ·  a archive\nCtrl-N new  ·  Ctrl-P new project  ·  r refresh  ·  q quit  ·  zmx Ctrl-\\ returns"
               : section === "archived"
-                ? "Tab/1-3 views  ·  ↑/↓ navigate  ·  Enter or u unarchive\nCtrl-N new thread  ·  Ctrl-P new project  ·  r refresh  ·  q quit"
-                : "Tab/1-3 views  ·  ↑/↓ navigate  ·  Enter or e rename  ·  d delete\nCtrl-P new project  ·  Ctrl-N new thread  ·  r refresh  ·  q quit"
+                ? "Tab cycle views  ·  Ctrl-Space 1-3 switch  ·  ↑/↓ navigate  ·  Enter or u unarchive\nCtrl-N new thread  ·  Ctrl-P new project  ·  r refresh  ·  q quit"
+                : "Tab cycle views  ·  Ctrl-Space 1-3 switch  ·  ↑/↓ navigate  ·  Enter or e rename\nd delete  ·  Ctrl-P new project  ·  Ctrl-N new thread  ·  r refresh  ·  q quit"
+          baseStatus = state.status ?? backgroundStatus ?? ""
           OpenTuiApp.update(shell, {
             subtitle:
               options.endpoint.origin + `  ·  ${View.connectionLabel(reachability)}` + fetched,
             title,
-            status: state.status ?? backgroundStatus,
+            status: prefixActive ? "Prefix: 1 Threads  ·  2 Archived  ·  3 Projects" : baseStatus,
             help,
           })
         })
