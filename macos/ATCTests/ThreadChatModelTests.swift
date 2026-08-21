@@ -179,7 +179,6 @@ struct ThreadChatModelTests {
         #expect(await chat.send("do it"))
         #expect(client.prompts.map(\.prompt) == ["do it"])
         #expect(chat.promptError == nil)
-        #expect(chat.lastSentPrompt == "do it")
         // The echo is up (the response named its turn); the real userMessage
         // resolves it.
         #expect(chat.transcript.pendingPrompts.count == 1)
@@ -200,6 +199,51 @@ struct ThreadChatModelTests {
         #expect(chat.promptError == "Codex is not installed")
         #expect(chat.transcript.pendingPrompts.isEmpty)
         #expect(chat.transcript.items.count == 3)
+    }
+
+    @Test("send uploads each image first, then prompts with their ids; the echo carries the images")
+    func sendWithAttachments() async throws {
+        let harness = try await acquired()
+        let chat = harness.chat
+        let client = harness.test.client
+        let images = [
+            PendingAttachment(data: Data([1, 2, 3]), mediaType: .imagePng, name: "one.png"),
+            PendingAttachment(data: Data([4, 5]), mediaType: .imageJpeg, name: "two.jpeg"),
+        ]
+
+        #expect(await chat.send("look", attachments: images))
+        #expect(client.uploads.map(\.attachment.name) == ["one.png", "two.jpeg"])
+        #expect(client.uploads.map(\.bytes) == [Data([1, 2, 3]), Data([4, 5])])
+        #expect(client.uploads.map(\.attachment.mediaType) == [.imagePng, .imageJpeg])
+        #expect(client.prompts.last?.attachments == client.uploads.map(\.attachment.id))
+        #expect(chat.transcript.pendingPrompts.first?.attachments == images)
+
+        // An image-only prompt is allowed; a refused upload restores nothing
+        // server-side and reports inline.
+        #expect(await chat.send("", attachments: [images[0]]))
+        #expect(client.prompts.last?.prompt == "")
+        client.shouldFail = true
+        #expect(await chat.send("again", attachments: [images[0]]) == false)
+        #expect(chat.promptError != nil)
+        #expect(chat.transcript.pendingPrompts.count == 2)
+    }
+
+    @Test("send passes the when choice through, and the prompt history lists sent prompts newest first")
+    func sendWhenAndHistory() async throws {
+        let harness = try await acquired()
+        let chat = harness.chat
+        let client = harness.test.client
+
+        #expect(await chat.send("nudge", when: .now))
+        #expect(client.prompts.last?.when == .now)
+        #expect(await chat.send("later", when: .queue))
+        #expect(client.prompts.last?.when == .queue)
+        #expect(await chat.send("plain"))
+        #expect(client.prompts.last?.when == nil)
+        // The echoes lead the history (newest first), ahead of the
+        // transcript's user messages; nothing repeats.
+        #expect(Array(chat.promptHistory.prefix(3)) == ["plain", "later", "nudge"])
+        #expect(Set(chat.promptHistory).count == chat.promptHistory.count)
     }
 
     @Test("perform refuses off-live inline and routes failures into actionError, never a throw")

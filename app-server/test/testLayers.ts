@@ -16,6 +16,7 @@ import * as ClaudeHooks from "../src/agents/claudeHooks.ts"
 import * as CodexAdapter from "../src/agents/codexAdapter.ts"
 import { AppConfig } from "../src/platform/config.ts"
 import * as Directories from "../src/platform/directories.ts"
+import * as FileSearch from "../src/platform/fileSearch.ts"
 import * as Events from "../src/events/events.ts"
 import * as Persistence from "../src/platform/persistence.ts"
 import * as ProjectRepository from "../src/projects/projectRepository.ts"
@@ -25,6 +26,8 @@ import * as Tailscale from "../src/platform/tailscale.ts"
 import type { TerminalAdapter } from "../src/terminals/terminalAdapter.ts"
 import * as TerminalRepository from "../src/terminals/terminalRepository.ts"
 import * as Terminals from "../src/terminals/terminals.ts"
+import * as AttachmentRepository from "../src/threads/attachmentRepository.ts"
+import * as Attachments from "../src/threads/attachments.ts"
 import * as ThreadRepository from "../src/threads/threadRepository.ts"
 import * as ThreadNaming from "../src/threads/threadNaming.ts"
 import * as ThreadRuntime from "../src/threads/threadRuntime.ts"
@@ -71,7 +74,11 @@ export const TestTailscaleLayer = Layer.succeed(Tailscale.Tailscale)({
   status: Effect.succeed({ state: "disabled" }),
 })
 
+/** One scratch data directory per test process: attachments write under it. */
+const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "atc-test-data-"))
+
 /** A settled AppConfig for tests that only need a few fields overridden. */
+
 export const testAppConfig = (overrides: Partial<AppConfig["Service"]>): Layer.Layer<AppConfig> =>
   Layer.succeed(AppConfig)({
     port: 0,
@@ -82,7 +89,7 @@ export const testAppConfig = (overrides: Partial<AppConfig["Service"]>): Layer.L
     logLevel: "Info",
     configFile: "/dev/null",
     home: os.homedir(),
-    dataDir: "/tmp",
+    dataDir: testDataDir,
     stateDir: "/tmp",
     dbFile: "/tmp/atc.db",
     tokenFile: "/tmp/atc-auth-token",
@@ -123,6 +130,8 @@ export const makeTestServiceLayers = (
     | Terminals.Terminals
     | Threads.Threads
     | ThreadRuntime.ThreadRuntime
+    | Attachments.Attachments
+    | FileSearch.FileSearch
     | TranscriptRepository.TranscriptRepository
     | Projects.Projects
     | AgentRegistry.AgentRegistry
@@ -146,13 +155,19 @@ export const makeTestServiceLayers = (
     TerminalRepository.layer,
     ThreadRepository.layer,
     TranscriptRepository.layer,
+    AttachmentRepository.layer,
     AgentDefaultsRepository.layer,
     // Merged, not just provided: Threads holds the SqlClient for its
     // settings write-through transaction.
   ).pipe(Layer.provideMerge(Persistence.layerFile(dbFile)))
+  const directories = Directories.layer.pipe(Layer.provide(testAppConfig(configOverrides)))
   const services = Layer.mergeAll(
     base,
-    Directories.layer.pipe(Layer.provide(testAppConfig(configOverrides))),
+    directories,
+    FileSearch.layer.pipe(Layer.provide(directories)),
+    Attachments.layer.pipe(
+      Layer.provide([base, testAppConfig(configOverrides), BunServices.layer]),
+    ),
     fake.layer,
     ClaudeHooks.layer,
   )

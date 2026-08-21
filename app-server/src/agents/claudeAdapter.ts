@@ -8,6 +8,7 @@ import type {
   PermissionMode,
   PermissionResult,
   PermissionUpdate,
+  SDKControlInitializeResponse,
   SDKMessage,
   SDKUserMessage,
   SessionMessage,
@@ -43,6 +44,7 @@ import type {
   ThreadItem,
   ThreadRequest,
   ThreadSettings,
+  TurnInput,
 } from "./agentAdapter.ts"
 import {
   AgentResumeFailed,
@@ -181,6 +183,7 @@ export interface ClaudeQueryHandle extends AsyncIterable<SDKMessage> {
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>
   readonly applyFlagSettings: (settings: { effortLevel?: EffortLevel | null }) => Promise<void>
   readonly supportedModels: () => Promise<ReadonlyArray<ModelInfo>>
+  readonly initializationResult: () => Promise<Pick<SDKControlInitializeResponse, "commands">>
 }
 
 /** The query() seam, injectable so fixture tests can script SDK streams. */
@@ -385,11 +388,46 @@ const HOOK_EVENTS: ReadonlyArray<HookEvent> = [
   "PermissionDenied",
 ]
 
-const userMessage = (text: string): SDKUserMessage => ({
+type UserContent = SDKUserMessage["message"]["content"]
+
+const userMessage = (content: UserContent): SDKUserMessage => ({
   type: "user",
-  message: { role: "user", content: text },
+  message: { role: "user", content },
   parent_tool_use_id: null,
 })
+
+/**
+ * The turn input as SDK content (ATC-216): plain text, or the text followed
+ * by each image inlined as a base64 block — the Anthropic API's image shape,
+ * read from the attachment's stored bytes here (the SDK child sees no
+ * paths). An unreadable attachment fails the turn before it starts.
+ */
+const readUserContent = (input: TurnInput): Effect.Effect<UserContent, AgentProtocolError> =>
+  input.attachments.length === 0
+    ? Effect.succeed(input.text)
+    : Effect.forEach(input.attachments, (attachment) =>
+        Effect.tryPromise({
+          try: () => Bun.file(attachment.path).arrayBuffer(),
+          catch: (error) =>
+            protocolError(
+              `attachment ${attachment.name} could not be read: ${error instanceof Error ? error.message : String(error)}`,
+            ),
+        }).pipe(
+          Effect.map((buffer) => ({
+            type: "image" as const,
+            source: {
+              type: "base64" as const,
+              media_type: attachment.mediaType,
+              data: Buffer.from(buffer).toString("base64"),
+            },
+          })),
+        ),
+      ).pipe(
+        Effect.map((images) => [
+          ...(input.text === "" ? [] : [{ type: "text" as const, text: input.text }]),
+          ...images,
+        ]),
+      )
 
 /**
  * Labeled plain-text lines from a transcript read (ATC-190): root user and
@@ -457,7 +495,7 @@ interface LiveSession {
   readonly abort: AbortController
   /** Aggregate session-tree activity state (ATC-158). */
   readonly tracker: ClaudeHooks.ActivityTracker
-  readonly pushInput: (text: string) => void
+  readonly pushInput: (message: SDKUserMessage) => void
   readonly closeInput: () => void
   readonly initGate: Deferred.Deferred<void, GateError>
   /** The held query() handle, once opened (control requests, interrupt). */
@@ -698,7 +736,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
             )
             return
           }
-          if (streamed || block.type === "tool_result") return
+          if (streamed || block.type === "tool_result" || block.type === "image") return
           // Already complete: one event, like a history item.
           emitItem(
             session,
@@ -1057,8 +1095,8 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
             queue,
             abort: new AbortController(),
             tracker: ClaudeHooks.makeActivityTracker(),
-            pushInput: (text) => {
-              Queue.offerUnsafe(inputQueue, userMessage(text))
+            pushInput: (message) => {
+              Queue.offerUnsafe(inputQueue, message)
             },
             closeInput: () => {
               Queue.endUnsafe(inputQueue)
@@ -1249,7 +1287,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
        * Turn ids are uuids — the Thread runtime persists them, so a process-local
        * counter would collide with an earlier process's turns.
        */
-      const beginTurn = (session: LiveSession, text: string): string => {
+      const beginTurn = (session: LiveSession, input: TurnInput, content: UserContent): string => {
         const turnId = `claude-turn-${crypto.randomUUID()}`
         session.activeTurn = turnId
         // Emitted before anything can await: the consume fiber may deliver
@@ -1260,9 +1298,10 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
           type: "userMessage",
           id: `${turnId}:prompt`,
           turnId,
-          text,
+          text: input.text,
+          ...(input.attachments.length > 0 ? { attachments: input.attachments } : {}),
         })
-        session.pushInput(text)
+        session.pushInput(userMessage(content))
         return turnId
       }
 
@@ -1324,12 +1363,13 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
           cwd: session.cwd,
           activity: Effect.sync(() => session.activity),
           events: Stream.fromQueue(session.queue),
-          startTurn: (text, settings) =>
+          startTurn: (input, settings) =>
             Effect.gen(function* () {
               yield* requireOpen
               if (session.activeTurn !== null) {
                 return yield* Effect.fail(turnStillActive(session.activeTurn))
               }
+              const content = yield* readUserContent(input)
               yield* pushSettings(session, settings)
               // The pushes suspended: the seam's one-turn rule is re-checked
               // before the input goes out.
@@ -1337,7 +1377,7 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
               if (session.activeTurn !== null) {
                 return yield* Effect.fail(turnStillActive(session.activeTurn))
               }
-              const turnId = beginTurn(session, text)
+              const turnId = beginTurn(session, input, content)
               if (session.sessionId === null) {
                 // First turn after a resume: this is where the deferred
                 // identity verification lands (see the module header).
@@ -1350,6 +1390,30 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
                 )
               }
               return { turnId }
+            }),
+          steer: (input, turn) =>
+            Effect.gen(function* () {
+              yield* requireOpen
+              if (session.activeTurn !== turn.turnId) {
+                return yield* Effect.fail(staleTurn(turn.turnId))
+              }
+              const content = yield* readUserContent(input)
+              // The read suspended: the turn may have ended meanwhile.
+              yield* requireOpen
+              if (session.activeTurn !== turn.turnId) {
+                return yield* Effect.fail(staleTurn(turn.turnId))
+              }
+              // The held query() takes the message mid-turn (the CLI folds
+              // it into the next model call); the SDK never echoes it, so it
+              // is minted here like the turn's first prompt.
+              emitItem(session, "itemCompleted", {
+                type: "userMessage",
+                id: `${turn.turnId}:steer:${crypto.randomUUID()}`,
+                turnId: turn.turnId,
+                text: input.text,
+                ...(input.attachments.length > 0 ? { attachments: input.attachments } : {}),
+              })
+              session.pushInput(userMessage(content))
             }),
           interrupt: (turn) =>
             Effect.gen(function* () {
@@ -1409,8 +1473,9 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
         sharedServer: false,
         createSession: (options) =>
           Effect.gen(function* () {
+            const content = yield* readUserContent(options.input)
             const session = yield* openSession({ cwd: options.cwd, settings: options.settings })
-            const turnId = beginTurn(session, options.input)
+            const turnId = beginTurn(session, options.input, content)
             // A create has no expected id, so AgentResumeFailed cannot
             // happen here — same rule as the codex adapter.
             yield* awaitVerified(session).pipe(
@@ -1570,6 +1635,60 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
                 }),
               )
               return normalizeClaudeCatalog(models)
+            }),
+          ),
+        // T3Code's probe: a child in `cwd` with a prompt that never yields,
+        // read for its initialization (the command and skill list the CLI
+        // resolved from the user and project scopes), then aborted — no API
+        // request is ever made.
+        listCommands: (options) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const executable = yield* resolvedExecutable
+              const abort = new AbortController()
+              yield* Effect.addFinalizer(() => Effect.sync(() => abort.abort()))
+              const prompt = yield* Stream.toAsyncIterableEffect(Stream.never)
+              const handle = yield* Effect.try({
+                try: () =>
+                  queryFn({
+                    prompt,
+                    options: {
+                      abortController: abort,
+                      cwd: options.cwd,
+                      env: claudeEnvironment(),
+                      pathToClaudeCodeExecutable: executable,
+                      settingSources: ["user", "project", "local"],
+                      strictMcpConfig: true,
+                      tools: [],
+                      persistSession: false,
+                    },
+                  }),
+                catch: (error) =>
+                  protocolError(
+                    `the command list read failed to start: ${error instanceof Error ? error.message : String(error)}`,
+                  ),
+              })
+              const initialized = yield* Effect.tryPromise({
+                try: () => handle.initializationResult(),
+                catch: (error) =>
+                  protocolError(
+                    `the command list read failed: ${error instanceof Error ? error.message : String(error)}`,
+                  ),
+              }).pipe(
+                Effect.timeoutOrElse({
+                  duration: "30 seconds",
+                  orElse: () => Effect.fail(protocolError("the command list read timed out")),
+                }),
+              )
+              return initialized.commands.map((command) =>
+                command.argumentHint === ""
+                  ? { name: command.name, description: command.description }
+                  : {
+                      name: command.name,
+                      description: command.description,
+                      argumentHint: command.argumentHint,
+                    },
+              )
             }),
           ),
         generateTitle: (options) =>

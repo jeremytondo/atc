@@ -60,7 +60,7 @@ describe("Thread TUI ownership", () => {
       assert.isTrue(terminalAlive(terminal.id))
       const readsBefore = fake.historyReads.length
 
-      const started = yield* runtime.prompt(threadId, "native wins")
+      const started = yield* runtime.prompt(threadId, { prompt: "native wins" })
       // The turn started at once: the TUI ended first — after a settled
       // history read (its last turn on disk) — and the session resumed
       // natively with the prompt.
@@ -88,13 +88,13 @@ describe("Thread TUI ownership", () => {
       const runtime = yield* ThreadRuntime
       const { threadId, sessionId, terminal, fake } = yield* openedThread("claude-code")
       fake.setUnavailable("transcript reads are down")
-      const refused = yield* runtime.prompt(threadId, "not yet").pipe(Effect.flip)
+      const refused = yield* runtime.prompt(threadId, { prompt: "not yet" }).pipe(Effect.flip)
       assert.strictEqual(refused._tag, "ProviderUnavailable")
       assert.isTrue(terminalAlive(terminal.id))
       // Un-admitted, not queued: the caller's error means "not accepted".
       assert.deepStrictEqual(yield* runtime.listQueue(threadId), [])
       fake.setUnavailable(null)
-      const started = yield* runtime.prompt(threadId, "now")
+      const started = yield* runtime.prompt(threadId, { prompt: "now" })
       assert.isString(started.turnId)
       assert.isFalse(terminalAlive(terminal.id))
       fake.completeTurn(sessionId, "completed")
@@ -112,7 +112,7 @@ describe("Thread TUI ownership", () => {
         threads.get(threadId).pipe(Effect.orDie),
         (current) => current.activityState === "working",
       )
-      const queued = yield* runtime.prompt(threadId, "after the tui")
+      const queued = yield* runtime.prompt(threadId, { prompt: "after the tui" })
       assert.isUndefined(queued.turnId)
       assert.isTrue(terminalAlive(terminal.id))
       assert.deepStrictEqual(fake.sessions.get(sessionId)?.inputs, [])
@@ -166,7 +166,7 @@ describe("Thread TUI ownership", () => {
       assert.isFalse(terminalAlive(reopened.id))
 
       // Closed means not shown: a native turn ends with no relaunch.
-      const started = yield* runtime.prompt(threadId, "chat only")
+      const started = yield* runtime.prompt(threadId, { prompt: "chat only" })
       assert.isString(started.turnId)
       fake.completeTurn(sessionId, "completed")
       yield* waitFor(
@@ -188,7 +188,7 @@ describe("Thread TUI ownership", () => {
       const { threadId, sessionId, fake } = yield* openedThread("claude-code")
       yield* threads.closeTerminal(threadId)
 
-      const started = yield* runtime.prompt(threadId, "busy natively")
+      const started = yield* runtime.prompt(threadId, { prompt: "busy natively" })
       assert.isString(started.turnId)
       const refused = yield* threads.openTerminal(threadId).pipe(Effect.flip)
       assert.strictEqual(refused._tag, "ThreadBusy")
@@ -208,7 +208,7 @@ describe("Thread TUI ownership", () => {
       const threads = yield* Threads
       const { threadId, sessionId, terminal, fake } = yield* openedThread("codex")
 
-      const started = yield* runtime.prompt(threadId, "alongside the tui")
+      const started = yield* runtime.prompt(threadId, { prompt: "alongside the tui" })
       assert.isString(started.turnId)
       assert.isTrue(terminalAlive(terminal.id))
       fake.completeTurn(sessionId, "completed")

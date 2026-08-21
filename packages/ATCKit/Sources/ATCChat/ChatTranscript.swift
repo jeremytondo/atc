@@ -66,6 +66,8 @@ enum ChatMutation: Equatable {
 struct PendingPrompt: Identifiable, Equatable {
     let id: String
     let text: String
+    /// The images sent with it, shown from local bytes until the real item lands.
+    let attachments: [PendingAttachment]
     /// The admitted prompt's id, once the send response arrived.
     var promptId: String?
     /// The turn the prompt started, once known (response or turn event).
@@ -133,8 +135,8 @@ struct ChatTranscript: Equatable {
     // MARK: - Pending prompts
 
     /// A send left for the server: echo it at the tail immediately.
-    mutating func addPending(_ text: String) -> String {
-        let pending = PendingPrompt(id: UUID().uuidString, text: text)
+    mutating func addPending(_ text: String, attachments: [PendingAttachment] = []) -> String {
+        let pending = PendingPrompt(id: UUID().uuidString, text: text, attachments: attachments)
         pendingPrompts.append(pending)
         return pending.id
     }
@@ -185,11 +187,13 @@ struct ChatTranscript: Equatable {
     private mutating func settle(byAppended item: ThreadItem) -> Bool {
         guard case .userMessage(let message) = item, !pendingPrompts.isEmpty else { return false }
         matchPendingTurns()
-        let index = pendingPrompts.firstIndex { pending in
-            if let turnId = pending.turnId { return turnId == message.turnId }
-            return pending.promptId == nil && pending.text == message.text
+        let byTurn = pendingPrompts.firstIndex { $0.turnId != nil && $0.turnId == message.turnId }
+        // Text identifies an echo only when it is unambiguous: two image-only
+        // prompts in flight both read "", and the wrong one must not settle.
+        let byText = pendingPrompts.indices.filter {
+            pendingPrompts[$0].promptId == nil && pendingPrompts[$0].text == message.text
         }
-        guard let index else { return false }
+        guard let index = byTurn ?? (byText.count == 1 ? byText[0] : nil) else { return false }
         pendingPrompts.remove(at: index)
         return true
     }

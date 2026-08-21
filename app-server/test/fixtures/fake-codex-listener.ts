@@ -37,6 +37,12 @@
 // thread/settings/updated like a TUI change would; model/list serves a
 // small catalog.
 //
+// Steering and skills (ATC-216): turn/steer takes input only while the
+// named turn is the thread's active one (anything else is an invalid
+// request) and echoes it as that turn's next userMessage item, localImage
+// blocks included; skills/list answers one entry per asked cwd with one
+// enabled skill ("review") and one disabled.
+//
 // Env switches (baked into the wrapper script by tests):
 //   FAKE_CODEX_MODE       "ok" (default) | "never-ready" (alive, never binds)
 //   FAKE_CODEX_WRONG_CWD  "start" | "resume" — lie about cwd in that reply
@@ -537,8 +543,14 @@ const handle = (
       const threadId = String(params["threadId"] ?? "")
       const thread = threads.get(threadId)
       if (thread === undefined) return respondError(-32600, `unknown thread ${threadId}`)
-      const input = params["input"] as Array<{ text?: string }> | undefined
-      const text = input?.[0]?.text ?? ""
+      const input = (params["input"] ?? []) as Array<{
+        type: string
+        text?: string
+        path?: string
+      }>
+      const text = input
+        .flatMap((block) => (block.type === "text" && block.text !== undefined ? [block.text] : []))
+        .join("\n")
       const turnId = crypto.randomUUID()
       // Overrides are sticky for this and subsequent turns, like the real server.
       if (typeof params["model"] === "string") thread.settings.model = params["model"]
@@ -572,10 +584,15 @@ const handle = (
       // The real server broadcasts the turn's input back as a completed
       // userMessage item — content text blocks, unlike agentMessage's
       // top-level text — the retention evidence for title refinement.
+      // Image inputs come back as localImage blocks, like the real server.
       emitItem(thread, turnId, "completed", {
         id: crypto.randomUUID(),
         type: "userMessage",
-        content: [{ type: "text", text, text_elements: [] }],
+        content: input.map((block) =>
+          block.type === "localImage"
+            ? { type: "localImage", path: block.path }
+            : { type: "text", text: block.text ?? "", text_elements: [] },
+        ),
       })
       if (text.includes("HANG")) {
         hangingTurns.add(threadId)
@@ -726,6 +743,59 @@ const handle = (
         })
       }
       return finishTurn(thread, turnId, text)
+    }
+    case "skills/list": {
+      // One entry per asked cwd: an enabled skill and a disabled one.
+      const cwds = (params["cwds"] as Array<string> | undefined) ?? []
+      return respond({
+        data: cwds.map((cwd) => ({
+          cwd,
+          errors: [],
+          skills: [
+            {
+              name: "review",
+              description: "Review the current diff carefully",
+              shortDescription: "Review the diff",
+              enabled: true,
+              path: "/skills/review/SKILL.md",
+              scope: "user",
+            },
+            {
+              name: "hidden",
+              description: "A disabled skill",
+              enabled: false,
+              path: "/skills/hidden/SKILL.md",
+              scope: "user",
+            },
+          ],
+        })),
+      })
+    }
+    case "turn/steer": {
+      const threadId = String(params["threadId"] ?? "")
+      const expectedTurnId = String(params["expectedTurnId"] ?? "")
+      const thread = threads.get(threadId)
+      if (thread === undefined) return respondError(-32600, `unknown thread ${threadId}`)
+      const active = thread.turns.find((turn) => turn.status === "inProgress")
+      if (active === undefined || active.id !== expectedTurnId) {
+        return respondError(-32600, `turn ${expectedTurnId} is not the active turn`)
+      }
+      const input = (params["input"] ?? []) as Array<{
+        type: string
+        text?: string
+        path?: string
+      }>
+      respond({ turnId: active.id })
+      // The real server echoes the steer as the turn's next userMessage item.
+      return emitItem(thread, active.id, "completed", {
+        id: crypto.randomUUID(),
+        type: "userMessage",
+        content: input.map((block) =>
+          block.type === "localImage"
+            ? { type: "localImage", path: block.path }
+            : { type: "text", text: block.text ?? "", text_elements: [] },
+        ),
+      })
     }
     case "turn/interrupt": {
       const threadId = String(params["threadId"] ?? "")

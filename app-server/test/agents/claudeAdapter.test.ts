@@ -44,7 +44,7 @@ describe("ClaudeAdapter", () => {
           Effect.gen(function* () {
             const { connection, turn } = yield* adapter.createSession({
               cwd,
-              input: "hello",
+              input: { text: "hello", attachments: [] },
               settings: TEST_SETTINGS,
             })
             assert.strictEqual(connection.providerSessionId, "session-a")
@@ -64,6 +64,150 @@ describe("ClaudeAdapter", () => {
     }),
   )
 
+  it.live("a turn's images go out as base64 blocks and ride the prompt's item", () =>
+    Effect.gen(function* () {
+      const cwd = workDir()
+      const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
+      const shotPath = path.join(cwd, "shot.png")
+      fs.writeFileSync(shotPath, png)
+      const shot = {
+        id: "att-1",
+        name: "shot.png",
+        mediaType: "image/png" as const,
+        byteSize: png.byteLength,
+        path: shotPath,
+        createdAt: "2026-08-20T00:00:00.000Z",
+      }
+      const { fake, layer } = adapterStack({ sessionId: "session-img" })
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter.ClaudeAdapter
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const { connection, turn } = yield* adapter.createSession({
+              cwd,
+              input: { text: "what is this", attachments: [shot] },
+              settings: TEST_SETTINGS,
+            })
+            const sink = yield* collectAgentEvents(connection.events)
+            yield* waitForAgentEvent(
+              sink,
+              (event) => event.type === "turnCompleted" && event.turnId === turn.turnId,
+            )
+            // The SDK child saw the text and the image inline, never a path.
+            assert.deepStrictEqual(fake.prompts[0], [
+              { type: "text", text: "what is this" },
+              {
+                type: "image",
+                source: {
+                  type: "base64",
+                  media_type: "image/png",
+                  data: Buffer.from(png).toString("base64"),
+                },
+              },
+            ])
+            const message = sink.find(
+              (event) => event.type === "itemCompleted" && event.item.type === "userMessage",
+            )
+            assert.deepStrictEqual(
+              message?.type === "itemCompleted" && message.item.type === "userMessage"
+                ? message.item.attachments
+                : undefined,
+              [shot],
+            )
+            // An unreadable image fails the turn before anything goes out.
+            const missing = yield* Effect.flip(
+              connection.startTurn(
+                { text: "again", attachments: [{ ...shot, path: path.join(cwd, "gone.png") }] },
+                TEST_SETTINGS,
+              ),
+            )
+            assert.strictEqual(missing._tag, "AgentProtocolError")
+            // Nothing reached the SDK: the failed turn pushed no message.
+            assert.lengthOf(fake.prompts, 1)
+            assert.strictEqual(yield* connection.activity, "idle")
+          }),
+        )
+      }).pipe(Effect.provide(layer))
+    }),
+  )
+
+  it.live(
+    "steer pushes a message into the running turn and mints its item; a stale turn is a conflict",
+    () =>
+      Effect.gen(function* () {
+        const cwd = workDir()
+        const { fake, layer } = adapterStack({ sessionId: "session-steer" })
+        yield* Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter.ClaudeAdapter
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const { connection, turn } = yield* adapter.createSession({
+                cwd,
+                input: { text: "HANG until told otherwise", attachments: [] },
+                settings: TEST_SETTINGS,
+              })
+              const sink = yield* collectAgentEvents(connection.events)
+              yield* connection.steer({ text: "also check the tests", attachments: [] }, turn)
+              // The SDK child took the message while the first turn still runs.
+              yield* eventually(
+                Effect.sync(() => fake.prompts),
+                (prompts) => prompts.length === 2,
+              )
+              assert.deepStrictEqual(fake.prompts, [
+                "HANG until told otherwise",
+                "also check the tests",
+              ])
+              const messages = sink.filter(
+                (event) => event.type === "itemCompleted" && event.item.type === "userMessage",
+              )
+              assert.lengthOf(messages, 2)
+              assert.isTrue(
+                messages.every(
+                  (event) => event.type === "itemCompleted" && event.item.turnId === turn.turnId,
+                ),
+              )
+              const stale = yield* Effect.flip(
+                connection.steer({ text: "nope", attachments: [] }, { turnId: "some-other-turn" }),
+              )
+              assert.strictEqual(stale._tag, "AgentConflict")
+              yield* connection.interrupt(turn)
+            }),
+          )
+        }).pipe(Effect.provide(layer))
+      }),
+  )
+
+  it.live(
+    "listCommands probes a throwaway child in the directory and reads its initialization",
+    () =>
+      Effect.gen(function* () {
+        const cwd = workDir()
+        const { fake, layer } = adapterStack({
+          commands: [
+            { name: "review", description: "Review the diff", argumentHint: "" },
+            { name: "commit", description: "Commit staged work", argumentHint: "<message>" },
+          ],
+        })
+        yield* Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter.ClaudeAdapter
+          const commands = yield* adapter.listCommands({ cwd })
+          assert.deepStrictEqual(commands, [
+            { name: "review", description: "Review the diff" },
+            { name: "commit", description: "Commit staged work", argumentHint: "<message>" },
+          ])
+          // The probe ran in the asked directory with the project's settings,
+          // sent no prompt, and was aborted.
+          const spawn = fake.spawns.at(-1) as {
+            cwd?: string
+            settingSources?: ReadonlyArray<string>
+          }
+          assert.strictEqual(spawn.cwd, cwd)
+          assert.deepStrictEqual(spawn.settingSources, ["user", "project", "local"])
+          assert.lengthOf(fake.prompts, 0)
+        }).pipe(Effect.provide(layer))
+      }),
+  )
+
   it.live("create with a lying cwd fails closed", () =>
     Effect.gen(function* () {
       const { layer } = adapterStack({ wrongCwd: true })
@@ -71,7 +215,11 @@ describe("ClaudeAdapter", () => {
         const adapter = yield* ClaudeAdapter.ClaudeAdapter
         const failure = yield* Effect.scoped(
           Effect.flip(
-            adapter.createSession({ cwd: workDir(), input: "hello", settings: TEST_SETTINGS }),
+            adapter.createSession({
+              cwd: workDir(),
+              input: { text: "hello", attachments: [] },
+              settings: TEST_SETTINGS,
+            }),
           ),
         )
         assert.strictEqual(failure._tag, "AgentIdentityMismatch")
@@ -96,7 +244,10 @@ describe("ClaudeAdapter", () => {
             // No identity evidence yet — the SDK sends none until a turn.
             assert.strictEqual(yield* connection.activity, "unknown")
             const sink = yield* collectAgentEvents(connection.events)
-            const turn = yield* connection.startTurn("continue please", TEST_SETTINGS)
+            const turn = yield* connection.startTurn(
+              { text: "continue please", attachments: [] },
+              TEST_SETTINGS,
+            )
             assert.strictEqual(connection.providerSessionId, "session-b")
             yield* waitForAgentEvent(
               sink,
@@ -123,7 +274,9 @@ describe("ClaudeAdapter", () => {
               cwd: workDir(),
               settings: TEST_SETTINGS,
             })
-            return yield* Effect.flip(connection.startTurn("hello?", TEST_SETTINGS))
+            return yield* Effect.flip(
+              connection.startTurn({ text: "hello?", attachments: [] }, TEST_SETTINGS),
+            )
           }),
         )
         assert.strictEqual(failure._tag, "AgentResumeFailed")
@@ -146,7 +299,9 @@ describe("ClaudeAdapter", () => {
               cwd: workDir(),
               settings: TEST_SETTINGS,
             })
-            return yield* Effect.flip(connection.startTurn("hello?", TEST_SETTINGS))
+            return yield* Effect.flip(
+              connection.startTurn({ text: "hello?", attachments: [] }, TEST_SETTINGS),
+            )
           }),
         )
         assert.strictEqual(failure._tag, "AgentIdentityMismatch")
@@ -198,7 +353,7 @@ describe("ClaudeAdapter", () => {
           Effect.gen(function* () {
             const { connection, turn } = yield* adapter.createSession({
               cwd,
-              input: "HANG until told otherwise",
+              input: { text: "HANG until told otherwise", attachments: [] },
               settings: TEST_SETTINGS,
             })
             const sink = yield* collectAgentEvents(connection.events)
@@ -217,7 +372,9 @@ describe("ClaudeAdapter", () => {
             // An interrupted turn ends the held query; the session is over
             // (AgentUnavailable — the seam's "resume it" signal), not a
             // caller-side handle conflict.
-            const closed = yield* Effect.flip(connection.startTurn("another", TEST_SETTINGS))
+            const closed = yield* Effect.flip(
+              connection.startTurn({ text: "another", attachments: [] }, TEST_SETTINGS),
+            )
             assert.strictEqual(closed._tag, "AgentUnavailable")
           }),
         )
@@ -235,7 +392,7 @@ describe("ClaudeAdapter", () => {
           Effect.gen(function* () {
             const { connection, turn } = yield* adapter.createSession({
               cwd,
-              input: "FAILTURN please",
+              input: { text: "FAILTURN please", attachments: [] },
               settings: TEST_SETTINGS,
             })
             const sink = yield* collectAgentEvents(connection.events)
@@ -265,7 +422,7 @@ describe("ClaudeAdapter", () => {
           Effect.gen(function* () {
             const { connection, turn } = yield* adapter.createSession({
               cwd,
-              input: "needs PERMISSION for a tool",
+              input: { text: "needs PERMISSION for a tool", attachments: [] },
               settings: TEST_SETTINGS,
             })
             const sink = yield* collectAgentEvents(connection.events)
@@ -335,7 +492,7 @@ describe("ClaudeAdapter", () => {
           Effect.gen(function* () {
             const { connection, turn } = yield* adapter.createSession({
               cwd,
-              input: "needs PERMISSION for a tool",
+              input: { text: "needs PERMISSION for a tool", attachments: [] },
               settings: TEST_SETTINGS,
             })
             const sink = yield* collectAgentEvents(connection.events)
@@ -371,7 +528,7 @@ describe("ClaudeAdapter", () => {
           Effect.gen(function* () {
             const { connection, turn } = yield* adapter.createSession({
               cwd,
-              input: "needs PERMISSION again",
+              input: { text: "needs PERMISSION again", attachments: [] },
               settings: TEST_SETTINGS,
             })
             const sink = yield* collectAgentEvents(connection.events)
@@ -402,7 +559,7 @@ describe("ClaudeAdapter", () => {
           Effect.gen(function* () {
             const { connection, turn } = yield* adapter.createSession({
               cwd,
-              input: "STREAM please",
+              input: { text: "STREAM please", attachments: [] },
               settings: TEST_SETTINGS,
             })
             const sink = yield* collectAgentEvents(connection.events)
@@ -468,7 +625,7 @@ describe("ClaudeAdapter", () => {
           Effect.gen(function* () {
             const { connection, turn } = yield* adapter.createSession({
               cwd,
-              input: "use a TOOL",
+              input: { text: "use a TOOL", attachments: [] },
               settings: TEST_SETTINGS,
             })
             const sink = yield* collectAgentEvents(connection.events)
@@ -537,7 +694,7 @@ describe("ClaudeAdapter", () => {
           Effect.gen(function* () {
             const { connection, turn } = yield* adapter.createSession({
               cwd,
-              input: "hello",
+              input: { text: "hello", attachments: [] },
               settings: TEST_SETTINGS,
             })
             const sink = yield* collectAgentEvents(connection.events)
@@ -568,7 +725,7 @@ describe("ClaudeAdapter", () => {
           Effect.gen(function* () {
             const { connection, turn } = yield* adapter.createSession({
               cwd,
-              input: "spawn",
+              input: { text: "spawn", attachments: [] },
               settings: TEST_SETTINGS,
             })
             const sink = yield* collectAgentEvents(connection.events)
@@ -625,7 +782,7 @@ describe("ClaudeAdapter", () => {
           Effect.gen(function* () {
             const { connection, turn } = yield* adapter.createSession({
               cwd,
-              input: "hello",
+              input: { text: "hello", attachments: [] },
               settings: TEST_SETTINGS,
             })
             const sink = yield* collectAgentEvents(connection.events)
@@ -637,7 +794,10 @@ describe("ClaudeAdapter", () => {
             assert.strictEqual(yield* connection.activity, "working")
             // A whole further turn completes (Stop without a snapshot,
             // result success, state idle): the background evidence holds.
-            const second = yield* connection.startTurn("again", TEST_SETTINGS)
+            const second = yield* connection.startTurn(
+              { text: "again", attachments: [] },
+              TEST_SETTINGS,
+            )
             yield* waitForAgentEvent(
               sink,
               (event) => event.type === "turnCompleted" && event.turnId === second.turnId,
@@ -661,7 +821,7 @@ describe("ClaudeAdapter", () => {
           Effect.gen(function* () {
             const { connection, turn } = yield* adapter.createSession({
               cwd,
-              input: "hello",
+              input: { text: "hello", attachments: [] },
               settings: TEST_SETTINGS,
             })
             const sink = yield* collectAgentEvents(connection.events)
@@ -696,7 +856,7 @@ describe("ClaudeAdapter", () => {
           Effect.gen(function* () {
             const { connection, turn } = yield* adapter.createSession({
               cwd,
-              input: "ASK me something",
+              input: { text: "ASK me something", attachments: [] },
               settings: TEST_SETTINGS,
             })
             const sink = yield* collectAgentEvents(connection.events)
@@ -1384,7 +1544,7 @@ describe("ClaudeAdapter collectTitleContext", () => {
             Effect.gen(function* () {
               const { connection, turn } = yield* adapter.createSession({
                 cwd,
-                input: "hello",
+                input: { text: "hello", attachments: [] },
                 settings: {
                   model: "sonnet",
                   reasoning: "low",
@@ -1424,12 +1584,15 @@ describe("ClaudeAdapter collectTitleContext", () => {
 
               // A later turn on the resident connection pushes only what
               // changed, and plan mode stands in for the rung.
-              const second = yield* connection.startTurn("again", {
-                model: "opus[1m]",
-                reasoning: "xhigh",
-                mode: "plan",
-                access: "autoAcceptEdits",
-              })
+              const second = yield* connection.startTurn(
+                { text: "again", attachments: [] },
+                {
+                  model: "opus[1m]",
+                  reasoning: "xhigh",
+                  mode: "plan",
+                  access: "autoAcceptEdits",
+                },
+              )
               yield* waitForAgentEvent(
                 sink,
                 (event) => event.type === "turnCompleted" && event.turnId === second.turnId,
@@ -1440,12 +1603,15 @@ describe("ClaudeAdapter collectTitleContext", () => {
                 "setPermissionMode:plan",
               ])
               // Unchanged settings push nothing; leaving plan restores the rung.
-              const third = yield* connection.startTurn("once more", {
-                model: "opus[1m]",
-                reasoning: "xhigh",
-                mode: "chat",
-                access: "fullAccess",
-              })
+              const third = yield* connection.startTurn(
+                { text: "once more", attachments: [] },
+                {
+                  model: "opus[1m]",
+                  reasoning: "xhigh",
+                  mode: "chat",
+                  access: "fullAccess",
+                },
+              )
               yield* waitForAgentEvent(
                 sink,
                 (event) => event.type === "turnCompleted" && event.turnId === third.turnId,
@@ -1453,23 +1619,29 @@ describe("ClaudeAdapter collectTitleContext", () => {
               assert.deepStrictEqual(fake.controls.slice(3), [
                 "setPermissionMode:bypassPermissions",
               ])
-              const fourth = yield* connection.startTurn("and again", {
-                model: "opus[1m]",
-                reasoning: "xhigh",
-                mode: "chat",
-                access: "fullAccess",
-              })
+              const fourth = yield* connection.startTurn(
+                { text: "and again", attachments: [] },
+                {
+                  model: "opus[1m]",
+                  reasoning: "xhigh",
+                  mode: "chat",
+                  access: "fullAccess",
+                },
+              )
               yield* waitForAgentEvent(
                 sink,
                 (event) => event.type === "turnCompleted" && event.turnId === fourth.turnId,
               )
               assert.strictEqual(fake.controls.length, 4)
               // A model with no effort support clears the flag layer's effort.
-              const fifth = yield* connection.startTurn("haiku now", {
-                model: "haiku",
-                mode: "chat",
-                access: "fullAccess",
-              })
+              const fifth = yield* connection.startTurn(
+                { text: "haiku now", attachments: [] },
+                {
+                  model: "haiku",
+                  mode: "chat",
+                  access: "fullAccess",
+                },
+              )
               yield* waitForAgentEvent(
                 sink,
                 (event) => event.type === "turnCompleted" && event.turnId === fifth.turnId,
@@ -1502,7 +1674,7 @@ describe("ClaudeAdapter collectTitleContext", () => {
             Effect.gen(function* () {
               const { connection } = yield* adapter.createSession({
                 cwd,
-                input: "hello",
+                input: { text: "hello", attachments: [] },
                 settings: { model: "haiku", mode: "chat", access: "auto" },
               })
               const sink = yield* collectAgentEvents(connection.events)

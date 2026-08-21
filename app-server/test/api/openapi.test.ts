@@ -1,22 +1,26 @@
 import { assert, describe, it } from "@effect/vitest"
 import { BunHttpServer } from "@effect/platform-bun"
-import { Context, Effect, Layer, Option } from "effect"
+import { Cause, Context, Effect, Layer, Option } from "effect"
 import {
   HttpBody,
   HttpClient,
   HttpClientRequest,
   HttpRouter,
   HttpServerRequest,
+  HttpServerRespondable,
   HttpServerResponse,
 } from "effect/unstable/http"
 import { HttpApi, OpenApi } from "effect/unstable/httpapi"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { Api, DEFAULT_PORT } from "../../src/api/contract.ts"
 import * as ClaudeHooks from "../../src/agents/claudeHooks.ts"
 import { openApiDocument, openApiJson } from "../../src/api/openapi.ts"
 import * as Server from "../../src/server.ts"
 import { appServerRoot } from "../blackbox.ts"
 import { TestBuildInfoLayer, testBuildInfo } from "../testBuildInfo.ts"
-import { startServer, TestAuthTokenLayer, TestRepositoryLayers } from "../testLayers.ts"
+import { eventually, startServer, TestAuthTokenLayer, TestRepositoryLayers } from "../testLayers.ts"
 
 // Contract-generation tests: the document must be deterministic, match the
 // checked-in artifact, cover every contract operation, and agree with what
@@ -28,6 +32,7 @@ const operation = (path: string, method = "get") =>
   ((openApiDocument.paths[path] as Record<string, unknown>)?.[method] ??
     assert.fail(`no ${method.toUpperCase()} operation documented for ${path}`)) as {
     readonly operationId: string
+    readonly requestBody?: { content: Record<string, unknown> }
     readonly responses: Record<string, { content: Record<string, { schema: { $ref?: string } }> }>
   }
 
@@ -152,7 +157,13 @@ const rawClient = Effect.gen(function* () {
         // The internal Claude hook route resolves its service per request;
         // the trust middleware resolves AuthToken the same way.
         Effect.provide([ClaudeHooks.layer, TestAuthTokenLayer]),
-        Effect.orDie,
+        // A request-decoding failure becomes the 400 the real listener sends.
+        Effect.catchCause((cause) =>
+          HttpServerRespondable.toResponseOrElse(
+            Cause.squash(cause),
+            HttpServerResponse.empty({ status: 500 }),
+          ),
+        ),
       )
       return HttpServerResponse.toClientResponse(response)
     }, Effect.scoped),
@@ -189,12 +200,16 @@ describe("openapi document vs runtime", () => {
       "/api/v1/threads/{threadId}/requests/{requestId}/answer",
       "/api/v1/threads/{threadId}/queue",
       "/api/v1/threads/{threadId}/queue/{promptId}",
+      "/api/v1/threads/{threadId}/attachments",
+      "/api/v1/threads/{threadId}/attachments/{attachmentId}",
       "/api/v1/agents",
       "/api/v1/agents/{agentId}",
       "/api/v1/agents/{agentId}/models",
+      "/api/v1/agents/{agentId}/commands",
       "/api/v1/events",
       "/api/v1/fs/check",
       "/api/v1/fs/list",
+      "/api/v1/fs/files",
     ])
     // The WebSocket attach endpoint is contract-declared but excluded from
     // the document — REST clients cannot represent an upgrade.
@@ -889,6 +904,147 @@ describe("openapi document vs runtime", () => {
     }),
   )
 
+  // Live: the transcript poll sleeps between reads (the TestClock would park it).
+  it.live(
+    "thread attachments: upload, fetch, reference from a prompt, and the documented refusals",
+    () =>
+      Effect.gen(function* () {
+        const client = yield* rawClient
+        const project = yield* client.post("http://127.0.0.1/api/v1/projects", {
+          body: HttpBody.jsonUnsafe({ name: "Attachment Docs", defaultWorkingDirectory: "/tmp" }),
+        })
+        const projectBody = (yield* project.json) as { id: string }
+        const created = yield* client.post("http://127.0.0.1/api/v1/threads", {
+          body: HttpBody.jsonUnsafe({ projectId: projectBody.id, agentId: "codex" }),
+        })
+        const thread = (yield* created.json) as { id: string }
+        const base = `http://127.0.0.1/api/v1/threads/${thread.id}`
+
+        // A PNG by signature; the server validates nothing past the header.
+        const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
+        const uploaded = yield* client.post(`${base}/attachments?name=shot.png`, {
+          body: HttpBody.uint8Array(png, "image/png"),
+        })
+        assert.strictEqual(uploaded.status, 200)
+        const attachment = (yield* uploaded.json) as Record<string, unknown>
+        assert.sameMembers(Object.keys(attachment), [
+          "id",
+          "name",
+          "mediaType",
+          "byteSize",
+          "path",
+          "createdAt",
+        ])
+        assert.strictEqual(attachment["name"], "shot.png")
+        assert.strictEqual(attachment["mediaType"], "image/png")
+        assert.strictEqual(attachment["byteSize"], png.byteLength)
+        assert.isTrue(
+          String(attachment["path"]).endsWith(`/attachments/${thread.id}/${attachment["id"]}.png`),
+          `path keyed by thread and id: ${attachment["path"]}`,
+        )
+        const post = operation("/api/v1/threads/{threadId}/attachments", "post")
+        // One raw-bytes body per accepted image type — the document IS the
+        // allowlist, and the Swift generator gets one typed case each.
+        assert.sameMembers(Object.keys(post.requestBody?.content ?? {}), [
+          "image/png",
+          "image/jpeg",
+          "image/gif",
+          "image/webp",
+        ])
+        assert.deepStrictEqual(post.responses["200"]!.content["application/json"]!.schema, {
+          $ref: "#/components/schemas/ThreadAttachment",
+        })
+        const schema = componentSchema("ThreadAttachment")
+        assert.sameMembers(
+          [...schema.required],
+          ["id", "name", "mediaType", "byteSize", "path", "createdAt"],
+        )
+
+        // The bytes come back whole, as the documented octet stream.
+        const fetched = yield* client.get(`${base}/attachments/${attachment["id"]}`)
+        assert.strictEqual(fetched.status, 200)
+        assert.strictEqual(fetched.headers["content-type"], "application/octet-stream")
+        assert.deepStrictEqual(new Uint8Array(yield* fetched.arrayBuffer), png)
+        const get = operation("/api/v1/threads/{threadId}/attachments/{attachmentId}")
+        assert.deepStrictEqual(Object.keys(get.responses["200"]!.content), [
+          "application/octet-stream",
+        ])
+
+        // The refusals, each as documented.
+        const unsupported = yield* client.post(`${base}/attachments`, {
+          body: HttpBody.text("not an image", "text/plain"),
+        })
+        assert.strictEqual(unsupported.status, 415)
+        const mislabeled = yield* client.post(`${base}/attachments`, {
+          body: HttpBody.uint8Array(png, "image/jpeg"),
+        })
+        assert.strictEqual(mislabeled.status, 422)
+        assert.strictEqual(
+          ((yield* mislabeled.json) as Record<string, unknown>)["_tag"],
+          "AttachmentInvalid",
+        )
+        const empty = yield* client.post(`${base}/attachments`, {
+          body: HttpBody.uint8Array(new Uint8Array(0), "image/png"),
+        })
+        assert.strictEqual(empty.status, 422)
+        const huge = new Uint8Array(8 * 1024 * 1024 + 1)
+        huge.set(png)
+        const tooLarge = yield* client.post(`${base}/attachments`, {
+          body: HttpBody.uint8Array(huge, "image/png"),
+        })
+        assert.strictEqual(tooLarge.status, 413)
+        assert.strictEqual(
+          ((yield* tooLarge.json) as Record<string, unknown>)["_tag"],
+          "AttachmentTooLarge",
+        )
+        const missing = yield* client.get(`${base}/attachments/nope`)
+        assert.strictEqual(missing.status, 404)
+        assert.strictEqual(
+          ((yield* missing.json) as Record<string, unknown>)["_tag"],
+          "AttachmentNotFound",
+        )
+
+        // A prompt may be the image alone; its item carries the attachment.
+        const prompted = yield* client.post(`${base}/prompt`, {
+          body: HttpBody.jsonUnsafe({ prompt: "", attachments: [attachment["id"]] }),
+        })
+        assert.strictEqual(prompted.status, 200)
+        const items = yield* eventually(
+          client.get(`${base}/transcript`).pipe(
+            Effect.flatMap((response) => response.json),
+            Effect.map((body) => (body as { items: Array<Record<string, unknown>> }).items),
+          ),
+          (list) => list.some((item) => item["type"] === "userMessage"),
+        )
+        const message = items.find((item) => item["type"] === "userMessage")
+        assert.deepStrictEqual(message?.["attachments"], [attachment])
+        // Another thread's attachment — a real one — refuses the prompt
+        // (attachments never cross threads); no text and no attachments is
+        // a malformed request.
+        const otherThread = yield* client.post("http://127.0.0.1/api/v1/threads", {
+          body: HttpBody.jsonUnsafe({ projectId: projectBody.id, agentId: "codex" }),
+        })
+        const other = (yield* otherThread.json) as { id: string }
+        const elsewhere = yield* client.post(
+          `http://127.0.0.1/api/v1/threads/${other.id}/attachments`,
+          { body: HttpBody.uint8Array(png, "image/png") },
+        )
+        const elsewhereId = ((yield* elsewhere.json) as { id: string }).id
+        const foreign = yield* client.post(`${base}/prompt`, {
+          body: HttpBody.jsonUnsafe({ prompt: "look", attachments: [elsewhereId] }),
+        })
+        assert.strictEqual(foreign.status, 404)
+        assert.strictEqual(
+          ((yield* foreign.json) as Record<string, unknown>)["_tag"],
+          "AttachmentNotFound",
+        )
+        const blank = yield* client.post(`${base}/prompt`, {
+          body: HttpBody.jsonUnsafe({ prompt: "   " }),
+        })
+        assert.strictEqual(blank.status, 400)
+      }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
+  )
+
   it.effect("GET /api/v1/fs/check returns the documented payload", () =>
     Effect.gen(function* () {
       const response = yield* (yield* rawClient).get(
@@ -905,6 +1061,59 @@ describe("openapi document vs runtime", () => {
       // reason is optional (absent when conclusive) — and deliberately not a
       // nullable required field, which the pinned Swift generator would drop.
       assert.sameMembers([...schema.required], ["path", "state", "checkedAt"])
+    }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
+  )
+
+  it.effect("GET /api/v1/fs/files returns the documented ranked listing", () =>
+    Effect.gen(function* () {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "atc-openapi-files-"))
+      fs.mkdirSync(path.join(dir, "src"))
+      fs.writeFileSync(path.join(dir, "src", "main.ts"), "")
+      fs.writeFileSync(path.join(dir, "notes.md"), "")
+      const response = yield* (yield* rawClient).get(
+        `http://127.0.0.1/api/v1/fs/files?dir=${encodeURIComponent(dir)}&query=main&limit=5`,
+      )
+      assert.strictEqual(response.status, 200)
+      const body = (yield* response.json) as Record<string, unknown>
+      assert.strictEqual(body["dir"], fs.realpathSync(dir))
+      assert.deepStrictEqual(body["entries"], [{ path: "src/main.ts", name: "main.ts" }])
+      assert.strictEqual(body["truncated"], false)
+      const ref =
+        operation("/api/v1/fs/files").responses["200"]!.content["application/json"]!.schema
+      assert.deepStrictEqual(ref, { $ref: "#/components/schemas/FsFilesResponse" })
+      const schema = componentSchema("FsFilesResponse")
+      assert.sameMembers([...schema.required], ["dir", "entries", "truncated"])
+      const missing = yield* (yield* rawClient).get(
+        "http://127.0.0.1/api/v1/fs/files?dir=/definitely/not/here",
+      )
+      assert.strictEqual(missing.status, 422)
+      fs.rmSync(dir, { recursive: true, force: true })
+    }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
+  )
+
+  it.effect("GET /api/v1/agents/{agentId}/commands returns the documented list", () =>
+    Effect.gen(function* () {
+      const response = yield* (yield* rawClient).get(
+        "http://127.0.0.1/api/v1/agents/codex/commands?dir=/tmp",
+      )
+      assert.strictEqual(response.status, 200)
+      // The fake adapter lists nothing by default: an empty list is an answer.
+      assert.deepStrictEqual(yield* response.json, [])
+      const ref = operation("/api/v1/agents/{agentId}/commands").responses["200"]!.content[
+        "application/json"
+      ]!.schema
+      assert.deepStrictEqual(ref, { $ref: "#/components/schemas/AgentCommandList" })
+      const command = componentSchema("AgentCommand")
+      assert.sameMembers(Object.keys(command.properties), ["name", "description", "argumentHint"])
+      assert.sameMembers([...command.required], ["name", "description"])
+      const unknown = yield* (yield* rawClient).get(
+        "http://127.0.0.1/api/v1/agents/nope/commands?dir=/tmp",
+      )
+      assert.strictEqual(unknown.status, 404)
+      const badDir = yield* (yield* rawClient).get(
+        "http://127.0.0.1/api/v1/agents/codex/commands?dir=/definitely/not/here",
+      )
+      assert.strictEqual(badDir.status, 422)
     }).pipe(Effect.provide(BunHttpServer.layerHttpServices)),
   )
 

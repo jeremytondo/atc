@@ -1,5 +1,6 @@
 import ATCAppServerAPI
 import ATCAppServerTransport
+import ATCChat
 import Foundation
 import OSLog
 import Observation
@@ -62,10 +63,11 @@ final class AppModel {
     /// history.
     private(set) var threadViewModes: [ThreadRef: ThreadViewMode] = [:]
 
-    /// Unsent composer text per thread, for this app session only — app-level
-    /// like the view mode, so every window on one thread shares one draft and
-    /// switching views (TUI, another thread, Dashboard) never loses it.
-    private(set) var threadDrafts: [ThreadRef: String] = [:]
+    /// Unsent composer drafts (text and images) per thread, for this app
+    /// session only — app-level like the view mode, so every window on one
+    /// thread shares one draft and switching views (TUI, another thread,
+    /// Dashboard) never loses it.
+    private(set) var threadDrafts: [ThreadRef: ComposerDraft] = [:]
 
     /// Live terminal attaches by composite ref. Connections and surfaces
     /// stay alive here while the user switches around the sidebar, bounded
@@ -263,12 +265,12 @@ final class AppModel {
         threadViewModes[ref] ?? .chat
     }
 
-    func draft(for ref: ThreadRef) -> String {
-        threadDrafts[ref] ?? ""
+    func draft(for ref: ThreadRef) -> ComposerDraft {
+        threadDrafts[ref] ?? ComposerDraft()
     }
 
-    func setDraft(_ text: String, for ref: ThreadRef) {
-        threadDrafts[ref] = text.isEmpty ? nil : text
+    func setDraft(_ draft: ComposerDraft, for ref: ThreadRef) {
+        threadDrafts[ref] = draft.isEmpty ? nil : draft
     }
 
     /// Remembers the mode and re-opens the thread in every window showing
@@ -615,4 +617,13 @@ final class AppModel {
 /// Connection that no longer exists locally.
 struct AppServerUnavailable: LocalizedError {
     var errorDescription: String? { "This connection no longer exists." }
+}
+
+/// What the composer holds for one thread before a send: the text and the
+/// images attached to it, cleared and restored together.
+struct ComposerDraft: Equatable {
+    var text = ""
+    var attachments: [PendingAttachment] = []
+
+    var isEmpty: Bool { text.isEmpty && attachments.isEmpty }
 }

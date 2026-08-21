@@ -133,6 +133,21 @@ export type ReasoningLevel = typeof Contract.ReasoningLevel.Type
 export type ThreadAccess = typeof Contract.ThreadAccess.Type
 export type ThreadMode = typeof Contract.ThreadMode.Type
 export type AgentModel = typeof Contract.AgentModel.Type
+export type AgentCommand = typeof Contract.AgentCommand.Type
+export type ThreadAttachment = typeof Contract.ThreadAttachment.Type
+
+/**
+ * What a turn is started with (ATC-216): the user's text and the images it
+ * carries, each stored at `path` on this host (attachments.ts). Adapters
+ * hand the images to the provider in its own shape — bytes read here and
+ * inlined (Claude), or the path for the provider to read (Codex) — and put
+ * them on the prompt's `userMessage` item, so the transcript shows what the
+ * provider saw.
+ */
+export interface TurnInput {
+  readonly text: string
+  readonly attachments: ReadonlyArray<ThreadAttachment>
+}
 
 /**
  * What a provider reported about its session's settings (ATC-205): only the
@@ -280,7 +295,7 @@ export interface AgentConnection {
    * `AgentIdentityMismatch` can surface fail-closed.
    */
   readonly startTurn: (
-    input: string,
+    input: TurnInput,
     settings: ThreadSettings,
   ) => Effect.Effect<
     AgentTurn,
@@ -290,6 +305,18 @@ export interface AgentConnection {
     | AgentIdentityMismatch
     | AgentProtocolError
   >
+  /**
+   * Hand `input` to exactly `turn` while it runs (ATC-216 "now"): the
+   * provider folds it into the work in progress and the feed carries it as
+   * the turn's next `userMessage` item (minted here for Claude, echoed by
+   * the shared server for Codex). A target that is not the active turn —
+   * it ended, or another is running — is `AgentConflict`, never a silent
+   * queue or a new turn: the caller decides what to do with the prompt.
+   */
+  readonly steer: (
+    input: TurnInput,
+    turn: AgentTurn,
+  ) => Effect.Effect<void, AgentConflict | AgentUnavailable | AgentProtocolError>
   /**
    * Interrupt exactly `turn`. A stale or unknown target fails with
    * `AgentConflict` — never "interrupt whatever is active". Success means
@@ -375,7 +402,7 @@ export interface AgentAdapter {
    */
   readonly createSession: (options: {
     readonly cwd: string
-    readonly input: string
+    readonly input: TurnInput
     readonly settings: ThreadSettings
   }) => Effect.Effect<
     AgentSessionStart,
@@ -461,6 +488,14 @@ export interface AgentAdapter {
     ReadonlyArray<AgentModel>,
     AgentUnavailable | AgentProtocolError
   >
+  /**
+   * The slash commands and skills the provider offers in `cwd` (ATC-216),
+   * resolved with no session of ours involved. Never persisted; callers
+   * cache it.
+   */
+  readonly listCommands: (options: {
+    readonly cwd: string
+  }) => Effect.Effect<ReadonlyArray<AgentCommand>, AgentUnavailable | AgentProtocolError>
   /**
    * One bounded, session-less completion: a short display title for a
    * thread whose first user prompt is `prompt` (ATC-155). Runs as the

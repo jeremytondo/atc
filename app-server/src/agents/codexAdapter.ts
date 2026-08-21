@@ -30,9 +30,11 @@ import type {
   EstablishedIdentity,
   ProviderSettings,
   ThreadAccess,
+  ThreadAttachment,
   ThreadItem,
   ThreadRequest,
   ThreadSettings,
+  TurnInput,
 } from "./agentAdapter.ts"
 import {
   AgentResumeFailed,
@@ -471,6 +473,9 @@ interface LiveSession {
   readonly toolItems: Map<string, ThreadItem>
   /** Parked requests by request id, closed with their turn. */
   readonly pendingRequests: Map<string, PendingRequest>
+  /** The attachments this client sent, by the localImage path it named, so
+   * the provider's echo of the prompt maps back to them (ATC-216). */
+  readonly attachmentsByPath: Map<string, ThreadAttachment>
   /** Set when the transport died underneath the session (vs. caller close). */
   failed: boolean
   /** The settings baseline: what the session runs with, as last echoed
@@ -478,8 +483,34 @@ interface LiveSession {
   live: ProviderSettings
 }
 
+/** skills/list, decoded to what a command listing needs. */
+const SkillsListReply = Schema.Struct({
+  data: Schema.Array(
+    Schema.Struct({
+      skills: Schema.Array(
+        Schema.Struct({
+          name: Schema.String,
+          description: Schema.String,
+          enabled: Schema.Boolean,
+          shortDescription: Schema.optional(Schema.NullOr(Schema.String)),
+        }),
+      ),
+    }),
+  ),
+})
+
 /** Reserves the active-turn slot between the local check and the RPC reply. */
 const PENDING_TURN = "(pending)"
+
+/** The turn input in the protocol's shape: the text, then each image as a
+ * `localImage` the app-server reads from the shared host (ATC-216). */
+const turnInputBlocks = (input: TurnInput) => [
+  ...(input.text === "" ? [] : [{ type: "text" as const, text: input.text }]),
+  ...input.attachments.map((attachment) => ({
+    type: "localImage" as const,
+    path: attachment.path,
+  })),
+]
 
 interface PendingReply {
   readonly succeed: (result: unknown) => void
@@ -916,11 +947,13 @@ export const layer = Layer.effect(CodexAdapter)(
         const decoded = decodeItemNotification(params)
         if (Option.isNone(decoded)) return
         const phase = message.method === "item/started" ? "started" : "completed"
-        const item = CodexItems.mapItem(decoded.value.item, decoded.value.turnId, phase)
+        const session = sessions.get(decoded.value.threadId)
+        const item = CodexItems.mapItem(decoded.value.item, decoded.value.turnId, phase, (path) =>
+          session?.attachmentsByPath.get(path),
+        )
         if (item === null) return
         const event: AgentItemEvent =
           phase === "started" ? { type: "itemStarted", item } : { type: "itemCompleted", item }
-        const session = sessions.get(decoded.value.threadId)
         if (session !== undefined) {
           if ("status" in item) session.toolItems.set(item.id, item)
           emit(session, event)
@@ -1198,6 +1231,7 @@ export const layer = Layer.effect(CodexAdapter)(
           ownTurn: null,
           toolItems: new Map(),
           pendingRequests: new Map(),
+          attachmentsByPath: new Map(),
           failed: false,
           live,
         }
@@ -1271,9 +1305,12 @@ export const layer = Layer.effect(CodexAdapter)(
               session.activeTurn = PENDING_TURN
               session.ownTurn = PENDING_TURN
               const overrides = settingsOverrides(session.live, settings)
+              for (const attachment of input.attachments) {
+                session.attachmentsByPath.set(attachment.path, attachment)
+              }
               const decoded = yield* request(state, "turn/start", {
                 threadId,
-                input: [{ type: "text", text: input }],
+                input: turnInputBlocks(input),
                 ...overrides,
               }).pipe(
                 Effect.mapError(rpcToProtocol),
@@ -1297,6 +1334,29 @@ export const layer = Layer.effect(CodexAdapter)(
                 access: settings.access,
               }
               return { turnId: decoded.turn.id }
+            }),
+          steer: (input, turn) =>
+            Effect.gen(function* () {
+              yield* requireLive
+              if (session.activeTurn !== turn.turnId) {
+                return yield* Effect.fail(staleTurn(turn.turnId))
+              }
+              for (const attachment of input.attachments) {
+                session.attachmentsByPath.set(attachment.path, attachment)
+              }
+              // expectedTurnId is the server's own precondition; its
+              // rejection means the turn ended in flight — a conflict, as
+              // for interrupt. The server echoes the message as the turn's
+              // next userMessage item on the fan-out.
+              yield* request(state, "turn/steer", {
+                threadId,
+                expectedTurnId: turn.turnId,
+                input: turnInputBlocks(input),
+              }).pipe(
+                Effect.mapError((error) =>
+                  error._tag === "RpcError" ? conflict(error.text) : error,
+                ),
+              )
             }),
           interrupt: (turn) =>
             Effect.gen(function* () {
@@ -1671,6 +1731,24 @@ export const layer = Layer.effect(CodexAdapter)(
             ),
           )
           return Stream.merge(observedEvents, Stream.fromQueue(promptQueue))
+        }),
+      // The shared server's skill index for the directory (the protocol
+      // lists skills only — custom prompts have no listing); disabled
+      // skills are not offered.
+      listCommands: (options) =>
+        Effect.gen(function* () {
+          const state = yield* getClient
+          const reply = yield* request(state, "skills/list", { cwds: [options.cwd] }).pipe(
+            Effect.mapError(rpcToProtocol),
+            Effect.flatMap((raw) => decodeReply(SkillsListReply, raw)),
+          )
+          return reply.data
+            .flatMap((entry) => entry.skills)
+            .filter((skill) => skill.enabled)
+            .map((skill) => ({
+              name: skill.name,
+              description: skill.shortDescription ?? skill.description,
+            }))
         }),
       // model/list, every page (walkPaginated; a walk that cannot complete
       // is a protocol error, never a partial catalog), hidden entries

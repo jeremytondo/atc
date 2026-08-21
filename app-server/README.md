@@ -35,11 +35,11 @@ naming the offending source — never a partial boot.
 Paths follow one XDG rule on every platform (macOS included), honoring `XDG_*`
 overrides:
 
-| Location    | Default                     | Holds                                            |
-| ----------- | --------------------------- | ------------------------------------------------ |
-| Config file | `~/.config/atc/config.toml` | Settings (TOML, camelCase)                       |
-| Data dir    | `~/.local/share/atc/`       | SQLite database (`atc.db`)                       |
-| State dir   | `~/.local/state/atc/`       | JSON log (`atc.log`), zmx sockets (`terminals/`) |
+| Location    | Default                     | Holds                                                                 |
+| ----------- | --------------------------- | --------------------------------------------------------------------- |
+| Config file | `~/.config/atc/config.toml` | Settings (TOML, camelCase)                                            |
+| Data dir    | `~/.local/share/atc/`       | SQLite database (`atc.db`), prompt images (`attachments/<threadId>/`) |
+| State dir   | `~/.local/state/atc/`       | JSON log (`atc.log`), zmx sockets (`terminals/`)                      |
 
 Environment variables are flat `ATC_<KEY>`: `ATC_PORT`, `ATC_BIND`,
 `ATC_TAILSCALE`, `ATC_LOG_LEVEL`, `ATC_DATA_DIR`, `ATC_ZMX_EXECUTABLE`,

@@ -2,6 +2,7 @@ import { Cause, Deferred, Effect, Queue, Stream } from "effect"
 import type {
   AgentActivity,
   AgentAdapter,
+  AgentCommand,
   AgentConnection,
   AgentEvent,
   AgentModel,
@@ -10,10 +11,12 @@ import type {
   AgentTurnOutcome,
   HistoryTurn,
   ProviderSettings,
+  ThreadAttachment,
   ThreadItem,
   ThreadRequest,
   ThreadRequestAnswer,
   ThreadSettings,
+  TurnInput,
 } from "../../src/agents/agentAdapter.ts"
 import {
   AgentConflict,
@@ -42,8 +45,10 @@ import {
 export interface FakeAgentSession {
   readonly providerSessionId: string
   readonly cwd: string
-  /** Inputs received via createSession/startTurn, for assertions. */
+  /** Input texts received via createSession/startTurn, for assertions. */
   readonly inputs: Array<string>
+  /** The attachments each input carried, aligned with `inputs`. */
+  readonly attachments: Array<ReadonlyArray<ThreadAttachment>>
   /** Settings each turn was started with (createSession/startTurn), in order. */
   readonly turnSettings: Array<ThreadSettings>
 }
@@ -78,6 +83,10 @@ export interface FakeAgentAdapter {
   readonly closeRequest: (providerSessionId: string, requestId: string) => void
   /** Answers `respond` delivered, in order. */
   readonly answers: Array<{ requestId: string; answer: ThreadRequestAnswer }>
+  /** Script what listCommands returns (default []). */
+  readonly setCommands: (commands: ReadonlyArray<AgentCommand>) => void
+  /** listCommands calls (cwds), in order. */
+  readonly commandReads: Array<string>
   /** Push one item event onto the active connection's feed. */
   readonly emitItem: (
     providerSessionId: string,
@@ -171,6 +180,8 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
   const observers = new Map<string, Set<Queue.Queue<AgentSessionEvent, Cause.Done>>>()
   const checkActivity = new Map<string, AgentActivity>()
   const runningOnResume = new Map<string, string>()
+  let commands: ReadonlyArray<AgentCommand> = []
+  const commandReads: Array<string> = []
   const histories = new Map<string, ReadonlyArray<HistoryTurn>>()
   const historyReads: Array<string> = []
   const answers: FakeAgentAdapter["answers"] = []
@@ -280,7 +291,7 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
           : Effect.void,
       )
 
-      const startTurn = (input: string, settings: ThreadSettings) =>
+      const startTurn = (input: TurnInput, settings: ThreadSettings) =>
         Effect.gen(function* () {
           yield* requireAvailable
           yield* requireOpen
@@ -292,7 +303,8 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
               }),
             )
           }
-          session.inputs.push(input)
+          session.inputs.push(input.text)
+          session.attachments.push(input.attachments)
           session.turnSettings.push(settings)
           // Unique across fake instances: turn ids are persisted, and a
           // "restarted" fake must not collide with the previous one's turns.
@@ -303,7 +315,13 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
           // first item (Codex via the fan-out, Claude explicitly).
           emit(live, {
             type: "itemCompleted",
-            item: { type: "userMessage", id: `${turnId}:prompt`, turnId, text: input },
+            item: {
+              type: "userMessage",
+              id: `${turnId}:prompt`,
+              turnId,
+              text: input.text,
+              ...(input.attachments.length > 0 ? { attachments: input.attachments } : {}),
+            },
           })
           setActivity(live, "working")
           return { turnId }
@@ -319,6 +337,32 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
           ),
         ),
         startTurn,
+        steer: (input, turn) =>
+          Effect.gen(function* () {
+            yield* requireAvailable
+            yield* requireOpen
+            if (live.activeTurn !== turn.turnId) {
+              return yield* Effect.fail(
+                new AgentConflict({
+                  provider: "codex",
+                  reason: `turn ${turn.turnId} is not the active turn`,
+                }),
+              )
+            }
+            session.inputs.push(input.text)
+            session.attachments.push(input.attachments)
+            // Both real adapters surface the message as the turn's next item.
+            emit(live, {
+              type: "itemCompleted",
+              item: {
+                type: "userMessage",
+                id: `${turn.turnId}:steer-${session.inputs.length}`,
+                turnId: turn.turnId,
+                text: input.text,
+                ...(input.attachments.length > 0 ? { attachments: input.attachments } : {}),
+              },
+            })
+          }),
         interrupt: (turn: AgentTurn) =>
           Effect.gen(function* () {
             yield* requireAvailable
@@ -388,6 +432,7 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
           providerSessionId: `fake-session-${nextSessionId++}`,
           cwd: options.cwd,
           inputs: [],
+          attachments: [],
           turnSettings: [],
         }
         sessions.set(session.providerSessionId, session)
@@ -455,6 +500,7 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
             providerSessionId,
             cwd: options.cwd,
             inputs: [],
+            attachments: [],
             turnSettings: [],
           })
           return {
@@ -491,6 +537,13 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
         )
         return Stream.fromQueue(queue)
       }),
+    listCommands: (options) =>
+      requireAvailable.pipe(
+        Effect.map(() => {
+          commandReads.push(options.cwd)
+          return commands
+        }),
+      ),
     listModels: () =>
       Effect.gen(function* () {
         yield* requireAvailable
@@ -559,7 +612,13 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
       unavailableReason = reason
     },
     seed: (providerSessionId, cwd) => {
-      const session: FakeAgentSession = { providerSessionId, cwd, inputs: [], turnSettings: [] }
+      const session: FakeAgentSession = {
+        providerSessionId,
+        cwd,
+        inputs: [],
+        attachments: [],
+        turnSettings: [],
+      }
       sessions.set(providerSessionId, session)
       return session
     },
@@ -618,6 +677,10 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
       histories.set(providerSessionId, turns)
     },
     historyReads,
+    setCommands: (next) => {
+      commands = next
+    },
+    commandReads,
     closeRequest: (providerSessionId, requestId) => {
       const live = requireLive(providerSessionId)
       if (!live.openRequests.delete(requestId)) {

@@ -541,6 +541,25 @@ import OpenAPIRuntime
             .ok(.init(body: .json(.init(items: [], turns: [], seq: 0, snapshotVersion: 0, hasMore: false))))
         }
 
+        func createThreadAttachment(
+            _ input: Operations.CreateThreadAttachment.Input
+        ) async throws -> Operations.CreateThreadAttachment.Output {
+            .ok(
+                .init(
+                    body: .json(
+                        .init(
+                            id: "0192f4c0-0000-7000-8000-00000000a001", name: input.query.name ?? "image.png",
+                            mediaType: .imagePng, byteSize: 0,
+                            path: "/Users/dev/.local/share/atc/attachments/\(input.path.threadId)/a001.png",
+                            createdAt: Date()))))
+        }
+
+        func getThreadAttachment(
+            _ input: Operations.GetThreadAttachment.Input
+        ) async throws -> Operations.GetThreadAttachment.Output {
+            throw PreviewUnavailable()
+        }
+
         func subscribeThreadEvents(
             _ input: Operations.SubscribeThreadEvents.Input
         ) async throws -> Operations.SubscribeThreadEvents.Output {
@@ -579,6 +598,25 @@ import OpenAPIRuntime
 
         func listAgents(_ input: Operations.ListAgents.Input) async throws -> Operations.ListAgents.Output {
             .ok(.init(body: .json(agents)))
+        }
+
+        func listAgentCommands(
+            _ input: Operations.ListAgentCommands.Input
+        ) async throws -> Operations.ListAgentCommands.Output {
+            .ok(
+                .init(
+                    body: .json([
+                        .init(name: "review", description: "Review the current diff"),
+                        .init(name: "commit", description: "Commit staged changes", argumentHint: "<message>"),
+                    ])))
+        }
+
+        func searchFiles(_ input: Operations.SearchFiles.Input) async throws -> Operations.SearchFiles.Output {
+            let files = ["Package.swift", "Sources/App/Main.swift", "Sources/App/Model.swift", "README.md"]
+            let needle = (input.query.query ?? "").lowercased()
+            let entries = files.filter { needle.isEmpty || $0.lowercased().contains(needle) }
+                .map { Components.Schemas.FsFileEntry(path: $0, name: ($0 as NSString).lastPathComponent) }
+            return .ok(.init(body: .json(.init(dir: input.query.dir, entries: entries, truncated: false))))
         }
 
         func listAgentModels(

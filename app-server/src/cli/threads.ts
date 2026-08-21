@@ -141,8 +141,13 @@ const threadPrompt = Command.make(
     follow: Flag.boolean("follow").pipe(
       Flag.withDescription("Stream the thread's events (JSON lines) until this prompt's turn ends"),
     ),
+    now: Flag.boolean("now").pipe(
+      Flag.withDescription(
+        "Hand the prompt to the running turn instead of queueing behind it (queues when no turn is running)",
+      ),
+    ),
   },
-  ({ threadId, text, follow }) =>
+  ({ threadId, text, follow, now }) =>
     Cli.withClient("thread prompt", (client) =>
       Effect.gen(function* () {
         // Subscribe BEFORE prompting so no event of the turn is missed.
@@ -151,7 +156,7 @@ const threadPrompt = Command.make(
           : undefined
         const admitted = yield* client.v1.promptThread({
           params: { threadId },
-          payload: { prompt: text },
+          payload: { prompt: text, ...(now ? { when: "now" as const } : {}) },
         })
         // Without --follow the admission is the result; with it, stdout is
         // a pure ThreadEvent stream (the turn.started event names the
@@ -167,7 +172,7 @@ const threadPrompt = Command.make(
     ),
 ).pipe(
   Command.withDescription(
-    "Prompt the thread (queued if a turn is running); --follow streams the thread's events (JSON lines) until this prompt's turn ends",
+    "Prompt the thread (queued if a turn is running, or --now to join it); --follow streams the thread's events (JSON lines) until this prompt's turn ends",
   ),
 )
 

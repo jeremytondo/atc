@@ -16,9 +16,16 @@ struct ChatQueueStrip: View {
                 HStack(spacing: Spacing.sm) {
                     Image(systemName: "clock")
                         .foregroundStyle(.secondary)
-                    Text(prompt.prompt)
+                    if let attachments = prompt.attachments, !attachments.isEmpty {
+                        Label("\(attachments.count)", systemImage: "paperclip")
+                            .labelStyle(.titleAndIcon)
+                            .foregroundStyle(.secondary)
+                            .help("\(attachments.count) image\(attachments.count == 1 ? "" : "s") attached")
+                    }
+                    Text(prompt.prompt.isEmpty ? "Images only" : prompt.prompt)
                         .lineLimit(1)
                         .truncationMode(.tail)
+                        .foregroundStyle(prompt.prompt.isEmpty ? .secondary : .primary)
                     Spacer(minLength: 0)
                     Button {
                         withdraw(prompt)

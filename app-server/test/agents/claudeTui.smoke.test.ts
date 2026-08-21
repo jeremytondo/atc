@@ -163,7 +163,10 @@ describe.skipIf(!enabled)("live claude TUI smoke (opt-in)", () => {
           Effect.gen(function* () {
             const { connection, turn } = yield* adapter.createSession({
               cwd,
-              input: "The first code word is ALPHA. Reply with exactly: OK",
+              input: {
+                text: "The first code word is ALPHA. Reply with exactly: OK",
+                attachments: [],
+              },
               settings: SMOKE_SETTINGS,
             })
             const sink = yield* collectAgentEvents(connection.events)
@@ -226,7 +229,10 @@ describe.skipIf(!enabled)("live claude TUI smoke (opt-in)", () => {
             })
             const sink = yield* collectAgentEvents(connection.events)
             const turn = yield* connection.startTurn(
-              "Reply with the two code words I gave you, in order, separated by a space, and nothing else.",
+              {
+                text: "Reply with the two code words I gave you, in order, separated by a space, and nothing else.",
+                attachments: [],
+              },
               SMOKE_SETTINGS,
             )
             yield* completedTurn(sink, turn.turnId)

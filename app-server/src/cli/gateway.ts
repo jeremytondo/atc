@@ -57,16 +57,22 @@ const requestUrl = (baseUrl: URL, requestPath: string): Effect.Effect<URL, Error
   )
 }
 
-/** Request body source: a file path, or "-" for stdin. */
+/** Whether a response body is text to print as lines (JSON, problem
+ * details, plain text); anything else is raw bytes. */
+const isTextual = (contentType: string | undefined): boolean =>
+  contentType === undefined || /json|text\/|xml/i.test(contentType)
+
+/** Request body source: a file path, or "-" for stdin. Bytes, not text —
+ * an image upload (createThreadAttachment) rides the same flag. */
 const readRequestBody = (source: string) =>
   source === "-"
     ? Effect.tryPromise({
-        try: () => Bun.stdin.text(),
+        try: () => Bun.stdin.bytes(),
         catch: () => new Error("cannot read the request body from stdin"),
       })
     : Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem
-        return yield* fileSystem.readFileString(source)
+        return yield* fileSystem.readFile(source)
       })
 
 export const api = Command.make(
@@ -78,10 +84,16 @@ export const api = Command.make(
     ),
     input: Flag.string("input").pipe(
       Flag.optional,
-      Flag.withDescription("JSON request body: a file path, or - to read stdin"),
+      Flag.withDescription("Request body: a file path, or - to read stdin"),
+    ),
+    contentType: Flag.string("content-type").pipe(
+      Flag.withDefault("application/json"),
+      Flag.withDescription(
+        "Content-Type of the request body (default application/json; e.g. image/png for an attachment upload)",
+      ),
     ),
   },
-  ({ method, path: requestPath, input }) =>
+  ({ method, path: requestPath, input, contentType }) =>
     Cli.withCliContext(
       "api",
       Effect.gen(function* () {
@@ -92,16 +104,23 @@ export const api = Command.make(
         const request = HttpClientRequest.make(method)(url, {
           acceptJson: true,
         }).pipe((base) =>
-          body === undefined ? base : HttpClientRequest.bodyText(base, body, "application/json"),
+          body === undefined ? base : HttpClientRequest.bodyUint8Array(base, body, contentType),
         )
         const response = yield* client.execute(request)
-        const text = yield* response.text
         if (response.status >= 200 && response.status < 300) {
-          // Success bodies pass through unchanged (plus the trailing
-          // newline); an empty response prints nothing.
+          // Success bodies pass through unchanged: text (JSON) plus the
+          // trailing newline — an empty response prints nothing — and a
+          // binary body (an attachment download) byte for byte.
+          if (!isTextual(response.headers["content-type"])) {
+            const bytes = yield* response.arrayBuffer
+            yield* Effect.promise(() => Bun.write(Bun.stdout, new Uint8Array(bytes)))
+            return
+          }
+          const text = yield* response.text
           if (text !== "") yield* Console.log(text)
           return
         }
+        const text = yield* response.text
         // API failures: the machine-readable error body, then the one-line
         // diagnostic — both on stderr, exit 1 like every other failure.
         if (text !== "") yield* Console.error(text)
@@ -148,9 +167,9 @@ export const context = Command.make("context", { json: jsonFlag }, ({ json }) =>
 const CAPABILITIES = {
   capabilitiesVersion: 1,
   api: {
-    command: "atc api <method> <path> [--input <file|->]",
+    command: "atc api <method> <path> [--input <file|->] [--content-type <type>]",
     description:
-      "Complete access to the canonical App Server HTTP API: every operation via GET, POST, PUT, PATCH, or DELETE, JSON body from a file or stdin, the raw JSON response on stdout.",
+      "Complete access to the canonical App Server HTTP API: every operation via GET, POST, PUT, PATCH, or DELETE, a body from a file or stdin (JSON by default, any Content-Type via --content-type), the response on stdout (JSON as text, anything else byte for byte).",
     example: "atc api GET /api/v1/projects",
   },
   openapi: {

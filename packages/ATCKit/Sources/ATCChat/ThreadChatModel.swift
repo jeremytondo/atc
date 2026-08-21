@@ -40,11 +40,19 @@
 // and resolves when the server shows it somewhere real. `perform` is the
 // action seam: gated on this stream being live (not the app-wide connection
 // dot) and reporting failures inline (`actionError`), never as a modal.
+//
+// Attachments (ATC-216) ride the send: each image uploads first, then the
+// prompt names their ids — an upload failure is a refusal like any other (the
+// composer keeps text and images). Attachment bytes for user rows are read
+// back lazily and cached here per id for the model's life; a pending echo
+// shows its local bytes and never fetches.
 
 import ATCAppServerAPI
 import ATCAppServerTransport
+import CoreGraphics
 import Foundation
 import Observation
+import OpenAPIRuntime
 import SwiftUI
 
 @Observable
@@ -74,8 +82,10 @@ public final class ThreadChatModel {
     public private(set) var promptError: String?
     /// The last chat action's failure, shown inline above the composer.
     public private(set) var actionError: String?
-    /// The last prompt this client sent (⌘↑ recalls it into the composer).
-    public private(set) var lastSentPrompt: String?
+    /// The thread's previous prompts, newest first and without repeats —
+    /// what ⌘↑/⌘↓ walk in the composer (ATC-216): the echoes still pending,
+    /// then the transcript's user messages.
+    public private(set) var promptHistory: [String] = []
 
     // What the views observe, projected from `transcript` after each change.
     private(set) var rows: [ChatRowModel] = []
@@ -91,6 +101,8 @@ public final class ThreadChatModel {
 
     private let client: any APIProtocol
     private let makeStream: StreamFactory
+    /// Decoded attachment images by id, shared by every row showing them.
+    @ObservationIgnored private var attachmentImages: [String: Task<CGImage?, Never>] = [:]
     private let cursor = SeqCursor()
     @ObservationIgnored private var boxes: [String: ChatItemModel] = [:]
     @ObservationIgnored private var folds: [String: ChatWorkModel] = [:]
@@ -205,6 +217,18 @@ public final class ThreadChatModel {
         if runningTurn != transcript.runningTurn { runningTurn = transcript.runningTurn }
         if hasMore != transcript.hasMore { hasMore = transcript.hasMore }
         if isLoaded != transcript.isLoaded { isLoaded = transcript.isLoaded }
+        let history = Self.history(of: transcript)
+        if promptHistory != history { promptHistory = history }
+    }
+
+    private static func history(of transcript: ChatTranscript) -> [String] {
+        let pending = transcript.pendingPrompts.reversed().map(\.text)
+        let sent = transcript.items.reversed().compactMap { item -> String? in
+            guard case .userMessage(let message) = item else { return nil }
+            return message.text
+        }
+        var seen: Set<String> = []
+        return (pending + sent).filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
     // MARK: - Reads
@@ -311,24 +335,36 @@ public final class ThreadChatModel {
         actionError = nil
     }
 
-    /// Prompts the thread, echoing the prompt as a pending row at once.
+    /// Prompts the thread, echoing the prompt (and its images) as a pending
+    /// row at once. Images upload first; the prompt carries their ids.
+    /// `when` is the server's choice between queueing and joining the
+    /// running turn (ATC-216); nil leaves it to the server's default.
     /// Returns false when the server refused (the error is in `promptError`)
-    /// so the composer restores the text.
+    /// so the composer restores text and images.
     @discardableResult
-    public func send(_ prompt: String) async -> Bool {
+    public func send(
+        _ prompt: String, attachments: [PendingAttachment] = [], when: PromptWhen? = nil
+    ) async -> Bool {
         promptError = nil
-        lastSentPrompt = prompt
-        let pendingID = transcript.addPending(prompt)
+        let pendingID = transcript.addPending(prompt, attachments: attachments)
         project(.structure)
         do {
-            switch try await client.promptThread(path: .init(threadId: threadID), body: .json(.init(prompt: prompt))) {
+            var ids: [String] = []
+            for attachment in attachments {
+                ids.append(try await upload(attachment).id)
+            }
+            let request = Components.Schemas.PromptThreadRequest(
+                prompt: prompt, attachments: ids.isEmpty ? nil : ids, when: when)
+            switch try await client.promptThread(path: .init(threadId: threadID), body: .json(request)) {
             case .ok(let ok):
                 let response = try ok.body.json
                 transcript.resolvePending(
                     id: pendingID, promptId: response.promptId, turnId: response.turnId)
                 project(.structure)
                 return true
-            case .notFound(let failure): throw ServerError(try failure.body.json)
+            case .notFound(let failure):
+                let payload = try failure.body.json
+                throw ServerError(anyOf: payload.value1, payload.value2)
             case .conflict(let failure):
                 let payload = try failure.body.json
                 throw ServerError(anyOf: payload.value1, payload.value2)
@@ -341,6 +377,47 @@ public final class ThreadChatModel {
             promptError = error.localizedDescription
             return false
         }
+    }
+
+    private func upload(_ attachment: PendingAttachment) async throws -> Components.Schemas.ThreadAttachment {
+        let body = HTTPBody(attachment.data)
+        let payload: Operations.CreateThreadAttachment.Input.Body =
+            switch attachment.mediaType {
+            case .imagePng: .png(body)
+            case .imageJpeg: .jpeg(body)
+            case .imageGif: .imageGif(body)
+            case .imageWebp: .imageWebp(body)
+            }
+        switch try await client.createThreadAttachment(
+            path: .init(threadId: threadID), query: .init(name: attachment.name), body: payload)
+        {
+        case .ok(let ok): return try ok.body.json
+        case .notFound(let failure): throw ServerError(try failure.body.json)
+        case .conflict(let failure): throw ServerError(try failure.body.json)
+        case .contentTooLarge(let failure): throw ServerError(try failure.body.json)
+        case .unprocessableContent(let failure): throw ServerError(try failure.body.json)
+        case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
+        }
+    }
+
+    /// The decoded image of an attachment on a user row, fetched once per
+    /// model and shared. Nil when the read fails (the row shows a placeholder).
+    public func image(for attachment: Components.Schemas.ThreadAttachment) async -> CGImage? {
+        if let inFlight = attachmentImages[attachment.id] { return await inFlight.value }
+        let load = Task { [client, threadID] () -> CGImage? in
+            guard
+                case .ok(let ok) = try? await client.getThreadAttachment(
+                    path: .init(threadId: threadID, attachmentId: attachment.id)),
+                let body = try? ok.body.binary,
+                let data = try? await Data(collecting: body, upTo: ImageAttachmentEncoder.maxBytes)
+            else { return nil }
+            return ImageAttachmentEncoder.decode(data)
+        }
+        attachmentImages[attachment.id] = load
+        let image = await load.value
+        // A failed read is not cached: the next appearance retries.
+        if image == nil { attachmentImages[attachment.id] = nil }
+        return image
     }
 
     /// Interrupts the server-driven turn; a TUI-driven turn is a server

@@ -26,6 +26,9 @@ public typealias ReasoningLevel = Components.Schemas.ReasoningLevel
 public typealias ThreadMode = Components.Schemas.ThreadMode
 public typealias ThreadAccess = Components.Schemas.ThreadAccess
 public typealias AgentModel = Components.Schemas.AgentModel
+public typealias AgentCommand = Components.Schemas.AgentCommand
+/// When a prompt runs: queued for the next idle, or handed to the running turn.
+public typealias PromptWhen = Components.Schemas.PromptThreadRequest.WhenPayload
 
 extension AgentID {
     public var displayName: String {

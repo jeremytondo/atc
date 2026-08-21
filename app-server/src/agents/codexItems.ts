@@ -2,6 +2,7 @@ import { Option, Schema } from "effect"
 import * as path from "node:path"
 import type {
   HistoryTurn,
+  ThreadAttachment,
   ThreadItem,
   ThreadRequest,
   ThreadRequestAnswer,
@@ -46,9 +47,15 @@ const codexToolStatus = (
 const ItemBase = Schema.Struct({ type: Schema.String, id: Schema.String })
 const decodeItemBase = Schema.decodeUnknownOption(ItemBase)
 
+// Text blocks carry `text`; localImage blocks (ATC-216) carry the `path`
+// the turn input named.
 const UserMessage = Schema.Struct({
   content: Schema.Array(
-    Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String) }),
+    Schema.Struct({
+      type: Schema.String,
+      text: Schema.optional(Schema.String),
+      path: Schema.optional(Schema.String),
+    }),
   ),
 })
 const AgentMessage = Schema.Struct({ text: Schema.String, phase: nullable(Schema.String) })
@@ -126,9 +133,17 @@ const genericTitle = (type: string, input: Record<string, unknown>): string => {
 /**
  * Normalize one Codex item. `phase` decides the lifecycle of items that
  * carry no status of their own (text completes with the notification;
- * status-less tools run until completed).
+ * status-less tools run until completed). `attachmentAt` names the ATC
+ * attachment behind a localImage path the adapter itself sent (ATC-216);
+ * a path it does not know — another client's image — is simply not an
+ * attachment of ours.
  */
-export const mapItem = (raw: unknown, turnId: string, phase: Phase): ThreadItem | null => {
+export const mapItem = (
+  raw: unknown,
+  turnId: string,
+  phase: Phase,
+  attachmentAt: (path: string) => ThreadAttachment | undefined = () => undefined,
+): ThreadItem | null => {
   const base = decodeItemBase(raw)
   if (Option.isNone(base) || NOT_EMITTED.has(base.value.type)) return null
   const { id, type } = base.value
@@ -140,7 +155,19 @@ export const mapItem = (raw: unknown, turnId: string, phase: Phase): ThreadItem 
       const text = decoded.value.content
         .flatMap((block) => (block.type === "text" && block.text !== undefined ? [block.text] : []))
         .join("\n")
-      return { type: "userMessage", ...common, text }
+      const attachments = decoded.value.content.flatMap((block) => {
+        const attachment =
+          block.type === "localImage" && block.path !== undefined
+            ? attachmentAt(block.path)
+            : undefined
+        return attachment === undefined ? [] : [attachment]
+      })
+      return {
+        type: "userMessage",
+        ...common,
+        text,
+        ...(attachments.length > 0 ? { attachments } : {}),
+      }
     }
     case "agentMessage": {
       const decoded = decoders.agentMessage(raw)

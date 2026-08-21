@@ -186,4 +186,24 @@ export const migrations: Record<string, Effect.Effect<void, unknown, SqlClient.S
     yield* sql`ALTER TABLE thread_items ADD COLUMN created_at TEXT`
     yield* sql`ALTER TABLE thread_items ADD COLUMN completed_at TEXT`
   }),
+  // Attachments (ATC-216): the metadata of images uploaded to a thread
+  // (the bytes live under the data directory, keyed by thread and
+  // attachment id — attachments.ts), and the attachment ids a queued prompt
+  // carries (a JSON array of ids, '[]' for none). Both cascade with the
+  // thread row; the blob directory is removed by Threads.delete.
+  "0009_thread_attachments": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`
+      CREATE TABLE thread_attachments (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        media_type TEXT NOT NULL,
+        byte_size INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+      ) STRICT
+    `
+    yield* sql`CREATE INDEX thread_attachments_thread_id ON thread_attachments(thread_id)`
+    yield* sql`ALTER TABLE thread_queue ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'`
+  }),
 }

@@ -61,7 +61,7 @@ describe.skipIf(!enabled)("live codex adapter smoke (opt-in)", () => {
               Effect.gen(function* () {
                 const { connection, turn } = yield* adapter.createSession({
                   cwd,
-                  input: "Reply with exactly: SMOKE-OK",
+                  input: { text: "Reply with exactly: SMOKE-OK", attachments: [] },
                   settings: SMOKE_SETTINGS,
                 })
                 const sink = yield* collectAgentEvents(connection.events)
@@ -88,7 +88,10 @@ describe.skipIf(!enabled)("live codex adapter smoke (opt-in)", () => {
                 assert.strictEqual(connection.providerSessionId, threadId)
                 const sink = yield* collectAgentEvents(connection.events)
                 const turn = yield* connection.startTurn(
-                  "Count from 1 to 200, one number per line. Do not stop early.",
+                  {
+                    text: "Count from 1 to 200, one number per line. Do not stop early.",
+                    attachments: [],
+                  },
                   SMOKE_SETTINGS,
                 )
                 yield* waitForAgentEvent(

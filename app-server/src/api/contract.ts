@@ -191,6 +191,27 @@ export const FsListResponse = Schema.Struct({
   description: "A directory listing for the server-backed folder browser. Never persisted.",
 })
 
+export const FsFileEntry = Schema.Struct({
+  path: Schema.String.annotate({ description: "Path relative to `dir`, `/`-separated." }),
+  name: Schema.String.annotate({ description: "The file's basename." }),
+}).annotate({ identifier: "FsFileEntry", description: "One file under a searched directory." })
+
+export const FsFilesResponse = Schema.Struct({
+  dir: Schema.String.annotate({
+    description: "Canonical (symlink-resolved) absolute path of the searched directory.",
+  }),
+  entries: Schema.Array(FsFileEntry).annotate({
+    description: "Best matches first; an empty query lists files in path order.",
+  }),
+  truncated: Schema.Boolean.annotate({
+    description:
+      "True when the tree holds more files than the index walks, so a file may be missing from every query of this directory.",
+  }),
+}).annotate({
+  identifier: "FsFilesResponse",
+  description: "A ranked filename search over one directory tree (`@` mentions). Never persisted.",
+})
+
 export const TerminalStatus = Schema.Literals(["live", "ended"]).annotate({
   identifier: "TerminalStatus",
   description:
@@ -362,6 +383,22 @@ export const AgentModel = Schema.Struct({
   identifier: "AgentModel",
   description:
     "One entry of an agent's model catalog, as the provider itself reports it. `defaultEffortLevel` is the level a thread gets on switching to this model when its current level is unsupported; absent for a model with no effort support.",
+})
+
+export const AgentCommand = Schema.Struct({
+  name: Schema.String.annotate({ description: "Command name, without the leading slash." }),
+  description: Schema.String,
+  argumentHint: Schema.optionalKey(
+    Schema.String.annotate({ description: "Placeholder for the arguments the command takes." }),
+  ),
+}).annotate({
+  identifier: "AgentCommand",
+  description: "A slash command or skill the agent offers in a directory (`/` completions).",
+})
+
+export const AgentCommandList = Schema.Array(AgentCommand).annotate({
+  identifier: "AgentCommandList",
+  description: "The agent's commands for a directory, as its provider lists them.",
 })
 
 export const AgentModelList = Schema.Array(AgentModel).annotate({
@@ -556,11 +593,53 @@ const toolFields = {
   ),
 }
 
+/** The image types an attachment may be (ATC-216); anything else is refused at upload. */
+export const ATTACHMENT_MEDIA_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+] as const
+
+export const AttachmentMediaType = Schema.Literals(ATTACHMENT_MEDIA_TYPES).annotate({
+  identifier: "AttachmentMediaType",
+  description: "The image type of an attachment; the accepted set of the upload endpoint.",
+})
+
+/** Per-attachment byte cap and per-prompt count cap, enforced server-side. */
+export const ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024
+export const ATTACHMENTS_PER_PROMPT = 10
+
+export const ThreadAttachment = Schema.Struct({
+  id: Schema.String.annotate({ description: "UUIDv7 attachment id, unique within the thread." }),
+  name: Schema.String.annotate({ description: "Display filename (the uploader's, sanitized)." }),
+  mediaType: AttachmentMediaType,
+  byteSize: Schema.Int.annotate({ description: "Size of the stored bytes." }),
+  path: Schema.String.annotate({
+    description:
+      "Server-host absolute path of the stored bytes — stable for the attachment's life, so an agent on that machine (a TUI, a script) can be pointed at it.",
+  }),
+  createdAt: timestamp("Upload time."),
+}).annotate({
+  identifier: "ThreadAttachment",
+  description:
+    "An image a client uploaded to a thread for a prompt. Attachments live with their thread and die with it; the bytes come back from getThreadAttachment.",
+})
+
 export const ThreadItemUserMessage = Schema.Struct({
   type: Schema.Literal("userMessage"),
   ...threadItemBase,
   text: Schema.String,
-}).annotate({ identifier: "ThreadItemUserMessage", description: "A user prompt (text only)." })
+  attachments: Schema.optionalKey(
+    Schema.Array(ThreadAttachment).annotate({
+      description:
+        "Images sent with the prompt; absent when none. Present for prompts ATC sent natively; a provider re-read keeps them where the provider's turn ids are stable (Codex), and loses them where they are not (Claude) — the bytes stay fetchable by id either way.",
+    }),
+  ),
+}).annotate({
+  identifier: "ThreadItemUserMessage",
+  description: "A user prompt: text plus any image attachments.",
+})
 
 export const ThreadItemAssistantText = Schema.Struct({
   type: Schema.Literal("assistantText"),
@@ -779,17 +858,48 @@ export const ThreadRequestAnswer = Schema.Union(
 })
 
 export const PromptThreadRequest = Schema.Struct({
-  prompt: Schema.NonEmptyString.annotate({ description: "The user's message." }),
-}).annotate({
-  identifier: "PromptThreadRequest",
-  description: "Payload for prompting a thread: text only (attachments are additive later).",
+  prompt: Schema.String.annotate({
+    description: "The user's message; may be empty only when attachments are present.",
+  }),
+  attachments: Schema.optionalKey(
+    Schema.Array(Schema.String)
+      .check(
+        Schema.isMaxLength(ATTACHMENTS_PER_PROMPT, {
+          description: `at most ${ATTACHMENTS_PER_PROMPT} attachments per prompt`,
+        }),
+      )
+      .annotate({
+        description:
+          "Ids of attachments previously uploaded to THIS thread (createThreadAttachment), in display order. An id the thread does not own is a 404.",
+      }),
+  ),
+  when: Schema.optionalKey(
+    Schema.Literals(["queue", "now"]).annotate({
+      description:
+        '"queue" (the default) runs the prompt at the next idle. "now" hands it to the turn ATC is running as a mid-turn message — the provider folds it into the work in progress and it lands in the transcript as that turn\'s next user message — and queues only when no turn of ATC\'s is running (a TUI-driven turn included) or the turn ended first. The response says which: `turnId` present is the turn it joined or started.',
+    }),
+  ),
 })
+  .check(
+    Schema.makeFilter(
+      (request) =>
+        request.prompt.trim() !== "" || (request.attachments?.length ?? 0) > 0
+          ? undefined
+          : "a prompt needs text or at least one attachment",
+      { description: "text or at least one attachment" },
+    ),
+  )
+  .annotate({
+    identifier: "PromptThreadRequest",
+    description: "Payload for prompting a thread: text, and optionally uploaded image attachments.",
+  })
 
 export const PromptThreadResponse = Schema.Struct({
   promptId: Schema.String.annotate({ description: "The admitted prompt's id." }),
   turnId: Schema.optionalKey(
     Schema.String.annotate({
-      description: "Present when the prompt started a turn at once; absent when it queued.",
+      description:
+        'Present when the prompt started a turn at once or joined the running one (`when: "now"`); absent when it queued.',
     }),
   ),
 }).annotate({
@@ -800,6 +910,9 @@ export const PromptThreadResponse = Schema.Struct({
 export const QueuedPrompt = Schema.Struct({
   id: Schema.String,
   prompt: Schema.String,
+  attachments: Schema.optionalKey(
+    Schema.Array(ThreadAttachment).annotate({ description: "Images waiting with the prompt." }),
+  ),
   queuedAt: timestamp("When the prompt was admitted."),
 }).annotate({
   identifier: "QueuedPrompt",
@@ -1217,9 +1330,75 @@ export class QueuedPromptNotFound extends Schema.TaggedErrorClass<QueuedPromptNo
   }
 }
 
+/** Unknown attachment id on this thread (attachments never cross threads). */
+export class AttachmentNotFound extends Schema.TaggedErrorClass<AttachmentNotFound>()(
+  "AttachmentNotFound",
+  { threadId: Schema.String, attachmentId: Schema.String, message: errorMessage },
+  {
+    identifier: "AttachmentNotFound",
+    description: "No attachment with the given id on this thread.",
+    httpApiStatus: 404,
+  },
+) {
+  constructor(props: { readonly threadId: string; readonly attachmentId: string }) {
+    super({
+      ...props,
+      message: `thread ${props.threadId} has no attachment ${props.attachmentId}`,
+    })
+  }
+}
+
+/** The upload exceeds the per-attachment byte cap. */
+export class AttachmentTooLarge extends Schema.TaggedErrorClass<AttachmentTooLarge>()(
+  "AttachmentTooLarge",
+  { threadId: Schema.String, byteSize: Schema.Int, limit: Schema.Int, message: errorMessage },
+  {
+    identifier: "AttachmentTooLarge",
+    description: `The upload exceeds the per-attachment cap (${ATTACHMENT_MAX_BYTES} bytes); downscale the image and retry.`,
+    httpApiStatus: 413,
+  },
+) {
+  constructor(props: {
+    readonly threadId: string
+    readonly byteSize: number
+    readonly limit: number
+  }) {
+    super({
+      ...props,
+      message: `attachment of ${props.byteSize} bytes exceeds the ${props.limit}-byte limit`,
+    })
+  }
+}
+
+/** The uploaded bytes are not the image the request declared (or are empty). */
+export class AttachmentInvalid extends Schema.TaggedErrorClass<AttachmentInvalid>()(
+  "AttachmentInvalid",
+  { threadId: Schema.String, reason: Schema.String, message: errorMessage },
+  {
+    identifier: "AttachmentInvalid",
+    description:
+      "The body is not a usable image of the declared Content-Type: empty, or its bytes do not carry that format's signature.",
+    httpApiStatus: 422,
+  },
+) {
+  constructor(props: { readonly threadId: string; readonly reason: string }) {
+    super({ ...props, message: props.reason })
+  }
+}
+
 const projectIdParam = { projectId: Schema.String }
 const terminalIdParam = { terminalId: Schema.String }
 const threadIdParam = { threadId: Schema.String }
+const attachmentIdParam = { threadId: Schema.String, attachmentId: Schema.String }
+
+/**
+ * One raw-bytes payload per accepted image type: the router dispatches on the
+ * request's Content-Type, so an unsupported type is a 415 before any byte is
+ * read, and the document lists exactly what the endpoint takes.
+ */
+const attachmentPayloads = ATTACHMENT_MEDIA_TYPES.map((contentType) =>
+  Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array({ contentType })),
+)
 
 export class V1 extends HttpApiGroup.make("v1")
   .add(
@@ -1498,12 +1677,18 @@ export class V1 extends HttpApiGroup.make("v1")
       params: threadIdParam,
       payload: PromptThreadRequest,
       success: PromptThreadResponse,
-      error: [ThreadNotFound, ThreadArchived, ProviderUnavailable, ProviderSessionConflict],
+      error: [
+        ThreadNotFound,
+        ThreadArchived,
+        AttachmentNotFound,
+        ProviderUnavailable,
+        ProviderSessionConflict,
+      ],
     })
       .annotate(OpenApi.Identifier, "promptThread")
       .annotate(
         OpenApi.Description,
-        "Prompt the thread. Always admitted: an idle thread starts a turn at once (`turnId` present) and a busy one queues the prompt to run at the next idle (`turnId` absent) — there is no busy error and no lock between surfaces. On a one-process provider (Claude Code) a prompt while the TUI is live takes the thread over: the TUI ends once idle, the turn runs natively, and the TUI relaunches when the queue drains (see openThreadTerminal). " +
+        'Prompt the thread. Always admitted: an idle thread starts a turn at once and a busy one queues the prompt for the next idle — or hands it to the running turn with `when: "now"` (see PromptThreadRequest); `turnId` tells which. There is no busy error and no lock between surfaces. On a one-process provider (Claude Code) a prompt while the TUI is live takes the thread over: the TUI ends once idle, the turn runs natively, and the TUI relaunches when the queue drains (see openThreadTerminal). ' +
           "The turn is server-owned: the client's connection never matters to it. When the prompt would start now and the provider refuses, it is un-admitted (the error means not accepted; nothing stays queued); a prompt queued behind others is admitted regardless. Follow the turn on the per-thread event stream.",
       ),
     HttpApiEndpoint.get("getThreadTranscript", "/threads/:threadId/transcript", {
@@ -1595,6 +1780,35 @@ export class V1 extends HttpApiGroup.make("v1")
         OpenApi.Description,
         "Withdraw a waiting prompt. A prompt that already started is a turn now (404); interrupt the thread instead.",
       ),
+    // --- Attachments (ATC-216): images a prompt carries ---
+    HttpApiEndpoint.post("createThreadAttachment", "/threads/:threadId/attachments", {
+      params: threadIdParam,
+      query: {
+        name: Schema.optionalKey(
+          Schema.String.annotate({
+            description: 'Display filename; omitted derives one from the type ("image.png").',
+          }),
+        ),
+      },
+      payload: attachmentPayloads,
+      success: ThreadAttachment,
+      error: [ThreadNotFound, ThreadArchived, AttachmentTooLarge, AttachmentInvalid],
+    })
+      .annotate(OpenApi.Identifier, "createThreadAttachment")
+      .annotate(
+        OpenApi.Description,
+        `Upload one image for a later prompt on this thread: the raw bytes as the body, the image type as Content-Type (PNG, JPEG, GIF, or WebP — anything else is 415), at most ${ATTACHMENT_MAX_BYTES} bytes (413 beyond). The bytes are held under the server's data directory for the thread's life and deleted with it; the returned path is stable and readable by any process on the server host. Reference the id in promptThread's attachments (up to ${ATTACHMENTS_PER_PROMPT} per prompt). Nothing is garbage-collected before the thread goes: upload at send time, not ahead of it.`,
+      ),
+    HttpApiEndpoint.get("getThreadAttachment", "/threads/:threadId/attachments/:attachmentId", {
+      params: attachmentIdParam,
+      success: HttpApiSchema.StreamUint8Array(),
+      error: [ThreadNotFound, AttachmentNotFound],
+    })
+      .annotate(OpenApi.Identifier, "getThreadAttachment")
+      .annotate(
+        OpenApi.Description,
+        "The attachment's bytes, as uploaded (served as application/octet-stream; the image type is in the attachment's metadata on the item or queue entry that carries it).",
+      ),
     HttpApiEndpoint.get("listAgents", "/agents", { success: AgentList })
       .annotate(OpenApi.Identifier, "listAgents")
       .annotate(
@@ -1616,7 +1830,22 @@ export class V1 extends HttpApiGroup.make("v1")
       .annotate(OpenApi.Identifier, "listAgentModels")
       .annotate(
         OpenApi.Description,
-        "The agent's model catalog as its provider reports it, cached server-side for a short while.",
+        "The agent's model catalog as its provider reports it. Cached server-side for a short while; expiry is lazy — no periodic task, the provider is asked again only on the next request after it — so a client that wants a fresh catalog asks again.",
+      ),
+    HttpApiEndpoint.get("listAgentCommands", "/agents/:agentId/commands", {
+      params: { agentId: Schema.String },
+      query: {
+        dir: AbsolutePath.annotate({
+          description: "Directory the commands are resolved in (project and user scopes).",
+        }),
+      },
+      success: AgentCommandList,
+      error: [AgentNotFound, ProviderUnavailable, DirectoryUnavailable, DirectoryCheckTimedOut],
+    })
+      .annotate(OpenApi.Identifier, "listAgentCommands")
+      .annotate(
+        OpenApi.Description,
+        "The slash commands and skills the agent offers in `dir` — answerable with no thread and no live session, so a cold thread and a thread not yet created complete alike. Cached server-side per agent and directory for a short while; expiry is lazy — no periodic task, the provider is asked again only on the next request after it — so a client that wants to see a newly added or removed skill asks again. An empty list is a real answer. Commands are inserted into a prompt as plain text.",
       ),
     HttpApiEndpoint.get("subscribeEvents", "/events", {
       success: HttpApiSchema.StreamSse({ data: ResourceChangedEvent }),
@@ -1666,6 +1895,27 @@ export class V1 extends HttpApiGroup.make("v1")
           "dotfolders excluded, symlinks included when they resolve to directories, sorted " +
           "case-insensitively. Omitting `path` lists the server's home directory. Same bounded " +
           "timeout and tagged errors as the health check; nothing is persisted.",
+      ),
+    HttpApiEndpoint.get("searchFiles", "/fs/files", {
+      query: {
+        dir: AbsolutePath.annotate({ description: "Directory tree to search." }),
+        query: Schema.optionalKey(
+          Schema.String.annotate({
+            description:
+              "Filename query (case-insensitive); omitted or empty lists files in path order.",
+          }),
+        ),
+        limit: Schema.optionalKey(
+          integerParam("Entries to return (default 25, at most 200).", 1, 200),
+        ),
+      },
+      success: FsFilesResponse,
+      error: [DirectoryUnavailable, DirectoryCheckTimedOut],
+    })
+      .annotate(OpenApi.Identifier, "searchFiles")
+      .annotate(
+        OpenApi.Description,
+        "Search the files under `dir` by name (`@` mentions): best matches first, with `.git` and every `.gitignore`'s exclusions skipped and the tree capped (see `truncated`). Directory-driven, not project-scoped: pass a thread's working directory, a worktree, or the directory a new thread will use. Same validation and tagged errors as /fs/list; nothing is persisted.",
       ),
   )
   // .prefix only applies to endpoints added above it — add new endpoints

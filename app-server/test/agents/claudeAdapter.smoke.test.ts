@@ -35,7 +35,7 @@ describe.skipIf(!enabled)("live claude adapter smoke (opt-in)", () => {
             Effect.gen(function* () {
               const { connection, turn } = yield* adapter.createSession({
                 cwd,
-                input: "Reply with exactly: SMOKE-OK",
+                input: { text: "Reply with exactly: SMOKE-OK", attachments: [] },
                 settings: SMOKE_SETTINGS,
               })
               const sink = yield* collectAgentEvents(connection.events)
@@ -61,7 +61,10 @@ describe.skipIf(!enabled)("live claude adapter smoke (opt-in)", () => {
               })
               const sink = yield* collectAgentEvents(connection.events)
               const turn = yield* connection.startTurn(
-                "What exact text did I ask you to reply with earlier? Answer with just that text.",
+                {
+                  text: "What exact text did I ask you to reply with earlier? Answer with just that text.",
+                  attachments: [],
+                },
                 SMOKE_SETTINGS,
               )
               assert.strictEqual(connection.providerSessionId, sessionId)
@@ -86,7 +89,10 @@ describe.skipIf(!enabled)("live claude adapter smoke (opt-in)", () => {
               })
               const sink = yield* collectAgentEvents(connection.events)
               const turn = yield* connection.startTurn(
-                "Count from 1 to 500, one number per line. Do not stop early.",
+                {
+                  text: "Count from 1 to 500, one number per line. Do not stop early.",
+                  attachments: [],
+                },
                 SMOKE_SETTINGS,
               )
               yield* waitForAgentEvent(
@@ -114,7 +120,9 @@ describe.skipIf(!enabled)("live claude adapter smoke (opt-in)", () => {
                 cwd,
                 settings: SMOKE_SETTINGS,
               })
-              return yield* Effect.flip(connection.startTurn("hello?", SMOKE_SETTINGS))
+              return yield* Effect.flip(
+                connection.startTurn({ text: "hello?", attachments: [] }, SMOKE_SETTINGS),
+              )
             }),
           )
           assert.strictEqual(failure._tag, "AgentResumeFailed")

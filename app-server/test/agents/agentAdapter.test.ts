@@ -162,7 +162,7 @@ describe("AgentAdapter seam semantics (fake adapter)", () => {
       const fake = makeFakeAgentAdapter()
       const { connection, turn } = yield* fake.adapter.createSession({
         cwd: "/work",
-        input: "do the thing",
+        input: { text: "do the thing", attachments: [] },
         settings: TEST_SETTINGS,
       })
       const sink = yield* collectEvents(connection.events)
@@ -188,10 +188,12 @@ describe("AgentAdapter seam semantics (fake adapter)", () => {
       const fake = makeFakeAgentAdapter()
       const { connection } = yield* fake.adapter.createSession({
         cwd: "/work",
-        input: "one",
+        input: { text: "one", attachments: [] },
         settings: TEST_SETTINGS,
       })
-      const second = yield* Effect.flip(connection.startTurn("two", TEST_SETTINGS))
+      const second = yield* Effect.flip(
+        connection.startTurn({ text: "two", attachments: [] }, TEST_SETTINGS),
+      )
       assert.strictEqual(second._tag, "AgentConflict")
     }).pipe(Effect.scoped),
   )
@@ -271,7 +273,7 @@ describe("AgentAdapter seam semantics (fake adapter)", () => {
       const fake = makeFakeAgentAdapter()
       const { connection, turn } = yield* fake.adapter.createSession({
         cwd: "/work",
-        input: "long task",
+        input: { text: "long task", attachments: [] },
         settings: TEST_SETTINGS,
       })
       const sink = yield* collectEvents(connection.events)
@@ -294,7 +296,7 @@ describe("AgentAdapter seam semantics (fake adapter)", () => {
       const fake = makeFakeAgentAdapter()
       const { connection } = yield* fake.adapter.createSession({
         cwd: "/work",
-        input: "ask me",
+        input: { text: "ask me", attachments: [] },
         settings: TEST_SETTINGS,
       })
       const sink = yield* collectEvents(connection.events)
@@ -314,7 +316,7 @@ describe("AgentAdapter seam semantics (fake adapter)", () => {
       const fake = makeFakeAgentAdapter()
       const { connection } = yield* fake.adapter.createSession({
         cwd: "/work",
-        input: "ask me",
+        input: { text: "ask me", attachments: [] },
         settings: TEST_SETTINGS,
       })
       const sink = yield* collectEvents(connection.events)
@@ -364,7 +366,11 @@ describe("AgentAdapter seam semantics (fake adapter)", () => {
       const fake = makeFakeAgentAdapter()
       fake.setUnavailable("fake outage")
       const failure = yield* Effect.flip(
-        fake.adapter.createSession({ cwd: "/work", input: "hi", settings: TEST_SETTINGS }),
+        fake.adapter.createSession({
+          cwd: "/work",
+          input: { text: "hi", attachments: [] },
+          settings: TEST_SETTINGS,
+        }),
       )
       assert.strictEqual(failure._tag, "AgentUnavailable")
     }).pipe(Effect.scoped),

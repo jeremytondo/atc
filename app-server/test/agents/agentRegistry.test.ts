@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest"
 import { BunHttpServer, BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
 import { HttpApiTest } from "effect/unstable/httpapi"
+import { realpathSync } from "node:fs"
 import * as AgentRegistry from "../../src/agents/agentRegistry.ts"
 import * as ClaudeAdapter from "../../src/agents/claudeAdapter.ts"
 import * as CodexAdapter from "../../src/agents/codexAdapter.ts"
@@ -41,6 +42,33 @@ describe("/api/v1/agents", () => {
         yield* client.v1.getAgent({ params: { agentId: "claude-code" } }),
         agents[1],
       )
+    }).pipe(Effect.provide(TestLayer)),
+  )
+
+  it.effect("commands come from the adapter per directory and are cached for a while", () =>
+    Effect.gen(function* () {
+      const client = yield* HttpApiTest.groups(Api, ["v1"])
+      kit.fakeAgents.codex.setCommands([{ name: "review", description: "Review the diff" }])
+      const first = yield* client.v1.listAgentCommands({
+        params: { agentId: "codex" },
+        query: { dir: "/tmp" },
+      })
+      assert.deepStrictEqual(first, [{ name: "review", description: "Review the diff" }])
+      // A second ask within the TTL is served from the cache — the adapter
+      // is not probed again — and another directory is its own entry.
+      kit.fakeAgents.codex.setCommands([])
+      const again = yield* client.v1.listAgentCommands({
+        params: { agentId: "codex" },
+        query: { dir: "/tmp" },
+      })
+      assert.deepStrictEqual(again, first)
+      const elsewhere = yield* client.v1.listAgentCommands({
+        params: { agentId: "codex" },
+        query: { dir: "/" },
+      })
+      assert.deepStrictEqual(elsewhere, [])
+      // Canonical paths (macOS resolves /tmp to /private/tmp; Linux does not).
+      assert.deepStrictEqual(kit.fakeAgents.codex.commandReads, [realpathSync("/tmp"), "/"])
     }).pipe(Effect.provide(TestLayer)),
   )
 
