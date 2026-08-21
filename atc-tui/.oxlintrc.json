@@ -1,0 +1,36 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc"],
+  "jsPlugins": ["../app-server/lint/index.ts"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "perf": "error"
+  },
+  "rules": {
+    "typescript/no-explicit-any": "error",
+    "atc/canonical-namespace-imports": "error",
+    "atc/no-adhoc-spawn": "error",
+    "atc/no-manual-effect-runtime": "error",
+    "atc/no-process-env": "error",
+    "eslint/no-underscore-dangle": ["error", { "allow": ["_tag"] }],
+    "eslint/no-shadow": "off",
+    "unicorn/consistent-function-scoping": "off",
+    "unicorn/prefer-add-event-listener": "off"
+  },
+  "ignorePatterns": ["dist"],
+  "overrides": [
+    {
+      "files": ["src/config.ts"],
+      "rules": { "atc/no-process-env": "off" }
+    },
+    {
+      "files": ["src/main.ts"],
+      "rules": { "atc/no-manual-effect-runtime": "off" }
+    },
+    {
+      "files": ["test/**"],
+      "rules": { "atc/no-process-env": "off" }
+    }
+  ]
+}
