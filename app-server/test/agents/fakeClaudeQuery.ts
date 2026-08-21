@@ -22,6 +22,12 @@ import type { ClaudeQueryFn, ClaudeQueryHandle } from "../../src/agents/claudeAd
 //                  per-block `assistant` message with the same message id
 //   "TOOL"       — emits a Read tool_use block and its tool_result
 //   "FAILTURN"   — ends with error_max_turns, then the iterator throws
+//   "WAKE"       — after the turn's result, a background task "finishes":
+//                  the root loop wakes into a turn of the SDK's own (probed
+//                  2026-08-21) — no user message on the stream, the
+//                  UserPromptSubmit hook carries WAKE_NOTIFICATION, then
+//                  the usual output, Stop and result; "WAKEQ" also asks
+//                  a question (canUseTool) inside that woken turn
 // Every successful turn ends with a per-block `assistant` text message
 // (`fake: <text>`) before its result, like the SDK's own output.
 //
@@ -55,6 +61,11 @@ export interface FakeClaudeQueryOptions {
   /** Leave getSettings() undeclared on the handle (an SDK that dropped it). */
   readonly withoutGetSettings?: boolean
 }
+
+/** The prompt the UserPromptSubmit hook carries for a woken turn (the CLI's
+ * task-notification shape, trimmed). */
+export const WAKE_NOTIFICATION =
+  "<task-notification>\n<task-id>fake-task</task-id>\n<status>completed</status>\n</task-notification>"
 
 /** The catalog shape recorded from the CLI (2026-08-18), trimmed. */
 export const FAKE_CLAUDE_MODELS: ReadonlyArray<ModelInfo> = [
@@ -153,6 +164,15 @@ export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeC
       done = true
       wake?.()
     }
+    let drainedWaiters: Array<() => void> = []
+    /** Resolves once the consumer has taken (and, being synchronous per
+     * message, handled) everything pushed so far — the real SDK's timing
+     * for evidence that lands well after a turn's result, such as a
+     * background task finishing seconds later. */
+    const whenDrained = (): Promise<void> =>
+      output.length === 0 && wake !== null
+        ? Promise.resolve()
+        : new Promise((resolve) => drainedWaiters.push(resolve))
     const state = (value: string): void => {
       if (options.stateEvents === false) return
       push({
@@ -354,6 +374,48 @@ export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeC
         result: `fake: ${text}`,
       })
       state("idle")
+      if (text.includes("WAKE")) await wakeTurn(text.includes("WAKEQ"))
+    }
+
+    /** The woken turn (see the header's WAKE entry). */
+    const wakeTurn = async (ask: boolean): Promise<void> => {
+      await whenDrained()
+      state("running")
+      await fireHook("UserPromptSubmit", { prompt: WAKE_NOTIFICATION })
+      const messageId = `msg_fake_${nextMessage++}`
+      if (ask) {
+        const input = {
+          questions: [
+            {
+              question: "Keep going?",
+              header: "Next",
+              options: [
+                { label: "yes", description: "continue" },
+                { label: "no", description: "stop" },
+              ],
+              multiSelect: false,
+            },
+          ],
+        }
+        state("requires_action")
+        const result = await args.options.canUseTool?.("AskUserQuestion", input, {
+          signal: new AbortController().signal,
+          requestId: "fake-request-wake",
+          toolUseID: "fake-tool-use-wake",
+        })
+        decisions.push({ toolName: "AskUserQuestion", result })
+        state("running")
+      }
+      await fireHook("Stop")
+      assistant(messageId, { type: "text", text: "fake: woke" })
+      push({
+        type: "result",
+        subtype: "success",
+        session_id: sessionId,
+        is_error: false,
+        result: "fake: woke",
+      })
+      state("idle")
     }
 
     // Drain the prompt stream like the real SDK does: input is taken as it
@@ -451,6 +513,9 @@ export const makeFakeClaudeQuery = (options: FakeClaudeQueryOptions = {}): FakeC
                   wake = null
                   resolve()
                 }
+                const waiters = drainedWaiters
+                drainedWaiters = []
+                for (const waiter of waiters) waiter()
               })
             }
           },

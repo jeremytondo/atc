@@ -89,6 +89,12 @@ import * as Subprocess from "../platform/subprocess.ts"
 //     (level snapshot); what the feed carries is always the reducer's
 //     aggregate, so a root Stop with live background work stays `working`
 //     and the last SubagentStop lands the `idle` transition.
+//   - A background task's notification wakes the root loop into a turn of
+//     the SDK's own (probed 2026-08-21): no `user` message is echoed, the
+//     UserPromptSubmit hook carries the notification text, and the turn
+//     ends with an ordinary `result`. It is opened on the feed like a
+//     client turn (`beginWakeTurn`) so its output and requests are not
+//     lost; startTurn refuses while it runs, as for any active turn.
 //   - Known residual: the SDK stream carries no correlation between a
 //     `result` and the input that caused it, so a background wake-turn's
 //     held result flushing just after a client startTurn is paired with
@@ -972,7 +978,17 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
             [
               {
                 hooks: [
-                  (input: { hook_event_name: string }) => {
+                  (input: { hook_event_name: string; prompt?: unknown }) => {
+                    // A prompt submitted with no turn of ours open is the
+                    // SDK waking the root loop (see beginWakeTurn).
+                    if (
+                      input.hook_event_name === "UserPromptSubmit" &&
+                      session.activeTurn === null &&
+                      !session.closed &&
+                      typeof input.prompt === "string"
+                    ) {
+                      beginWakeTurn(session, input.prompt)
+                    }
                     const activity = session.tracker.update(
                       input.hook_event_name,
                       input as unknown as Record<string, unknown>,
@@ -1303,6 +1319,30 @@ export const layerWith = (adapterOptions: ClaudeAdapterOptions) =>
         })
         session.pushInput(userMessage(content))
         return turnId
+      }
+
+      /**
+       * A turn the provider started on its own: a background task finished
+       * and its notification woke the root loop (probed 2026-08-21, SDK
+       * 0.3.235 — the notification is never echoed as a `user` message on
+       * the stream; the in-process UserPromptSubmit hook is what carries
+       * its text, after `session_state_changed: running` and before the
+       * turn's output). Opened exactly like a client turn, so its items,
+       * requests and result flow through the same paths — without this
+       * every block is dropped for want of an active turn and its
+       * canUseTool asks are denied unseen. Only ever opened with no turn
+       * active: a notification that lands mid-turn is that turn's input.
+       */
+      const beginWakeTurn = (session: LiveSession, prompt: string): void => {
+        const turnId = `claude-turn-${crypto.randomUUID()}`
+        session.activeTurn = turnId
+        emit(session, { type: "turnStarted", turnId })
+        emitItem(session, "itemCompleted", {
+          type: "userMessage",
+          id: `${turnId}:prompt`,
+          turnId,
+          text: prompt,
+        })
       }
 
       /** The bounded transcript read behind both readers (getSessionMessages). */

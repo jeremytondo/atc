@@ -15,7 +15,7 @@ import {
 } from "./agentTestKit.ts"
 import { eventually } from "../testLayers.ts"
 import { trackTempDir } from "../blackbox.ts"
-import { FAKE_CLAUDE_MODELS, makeFakeClaudeQuery } from "./fakeClaudeQuery.ts"
+import { FAKE_CLAUDE_MODELS, WAKE_NOTIFICATION, makeFakeClaudeQuery } from "./fakeClaudeQuery.ts"
 import type { FakeClaudeQueryOptions } from "./fakeClaudeQuery.ts"
 
 // Claude adapter tests over the scripted query() seam (fakeClaudeQuery.ts):
@@ -977,6 +977,67 @@ describe("ClaudeAdapter", () => {
           providerMetadata: launch.providerMetadata,
         })
         assert.strictEqual(relaunch.providerMetadata, launch.providerMetadata)
+      }).pipe(Effect.provide(layer))
+    }),
+  )
+
+  it.live("a finished background task wakes the root loop into a turn of the feed's own", () =>
+    Effect.gen(function* () {
+      const cwd = workDir()
+      const { fake, layer } = adapterStack()
+      yield* Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter.ClaudeAdapter
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const { connection, turn } = yield* adapter.createSession({
+              cwd,
+              input: { text: "WAKEQ when done", attachments: [] },
+              settings: TEST_SETTINGS,
+            })
+            const sink = yield* collectAgentEvents(connection.events)
+            yield* waitForAgentEvent(
+              sink,
+              (event) => event.type === "turnCompleted" && event.turnId === turn.turnId,
+            )
+            // The woken turn opens on the feed with the notification as its
+            // prompt, and its question reaches the consumer like any other.
+            yield* waitForAgentEvent(
+              sink,
+              (event) => event.type === "requestOpened" && event.request.kind === "question",
+            )
+            const woken = sink.find(
+              (event) => event.type === "turnStarted" && event.turnId !== turn.turnId,
+            )
+            if (woken?.type !== "turnStarted") return assert.fail("expected a woken turn")
+            const opened = sink.find((event) => event.type === "requestOpened")
+            if (opened?.type !== "requestOpened") return assert.fail("expected a request")
+            assert.strictEqual(opened.request.turnId, woken.turnId)
+            yield* connection.respond(opened.request.id, {
+              kind: "question",
+              answers: { q0: ["yes"] },
+            })
+            yield* waitForAgentEvent(
+              sink,
+              (event) => event.type === "turnCompleted" && event.turnId === woken.turnId,
+            )
+            const items = sink.flatMap((event) =>
+              event.type === "itemCompleted" && event.item.turnId === woken.turnId
+                ? [event.item]
+                : [],
+            )
+            assert.deepStrictEqual(
+              items.map((item) => [item.type, "text" in item ? item.text : undefined]),
+              [
+                ["userMessage", WAKE_NOTIFICATION],
+                ["assistantText", "fake: woke"],
+              ],
+            )
+            assert.strictEqual(
+              (fake.decisions.at(-1)?.result as { behavior?: string } | undefined)?.behavior,
+              "allow",
+            )
+          }),
+        )
       }).pipe(Effect.provide(layer))
     }),
   )
