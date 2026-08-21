@@ -11,6 +11,7 @@
 // exact ordering the sidebar would show.
 
 import ATCAppServerAPI
+import AppKit
 import Foundation
 
 enum SidebarJump: Equatable, Sendable {
@@ -88,6 +89,21 @@ enum SidebarShortcuts {
     static func perform(_ jump: SidebarJump, appModel: AppModel, windowState: WindowState) {
         switch jump {
         case .thread(let slot):
+            // While the New Thread composer is shown, ⌘1–9 pick its agent
+            // (ATC-166) instead of jumping the sidebar; an unavailable one
+            // answers with a beep, never a silent no-op.
+            if windowState.newThreadContext != nil {
+                // A send in flight owns the chips (see NewThreadDraft).
+                guard !appModel.newThreadSending else { return }
+                guard let agent = NewThreadDraftRules.agent(forShortcut: slot + 1, in: appModel.newThreadAgents())
+                else { return }
+                guard agent.available else {
+                    NSSound.beep()
+                    return
+                }
+                appModel.newThreadDraft.agentID = agent.id
+                return
+            }
             let model = appModel.threadList(filter: windowState.threadFilter)
             let targets = threadTargets(
                 model: model,

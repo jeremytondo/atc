@@ -30,11 +30,11 @@ struct TerminalRetentionContext: Equatable, Sendable {
     static let empty = TerminalRetentionContext(visibleTerminal: nil)
 }
 
-/// Everything a New Thread sheet needs to open with the right defaults.
-struct NewThreadContext: Identifiable, Hashable {
-    /// Pre-selected project; nil lets the sheet offer a picker.
+/// What a New Thread composer opens with (ATC-216): the project in
+/// context, if any — the draft's chips fill in the rest.
+struct NewThreadContext: Hashable {
+    /// Pre-selected project; nil keeps the draft's own (or the first offered).
     let projectRef: ProjectRef?
-    var id: Self { self }
 }
 
 /// Per-window navigation, disclosure, sheet, and command state. The
@@ -67,6 +67,9 @@ final class WindowState {
     var isTerminalsSectionExpanded = true
 
     var isCreateProjectPresented = false
+    /// The New Thread composer is shown over the content area while set
+    /// (not a sheet: the sidebar stays live, and navigating anywhere
+    /// dismisses it — the draft survives on `AppModel`).
     var newThreadContext: NewThreadContext?
     var newTerminalProject: ProjectRef?
 
@@ -97,7 +100,7 @@ final class WindowState {
     @ObservationIgnored private var markingViewed: Set<ThreadRef> = []
 
     var isSheetPresented: Bool {
-        isCreateProjectPresented || newThreadContext != nil || newTerminalProject != nil
+        isCreateProjectPresented || newTerminalProject != nil
     }
 
     /// Advances for every explicit request to type in the displayed content
@@ -152,6 +155,7 @@ final class WindowState {
         guard !thread.isArchived else { return }
 
         appModel.noteThreadOpened()
+        newThreadContext = nil
         selectedContent = .thread(ref)
         if reveal { sidebarRevealToken += 1 }
         returnThread = ref
@@ -209,6 +213,7 @@ final class WindowState {
     /// renders as a tombstone.
     func selectTerminal(_ ref: TerminalRef, in appModel: AppModel, reveal: Bool = true) {
         guard let terminal = appModel.terminal(for: ref) else { return }
+        newThreadContext = nil
         selectedContent = .terminal(ref)
         if reveal { sidebarRevealToken += 1 }
         if terminal.isLive {
@@ -224,6 +229,7 @@ final class WindowState {
     }
 
     func showDashboard() {
+        newThreadContext = nil
         selectedContent = .dashboard
         isInspectorPresented = false
     }
@@ -238,23 +244,16 @@ final class WindowState {
         columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
     }
 
-    // MARK: - Sheet presentation
+    // MARK: - Sheet and composer presentation
 
-    /// New Thread pre-selects the launch-local context Project when the
-    /// filter isn't pinning a different one.
+    /// New Thread opens the composer with the launch-local context Project
+    /// when the filter isn't pinning a different one.
     func presentNewThread() {
         if case .project(let ref) = threadFilter {
             newThreadContext = NewThreadContext(projectRef: ref)
             return
         }
         newThreadContext = NewThreadContext(projectRef: activeProject)
-    }
-
-    /// Called by the New Thread sheet after the server confirms creation:
-    /// establishes context and opens the thread immediately.
-    func threadCreated(_ ref: ThreadRef, in appModel: AppModel) {
-        newThreadContext = nil
-        Task { await openThread(ref, in: appModel) }
     }
 
     // MARK: - Reconciliation

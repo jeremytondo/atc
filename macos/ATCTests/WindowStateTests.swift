@@ -131,20 +131,23 @@ struct WindowStateTests {
 
     // MARK: - Sheets
 
-    @Test("New Thread prefers the filter's project, else the launch-local context")
+    @Test("New Thread prefers the filter's project, else the launch-local context; navigation dismisses it")
     func newThreadDefaults() async throws {
         let test = try await loadedModel()
         let state = WindowState()
 
         state.presentNewThread()
         #expect(try #require(state.newThreadContext).projectRef == nil)
-        #expect(state.isSheetPresented)
-        state.newThreadContext = nil
+        // A composer over the content, not a sheet: commands stay available.
+        #expect(!state.isSheetPresented)
 
+        // Opening a thread (any navigation) dismisses the composer.
         await state.openThread(test.threadRef("thr1"), in: test.model)
+        #expect(state.newThreadContext == nil)
         state.presentNewThread()
         #expect(try #require(state.newThreadContext).projectRef == test.projectRef("prj"))
-        state.newThreadContext = nil
+        state.showDashboard()
+        #expect(state.newThreadContext == nil)
 
         // The filter wins over the launch-local context when it pins a
         // different Project.

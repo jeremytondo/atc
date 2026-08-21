@@ -51,9 +51,10 @@ public nonisolated enum ImageAttachmentError: LocalizedError, Equatable {
 // Nonisolated so the composer can run `prepare` off the main actor: a large
 // image decodes and re-encodes for long enough to freeze typing otherwise.
 public nonisolated enum ImageAttachmentEncoder {
-    /// The server's per-image cap.
+    /// The server's per-image cap (`ATTACHMENT_MAX_BYTES` in the contract;
+    /// the OpenAPI document carries no byte cap, so it is mirrored here).
     public static let maxBytes = 8 * 1024 * 1024
-    /// The server's per-prompt cap.
+    /// The server's per-prompt cap (`ATTACHMENTS_PER_PROMPT`, the contract's `maxItems`).
     public static let maxPerPrompt = 10
 
     /// Scales tried when an image must shrink, largest first.

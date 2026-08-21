@@ -260,3 +260,12 @@ final class ConnectionRuntime: Identifiable {
             && terminals.lastError == nil && agents.lastError == nil
     }
 }
+
+extension ConnectionRuntime {
+    /// The server's ranked files for an `@` query under `dir`, a dozen at a
+    /// time; nil when the read fails (the completion list simply stays as
+    /// it was). Shared by the Chat composer and the New Thread composer.
+    func searchFiles(dir: String, query: String) async -> Components.Schemas.FsFilesResponse? {
+        try? await client.searchFiles(query: .init(dir: dir, query: query, limit: "12")).ok.body.json
+    }
+}

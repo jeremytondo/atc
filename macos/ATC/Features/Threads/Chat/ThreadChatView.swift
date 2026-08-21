@@ -145,7 +145,7 @@ private struct ChatPane: View {
                 ChatComposer(
                     text: draftBinding.text,
                     attachments: draftBinding.attachments,
-                    thread: thread,
+                    subject: ComposerSubject(thread: thread),
                     models: agents?.models(for: thread.agentId),
                     modelsError: agents?.modelErrors[thread.agentId],
                     isTurnRunning: chat.runningTurn != nil,
@@ -294,10 +294,7 @@ private struct ChatPane: View {
     /// directory's files, a dozen at a time; nil when the read fails (the
     /// list simply stays empty).
     private func searchFiles(_ query: String) async -> Components.Schemas.FsFilesResponse? {
-        guard let client = appModel.runtime(id: ref.connectionID)?.client else { return nil }
-        return try? await client.searchFiles(
-            query: .init(dir: thread.workingDirectory, query: query, limit: "12")
-        ).ok.body.json
+        await appModel.runtime(id: ref.connectionID)?.searchFiles(dir: thread.workingDirectory, query: query)
     }
 
     // MARK: - Status

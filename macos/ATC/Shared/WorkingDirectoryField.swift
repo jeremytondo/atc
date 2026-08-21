@@ -1,8 +1,11 @@
-// The one editor for a server-host absolute directory, shared by every
-// creation sheet. The server is the sole authority on whether a path is
+// The one editor for a server-host absolute directory, shared by the
+// creation sheets and the New Thread composer's directory chip. The server
+// is the sole authority on whether a path is
 // usable, so the field re-checks through `checkDirectory` whenever the typed
-// value settles and publishes the outcome; sheets gate submission on
-// `DirectoryCheckState.isAvailable` rather than inspecting paths themselves.
+// value settles and publishes the outcome; the creation sheets gate
+// submission on `DirectoryCheckState.isAvailable` rather than inspecting
+// paths themselves, while the New Thread composer lets the server's create
+// refuse an unusable path on the first send instead.
 // Any edit to the path or connection drops the previous verdict to
 // `.checking` before the debounce, so a gate can never submit on a verdict
 // that belongs to an earlier value.
@@ -39,9 +42,6 @@ struct WorkingDirectoryField: View {
     /// when the typed path is unchanged.
     let connectionID: UUID?
     @Binding var state: DirectoryCheckState
-    /// When provided, the text field binds its focus here so hosts can move
-    /// focus programmatically (the New Thread launcher's Shift-⌘-G).
-    var isFocused: FocusState<Bool>.Binding?
     @State private var isBrowsing = false
 
     private struct CheckKey: Equatable {
@@ -82,15 +82,9 @@ struct WorkingDirectoryField: View {
         }
     }
 
-    @ViewBuilder
     private var textField: some View {
-        let field = TextField(label, text: $path, prompt: Text("/path/on/the/server"))
+        TextField(label, text: $path, prompt: Text("/path/on/the/server"))
             .autocorrectionDisabled()
-        if let isFocused {
-            field.focused(isFocused)
-        } else {
-            field
-        }
     }
 
     private func check() async {

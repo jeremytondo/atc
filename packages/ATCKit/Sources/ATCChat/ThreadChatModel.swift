@@ -349,54 +349,16 @@ public final class ThreadChatModel {
         let pendingID = transcript.addPending(prompt, attachments: attachments)
         project(.structure)
         do {
-            var ids: [String] = []
-            for attachment in attachments {
-                ids.append(try await upload(attachment).id)
-            }
-            let request = Components.Schemas.PromptThreadRequest(
-                prompt: prompt, attachments: ids.isEmpty ? nil : ids, when: when)
-            switch try await client.promptThread(path: .init(threadId: threadID), body: .json(request)) {
-            case .ok(let ok):
-                let response = try ok.body.json
-                transcript.resolvePending(
-                    id: pendingID, promptId: response.promptId, turnId: response.turnId)
-                project(.structure)
-                return true
-            case .notFound(let failure):
-                let payload = try failure.body.json
-                throw ServerError(anyOf: payload.value1, payload.value2)
-            case .conflict(let failure):
-                let payload = try failure.body.json
-                throw ServerError(anyOf: payload.value1, payload.value2)
-            case .serviceUnavailable(let failure): throw ServerError(try failure.body.json)
-            case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
-            }
+            let response = try await ThreadPrompting.prompt(
+                prompt, attachments: attachments, when: when, threadID: threadID, client: client)
+            transcript.resolvePending(id: pendingID, promptId: response.promptId, turnId: response.turnId)
+            project(.structure)
+            return true
         } catch {
             transcript.removePending(id: pendingID)
             project(.structure)
             promptError = error.localizedDescription
             return false
-        }
-    }
-
-    private func upload(_ attachment: PendingAttachment) async throws -> Components.Schemas.ThreadAttachment {
-        let body = HTTPBody(attachment.data)
-        let payload: Operations.CreateThreadAttachment.Input.Body =
-            switch attachment.mediaType {
-            case .imagePng: .png(body)
-            case .imageJpeg: .jpeg(body)
-            case .imageGif: .imageGif(body)
-            case .imageWebp: .imageWebp(body)
-            }
-        switch try await client.createThreadAttachment(
-            path: .init(threadId: threadID), query: .init(name: attachment.name), body: payload)
-        {
-        case .ok(let ok): return try ok.body.json
-        case .notFound(let failure): throw ServerError(try failure.body.json)
-        case .conflict(let failure): throw ServerError(try failure.body.json)
-        case .contentTooLarge(let failure): throw ServerError(try failure.body.json)
-        case .unprocessableContent(let failure): throw ServerError(try failure.body.json)
-        case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
         }
     }
 

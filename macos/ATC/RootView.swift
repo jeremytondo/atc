@@ -77,14 +77,6 @@ struct RootView: View {
             CreateProjectSheet()
         }
         .sheet(
-            item: $windowState.newThreadContext,
-            onDismiss: {
-                windowState.requestContentFocus()
-            }
-        ) { context in
-            NewThreadSheet(context: context)
-        }
-        .sheet(
             item: $windowState.newTerminalProject,
             onDismiss: {
                 windowState.requestContentFocus()
@@ -107,6 +99,11 @@ struct RootView: View {
             if windowState.selectedContent == .dashboard {
                 DashboardView()
                     .background(AppColors.canvas)
+            }
+            // The New Thread composer draws over whatever is selected; any
+            // navigation dismisses it (WindowState).
+            if let context = windowState.newThreadContext {
+                NewThreadComposerView(context: context)
             }
         }
         .background(AppColors.canvas.ignoresSafeArea(.container, edges: .top))

@@ -144,7 +144,6 @@ struct CommandRegistryTests {
 
         let presenters: [() -> Void] = [
             { state.isCreateProjectPresented = true },
-            { state.newThreadContext = NewThreadContext(projectRef: nil) },
             { state.newTerminalProject = ProjectRef(connectionID: UUID(), projectID: "prj") },
         ]
         for present in presenters {
@@ -152,7 +151,6 @@ struct CommandRegistryTests {
             #expect(state.isSheetPresented)
             #expect(!descriptor.availability(context).isAvailable)
             state.isCreateProjectPresented = false
-            state.newThreadContext = nil
             state.newTerminalProject = nil
         }
         #expect(!state.isSheetPresented)

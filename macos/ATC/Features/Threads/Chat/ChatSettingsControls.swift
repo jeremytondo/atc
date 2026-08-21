@@ -7,17 +7,36 @@
 // Full access in warning color and behind a confirmation, so it is never a
 // mis-click. When the row is too narrow for all three, Mode and Access fold
 // into one ⋯ menu.
-// The controls show what the server holds and send one patch per choice;
-// the server validates it, applies the per-model reasoning rule, and the
-// thread's refetch repaints — nothing is derived here beyond looking the
-// selected model up in the agent's catalog.
+// The controls render the subject they are given (an agent and its
+// settings) and emit one patch per choice; the caller decides where the
+// patch goes — Chat sends it to the server, which validates it, applies
+// the per-model reasoning rule, and repaints through the thread's refetch;
+// the New Thread draft applies it locally. Nothing is derived here beyond
+// looking the selected model up in the agent's catalog.
 
 import ATCAppServerAPI
 import ATCDesign
 import SwiftUI
 
+/// What the composer's controls describe: the agent whose catalog the
+/// model menu lists, and the settings the controls show — a thread's, or a
+/// New Thread draft's before any thread exists (ATC-216).
+struct ComposerSubject: Equatable {
+    let agentId: AgentID
+    let settings: ThreadSettings
+
+    init(agentId: AgentID, settings: ThreadSettings) {
+        self.agentId = agentId
+        self.settings = settings
+    }
+
+    init(thread: ATCThread) {
+        self.init(agentId: thread.agentId, settings: thread.settings)
+    }
+}
+
 struct ChatSettingsControls: View {
-    let thread: ATCThread
+    let subject: ComposerSubject
     /// The agent's catalog, nil until the store has read it.
     let models: [AgentModel]?
     /// Why the catalog is missing, when a read failed (nil while loading).
@@ -30,7 +49,7 @@ struct ChatSettingsControls: View {
     /// not applied straight from the menu).
     @State private var confirmingFullAccess = false
 
-    private var settings: ThreadSettings { thread.settings }
+    private var settings: ThreadSettings { subject.settings }
 
     private var selectedModel: AgentModel? {
         models?.first { $0.value == settings.model }
@@ -67,7 +86,7 @@ struct ChatSettingsControls: View {
     private var modelControl: some View {
         PopupMenuButton(entries: modelEntries, appearance: .accessoryBar) {
             controlLabel(chevron: true) {
-                Image(systemName: thread.agentId.systemImage)
+                Image(systemName: subject.agentId.systemImage)
                 Text(modelName).foregroundStyle(.primary)
                 if let reasoning = settings.reasoning {
                     Text(reasoning.displayName)

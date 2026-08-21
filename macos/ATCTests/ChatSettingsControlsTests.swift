@@ -18,7 +18,8 @@ struct ChatSettingsControlsTests {
 
     private func controls(model: String, models: [AgentModel]?, error: String? = nil) -> ChatSettingsControls {
         ChatSettingsControls(
-            thread: Fixtures.thread(id: "t", settings: Fixtures.settings(model: model, reasoning: .high)),
+            subject: ComposerSubject(
+                thread: Fixtures.thread(id: "t", settings: Fixtures.settings(model: model, reasoning: .high))),
             models: models, modelsError: error, update: { _ in }, reloadModels: {})
     }
 

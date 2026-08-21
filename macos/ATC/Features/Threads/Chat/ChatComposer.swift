@@ -39,7 +39,8 @@ import UniformTypeIdentifiers
 struct ChatComposer: View {
     @Binding var text: String
     @Binding var attachments: [PendingAttachment]
-    let thread: ATCThread
+    /// Whose composer this is: the agent and settings the controls show.
+    let subject: ComposerSubject
     /// The agent's model catalog, nil until read (the chip shows the raw id).
     let models: [AgentModel]?
     let modelsError: String?
@@ -111,7 +112,7 @@ struct ChatComposer: View {
                     .help("Attach image… (⌘⇧A)")
                     .accessibilityLabel("Attach image")
                     ChatSettingsControls(
-                        thread: thread, models: models, modelsError: modelsError,
+                        subject: subject, models: models, modelsError: modelsError,
                         update: updateSettings, reloadModels: reloadModels
                     )
                     .frame(maxWidth: .infinity, alignment: .leading)

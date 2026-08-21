@@ -68,6 +68,11 @@ final class AppModel {
     /// thread shares one draft and switching views (TUI, another thread,
     /// Dashboard) never loses it.
     private(set) var threadDrafts: [ThreadRef: ComposerDraft] = [:]
+    /// The New Thread composer's draft (ATC-216): one app-wide slot with the
+    /// same lifetime as thread drafts, so leaving the composer keeps it.
+    var newThreadDraft = NewThreadDraft()
+    /// A first send is in flight (one at a time, app-wide — see NewThreadDraft).
+    var newThreadSending = false
 
     /// Live terminal attaches by composite ref. Connections and surfaces
     /// stay alive here while the user switches around the sidebar, bounded
@@ -263,6 +268,13 @@ final class AppModel {
 
     func viewMode(for ref: ThreadRef) -> ThreadViewMode {
         threadViewModes[ref] ?? .chat
+    }
+
+    /// The agents the New Thread draft's Connection offers (the detected
+    /// registry, or the built-in slugs before detection lands).
+    func newThreadAgents() -> [Agent] {
+        let detected = newThreadDraft.project.flatMap { runtime(id: $0.connectionID) }?.agents.agents ?? []
+        return NewThreadDraftRules.agents(detected: detected)
     }
 
     func draft(for ref: ThreadRef) -> ComposerDraft {
