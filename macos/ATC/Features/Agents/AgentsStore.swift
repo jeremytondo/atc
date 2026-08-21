@@ -1,14 +1,21 @@
 // Shared domain state for one Connection's agent registry: live-detected
 // availability plus the actionable reason when a provider is missing. The
 // server never persists this — every refresh is a fresh detection — so the
-// store refreshes with the SSE-driven cycle like every other list. The
-// per-agent model catalogs (ATC-205) are read on demand — the first Chat of
-// an agent asks for its catalog — and kept for the store's life; the server
-// caches them too, so a re-read is cheap when a view wants one. The
-// per-agent, per-directory command lists (ATC-216) follow the same rule:
-// read when a composer first asks, kept for the store's life, a failed read
-// retried on the next ask — and never shown as an error, since an absent
-// list simply means no `/` suggestions.
+// store refreshes with the SSE-driven cycle like every other list.
+//
+// The per-agent model catalogs (ATC-205) and per-agent, per-directory
+// command lists (ATC-216) are read on demand and held only for rendering:
+// the server owns their freshness (it caches each for a short while and
+// re-asks the provider lazily, on the next request after expiry), so every
+// ask here re-reads — serving what is held immediately and replacing it
+// when the read lands (stale-while-revalidate). A catalog is asked for when
+// a Chat of the agent appears; a command list whenever a composer's `/`
+// needs suggestions. Neither polls. A failed re-read keeps what is held; a
+// failed first read of a catalog records its error for the picker, while an
+// absent command list is never an error — it simply means no `/`
+// suggestions. Nothing is kept across a URL/token rebuild of the runtime;
+// an SSE reconnect keeps the store, so freshness comes from re-asking, not
+// from reconnecting.
 
 import ATCAppServerAPI
 import Foundation
@@ -65,26 +72,29 @@ final class AgentsStore {
         commands[AgentDirectory(agent: id, dir: dir)]
     }
 
-    /// Read the agent's command list for `dir` once (idempotent while a
-    /// read is in flight or already landed); a failed read is retried on
-    /// the next call.
+    /// Re-read the agent's command list for `dir` (coalesced while a read
+    /// is in flight). The held list stays up until the read lands; a failed
+    /// read keeps it.
     func loadCommands(for id: AgentID, dir: String) {
         let key = AgentDirectory(agent: id, dir: dir)
-        guard commands[key] == nil, commandReads[key] == nil else { return }
+        guard commandReads[key] == nil else { return }
         commandReads[key] = Task { [weak self] in
             defer { self?.commandReads[key] = nil }
             guard let self else { return }
-            commands[key] = try? await client.listAgentCommands(
+            if let fetched = try? await client.listAgentCommands(
                 path: .init(agentId: id.rawValue), query: .init(dir: dir)
-            ).ok.body.json
+            ).ok.body.json {
+                commands[key] = fetched
+            }
         }
     }
 
-    /// Read the agent's catalog once (idempotent while a read is in flight
-    /// or already landed); a failed read records its error and is retried
-    /// on the next call.
+    /// Re-read the agent's catalog (coalesced while a read is in flight).
+    /// The held catalog stays up until the read lands; a failed read keeps
+    /// it and records the error, which the picker shows only while no
+    /// catalog is held.
     func loadModels(for id: AgentID) {
-        guard models[id] == nil, modelReads[id] == nil else { return }
+        guard modelReads[id] == nil else { return }
         modelReads[id] = Task { [weak self] in
             defer { self?.modelReads[id] = nil }
             guard let self else { return }

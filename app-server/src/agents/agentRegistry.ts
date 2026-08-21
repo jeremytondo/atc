@@ -32,7 +32,12 @@ export type Agent = typeof Contract.Agent.Type
 //     — a failed read is never cached, so a provider that comes up later is
 //     seen;
 //   - the command list per directory (ATC-216), read the same way and cached
-//     per agent and canonical directory — the probe is the freshness model;
+//     per agent and canonical directory.
+//   Both TTLs are demand-driven: nothing runs at expiry, the provider is
+//   asked again on the next request after it, and concurrent asks coalesce
+//   into one read. The TTL bounds how often a provider is probed, not how
+//   fresh a client sees — a client sees a change on its next ask after
+//   expiry, so clients re-ask on demand rather than holding one read.
 //   - the write-through defaults a new thread inherits: the agent_defaults
 //     row when one exists, else the entry's seed here. The seed is a
 //     starting point only (the first change any thread makes replaces it);

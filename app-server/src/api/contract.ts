@@ -1830,7 +1830,7 @@ export class V1 extends HttpApiGroup.make("v1")
       .annotate(OpenApi.Identifier, "listAgentModels")
       .annotate(
         OpenApi.Description,
-        "The agent's model catalog as its provider reports it, cached server-side for a short while.",
+        "The agent's model catalog as its provider reports it. Cached server-side for a short while; expiry is lazy — no periodic task, the provider is asked again only on the next request after it — so a client that wants a fresh catalog asks again.",
       ),
     HttpApiEndpoint.get("listAgentCommands", "/agents/:agentId/commands", {
       params: { agentId: Schema.String },
@@ -1845,7 +1845,7 @@ export class V1 extends HttpApiGroup.make("v1")
       .annotate(OpenApi.Identifier, "listAgentCommands")
       .annotate(
         OpenApi.Description,
-        "The slash commands and skills the agent offers in `dir` — answerable with no thread and no live session, so a cold thread and a thread not yet created complete alike. Cached server-side per agent and directory for a short while; an empty list is a real answer. Commands are inserted into a prompt as plain text.",
+        "The slash commands and skills the agent offers in `dir` — answerable with no thread and no live session, so a cold thread and a thread not yet created complete alike. Cached server-side per agent and directory for a short while; expiry is lazy — no periodic task, the provider is asked again only on the next request after it — so a client that wants to see a newly added or removed skill asks again. An empty list is a real answer. Commands are inserted into a prompt as plain text.",
       ),
     HttpApiEndpoint.get("subscribeEvents", "/events", {
       success: HttpApiSchema.StreamSse({ data: ResourceChangedEvent }),
