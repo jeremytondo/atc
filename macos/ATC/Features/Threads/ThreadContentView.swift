@@ -2,15 +2,12 @@
 // with nothing open, so live surfaces and their attach WebSockets survive
 // sidebar navigation; every other state draws over it.
 //
-// A thread shows in one of two modes (`AppModel.viewMode(for:)`): Chat draws
-// `ThreadChatView` over the pane with the thread's terminal hidden (a
-// retained surface survives the mode flip untouched — though the server may
-// end a Claude TUI once Chat is shown, ATC-203); TUI shows the terminal with
-// the status/relaunch banners over it. A thread whose TUI terminal has
-// ended keeps its final frame: the relaunch bar floats above the retained
-// surface instead of replacing it, and relaunching is just `openThread`
-// again — the server's open is idempotent. A TUI open the server defers
-// (it is driving a turn) shows a waiting banner until the terminal appears.
+// A thread's `kind` decides what it shows (ATC-224): a chat thread draws
+// `ThreadChatView` over the pane (its terminal, if a stale one is linked,
+// stays hidden); a tui thread shows its terminal with the status banners
+// over it. A tui thread whose terminal ended shows an empty state with a
+// Reopen button as the whole view — never a relaunch on its own; reopening
+// is just `openThread` again, and the server's open is idempotent.
 
 import ATCAppServerAPI
 import ATCAppServerTransport
@@ -31,10 +28,10 @@ struct ThreadContentView: View {
         }
     }
 
-    /// The terminal the pane should actually show: none while the selected
-    /// thread is in Chat, even though its terminal stays retained.
+    /// The terminal the pane should actually show: none for a chat thread,
+    /// even if a terminal is retained for it.
     private var shownTerminal: TerminalRef? {
-        if case .thread(let ref) = windowState.selectedContent, appModel.viewMode(for: ref) == .chat {
+        if case .thread(let ref) = windowState.selectedContent, appModel.thread(for: ref)?.kind != .tui {
             return nil
         }
         return windowState.visibleTerminal
@@ -54,14 +51,24 @@ struct ThreadContentView: View {
 
     @ViewBuilder
     private func threadCover(_ ref: ThreadRef) -> some View {
-        if appModel.thread(for: ref) == nil {
+        switch appModel.thread(for: ref)?.kind {
+        case .none:
             unavailableCover
-        } else if appModel.viewMode(for: ref) == .chat {
+        case .chat:
             // Identity per thread: scroll position and the Chat hold belong
             // to one thread, never carried to the next (the composer draft
             // lives on AppModel and survives the switch).
             ThreadChatView(ref: ref).id(ref)
-        } else if let message = windowState.threadOpenErrors[ref] {
+        case .tui:
+            tuiCover(ref)
+        }
+    }
+
+    /// The tui thread's states over its terminal: a failed open, a running
+    /// controller, an open in flight, else nothing running.
+    @ViewBuilder
+    private func tuiCover(_ ref: ThreadRef) -> some View {
+        if let message = windowState.threadOpenErrors[ref] {
             FloatingBanner {
                 Image(systemName: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
@@ -72,30 +79,15 @@ struct ThreadContentView: View {
                 }
                 .keyboardShortcut(.defaultAction)
             }
-        } else if windowState.threadsAwaitingTui.contains(ref) {
-            // The server is driving a turn on this thread and launches the
-            // TUI itself when it ends; the linked terminal then attaches
-            // through reconciliation. Retry re-asks (still busy, or launched).
-            FloatingBanner {
-                ProgressView().controlSize(.small)
-                Text("Waiting for the current turn to finish…")
-                Button("Retry") {
-                    Task { await windowState.openThread(ref, in: appModel) }
-                }
-            }
-        } else if let controller = controller(for: ref) {
-            if case .ended(.terminalEnded) = controller.phase {
-                relaunchBar(ref)
-            } else {
-                TerminalStatusBanner(controller: controller)
-            }
+        } else if let controller = controller(for: ref), !controller.hasEnded {
+            TerminalStatusBanner(controller: controller)
         } else if windowState.openingThreads.contains(ref) {
             FloatingBanner {
                 ProgressView().controlSize(.small)
                 Text("Opening thread…")
             }
         } else {
-            relaunchBar(ref)
+            endedCover(ref)
         }
     }
 
@@ -119,15 +111,21 @@ struct ThreadContentView: View {
         }
     }
 
-    private func relaunchBar(_ ref: ThreadRef) -> some View {
-        FloatingBanner {
-            Image(systemName: "arrow.clockwise")
-            Text("Terminal ended")
-            Button("Relaunch") {
+    /// A tui thread with no running terminal: the whole view is the empty
+    /// state, and Reopen is the one way back (the server never relaunches).
+    private func endedCover(_ ref: ThreadRef) -> some View {
+        ContentUnavailableView {
+            Label("Terminal Ended", systemImage: "terminal")
+        } description: {
+            Text("The agent's terminal is no longer running. Reopen it to continue the session.")
+        } actions: {
+            Button("Reopen") {
                 Task { await windowState.openThread(ref, in: appModel) }
             }
             .keyboardShortcut(.defaultAction)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(AppColors.canvas)
     }
 
     private var unavailableCover: some View {
@@ -142,5 +140,14 @@ struct ThreadContentView: View {
 
     private func controller(for ref: ThreadRef) -> TerminalSessionController? {
         windowState.threadTerminals[ref].flatMap { appModel.terminals[$0] }
+    }
+}
+
+extension TerminalSessionController {
+    /// The terminal itself ended (as opposed to a connection the controller
+    /// can still recover).
+    fileprivate var hasEnded: Bool {
+        if case .ended(.terminalEnded) = phase { return true }
+        return false
     }
 }

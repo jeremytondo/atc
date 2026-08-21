@@ -7,13 +7,14 @@ import {
   AttachmentNotFound,
   AttachmentTooLarge,
   ThreadArchived,
+  ThreadKindMismatch,
   ThreadNotFound,
 } from "../api/contract.ts"
 import type * as Contract from "../api/contract.ts"
 import { AppConfig } from "../platform/config.ts"
 import { AttachmentRepository } from "./attachmentRepository.ts"
 import type { AttachmentRecord } from "./attachmentRepository.ts"
-import { ThreadRepository } from "./threadRepository.ts"
+import { requireKind, ThreadRepository } from "./threadRepository.ts"
 
 // Thread attachments (ATC-216): the images a prompt carries. The first
 // per-thread state on disk — bytes live at
@@ -99,7 +100,7 @@ export class Attachments extends Context.Service<
       },
     ) => Effect.Effect<
       ThreadAttachment,
-      ThreadNotFound | ThreadArchived | AttachmentTooLarge | AttachmentInvalid
+      ThreadNotFound | ThreadArchived | ThreadKindMismatch | AttachmentTooLarge | AttachmentInvalid
     >
     /** The stored bytes of one of the thread's attachments. */
     readonly stream: (
@@ -167,6 +168,8 @@ export const layer = Layer.effect(Attachments)(
           if (thread.archivedAt !== undefined) {
             return yield* Effect.fail(new ThreadArchived({ threadId }))
           }
+          // Attachments feed prompts, and only a chat thread takes prompts.
+          yield* requireKind(thread, "chat")
           const mediaType = input.mediaType.split(";")[0]!.trim().toLowerCase()
           if (!isMediaType(mediaType)) {
             return yield* Effect.fail(

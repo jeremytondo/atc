@@ -19,6 +19,9 @@ struct CommandPaletteContentTests {
     private func connectedContext() async throws -> (CommandContext, TestModel) {
         let client = ScriptableAppServerClient()
         Fixtures.seed(client)
+        // A tui thread: the palette's terminals test relies on the linked
+        // terminal its open creates.
+        client.setThreadKind(.tui, threadID: "thr1")
         let events = ScriptedEventStream()
         let test = try await makeModel(client: client, events: events)
         events.connect()
@@ -26,9 +29,6 @@ struct CommandPaletteContentTests {
         await test.runtime.threads.loadArchivedIfNeeded()
 
         let state = WindowState()
-        // TUI mode: the palette's terminals test relies on the linked TUI
-        // terminal this open creates.
-        test.model.setViewMode(.tui, for: test.threadRef("thr1"))
         await state.openThread(test.threadRef("thr1"), in: test.model)
         let context = CommandContext(
             appModel: test.model,

@@ -4,7 +4,6 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll } from "vitest"
-import { sessionNameForTerminalId } from "../../src/terminals/terminalAdapter.ts"
 import { ThreadRepository } from "../../src/threads/threadRepository.ts"
 import { ThreadRuntime } from "../../src/threads/threadRuntime.ts"
 import { Threads } from "../../src/threads/threads.ts"
@@ -30,9 +29,6 @@ const codex = kit.fakeAgents.codex
 const waitFor = <A>(read: Effect.Effect<A>, predicate: (value: A) => boolean) =>
   eventually(read, predicate, { attempts: 400, interval: "10 millis" })
 
-const terminalAlive = (terminalId: string): boolean =>
-  kit.fake.sessions.has(sessionNameForTerminalId(terminalId))
-
 /** Writer connections opened on `sessionId` so far. */
 const opened = (fake: FakeAgentAdapter, sessionId: string): number =>
   fake.connectionsOpened.filter((id) => id === sessionId).length
@@ -47,7 +43,7 @@ const settledThread = (layerKit: typeof kit, agentId: "claude-code" | "codex", p
     const repository = yield* ThreadRepository
     const fake = agentId === "claude-code" ? layerKit.fakeAgents.claude : layerKit.fakeAgents.codex
     const project = yield* projects.create({ name: "Residency", defaultWorkingDirectory: realDir })
-    const thread = yield* threads.create({ projectId: project.id, agentId })
+    const thread = yield* threads.create({ projectId: project.id, agentId, kind: "chat" })
     const started = yield* runtime.prompt(thread.id, { prompt: prompt })
     assert.isString(started.turnId)
     const record = yield* repository.require(thread.id)
@@ -142,62 +138,6 @@ describe("Resident writer connections", () => {
           (current) => current.activityState === "idle",
         )
       }).pipe(Effect.provide(kit.layer)),
-  )
-
-  it.live(
-    "the TUI takes the session over from the resident connection, and native resumes it back",
-    () =>
-      Effect.gen(function* () {
-        const runtime = yield* ThreadRuntime
-        const threads = yield* Threads
-        const { threadId, sessionId } = yield* settledThread(kit, "claude-code")
-        assert.isTrue(claude.isConnected(sessionId))
-
-        // Native → TUI: the connection is gone before the TUI process starts.
-        const terminal = yield* threads.openTerminal(threadId)
-        assert.isFalse(claude.isConnected(sessionId))
-        assert.isTrue(terminalAlive(terminal.id))
-        assert.isFalse(yield* runtime.hasWriter(threadId))
-
-        // TUI → native: the TUI ends, and ONE fresh connection resumes the
-        // same session — the writer count on that session was 1 until now.
-        yield* threads.closeTerminal(threadId)
-        assert.isFalse(terminalAlive(terminal.id))
-        const started = yield* runtime.prompt(threadId, { prompt: "back to chat" })
-        assert.isString(started.turnId)
-        assert.strictEqual(opened(claude, sessionId), 2)
-        assert.deepStrictEqual(claude.sessions.get(sessionId)?.inputs, ["first", "back to chat"])
-        claude.completeTurn(sessionId, "completed")
-        yield* waitFor(
-          threads.get(threadId).pipe(Effect.orDie),
-          (current) => current.activityState === "idle",
-        )
-        // The TUI was closed, not shown: the connection stays resident.
-        assert.isTrue(claude.isConnected(sessionId))
-      }).pipe(Effect.provide(kit.layer)),
-  )
-
-  it.live("a run's end hands a wanted TUI back: the connection closes first", () =>
-    Effect.gen(function* () {
-      const runtime = yield* ThreadRuntime
-      const threads = yield* Threads
-      const { threadId, sessionId } = yield* settledThread(kit, "claude-code")
-      const terminal = yield* threads.openTerminal(threadId)
-      assert.isFalse(claude.isConnected(sessionId))
-      // Native wins: the prompt ends the TUI and resumes; the TUI comes back
-      // at the run's end because it is still wanted, so the resident
-      // connection does not survive this turn.
-      const started = yield* runtime.prompt(threadId, { prompt: "native again" })
-      assert.isString(started.turnId)
-      assert.isFalse(terminalAlive(terminal.id))
-      claude.completeTurn(sessionId, "completed")
-      const after = yield* waitFor(
-        threads.get(threadId).pipe(Effect.orDie),
-        (current) => current.linkedTerminalId !== undefined,
-      )
-      assert.isTrue(terminalAlive(after.linkedTerminalId ?? ""))
-      assert.isFalse(claude.isConnected(sessionId))
-    }).pipe(Effect.provide(kit.layer)),
   )
 
   it.live("a connection the provider ends drops once, and a queued prompt resumes afresh", () =>

@@ -19,7 +19,6 @@ enum Keymap {
         ("cmd+shift+p", .toggleCommandPalette),
         ("cmd+d", .showDashboard), ("leader>d", .showDashboard),
         ("cmd+n", .newThread), ("leader>n", .newThread),
-        ("leader>c", .toggleThreadViewMode),
         ("cmd+r", .refresh), ("leader>r", .refresh),
         ("cmd+t", .newTerminal),
         ("cmd+shift+n", .newProject),

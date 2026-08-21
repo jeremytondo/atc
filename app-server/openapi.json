@@ -561,6 +561,14 @@
               "description": "\"true\" lists archived threads only, \"all\" lists active and archived together; omitted (or \"false\") lists active threads only."
             },
             "required": false
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "schema": {
+              "$ref": "#/components/schemas/ThreadKind"
+            },
+            "required": false
           }
         ],
         "responses": {
@@ -575,7 +583,7 @@
             }
           }
         },
-        "description": "List threads, newest first. Archived threads are excluded unless requested."
+        "description": "List threads, newest first. Archived threads are excluded unless requested; `kind` narrows to one kind."
       },
       "post": {
         "tags": [
@@ -721,6 +729,16 @@
               }
             }
           },
+          "409": {
+            "description": "The operation is unavailable for the thread's kind (`kind` is the thread's).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadKindMismatchJsonEncoding"
+                }
+              }
+            }
+          },
           "503": {
             "description": "The thread's agent provider cannot be used right now (not installed, not ready, or unreachable). Retryable once the cause is fixed.",
             "content": {
@@ -732,7 +750,7 @@
             }
           }
         },
-        "description": "Update a thread's display label and/or settings. A model or reasoning change is validated against the agent's model catalog (ProviderUnavailable when the catalog cannot be read); other fields never consult the provider.",
+        "description": "Update a thread's display label and/or settings. A model or reasoning change is validated against the agent's model catalog (ProviderUnavailable when the catalog cannot be read); other fields never consult the provider. Settings are refused on a tui thread (ThreadKindMismatch): a change made here could never reach its terminal; the thread's settings are what its TUI reports, read-only.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1060,7 +1078,7 @@
             }
           },
           "409": {
-            "description": "The thread is archived; unarchive it first. | The thread's agent session is actively working; retry once the turn completes. | The thread's provider session cannot be driven as requested (resume failed, identity mismatch, or a concurrent writer). Fail-closed: no changed identity was adopted.",
+            "description": "The thread is archived; unarchive it first. | The operation is unavailable for the thread's kind (`kind` is the thread's). | The thread's provider session cannot be driven as requested (resume failed, identity mismatch, or a concurrent writer). Fail-closed: no changed identity was adopted.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1069,7 +1087,7 @@
                       "$ref": "#/components/schemas/ThreadArchivedJsonEncoding"
                     },
                     {
-                      "$ref": "#/components/schemas/ThreadBusyJsonEncoding"
+                      "$ref": "#/components/schemas/ThreadKindMismatchJsonEncoding"
                     },
                     {
                       "$ref": "#/components/schemas/ProviderSessionConflictJsonEncoding"
@@ -1117,7 +1135,7 @@
             }
           }
         },
-        "description": "Open the thread's TUI terminal — the client is showing the TUI. Idempotent: a live linked terminal is returned as-is. Otherwise the provider TUI is launched in a new terminal — a confirmed session is relaunched against its exact persisted identity (ATC never adopts a different one), an unconfirmed one materializes a fresh provider session whose identity is established and persisted before this call returns. A provider that can be probed (Codex) fails fast when the persisted session no longer exists; one that cannot (Claude Code) launches blind — a successful open whose terminal dies within seconds is a state clients must expect and surface. One live process per thread (Claude Code): while the server is driving a turn the open fails ThreadBusy and the TUI launches by itself when that turn ends — watch the thread's `linkedTerminalId`; a prompt sent while the TUI is live takes the thread over (the TUI ends once idle, the turn runs, and the TUI relaunches when the queue drains). Codex, whose shared server lets both coexist, needs none of this."
+        "description": "Open a tui thread's terminal (a chat thread has none: ThreadKindMismatch). Idempotent: a live linked terminal is returned as-is. Otherwise the provider TUI is launched in a new terminal — a confirmed session is relaunched against its exact persisted identity (ATC never adopts a different one), an unconfirmed one materializes a fresh provider session whose identity is established and persisted before this call returns. A provider that can be probed (Codex) fails fast when the persisted session no longer exists; one that cannot (Claude Code) launches blind — a successful open whose terminal dies within seconds is a state clients must expect and surface. A terminal that ended is never relaunched by the server; open again to relaunch it."
       },
       "delete": {
         "tags": [
@@ -1156,11 +1174,18 @@
             }
           },
           "409": {
-            "description": "The thread's provider session cannot be driven as requested (resume failed, identity mismatch, or a concurrent writer). Fail-closed: no changed identity was adopted.",
+            "description": "The operation is unavailable for the thread's kind (`kind` is the thread's). | The thread's provider session cannot be driven as requested (resume failed, identity mismatch, or a concurrent writer). Fail-closed: no changed identity was adopted.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProviderSessionConflictJsonEncoding"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ThreadKindMismatchJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProviderSessionConflictJsonEncoding"
+                    }
+                  ]
                 }
               }
             }
@@ -1183,7 +1208,7 @@
             }
           }
         },
-        "description": "Close the thread's TUI — the client stopped showing it (switched to Chat). On a provider whose session lives in one process at a time (Claude Code) this hands the thread back to the App Server: an idle TUI ends now, a busy one when its turn completes — either way only once that turn is on disk (a history read that fails leaves the TUI running and fails the call retryably) — and the next prompt resumes the full conversation natively; opening the terminal again relaunches the TUI. On a shared-server provider (Codex) the TUI needs no hand-off and keeps running; the call changes nothing. Returns the thread."
+        "description": "End a tui thread's terminal (a chat thread has none: ThreadKindMismatch): an idle TUI ends now, a busy one at its observed idle, either way once its last turn is on disk. Returns the thread."
       }
     },
     "/api/v1/threads/{threadId}/prompt": {
@@ -1231,13 +1256,16 @@
             }
           },
           "409": {
-            "description": "The thread is archived; unarchive it first. | The thread's provider session cannot be driven as requested (resume failed, identity mismatch, or a concurrent writer). Fail-closed: no changed identity was adopted.",
+            "description": "The thread is archived; unarchive it first. | The operation is unavailable for the thread's kind (`kind` is the thread's). | The thread's provider session cannot be driven as requested (resume failed, identity mismatch, or a concurrent writer). Fail-closed: no changed identity was adopted.",
             "content": {
               "application/json": {
                 "schema": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/ThreadArchivedJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ThreadKindMismatchJsonEncoding"
                     },
                     {
                       "$ref": "#/components/schemas/ProviderSessionConflictJsonEncoding"
@@ -1258,7 +1286,7 @@
             }
           }
         },
-        "description": "Prompt the thread. Always admitted: an idle thread starts a turn at once and a busy one queues the prompt for the next idle — or hands it to the running turn with `when: \"now\"` (see PromptThreadRequest); `turnId` tells which. There is no busy error and no lock between surfaces. On a one-process provider (Claude Code) a prompt while the TUI is live takes the thread over: the TUI ends once idle, the turn runs natively, and the TUI relaunches when the queue drains (see openThreadTerminal). The turn is server-owned: the client's connection never matters to it. When the prompt would start now and the provider refuses, it is un-admitted (the error means not accepted; nothing stays queued); a prompt queued behind others is admitted regardless. Follow the turn on the per-thread event stream.",
+        "description": "Prompt a chat thread (a tui thread is driven from its terminal: ThreadKindMismatch). Always admitted: an idle thread starts a turn at once and a busy one queues the prompt for the next idle — or hands it to the running turn with `when: \"now\"` (see PromptThreadRequest); `turnId` tells which. The turn is server-owned: the client's connection never matters to it. When the prompt would start now and the provider refuses, it is un-admitted (the error means not accepted; nothing stays queued) — including a Codex thread mid-turn in another Codex client (ProviderSessionConflict: nothing queues behind outside turns); a prompt queued behind others is admitted regardless. A provider session that no longer exists (swept, deleted, moved) is not an error: the turn starts a fresh session, the transcript is kept, and a `notice` item says the agent will not remember earlier turns. Follow the turn on the per-thread event stream.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -1328,7 +1356,7 @@
             }
           }
         },
-        "description": "Read the thread's transcript: the newest `limit` items (or the page before `before`), oldest first, with every turn they reference and any running turn, plus the head `seq` to subscribe after and the `snapshotVersion`. The transcript is ATC's copy of the provider's conversation — a re-read from the provider replaces it wholesale (snapshotVersion bumps, `snapshot.invalidated` on the stream)."
+        "description": "Read the thread's transcript: the newest `limit` items (or the page before `before`), oldest first, with every turn they reference and any running turn, plus the head `seq` to subscribe after and the `snapshotVersion`. A chat thread's transcript is ATC's own append-only record of the turns it drove; it is never re-read from the provider. A tui thread's is a projection of the provider's conversation — a re-read at idle replaces it wholesale (snapshotVersion bumps, `snapshot.invalidated` on the stream)."
       }
     },
     "/api/v1/threads/{threadId}/events": {
@@ -1379,7 +1407,7 @@
             }
           }
         },
-        "description": "Subscribe to one thread's live events (SSE): items as they start, stream (`text.delta`), update, and complete; turns; pending requests; the queue; and snapshot invalidations. Durable events carry `seq`; track the highest seen and reconnect with `after=<seq>` to replay every change you missed (current state per row, in seq order) — a rejoin from before a provider re-read gets `snapshot.invalidated` instead: refetch the transcript and resubscribe after its `seq`. Framed like /events (see that endpoint's response); a subscriber that falls too far behind is ended and should resubscribe with `after`."
+        "description": "Subscribe to one thread's live events (SSE): items as they start, stream (`text.delta`), update, and complete; turns; pending requests; the queue; and snapshot invalidations. Durable events carry `seq`; track the highest seen and reconnect with `after=<seq>` to replay every change you missed (current state per row, in seq order) — a rejoin from before a provider re-read (tui threads only; a chat thread's stream never carries it) gets `snapshot.invalidated` instead: refetch the transcript and resubscribe after its `seq`. Framed like /events (see that endpoint's response); a subscriber that falls too far behind is ended and should resubscribe with `after`."
       }
     },
     "/api/v1/threads/{threadId}/interrupt": {
@@ -1412,6 +1440,16 @@
               }
             }
           },
+          "409": {
+            "description": "The operation is unavailable for the thread's kind (`kind` is the thread's).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadKindMismatchJsonEncoding"
+                }
+              }
+            }
+          },
           "503": {
             "description": "The thread's agent provider cannot be used right now (not installed, not ready, or unreachable). Retryable once the cause is fixed.",
             "content": {
@@ -1423,7 +1461,7 @@
             }
           }
         },
-        "description": "Interrupt the turn the server is driving (its `turn.completed` reads interrupted). A thread with no server-driven turn is a no-op — a turn a TUI drives is interrupted from the TUI — and queued prompts stay queued; they run at the next idle."
+        "description": "Interrupt the turn the server is driving (its `turn.completed` reads interrupted). An idle chat thread is a no-op, and queued prompts stay queued; they run at the next idle. A tui thread is interrupted from its terminal (ThreadKindMismatch)."
       }
     },
     "/api/v1/threads/{threadId}/requests": {
@@ -1518,6 +1556,16 @@
                       "$ref": "#/components/schemas/RequestNotFoundJsonEncoding"
                     }
                   ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The operation is unavailable for the thread's kind (`kind` is the thread's).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadKindMismatchJsonEncoding"
                 }
               }
             }
@@ -1631,6 +1679,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "The operation is unavailable for the thread's kind (`kind` is the thread's).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadKindMismatchJsonEncoding"
+                }
+              }
+            }
           }
         },
         "description": "Withdraw a waiting prompt. A prompt that already started is a turn now (404); interrupt the thread instead."
@@ -1683,11 +1741,18 @@
             }
           },
           "409": {
-            "description": "The thread is archived; unarchive it first.",
+            "description": "The thread is archived; unarchive it first. | The operation is unavailable for the thread's kind (`kind` is the thread's).",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ThreadArchivedJsonEncoding"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ThreadArchivedJsonEncoding"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ThreadKindMismatchJsonEncoding"
+                    }
+                  ]
                 }
               }
             }
@@ -2619,6 +2684,14 @@
         "additionalProperties": false,
         "description": "Partial update; only the display label is mutable."
       },
+      "ThreadKind": {
+        "type": "string",
+        "enum": [
+          "chat",
+          "tui"
+        ],
+        "description": "The thread's driver, chosen at creation and never changed: \"chat\" is driven through ATC (prompted; its transcript is ATC's own append-only record), \"tui\" through the terminal ATC launches for it (never prompted; its transcript is a projection of the provider's). Operations of the other kind fail ThreadKindMismatch."
+      },
       "AgentId": {
         "type": "string",
         "enum": [
@@ -2706,6 +2779,9 @@
           "agentId": {
             "$ref": "#/components/schemas/AgentId"
           },
+          "kind": {
+            "$ref": "#/components/schemas/ThreadKind"
+          },
           "name": {
             "type": "string",
             "description": "Mutable display label."
@@ -2726,7 +2802,7 @@
           },
           "linkedTerminalId": {
             "type": "string",
-            "description": "The thread's live TUI terminal, when one is open (derived; never required)."
+            "description": "The thread's live TUI terminal, when one is open (derived; never required). Only ever present on a tui thread."
           },
           "pinnedAt": {
             "type": "string",
@@ -2753,6 +2829,7 @@
           "id",
           "projectId",
           "agentId",
+          "kind",
           "workingDirectory",
           "settings",
           "activityState",
@@ -2780,6 +2857,9 @@
           "agentId": {
             "$ref": "#/components/schemas/AgentId"
           },
+          "kind": {
+            "$ref": "#/components/schemas/ThreadKind"
+          },
           "name": {
             "type": "string",
             "description": "Display label."
@@ -2792,10 +2872,11 @@
         },
         "required": [
           "projectId",
-          "agentId"
+          "agentId",
+          "kind"
         ],
         "additionalProperties": false,
-        "description": "Payload for creating a thread. Creation is local-only: the durable record is written and no provider session is created until the first interaction."
+        "description": "Payload for creating a thread. Creation is local-only: the durable record is written and no provider session is created until the first interaction. `kind` is required — the default is the client's choice, never the server's."
       },
       "ThreadNotFoundJsonEncoding": {
         "type": "object",
@@ -2854,6 +2935,34 @@
         },
         "additionalProperties": false,
         "description": "Partial update of the display label and/or the settings. A settings change writes ATC state only: it takes effect at the thread's next turn (a turn in flight is never disturbed) and becomes the agent's defaults for new threads."
+      },
+      "ThreadKindMismatchJsonEncoding": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": [
+              "ThreadKindMismatch"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ThreadKind"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable diagnostic derived from the structured fields."
+          }
+        },
+        "required": [
+          "_tag",
+          "threadId",
+          "kind",
+          "message"
+        ],
+        "additionalProperties": false
       },
       "InvalidThreadSettingsJsonEncoding": {
         "type": "object",
@@ -3576,6 +3685,47 @@
         "additionalProperties": false,
         "description": "Marker: the provider compacted the conversation context here."
       },
+      "ThreadItemNotice": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "notice"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "Item id, unique within the thread."
+          },
+          "turnId": {
+            "type": "string",
+            "description": "The turn this item belongs to."
+          },
+          "parentItemId": {
+            "type": "string",
+            "description": "The enclosing item when this work happened inside a subagent or nested tool; absent at top level."
+          },
+          "providerMetadata": {},
+          "createdAt": {
+            "type": "string",
+            "description": "When the item was created: the provider's time when it gives one, otherwise when ATC first recorded the item. Items stored before ATC stamped timestamps can omit it; adapters may omit it.",
+            "format": "date-time"
+          },
+          "text": {
+            "type": "string",
+            "description": "The one-line system notice."
+          }
+        },
+        "required": [
+          "type",
+          "id",
+          "turnId",
+          "text"
+        ],
+        "additionalProperties": false,
+        "description": "A system notice ATC itself appended (never provider content): the previous provider session was lost and this turn started a fresh one."
+      },
       "ThreadItem": {
         "oneOf": [
           {
@@ -3601,6 +3751,9 @@
           },
           {
             "$ref": "#/components/schemas/ThreadItemCompaction"
+          },
+          {
+            "$ref": "#/components/schemas/ThreadItemNotice"
           }
         ],
         "description": "One normalized transcript item, discriminated by `type`.",
@@ -3614,7 +3767,8 @@
             "fileChange": "#/components/schemas/ThreadItemFileChange",
             "mcpCall": "#/components/schemas/ThreadItemMcpCall",
             "toolCall": "#/components/schemas/ThreadItemToolCall",
-            "compaction": "#/components/schemas/ThreadItemCompaction"
+            "compaction": "#/components/schemas/ThreadItemCompaction",
+            "notice": "#/components/schemas/ThreadItemNotice"
           }
         }
       },

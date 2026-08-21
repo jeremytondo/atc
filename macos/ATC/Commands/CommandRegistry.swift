@@ -92,17 +92,6 @@ enum CommandRegistry {
                 availability: anyConnectionAvailability,
                 perform: { $0.windowState.presentNewThread() }
             )
-        case .toggleThreadViewMode:
-            CommandDescriptor(
-                id: id,
-                title: "Toggle Chat/TUI",
-                availability: {
-                    $0.windowState.selectedThread == nil
-                        ? .unavailable(reason: threadUnavailable)
-                        : .available
-                },
-                perform: { $0.windowState.toggleViewMode(in: $0.appModel) }
-            )
         case .newTerminal:
             CommandDescriptor(
                 id: id,

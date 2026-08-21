@@ -42,9 +42,6 @@ public struct ChatTranscriptView: View {
     let chat: ThreadChatModel
     /// The empty transcript's title (the thread's display name).
     let emptyTitle: String
-    /// The agent is busy outside this stream (a TUI-driven turn): show the
-    /// working indicator even with no running turn of our own.
-    let isBusyOutside: Bool
     /// Bumped to jump to the tail and follow it again (a sent prompt).
     let followRequest: Int
     let jumpRequest: ChatJumpRequest?
@@ -52,13 +49,11 @@ public struct ChatTranscriptView: View {
     public init(
         chat: ThreadChatModel,
         emptyTitle: String,
-        isBusyOutside: Bool,
         followRequest: Int,
         jumpRequest: ChatJumpRequest?
     ) {
         self.chat = chat
         self.emptyTitle = emptyTitle
-        self.isBusyOutside = isBusyOutside
         self.followRequest = followRequest
         self.jumpRequest = jumpRequest
     }
@@ -283,17 +278,15 @@ public struct ChatTranscriptView: View {
 
     private let tailAnchor = "tail"
 
-    /// The server drives a turn (Stop is offered), or the agent is busy
-    /// under a TUI (items land at idle — the server's re-read).
+    /// The server drives a turn (Stop is offered).
     private var isWorking: Bool {
-        chat.runningTurn != nil || isBusyOutside
+        chat.runningTurn != nil
     }
 
     /// The tail "Working…" row shows only while nothing else is showing the
     /// same fact — once the running turn has rows on screen, its fold's
     /// spinner (or streaming answer) already says it.
     private var showsWorkingRow: Bool {
-        if isBusyOutside { return true }
         guard let turn = chat.runningTurn else { return false }
         return !chat.rows.contains { row in
             switch row {

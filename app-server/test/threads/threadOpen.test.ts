@@ -46,7 +46,7 @@ const setup = Effect.gen(function* () {
     payload: { name: "Open", defaultWorkingDirectory: realDir },
   })
   const thread = yield* client.v1.createThread({
-    payload: { projectId: project.id, agentId: "codex" },
+    payload: { projectId: project.id, agentId: "codex", kind: "tui" },
   })
   return { client, project, thread }
 })
@@ -65,7 +65,7 @@ const openedThreadState = (name: string) =>
       payload: { name, defaultWorkingDirectory: realDir },
     })
     const thread = yield* client.v1.createThread({
-      payload: { projectId: project.id, agentId: "codex" },
+      payload: { projectId: project.id, agentId: "codex", kind: "tui" },
     })
     const terminal = yield* client.v1.openThreadTerminal({ params: { threadId: thread.id } })
     const record = Option.getOrThrow(yield* repository.get(thread.id))
@@ -590,7 +590,7 @@ describe("threads.openTerminal", () => {
       const { client, project } = yield* setup
       const repository = yield* ThreadRepository
       const thread = yield* client.v1.createThread({
-        payload: { projectId: project.id, agentId: "claude-code" },
+        payload: { projectId: project.id, agentId: "claude-code", kind: "tui" },
       })
       const terminal = yield* client.v1.openThreadTerminal({ params: { threadId: thread.id } })
       const sessionId = Option.getOrThrow(yield* repository.get(thread.id)).providerSessionId ?? ""
@@ -629,7 +629,7 @@ describe("threads.openTerminal", () => {
       const sessionIds: Array<string> = []
       for (let i = 0; i < 10; i++) {
         const thread = yield* client.v1.createThread({
-          payload: { projectId: project.id, agentId: "codex" },
+          payload: { projectId: project.id, agentId: "codex", kind: "tui" },
         })
         const terminal = yield* client.v1.openThreadTerminal({ params: { threadId: thread.id } })
         const sessionId =

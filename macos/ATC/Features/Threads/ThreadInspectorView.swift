@@ -16,6 +16,17 @@ struct ThreadInspectorView: View {
                 LabeledContent("Agent") {
                     Label(thread.agentId.displayName, systemImage: thread.agentId.systemImage)
                 }
+                LabeledContent("Kind", value: thread.kind.displayName)
+            }
+            Section {
+                LabeledContent("Model", value: thread.settings.model)
+                if let reasoning = thread.settings.reasoning {
+                    LabeledContent("Reasoning", value: reasoning.displayName)
+                }
+                LabeledContent("Mode", value: thread.settings.mode.displayName)
+                LabeledContent("Access", value: thread.settings.access.displayName)
+            } header: {
+                Text("Settings")
             }
             Section {
                 LabeledContent("Working Directory") {

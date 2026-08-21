@@ -35,7 +35,12 @@ const openedThread = (name?: string) =>
       },
     })
     const thread = yield* client.v1.createThread({
-      payload: { projectId: project.id, agentId: "codex", ...(name !== undefined ? { name } : {}) },
+      payload: {
+        projectId: project.id,
+        agentId: "codex",
+        kind: "tui",
+        ...(name !== undefined ? { name } : {}),
+      },
     })
     yield* client.v1.openThreadTerminal({ params: { threadId: thread.id } })
     const record = Option.getOrThrow(yield* repository.get(thread.id))
@@ -50,7 +55,7 @@ const nativeThread = Effect.gen(function* () {
     payload: { name: `Title native ${Date.now()}`, defaultWorkingDirectory: realDir },
   })
   const thread = yield* client.v1.createThread({
-    payload: { projectId: project.id, agentId: "codex" },
+    payload: { projectId: project.id, agentId: "codex", kind: "chat" },
   })
   /** The provider session the runtime adopted for the thread. */
   const readSessionId = repository
@@ -162,55 +167,6 @@ describe("thread auto-naming", () => {
     }).pipe(Effect.provide(TestLayer)),
   )
 
-  it.live("a native first turn followed by a TUI turn names the thread once, not twice", () =>
-    Effect.gen(function* () {
-      const fake = kit.fakeAgents.codex
-      const { client, threadId, readSessionId } = yield* nativeThread
-      const requestsBefore = fake.titleRequests.length
-      const contextsBefore = fake.contextRequests.length
-      fake.setTitle("Native first")
-
-      yield* client.v1.promptThread({
-        params: { threadId },
-        payload: { prompt: "first, natively" },
-      })
-      yield* eventually(
-        client.v1.getThread({ params: { threadId } }),
-        (read) => read.name === "Native first",
-      )
-      // The native turn ends: its one refinement collects (nothing usable
-      // here) and is spent.
-      const providerSessionId = yield* readSessionId
-      fake.completeTurn(providerSessionId, "completed")
-      yield* eventually(
-        Effect.sync(() => fake.contextRequests.length),
-        (count) => count === contextsBefore + 1,
-      )
-
-      // The second turn runs in the TUI over the same, now confirmed,
-      // session: neither its prompt nor its busy/idle edges may name or
-      // refine again.
-      yield* client.v1.openThreadTerminal({ params: { threadId } })
-      fake.emitUserPrompt(providerSessionId, "second, in the TUI")
-      fake.emitActivity(providerSessionId, "working")
-      fake.emitActivity(providerSessionId, "idle")
-      // Barrier: a later event observed proves the edges were consumed.
-      fake.emitActivity(providerSessionId, "working")
-      yield* eventually(
-        client.v1.getThread({ params: { threadId } }),
-        (read) => read.activityState === "working",
-      )
-      assert.strictEqual(fake.titleRequests.length, requestsBefore + 1)
-      assert.strictEqual(fake.contextRequests.length, contextsBefore + 1)
-      assert.strictEqual(
-        (yield* client.v1.getThread({ params: { threadId } })).name,
-        "Native first",
-      )
-
-      yield* client.v1.deleteThread({ params: { threadId } })
-    }).pipe(Effect.provide(TestLayer)),
-  )
-
   it.live("a creation-time name suppresses generation and refinement entirely", () =>
     Effect.gen(function* () {
       const { client, threadId, sessionId } = yield* openedThread("Named at birth")
@@ -300,7 +256,7 @@ describe("thread auto-naming", () => {
         payload: { name: `Guard ${Date.now()}`, defaultWorkingDirectory: realDir },
       })
       const thread = yield* client.v1.createThread({
-        payload: { projectId: project.id, agentId: "codex" },
+        payload: { projectId: project.id, agentId: "codex", kind: "chat" },
       })
       // Unnamed: the first-pass write (expected null) adopts.
       const adopted = yield* repository.renameIfUnchanged(thread.id, "Generated", null)

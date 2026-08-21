@@ -21,10 +21,11 @@ struct WindowStateTests {
         return test
     }
 
-    /// The terminal-first path: these suites predate Chat, so the thread
-    /// is put in TUI mode before opening.
+    /// The terminal path: the fixture threads are chat by default, so the
+    /// thread is made a tui thread (the server's word) before opening.
     private func openInTUI(_ ref: ThreadRef, state: WindowState, in test: TestModel) async {
-        test.model.setViewMode(.tui, for: ref)
+        test.client.setThreadKind(.tui, threadID: ref.threadID)
+        await test.runtime.refresh()
         await state.openThread(ref, in: test.model)
     }
 
@@ -68,8 +69,12 @@ struct WindowStateTests {
         let state = WindowState()
         let ref = test.threadRef("thr1")
 
+        // The refresh that records the tui kind must land before the client
+        // starts failing.
+        client.setThreadKind(.tui, threadID: ref.threadID)
+        await test.runtime.refresh()
         client.shouldFail = true
-        await openInTUI(ref, state: state, in: test)
+        await state.openThread(ref, in: test.model)
 
         // The content area stays on the thread and explains itself; bouncing
         // back to Dashboard would lose the user's place on a transient error.
@@ -464,15 +469,14 @@ struct WindowStateTests {
 
     // MARK: - Chat and TUI
 
-    @Test("Chat is the default: opening a thread selects it and never opens or attaches a terminal")
-    func chatIsDefault() async throws {
+    @Test("a chat thread opens without opening or attaching a terminal")
+    func chatThreadOpensNoTerminal() async throws {
         let test = try await loadedModel()
         let state = WindowState()
         let ref = test.threadRef("thr1")
 
         await state.openThread(ref, in: test.model)
 
-        #expect(test.model.viewMode(for: ref) == .chat)
         #expect(state.selectedContent == .thread(ref))
         #expect(state.activeProject == test.projectRef("prj"))
         #expect(state.threadTerminals[ref] == nil)
@@ -481,38 +485,8 @@ struct WindowStateTests {
         #expect(state.contentFocusRequest > 0)
     }
 
-    @Test("switching the displayed thread to TUI opens its terminal; back to Chat leaves it retained")
-    func switchingModes() async throws {
-        let test = try await loadedModel()
-        let state = WindowState()
-        test.model.registerWindow(state)
-        let ref = test.threadRef("thr1")
-        await state.openThread(ref, in: test.model)
-
-        test.model.setViewMode(.tui, for: ref)
-        await settle(until: { state.threadTerminals[ref] != nil })
-        let terminalRef = try #require(state.threadTerminals[ref])
-        #expect(test.model.terminals[terminalRef] != nil)
-        #expect(test.client.openThreadTerminalCount == 1)
-
-        test.model.setViewMode(.chat, for: ref)
-        await drainPendingTasks()
-        // The surface survives the flip; only what the pane shows changes —
-        // and the server is told the TUI is no longer shown (ATC-203), so
-        // it can hand a one-process thread back to Chat.
-        #expect(state.threadTerminals[ref] == terminalRef)
-        #expect(test.model.terminals[terminalRef] != nil)
-        #expect(test.client.openThreadTerminalCount == 1)
-        await settle(until: { test.client.closeThreadTerminalCount == 1 })
-
-        state.toggleViewMode(in: test.model)
-        #expect(test.model.viewMode(for: ref) == .tui)
-        await drainPendingTasks()
-        #expect(test.client.closeThreadTerminalCount == 1)
-    }
-
-    @Test("composer drafts are per-thread and survive switching modes")
-    func composerDraftsSurviveSwitchingModes() async throws {
+    @Test("composer drafts are per-thread")
+    func composerDraftsArePerThread() async throws {
         let test = try await loadedModel()
         let ref = test.threadRef("thr1")
         let other = test.threadRef("thr2")
@@ -520,91 +494,7 @@ struct WindowStateTests {
         test.model.setDraft(ComposerDraft(text: "unfinished prompt"), for: ref)
         #expect(test.model.draft(for: ref).text == "unfinished prompt")
         #expect(test.model.draft(for: other).isEmpty)
-        test.model.setViewMode(.tui, for: ref)
-        test.model.setViewMode(.chat, for: ref)
-        #expect(test.model.draft(for: ref).text == "unfinished prompt")
         test.model.setDraft(ComposerDraft(), for: ref)
         #expect(test.model.threadDrafts[ref] == nil)
-    }
-
-    @Test("a TUI open refused while the server drives a turn waits, then attaches the terminal it launches")
-    func deferredTuiOpenAttachesOnArrival() async throws {
-        let client = ScriptableAppServerClient()
-        let test = try await loadedModel(client)
-        let state = WindowState()
-        test.model.registerWindow(state)
-        let ref = test.threadRef("thr1")
-        client.openThreadTerminalBusy = true
-
-        test.model.setViewMode(.tui, for: ref)
-        await state.openThread(ref, in: test.model)
-        await settle(until: { state.threadsAwaitingTui.contains(ref) })
-        // A wait, not an error: no banner message, nothing attached.
-        #expect(state.threadOpenErrors[ref] == nil)
-        #expect(state.threadTerminals[ref] == nil)
-
-        // The server's turn ends and it launches the TUI itself: the linked
-        // terminal appears on the thread and reconciliation attaches it.
-        client.openThreadTerminalBusy = false
-        let linked = Fixtures.terminal(id: "trm_deferred", threadId: "thr1")
-        client.terminals += [linked]
-        client.threads = client.threads.map { thread in
-            var thread = thread
-            if thread.id == "thr1" { thread.linkedTerminalId = "trm_deferred" }
-            return thread
-        }
-        await test.runtime.refresh()
-        state.reconcile(in: test.model)
-
-        #expect(state.threadTerminals[ref] == test.terminalRef("trm_deferred"))
-        #expect(!state.threadsAwaitingTui.contains(ref))
-        #expect(test.model.terminals[test.terminalRef("trm_deferred")] != nil)
-    }
-
-    @Test("the mode is remembered per thread and shared by every window showing it")
-    func modeIsSharedAcrossWindows() async throws {
-        let test = try await loadedModel()
-        let first = WindowState()
-        let second = WindowState()
-        let elsewhere = WindowState()
-        for window in [first, second, elsewhere] { test.model.registerWindow(window) }
-        let ref = test.threadRef("thr1")
-        let other = test.threadRef("thr2")
-        await first.openThread(ref, in: test.model)
-        await second.openThread(ref, in: test.model)
-        await elsewhere.openThread(other, in: test.model)
-
-        first.toggleViewMode(in: test.model)
-        // Both windows on the thread open its terminal, without a second
-        // server open; the window on another thread is untouched.
-        await settle(until: { first.threadTerminals[ref] != nil && second.threadTerminals[ref] != nil })
-        #expect(test.model.viewMode(for: ref) == .tui)
-        #expect(test.model.viewMode(for: other) == .chat)
-        #expect(first.threadTerminals[ref] == second.threadTerminals[ref])
-        #expect(test.client.openThreadTerminalCount <= 2)
-        #expect(elsewhere.threadTerminals.isEmpty)
-    }
-
-    @Test("in Chat, reconciliation tracks the linked terminal but never attaches it")
-    func chatNeverAttachesOnReconcile() async throws {
-        let client = ScriptableAppServerClient()
-        let test = try await loadedModel(client)
-        let state = WindowState()
-        let ref = test.threadRef("thr1")
-        await state.openThread(ref, in: test.model)
-
-        // Another client (a TUI elsewhere) links a live terminal.
-        let linked = Fixtures.terminal(id: "trm_linked", threadId: "thr1")
-        client.terminals += [linked]
-        client.threads = client.threads.map { thread in
-            var thread = thread
-            if thread.id == "thr1" { thread.linkedTerminalId = "trm_linked" }
-            return thread
-        }
-        await test.runtime.refresh()
-        state.reconcile(in: test.model)
-
-        #expect(state.threadTerminals[ref] == test.terminalRef("trm_linked"))
-        #expect(test.model.terminals.isEmpty)
     }
 }

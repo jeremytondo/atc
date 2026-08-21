@@ -7,6 +7,10 @@ struct SettingsView: View {
 
     var body: some View {
         TabView {
+            Tab("General", systemImage: "gearshape") {
+                GeneralSettingsView()
+                    .frame(width: Self.windowSize.width, height: Self.windowSize.height)
+            }
             Tab("Connections", systemImage: "network") {
                 ConnectionsSettingsView()
                     .frame(width: Self.windowSize.width, height: Self.windowSize.height)

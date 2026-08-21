@@ -93,6 +93,7 @@ export const V1Handlers = HttpApiBuilder.group(
             projectId: query.projectId,
             archived:
               query.archived === "true" ? "archived" : query.archived === "all" ? "all" : "active",
+            kind: query.kind,
           }),
         )
         .handle("createThread", ({ payload }) => threads.create(payload))

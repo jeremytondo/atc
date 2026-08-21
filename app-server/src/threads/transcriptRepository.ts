@@ -160,6 +160,7 @@ const itemCompletedAt = (item: ThreadItemRecord): string | undefined => {
     case "assistantText":
     case "reasoning":
     case "compaction":
+    case "notice":
       return undefined
   }
 }
@@ -189,6 +190,7 @@ const stampItem = (
     case "assistantText":
     case "reasoning":
     case "compaction":
+    case "notice":
       return { ...item, createdAt }
   }
 }

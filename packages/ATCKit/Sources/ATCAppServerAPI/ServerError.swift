@@ -40,6 +40,7 @@ extension Components.Schemas.TerminalLaunchFailedJsonEncoding: ServerErrorPayloa
 extension Components.Schemas.ThreadNotFoundJsonEncoding: ServerErrorPayload {}
 extension Components.Schemas.ThreadArchivedJsonEncoding: ServerErrorPayload {}
 extension Components.Schemas.ThreadBusyJsonEncoding: ServerErrorPayload {}
+extension Components.Schemas.ThreadKindMismatchJsonEncoding: ServerErrorPayload {}
 extension Components.Schemas.ProviderUnavailableJsonEncoding: ServerErrorPayload {}
 extension Components.Schemas.ProviderSessionConflictJsonEncoding: ServerErrorPayload {}
 extension Components.Schemas.RequestNotFoundJsonEncoding: ServerErrorPayload {}

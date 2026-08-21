@@ -367,7 +367,7 @@ public final class ThreadChatModel {
                 throw ServerError(anyOf: payload.value1, payload.value2)
             case .conflict(let failure):
                 let payload = try failure.body.json
-                throw ServerError(anyOf: payload.value1, payload.value2)
+                throw ServerError(anyOf: payload.value1, payload.value2, payload.value3)
             case .serviceUnavailable(let failure): throw ServerError(try failure.body.json)
             case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
             }
@@ -393,7 +393,9 @@ public final class ThreadChatModel {
         {
         case .ok(let ok): return try ok.body.json
         case .notFound(let failure): throw ServerError(try failure.body.json)
-        case .conflict(let failure): throw ServerError(try failure.body.json)
+        case .conflict(let failure):
+            let payload = try failure.body.json
+            throw ServerError(anyOf: payload.value1, payload.value2)
         case .contentTooLarge(let failure): throw ServerError(try failure.body.json)
         case .unprocessableContent(let failure): throw ServerError(try failure.body.json)
         case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
@@ -420,12 +422,13 @@ public final class ThreadChatModel {
         return image
     }
 
-    /// Interrupts the server-driven turn; a TUI-driven turn is a server
-    /// no-op, and queued prompts stay queued.
+    /// Interrupts the server-driven turn; an idle thread is a server no-op,
+    /// and queued prompts stay queued.
     public func interrupt() async throws {
         switch try await client.interruptThread(path: .init(threadId: threadID)) {
         case .noContent: break
         case .notFound(let failure): throw ServerError(try failure.body.json)
+        case .conflict(let failure): throw ServerError(try failure.body.json)
         case .serviceUnavailable(let failure): throw ServerError(try failure.body.json)
         case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
         }
@@ -440,6 +443,7 @@ public final class ThreadChatModel {
         case .notFound(let failure):
             let payload = try failure.body.json
             throw ServerError(anyOf: payload.value1, payload.value2)
+        case .conflict(let failure): throw ServerError(try failure.body.json)
         case .serviceUnavailable(let failure): throw ServerError(try failure.body.json)
         case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
         }
@@ -451,6 +455,7 @@ public final class ThreadChatModel {
         case .notFound(let failure):
             let payload = try failure.body.json
             throw ServerError(anyOf: payload.value1, payload.value2)
+        case .conflict(let failure): throw ServerError(try failure.body.json)
         case .undocumented(statusCode: let status, _): throw ServerError.undocumented(status: status)
         }
     }

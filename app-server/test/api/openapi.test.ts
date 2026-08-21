@@ -374,7 +374,7 @@ describe("openapi document vs runtime", () => {
       const projectBody = (yield* project.json) as { id: string }
 
       const created = yield* client.post("http://127.0.0.1/api/v1/threads", {
-        body: HttpBody.jsonUnsafe({ projectId: projectBody.id, agentId: "codex" }),
+        body: HttpBody.jsonUnsafe({ projectId: projectBody.id, agentId: "codex", kind: "chat" }),
       })
       assert.strictEqual(created.status, 200)
       const createdBody = (yield* created.json) as Record<string, unknown>
@@ -425,7 +425,11 @@ describe("openapi document vs runtime", () => {
       })
       const projectBody = (yield* project.json) as { id: string }
       const created = yield* client.post("http://127.0.0.1/api/v1/threads", {
-        body: HttpBody.jsonUnsafe({ projectId: projectBody.id, agentId: "claude-code" }),
+        body: HttpBody.jsonUnsafe({
+          projectId: projectBody.id,
+          agentId: "claude-code",
+          kind: "chat",
+        }),
       })
       const createdBody = (yield* created.json) as { id: string }
 
@@ -510,7 +514,7 @@ describe("openapi document vs runtime", () => {
       })
       const projectBody = (yield* project.json) as { id: string }
       const thread = yield* client.post("http://127.0.0.1/api/v1/threads", {
-        body: HttpBody.jsonUnsafe({ projectId: projectBody.id, agentId: "codex" }),
+        body: HttpBody.jsonUnsafe({ projectId: projectBody.id, agentId: "codex", kind: "tui" }),
       })
       const threadBody = (yield* thread.json) as { id: string }
 
@@ -600,7 +604,7 @@ describe("openapi document vs runtime", () => {
       })
       const projectBody = (yield* project.json) as { id: string }
       const created = yield* client.post("http://127.0.0.1/api/v1/threads", {
-        body: HttpBody.jsonUnsafe({ projectId: projectBody.id, agentId: "codex" }),
+        body: HttpBody.jsonUnsafe({ projectId: projectBody.id, agentId: "codex", kind: "chat" }),
       })
       const thread = (yield* created.json) as { id: string }
       const base = `http://127.0.0.1/api/v1/threads/${thread.id}`
@@ -768,7 +772,7 @@ describe("openapi document vs runtime", () => {
           fetch(`${base}/api/v1/threads`, {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ projectId: project.id, agentId: "codex" }),
+            body: JSON.stringify({ projectId: project.id, agentId: "codex", kind: "chat" }),
           }),
         ),
       )
@@ -915,7 +919,7 @@ describe("openapi document vs runtime", () => {
         })
         const projectBody = (yield* project.json) as { id: string }
         const created = yield* client.post("http://127.0.0.1/api/v1/threads", {
-          body: HttpBody.jsonUnsafe({ projectId: projectBody.id, agentId: "codex" }),
+          body: HttpBody.jsonUnsafe({ projectId: projectBody.id, agentId: "codex", kind: "chat" }),
         })
         const thread = (yield* created.json) as { id: string }
         const base = `http://127.0.0.1/api/v1/threads/${thread.id}`
@@ -1022,7 +1026,7 @@ describe("openapi document vs runtime", () => {
         // (attachments never cross threads); no text and no attachments is
         // a malformed request.
         const otherThread = yield* client.post("http://127.0.0.1/api/v1/threads", {
-          body: HttpBody.jsonUnsafe({ projectId: projectBody.id, agentId: "codex" }),
+          body: HttpBody.jsonUnsafe({ projectId: projectBody.id, agentId: "codex", kind: "chat" }),
         })
         const other = (yield* otherThread.json) as { id: string }
         const elsewhere = yield* client.post(

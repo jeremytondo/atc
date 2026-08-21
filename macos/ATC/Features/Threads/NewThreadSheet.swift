@@ -1,7 +1,8 @@
 // The New Thread launcher for `POST /threads`: a search-first sheet where
-// Project search dominates and the Agent and Working Directory stay visible
-// below it. Threads are auto-named after their first prompt, so there is no
-// Name field.
+// Project search dominates and the Agent, the kind (Chat or TUI — the
+// thread's driver for life, ATC-224; the default is the General settings
+// preference), and Working Directory stay visible below it. Threads are
+// auto-named after their first prompt, so there is no Name field.
 //
 // Keyboard model: the search field keeps focus while ↑/↓/Ctrl-N/Ctrl-P move
 // the highlighted Project; ⌘1…⌘9 select Agents (never create); Shift-⌘-G
@@ -44,6 +45,7 @@ struct NewThreadSheet: View {
         + Spacing.xs * 2
 
     @AppStorage("newThreadLastAgentId") private var lastAgentRaw = ""
+    @AppStorage(GeneralSettingsView.newThreadKindKey) private var defaultKind: ThreadKind = .chat
 
     @State private var query = ""
     @State private var selectedProject: ProjectRef?
@@ -51,6 +53,7 @@ struct NewThreadSheet: View {
     /// `selectedProject` because SwiftUI writes the scrolled-to row into it.
     @State private var scrolledProject: ProjectRef?
     @State private var agentID: AgentID = .codex
+    @State private var kind: ThreadKind = .chat
     @State private var workingDirectory = ""
     @State private var directoryState: DirectoryCheckState = .idle
     @State private var isSubmitting = false
@@ -110,6 +113,7 @@ struct NewThreadSheet: View {
             return .handled
         }
         .task {
+            kind = defaultKind
             agentID = NewThreadLauncherModel.initialAgent(
                 lastUsedRawValue: lastAgentRaw,
                 agents: agents
@@ -262,6 +266,8 @@ struct NewThreadSheet: View {
                             ForEach(Array(agents.enumerated()), id: \.element.id) { index, agent in
                                 agentButton(agent, index: index)
                             }
+                            Spacer(minLength: Spacing.md)
+                            kindPicker
                         }
                         ForEach(agents.filter { !$0.available }, id: \.id) { agent in
                             Label(
@@ -294,6 +300,18 @@ struct NewThreadSheet: View {
         }
         .padding(.horizontal, Self.gutter)
         .padding(.vertical, Spacing.lg)
+    }
+
+    private var kindPicker: some View {
+        Picker("Open as", selection: $kind) {
+            ForEach(ThreadKind.allCases, id: \.self) { kind in
+                Text(kind.displayName).tag(kind)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .help("Chat: drive the thread from ATC. TUI: run the agent's terminal UI. A thread keeps its kind.")
     }
 
     /// Fixed-width row labels keep the Agent and Directory cells aligned, and
@@ -437,6 +455,7 @@ struct NewThreadSheet: View {
                 .init(
                     projectId: ref.projectID,
                     agentId: agentID,
+                    kind: kind,
                     workingDirectory: workingDirectory.trimmingCharacters(in: .whitespaces)
                 ))
             submitError = nil

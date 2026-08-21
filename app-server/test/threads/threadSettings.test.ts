@@ -105,7 +105,7 @@ describe("thread settings", () => {
     Effect.gen(function* () {
       const { client, project } = yield* testClient
       const thread = yield* client.v1.createThread({
-        payload: { projectId: project.id, agentId: "codex" },
+        payload: { projectId: project.id, agentId: "codex", kind: "chat" },
       })
       // A fresh install: the registry seed, until a thread changes something.
       assert.deepStrictEqual(thread.settings, {
@@ -167,7 +167,7 @@ describe("thread settings", () => {
     Effect.gen(function* () {
       const { client, project } = yield* testClient
       const first = yield* client.v1.createThread({
-        payload: { projectId: project.id, agentId: "claude-code" },
+        payload: { projectId: project.id, agentId: "claude-code", kind: "chat" },
       })
       yield* client.v1.updateThread({
         params: { threadId: first.id },
@@ -181,7 +181,7 @@ describe("thread settings", () => {
         access: "fullAccess",
       })
       const second = yield* client.v1.createThread({
-        payload: { projectId: project.id, agentId: "claude-code" },
+        payload: { projectId: project.id, agentId: "claude-code", kind: "chat" },
       })
       assert.deepStrictEqual(second.settings, agent.defaults)
       // Per agent: codex is untouched by a claude change.
@@ -196,7 +196,7 @@ describe("thread settings", () => {
       const { client, project } = yield* testClient
       const fake = kit.fakeAgents.claude
       const thread = yield* client.v1.createThread({
-        payload: { projectId: project.id, agentId: "claude-code" },
+        payload: { projectId: project.id, agentId: "claude-code", kind: "chat" },
       })
       // Park the catalog read the model patch needs, so a mode patch lands
       // between that patch's read of the row and its write.
@@ -229,7 +229,7 @@ describe("thread settings", () => {
       // the first already holds must not write it back (updatedAt) nor
       // reset the defaults to it.
       const other = yield* client.v1.createThread({
-        payload: { projectId: project.id, agentId: "claude-code" },
+        payload: { projectId: project.id, agentId: "claude-code", kind: "chat" },
       })
       yield* client.v1.updateThread({
         params: { threadId: other.id },
@@ -250,7 +250,7 @@ describe("thread settings", () => {
       const { client, project } = yield* testClient
       const sql = yield* SqlClient.SqlClient
       const thread = yield* client.v1.createThread({
-        payload: { projectId: project.id, agentId: "codex" },
+        payload: { projectId: project.id, agentId: "codex", kind: "chat" },
       })
       // A newer build wrote a mode this one cannot decode: the read coerces
       // it (settingsFromColumns), and the compare-and-swap must still match
@@ -275,7 +275,7 @@ describe("thread settings", () => {
       const runtime = yield* ThreadRuntime
       const fake = kit.fakeAgents.codex
       const thread = yield* client.v1.createThread({
-        payload: { projectId: project.id, agentId: "codex" },
+        payload: { projectId: project.id, agentId: "codex", kind: "chat" },
       })
       yield* client.v1.updateThread({
         params: { threadId: thread.id },

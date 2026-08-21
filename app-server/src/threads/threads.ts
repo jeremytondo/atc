@@ -17,6 +17,7 @@ import {
   ProviderUnavailable,
   ThreadArchived,
   ThreadBusy,
+  ThreadKindMismatch,
   ThreadNotFound,
 } from "../api/contract.ts"
 import type * as Contract from "../api/contract.ts"
@@ -26,6 +27,7 @@ import type {
   DirectoryUnavailable,
   ProjectNotFound,
   TerminalLaunchFailed,
+  ThreadKind,
   ThreadSettingsPatch,
   ZmxUnavailable,
 } from "../api/contract.ts"
@@ -37,7 +39,7 @@ import { Terminals } from "../terminals/terminals.ts"
 import type { Terminal } from "../terminals/terminals.ts"
 import { ThreadNaming } from "./threadNaming.ts"
 import { Attachments } from "./attachments.ts"
-import { ThreadRepository } from "./threadRepository.ts"
+import { requireKind, ThreadRepository } from "./threadRepository.ts"
 import type { ThreadRecord } from "./threadRepository.ts"
 import { ThreadRuntime } from "./threadRuntime.ts"
 import { applySettingsPatch, sameSettings } from "./threadSettings.ts"
@@ -56,20 +58,22 @@ export type Thread = typeof Contract.Thread.Type
 //     in the same flow for every agent.
 //   - `create` is local-only: the durable row, no provider call. Identity
 //     establishment is one internal transition (`materialize`, below) with
-//     openTerminal as its first caller — a future native first-prompt is
-//     the second caller, with identical persistence.
+//     openTerminal as its first caller; the runtime's first prompt is the
+//     second caller, with identical persistence.
+//   - A thread has one driver for life — its `kind` (ATC-224): a chat
+//     thread is driven by the runtime's own process and has no terminal
+//     (openTerminal / closeTerminal refuse ThreadKindMismatch, and a read
+//     never shows one linked, whatever the inventory holds); a tui thread
+//     is driven from the terminal this module launches and is never
+//     prompted or re-configured from ATC (`update` refuses settings; the
+//     runtime and Attachments gate their own operations — see
+//     threadRepository.ts requireKind).
 //   - openTerminal is idempotent (a live linked terminal is returned
 //     as-is) and enforces at most one live linked TUI terminal per thread
 //     (concurrent opens conflict). Confirmed sessions reopen their exact
 //     id; unconfirmed ones re-materialize with fresh identity — there is
-//     no history to protect yet.
-//   - No lock between surfaces (ATC-193): a TUI may open while the runtime
-//     drives a turn and a prompt may arrive while a TUI is live — the only
-//     guard is the in-progress state plus the queue, and nothing binds a
-//     Thread to one surface. Which PROCESS runs the session is the
-//     runtime's affair (ATC-203): openTerminal and closeTerminal only tell
-//     it what clients show (`openTui` / `closeTui`), and it hands a
-//     one-process provider's session between the TUI and its own turns.
+//     no history to protect yet. A terminal that ended is never relaunched
+//     by the server: the next open relaunches it.
 //   - workingDirectory is validated, canonicalized, and immutable.
 //   - activityState is in-memory evidence, never persisted, and lives in
 //     the ThreadRuntime's activity ledger — fed by its observation of a
@@ -138,20 +142,25 @@ export class Threads extends Context.Service<
     readonly list: (options?: {
       readonly projectId?: string | undefined
       readonly archived?: "active" | "archived" | "all" | undefined
+      readonly kind?: typeof ThreadKind.Type | undefined
     }) => Effect.Effect<ReadonlyArray<Thread>>
     readonly get: (id: string) => Effect.Effect<Thread, ThreadNotFound>
     /** Write the durable record; no provider call (see the header). */
     readonly create: (
       input: typeof CreateThreadRequest.Type,
     ) => Effect.Effect<Thread, ProjectNotFound | DirectoryUnavailable | DirectoryCheckTimedOut>
-    /** Patch mutable fields; an empty patch changes nothing, updatedAt included. */
+    /** Patch mutable fields; an empty patch changes nothing, updatedAt
+     * included. Settings are refused on a tui thread (the header). */
     readonly update: (
       id: string,
       patch: {
         readonly name?: string | undefined
         readonly settings?: typeof ThreadSettingsPatch.Type | undefined
       },
-    ) => Effect.Effect<Thread, ThreadNotFound | InvalidThreadSettings | ProviderUnavailable>
+    ) => Effect.Effect<
+      Thread,
+      ThreadNotFound | ThreadKindMismatch | InvalidThreadSettings | ProviderUnavailable
+    >
     /** Kill the live linked terminal and release adapter runtime resources,
      * then set archivedAt (idempotent and convergent — see the header);
      * refused while the agent session is actively working. */
@@ -169,16 +178,14 @@ export class Threads extends Context.Service<
     /** Kill the live linked terminal and release adapter resources, then
      * remove the record. */
     readonly delete: (id: string) => Effect.Effect<void, ThreadNotFound | ZmxUnavailable>
-    /** Open (or return) the thread's TUI terminal — the header's workflow.
-     * ThreadBusy: a one-process provider's native turn is running; the
-     * runtime launches the TUI when it ends. */
+    /** Open (or return) a tui thread's terminal — the header's workflow. */
     readonly openTerminal: (
       id: string,
     ) => Effect.Effect<
       Terminal,
       | ThreadNotFound
       | ThreadArchived
-      | ThreadBusy
+      | ThreadKindMismatch
       | ProviderUnavailable
       | ProviderSessionConflict
       | DirectoryUnavailable
@@ -186,13 +193,17 @@ export class Threads extends Context.Service<
       | ZmxUnavailable
       | TerminalLaunchFailed
     >
-    /** The client stopped showing the TUI: hand the thread back to the
-     * native side (`runtime.closeTui` — the runtime's ownership rules). */
+    /** End a tui thread's terminal: at once when idle, at its observed
+     * idle when busy (`runtime.closeTui`). */
     readonly closeTerminal: (
       id: string,
     ) => Effect.Effect<
       Thread,
-      ThreadNotFound | ProviderUnavailable | ProviderSessionConflict | ZmxUnavailable
+      | ThreadNotFound
+      | ThreadKindMismatch
+      | ProviderUnavailable
+      | ProviderSessionConflict
+      | ZmxUnavailable
     >
   }
 >()("app-server/Threads") {}
@@ -325,6 +336,7 @@ export const layerWith = (options: ThreadsOptions) =>
         // Permissive read (see the repository header); a foreign slug fails
         // response encoding for that row, never the domain logic.
         agentId: record.agentId as Thread["agentId"],
+        kind: record.kind,
         ...(record.name !== undefined ? { name: record.name } : {}),
         workingDirectory: record.workingDirectory,
         settings: record.settings,
@@ -342,11 +354,12 @@ export const layerWith = (options: ThreadsOptions) =>
        * listing callers batch one reconciled inventory pass for the whole
        * page instead of one per record.
        */
-      const assemble = (
-        record: ThreadRecord,
-        linked: Terminal | undefined,
-      ): Effect.Effect<Thread> =>
+      const assemble = (record: ThreadRecord, found: Terminal | undefined): Effect.Effect<Thread> =>
         Effect.gen(function* () {
+          // A chat thread has no terminal, whatever the inventory still
+          // links to it (a TUI left over from before the thread's kind was
+          // fixed): never shown, never observed.
+          const linked = record.kind === "tui" ? found : undefined
           // Demand-driven recovery: a restart under a live TUI re-observes
           // on the first read, so status flows again with no poller. NOT
           // while an open is in flight: a mid-materialize row still names
@@ -573,6 +586,7 @@ export const layerWith = (options: ThreadsOptions) =>
           if (record.archivedAt !== undefined) {
             return yield* Effect.fail(new ThreadArchived({ threadId: id }))
           }
+          yield* requireKind(record, "tui")
           const linked = yield* tui.linked(record)
           if (linked !== undefined) {
             if (!opening.has(id)) yield* runtime.observe(record)
@@ -602,6 +616,7 @@ export const layerWith = (options: ThreadsOptions) =>
         withLifecycleLock(id)(
           Effect.gen(function* () {
             const record = yield* repository.require(id)
+            yield* requireKind(record, "tui")
             yield* runtime.closeTui(record)
             return yield* assembleAlone(record)
           }),
@@ -732,12 +747,14 @@ export const layerWith = (options: ThreadsOptions) =>
           Effect.gen(function* () {
             const records = yield* repository.list(listOptions?.projectId)
             const scope = listOptions?.archived ?? "active"
+            const kind = listOptions?.kind
             const wanted = records.filter(
               (record) =>
-                scope === "all" ||
-                (scope === "archived"
-                  ? record.archivedAt !== undefined
-                  : record.archivedAt === undefined),
+                (kind === undefined || record.kind === kind) &&
+                (scope === "all" ||
+                  (scope === "archived"
+                    ? record.archivedAt !== undefined
+                    : record.archivedAt === undefined)),
             )
             if (wanted.length === 0) return []
             // One reconciled inventory pass for the whole page.
@@ -771,6 +788,7 @@ export const layerWith = (options: ThreadsOptions) =>
             const record = yield* repository.create({
               projectId: input.projectId,
               agentId: input.agentId,
+              kind: input.kind,
               name: input.name,
               workingDirectory: canonical,
               settings: yield* registry.defaults(input.agentId),
@@ -785,6 +803,9 @@ export const layerWith = (options: ThreadsOptions) =>
             // leaves the row untouched, name included); a patch that
             // changes nothing changes nothing — updatedAt included, the
             // rule the other repositories apply — and publishes nothing.
+            // A tui thread takes no settings at all (the header): even an
+            // empty settings object is the wrong kind of request.
+            if (patch.settings !== undefined) yield* requireKind(record, "chat")
             const settled =
               patch.settings === undefined || Object.keys(patch.settings).length === 0
                 ? { record, changed: false }

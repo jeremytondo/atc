@@ -41,10 +41,6 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         /// While set, openThreadTerminal fails 503 with this payload — the
         /// install-or-configure message the unwrap seam must surface.
         var openThreadTerminalFailure: Components.Schemas.ProviderUnavailableJsonEncoding?
-        /// While set, openThreadTerminal is refused 409 ThreadBusy (the
-        /// server is driving a turn and launches the TUI itself later).
-        var openThreadTerminalBusy = false
-        var closeThreadTerminalCount = 0
         /// The Thread runtime (ATC-193) as seen by one client: a transcript
         /// page per thread (an unseeded thread reads as empty), the pending
         /// requests and queue, and what clients did about them.
@@ -187,13 +183,6 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         get { lock.withLock { state.openThreadTerminalFailure } }
         set { lock.withLock { state.openThreadTerminalFailure = newValue } }
     }
-
-    var openThreadTerminalBusy: Bool {
-        get { lock.withLock { state.openThreadTerminalBusy } }
-        set { lock.withLock { state.openThreadTerminalBusy = newValue } }
-    }
-
-    var closeThreadTerminalCount: Int { lock.withLock { state.closeThreadTerminalCount } }
 
     /// Transcript page served for a thread id; unseeded threads read empty.
     var transcripts: [String: ThreadTranscriptPage] {
@@ -460,6 +449,7 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
                 id: model.nextID("thr"),
                 projectId: project.id,
                 agentId: request.agentId,
+                kind: request.kind,
                 name: request.name,
                 workingDirectory: request.workingDirectory ?? project.defaultWorkingDirectory,
                 settings: model.agents.first { $0.id == request.agentId }?.defaults ?? Fixtures.settings(),
@@ -630,6 +620,16 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         }
     }
 
+    /// Fixes a fixture thread's kind (the fixtures are chat): the server's
+    /// word, which the store adopts on its next refresh.
+    func setThreadKind(_ kind: ThreadKind, threadID: String) {
+        threads = threads.map { thread in
+            var thread = thread
+            if thread.id == threadID { thread.kind = kind }
+            return thread
+        }
+    }
+
     /// Idempotent per the contract: a live linked terminal is returned as-is,
     /// otherwise a fresh live terminal is created and linked.
     func openThreadTerminal(_ input: Operations.OpenThreadTerminal.Input) async throws
@@ -645,16 +645,11 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
             guard let index = model.threads.firstIndex(where: { $0.id == id }) else {
                 return .notFound(.init(body: .json(threadNotFound(id))))
             }
-            if model.openThreadTerminalBusy {
-                return .conflict(
-                    .init(
-                        body: .json(
-                            .init(
-                                value2: .init(
-                                    _tag: .threadBusy, threadId: id,
-                                    message: "thread \(id) is working; retry once the turn completes")))))
-            }
             let thread = model.threads[index]
+            // The server's kind gate (ATC-224): a chat thread has no terminal.
+            if thread.kind != .tui {
+                return .conflict(.init(body: .json(.init(value2: threadKindMismatch(thread)))))
+            }
             if let linkedID = thread.linkedTerminalId,
                 let existing = model.terminals.first(where: {
                     $0.id == linkedID && $0.status == .live
@@ -676,16 +671,13 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         }
     }
 
-    /// The Claude hand-off as one client sees it: the linked terminal ends
-    /// (its record removed, the thread unlinked). A Codex TUI would keep
-    /// running; this double models the one-process provider.
+    /// Ends the linked terminal (its record removed, the thread unlinked).
     func closeThreadTerminal(_ input: Operations.CloseThreadTerminal.Input) async throws
         -> Operations.CloseThreadTerminal.Output
     {
         try await gate()
         let id = input.path.threadId
         return mutate { model -> Operations.CloseThreadTerminal.Output in
-            model.closeThreadTerminalCount += 1
             guard let index = model.threads.firstIndex(where: { $0.id == id }) else {
                 return .notFound(.init(body: .json(threadNotFound(id))))
             }
@@ -835,8 +827,12 @@ nonisolated final class ScriptableAppServerClient: APIProtocol, @unchecked Senda
         }
         let id = input.path.threadId
         return mutate { model -> Operations.PromptThread.Output in
-            guard model.threads.contains(where: { $0.id == id }) else {
+            guard let thread = model.threads.first(where: { $0.id == id }) else {
                 return .notFound(.init(body: .json(.init(value1: threadNotFound(id)))))
+            }
+            // The server's kind gate (ATC-224): a tui thread is never prompted.
+            if thread.kind != .chat {
+                return .conflict(.init(body: .json(.init(value2: threadKindMismatch(thread)))))
             }
             model.prompts.append((id, request.prompt, request.attachments, request.when))
             return .ok(.init(body: .json(.init(promptId: model.nextID("prm"), turnId: model.nextID("turn")))))
@@ -1049,6 +1045,13 @@ private nonisolated func threadNotFound(_ id: String) -> Components.Schemas.Thre
     .init(_tag: .threadNotFound, threadId: id, message: "No thread \(id)")
 }
 
+/// The server's kind gate (ATC-224), as the scripted client refuses it.
+private nonisolated func threadKindMismatch(_ thread: ATCThread) -> Components.Schemas.ThreadKindMismatchJsonEncoding {
+    .init(
+        _tag: .threadKindMismatch, threadId: thread.id, kind: thread.kind,
+        message: "thread \(thread.id) is a \(thread.kind.rawValue) thread")
+}
+
 private nonisolated func terminalNotFound(_ id: String) -> Components.Schemas.TerminalNotFoundJsonEncoding {
     .init(_tag: .terminalNotFound, terminalId: id, message: "No terminal \(id)")
 }
@@ -1102,6 +1105,7 @@ enum Fixtures {
         id: String,
         projectId: String = "prj",
         agentId: AgentID = .codex,
+        kind: ThreadKind = .chat,
         name: String? = nil,
         workingDirectory: String = "/home/dev/app",
         settings: ThreadSettings = Fixtures.settings(),
@@ -1116,6 +1120,7 @@ enum Fixtures {
             id: id,
             projectId: projectId,
             agentId: agentId,
+            kind: kind,
             name: name,
             workingDirectory: workingDirectory,
             settings: settings,

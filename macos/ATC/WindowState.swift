@@ -82,12 +82,6 @@ final class WindowState {
     /// Most recent failed open per thread, cleared on the next attempt.
     private(set) var threadOpenErrors: [ThreadRef: String] = [:]
 
-    /// Threads whose TUI open was refused because the server is driving a
-    /// turn (ATC-203): the server launches the TUI when the turn ends and
-    /// reconciliation attaches it. Cleared when the linked terminal appears
-    /// or an open succeeds.
-    private(set) var threadsAwaitingTui: Set<ThreadRef> = []
-
     /// Whether the app is frontmost — the seam tests override; production
     /// asks AppKit. Viewing only counts when the user can actually see it.
     @ObservationIgnored var isAppActive: () -> Bool = { AppActivity.isActive() }
@@ -144,9 +138,10 @@ final class WindowState {
 
     /// The single thread-open transition used by every entry point: select
     /// immediately, establish the thread's Project as the launch-local
-    /// context, then — only in TUI mode — idempotently open the TUI terminal
-    /// and attach. Chat mode never opens or attaches a terminal; the Chat
-    /// view acquires the thread's transcript on display instead.
+    /// context, then — for a tui thread only — idempotently open its
+    /// terminal and attach. A chat thread never opens or attaches a
+    /// terminal; the Chat view acquires the thread's transcript on display
+    /// instead. The thread's `kind` decides (ATC-224); nothing here does.
     func openThread(_ ref: ThreadRef, in appModel: AppModel, reveal: Bool = true) async {
         guard let thread = appModel.thread(for: ref) else { return }
         guard !thread.isArchived else { return }
@@ -163,46 +158,17 @@ final class WindowState {
         if thread.unread { markViewed(ref, in: appModel) }
         requestContentFocus()
 
-        guard appModel.viewMode(for: ref) == .tui else { return }
+        guard thread.kind == .tui else { return }
         guard !openingThreads.contains(ref) else { return }
         openingThreads.insert(ref)
         defer { openingThreads.remove(ref) }
         do {
             let terminalRef = try await appModel.openThread(ref, retentionContext: retentionContext)
             threadTerminals[ref] = terminalRef
-            threadsAwaitingTui.remove(ref)
-            // The user may have flipped back to Chat while the open was in
-            // flight; the terminal stays retained (hidden), Chat keeps the
-            // focus, and the server hears that Chat is what is shown (the
-            // open must not be the last word).
-            if appModel.viewMode(for: ref) == .tui {
-                requestContentFocus()
-            } else {
-                appModel.closeTerminalIfChat(ref)
-            }
-        } catch is ThreadTerminalBusy {
-            // The server is driving a turn: it launches the TUI when the
-            // turn ends, and reconciliation attaches it (the linked
-            // terminal appears on the thread). Not an error to show — unless
-            // the user flipped back to Chat meanwhile: then the request is
-            // retracted (a close after the open, so the later one wins).
-            guard appModel.viewMode(for: ref) == .tui else {
-                threadsAwaitingTui.remove(ref)
-                appModel.closeTerminalIfChat(ref)
-                return
-            }
-            threadsAwaitingTui.insert(ref)
+            requestContentFocus()
         } catch {
             threadOpenErrors[ref] = error.localizedDescription
         }
-    }
-
-    /// Flips the displayed thread between Chat and TUI. The mode is
-    /// app-wide (`AppModel.setViewMode`), which re-opens the thread in every
-    /// window showing it.
-    func toggleViewMode(in appModel: AppModel) {
-        guard let ref = selectedThread else { return }
-        appModel.setViewMode(appModel.viewMode(for: ref) == .chat ? .tui : .chat, for: ref)
     }
 
     /// Selects a standalone Terminal. Live terminals attach; an ended one
@@ -384,18 +350,19 @@ final class WindowState {
         }
     }
 
-    /// Keeps the displayed thread's terminal mapping and attach current:
+    /// Keeps the displayed tui thread's terminal mapping and attach current:
     /// adopt the server's linked terminal when it differs (a relaunch made
-    /// a new one), and — in TUI mode — reattach a live terminal that lost
-    /// its controller. Chat mode tracks the mapping but never attaches; the
-    /// switch to TUI opens (and attaches) on its own.
+    /// a new one), and reattach a live terminal that lost its controller.
+    /// A chat thread has no terminal (the server never links one).
     private func reconcileThreadTerminal(_ ref: ThreadRef, thread: ATCThread, in appModel: AppModel) {
+        guard thread.kind == .tui else {
+            threadTerminals[ref] = nil
+            return
+        }
         if let linkedID = thread.linkedTerminalId {
             let linkedRef = TerminalRef(connectionID: ref.connectionID, terminalID: linkedID)
             threadTerminals[ref] = linkedRef
-            threadsAwaitingTui.remove(ref)
-            if appModel.viewMode(for: ref) == .tui,
-                let terminal = appModel.terminal(for: linkedRef), terminal.isLive,
+            if let terminal = appModel.terminal(for: linkedRef), terminal.isLive,
                 appModel.terminals[linkedRef] == nil
             {
                 appModel.attachIfNeeded(
