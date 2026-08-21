@@ -57,7 +57,7 @@ struct ThreadCard: View {
                     if let directory = item.distinctWorkingDirectory {
                         Text(directory)
                             .font(.caption.monospaced())
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.head)
                     }

@@ -59,6 +59,21 @@ public enum Surface {
     public static let cardBorder = Color.white.opacity(0.08)
 }
 
+/// The text hierarchy. Three tiers, one rule: the user's own words, headings,
+/// and control labels are `primary`; prose to be read is `body`; context about
+/// the prose — metadata, placeholders, tool detail — is `secondary`. All three
+/// derive from the system label color so Increase Contrast still lifts them.
+/// On the canvas they measure ~13:1, ~11:1, and ~6:1; `.tertiary` (2.2:1) and
+/// `.quaternary` fall below the 4.5:1 floor here, so they are reserved for
+/// non-text — dividers, fills, and disabled glyphs — never for readable text.
+public enum TextColor {
+    public static let primary = Color.primary
+    /// Long-form assistant prose, one step below headings so a screen of text
+    /// does not glare. Matches the prose tier T3Code and Codex desktop use.
+    public static let body = Color.primary.opacity(0.9)
+    public static let secondary = Color.secondary
+}
+
 /// Opacity applied to unavailable content.
 public enum Dimming {
     public static let unavailable: Double = 0.5

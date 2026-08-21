@@ -332,7 +332,7 @@ struct NavigatorSidebar: View {
                 if !terminal.isLive {
                     Text("Ended")
                         .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                 }
                 if let shortcutLabel {
                     Spacer(minLength: Spacing.sm)
@@ -368,7 +368,7 @@ struct NavigatorSidebar: View {
     private func emptyLabel(_ title: String) -> some View {
         Text(title)
             .font(.caption)
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(.secondary)
             .padding(.horizontal, NavigatorMetrics.contentHorizontalPadding)
             .frame(minHeight: NavigatorMetrics.rowHeight, alignment: .leading)
             .navigatorListRow()

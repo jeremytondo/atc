@@ -79,7 +79,7 @@ struct DashboardView: View {
                 Text(section.connectionName)
                     .font(.title3.weight(.semibold))
                 Text(section.contextLabel)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                 Spacer()
                 if reachability == .unreachable {
                     Button("Retry", systemImage: "arrow.clockwise") {
@@ -131,7 +131,7 @@ struct DashboardView: View {
 
             Text(card.project.defaultWorkingDirectory)
                 .font(.caption.monospaced())
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.head)
 
@@ -173,7 +173,7 @@ struct DashboardView: View {
         HStack(spacing: Spacing.md) {
             Text("No projects yet")
                 .font(.callout)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
             Spacer()
             Button("New Project", systemImage: "plus") {
                 windowState.isCreateProjectPresented = true

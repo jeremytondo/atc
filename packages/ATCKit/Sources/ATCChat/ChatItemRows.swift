@@ -93,6 +93,7 @@ struct ChatNodeView: View {
             }
         case .assistantText(let text):
             MarkdownBlocksView(blocks: node.box.markdownBlocks(text: text.text, complete: text.complete))
+                .foregroundStyle(TextColor.body)
                 .copyable(text.text)
         case .compaction:
             ChatDividerRow(label: "Context compacted")
@@ -207,7 +208,7 @@ struct ChatDividerRow: View {
             Rectangle().fill(Surface.chipBorder).frame(height: 1)
             Text(label)
                 .font(.caption)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .fixedSize()
             Rectangle().fill(Surface.chipBorder).frame(height: 1)
         }
@@ -223,7 +224,7 @@ struct TimestampCaption: View {
     var body: some View {
         Text(date, style: .time)
             .font(.caption2)
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(.secondary)
     }
 }
 
