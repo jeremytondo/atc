@@ -412,6 +412,10 @@ set -e
 grep -Fq -- \
   "<CODE_SIGN_STYLE=Manual> <CODE_SIGN_IDENTITY=Developer ID Application: Test (337D6CNU4E)>" \
   "$tool_log"
+if grep -Fq '<PRODUCT_NAME=atc>' "$tool_log"; then
+  echo "release builds must not globally rename SwiftPM resource bundle targets" >&2
+  exit 1
+fi
 if grep -Eq -- '-allowProvisioningUpdates|-authenticationKey(Path|ID|IssuerID)' "$tool_log"; then
   echo "release builds must not let Xcode create or update signing assets" >&2
   exit 1

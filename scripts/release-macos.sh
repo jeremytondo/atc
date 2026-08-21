@@ -310,7 +310,9 @@ run_step "Generate App Server API sources" "01-generate-api" \
 XCODE_OVERRIDES=(
   "ARCHS=arm64"
   "ONLY_ACTIVE_ARCH=NO"
-  "PRODUCT_NAME=$APP_NAME"
+  # Command-line build settings apply to every target. Overriding PRODUCT_NAME
+  # here renames SwiftPM resource bundles while Xcode still copies their
+  # package-derived names.
   "PRODUCT_BUNDLE_IDENTIFIER=$BUNDLE_ID"
   "DEVELOPMENT_TEAM=$ATC_TEAM_ID"
   # Release CI imports this long-lived identity into an isolated keychain.
