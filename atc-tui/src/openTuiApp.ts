@@ -21,7 +21,6 @@ const colors = {
   status: "#fbbf24",
   selection: "#293241",
   selectedDescription: "#dbeafe",
-  overlay: "#0f172a",
 } as const
 
 export interface AppShell {
@@ -63,12 +62,14 @@ export const make = (renderer: CliRenderer): AppShell => {
     height: 1,
     content: "",
     fg: colors.status,
+    visible: false,
   })
   const help = new TextRenderable(renderer, {
     id: "atc-help",
-    height: 2,
+    height: 1,
     content: "",
     fg: colors.muted,
+    visible: false,
   })
   screen.add(header)
   screen.add(panel)
@@ -175,40 +176,6 @@ export const makeSelect = (
     descriptionColor: colors.description,
   })
 
-export interface CommandMenu {
-  readonly box: BoxRenderable
-  readonly content: TextRenderable
-}
-
-export const makeCommandMenu = (shell: AppShell, id: string): CommandMenu => {
-  const box = new BoxRenderable(shell.renderer, {
-    id,
-    position: "absolute",
-    left: "20%",
-    top: "20%",
-    width: "60%",
-    height: 9,
-    zIndex: 100,
-    title: " Commands · Ctrl-Space ",
-    titleColor: colors.title,
-    border: true,
-    borderStyle: "rounded",
-    borderColor: colors.title,
-    backgroundColor: colors.overlay,
-    padding: 1,
-    visible: false,
-  })
-  const content = new TextRenderable(shell.renderer, {
-    id: `${id}-content`,
-    width: "100%",
-    height: "100%",
-    content: "",
-    fg: colors.text,
-  })
-  box.add(content)
-  return { box, content }
-}
-
 export const makeMessage = (shell: AppShell, id: string): TextRenderable =>
   new TextRenderable(shell.renderer, {
     id,
@@ -217,6 +184,17 @@ export const makeMessage = (shell: AppShell, id: string): TextRenderable =>
     content: "",
     fg: colors.description,
   })
+
+export const setStatus = (shell: AppShell, status: string): void => {
+  shell.status.content = status
+  shell.status.visible = status !== ""
+}
+
+export const setHelp = (shell: AppShell, help: string): void => {
+  shell.help.content = help
+  shell.help.height = Math.max(1, help.split("\n").length)
+  shell.help.visible = help !== ""
+}
 
 export const update = (
   shell: AppShell,
@@ -229,6 +207,6 @@ export const update = (
 ): void => {
   if (content.subtitle !== undefined) shell.header.content = `ATC\n${content.subtitle}`
   shell.panel.title = ` ${content.title} `
-  shell.status.content = content.status ?? ""
-  shell.help.content = content.help
+  setStatus(shell, content.status ?? "")
+  setHelp(shell, content.help)
 }

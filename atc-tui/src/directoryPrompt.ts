@@ -130,7 +130,7 @@ export const run = (
       }
 
       const refresh = (value: string): Effect.Effect<void, never, Scope.Scope> => {
-        shell.status.content = ""
+        OpenTuiApp.setStatus(shell, "")
         const target = DirectoryCompletion.listingPath(value, browser.home)
         if (target === undefined) {
           clearSuggestions(
@@ -211,10 +211,12 @@ export const run = (
         if (event.type === "submit") {
           const resolved = DirectoryCompletion.resolveInput(event.value, browser.home)
           if (resolved !== undefined) return { type: "value", value: resolved }
-          shell.status.content =
+          OpenTuiApp.setStatus(
+            shell,
             event.value.trim().startsWith("~") && browser.home === undefined
               ? "The App Server home is unavailable; enter an absolute path."
-              : "Enter an absolute path beginning with / or ~/."
+              : "Enter an absolute path beginning with / or ~/.",
+          )
           continue
         }
 
@@ -237,7 +239,7 @@ export const run = (
           target === event.requestedPath ||
           (event.requestedPath === undefined && target === undefined)
         ) {
-          shell.status.content = `Could not list directories: ${event.message}`
+          OpenTuiApp.setStatus(shell, `Could not list directories: ${event.message}`)
           clearSuggestions("You can still submit an absolute path.")
         }
       }

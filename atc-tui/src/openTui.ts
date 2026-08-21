@@ -135,8 +135,17 @@ type MainEvent =
   | { readonly type: "refresh" }
   | { readonly type: "quit" }
 
-const sectionForNumber = (name: string): ManagerSection | undefined =>
-  name === "1" ? "threads" : name === "2" ? "archived" : name === "3" ? "projects" : undefined
+const sectionForPrefix = (name: string): ManagerSection | undefined =>
+  name === "t" ? "threads" : name === "p" ? "projects" : undefined
+
+const prefixHelp = (section: ManagerSection): string => {
+  const navigation = "[t] Threads  ·  [p] Projects"
+  if (section === "threads") return `${navigation}  ·  [n] New thread  ·  [a] Archive`
+  if (section === "projects") {
+    return `${navigation}  ·  [n] New project  ·  [e] Rename  ·  [d] Delete`
+  }
+  return `${navigation}  ·  [u] Unarchive`
+}
 
 const runMainScreen = (
   shell: OpenTuiApp.AppShell,
@@ -152,14 +161,11 @@ const runMainScreen = (
       const view = OpenTuiApp.makeView(shell, "manager-view")
       const list = OpenTuiApp.makeSelect(shell, { id: "manager-list", items: [] })
       const empty = OpenTuiApp.makeMessage(shell, "manager-empty")
-      const commandMenu = OpenTuiApp.makeCommandMenu(shell, "manager-command-menu")
       view.add(list)
       view.add(empty)
-      view.add(commandMenu.box)
       yield* OpenTuiApp.mountView(shell, view)
 
       let prefixActive = false
-      let baseStatus = ""
 
       const selectedId = () => itemIdsByIndex[list.getSelectedIndex()]
       const selectionState = (
@@ -188,20 +194,38 @@ const runMainScreen = (
         }
         if (key.ctrl && key.name === "space") {
           prefixActive = !prefixActive
-          commandMenu.box.visible = prefixActive
-          shell.status.content = prefixActive
-            ? "Command: press 1, 2, or 3  ·  Esc cancel"
-            : baseStatus
+          OpenTuiApp.setHelp(shell, prefixActive ? prefixHelp(section) : "")
           return
         }
         if (prefixActive) {
           prefixActive = false
-          commandMenu.box.visible = false
-          shell.status.content = baseStatus
-          const target = sectionForNumber(key.name)
+          OpenTuiApp.setHelp(shell, "")
+          const target = sectionForPrefix(key.name)
           if (target !== undefined && target !== section) {
             Queue.offerUnsafe(events, { type: "switchSection", section: target })
+            return
           }
+          if (section === "threads" && key.name === "n") {
+            Queue.offerUnsafe(events, { type: "newThread" })
+            return
+          }
+          if (section === "threads" && key.name === "a") {
+            offerSelected("archiveThread")
+            return
+          }
+          if (section === "projects" && key.name === "n") {
+            Queue.offerUnsafe(events, { type: "newProject" })
+            return
+          }
+          if (section === "projects" && key.name === "e") {
+            offerSelected("renameProject")
+            return
+          }
+          if (section === "projects" && key.name === "d") {
+            offerSelected("deleteProject")
+            return
+          }
+          if (section === "archived" && key.name === "u") offerSelected("unarchiveThread")
           return
         }
         if (key.ctrl && key.name === "n") {
@@ -310,37 +334,18 @@ const runMainScreen = (
                     : "No active Threads. Press Ctrl-N to create one."
           const fetched =
             snapshot === undefined ? "" : `  ·  synced ${snapshot.fetchedAt.toLocaleTimeString()}`
-          const activeCount =
-            snapshot?.threads.filter((thread) => thread.archivedAt === undefined).length ?? 0
-          const archivedCount = (snapshot?.threads.length ?? 0) - activeCount
-          const current = (candidate: ManagerSection) =>
-            candidate === section ? "  ← current" : ""
-          commandMenu.content.content = [
-            `1  Threads (${activeCount})${current("threads")}`,
-            `2  Archived Threads (${archivedCount})${current("archived")}`,
-            `3  Projects (${snapshot?.projects.length ?? 0})${current("projects")}`,
-            "",
-            "Esc  Cancel",
-          ].join("\n")
           const title =
             section === "threads"
               ? `Active Threads (${items.length})`
               : section === "archived"
                 ? `Archived Threads (${items.length})`
                 : `Projects (${items.length})`
-          const help =
-            section === "threads"
-              ? "Ctrl-Space commands  ·  ↑/↓ navigate  ·  Enter attach  ·  a archive\nCtrl-N new  ·  Ctrl-P new project  ·  r refresh  ·  q quit  ·  zmx Ctrl-\\ returns"
-              : section === "archived"
-                ? "Ctrl-Space commands  ·  ↑/↓ navigate  ·  Enter or u unarchive\nCtrl-N new thread  ·  Ctrl-P new project  ·  r refresh  ·  q quit"
-                : "Ctrl-Space commands  ·  ↑/↓ navigate  ·  Enter or e rename  ·  d delete\nCtrl-P new project  ·  Ctrl-N new thread  ·  r refresh  ·  q quit"
-          baseStatus = state.status ?? backgroundStatus ?? ""
           OpenTuiApp.update(shell, {
             subtitle:
               options.endpoint.origin + `  ·  ${View.connectionLabel(reachability)}` + fetched,
             title,
-            status: prefixActive ? "Command: press 1, 2, or 3  ·  Esc cancel" : baseStatus,
-            help,
+            status: state.status ?? backgroundStatus,
+            help: prefixActive ? prefixHelp(section) : "",
           })
         })
 
@@ -483,7 +488,7 @@ const textPrompt = (
         const normalized = value.trim()
         const problem = options.validate(normalized)
         if (problem !== undefined) {
-          shell.status.content = problem
+          OpenTuiApp.setStatus(shell, problem)
           return
         }
         Queue.offerUnsafe(results, { type: "value", value: normalized })
