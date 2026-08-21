@@ -62,9 +62,17 @@ const snapshot: AppServer.Snapshot = {
   fetchedAt: new Date("2026-08-20T00:00:00.000Z"),
 }
 
+interface ManagerHarness {
+  readonly setup: TestRendererSetup
+  readonly uiUpdates: Queue.Queue<void>
+  readonly refreshRequests: Queue.Queue<void>
+  readonly snapshotRef: Ref.Ref<AppServer.Snapshot | undefined>
+}
+
 const runManager = (
+  initialSnapshot: AppServer.Snapshot | undefined,
   initial: OpenTui.ManagerState,
-  drive: (setup: TestRendererSetup) => Effect.Effect<void, unknown>,
+  drive: (harness: ManagerHarness) => Effect.Effect<void, unknown>,
 ): Effect.Effect<OpenTui.ManagerResult, unknown> =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -82,7 +90,7 @@ const runManager = (
         ({ renderer }) => Effect.sync(() => renderer.destroy()),
       )
       yield* Effect.sync(() => setup.renderer.start())
-      const snapshotRef = yield* Ref.make<AppServer.Snapshot | undefined>(snapshot)
+      const snapshotRef = yield* Ref.make<AppServer.Snapshot | undefined>(initialSnapshot)
       const reachabilityRef = yield* Ref.make<View.Reachability>("connected")
       const backgroundStatusRef = yield* Ref.make<string | undefined>(undefined)
       const uiUpdates = yield* Queue.unbounded<void>()
@@ -99,7 +107,7 @@ const runManager = (
         }),
       )
 
-      yield* drive(setup)
+      yield* drive({ setup, uiUpdates, refreshRequests, snapshotRef })
       return yield* Fiber.join(resultFiber)
     }),
   )
@@ -110,7 +118,7 @@ const waitForFrame = (setup: TestRendererSetup, text: string) =>
 describe("OpenTUI manager", () => {
   it.effect("creates an unnamed Thread in the selected Project with the preferred agent", () =>
     Effect.gen(function* () {
-      const result = yield* runManager({ selectedThreadId: "t2" }, (setup) =>
+      const result = yield* runManager(snapshot, { selectedThreadId: "t2" }, ({ setup }) =>
         Effect.gen(function* () {
           yield* waitForFrame(setup, "Beta  ›  Second")
           setup.mockInput.pressKey("n", { ctrl: true })
@@ -131,17 +139,53 @@ describe("OpenTUI manager", () => {
 
   it.effect("navigates and attaches across Project boundaries", () =>
     Effect.gen(function* () {
-      const result = yield* runManager({ selectedThreadId: "t1" }, (setup) =>
-        Effect.gen(function* () {
-          yield* waitForFrame(setup, "Alpha  ›  First")
-          yield* waitForFrame(setup, "Beta  ›  Second")
-          setup.mockInput.pressArrow("down")
-          yield* Effect.yieldNow
-          setup.mockInput.pressEnter()
-        }),
+      const result = yield* runManager(
+        undefined,
+        { selectedThreadId: "t1" },
+        ({ setup, uiUpdates, snapshotRef }) =>
+          Effect.gen(function* () {
+            yield* waitForFrame(setup, "Waiting for the App Server…")
+            yield* Ref.set(snapshotRef, snapshot)
+            yield* Queue.offer(uiUpdates, void 0)
+            yield* waitForFrame(setup, "Alpha  ›  First")
+            yield* waitForFrame(setup, "Beta  ›  Second")
+            setup.mockInput.pressArrow("down")
+            yield* Queue.offer(uiUpdates, void 0)
+            yield* Effect.promise(() =>
+              setup.waitForFrame((frame) => frame.includes("▶ Beta  ›  Second")),
+            )
+            setup.mockInput.pressEnter()
+          }),
       )
 
       assert.deepStrictEqual(result, { type: "attach", threadId: "t2" })
+    }),
+  )
+
+  it.effect("clears the refresh status after the live snapshot updates", () =>
+    Effect.gen(function* () {
+      const result = yield* runManager(
+        snapshot,
+        { selectedThreadId: "t1" },
+        ({ setup, uiUpdates, refreshRequests }) =>
+          Effect.gen(function* () {
+            yield* waitForFrame(setup, "Alpha  ›  First")
+            setup.mockInput.pressKey("r")
+            yield* waitForFrame(setup, "Refreshing…")
+            yield* Queue.take(refreshRequests)
+            yield* Queue.offer(uiUpdates, void 0)
+            yield* Effect.promise(() =>
+              setup.waitForFrame((frame) =>
+                Promise.resolve(
+                  frame.includes("Alpha  ›  First") && !frame.includes("Refreshing…"),
+                ),
+              ),
+            )
+            setup.mockInput.pressKey("q")
+          }),
+      )
+
+      assert.deepStrictEqual(result, { type: "quit", selectedThreadId: "t1" })
     }),
   )
 })

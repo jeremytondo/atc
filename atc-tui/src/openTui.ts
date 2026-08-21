@@ -97,11 +97,10 @@ const acquireScreen = (renderer: CliRenderer, screen: BoxRenderable) =>
   )
 
 type MainEvent =
-  | { readonly type: "selected"; readonly threadId: string }
   | { readonly type: "attach"; readonly threadId: string }
-  | { readonly type: "new" }
-  | { readonly type: "refresh" }
-  | { readonly type: "quit" }
+  | { readonly type: "new"; readonly selectedThreadId?: string | undefined }
+  | { readonly type: "refresh"; readonly selectedThreadId?: string | undefined }
+  | { readonly type: "quit"; readonly selectedThreadId?: string | undefined }
 
 const runMainScreen = (
   renderer: CliRenderer,
@@ -182,42 +181,39 @@ const runMainScreen = (
       screen.add(help)
       yield* acquireScreen(renderer, screen)
 
+      const selectedThreadId = () => threadIdsByIndex[threads.getSelectedIndex()]
       const onKey = (key: KeyEvent) => {
         if (key.ctrl && key.name === "c") {
-          Queue.offerUnsafe(events, { type: "quit" })
+          Queue.offerUnsafe(events, { type: "quit", selectedThreadId: selectedThreadId() })
           return
         }
         if (key.ctrl && key.name === "n") {
-          Queue.offerUnsafe(events, { type: "new" })
+          Queue.offerUnsafe(events, { type: "new", selectedThreadId: selectedThreadId() })
           return
         }
         if (key.name === "q") {
-          Queue.offerUnsafe(events, { type: "quit" })
+          Queue.offerUnsafe(events, { type: "quit", selectedThreadId: selectedThreadId() })
           return
         }
-        if (key.name === "r") Queue.offerUnsafe(events, { type: "refresh" })
-      }
-      const onSelectionChanged = (index: number) => {
-        const threadId = threadIdsByIndex[index]
-        if (threadId !== undefined) Queue.offerUnsafe(events, { type: "selected", threadId })
+        if (key.name === "r") {
+          Queue.offerUnsafe(events, { type: "refresh", selectedThreadId: selectedThreadId() })
+        }
       }
       const onItemSelected = (index: number) => {
         const threadId = threadIdsByIndex[index]
         if (threadId !== undefined) Queue.offerUnsafe(events, { type: "attach", threadId })
       }
       renderer.keyInput.on("keypress", onKey)
-      threads.on(SelectRenderableEvents.SELECTION_CHANGED, onSelectionChanged)
       threads.on(SelectRenderableEvents.ITEM_SELECTED, onItemSelected)
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
           renderer.keyInput.off("keypress", onKey)
-          threads.off(SelectRenderableEvents.SELECTION_CHANGED, onSelectionChanged)
           threads.off(SelectRenderableEvents.ITEM_SELECTED, onItemSelected)
         }),
       )
       threads.focus()
 
-      const render = (state: ManagerState) =>
+      const render = (state: ManagerState): Effect.Effect<void> =>
         Effect.gen(function* () {
           const snapshot = yield* Ref.get(options.snapshotRef)
           const reachability = yield* Ref.get(options.reachabilityRef)
@@ -239,6 +235,9 @@ const runMainScreen = (
           }
           threads.visible = items.length > 0
           empty.visible = items.length === 0
+          if (items.length > 0 && renderer.currentFocusedRenderable !== threads) {
+            threads.focus()
+          }
           empty.content =
             snapshot === undefined
               ? "Waiting for the App Server…"
@@ -261,30 +260,37 @@ const runMainScreen = (
               Queue.take(options.uiUpdates).pipe(Effect.as({ type: "update" as const })),
             ),
           ),
-          Effect.flatMap((event) => {
+          Effect.flatMap((event): Effect.Effect<MainResult, unknown> => {
             if (event.type === "update") {
+              const currentThreadId = selectedThreadId()
               return Ref.get(options.snapshotRef).pipe(
                 Effect.flatMap((snapshot) =>
                   loop({
-                    ...state,
-                    selectedThreadId: View.normalizeSelection(snapshot, state.selectedThreadId),
+                    selectedThreadId: View.normalizeSelection(snapshot, currentThreadId),
                   }),
                 ),
               )
             }
-            if (event.type === "selected") {
-              return loop({ selectedThreadId: event.threadId })
-            }
             if (event.type === "refresh") {
               return Queue.offer(options.refreshRequests, void 0).pipe(
-                Effect.andThen(loop({ ...state, status: "Refreshing…" })),
+                Effect.andThen(
+                  loop({ selectedThreadId: event.selectedThreadId, status: "Refreshing…" }),
+                ),
               )
             }
-            if (event.type === "new") return Effect.succeed({ type: "new", state })
-            if (event.type === "quit") {
-              return Effect.succeed({ type: "quit", selectedThreadId: state.selectedThreadId })
+            if (event.type === "new") {
+              return Effect.succeed({
+                type: "new",
+                state: { selectedThreadId: event.selectedThreadId },
+              } as const)
             }
-            return Effect.succeed(event)
+            if (event.type === "quit") {
+              return Effect.succeed({
+                type: "quit",
+                selectedThreadId: event.selectedThreadId,
+              } as const)
+            }
+            return Effect.succeed({ type: "attach", threadId: event.threadId } as const)
           }),
         )
 
