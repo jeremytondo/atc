@@ -1,8 +1,6 @@
 import {
   BoxRenderable,
   createCliRenderer,
-  InputRenderable,
-  InputRenderableEvents,
   SelectRenderable,
   SelectRenderableEvents,
   TextRenderable,
@@ -98,53 +96,12 @@ const acquireScreen = (renderer: CliRenderer, screen: BoxRenderable) =>
       }).pipe(Effect.ignore),
   )
 
-const mainInput = (
-  key: KeyEvent,
-  snapshot: AppServer.Snapshot | undefined,
-  state: ManagerState,
-):
-  | MainResult
-  | { readonly type: "state"; readonly state: ManagerState }
-  | { readonly type: "refresh"; readonly state: ManagerState } => {
-  if (key.ctrl && key.name === "c") {
-    return { type: "quit", selectedThreadId: state.selectedThreadId }
-  }
-  if (key.ctrl && key.name === "n") return { type: "new", state }
-  if (key.name === "q") return { type: "quit", selectedThreadId: state.selectedThreadId }
-  if (key.name === "up" || key.name === "k") {
-    return {
-      type: "state",
-      state: {
-        ...state,
-        selectedThreadId: View.moveSelection(snapshot, state.selectedThreadId, -1),
-        status: undefined,
-      },
-    }
-  }
-  if (key.name === "down" || key.name === "j") {
-    return {
-      type: "state",
-      state: {
-        ...state,
-        selectedThreadId: View.moveSelection(snapshot, state.selectedThreadId, 1),
-        status: undefined,
-      },
-    }
-  }
-  if (key.name === "r") {
-    return { type: "refresh", state: { ...state, status: "Refreshing…" } }
-  }
-  if (key.name === "return" || key.name === "enter") {
-    const threadId = View.normalizeSelection(snapshot, state.selectedThreadId)
-    return threadId === undefined
-      ? {
-          type: "state",
-          state: { ...state, status: "There is no active Thread to attach." },
-        }
-      : { type: "attach", threadId }
-  }
-  return { type: "state", state }
-}
+type MainEvent =
+  | { readonly type: "selected"; readonly threadId: string }
+  | { readonly type: "attach"; readonly threadId: string }
+  | { readonly type: "new" }
+  | { readonly type: "refresh" }
+  | { readonly type: "quit" }
 
 const runMainScreen = (
   renderer: CliRenderer,
@@ -153,55 +110,154 @@ const runMainScreen = (
 ): Effect.Effect<MainResult, unknown> =>
   Effect.scoped(
     Effect.gen(function* () {
-      const keys = yield* Queue.unbounded<KeyEvent>()
+      const events = yield* Queue.unbounded<MainEvent>()
+      const threadIdsByIndex: Array<string> = []
       const screen = new BoxRenderable(renderer, {
         id: "manager",
         width: "100%",
         height: "100%",
         padding: 1,
+        gap: 1,
+        flexDirection: "column",
+        backgroundColor: "#0b1020",
       })
-      const content = new TextRenderable(renderer, {
-        id: "manager-content",
+      const header = new TextRenderable(renderer, {
+        id: "manager-header",
+        height: 2,
+        content: "",
+        fg: "#e2e8f0",
+      })
+      const list = new BoxRenderable(renderer, {
+        id: "manager-list",
+        title: " Threads ",
+        titleColor: "#93c5fd",
+        border: true,
+        borderStyle: "rounded",
+        borderColor: "#334155",
+        flexGrow: 1,
+        padding: 1,
+        backgroundColor: "#111827",
+      })
+      const threads = new SelectRenderable(renderer, {
+        id: "manager-threads",
+        width: "100%",
+        height: "100%",
+        options: [],
+        wrapSelection: false,
+        showDescription: true,
+        showScrollIndicator: true,
+        backgroundColor: "#111827",
+        focusedBackgroundColor: "#111827",
+        selectedBackgroundColor: "#1d4ed8",
+        selectedTextColor: "#ffffff",
+        selectedDescriptionColor: "#dbeafe",
+        descriptionColor: "#94a3b8",
+      })
+      const empty = new TextRenderable(renderer, {
+        id: "manager-empty",
         width: "100%",
         height: "100%",
         content: "",
+        fg: "#94a3b8",
       })
-      screen.add(content)
+      const status = new TextRenderable(renderer, {
+        id: "manager-status",
+        height: 1,
+        content: "",
+        fg: "#fbbf24",
+      })
+      const help = new TextRenderable(renderer, {
+        id: "manager-help",
+        height: 2,
+        content:
+          "↑/↓ or j/k navigate  ·  Enter attach  ·  Ctrl-N new  ·  r refresh  ·  q quit\n" +
+          "Inside zmx, Ctrl-\\ returns here",
+        fg: "#64748b",
+      })
+      list.add(threads)
+      list.add(empty)
+      screen.add(header)
+      screen.add(list)
+      screen.add(status)
+      screen.add(help)
       yield* acquireScreen(renderer, screen)
 
       const onKey = (key: KeyEvent) => {
-        Queue.offerUnsafe(keys, key)
+        if (key.ctrl && key.name === "c") {
+          Queue.offerUnsafe(events, { type: "quit" })
+          return
+        }
+        if (key.ctrl && key.name === "n") {
+          Queue.offerUnsafe(events, { type: "new" })
+          return
+        }
+        if (key.name === "q") {
+          Queue.offerUnsafe(events, { type: "quit" })
+          return
+        }
+        if (key.name === "r") Queue.offerUnsafe(events, { type: "refresh" })
+      }
+      const onSelectionChanged = (index: number) => {
+        const threadId = threadIdsByIndex[index]
+        if (threadId !== undefined) Queue.offerUnsafe(events, { type: "selected", threadId })
+      }
+      const onItemSelected = (index: number) => {
+        const threadId = threadIdsByIndex[index]
+        if (threadId !== undefined) Queue.offerUnsafe(events, { type: "attach", threadId })
       }
       renderer.keyInput.on("keypress", onKey)
+      threads.on(SelectRenderableEvents.SELECTION_CHANGED, onSelectionChanged)
+      threads.on(SelectRenderableEvents.ITEM_SELECTED, onItemSelected)
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
           renderer.keyInput.off("keypress", onKey)
+          threads.off(SelectRenderableEvents.SELECTION_CHANGED, onSelectionChanged)
+          threads.off(SelectRenderableEvents.ITEM_SELECTED, onItemSelected)
         }),
       )
+      threads.focus()
 
       const render = (state: ManagerState) =>
         Effect.gen(function* () {
           const snapshot = yield* Ref.get(options.snapshotRef)
           const reachability = yield* Ref.get(options.reachabilityRef)
           const backgroundStatus = yield* Ref.get(options.backgroundStatusRef)
-          content.content = View.render({
-            endpoint: options.endpoint,
-            reachability,
-            snapshot,
-            state: {
-              selectedThreadId: View.normalizeSelection(snapshot, state.selectedThreadId),
-              status: state.status ?? backgroundStatus,
-            },
-            columns: renderer.terminalWidth - 2,
-            rows: renderer.terminalHeight - 2,
-          })
+          const items = View.threadOptions(snapshot)
+          const selectedThreadId = View.normalizeSelection(snapshot, state.selectedThreadId)
+          const selectedIndex = Math.max(
+            0,
+            items.findIndex((item) => item.threadId === selectedThreadId),
+          )
+
+          threadIdsByIndex.splice(0, threadIdsByIndex.length, ...items.map((item) => item.threadId))
+          threads.options = items.map((item) => ({
+            name: item.name,
+            description: item.description,
+          }))
+          if (items.length > 0 && threads.getSelectedIndex() !== selectedIndex) {
+            threads.setSelectedIndex(selectedIndex)
+          }
+          threads.visible = items.length > 0
+          empty.visible = items.length === 0
+          empty.content =
+            snapshot === undefined
+              ? "Waiting for the App Server…"
+              : snapshot.projects.length === 0
+                ? "No Projects yet. Create one before starting a Thread."
+                : "No active Threads. Press Ctrl-N to create one."
+          list.title = ` Threads (${items.length}) `
+          const fetched =
+            snapshot === undefined ? "" : `  ·  synced ${snapshot.fetchedAt.toLocaleTimeString()}`
+          header.content =
+            `ATC\n${options.endpoint.origin}  ·  ${View.connectionLabel(reachability)}` + fetched
+          status.content = state.status ?? backgroundStatus ?? ""
         })
 
       const loop = (state: ManagerState): Effect.Effect<MainResult, unknown> =>
         render(state).pipe(
           Effect.andThen(
             Effect.race(
-              Queue.take(keys).pipe(Effect.map((key) => ({ type: "key" as const, key }))),
+              Queue.take(events),
               Queue.take(options.uiUpdates).pipe(Effect.as({ type: "update" as const })),
             ),
           ),
@@ -210,24 +266,25 @@ const runMainScreen = (
               return Ref.get(options.snapshotRef).pipe(
                 Effect.flatMap((snapshot) =>
                   loop({
+                    ...state,
                     selectedThreadId: View.normalizeSelection(snapshot, state.selectedThreadId),
                   }),
                 ),
               )
             }
-
-            return Ref.get(options.snapshotRef).pipe(
-              Effect.flatMap((snapshot) => {
-                const action = mainInput(event.key, snapshot, state)
-                if (action.type === "state") return loop(action.state)
-                if (action.type === "refresh") {
-                  return Queue.offer(options.refreshRequests, void 0).pipe(
-                    Effect.andThen(loop(action.state)),
-                  )
-                }
-                return Effect.succeed(action)
-              }),
-            )
+            if (event.type === "selected") {
+              return loop({ selectedThreadId: event.threadId })
+            }
+            if (event.type === "refresh") {
+              return Queue.offer(options.refreshRequests, void 0).pipe(
+                Effect.andThen(loop({ ...state, status: "Refreshing…" })),
+              )
+            }
+            if (event.type === "new") return Effect.succeed({ type: "new", state })
+            if (event.type === "quit") {
+              return Effect.succeed({ type: "quit", selectedThreadId: state.selectedThreadId })
+            }
+            return Effect.succeed(event)
           }),
         )
 
@@ -301,86 +358,6 @@ const selectPrompt = <Value>(
     }),
   )
 
-const inputPrompt = (
-  renderer: CliRenderer,
-  project: AppServer.Project,
-  agent: AppServer.Agent,
-): Effect.Effect<PromptResult<string>> =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const results = yield* Queue.unbounded<PromptResult<string>>()
-      const screen = new BoxRenderable(renderer, {
-        id: "prompt-name",
-        title: "New Thread",
-        border: true,
-        borderStyle: "rounded",
-        width: "100%",
-        height: "100%",
-        padding: 1,
-        flexDirection: "column",
-        gap: 1,
-      })
-      const context = new TextRenderable(renderer, {
-        id: "prompt-context",
-        content: `Project: ${project.name}\nAgent: ${agent.id}\n\nThread name`,
-      })
-      const input = new InputRenderable(renderer, {
-        id: "prompt-name-input",
-        width: "100%",
-        maxLength: 120,
-        placeholder: "Name this session",
-        backgroundColor: "#1f2937",
-        focusedBackgroundColor: "#374151",
-        textColor: "#f9fafb",
-        cursorColor: "#60a5fa",
-      })
-      const status = new TextRenderable(renderer, {
-        id: "prompt-name-status",
-        content: "",
-        fg: "#f87171",
-        height: 1,
-      })
-      const help = new TextRenderable(renderer, {
-        id: "prompt-name-help",
-        content: "Enter create and attach · Esc cancel · Ctrl-C quit",
-        fg: "#888888",
-      })
-      screen.add(context)
-      screen.add(input)
-      screen.add(status)
-      screen.add(help)
-      yield* acquireScreen(renderer, screen)
-
-      const onEnter = (value: string) => {
-        const name = value.trim()
-        if (name === "") {
-          status.content = "A Thread name is required."
-          input.focus()
-          return
-        }
-        Queue.offerUnsafe(results, { type: "value", value: name })
-      }
-      const onKey = (key: KeyEvent) => {
-        if (key.ctrl && key.name === "c") {
-          Queue.offerUnsafe(results, { type: "quit" })
-          return
-        }
-        if (key.name === "escape") Queue.offerUnsafe(results, { type: "cancel" })
-      }
-      input.on(InputRenderableEvents.ENTER, onEnter)
-      renderer.keyInput.on("keypress", onKey)
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          input.off(InputRenderableEvents.ENTER, onEnter)
-          renderer.keyInput.off("keypress", onKey)
-        }),
-      )
-      input.focus()
-
-      return yield* Queue.take(results)
-    }),
-  )
-
 type WizardResult =
   | { readonly type: "create"; readonly input: AppServer.CreateThreadInput }
   | { readonly type: "cancel"; readonly status: string }
@@ -441,18 +418,11 @@ const runCreateWizard = (
       return { type: "cancel", status: "Thread creation cancelled." } as const
     }
 
-    const name = yield* inputPrompt(renderer, project.value, agent.value)
-    if (name.type === "quit") return name
-    if (name.type === "cancel") {
-      return { type: "cancel", status: "Thread creation cancelled." } as const
-    }
-
     return {
       type: "create",
       input: {
         projectId: project.value.id,
         agentId: agent.value.id,
-        name: name.value,
       },
     }
   })

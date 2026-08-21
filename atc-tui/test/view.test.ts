@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest"
 import type * as AppServer from "../src/appServer.ts"
-import { moveSelection, normalizeSelection, projectIdForSelection, render } from "../src/view.ts"
+import {
+  connectionLabel,
+  normalizeSelection,
+  projectIdForSelection,
+  threadOptions,
+} from "../src/view.ts"
 
 const project = (id: string, name: string): AppServer.Project => ({
   id,
@@ -20,12 +25,7 @@ const thread = (
   agentId: "codex",
   name: id,
   workingDirectory: "/work/" + projectId,
-  settings: {
-    model: "gpt-5",
-    reasoning: "medium",
-    mode: "chat",
-    access: "auto",
-  },
+  settings: { model: "gpt-5", reasoning: "medium", mode: "chat", access: "auto" },
   activityState,
   unread: activityState === "idle",
   ...(activityState === "working" ? { linkedTerminalId: "terminal-" + id } : {}),
@@ -35,7 +35,7 @@ const thread = (
 
 const snapshot: AppServer.Snapshot = {
   projects: [project("p1", "Alpha"), project("p2", "Beta")],
-  threads: [thread("t1", "p1"), thread("t2", "p1", "working")],
+  threads: [thread("t1", "p1"), thread("t2", "p2", "working")],
   agents: [
     {
       id: "codex",
@@ -47,34 +47,27 @@ const snapshot: AppServer.Snapshot = {
   fetchedAt: new Date("2026-08-20T00:00:00.000Z"),
 }
 
-describe("navigation", () => {
-  it("normalizes stale selection and clamps movement", () => {
+describe("manager view model", () => {
+  it("normalizes selection and resolves its Project", () => {
     expect(normalizeSelection(snapshot, "missing")).toBe("t1")
-    expect(moveSelection(snapshot, "t1", 1)).toBe("t2")
-    expect(moveSelection(snapshot, "t2", 1)).toBe("t2")
-    expect(moveSelection(snapshot, "t1", -1)).toBe("t1")
-    expect(projectIdForSelection(snapshot, "t2")).toBe("p1")
+    expect(normalizeSelection(snapshot, "t2")).toBe("t2")
+    expect(projectIdForSelection(snapshot, "t2")).toBe("p2")
     expect(projectIdForSelection(snapshot, "missing")).toBe("p1")
   })
-})
 
-describe("render", () => {
-  it("groups Threads under Projects and shows live status", () => {
-    const output = render({
-      endpoint: new URL("https://atc.example"),
-      reachability: "connected",
-      snapshot,
-      state: { selectedThreadId: "t2" },
-      columns: 100,
-      rows: 30,
-    })
-
-    expect(output).toContain("Alpha  (2)")
-    expect(output).toContain("Beta  (0)")
-    expect(output).toContain("t1  [idle · unread]  codex")
-    expect(output).toContain("t2  [working · terminal]  codex")
-    expect(output).toContain("›   t2")
-    expect(output).toContain("Ctrl-N new")
-    expect(output).not.toContain("\u001b")
+  it("makes every Thread a Project-labelled OpenTUI option", () => {
+    expect(threadOptions(snapshot)).toEqual([
+      {
+        threadId: "t1",
+        name: "Alpha  ›  t1",
+        description: "idle · unread  ·  codex  ·  /work/p1",
+      },
+      {
+        threadId: "t2",
+        name: "Beta  ›  t2",
+        description: "working · terminal  ·  codex  ·  /work/p2",
+      },
+    ])
+    expect(connectionLabel("disconnected")).toBe("reconnecting…")
   })
 })

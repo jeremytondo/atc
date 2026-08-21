@@ -12,7 +12,6 @@ export type Project = typeof Contract.Project.Type
 export type Thread = typeof Contract.Thread.Type
 export type Terminal = typeof Contract.Terminal.Type
 export type Agent = typeof Contract.Agent.Type
-export type AgentId = typeof Contract.AgentId.Type
 
 export interface Snapshot {
   readonly projects: ReadonlyArray<Project>
@@ -21,11 +20,7 @@ export interface Snapshot {
   readonly fetchedAt: Date
 }
 
-export interface CreateThreadInput {
-  readonly projectId: Project["id"]
-  readonly agentId: AgentId
-  readonly name: string
-}
+export type CreateThreadInput = typeof Contract.CreateThreadRequest.Type
 
 export class AppServer extends Context.Service<
   AppServer,

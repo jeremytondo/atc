@@ -1,23 +1,19 @@
 import * as path from "node:path"
 import type * as AppServer from "./appServer.ts"
 
-// Pure navigation and rendering model. The UI is intentionally a small
-// grouped Project/Thread list; the host terminal owns all actual terminal
-// rendering once a Thread is entered.
+// Pure presentation model for the OpenTUI manager. Every active Thread maps
+// to exactly one selectable option, regardless of Project, so navigation and
+// scrolling are owned by SelectRenderable rather than terminal line math.
 
 export type Reachability = "connecting" | "connected" | "disconnected"
 
-export interface ViewState {
-  readonly selectedThreadId?: string | undefined
-  readonly status?: string | undefined
+export interface ThreadOption {
+  readonly threadId: string
+  readonly name: string
+  readonly description: string
 }
 
-interface DisplayLine {
-  readonly text: string
-  readonly threadId?: string | undefined
-}
-
-export const threadIds = (snapshot: AppServer.Snapshot | undefined): ReadonlyArray<string> =>
+const threadIds = (snapshot: AppServer.Snapshot | undefined): ReadonlyArray<string> =>
   snapshot?.threads.map((thread) => thread.id) ?? []
 
 export const normalizeSelection = (
@@ -27,18 +23,6 @@ export const normalizeSelection = (
   const ids = threadIds(snapshot)
   if (selectedThreadId !== undefined && ids.includes(selectedThreadId)) return selectedThreadId
   return ids[0]
-}
-
-export const moveSelection = (
-  snapshot: AppServer.Snapshot | undefined,
-  selectedThreadId: string | undefined,
-  delta: number,
-): string | undefined => {
-  const ids = threadIds(snapshot)
-  if (ids.length === 0) return undefined
-  const current = selectedThreadId === undefined ? 0 : Math.max(0, ids.indexOf(selectedThreadId))
-  const next = Math.max(0, Math.min(ids.length - 1, current + delta))
-  return ids[next]
 }
 
 export const projectIdForSelection = (
@@ -58,111 +42,28 @@ const activity = (thread: AppServer.Thread): string => {
       : thread.activityState === "unknown"
         ? "?"
         : thread.activityState
-  const overlays = [
+  return [
     state,
     ...(thread.unread ? ["unread"] : []),
     ...(thread.linkedTerminalId === undefined ? [] : ["terminal"]),
-  ]
-  return overlays.join(" · ")
+  ].join(" · ")
 }
 
-const displayLines = (snapshot: AppServer.Snapshot | undefined): ReadonlyArray<DisplayLine> => {
-  if (snapshot === undefined) return [{ text: "  Waiting for the App Server…" }]
-  if (snapshot.projects.length === 0) return [{ text: "  No Projects." }]
-
-  const lines: Array<DisplayLine> = []
-  for (const project of snapshot.projects) {
-    const threads = snapshot.threads.filter((thread) => thread.projectId === project.id)
-    lines.push({ text: `${project.name}  (${threads.length})` })
-    if (threads.length === 0) {
-      lines.push({ text: "    No active Threads." })
-      continue
-    }
-    for (const thread of threads) {
-      lines.push({
-        text: `  ${threadLabel(thread)}  [${activity(thread)}]  ${thread.agentId}`,
-        threadId: thread.id,
-      })
-    }
-  }
-
-  const knownProjects = new Set(snapshot.projects.map((project) => project.id))
-  const orphaned = snapshot.threads.filter((thread) => !knownProjects.has(thread.projectId))
-  if (orphaned.length > 0) {
-    lines.push({ text: `Unknown Project  (${orphaned.length})` })
-    for (const thread of orphaned) {
-      lines.push({
-        text: `  ${threadLabel(thread)}  [${activity(thread)}]  ${thread.agentId}`,
-        threadId: thread.id,
-      })
-    }
-  }
-  return lines
+export const threadOptions = (
+  snapshot: AppServer.Snapshot | undefined,
+): ReadonlyArray<ThreadOption> => {
+  if (snapshot === undefined) return []
+  const projects = new Map(snapshot.projects.map((project) => [project.id, project.name]))
+  return snapshot.threads.map((thread) => ({
+    threadId: thread.id,
+    name: `${projects.get(thread.projectId) ?? "Unknown Project"}  ›  ${threadLabel(thread)}`,
+    description: `${activity(thread)}  ·  ${thread.agentId}  ·  ${thread.workingDirectory}`,
+  }))
 }
 
-const truncate = (value: string, width: number): string =>
-  value.length <= width
-    ? value
-    : width <= 1
-      ? value.slice(0, width)
-      : value.slice(0, width - 1) + "…"
-
-const visibleLines = (
-  lines: ReadonlyArray<DisplayLine>,
-  selectedThreadId: string | undefined,
-  available: number,
-): ReadonlyArray<DisplayLine> => {
-  if (lines.length <= available) return lines
-  const selected = Math.max(
-    0,
-    lines.findIndex((line) => line.threadId === selectedThreadId),
-  )
-  const start = Math.max(
-    0,
-    Math.min(lines.length - available, selected - Math.floor(available / 2)),
-  )
-  return lines.slice(start, start + available)
-}
-
-export const render = (options: {
-  readonly endpoint: URL
-  readonly reachability: Reachability
-  readonly snapshot: AppServer.Snapshot | undefined
-  readonly state: ViewState
-  readonly columns: number
-  readonly rows: number
-}): string => {
-  const width = Math.max(20, options.columns || 80)
-  const height = Math.max(8, options.rows || 24)
-  const selection = normalizeSelection(options.snapshot, options.state.selectedThreadId)
-  const lines = visibleLines(displayLines(options.snapshot), selection, Math.max(1, height - 8))
-  const connection =
-    options.reachability === "connected"
-      ? "connected"
-      : options.reachability === "connecting"
-        ? "connecting…"
-        : "reconnecting…"
-  const body = lines
-    .map((line) => {
-      const selected = line.threadId !== undefined && line.threadId === selection
-      const prefix = selected ? "› " : "  "
-      const content = truncate(prefix + line.text, width)
-      return content
-    })
-    .join("\n")
-  const fetched =
-    options.snapshot === undefined
-      ? ""
-      : ` · synced ${options.snapshot.fetchedAt.toLocaleTimeString()}`
-  const status =
-    options.state.status === undefined ? "" : `\n${truncate(options.state.status, width)}`
-
-  return (
-    `ATC · ${options.endpoint.origin}\n` +
-    `${connection}${fetched}\n\n` +
-    body +
-    status +
-    "\n\n↑/↓ or j/k select · Enter attach · Ctrl-N new · r refetch · q quit\n" +
-    "Ctrl-\\ returns from the zmx session to this list\n"
-  )
-}
+export const connectionLabel = (reachability: Reachability): string =>
+  reachability === "connected"
+    ? "connected"
+    : reachability === "connecting"
+      ? "connecting…"
+      : "reconnecting…"
