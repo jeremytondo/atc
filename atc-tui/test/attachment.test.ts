@@ -3,7 +3,13 @@ import {
   CLOSE_DETACH,
   CLOSE_TERMINAL_ENDED,
 } from "../../app-server/src/terminals/attachProtocol.ts"
-import { classifyClose } from "../src/attachment.ts"
+import { classifyClose, DETACH_BYTE } from "../src/attachment.ts"
+
+describe("attachment input", () => {
+  it("uses zmx's Ctrl-\\ detach binding", () => {
+    expect(DETACH_BYTE).toBe(0x1c)
+  })
+})
 
 describe("classifyClose", () => {
   it("distinguishes deliberate detach from terminal end and transport loss", () => {

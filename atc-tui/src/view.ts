@@ -157,6 +157,6 @@ export const render = (options: {
     body +
     status +
     "\r\n\r\n↑/↓ or j/k select · Enter attach · r refetch · q quit\r\n" +
-    "Ctrl-] detaches from a session without ending it\r\n"
+    "Ctrl-\\ detaches from a session without ending it\r\n"
   )
 }

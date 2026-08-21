@@ -9,8 +9,10 @@ import {
 import * as AppServer from "./appServer.ts"
 
 // Scoped raw-TTY WebSocket bridge for one terminal. Retryable closes are
-// reconciled through GET /terminals/{id} before reconnecting; Ctrl-] is a
-// deliberate detach and always returns to the manager.
+// reconciled through GET /terminals/{id} before reconnecting. Ctrl-\\ matches
+// zmx's native detach binding, but is handled locally so the manager returns
+// immediately instead of treating the server-side zmx client exit as a lost
+// connection and reconnecting it.
 
 interface BunClientWebSocket extends WebSocket {
   terminate(): void
@@ -20,7 +22,7 @@ const BunWebSocket = WebSocket as unknown as new (
   url: string | URL,
   options?: Bun.WebSocketOptions,
 ) => BunClientWebSocket
-const DETACH_BYTE = 0x1d
+export const DETACH_BYTE = 0x1c // Ctrl-\\, matching zmx
 
 export type AttachOutcome = { readonly type: "detached" } | { readonly type: "terminalEnded" }
 
@@ -263,7 +265,7 @@ const runLoop = (
             const nextAttempt = ended.livedMillis >= 8_000 ? 0 : attempt + 1
             const delay = backoffMillis(attempt)
             return Console.error(
-              `\r\natc-tui: connection lost (${ended.reason}); reconnecting in ${delay}ms (Ctrl-] to detach)`,
+              `\r\natc-tui: connection lost (${ended.reason}); reconnecting in ${delay}ms (Ctrl-\\ to detach)`,
             ).pipe(
               Effect.andThen(
                 Effect.race(
