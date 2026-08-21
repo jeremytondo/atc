@@ -1,14 +1,12 @@
 import {
-  BoxRenderable,
   createCliRenderer,
-  SelectRenderable,
   SelectRenderableEvents,
-  TextRenderable,
   type CliRenderer,
   type KeyEvent,
 } from "@opentui/core"
 import { Effect, Queue, Ref } from "effect"
 import * as AppServer from "./appServer.ts"
+import * as OpenTuiApp from "./openTuiApp.ts"
 import * as View from "./view.ts"
 
 // OpenTUI owns only the interactive manager surface. Callbacks publish typed
@@ -80,22 +78,6 @@ const acquireRenderer = Effect.acquireRelease(
     }).pipe(Effect.ignore),
 )
 
-const acquireScreen = (renderer: CliRenderer, screen: BoxRenderable) =>
-  Effect.acquireRelease(
-    Effect.sync(() => {
-      renderer.root.add(screen)
-      return screen
-    }),
-    (owned) =>
-      Effect.try({
-        try: () => {
-          if (owned.parent !== null) renderer.root.remove(owned)
-          owned.destroyRecursively()
-        },
-        catch: () => undefined,
-      }).pipe(Effect.ignore),
-  )
-
 type MainEvent =
   | { readonly type: "attach"; readonly threadId: string }
   | { readonly type: "new"; readonly selectedThreadId?: string | undefined }
@@ -103,83 +85,24 @@ type MainEvent =
   | { readonly type: "quit"; readonly selectedThreadId?: string | undefined }
 
 const runMainScreen = (
-  renderer: CliRenderer,
+  shell: OpenTuiApp.AppShell,
   options: ManagerOptions,
   initial: ManagerState,
 ): Effect.Effect<MainResult, unknown> =>
   Effect.scoped(
     Effect.gen(function* () {
+      const renderer = shell.renderer
       const events = yield* Queue.unbounded<MainEvent>()
       const threadIdsByIndex: Array<string> = []
-      const screen = new BoxRenderable(renderer, {
-        id: "manager",
-        width: "100%",
-        height: "100%",
-        padding: 1,
-        gap: 1,
-        flexDirection: "column",
-        backgroundColor: "#0b1020",
+      const view = OpenTuiApp.makeView(shell, "threads-view")
+      const threads = OpenTuiApp.makeSelect(shell, {
+        id: "threads",
+        items: [],
       })
-      const header = new TextRenderable(renderer, {
-        id: "manager-header",
-        height: 2,
-        content: "",
-        fg: "#e2e8f0",
-      })
-      const list = new BoxRenderable(renderer, {
-        id: "manager-list",
-        title: " Threads ",
-        titleColor: "#93c5fd",
-        border: true,
-        borderStyle: "rounded",
-        borderColor: "#334155",
-        flexGrow: 1,
-        padding: 1,
-        backgroundColor: "#111827",
-      })
-      const threads = new SelectRenderable(renderer, {
-        id: "manager-threads",
-        width: "100%",
-        height: "100%",
-        options: [],
-        wrapSelection: false,
-        showDescription: true,
-        showScrollIndicator: true,
-        backgroundColor: "#111827",
-        focusedBackgroundColor: "#111827",
-        selectedBackgroundColor: "#1d4ed8",
-        selectedTextColor: "#ffffff",
-        selectedDescriptionColor: "#dbeafe",
-        descriptionColor: "#94a3b8",
-      })
-      const empty = new TextRenderable(renderer, {
-        id: "manager-empty",
-        width: "100%",
-        height: "100%",
-        content: "",
-        fg: "#94a3b8",
-      })
-      const status = new TextRenderable(renderer, {
-        id: "manager-status",
-        height: 1,
-        content: "",
-        fg: "#fbbf24",
-      })
-      const help = new TextRenderable(renderer, {
-        id: "manager-help",
-        height: 2,
-        content:
-          "↑/↓ or j/k navigate  ·  Enter attach  ·  Ctrl-N new  ·  r refresh  ·  q quit\n" +
-          "Inside zmx, Ctrl-\\ returns here",
-        fg: "#64748b",
-      })
-      list.add(threads)
-      list.add(empty)
-      screen.add(header)
-      screen.add(list)
-      screen.add(status)
-      screen.add(help)
-      yield* acquireScreen(renderer, screen)
+      const empty = OpenTuiApp.makeMessage(shell, "threads-empty")
+      view.add(threads)
+      view.add(empty)
+      yield* OpenTuiApp.mountView(shell, view)
 
       const selectedThreadId = () => threadIdsByIndex[threads.getSelectedIndex()]
       const onKey = (key: KeyEvent) => {
@@ -244,12 +167,17 @@ const runMainScreen = (
               : snapshot.projects.length === 0
                 ? "No Projects yet. Create one before starting a Thread."
                 : "No active Threads. Press Ctrl-N to create one."
-          list.title = ` Threads (${items.length}) `
           const fetched =
             snapshot === undefined ? "" : `  ·  synced ${snapshot.fetchedAt.toLocaleTimeString()}`
-          header.content =
-            `ATC\n${options.endpoint.origin}  ·  ${View.connectionLabel(reachability)}` + fetched
-          status.content = state.status ?? backgroundStatus ?? ""
+          OpenTuiApp.update(shell, {
+            subtitle:
+              options.endpoint.origin + `  ·  ${View.connectionLabel(reachability)}` + fetched,
+            title: `Threads (${items.length})`,
+            status: state.status ?? backgroundStatus,
+            help:
+              "↑/↓ or j/k navigate  ·  Enter attach  ·  Ctrl-N new  ·  r refresh  ·  q quit\n" +
+              "Inside zmx, Ctrl-\\ returns here",
+          })
         })
 
       const loop = (state: ManagerState): Effect.Effect<MainResult, unknown> =>
@@ -299,45 +227,29 @@ const runMainScreen = (
   )
 
 const selectPrompt = <Value>(
-  renderer: CliRenderer,
+  shell: OpenTuiApp.AppShell,
   title: string,
   items: ReadonlyArray<PromptItem<Value>>,
   selectedIndex: number,
 ): Effect.Effect<PromptResult<Value>> =>
   Effect.scoped(
     Effect.gen(function* () {
+      const renderer = shell.renderer
       const results = yield* Queue.unbounded<PromptResult<Value>>()
-      const screen = new BoxRenderable(renderer, {
-        id: "prompt-select",
-        title,
-        border: true,
-        borderStyle: "rounded",
-        width: "100%",
-        height: "100%",
-        padding: 1,
-        flexDirection: "column",
-        gap: 1,
-      })
-      const select = new SelectRenderable(renderer, {
+      const view = OpenTuiApp.makeView(shell, "prompt-view")
+      const select = OpenTuiApp.makeSelect(shell, {
         id: "prompt-options",
-        width: "100%",
-        height: Math.max(3, Math.min(items.length * 2, renderer.terminalHeight - 8)),
-        options: items.map((item) => ({
-          name: item.name,
-          description: item.description,
-        })),
+        items,
         selectedIndex: Math.max(0, Math.min(items.length - 1, selectedIndex)),
         wrapSelection: true,
-        showDescription: true,
       })
-      const help = new TextRenderable(renderer, {
-        id: "prompt-help",
-        content: "↑/↓ select · Enter continue · Esc cancel · Ctrl-C quit",
-        fg: "#888888",
+      view.add(select)
+      yield* OpenTuiApp.mountView(shell, view)
+      OpenTuiApp.update(shell, {
+        title,
+        status: "",
+        help: "↑/↓ or j/k select  ·  Enter continue  ·  Esc cancel  ·  Ctrl-C quit",
       })
-      screen.add(select)
-      screen.add(help)
-      yield* acquireScreen(renderer, screen)
 
       const onSelected = (index: number) => {
         const item = items[index]
@@ -370,7 +282,7 @@ type WizardResult =
   | { readonly type: "quit" }
 
 const runCreateWizard = (
-  renderer: CliRenderer,
+  shell: OpenTuiApp.AppShell,
   snapshot: AppServer.Snapshot,
   preferredProjectId: string | undefined,
 ): Effect.Effect<WizardResult> =>
@@ -391,7 +303,7 @@ const runCreateWizard = (
       snapshot.projects.findIndex((project) => project.id === preferredProjectId),
     )
     const project = yield* selectPrompt(
-      renderer,
+      shell,
       "New Thread · Project",
       snapshot.projects.map((item) => ({
         name: item.name,
@@ -410,7 +322,7 @@ const runCreateWizard = (
       agents.findIndex((agent) => agent.id === "codex"),
     )
     const agent = yield* selectPrompt(
-      renderer,
+      shell,
       "New Thread · Agent",
       agents.map((item) => ({
         name: item.id,
@@ -436,45 +348,54 @@ const runCreateWizard = (
 export const runWithRenderer = (
   renderer: CliRenderer,
   options: ManagerOptions,
-): Effect.Effect<ManagerResult, unknown> => {
-  const loop = (state: ManagerState): Effect.Effect<ManagerResult, unknown> =>
-    runMainScreen(renderer, options, state).pipe(
-      Effect.flatMap((result) => {
-        if (result.type !== "new") return Effect.succeed(result)
+): Effect.Effect<ManagerResult, unknown> =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const shell = OpenTuiApp.make(renderer)
+      yield* OpenTuiApp.mount(shell)
 
-        return Ref.get(options.snapshotRef).pipe(
-          Effect.flatMap((snapshot) => {
-            if (snapshot === undefined) {
-              return loop({ ...result.state, status: "Wait for the App Server before creating." })
-            }
-            const preferredProjectId = View.projectIdForSelection(
-              snapshot,
-              result.state.selectedThreadId,
-            )
-            return runCreateWizard(renderer, snapshot, preferredProjectId).pipe(
-              Effect.flatMap((created) => {
-                if (created.type === "quit") {
-                  return Effect.succeed({
-                    type: "quit",
-                    selectedThreadId: result.state.selectedThreadId,
-                  } as const)
+      const loop = (state: ManagerState): Effect.Effect<ManagerResult, unknown> =>
+        runMainScreen(shell, options, state).pipe(
+          Effect.flatMap((result) => {
+            if (result.type !== "new") return Effect.succeed(result)
+
+            return Ref.get(options.snapshotRef).pipe(
+              Effect.flatMap((snapshot) => {
+                if (snapshot === undefined) {
+                  return loop({
+                    ...result.state,
+                    status: "Wait for the App Server before creating.",
+                  })
                 }
-                if (created.type === "cancel") {
-                  return loop({ ...result.state, status: created.status })
-                }
-                return Effect.succeed({
-                  ...created,
-                  selectedThreadId: result.state.selectedThreadId,
-                })
+                const preferredProjectId = View.projectIdForSelection(
+                  snapshot,
+                  result.state.selectedThreadId,
+                )
+                return runCreateWizard(shell, snapshot, preferredProjectId).pipe(
+                  Effect.flatMap((created) => {
+                    if (created.type === "quit") {
+                      return Effect.succeed({
+                        type: "quit",
+                        selectedThreadId: result.state.selectedThreadId,
+                      } as const)
+                    }
+                    if (created.type === "cancel") {
+                      return loop({ ...result.state, status: created.status })
+                    }
+                    return Effect.succeed({
+                      ...created,
+                      selectedThreadId: result.state.selectedThreadId,
+                    })
+                  }),
+                )
               }),
             )
           }),
         )
-      }),
-    )
 
-  return loop(options.initial)
-}
+      return yield* loop(options.initial)
+    }),
+  )
 
 export const run = (options: ManagerOptions): Effect.Effect<ManagerResult, unknown> =>
   Effect.scoped(
