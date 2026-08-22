@@ -42,6 +42,15 @@ export const tunnelSpec = (connection: Config.RemoteConnection): TunnelSpec => (
     "-T",
     "-o",
     "ExitOnForwardFailure=yes",
+    // The tunnel must belong to this exact child process. User SSH config may
+    // otherwise hand the forward to a persistent ControlMaster or background
+    // the client, leaving the port alive after the TUI's scope closes.
+    "-o",
+    "ControlMaster=no",
+    "-o",
+    "ControlPath=none",
+    "-o",
+    "ForkAfterAuthentication=no",
     ...connectionArgs,
     "-L",
     `127.0.0.1:${connection.tunnelPort}:127.0.0.1:${connection.remotePort}`,

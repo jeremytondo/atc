@@ -26,7 +26,16 @@ echo "installed atc-tui to $install_dir/atc-tui"
 '''
 
 [tasks.deps]
-description = "Install dependencies from the committed lockfile"
+description = "Install TUI and imported App Server source dependencies from committed lockfiles"
+depends = ["deps:app-server", "deps:tui"]
+
+[tasks."deps:app-server"]
+description = "Install dependencies for App Server source modules imported by the TUI"
+dir = "../app-server"
+run = "bun install --frozen-lockfile"
+
+[tasks."deps:tui"]
+description = "Install terminal client dependencies from the committed lockfile"
 run = "bun install --frozen-lockfile"
 
 [tasks.fmt]
