@@ -59,6 +59,7 @@ export type ManagerAction = Exclude<ManagerResult, { readonly type: "quit" }>
 
 type ManagerAttachExit = {
   readonly type: "attach"
+  readonly threadId: string
   readonly terminal: AppServer.Terminal
   readonly state: ManagerState
 }

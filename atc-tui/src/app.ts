@@ -7,15 +7,48 @@ import * as View from "./view.ts"
 // Application coordinator: one scoped SSE subscription maintains an
 // authoritative snapshot. The manager keeps its renderer across server
 // interactions and releases it only while a direct zmx client owns the TTY.
+// A Thread remains viewed while zmx is attached, so finishes reconciled under
+// that attachment are acknowledged before the manager can render them unread.
 
 const describeError = (error: unknown): string =>
   error instanceof Error && error.message !== "" ? error.message : String(error)
 
+const mergeThread = (
+  snapshotRef: Ref.Ref<AppServer.Snapshot | undefined>,
+  thread: AppServer.TuiThread,
+) =>
+  Ref.update(snapshotRef, (snapshot) =>
+    snapshot === undefined
+      ? snapshot
+      : {
+          ...snapshot,
+          threads: snapshot.threads.map((item) => (item.id === thread.id ? thread : item)),
+        },
+  )
+
+export const refreshSnapshot = (
+  server: Pick<AppServer.AppServer["Service"], "markThreadViewed" | "snapshot">,
+  snapshotRef: Ref.Ref<AppServer.Snapshot | undefined>,
+  attachedThreadIdRef: Ref.Ref<string | undefined>,
+) =>
+  Effect.gen(function* () {
+    const snapshot = yield* server.snapshot
+    yield* Ref.set(snapshotRef, snapshot)
+    const threadId = yield* Ref.get(attachedThreadIdRef)
+    if (threadId === undefined) return
+    if (!snapshot.threads.some((thread) => thread.id === threadId && thread.unread)) return
+    yield* server.markThreadViewed(threadId).pipe(
+      Effect.flatMap((thread) => mergeThread(snapshotRef, thread)),
+      Effect.ignore,
+    )
+  })
+
 const startLiveState = (
-  server: AppServer.AppServer["Service"],
+  server: Pick<AppServer.AppServer["Service"], "markThreadViewed" | "snapshot" | "subscribe">,
   snapshotRef: Ref.Ref<AppServer.Snapshot | undefined>,
   reachabilityRef: Ref.Ref<View.Reachability>,
   backgroundStatusRef: Ref.Ref<string | undefined>,
+  attachedThreadIdRef: Ref.Ref<string | undefined>,
   refreshRequests: Queue.Queue<void>,
   uiUpdates: Queue.Queue<void>,
 ) =>
@@ -24,8 +57,7 @@ const startLiveState = (
       Queue.take(refreshRequests).pipe(
         Effect.andThen(Effect.sleep("100 millis")),
         Effect.andThen(Queue.poll(refreshRequests)),
-        Effect.andThen(server.snapshot),
-        Effect.tap((snapshot) => Ref.set(snapshotRef, snapshot)),
+        Effect.andThen(refreshSnapshot(server, snapshotRef, attachedThreadIdRef)),
         Effect.tap(() => Ref.set(backgroundStatusRef, undefined)),
         Effect.catchCause((cause) =>
           Ref.set(backgroundStatusRef, `Refresh failed: ${Cause.pretty(cause)}`),
@@ -70,6 +102,7 @@ export const run = Effect.scoped(
     const snapshotRef = yield* Ref.make<AppServer.Snapshot | undefined>(undefined)
     const reachabilityRef = yield* Ref.make<View.Reachability>("connecting")
     const backgroundStatusRef = yield* Ref.make<string | undefined>(undefined)
+    const attachedThreadIdRef = yield* Ref.make<string | undefined>(undefined)
     const refreshRequests = yield* Queue.sliding<void>(1)
     const uiUpdates = yield* Queue.sliding<void>(1)
     yield* startLiveState(
@@ -77,6 +110,7 @@ export const run = Effect.scoped(
       snapshotRef,
       reachabilityRef,
       backgroundStatusRef,
+      attachedThreadIdRef,
       refreshRequests,
       uiUpdates,
     )
@@ -95,6 +129,7 @@ export const run = Effect.scoped(
           server.openThreadTerminal(action.threadId).pipe(
             Effect.map((terminal) => ({
               type: "attach" as const,
+              threadId: action.threadId,
               terminal,
               state: {
                 ...action.state,
@@ -257,6 +292,7 @@ export const run = Effect.scoped(
               server.openThreadTerminal(thread.id).pipe(
                 Effect.map((terminal) => ({
                   type: "attach" as const,
+                  threadId: thread.id,
                   terminal,
                   state: {
                     ...action.state,
@@ -307,14 +343,24 @@ export const run = Effect.scoped(
         runAction,
       )
 
-    const attach = (terminal: AppServer.Terminal) =>
-      zmx.attach(terminal).pipe(Effect.as("Returned from zmx; session state refreshed."))
+    const attach = (threadId: string, terminal: AppServer.Terminal) =>
+      Ref.set(attachedThreadIdRef, threadId).pipe(
+        Effect.andThen(zmx.attach(terminal)),
+        Effect.tap(() =>
+          server.markThreadViewed(threadId).pipe(
+            Effect.flatMap((thread) => mergeThread(snapshotRef, thread)),
+            Effect.ignore,
+          ),
+        ),
+        Effect.ensuring(Ref.set(attachedThreadIdRef, undefined)),
+        Effect.as("Returned from zmx; session state refreshed."),
+      )
 
     const loop = (state: OpenTui.ManagerState): Effect.Effect<void, unknown> =>
       manager(state).pipe(
         Effect.flatMap((result) => {
           if (result.type === "quit") return Effect.void
-          return attach(result.terminal).pipe(
+          return attach(result.threadId, result.terminal).pipe(
             Effect.catch((error) => Effect.succeed(`Could not attach: ${describeError(error)}`)),
             Effect.tap(() => Queue.offer(refreshRequests, void 0)),
             Effect.flatMap((status) => loop({ ...result.state, status })),

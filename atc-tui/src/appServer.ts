@@ -80,6 +80,7 @@ export class AppServer extends Context.Service<
     ) => Effect.Effect<Thread, unknown>
     readonly archiveThread: (threadId: string) => Effect.Effect<Thread, unknown>
     readonly unarchiveThread: (threadId: string) => Effect.Effect<Thread, unknown>
+    readonly markThreadViewed: (threadId: string) => Effect.Effect<TuiThread, unknown>
     readonly openThreadTerminal: (threadId: string) => Effect.Effect<Terminal, unknown>
     readonly subscribe: (
       publish: (signal: Sse.ResourceSignal) => Effect.Effect<void>,
@@ -113,6 +114,16 @@ export const make = Effect.gen(function* () {
     }
   })
 
+  const markThreadViewed = (threadId: string) =>
+    client.v1.markThreadViewed({ params: { threadId } }).pipe(
+      Effect.flatMap((thread): Effect.Effect<TuiThread> => {
+        if (!isTuiThread(thread)) {
+          return Effect.die(new Error(`viewed TUI Thread ${thread.id} has kind ${thread.kind}`))
+        }
+        return Effect.succeed(thread)
+      }),
+    )
+
   return AppServer.of({
     config,
     snapshot,
@@ -134,12 +145,11 @@ export const make = Effect.gen(function* () {
       client.v1.updateThread({ params: { threadId }, payload: input }),
     archiveThread: (threadId) => client.v1.archiveThread({ params: { threadId } }),
     unarchiveThread: (threadId) => client.v1.unarchiveThread({ params: { threadId } }),
+    markThreadViewed,
     openThreadTerminal: (threadId) =>
       client.v1
         .openThreadTerminal({ params: { threadId } })
-        .pipe(
-          Effect.tap(() => Effect.ignore(client.v1.markThreadViewed({ params: { threadId } }))),
-        ),
+        .pipe(Effect.tap(() => Effect.ignore(markThreadViewed(threadId)))),
     subscribe: (publish) => Sse.subscribe(config, publish),
   })
 })
