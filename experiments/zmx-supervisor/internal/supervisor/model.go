@@ -4,7 +4,11 @@
 // absence from zmx inventory alone is never interpreted as a clean exit.
 package supervisor
 
-import "time"
+import (
+	"time"
+
+	"github.com/elevenideas/atc/experiments/zmx-supervisor/internal/agentstatus"
+)
 
 type State string
 
@@ -43,16 +47,18 @@ type ExitMarker struct {
 }
 
 type Snapshot struct {
-	ID        string      `json:"id,omitempty"`
-	Name      string      `json:"name"`
-	ZmxName   string      `json:"zmxName"`
-	Kind      string      `json:"kind,omitempty"`
-	State     State       `json:"state"`
-	Reachable bool        `json:"reachable"`
-	DaemonPID int         `json:"daemonPid,omitempty"`
-	Orphan    bool        `json:"orphan,omitempty"`
-	Exit      *ExitMarker `json:"exit,omitempty"`
-	Reason    string      `json:"reason,omitempty"`
+	ID               string                   `json:"id,omitempty"`
+	Name             string                   `json:"name"`
+	ZmxName          string                   `json:"zmxName"`
+	Kind             string                   `json:"kind,omitempty"`
+	State            State                    `json:"state"`
+	Reachable        bool                     `json:"reachable"`
+	DaemonPID        int                      `json:"daemonPid,omitempty"`
+	Orphan           bool                     `json:"orphan,omitempty"`
+	Exit             *ExitMarker              `json:"exit,omitempty"`
+	Reason           string                   `json:"reason,omitempty"`
+	AgentStatus      *agentstatus.Observation `json:"agentStatus,omitempty"`
+	AgentStatusError string                   `json:"agentStatusError,omitempty"`
 }
 
 type CreateRequest struct {

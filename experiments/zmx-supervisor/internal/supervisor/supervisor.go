@@ -14,26 +14,29 @@ import (
 	"sync"
 	"time"
 
+	"github.com/elevenideas/atc/experiments/zmx-supervisor/internal/agentstatus"
 	"github.com/elevenideas/atc/experiments/zmx-supervisor/internal/terminal"
 )
 
 type Config struct {
-	Terminal   terminal.Terminal
-	Store      *Store
-	Executable string
-	StaleAfter time.Duration
-	Now        func() time.Time
+	Terminal    terminal.Terminal
+	Store       *Store
+	Executable  string
+	StaleAfter  time.Duration
+	Now         func() time.Time
+	AgentStatus *agentstatus.Service
 }
 
 type Supervisor struct {
 	mu sync.Mutex
 
-	terminal   terminal.Terminal
-	store      *Store
-	executable string
-	staleAfter time.Duration
-	now        func() time.Time
-	records    []Record
+	terminal    terminal.Terminal
+	store       *Store
+	executable  string
+	staleAfter  time.Duration
+	now         func() time.Time
+	agentStatus *agentstatus.Service
+	records     []Record
 }
 
 func New(config Config) (*Supervisor, error) {
@@ -52,13 +55,21 @@ func New(config Config) (*Supervisor, error) {
 	if now == nil {
 		now = time.Now
 	}
+	statusService := config.AgentStatus
+	if statusService == nil {
+		statusService, err = agentstatus.New(config.Store.Dir(), config.Executable, now)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return &Supervisor{
-		terminal:   config.Terminal,
-		store:      config.Store,
-		executable: config.Executable,
-		staleAfter: staleAfter,
-		now:        now,
-		records:    records,
+		terminal:    config.Terminal,
+		store:       config.Store,
+		executable:  config.Executable,
+		staleAfter:  staleAfter,
+		now:         now,
+		records:     records,
+		agentStatus: statusService,
 	}, nil
 }
 
@@ -87,6 +98,10 @@ func (s *Supervisor) Create(ctx context.Context, request CreateRequest) (Snapsho
 		return Snapshot{}, err
 	}
 	now := s.now().UTC()
+	preparedCommand, err := s.agentStatus.Prepare(kind, id, command)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	record := Record{
 		ID:        id,
 		Name:      name,
@@ -102,7 +117,7 @@ func (s *Supervisor) Create(ctx context.Context, request CreateRequest) (Snapsho
 		s.records = s.records[:len(s.records)-1]
 		return Snapshot{}, err
 	}
-	wrapped := append([]string{s.executable, "__child", "--marker", s.store.ExitPath(id), "--id", id, "--"}, command...)
+	wrapped := append([]string{s.executable, "__child", "--marker", s.store.ExitPath(id), "--id", id, "--"}, preparedCommand...)
 	if err := s.terminal.Create(ctx, terminal.CreateOptions{
 		Name:    record.ZmxName,
 		CWD:     cwd,
@@ -135,7 +150,9 @@ func (s *Supervisor) reconcileLocked(ctx context.Context) ([]Snapshot, error) {
 		snapshots := make([]Snapshot, 0, len(s.records))
 		for i := range s.records {
 			s.records[i].State = StateDisconnected
-			snapshots = append(snapshots, snapshotFor(s.records[i], nil, nil, "zmx inventory unavailable"))
+			snapshot := snapshotFor(s.records[i], nil, nil, "zmx inventory unavailable")
+			s.enrichAgentStatus(ctx, &snapshot, s.records[i], nil, "zmx inventory unavailable")
+			snapshots = append(snapshots, snapshot)
 		}
 		_ = s.store.Save(s.records)
 		return snapshots, err
@@ -168,7 +185,11 @@ func (s *Supervisor) reconcileLocked(ctx context.Context) ([]Snapshot, error) {
 		} else if marker != nil && marker.ExitedAt != nil {
 			record.State = StateExited
 			record.DaemonPID = 0
-			reason = exitReason(marker)
+			if record.StopRequestedAt != nil {
+				reason = "terminated deliberately"
+			} else {
+				reason = exitReason(marker)
+			}
 		} else if record.StopRequestedAt != nil {
 			record.State = StateExited
 			record.DaemonPID = 0
@@ -191,7 +212,9 @@ func (s *Supervisor) reconcileLocked(ctx context.Context) ([]Snapshot, error) {
 			copy := entry
 			session = &copy
 		}
-		snapshots = append(snapshots, snapshotFor(*record, session, marker, reason))
+		snapshot := snapshotFor(*record, session, marker, reason)
+		s.enrichAgentStatus(ctx, &snapshot, *record, marker, reason)
+		snapshots = append(snapshots, snapshot)
 	}
 	for _, entry := range inventory {
 		if managed[entry.Name] {
@@ -261,6 +284,16 @@ func (s *Supervisor) Stop(ctx context.Context, name string) error {
 	return err
 }
 
+func (s *Supervisor) AgentTransitions(name string) ([]agentstatus.Observation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	index := s.recordIndex(name)
+	if index < 0 {
+		return nil, fmt.Errorf("unknown session %q", name)
+	}
+	return s.agentStatus.Transitions(s.records[index].ID)
+}
+
 func (s *Supervisor) Cleanup(ctx context.Context) (CleanupResult, error) {
 	s.mu.Lock()
 	snapshots, err := s.reconcileLocked(ctx)
@@ -298,6 +331,9 @@ func (s *Supervisor) Cleanup(ctx context.Context) (CleanupResult, error) {
 	for _, record := range s.records {
 		if forget[record.ID] {
 			if err := s.store.RemoveExit(record.ID); err != nil {
+				return result, err
+			}
+			if err := s.agentStatus.Remove(record.ID); err != nil {
 				return result, err
 			}
 			continue
@@ -401,4 +437,33 @@ func exitReason(marker *ExitMarker) string {
 		return fmt.Sprintf("child exited with code %d", *marker.ExitCode)
 	}
 	return "child exited"
+}
+
+func processEvidence(record Record, marker *ExitMarker, reason string) agentstatus.ProcessEvidence {
+	switch record.State {
+	case StateRunning:
+		return agentstatus.ProcessEvidence{State: agentstatus.ProcessRunning, Detail: "zmx daemon and child are running"}
+	case StateExited:
+		var exitCode *int
+		if marker != nil && record.StopRequestedAt == nil {
+			exitCode = marker.ExitCode
+		}
+		return agentstatus.ProcessEvidence{State: agentstatus.ProcessExited, ExitCode: exitCode, Detail: reason}
+	default:
+		return agentstatus.ProcessEvidence{State: agentstatus.ProcessUnavailable, Detail: reason}
+	}
+}
+
+func (s *Supervisor) enrichAgentStatus(ctx context.Context, snapshot *Snapshot, record Record, marker *ExitMarker, reason string) {
+	if record.Kind != "codex" && record.Kind != "claude" {
+		return
+	}
+	observation, err := s.agentStatus.Observe(ctx, record.Kind, record.ID, func(ctx context.Context) ([]byte, error) {
+		return s.terminal.History(ctx, record.ZmxName)
+	}, processEvidence(record, marker, reason))
+	if err != nil {
+		snapshot.AgentStatusError = err.Error()
+		return
+	}
+	snapshot.AgentStatus = &observation
 }

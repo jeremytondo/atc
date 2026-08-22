@@ -1,7 +1,12 @@
-# zmx supervision experiment (ATC-230)
+# zmx terminal-agent experiment (ATC-230 / ATC-231)
 
 This is an isolated Go prototype for testing zmx as the durable owner of ATC
 terminal-backed sessions. It does not import or modify the current app server.
+
+ATC-231 extends the same harness with an isolated `internal/agentstatus/`
+layer. Claude sessions receive launch-time lifecycle hooks, while Claude and
+Codex both have declarative terminal-screen fallbacks. The supervisor consumes
+only normalized agent status and evidence.
 
 The zmx-specific implementation is confined to `internal/terminal/`. The
 supervisor above it deals only in terminal sessions, persisted metadata, exit
@@ -47,6 +52,7 @@ create NAME codex [ARGS]
 create NAME claude [ARGS]
 list
 status NAME
+transitions NAME
 send NAME TEXT
 send-raw NAME ESCAPED
 history NAME [LINES]
@@ -60,8 +66,10 @@ quit
 `attach` hands the current TTY to zmx. Press Ctrl-\ to detach and return to the
 REPL without ending the session. `send` appends a carriage return; `send-raw`
 accepts Go-style escapes such as `\x03`. `history` reads scrollback without
-attaching. All commands also work as one-shot invocations, which makes restart
-tests straightforward:
+attaching. `status` includes the currently authoritative normalized agent
+observation, and `transitions` prints its persisted evidence timeline. All
+commands also work as one-shot invocations, which makes restart tests
+straightforward:
 
 ```sh
 ./bin/atc-zmx --state-dir /tmp/atc-zmx-demo create demo shell
@@ -98,3 +106,23 @@ session, so a deliberate termination remains distinguishable even if the
 child cannot finish its exit marker.
 
 See [findings.md](findings.md) for the exercised matrix and conclusions.
+
+## Agent status model
+
+For running Claude and Codex workloads, the status layer selects exactly one
+source in this order:
+
+1. A recognized structured lifecycle signal. The prototype wires real Claude
+   hooks into the private state directory; Codex has no structured adapter in
+   this experiment.
+2. The most recent matching declarative rule in zmx's terminal screen.
+3. Process evidence, which reports `unknown` while the child is running.
+
+Once the child exits, its exit marker overrides stale provider or screen
+evidence and produces `completed` or `failed`. Missing, stale, and disconnected
+sessions are `unavailable`. Every observed normalized transition records its
+source, rule, detail, timestamp, and raw evidence under
+`<state-dir>/agent-status/<session-id>/`.
+
+See [status-findings.md](status-findings.md) for the ATC-231 scenarios,
+limitations, and recommendation.

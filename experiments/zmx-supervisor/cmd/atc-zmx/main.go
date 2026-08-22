@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/elevenideas/atc/experiments/zmx-supervisor/internal/agentstatus"
 	"github.com/elevenideas/atc/experiments/zmx-supervisor/internal/supervisor"
 	"github.com/elevenideas/atc/experiments/zmx-supervisor/internal/terminal"
 )
@@ -29,10 +30,31 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "__child" {
 		os.Exit(runChild(os.Args[2:]))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "__agent_status_hook" {
+		os.Exit(runAgentStatusHook(os.Args[2:]))
+	}
 	if err := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+func runAgentStatusHook(args []string) int {
+	flags := flag.NewFlagSet("__agent_status_hook", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	var stateDir, sessionID, provider string
+	flags.StringVar(&stateDir, "state-dir", "", "state directory")
+	flags.StringVar(&sessionID, "id", "", "session id")
+	flags.StringVar(&provider, "provider", "", "provider")
+	if err := flags.Parse(args); err != nil || stateDir == "" || sessionID == "" || provider == "" {
+		fmt.Fprintln(os.Stderr, "invalid agent status hook arguments")
+		return 2
+	}
+	if err := agentstatus.RecordHook(stateDir, sessionID, provider, os.Stdin); err != nil {
+		fmt.Fprintln(os.Stderr, "record agent status hook:", err)
+		return 1
+	}
+	return 0
 }
 
 func runChild(args []string) int {
@@ -171,6 +193,15 @@ func execute(ctx context.Context, parts []string, cwd string, stdin *os.File, st
 			}
 		}
 		return false, fmt.Errorf("unknown session %q", parts[1])
+	case "transitions":
+		if len(parts) != 2 {
+			return false, errors.New("usage: transitions NAME")
+		}
+		transitions, err := host.AgentTransitions(parts[1])
+		if err == nil {
+			printJSON(stdout, transitions)
+		}
+		return false, err
 	case "create":
 		if len(parts) < 3 {
 			return false, errors.New("usage: create NAME shell|process|codex|claude [COMMAND ARGS...]")
@@ -276,6 +307,7 @@ func printHelp(output io.Writer) {
   create NAME claude [ARGS]            create a real Claude TUI
   list | recover                       reconcile persisted and zmx state
   status NAME                          inspect one normalized session
+  transitions NAME                     inspect normalized agent-status evidence
   send NAME TEXT                       send text followed by carriage return
   send-raw NAME ESCAPED                send bytes such as \x03 without a return
   history NAME [LINES]                 receive recent terminal output

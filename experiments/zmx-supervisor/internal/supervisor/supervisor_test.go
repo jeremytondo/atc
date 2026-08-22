@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/elevenideas/atc/experiments/zmx-supervisor/internal/agentstatus"
 	"github.com/elevenideas/atc/experiments/zmx-supervisor/internal/terminal"
 )
 
@@ -18,6 +19,7 @@ type fakeTerminal struct {
 	listErr  error
 	killed   []string
 	lastSend []byte
+	history  []byte
 }
 
 func newFakeTerminal() *fakeTerminal {
@@ -49,7 +51,64 @@ func (f *fakeTerminal) Send(_ context.Context, _ string, input []byte) error {
 }
 
 func (f *fakeTerminal) History(context.Context, string) ([]byte, error) {
-	return []byte("terminal history"), nil
+	return append([]byte(nil), f.history...), nil
+}
+
+func TestAgentStatusUsesScreenThenProcessEvidence(t *testing.T) {
+	ctx := context.Background()
+	clock := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	adapter := newFakeTerminal()
+	adapter.history = []byte("Codex\n›")
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := newTestSupervisor(t, adapter, store, &clock)
+	running, err := host.Create(ctx, CreateRequest{Name: "agent", Kind: "codex", CWD: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if running.AgentStatus == nil || running.AgentStatus.State != agentstatus.StateIdle ||
+		running.AgentStatus.Evidence.Source != agentstatus.SourceScreen {
+		t.Fatalf("running agent status = %#v", running.AgentStatus)
+	}
+
+	delete(adapter.sessions, running.ZmxName)
+	exitCode := 4
+	exitedAt := clock.Add(time.Second)
+	if err := WriteExitMarker(store.ExitPath(running.ID), ExitMarker{
+		SessionID: running.ID, StartedAt: clock, ExitedAt: &exitedAt, ExitCode: &exitCode,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	failed := snapshot(t, host, "agent")
+	if failed.AgentStatus == nil || failed.AgentStatus.State != agentstatus.StateFailed ||
+		failed.AgentStatus.Evidence.Source != agentstatus.SourceProcess {
+		t.Fatalf("failed agent status = %#v", failed.AgentStatus)
+	}
+}
+
+func TestAgentStatusReportsUnavailableWithIncompleteInventory(t *testing.T) {
+	ctx := context.Background()
+	clock := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
+	adapter := newFakeTerminal()
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := newTestSupervisor(t, adapter, store, &clock)
+	if _, err := host.Create(ctx, CreateRequest{Name: "agent", Kind: "claude", CWD: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	adapter.listErr = errors.New("zmx unavailable")
+	snapshots, err := host.Reconcile(ctx)
+	if err == nil {
+		t.Fatal("reconcile succeeded with an incomplete inventory")
+	}
+	if len(snapshots) != 1 || snapshots[0].AgentStatus == nil ||
+		snapshots[0].AgentStatus.State != agentstatus.StateUnavailable {
+		t.Fatalf("disconnected snapshots = %#v", snapshots)
+	}
 }
 
 func (f *fakeTerminal) Attach(context.Context, string, *os.File, *os.File, io.Writer) error {
@@ -188,7 +247,7 @@ func TestStopRecordsIntentBeforeKilling(t *testing.T) {
 	}
 	host := newTestSupervisor(t, adapter, store, &clock)
 	running, err := host.Create(ctx, CreateRequest{
-		Name: "job", Kind: "process", Command: []string{"sleep", "10"}, CWD: t.TempDir(),
+		Name: "job", Kind: "claude", CWD: t.TempDir(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -209,6 +268,18 @@ func TestStopRecordsIntentBeforeKilling(t *testing.T) {
 	}
 	if len(loaded) != 1 || loaded[0].StopRequestedAt == nil {
 		t.Fatalf("persisted records = %#v", loaded)
+	}
+	exitCode := 129
+	exitedAt := clock.Add(time.Second)
+	if err := WriteExitMarker(store.ExitPath(running.ID), ExitMarker{
+		SessionID: running.ID, StartedAt: clock, ExitedAt: &exitedAt, ExitCode: &exitCode,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stopped = snapshot(t, host, "job")
+	if stopped.Reason != "terminated deliberately" || stopped.AgentStatus == nil ||
+		stopped.AgentStatus.State != agentstatus.StateCompleted {
+		t.Fatalf("stopped snapshot with marker = %#v", stopped)
 	}
 }
 
