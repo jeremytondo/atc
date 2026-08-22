@@ -33,11 +33,12 @@ cd experiments/unified-core
 make play
 ```
 
-On the first run, the launcher opens the Codex and Claude login flows. Those
-credentials, core data, zmx sessions, and logs stay isolated under `.state/`;
-later runs go straight to the TUI. The launcher builds the binary, starts the
-private Codex app-server and unified core, waits for both, opens `play`, and
-stops only the two background processes it created when `play` exits.
+On the first run, the launcher uses Codex's headless-friendly device login and
+then starts the Claude login flow. Those credentials, core data, zmx sessions,
+and logs stay isolated under `.state/`; later runs go straight to the TUI. The
+launcher builds the binary, starts the private Codex app-server and unified
+core, waits for both, opens `play`, and stops only the two background processes
+it created when `play` exits.
 
 The footer shows the available keys. The client retains its last snapshot while
 the core is unavailable, then reconnects and catches up. Logs are under

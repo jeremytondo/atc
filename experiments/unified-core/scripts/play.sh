@@ -71,8 +71,8 @@ login_if_needed() {
 		if [[ -n "${OPENAI_API_KEY:-}" ]]; then
 			printf '%s' "${OPENAI_API_KEY}" | codex login --with-api-key
 		else
-			printf '\nCodex needs a one-time login for this isolated prototype profile.\n\n'
-			codex login
+			printf '\nCodex needs a one-time device login for this isolated prototype profile.\n\n'
+			codex login --device-auth
 		fi
 	fi
 	if [[ -z "${ANTHROPIC_API_KEY:-}" ]] && ! claude auth status >/dev/null 2>&1; then
