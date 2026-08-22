@@ -29,11 +29,12 @@ struct MarkdownBlocksView: View {
     let blocks: [MarkdownBlock]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
+        VStack(alignment: .leading, spacing: Spacing.md) {
             ForEach(blocks) { block in
                 MarkdownBlockView(block: block)
             }
         }
+        .font(Prose.font)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -45,11 +46,12 @@ private struct MarkdownBlockView: View {
         switch block {
         case .paragraph(_, let text):
             Text(text)
+                .lineSpacing(Prose.lineSpacing)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .heading(_, let level, let text):
             Text(text)
-                .font(headingFont(level))
+                .font(Prose.heading(level))
                 .foregroundStyle(.primary)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -66,7 +68,7 @@ private struct MarkdownBlockView: View {
                         .frame(width: 3)
                 }
         case .list(_, let items):
-            VStack(alignment: .leading, spacing: Spacing.xs) {
+            VStack(alignment: .leading, spacing: Spacing.sm) {
                 ForEach(items) { item in
                     HStack(alignment: .firstTextBaseline, spacing: Spacing.sm) {
                         Text(item.marker)
@@ -84,14 +86,6 @@ private struct MarkdownBlockView: View {
         }
     }
 
-    private func headingFont(_ level: Int) -> Font {
-        switch level {
-        case 1: .title2.weight(.semibold)
-        case 2: .title3.weight(.semibold)
-        case 3: .headline
-        default: .subheadline.weight(.semibold)
-        }
-    }
 }
 
 /// A fenced code block: language label and copy button above monospaced,
