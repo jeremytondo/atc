@@ -8,11 +8,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -136,24 +138,63 @@ func serve(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := service.RecoverChatSessions(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "chat recovery:", err)
-	}
-	_, _ = service.ReconcileTerminals(ctx)
 	server := &http.Server{Addr: *listen, Handler: httpapi.New(service, *debug), ReadHeaderTimeout: 5 * time.Second}
+	listener, err := net.Listen("tcp", *listen)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "ATC unified-core listening on http://%s\n", *listen)
+	return serveHTTP(ctx, listener, server, func(recoveryContext context.Context) {
+		var recovery sync.WaitGroup
+		recovery.Add(2)
+		go func() {
+			defer recovery.Done()
+			if err := service.RecoverChatSessions(recoveryContext); err != nil {
+				fmt.Fprintln(os.Stderr, "chat recovery:", err)
+			}
+		}()
+		go func() {
+			defer recovery.Done()
+			_, _ = service.ReconcileTerminals(recoveryContext)
+		}()
+		recovery.Wait()
+	}, service.Close)
+}
+
+// serveHTTP makes the listener available before provider recovery begins.
+// Persisted ACP sessions are external resources and may take tens of seconds
+// to reload; they must never prevent the local control plane from starting.
+func serveHTTP(
+	ctx context.Context,
+	listener net.Listener,
+	server *http.Server,
+	initialize func(context.Context),
+	closeService func(context.Context) error,
+) error {
+	initializationDone := make(chan struct{})
 	go func() {
+		defer close(initializationDone)
+		initialize(ctx)
+	}()
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = service.Close(shutdown)
 		_ = server.Shutdown(shutdown)
+		select {
+		case <-initializationDone:
+		case <-shutdown.Done():
+		}
+		_ = closeService(shutdown)
 	}()
-	fmt.Fprintf(os.Stderr, "ATC unified-core listening on http://%s\n", *listen)
-	err = server.ListenAndServe()
-	if errors.Is(err, http.ErrServerClosed) {
-		return nil
+	err := server.Serve(listener)
+	if !errors.Is(err, http.ErrServerClosed) {
+		return err
 	}
-	return err
+	<-shutdownDone
+	return nil
 }
 
 func callAPI(args []string, input io.Reader, output io.Writer) error {
