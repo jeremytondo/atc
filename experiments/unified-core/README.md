@@ -49,9 +49,22 @@ make build
 ```
 
 The server binds to `127.0.0.1:7332` by default. Thread creation additionally
-rejects non-loopback callers. The CLI is deliberately thin: `api` sends an
-arbitrary canonical request and `repl` offers the same operation interactively.
-For example:
+rejects non-loopback callers. `play` is the human client; it lists lifecycle
+state, creates Threads, drives chats and pending requests, and temporarily
+hands the terminal to a TUI attach before restoring its own screen:
+
+```sh
+./bin/atc-unified play
+```
+
+The footer shows the available keys. `--base` points it at another core. The
+client polls canonical cursor events and retains its last snapshot while the
+core is unavailable, so it reconnects and catches up after restart. See
+`play-findings.md` for the reviewed behavior and remaining live matrix.
+
+The lower-level CLI remains deliberately thin: `api` sends an arbitrary
+canonical request and `repl` offers the same operation interactively. For
+example:
 
 ```sh
 ./bin/atc-unified api POST /v1/threads \

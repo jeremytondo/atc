@@ -23,6 +23,7 @@ import (
 	"github.com/elevenideas/atc/experiments/unified-core/internal/core"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/domain"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/httpapi"
+	"github.com/elevenideas/atc/experiments/unified-core/internal/play"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/provider"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/status"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/store"
@@ -37,11 +38,13 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: atc-unified serve|api|repl|attach")
+		return errors.New("usage: atc-unified serve|play|api|repl|attach")
 	}
 	switch args[0] {
 	case "serve":
 		return serve(args[1:])
+	case "play":
+		return playTUI(args[1:])
 	case "api":
 		return callAPI(args[1:], os.Stdin, os.Stdout)
 	case "repl":
@@ -55,6 +58,20 @@ func run(args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func playTUI(args []string) error {
+	flags := flag.NewFlagSet("play", flag.ContinueOnError)
+	base := flags.String("base", "http://127.0.0.1:7332", "server base URL")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("usage: atc-unified play [--base URL]")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return play.Run(ctx, play.Config{BaseURL: *base})
 }
 
 func serve(args []string) error {
