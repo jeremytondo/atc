@@ -19,7 +19,6 @@ import (
 	"github.com/elevenideas/atc/experiments/unified-core/internal/domain"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/ports"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/store"
-	"github.com/elevenideas/atc/experiments/unified-core/internal/terminalname"
 )
 
 type Config struct {
@@ -429,11 +428,12 @@ func (s *Service) OpenTerminal(ctx context.Context, threadID string, _ OpenTermi
 		return domain.Terminal{}, wrongKind(threadID, domain.ThreadTUI, record.Thread.Kind)
 	}
 	terminalRecord := s.terminalForThreadLocked(threadID)
-	if terminalRecord != nil && terminalRecord.Terminal.Lifecycle == domain.TerminalLive && terminalRecord.Terminal.Reachable {
+	if terminalRecord != nil && terminalRecord.LegacyName == "" && terminalRecord.Terminal.Lifecycle == domain.TerminalLive && terminalRecord.Terminal.Reachable {
 		result := terminalRecord.Terminal
 		s.mu.Unlock()
 		return result, nil
 	}
+	legacyName := ""
 	if terminalRecord == nil {
 		id, err := randomID("term")
 		if err != nil {
@@ -444,16 +444,12 @@ func (s *Service) OpenTerminal(ctx context.Context, threadID string, _ OpenTermi
 		terminal := domain.Terminal{ID: id, ThreadID: threadID, Lifecycle: domain.TerminalLive, CreatedAt: now}
 		exitPath := filepath.Join(s.stateDir, "exits", id+".json")
 		s.state.Terminals = append(s.state.Terminals, store.TerminalRecord{
-			Terminal: terminal, PrivateName: terminalname.FromID(id),
-			State: store.TerminalMissing, ExitPath: exitPath,
+			Terminal: terminal, State: store.TerminalMissing, ExitPath: exitPath,
 		})
 		record.Thread.TerminalID = id
 		terminalRecord = &s.state.Terminals[len(s.state.Terminals)-1]
 	} else {
-		// The original prototype name exceeded zmx's socket-path-dependent limit.
-		// Any reachable legacy session returned above; failed persisted attempts
-		// are safe to retry under the compact deterministic name.
-		terminalRecord.PrivateName = terminalname.FromID(terminalRecord.Terminal.ID)
+		legacyName = terminalRecord.LegacyName
 		terminalRecord.Terminal.Lifecycle = domain.TerminalLive
 		terminalRecord.Terminal.EndedAt = nil
 		terminalRecord.Terminal.Reason = ""
@@ -462,7 +458,7 @@ func (s *Service) OpenTerminal(ctx context.Context, threadID string, _ OpenTermi
 		terminalRecord.StopRequestedAt = nil
 	}
 	open := ports.TerminalOpen{
-		TerminalID: terminalRecord.Terminal.ID, SessionName: terminalRecord.PrivateName, Agent: record.Thread.Agent,
+		TerminalID: terminalRecord.Terminal.ID, Agent: record.Thread.Agent,
 		CWD: record.Thread.CWD, ExitPath: terminalRecord.ExitPath,
 	}
 	public := terminalRecord.Terminal
@@ -473,6 +469,22 @@ func (s *Service) OpenTerminal(ctx context.Context, threadID string, _ OpenTermi
 	}
 	s.mu.Unlock()
 
+	if legacyName != "" && legacyName != open.TerminalID {
+		if err := s.terminal.Terminate(ctx, legacyName); err != nil {
+			return domain.Terminal{}, err
+		}
+	}
+	if legacyName != "" {
+		s.mu.Lock()
+		if record := s.terminalLocked(open.TerminalID); record != nil && record.LegacyName == legacyName {
+			record.LegacyName = ""
+		}
+		if err := s.saveLocked(); err != nil {
+			s.mu.Unlock()
+			return domain.Terminal{}, err
+		}
+		s.mu.Unlock()
+	}
 	if err := s.terminal.Open(ctx, open); err != nil {
 		return domain.Terminal{}, err
 	}
@@ -502,30 +514,6 @@ func (s *Service) Terminal(id string) (domain.Terminal, error) {
 	return record.Terminal, nil
 }
 
-func (s *Service) SendTerminal(ctx context.Context, id string, input []byte) error {
-	private, err := s.liveTerminalName(id)
-	if err != nil {
-		return err
-	}
-	return s.terminal.Send(ctx, private, input)
-}
-
-func (s *Service) TerminalOutput(ctx context.Context, id string) ([]byte, error) {
-	private, err := s.liveTerminalName(id)
-	if err != nil {
-		return nil, err
-	}
-	return s.terminal.Output(ctx, private)
-}
-
-func (s *Service) AttachTerminal(ctx context.Context, id string, input interface{ Read([]byte) (int, error) }, output interface{ Write([]byte) (int, error) }) error {
-	private, err := s.liveTerminalName(id)
-	if err != nil {
-		return err
-	}
-	return s.terminal.Attach(ctx, private, input, output)
-}
-
 func (s *Service) TerminateTerminal(ctx context.Context, id string) error {
 	s.mu.Lock()
 	record := s.terminalLocked(id)
@@ -535,13 +523,13 @@ func (s *Service) TerminateTerminal(ctx context.Context, id string) error {
 	}
 	now := s.now().UTC()
 	record.StopRequestedAt = &now
-	private := record.PrivateName
+	name := record.Terminal.ID
 	if err := s.saveLocked(); err != nil {
 		s.mu.Unlock()
 		return err
 	}
 	s.mu.Unlock()
-	if err := s.terminal.Terminate(ctx, private); err != nil {
+	if err := s.terminal.Terminate(ctx, name); err != nil {
 		return err
 	}
 	_, err := s.ReconcileTerminals(ctx)
@@ -572,7 +560,7 @@ func (s *Service) ReconcileTerminals(ctx context.Context) ([]domain.Terminal, er
 	now := s.now().UTC()
 	for i := range s.state.Terminals {
 		record := &s.state.Terminals[i]
-		entry, present := entries[record.PrivateName]
+		entry, present := entries[record.Terminal.ID]
 		exit, exitErr := readExit(record.ExitPath, record.Terminal.ID)
 		if exitErr != nil {
 			return nil, exitErr
@@ -648,7 +636,7 @@ func (s *Service) CleanupTerminals(ctx context.Context) (CleanupResult, error) {
 	s.mu.Lock()
 	managed := make(map[string]bool, len(s.state.Terminals))
 	for _, record := range s.state.Terminals {
-		managed[record.PrivateName] = true
+		managed[record.Terminal.ID] = true
 	}
 	s.mu.Unlock()
 	result := CleanupResult{TerminatedOrphans: []string{}}
@@ -925,19 +913,6 @@ func (s *Service) terminalForThreadLocked(threadID string) *store.TerminalRecord
 		}
 	}
 	return nil
-}
-
-func (s *Service) liveTerminalName(id string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	record := s.terminalLocked(id)
-	if record == nil {
-		return "", notFound("terminal", id)
-	}
-	if record.Terminal.Lifecycle != domain.TerminalLive || !record.Terminal.Reachable {
-		return "", domain.NewError("terminal_unavailable", "terminal is not live and reachable")
-	}
-	return record.PrivateName, nil
 }
 
 type exitMarker struct {

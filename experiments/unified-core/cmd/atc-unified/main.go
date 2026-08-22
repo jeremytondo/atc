@@ -38,7 +38,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: atc-unified serve|play|api|repl|attach")
+		return errors.New("usage: atc-unified serve|play|api|repl")
 	}
 	switch args[0] {
 	case "serve":
@@ -49,8 +49,6 @@ func run(args []string) error {
 		return callAPI(args[1:], os.Stdin, os.Stdout)
 	case "repl":
 		return repl(args[1:])
-	case "attach":
-		return attach(args[1:])
 	case "__child":
 		return runChild(args[1:])
 	case "__codex_tui":
@@ -207,32 +205,6 @@ func repl(args []string) error {
 			fmt.Fprintln(os.Stderr, "error:", err)
 		}
 	}
-}
-
-func attach(args []string) error {
-	flags := flag.NewFlagSet("attach", flag.ContinueOnError)
-	base := flags.String("base", "http://127.0.0.1:7332", "server base URL")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	if flags.NArg() != 1 {
-		return errors.New("usage: atc-unified attach [--base URL] TERMINAL_ID")
-	}
-	request, err := http.NewRequest(http.MethodPost, strings.TrimRight(*base, "/")+"/v1/terminals/"+flags.Arg(0)+"/attach", os.Stdin)
-	if err != nil {
-		return err
-	}
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode >= 400 {
-		_, _ = io.Copy(os.Stderr, response.Body)
-		return fmt.Errorf("attach failed: %s", response.Status)
-	}
-	_, err = io.Copy(os.Stdout, response.Body)
-	return err
 }
 
 func runChild(args []string) error {

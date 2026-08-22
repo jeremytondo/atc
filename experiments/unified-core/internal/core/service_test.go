@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"errors"
-	"io"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -88,8 +87,6 @@ type fakeTerminal struct {
 	listErr error
 	opened  []ports.TerminalOpen
 	killed  []string
-	input   []byte
-	output  []byte
 }
 
 func newFakeTerminal() *fakeTerminal {
@@ -100,7 +97,7 @@ func (f *fakeTerminal) Open(_ context.Context, open ports.TerminalOpen) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.opened = append(f.opened, open)
-	f.entries[open.SessionName] = ports.TerminalEntry{Name: open.SessionName, Reachable: true, DaemonPID: 100 + len(f.opened)}
+	f.entries[open.TerminalID] = ports.TerminalEntry{Name: open.TerminalID, Reachable: true, DaemonPID: 100 + len(f.opened)}
 	return nil
 }
 
@@ -115,20 +112,6 @@ func (f *fakeTerminal) Inventory(context.Context) ([]ports.TerminalEntry, error)
 		result = append(result, entry)
 	}
 	return result, nil
-}
-
-func (f *fakeTerminal) Send(_ context.Context, _ string, input []byte) error {
-	f.input = append([]byte(nil), input...)
-	return nil
-}
-
-func (f *fakeTerminal) Output(context.Context, string) ([]byte, error) {
-	return append([]byte(nil), f.output...), nil
-}
-
-func (f *fakeTerminal) Attach(_ context.Context, _ string, input io.Reader, output io.Writer) error {
-	_, _ = io.Copy(output, input)
-	return nil
 }
 
 func (f *fakeTerminal) Terminate(_ context.Context, name string) error {
@@ -299,21 +282,19 @@ func TestTerminalEvidenceMatrixAndScopedCleanup(t *testing.T) {
 	if !opened.Reachable || opened.Lifecycle != domain.TerminalLive {
 		t.Fatalf("opened terminal = %#v", opened)
 	}
-	private := terminal.opened[0].SessionName
-	if len(private) > 31 || !strings.HasPrefix(private, "atcu-") {
-		t.Fatalf("private terminal name = %q", private)
+	name := terminal.opened[0].TerminalID
+	if name != opened.ID || len(name) > 31 || !strings.HasPrefix(name, "term_") {
+		t.Fatalf("zmx terminal name = %q", name)
 	}
 
-	entry := terminal.entries[private]
+	entry := terminal.entries[name]
 	entry.Reachable = false
-	terminal.entries[private] = entry
+	terminal.entries[name] = entry
 	disconnected := reconcileOne(t, service)
 	if disconnected.Lifecycle != domain.TerminalLive || disconnected.Reachable {
 		t.Fatalf("unreachable terminal = %#v", disconnected)
 	}
-	entry.Reachable = true
-	terminal.entries[private] = entry
-	delete(terminal.entries, private)
+	delete(terminal.entries, name)
 	missing := reconcileOne(t, service)
 	if missing.Lifecycle != domain.TerminalLive || missing.Reason == "" {
 		t.Fatalf("missing terminal = %#v", missing)
@@ -336,16 +317,16 @@ func TestTerminalEvidenceMatrixAndScopedCleanup(t *testing.T) {
 	}
 
 	terminal.listErr = nil
-	terminal.entries["atcu-orphan-live"] = ports.TerminalEntry{Name: "atcu-orphan-live", Reachable: true}
-	terminal.entries["atcu-orphan-down"] = ports.TerminalEntry{Name: "atcu-orphan-down", Reachable: false}
+	terminal.entries["term_orphan_live"] = ports.TerminalEntry{Name: "term_orphan_live", Reachable: true}
+	terminal.entries["term_orphan_down"] = ports.TerminalEntry{Name: "term_orphan_down", Reachable: false}
 	cleanup, err := service.CleanupTerminals(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(cleanup.TerminatedOrphans, []string{"atcu-orphan-live"}) {
+	if !slices.Equal(cleanup.TerminatedOrphans, []string{"term_orphan_live"}) {
 		t.Fatalf("cleanup = %#v", cleanup)
 	}
-	if _, ok := terminal.entries["atcu-orphan-down"]; !ok {
+	if _, ok := terminal.entries["term_orphan_down"]; !ok {
 		t.Fatal("cleanup removed unreachable orphan")
 	}
 
@@ -362,7 +343,7 @@ func TestTerminalEvidenceMatrixAndScopedCleanup(t *testing.T) {
 	}
 }
 
-func TestOpenTerminalRepairsPersistedOversizedSessionName(t *testing.T) {
+func TestOpenTerminalMigratesPersistedPrivateNameToPublicID(t *testing.T) {
 	ctx := context.Background()
 	repository := store.NewMemory()
 	firstTerminal := newFakeTerminal()
@@ -374,7 +355,7 @@ func TestOpenTerminalRepairsPersistedOversizedSessionName(t *testing.T) {
 	}
 
 	legacyName := "atc-unified-" + opened.ID
-	repository.State.Terminals[0].PrivateName = legacyName
+	repository.State.Terminals[0].LegacyName = legacyName
 	repository.State.Terminals[0].Terminal.Reachable = false
 	repository.State.Terminals[0].State = store.TerminalMissing
 
@@ -387,8 +368,11 @@ func TestOpenTerminalRepairsPersistedOversizedSessionName(t *testing.T) {
 		t.Fatalf("opens = %#v", retryTerminal.opened)
 	}
 	retried := retryTerminal.opened[0]
-	if retried.TerminalID != opened.ID || retried.SessionName == legacyName || len(retried.SessionName) > 31 {
+	if retried.TerminalID != opened.ID || len(retried.TerminalID) > 31 {
 		t.Fatalf("retried terminal = %#v", retried)
+	}
+	if !slices.Contains(retryTerminal.killed, legacyName) {
+		t.Fatalf("legacy session was not removed: %#v", retryTerminal.killed)
 	}
 }
 

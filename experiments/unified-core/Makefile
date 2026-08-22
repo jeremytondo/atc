@@ -1,4 +1,4 @@
-.PHONY: build play test check smoke-zmx smoke-acp
+.PHONY: build play attach test check smoke-zmx smoke-acp
 
 build:
 	mkdir -p bin
@@ -6,6 +6,11 @@ build:
 
 play:
 	bash scripts/play.sh
+
+attach:
+	@test -n "$(TERMINAL)" || { echo "usage: make attach TERMINAL=term_..." >&2; exit 2; }
+	@runtime_dir="$${ATC_UNIFIED_RUNTIME_DIR:-$(CURDIR)/.state}"; \
+		ZMX_DIR="$$runtime_dir/core/zmx" ZMX_LOG_DIR="$$runtime_dir/core/logs" zmx attach "$(TERMINAL)"
 
 test:
 	go test ./...

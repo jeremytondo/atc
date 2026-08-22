@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -25,11 +24,10 @@ const (
 )
 
 type Config struct {
-	BaseURL    string
-	Executable string
-	Client     *Client
-	Input      *os.File
-	Output     *os.File
+	BaseURL string
+	Client  *Client
+	Input   *os.File
+	Output  *os.File
 }
 
 func Run(ctx context.Context, config Config) error {
@@ -45,15 +43,7 @@ func Run(ctx context.Context, config Config) error {
 			return err
 		}
 	}
-	executable := config.Executable
-	if executable == "" {
-		var err error
-		executable, err = os.Executable()
-		if err != nil {
-			return err
-		}
-	}
-	model := newModel(ctx, client, base, executable)
+	model := newModel(ctx, client, base)
 	options := []tea.ProgramOption{tea.WithContext(ctx), tea.WithAltScreen()}
 	if config.Input != nil {
 		options = append(options, tea.WithInput(config.Input))
@@ -75,12 +65,11 @@ const (
 )
 
 type model struct {
-	ctx        context.Context
-	client     *Client
-	baseURL    string
-	executable string
-	width      int
-	height     int
+	ctx     context.Context
+	client  *Client
+	baseURL string
+	width   int
+	height  int
 
 	threads    []Thread
 	terminals  map[string]Terminal
@@ -134,11 +123,7 @@ type terminalOpenedMsg struct {
 	err      error
 }
 
-type attachDoneMsg struct {
-	err error
-}
-
-func newModel(ctx context.Context, client *Client, baseURL, executable string) model {
+func newModel(ctx context.Context, client *Client, baseURL string) model {
 	cwd, err := os.Getwd()
 	if err != nil {
 		cwd = "."
@@ -160,7 +145,7 @@ func newModel(ctx context.Context, client *Client, baseURL, executable string) m
 	answerInput.CharLimit = 4096
 
 	return model{
-		ctx: ctx, client: client, baseURL: baseURL, executable: executable,
+		ctx: ctx, client: client, baseURL: baseURL,
 		terminals: make(map[string]Terminal), createKind: "chat", createAgent: "claude",
 		cwdInput: cwdInput, promptInput: promptInput, answerInput: answerInput,
 	}
@@ -236,14 +221,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "error: " + message.err.Error()
 			return m, m.syncCmd()
 		}
-		m.status = "terminal attach active; detach to return"
-		return m, m.attachCmd(message.terminal.ID)
-	case attachDoneMsg:
-		if message.err != nil {
-			m.status = "attach ended: " + message.err.Error()
-		} else {
-			m.status = "returned from terminal"
-		}
+		m.status = "zmx session ready; in another terminal: make attach TERMINAL=" + message.terminal.ID
 		return m, m.syncCmd()
 	}
 
@@ -499,7 +477,7 @@ func (m model) browseView() string {
 	if status == "" && m.lastError != "" {
 		status = "server unavailable: " + m.lastError
 	}
-	footer := mutedStyle.Render("↑/↓ select  n new  p prompt  a answer  i interrupt  enter/o terminal  r refresh  q quit")
+	footer := mutedStyle.Render("↑/↓ select  n new  p ACP prompt  a answer  i interrupt  enter/o create zmx session  r refresh  q quit")
 	if status != "" {
 		footer = truncate(status, width) + "\n" + footer
 	}
@@ -523,7 +501,7 @@ func (m model) threadList(width, height int) string {
 			marker = accentStyle.Render("› ")
 			style = selectedStyle
 		}
-		identity := fmt.Sprintf("%s%s/%s  %s", marker, thread.Kind, thread.Agent, shortID(thread.ID))
+		identity := fmt.Sprintf("%s%s/%s  %s", marker, kindLabel(thread.Kind), thread.Agent, shortID(thread.ID))
 		lifecycle := threadLifecycle(thread, m.terminals[thread.ID])
 		cwd := filepath.Base(thread.CWD)
 		lines = append(lines, style.Render(truncate(identity, width-2)), "  "+truncate(lifecycle, width-4), mutedStyle.Render("  "+truncate(cwd, width-4)))
@@ -538,7 +516,7 @@ func (m model) threadDetail(width, height int) string {
 	}
 	terminal := m.terminals[thread.ID]
 	lines := []string{
-		sectionStyle.Render(thread.Agent + " " + thread.Kind + " • " + shortID(thread.ID)),
+		sectionStyle.Render(thread.Agent + " " + kindLabel(thread.Kind) + " • " + shortID(thread.ID)),
 		truncate(thread.CWD, width-2),
 		threadLifecycle(*thread, terminal),
 	}
@@ -553,6 +531,9 @@ func (m model) threadDetail(width, height int) string {
 			detail += " • " + terminal.Reason
 		}
 		lines = append(lines, truncate(detail, width-2))
+		if terminal.Reachable {
+			lines = append(lines, truncate("attach elsewhere: make attach TERMINAL="+terminal.ID, width-2))
+		}
 	}
 	if thread.LastTurn != nil {
 		last := "last turn • " + thread.LastTurn.Outcome
@@ -580,7 +561,7 @@ func (m model) threadDetail(width, height int) string {
 
 func (m model) createView() string {
 	fields := []string{
-		choiceLine("Kind", m.createKind, m.createFocus == 0),
+		choiceLine("Experiment", kindLabel(m.createKind), m.createFocus == 0),
 		choiceLine("Agent", m.createAgent, m.createFocus == 1),
 		fieldLabel("Working directory", m.createFocus == 2) + "\n" + inputStyle.Render(m.cwdInput.View()),
 	}
@@ -715,16 +696,6 @@ func (m model) openTerminalCmd(threadID string) tea.Cmd {
 		terminal, err := m.client.OpenTerminal(m.ctx, threadID)
 		return terminalOpenedMsg{terminal: terminal, err: err}
 	}
-}
-
-func (m model) attachCmd(terminalID string) tea.Cmd {
-	command := exec.Command(m.executable, "attach", "--base", m.baseURL, terminalID)
-	return tea.ExecProcess(command, func(err error) tea.Msg {
-		if errors.Is(err, context.Canceled) {
-			err = nil
-		}
-		return attachDoneMsg{err: err}
-	})
 }
 
 func schedulePoll() tea.Cmd {
@@ -872,6 +843,16 @@ func toggle(value, first, second string) string {
 		return second
 	}
 	return first
+}
+
+func kindLabel(kind string) string {
+	if kind == "chat" {
+		return "ACP"
+	}
+	if kind == "tui" {
+		return "TUI/zmx"
+	}
+	return kind
 }
 
 func shortID(id string) string {

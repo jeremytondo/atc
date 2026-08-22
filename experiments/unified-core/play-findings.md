@@ -5,9 +5,10 @@ smoke passing; live provider rerun requires authenticated private profiles
 
 Observed on 2026-08-22. The client is a separate `internal/play` package with
 its own canonical HTTP DTOs. A package-boundary test rejects imports from the
-core, adapters, ports, domain, store, provider, or status packages. Every
-operation goes through `/v1` routes; terminal attach suspends Bubble Tea and
-runs the existing HTTP-backed `attach` command, then restores the play screen.
+core, adapters, ports, domain, store, provider, or status packages. Canonical
+control and observation go through `/v1` routes. Terminal I/O does not: the UI
+creates the zmx session, displays its public Terminal ID, and leaves attachment
+to direct `zmx attach` in another terminal.
 
 ## What the prototype makes legible
 
@@ -58,9 +59,9 @@ through `play`.
   faithfully shows those events, but a production conversation view will want
   a canonical message projection rather than client-side provider-neutral
   delta assembly.
-- Terminal attach has no canonical resize operation. Suspending into the
-  existing byte-stream attach is correct for this prototype, but production
-  attach needs explicit size propagation, as already noted in ATC-232.
+- The HTTP byte-stream attach experiment produced broken raw-mode and resize
+  behavior. It was removed: this prototype now tests only zmx creation and
+  status tracking, while a real terminal attaches directly through zmx.
 - Local-only Thread creation means a remotely connected play client can
   observe and control existing resources but receives the canonical
   `local_only` error when creating one. That trust boundary needs an explicit

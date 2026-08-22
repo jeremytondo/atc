@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -36,7 +35,7 @@ type apiTerminal struct {
 }
 
 func (a *apiTerminal) Open(_ context.Context, open ports.TerminalOpen) error {
-	a.entries[open.SessionName] = ports.TerminalEntry{Name: open.SessionName, Reachable: true, DaemonPID: 42}
+	a.entries[open.TerminalID] = ports.TerminalEntry{Name: open.TerminalID, Reachable: true, DaemonPID: 42}
 	return nil
 }
 func (a *apiTerminal) Inventory(context.Context) ([]ports.TerminalEntry, error) {
@@ -45,12 +44,6 @@ func (a *apiTerminal) Inventory(context.Context) ([]ports.TerminalEntry, error) 
 		result = append(result, entry)
 	}
 	return result, nil
-}
-func (*apiTerminal) Send(context.Context, string, []byte) error     { return nil }
-func (*apiTerminal) Output(context.Context, string) ([]byte, error) { return []byte("screen"), nil }
-func (*apiTerminal) Attach(_ context.Context, _ string, input io.Reader, output io.Writer) error {
-	_, err := io.Copy(output, input)
-	return err
 }
 func (a *apiTerminal) Terminate(_ context.Context, name string) error {
 	delete(a.entries, name)
@@ -118,6 +111,15 @@ func TestWrongKindErrorAndLocalOnlyCreation(t *testing.T) {
 	wrong := request(t, handler, http.MethodPost, "/v1/threads/"+thread.ID+"/prompts", `{"text":"no"}`, "127.0.0.1:1")
 	if wrong.Code != http.StatusConflict || !strings.Contains(wrong.Body.String(), `"code":"wrong_thread_kind"`) {
 		t.Fatalf("wrong kind = %d: %s", wrong.Code, wrong.Body.String())
+	}
+	opened := request(t, handler, http.MethodPost, "/v1/threads/"+thread.ID+"/terminal", `{}`, "127.0.0.1:1")
+	var terminal domain.Terminal
+	if err := json.Unmarshal(opened.Body.Bytes(), &terminal); err != nil {
+		t.Fatal(err)
+	}
+	proxied := request(t, handler, http.MethodPost, "/v1/terminals/"+terminal.ID+"/attach", "", "127.0.0.1:1")
+	if proxied.Code != http.StatusNotFound {
+		t.Fatalf("terminal proxy route still exists: %d", proxied.Code)
 	}
 }
 

@@ -35,9 +35,6 @@ func New(service *core.Service, debug bool) http.Handler {
 	mux.HandleFunc("GET /v1/threads/{thread}/events", api.threadEvents)
 	mux.HandleFunc("GET /v1/terminals", api.listTerminals)
 	mux.HandleFunc("GET /v1/terminals/{terminal}", api.getTerminal)
-	mux.HandleFunc("GET /v1/terminals/{terminal}/output", api.terminalOutput)
-	mux.HandleFunc("POST /v1/terminals/{terminal}/input", api.terminalInput)
-	mux.HandleFunc("POST /v1/terminals/{terminal}/attach", api.attachTerminal)
 	mux.HandleFunc("DELETE /v1/terminals/{terminal}", api.closeTerminal)
 	mux.HandleFunc("GET /v1/events", api.events)
 	mux.HandleFunc("POST /internal/hooks/{provider}/terminal/{terminal}", api.providerHook)
@@ -138,38 +135,6 @@ func (a *API) getTerminal(response http.ResponseWriter, request *http.Request) {
 	}
 	terminal, err := a.core.Terminal(request.PathValue("terminal"))
 	write(response, http.StatusOK, terminal, err)
-}
-
-func (a *API) terminalOutput(response http.ResponseWriter, request *http.Request) {
-	output, err := a.core.TerminalOutput(request.Context(), request.PathValue("terminal"))
-	if err != nil {
-		write(response, http.StatusOK, nil, err)
-		return
-	}
-	response.Header().Set("Content-Type", "application/octet-stream")
-	response.WriteHeader(http.StatusOK)
-	_, _ = response.Write(output)
-}
-
-func (a *API) terminalInput(response http.ResponseWriter, request *http.Request) {
-	input, err := io.ReadAll(io.LimitReader(request.Body, 1<<20))
-	if err == nil {
-		err = a.core.SendTerminal(request.Context(), request.PathValue("terminal"), input)
-	}
-	write(response, http.StatusNoContent, nil, err)
-}
-
-func (a *API) attachTerminal(response http.ResponseWriter, request *http.Request) {
-	controller := http.NewResponseController(response)
-	if err := controller.EnableFullDuplex(); err != nil {
-		write(response, http.StatusInternalServerError, nil, err)
-		return
-	}
-	response.Header().Set("Content-Type", "application/octet-stream")
-	response.WriteHeader(http.StatusOK)
-	if err := a.core.AttachTerminal(request.Context(), request.PathValue("terminal"), request.Body, response); err != nil {
-		return
-	}
 }
 
 func (a *API) closeTerminal(response http.ResponseWriter, request *http.Request) {

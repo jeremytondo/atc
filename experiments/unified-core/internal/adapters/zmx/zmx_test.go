@@ -28,7 +28,7 @@ func TestProviderCommandsPinCheapModels(t *testing.T) {
 	}
 	for _, agent := range []domain.Agent{domain.AgentClaude, domain.AgentCodex} {
 		command, err := adapter.providerCommand(ports.TerminalOpen{
-			TerminalID: "term_test", SessionName: "atcu-test", Agent: agent, CWD: "/tmp",
+			TerminalID: "term_test", Agent: agent, CWD: "/tmp",
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -41,7 +41,7 @@ func TestProviderCommandsPinCheapModels(t *testing.T) {
 }
 
 func TestParseInventoryFiltersPrivateNamespaceAndPreservesUnreachable(t *testing.T) {
-	entries := ParseInventory("name=atcu-live\tpid=42\n" +
+	entries := ParseInventory("name=term_live\tpid=42\n" +
 		"name=user-session\tpid=99\n" +
 		"→ name=atc-unified-down\tpid=43\terr=connection refused\n")
 	if len(entries) != 2 {
@@ -50,12 +50,12 @@ func TestParseInventoryFiltersPrivateNamespaceAndPreservesUnreachable(t *testing
 	if entries[0].Name != "atc-unified-down" || entries[0].Reachable {
 		t.Fatalf("unreachable entry = %#v", entries[0])
 	}
-	if entries[1].Name != "atcu-live" || !entries[1].Reachable || entries[1].DaemonPID != 42 {
+	if entries[1].Name != "term_live" || !entries[1].Reachable || entries[1].DaemonPID != 42 {
 		t.Fatalf("live entry = %#v", entries[1])
 	}
 }
 
-func TestAttachRejectsAutoCreatedReplacementAndVerifiedKill(t *testing.T) {
+func TestTerminateVerifiesKillAndRejectsOutsidePrivateDirectory(t *testing.T) {
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "inventory")
 	scriptPath := filepath.Join(dir, "fake-zmx")
@@ -68,9 +68,6 @@ case "$1" in
       cat "$state"
     fi
     ;;
-  attach)
-    printf 'name=%s\tpid=202\n' "$2" > "$state"
-    ;;
   kill)
     : > "$state"
     ;;
@@ -78,9 +75,6 @@ case "$1" in
 esac
 `
 	if err := os.WriteFile(scriptPath, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(statePath, []byte("name=atcu-terminal\tpid=101\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	adapter, err := New(Config{
@@ -91,22 +85,10 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = adapter.Attach(context.Background(), "atcu-terminal", strings.NewReader(""), &strings.Builder{})
-	if err == nil || !strings.Contains(err.Error(), "refused auto-created replacement") {
-		t.Fatalf("attach error = %v", err)
-	}
-	contents, readErr := os.ReadFile(statePath)
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if len(contents) != 0 {
-		t.Fatalf("phantom replacement survived: %q", contents)
-	}
-
-	if err := os.WriteFile(statePath, []byte("name=atcu-terminal\tpid=303\n"), 0o600); err != nil {
+	if err := os.WriteFile(statePath, []byte("name=term_terminal\tpid=303\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.Terminate(context.Background(), "atcu-terminal"); err != nil {
+	if err := adapter.Terminate(context.Background(), "term_terminal"); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := adapter.Inventory(context.Background())

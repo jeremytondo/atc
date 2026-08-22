@@ -62,14 +62,13 @@ not. Claude's current ACP adapter rejects a separate Haiku `effort=low` update;
 the verified Haiku selection remains enforced, while Claude TUI accepts its
 native `--effort low` flag.
 
-zmx runs only with a private socket directory, log directory, and compact
-`atcu-` prefix. The child wrapper records atomic start/exit evidence and
+zmx runs only with a private socket and log directory. The public `term_` ID is
+also the zmx session name, allowing direct attachment without a proxy. The
+child wrapper records atomic start/exit evidence and
 forwards HUP/INT/TERM while zmx remains the supervisor. Reconciliation keeps an
 unreachable inventory entry, distinguishes missing from stale and exited,
 persists stop intent before kill, verifies absence after kill, and refuses
-cleanup without complete inventory. Attach compares daemon identity before and
-after, kills an auto-created phantom, and reports loss rather than attaching to
-a replacement.
+cleanup without complete inventory.
 
 Codex uses one separately launched shared app-server. Every TUI still receives
 `--remote`, but connects through a transparent per-TUI relay running inside its
@@ -104,8 +103,7 @@ The suite covers:
 - foreground interruption followed by late background-tool evidence;
 - a request opened after prompt completion and answered after core restart;
 - terminal running, exited, missing, stale, disconnected, inventory failure,
-  stop intent, reachable/unreachable orphan, verified kill, and attach
-  auto-create cases;
+  stop intent, reachable/unreachable orphan, and verified kill;
 - Claude question precedence and background descendant transitions;
 - Codex exact root selection, unrelated-root rejection, descendant discovery,
   root-idle/child-active aggregation, and exact-read reconstruction;
@@ -149,7 +147,8 @@ Change before production:
   reporting;
 - make shared Codex app-server lifecycle/profile management an explicit server
   resource instead of a separately launched experiment prerequisite;
-- add terminal resize and polished raw-mode attach behavior;
+- keep terminal transport out of the status/control API until a production
+  transport can preserve raw mode and resize semantics;
 - define a stronger adapter/process-tree contract for “stop all agent work”;
   foreground ACP cancellation is intentionally not that operation; and
 - rerun the live matrix on every pinned provider upgrade, including exact

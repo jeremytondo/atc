@@ -33,7 +33,7 @@ func TestSyncKeepsCanonicalThreadsWhenTerminalInventoryFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := newModel(t.Context(), client, defaultBase, "atc-unified")
+	m := newModel(t.Context(), client, defaultBase)
 	message := m.syncCmd()().(syncMsg)
 	if message.err != nil || message.warning == nil || len(message.threads) != 1 || len(message.events) != 1 {
 		t.Fatalf("sync = %#v", message)
@@ -46,7 +46,7 @@ func TestSyncKeepsCanonicalThreadsWhenTerminalInventoryFails(t *testing.T) {
 }
 
 func TestReconnectPreservesStateAndCatchesUpCursor(t *testing.T) {
-	m := newModel(t.Context(), nil, defaultBase, "atc-unified")
+	m := newModel(t.Context(), nil, defaultBase)
 	connected, _ := m.Update(syncMsg{
 		threads: []Thread{{ID: "thr-one", Kind: "chat", Activity: "working", BackgroundActivity: "idle"}},
 		events:  []Event{{Sequence: 4, ThreadID: "thr-one", Type: "turn.started"}},
@@ -93,8 +93,24 @@ func TestLifecycleViewKeepsIndependentDimensionsLegible(t *testing.T) {
 	}
 }
 
+func TestTUISessionShowsDirectZmxAttachCommand(t *testing.T) {
+	m := newModel(t.Context(), nil, defaultBase)
+	terminal := Terminal{ID: "term_0123456789abcdef01234567", ThreadID: "thr-one", Lifecycle: "live", Reachable: true}
+	updated, _ := m.Update(terminalOpenedMsg{terminal: terminal})
+	m = updated.(model)
+	if !strings.Contains(m.status, "make attach TERMINAL="+terminal.ID) {
+		t.Fatalf("status = %q", m.status)
+	}
+
+	m.threads = []Thread{{ID: "thr-one", Kind: "tui", Agent: "claude", CWD: "/tmp"}}
+	m.terminals["thr-one"] = terminal
+	if detail := m.threadDetail(100, 20); !strings.Contains(detail, "attach elsewhere: make attach TERMINAL="+terminal.ID) {
+		t.Fatalf("detail = %q", detail)
+	}
+}
+
 func TestAnswerModeUsesLabeledOpaqueOptionID(t *testing.T) {
-	m := newModel(t.Context(), nil, defaultBase, "atc-unified")
+	m := newModel(t.Context(), nil, defaultBase)
 	m.mode = modeAnswer
 	m.requests = []PendingRequest{{
 		ID: "req-one", ThreadID: "thr-one", Kind: "approval", Prompt: "May I?",

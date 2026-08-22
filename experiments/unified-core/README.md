@@ -1,14 +1,19 @@
 # Unified core composition prototype
 
-This disposable Go experiment for ATC-232 puts native chat and native TUI
-execution behind one provider-neutral Thread model and a small HTTP API. It is
-not production code and does not share implementation with the earlier ACP,
-zmx, or status experiments.
+This disposable Go experiment tests two deliberately separate paths:
+
+1. ACP agent threads, including prompts, requests, answers, and normalized
+   status in the play UI.
+2. Agent TUIs supervised by zmx, with creation and status in the play UI and
+   direct attachment from a second terminal using zmx itself.
+
+The prototype does not proxy terminal bytes through HTTP or render an agent TUI
+inside the play UI.
 
 The important boundary is visible in the packages: `domain` contains only
 ATC-owned resources, `ports` defines three execution seams, `core` owns all
 materialization and correlation, and protocol shapes stop inside `adapters`
-and `status`. A chat Thread gets one ACP writer. A TUI Thread links to a
+and `status`. An ACP Thread gets one ACP writer. A TUI Thread links to a
 separate zmx-backed Terminal. Kind, agent, and canonical working directory are
 immutable.
 
@@ -45,6 +50,19 @@ the core is unavailable, then reconnects and catches up. Logs are under
 `.state/logs/`. Ports and model policy can be overridden with the
 `ATC_UNIFIED_*` variables at the top of `scripts/play.sh`.
 
+Create an `ACP` experiment to test prompts and requests in the play UI. Create a
+`TUI/zmx` experiment and press Enter to start its agent TUI. The detail panel
+then shows a command like this for a second terminal:
+
+```sh
+cd experiments/unified-core
+make attach TERMINAL=term_0123456789abcdef01234567
+```
+
+`make attach` only supplies the experiment's private `ZMX_DIR` and invokes
+`zmx attach` directly. Keep `make play` running in the first terminal while
+attached.
+
 The lower-level CLI remains deliberately thin: `api` sends an arbitrary
 canonical request and `repl` offers the same operation interactively. For
 example:
@@ -74,7 +92,7 @@ make smoke-zmx
 `smoke-acp` calls both official ACP v1 adapters several times to cover allow,
 deny, cancellation, and exact reload, so it uses provider quota. It reuses the
 private profiles initialized by `make play`. `smoke-zmx` uses temporary
-directories and the compact `atcu-` prefix.
+directories and a test-owned `term_` session.
 
 For the full reviewed matrix, keep the shared app-server and core processes in
 separate terminals, then use canonical API calls only:
@@ -84,10 +102,9 @@ separate terminals, then use canonical API calls only:
    one allow and one deny, and verify the filesystem outcome. Stop and restart
    the core, then prompt again to exercise exact `session/load`.
 2. Create one Claude and two Codex `tui` Threads and open their linked
-   Terminals. Codex starts one passive per-TUI WebSocket relay; the relay learns
-   the exact root from the TUI writer's own start/resume response and forwards
-   only that root and correlated descendants to the shared status reducer.
-   Attach with `./bin/atc-unified attach TERMINAL_ID`.
+   Terminals. Attach from separate real terminals with
+   `make attach TERMINAL=TERMINAL_ID`; the play UI remains a status/control
+   surface and never transports terminal I/O.
 3. Capture the exact core PID when starting it in the background. Send
    `SIGKILL` only to that PID during a turn, request, and background task. The
    shared Codex app-server, zmx daemons, TUI processes, and relays must remain.

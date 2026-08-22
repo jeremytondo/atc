@@ -31,8 +31,9 @@ func TestRealZmx(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	marker := filepath.Join(dir, "exits", "smoke.json")
+	terminalID := "term_0123456789abcdef01234567"
 	err = adapter.Open(ctx, ports.TerminalOpen{
-		TerminalID: "term_smoke", SessionName: "atcu-smoke", Agent: domain.AgentClaude, CWD: dir,
+		TerminalID: terminalID, Agent: domain.AgentClaude, CWD: dir,
 		Command: []string{"sh", "-c", "trap 'exit 0' HUP TERM INT; while :; do sleep 60; done"}, ExitPath: marker,
 	})
 	if err != nil {
@@ -42,7 +43,7 @@ func TestRealZmx(t *testing.T) {
 	if err != nil || len(entries) != 1 || !entries[0].Reachable {
 		t.Fatalf("running inventory = %#v, %v", entries, err)
 	}
-	if err := adapter.Terminate(ctx, "atcu-smoke"); err != nil {
+	if err := adapter.Terminate(ctx, terminalID); err != nil {
 		t.Fatal(err)
 	}
 	if entries, err := adapter.Inventory(ctx); err != nil || len(entries) != 0 {

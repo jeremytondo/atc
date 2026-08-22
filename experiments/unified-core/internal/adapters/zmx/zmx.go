@@ -1,6 +1,6 @@
-// Package zmx is the private terminal adapter. Every command is scoped to the
-// prototype-owned directory and prefix; inventory is complete only within that
-// namespace, so cleanup cannot discover or affect user or production sessions.
+// Package zmx owns an isolated zmx directory for the prototype. Public
+// Terminal IDs are used directly as session names so a human can attach with
+// zmx itself; legacy prototype names remain visible only for state migration.
 package zmx
 
 import (
@@ -23,7 +23,6 @@ import (
 	"github.com/elevenideas/atc/experiments/unified-core/internal/domain"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/ports"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/provider"
-	"github.com/elevenideas/atc/experiments/unified-core/internal/terminalname"
 )
 
 type Config struct {
@@ -94,25 +93,25 @@ func New(config Config) (*Adapter, error) {
 }
 
 func (a *Adapter) Open(ctx context.Context, open ports.TerminalOpen) error {
-	if !terminalname.IsManaged(open.SessionName) {
+	if !isManagedName(open.TerminalID) {
 		return errors.New("refusing terminal name outside prototype namespace")
 	}
 	if _, err := os.Stat(open.CWD); err != nil {
 		return fmt.Errorf("inspect working directory: %w", err)
 	}
-	existing, err := a.find(ctx, open.SessionName)
+	existing, err := a.find(ctx, open.TerminalID)
 	if err != nil {
 		return err
 	}
 	if existing != nil {
-		return fmt.Errorf("terminal %s already exists", open.SessionName)
+		return fmt.Errorf("terminal %s already exists", open.TerminalID)
 	}
 	command, err := a.providerCommand(open)
 	if err != nil {
 		return err
 	}
 	wrapped := append([]string{a.wrapperExecutable, "__child", "--marker", open.ExitPath, "--terminal", open.TerminalID, "--"}, command...)
-	create := exec.CommandContext(ctx, a.executable, append([]string{"attach", open.SessionName}, wrapped...)...)
+	create := exec.CommandContext(ctx, a.executable, append([]string{"attach", open.TerminalID}, wrapped...)...)
 	create.Dir = open.CWD
 	create.Env = a.environment(nil)
 	ptmx, err := pty.StartWithSize(create, &pty.Winsize{Rows: 24, Cols: 100})
@@ -127,7 +126,7 @@ func (a *Adapter) Open(ctx context.Context, open ports.TerminalOpen) error {
 	}()
 	reachable, pollErr := a.poll(ctx, func(entries []ports.TerminalEntry) bool {
 		for _, entry := range entries {
-			if entry.Name == open.SessionName && entry.Reachable {
+			if entry.Name == open.TerminalID && entry.Reachable {
 				return true
 			}
 		}
@@ -171,7 +170,7 @@ func ParseInventory(output string) []ports.TerminalEntry {
 			}
 		}
 		name := fields["name"]
-		if !terminalname.IsManaged(name) {
+		if !isManagedName(name) {
 			continue
 		}
 		pid, _ := strconv.Atoi(fields["pid"])
@@ -182,67 +181,8 @@ func ParseInventory(output string) []ports.TerminalEntry {
 	return entries
 }
 
-func (a *Adapter) Send(ctx context.Context, name string, input []byte) error {
-	if _, err := a.requireReachable(ctx, name); err != nil {
-		return err
-	}
-	_, stderr, err := a.run(ctx, bytes.NewReader(input), "send", name)
-	if err != nil {
-		return fmt.Errorf("send terminal input: %w: %s", err, strings.TrimSpace(string(stderr)))
-	}
-	return nil
-}
-
-func (a *Adapter) Output(ctx context.Context, name string) ([]byte, error) {
-	if _, err := a.requireReachable(ctx, name); err != nil {
-		return nil, err
-	}
-	stdout, stderr, err := a.run(ctx, nil, "history", name)
-	if err != nil {
-		return nil, fmt.Errorf("read terminal output: %w: %s", err, strings.TrimSpace(string(stderr)))
-	}
-	return stdout, nil
-}
-
-func (a *Adapter) Attach(ctx context.Context, name string, input io.Reader, output io.Writer) error {
-	before, err := a.requireReachable(ctx, name)
-	if err != nil {
-		return err
-	}
-	command := exec.CommandContext(ctx, a.executable, "attach", name)
-	command.Env = a.environment(nil)
-	command.Stdin = input
-	command.Stdout = output
-	var stderr bytes.Buffer
-	command.Stderr = &stderr
-	if err := command.Start(); err != nil {
-		return err
-	}
-	after, inventoryErr := a.find(ctx, name)
-	if inventoryErr != nil || after == nil || !after.Reachable || after.DaemonPID != before.DaemonPID {
-		_ = command.Process.Kill()
-		_ = command.Wait()
-		if after != nil && after.DaemonPID != before.DaemonPID {
-			_ = a.Terminate(context.Background(), name)
-		}
-		return errors.New("original terminal disappeared during attach; refused auto-created replacement")
-	}
-	waitErr := command.Wait()
-	final, finalErr := a.find(context.Background(), name)
-	if finalErr != nil || final == nil || !final.Reachable || final.DaemonPID != before.DaemonPID {
-		if final != nil && final.DaemonPID != before.DaemonPID {
-			_ = a.Terminate(context.Background(), name)
-		}
-		return errors.New("original terminal disappeared during attach; refused auto-created replacement")
-	}
-	if waitErr != nil && ctx.Err() == nil {
-		return fmt.Errorf("attach terminal: %w: %s", waitErr, strings.TrimSpace(stderr.String()))
-	}
-	return ctx.Err()
-}
-
 func (a *Adapter) Terminate(ctx context.Context, name string) error {
-	if !terminalname.IsManaged(name) {
+	if !isManagedName(name) {
 		return errors.New("refusing to terminate outside prototype namespace")
 	}
 	existing, err := a.find(ctx, name)
@@ -324,20 +264,6 @@ func stableUUID(value string) string {
 	return hex[:8] + "-" + hex[8:12] + "-4" + hex[13:16] + "-a" + hex[17:20] + "-" + hex[20:32]
 }
 
-func (a *Adapter) requireReachable(ctx context.Context, name string) (*ports.TerminalEntry, error) {
-	entry, err := a.find(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	if entry == nil {
-		return nil, errors.New("terminal is missing")
-	}
-	if !entry.Reachable {
-		return nil, errors.New("terminal is temporarily unreachable")
-	}
-	return entry, nil
-}
-
 func (a *Adapter) find(ctx context.Context, name string) (*ports.TerminalEntry, error) {
 	entries, err := a.Inventory(ctx)
 	if err != nil {
@@ -350,6 +276,10 @@ func (a *Adapter) find(ctx context.Context, name string) (*ports.TerminalEntry, 
 		}
 	}
 	return nil, nil
+}
+
+func isManagedName(name string) bool {
+	return strings.HasPrefix(name, "term_") || strings.HasPrefix(name, "atcu-") || strings.HasPrefix(name, "atc-unified-")
 }
 
 func (a *Adapter) poll(ctx context.Context, predicate func([]ports.TerminalEntry) bool) (bool, error) {

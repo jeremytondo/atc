@@ -1,6 +1,6 @@
 // Package store is the prototype persistence seam. The JSON format is
-// intentionally disposable; atomic replacement and private/public separation
-// are the only decisions being validated here.
+// intentionally disposable; atomic replacement is the only storage decision
+// being validated here.
 package store
 
 import (
@@ -42,7 +42,7 @@ const (
 
 type TerminalRecord struct {
 	Terminal        domain.Terminal `json:"terminal"`
-	PrivateName     string          `json:"privateName"`
+	LegacyName      string          `json:"privateName,omitempty"`
 	State           TerminalState   `json:"state"`
 	DaemonPID       int             `json:"daemonPid,omitempty"`
 	LastSeenAt      *time.Time      `json:"lastSeenAt,omitempty"`

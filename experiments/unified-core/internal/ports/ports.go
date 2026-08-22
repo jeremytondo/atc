@@ -4,7 +4,6 @@ package ports
 
 import (
 	"context"
-	"io"
 	"time"
 
 	"github.com/elevenideas/atc/experiments/unified-core/internal/domain"
@@ -43,20 +42,16 @@ type TerminalEntry struct {
 }
 
 type TerminalOpen struct {
-	TerminalID  string
-	SessionName string
-	Agent       domain.Agent
-	CWD         string
-	Command     []string
-	ExitPath    string
+	TerminalID string
+	Agent      domain.Agent
+	CWD        string
+	Command    []string
+	ExitPath   string
 }
 
 type TerminalAdapter interface {
 	Open(context.Context, TerminalOpen) error
 	Inventory(context.Context) ([]TerminalEntry, error)
-	Send(context.Context, string, []byte) error
-	Output(context.Context, string) ([]byte, error)
-	Attach(context.Context, string, io.Reader, io.Writer) error
 	Terminate(context.Context, string) error
 }
 
