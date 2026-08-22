@@ -1,5 +1,22 @@
+import { assert, it as effectIt } from "@effect/vitest"
+import { Effect } from "effect"
+import { TestClock } from "effect/testing"
 import { describe, expect, it } from "vitest"
-import { SseParser, backoffMillis, headers, parseConnectionSignal } from "../src/sse.ts"
+import {
+  SseParser,
+  backoffMillis,
+  headers,
+  parseConnectionSignal,
+  type ResourceSignal,
+  subscribe,
+} from "../src/sse.ts"
+
+const config = {
+  endpoint: new URL("http://127.0.0.1:7331"),
+  zmxExecutable: "zmx",
+  zmxDir: "/tmp/atc/terminals",
+  environment: {},
+}
 
 describe("SseParser", () => {
   it("preserves framing across chunks and surfaces comments immediately", () => {
@@ -58,16 +75,47 @@ describe("connection signals", () => {
   })
 
   it("adds authorization only when configured", () => {
-    const config = {
-      endpoint: new URL("http://127.0.0.1:7331"),
-      zmxExecutable: "zmx",
-      zmxDir: "/tmp/atc/terminals",
-      environment: {},
-    }
     expect(headers(config)).toEqual({ accept: "text/event-stream" })
     expect(headers({ ...config, token: "secret" })).toEqual({
       accept: "text/event-stream",
       authorization: "Bearer secret",
     })
   })
+})
+
+describe("subscription", () => {
+  effectIt.effect("times out only while waiting for the connection response", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const originalFetch = globalThis.fetch
+        const signals: Array<ResourceSignal> = []
+        const stalledFetch = Object.assign(
+          (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+            new Promise<Response>((_resolve, reject) => {
+              const signal = init?.signal
+              if (signal === undefined || signal === null) {
+                reject(new Error("missing connection abort signal"))
+                return
+              }
+              signal.addEventListener("abort", () => reject(signal.reason), { once: true })
+            }),
+          { preconnect: originalFetch.preconnect },
+        ) satisfies typeof fetch
+        globalThis.fetch = stalledFetch
+        yield* Effect.addFinalizer(() => Effect.sync(() => (globalThis.fetch = originalFetch)))
+
+        yield* Effect.forkScoped(
+          subscribe(config, (signal) => Effect.sync(() => signals.push(signal))),
+        )
+        yield* Effect.yieldNow
+        yield* TestClock.adjust("10 seconds")
+        yield* Effect.yieldNow
+
+        assert.deepStrictEqual(signals[0], {
+          type: "disconnected",
+          reason: "event stream connection timed out",
+        })
+      }),
+    ),
+  )
 })

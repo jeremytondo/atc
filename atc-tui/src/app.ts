@@ -39,6 +39,7 @@ const startLiveState = (
       server.subscribe((signal) => {
         if (signal.type === "connected") {
           return Ref.set(reachabilityRef, "connected").pipe(
+            Effect.andThen(Ref.set(backgroundStatusRef, undefined)),
             Effect.andThen(Queue.offer(refreshRequests, void 0)),
             Effect.andThen(Queue.offer(uiUpdates, void 0)),
           )
