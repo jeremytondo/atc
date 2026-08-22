@@ -1,0 +1,25 @@
+{
+  "name": "atc-tui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Terminal-native ATC session orchestrator prototype",
+  "prettier": {
+    "semi": false,
+    "printWidth": 100
+  },
+  "dependencies": {
+    "@effect/platform-bun": "4.0.0-beta.102",
+    "@opentui/core": "0.4.5",
+    "effect": "4.0.0-beta.102"
+  },
+  "devDependencies": {
+    "@effect/vitest": "4.0.0-beta.102",
+    "@oxlint/plugins": "1.78.0",
+    "@types/bun": "1.3.14",
+    "oxlint": "1.78.0",
+    "prettier": "3.9.6",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
+  }
+}

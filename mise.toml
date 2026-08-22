@@ -32,16 +32,16 @@ echo "installed $dir/atc ($("$dir/atc" --version))"
 """
 
 [tasks.check]
-description = "All gates: App Server, Swift lint+format, Kit/macOS tests, release tooling"
-depends = ["app-server:check", "swift:lint", "swift:fmt:check", "kit:test", "kit:build:ios", "macos:test", "release:check"]
+description = "All gates: App Server, terminal client, Swift lint+format, Kit/macOS tests, release tooling"
+depends = ["app-server:check", "tui:check", "swift:lint", "swift:fmt:check", "kit:test", "kit:build:ios", "macos:test", "release:check"]
 
 [tasks.build]
-description = "Build the local App Server binary and developer macOS app"
-depends = ["app-server:build", "macos:build"]
+description = "Build the local App Server, terminal client, and developer macOS app"
+depends = ["app-server:build", "tui:build", "macos:build"]
 
 [tasks.test]
-description = "All tests: App Server, ATCKit, macOS app"
-depends = ["app-server:test", "kit:test", "macos:test"]
+description = "All tests: App Server, terminal client, ATCKit, macOS app"
+depends = ["app-server:test", "tui:test", "kit:test", "macos:test"]
 
 # --- App Server (TypeScript/Effect on Bun) ---
 
@@ -68,6 +68,20 @@ depends = ["app-server:check", "kit:test"]
 [tasks."app-server:build"]
 description = "Compile the standalone App Server atc executable for this machine"
 run = "mise run -C app-server build"
+
+# --- Terminal client prototype (TypeScript/Effect on Bun) ---
+
+[tasks."tui:check"]
+description = "Terminal client format, lint, type, and test gates"
+run = "mise run -C atc-tui check"
+
+[tasks."tui:test"]
+description = "Terminal client tests"
+run = "mise run -C atc-tui test"
+
+[tasks."tui:build"]
+description = "Compile the standalone atc-tui executable for this machine"
+run = "mise run -C atc-tui build"
 
 # --- Swift surfaces ---
 
