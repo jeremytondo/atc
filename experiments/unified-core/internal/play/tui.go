@@ -545,8 +545,20 @@ func (m model) threadDetail(width, height int) string {
 	if len(m.requests) > 0 {
 		lines = append(lines, warningStyle.Render(fmt.Sprintf("%d pending request(s) • press a", len(m.requests))))
 	}
-	lines = append(lines, "", sectionStyle.Render("Normalized events"))
 	events := m.eventsForThread(thread.ID)
+	if thread.Kind == "chat" {
+		lines = append(lines, "", sectionStyle.Render("Conversation"))
+		available := max(2, height-len(lines)-1)
+		conversation := conversationLines(events, width-2)
+		if len(conversation) == 0 {
+			lines = append(lines, mutedStyle.Render("Press p to prompt this ACP thread."))
+			return strings.Join(lines, "\n")
+		}
+		start := max(0, len(conversation)-available)
+		lines = append(lines, conversation[start:]...)
+		return strings.Join(lines, "\n")
+	}
+	lines = append(lines, "", sectionStyle.Render("Status events"))
 	available := max(2, height-len(lines)-1)
 	if len(events) == 0 {
 		lines = append(lines, mutedStyle.Render("No events received for this thread."))
@@ -825,6 +837,71 @@ func formatEvent(event Event) string {
 		line += "  " + detail
 	}
 	return line
+}
+
+type conversationEntry struct {
+	role   string
+	turnID string
+	text   string
+}
+
+func conversationLines(events []Event, width int) []string {
+	entries := make([]conversationEntry, 0)
+	for _, event := range events {
+		switch event.Type {
+		case "user.message":
+			entries = append(entries, conversationEntry{role: "You", turnID: event.TurnID, text: event.Text})
+		case "assistant.delta":
+			last := len(entries) - 1
+			if last >= 0 && entries[last].role == "Agent" && entries[last].turnID == event.TurnID {
+				entries[last].text += event.Text
+				continue
+			}
+			entries = append(entries, conversationEntry{role: "Agent", turnID: event.TurnID, text: event.Text})
+		case "request.opened":
+			if event.Request != nil {
+				entries = append(entries, conversationEntry{role: "Request", turnID: event.TurnID, text: event.Request.Prompt})
+			}
+		case "turn.ended":
+			if event.Turn != nil && event.Turn.Error != "" {
+				entries = append(entries, conversationEntry{role: "Error", turnID: event.TurnID, text: event.Turn.Error})
+			}
+		}
+	}
+	lines := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		lines = append(lines, wrapLine(entry.role+": ", entry.text, width)...)
+	}
+	return lines
+}
+
+func wrapLine(prefix, text string, width int) []string {
+	text = strings.Join(strings.Fields(text), " ")
+	if text == "" {
+		return []string{prefix}
+	}
+	width = max(width, len(prefix)+1)
+	continuation := strings.Repeat(" ", len(prefix))
+	words := strings.Fields(text)
+	lines := []string{}
+	line := prefix
+	for _, word := range words {
+		separator := ""
+		if line != prefix && line != continuation {
+			separator = " "
+		}
+		if len([]rune(line+separator+word)) <= width {
+			line += separator + word
+			continue
+		}
+		if line == prefix || line == continuation {
+			line += word
+			continue
+		}
+		lines = append(lines, line)
+		line = continuation + word
+	}
+	return append(lines, line)
 }
 
 func choiceLine(label, value string, focused bool) string {

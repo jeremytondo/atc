@@ -25,6 +25,7 @@ import (
 	"github.com/elevenideas/atc/experiments/unified-core/internal/httpapi"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/play"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/provider"
+	"github.com/elevenideas/atc/experiments/unified-core/internal/providerprofile"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/status"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/store"
 )
@@ -53,9 +54,23 @@ func run(args []string) error {
 		return runChild(args[1:])
 	case "__codex_tui":
 		return runCodexTUI(args[1:])
+	case "__prepare_claude_profile":
+		return prepareClaudeProfile(args[1:])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func prepareClaudeProfile(args []string) error {
+	flags := flag.NewFlagSet("__prepare_claude_profile", flag.ContinueOnError)
+	configDir := flags.String("config-dir", "", "isolated Claude configuration directory")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if *configDir == "" || flags.NArg() != 0 {
+		return errors.New("usage: atc-unified __prepare_claude_profile --config-dir DIR")
+	}
+	return providerprofile.CompleteClaudeOnboarding(*configDir)
 }
 
 func playTUI(args []string) error {

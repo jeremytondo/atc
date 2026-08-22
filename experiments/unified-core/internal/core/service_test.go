@@ -141,6 +141,15 @@ func TestThreadKindsCorrelationAndLateBackgroundEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	userMessageFound := false
+	for _, event := range service.EventsAfter(0, chatThread.ID) {
+		if event.Type == "user.message" && event.TurnID == turn.ID && event.Text == "hello" {
+			userMessageFound = true
+		}
+	}
+	if !userMessageFound {
+		t.Fatal("prompt was not projected into the canonical conversation")
+	}
 	session := chat.sessions[0]
 	if started := <-session.started; started != turn.ID {
 		t.Fatalf("started turn = %s", started)

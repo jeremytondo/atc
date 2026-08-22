@@ -190,6 +190,7 @@ func (s *Service) Prompt(ctx context.Context, threadID, text string) (domain.Tur
 	record.Thread.ActiveTurn = &turn
 	record.Foreground = domain.ActivityWorking
 	s.recomputeActivityLocked(record)
+	s.emitLocked(domain.Event{ThreadID: threadID, TurnID: turnID, Resource: "message", Type: "user.message", Text: text})
 	s.emitLocked(domain.Event{ThreadID: threadID, Resource: "turn", Type: "turn.started", Activity: record.Thread.Activity, Turn: cloneTurn(&turn)})
 	if err := s.saveLocked(); err != nil {
 		s.mu.Unlock()

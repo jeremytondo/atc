@@ -86,12 +86,15 @@ for command in go codex claude zmx; do
 done
 
 mkdir -p "${core_state_dir}" "${codex_home_dir}" "${claude_home_dir}" "${log_dir}"
+printf 'Building atc-unified…\n'
+make -s -C "${experiment_dir}" build
+
 if [[ "${ATC_UNIFIED_SKIP_LOGIN:-0}" != "1" ]]; then
 	login_if_needed
 fi
-
-printf 'Building atc-unified…\n'
-make -s -C "${experiment_dir}" build
+if claude auth status >/dev/null 2>&1; then
+	"${experiment_dir}/bin/atc-unified" __prepare_claude_profile --config-dir "${claude_home_dir}"
+fi
 
 trap cleanup EXIT INT TERM
 

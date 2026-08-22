@@ -109,6 +109,23 @@ func TestTUISessionShowsDirectZmxAttachCommand(t *testing.T) {
 	}
 }
 
+func TestConversationCoalescesStreamedACPResponse(t *testing.T) {
+	request := PendingRequest{Prompt: "Allow the edit?"}
+	lines := conversationLines([]Event{
+		{Sequence: 1, TurnID: "turn-one", Type: "user.message", Text: "Explain this repository"},
+		{Sequence: 2, TurnID: "turn-one", Type: "assistant.delta", Text: "It has "},
+		{Sequence: 3, ThreadID: "thr-one", Type: "thread.activity", Activity: "working"},
+		{Sequence: 4, TurnID: "turn-one", Type: "assistant.delta", Text: "two packages."},
+		{Sequence: 5, TurnID: "turn-one", Type: "request.opened", Request: &request},
+	}, 80)
+	joined := strings.Join(lines, "\n")
+	for _, expected := range []string{"You: Explain this repository", "Agent: It has two packages.", "Request: Allow the edit?"} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("conversation %q is missing %q", joined, expected)
+		}
+	}
+}
+
 func TestAnswerModeUsesLabeledOpaqueOptionID(t *testing.T) {
 	m := newModel(t.Context(), nil, defaultBase)
 	m.mode = modeAnswer

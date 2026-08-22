@@ -39,20 +39,21 @@ make play
 ```
 
 On the first run, the launcher uses Codex's headless-friendly device login and
-then starts the Claude login flow. Those credentials, core data, zmx sessions,
-and logs stay isolated under `.state/`; later runs go straight to the TUI. The
-launcher builds the binary, starts the private Codex app-server and unified
-core, waits for both, opens `play`, and stops only the two background processes
-it created when `play` exits.
+then starts the Claude login flow. It also completes the interactive marker
+that Claude's headless login currently omits. Those credentials, core data,
+zmx sessions, and logs stay isolated under `.state/`; later runs go straight to
+the TUI. The launcher builds the binary, starts the private Codex app-server and
+unified core, waits for both, opens `play`, and stops only the two background
+processes it created when `play` exits.
 
 The footer shows the available keys. The client retains its last snapshot while
 the core is unavailable, then reconnects and catches up. Logs are under
 `.state/logs/`. Ports and model policy can be overridden with the
 `ATC_UNIFIED_*` variables at the top of `scripts/play.sh`.
 
-Create an `ACP` experiment to test prompts and requests in the play UI. Create a
-`TUI/zmx` experiment and press Enter to start its agent TUI. The detail panel
-then shows a command like this for a second terminal:
+Create an `ACP` experiment to test prompts, readable responses, and requests in
+the play UI. Create a `TUI/zmx` experiment and press Enter to start its agent
+TUI. The detail panel then shows a command like this for a second terminal:
 
 ```sh
 cd experiments/unified-core
