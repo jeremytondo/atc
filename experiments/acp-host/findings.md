@@ -37,25 +37,66 @@ methods are not conflated.
 - Resume never falls back to a new session and therefore cannot hide lost
   continuity.
 
+## Execution ownership addendum
+
+A second real-adapter matrix made the execution boundary explicit. The host
+continued to initialize with empty client capabilities and handled no
+`fs/read_text_file`, `fs/write_text_file`, or `terminal/*` methods. In isolated
+workspaces, both adapters nevertheless:
+
+- read a seeded file using their own file tool;
+- created a file using their own edit/write tool;
+- ran `wc` using their own command tool; and
+- reported the tool lifecycle and results through `session/update`.
+
+The raw ACP logs contained only initialization, session control, updates, and
+permission requests. They contained no client-side filesystem or terminal
+request. This proves that ATC can use ACP v1 with the v2-style ownership model:
+the agent owns tool execution and filesystem access, while ATC supervises the
+agent and uses ACP as its control and observation channel.
+
 ## Permissions
 
-The real adapters implement `session/request_permission`, but the harmless
-terminal operations in this run were approved by their own configured policy
-and did not emit a client permission request. The subprocess integration test
-therefore remains the direct coverage for pending, allow, deny, and
-cancel-while-pending behavior using the exact v1 request and response shapes.
-This is enough to validate the host path, but a production evaluation should
-also force each provider into a policy that emits a real permission request.
+The follow-up matrix forced real `session/request_permission` calls from both
+providers. Allowing a file mutation caused the agent-owned operation to create
+the expected file. Denying a second mutation produced a failed tool update and
+left the filesystem unchanged. Claude also requested and honored permission
+for the command tool. This validates real provider round trips for both allow
+and deny, rather than only the deterministic fake-agent path.
+
+## Tool cancellation and background work
+
+Agent-owned execution makes turn state and tool-process state distinct. A
+long-running command exposed two cases that the original cancellation result
+did not cover:
+
+- Codex returned `stopReason: cancelled` immediately after `session/cancel`,
+  but its command continued until the original sleep elapsed and only then
+  emitted its final tool update. Turn cancellation therefore did not terminate
+  the tool process.
+- Claude chose to run the command as a background task and ended the prompt
+  normally while it was still running. The harness could no longer issue
+  `session/cancel` because there was no active prompt. When that background task
+  later completed, it produced more tool activity and a permission request
+  while the session was idle.
+
+The test-owned Claude shell and sleep PIDs were terminated explicitly and no
+delayed file was created. These results do not weaken the execution-ownership
+decision, but they do mean a production ATC lifecycle cannot equate a terminal
+prompt response with all agent-owned work being finished. The next composition
+prototype needs an explicit model for background activity plus process-tree
+cleanup or a stronger adapter contract for cancellation.
 
 ## Success criteria
 
 1. **Can Go reliably own the ACP process and lifecycle for Claude and Codex?**
    Yes for the exercised v1 path: both real adapters passed startup, multiple
-   turns, cancellation, close, relaunch, replay, and continuation.
+   turns, close, relaunch, replay, and continuation. Turn cancellation is
+   observable, but it does not guarantee agent-owned tool cleanup.
 2. **Does ACP expose enough information and control for ATC native chat?** Yes
-   for messages, tool activity, permissions, cancellation, and terminal turn
-   outcomes. V1 derives working/idle from the lifetime of `session/prompt`
-   rather than explicit v2 state updates.
+   for messages, tool activity, real permission decisions, cancellation, and
+   terminal turn outcomes. V1 derives foreground working/idle from the lifetime
+   of `session/prompt`; background agent work must be tracked separately.
 3. **Can sessions resume after the ATC host restarts?** Yes. Both providers
    replayed history and retained context using the exact saved session ID in a
    fresh adapter process.
@@ -69,6 +110,8 @@ also force each provider into a policy that emits a real permission request.
 ## Decision
 
 Use ACP v1 for the next experiment while the official Claude and Codex ACP v2
-adapters are unavailable. Carry forward two explicit follow-ups: force a real
-permission prompt under each provider's policy, and rerun the same matrix when
-both official adapters publish protocol v2 support.
+adapters are unavailable. Keep the client capability surface empty: agents own
+tools, filesystem access, and command execution; ATC owns supervision,
+permission mediation, normalized state, and the canonical API. Carry forward
+the background-work and tool-cleanup lifecycle gap, and rerun the protocol
+matrix when both official adapters publish protocol v2 support.

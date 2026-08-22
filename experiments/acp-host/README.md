@@ -18,6 +18,12 @@ fresh-process history replay, and follow-up context continuity with the exact
 same session ID. See [findings.md](findings.md) for the matrix and remaining
 limitations.
 
+The host advertises no client filesystem or terminal capabilities. Real
+read/edit/command and permission allow/deny tests confirmed that the agents own
+execution while ACP carries control and observation. Turn cancellation does not
+necessarily terminate agent-owned tool processes, and background work can
+outlive a prompt; those lifecycle cases remain explicit follow-ups.
+
 ## Build and test
 
 Requirements are Go 1.26 or newer, `npx`, and locally authenticated Codex and
