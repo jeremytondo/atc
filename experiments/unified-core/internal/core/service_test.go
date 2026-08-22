@@ -277,6 +277,49 @@ func TestRestartReconnectsWriterBeforeAnsweringBackgroundRequest(t *testing.T) {
 	}
 }
 
+func TestPendingRequestIsIsolatedFromAnotherThread(t *testing.T) {
+	ctx := context.Background()
+	chat := &fakeChat{}
+	service := newTestService(t, store.NewMemory(), chat, newFakeTerminal(), nil)
+	blocked := createThread(t, service, domain.ThreadChat, domain.AgentCodex)
+	independent := createThread(t, service, domain.ThreadChat, domain.AgentClaude)
+
+	blockedTurn, err := service.Prompt(ctx, blocked.ID, "materialize blocked thread")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockedSession := chat.sessions[0]
+	<-blockedSession.started
+	blockedSession.result <- promptResult{outcome: domain.TurnCompleted}
+	waitForEvent(t, service, blocked.ID, "turn.ended", turnEventSequence(service, blocked.ID, blockedTurn.ID)-1)
+	blockedSession.open.Events.Request(blocked.ID, "", "provider-request", domain.RequestApproval, "Allow?", []domain.RequestOption{{ID: "option_1", Label: "Allow"}})
+
+	independentTurn, err := service.Prompt(ctx, independent.ID, "continue independently")
+	if err != nil {
+		t.Fatal(err)
+	}
+	independentSession := chat.sessions[1]
+	<-independentSession.started
+	blockedState, _ := service.Thread(blocked.ID)
+	independentState, _ := service.Thread(independent.ID)
+	if blockedState.Activity != domain.ActivityNeedsInput || blockedState.PendingCount != 1 {
+		t.Fatalf("blocked thread = %#v", blockedState)
+	}
+	if independentState.Activity != domain.ActivityWorking || independentState.PendingCount != 0 {
+		t.Fatalf("independent thread = %#v", independentState)
+	}
+	independentSession.result <- promptResult{outcome: domain.TurnCompleted}
+	waitForEvent(t, service, independent.ID, "turn.ended", turnEventSequence(service, independent.ID, independentTurn.ID)-1)
+	blockedState, _ = service.Thread(blocked.ID)
+	independentState, _ = service.Thread(independent.ID)
+	if blockedState.Activity != domain.ActivityNeedsInput || blockedState.PendingCount != 1 {
+		t.Fatalf("blocked thread after independent completion = %#v", blockedState)
+	}
+	if independentState.Activity != domain.ActivityIdle || independentState.PendingCount != 0 {
+		t.Fatalf("completed independent thread = %#v", independentState)
+	}
+}
+
 func TestTerminalEvidenceMatrixAndScopedCleanup(t *testing.T) {
 	ctx := context.Background()
 	clock := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
