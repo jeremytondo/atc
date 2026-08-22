@@ -106,7 +106,7 @@ func TestProcessExitOverridesStructuredEvidence(t *testing.T) {
 	assertTransitionStates(t, service, "session", []State{StateWorking, StateFailed})
 }
 
-func TestCodexRunningStateRemainsUnknownWithoutStructuredAdapter(t *testing.T) {
+func TestCodexRunningStateRemainsUnknownBeforeStructuredEvidence(t *testing.T) {
 	service, err := New(t.TempDir(), "/tmp/atc-zmx", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -121,6 +121,73 @@ func TestCodexRunningStateRemainsUnknownWithoutStructuredAdapter(t *testing.T) {
 	})
 	if completed.State != StateCompleted || completed.Evidence.Source != SourceProcess {
 		t.Fatalf("completed observation = %#v", completed)
+	}
+}
+
+func TestCodexReducerUsesOnlyTheCapturedRootThread(t *testing.T) {
+	stateDir := t.TempDir()
+	service, err := New(stateDir, "/tmp/atc-zmx", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordTestCodexSignal(t, stateDir, "session", `{
+		"method":"thread/started",
+		"params":{"thread":{"id":"root","parentThreadId":null,"status":{"type":"idle"}}}
+	}`)
+	recordTestCodexSignal(t, stateDir, "session", `{
+		"method":"thread/status/changed",
+		"params":{"threadId":"root","status":{"type":"active","activeFlags":[]}}
+	}`)
+	recordTestCodexSignal(t, stateDir, "session", `{
+		"method":"thread/started",
+		"params":{"thread":{"id":"child","parentThreadId":"root","status":{"type":"active","activeFlags":[]}}}
+	}`)
+	recordTestCodexSignal(t, stateDir, "session", `{
+		"method":"thread/status/changed",
+		"params":{"threadId":"child","status":{"type":"active","activeFlags":["waitingOnApproval"]}}
+	}`)
+	recordTestCodexSignal(t, stateDir, "session", `{
+		"method":"thread/status/changed",
+		"params":{"threadId":"root","status":{"type":"active","activeFlags":["waitingOnApproval","waitingOnUserInput"]}}
+	}`)
+
+	waiting := observeTestStatus(t, service, "codex", "session", ProcessEvidence{State: ProcessRunning})
+	if waiting.State != StateWaitingInput || waiting.Evidence.Rule != "thread/status/changed.active.waitingOnUserInput" {
+		t.Fatalf("waiting observation = %#v", waiting)
+	}
+	recordTestCodexSignal(t, stateDir, "session", `{
+		"method":"thread/status/changed",
+		"params":{"threadId":"root","status":{"type":"idle"}}
+	}`)
+	assertTransitionStates(t, service, "session", []State{
+		StateIdle, StateWorking, StateWaitingInput, StateIdle,
+	})
+}
+
+func TestCodexReducerMapsApprovalAndSystemError(t *testing.T) {
+	signals := []storedSignal{
+		{Provider: "codex", ReceivedAt: time.Now(), Payload: json.RawMessage(`{
+			"method":"thread/started",
+			"params":{"thread":{"id":"root","parentThreadId":null,"status":{"type":"idle"}}}
+		}`)},
+		{Provider: "codex", ReceivedAt: time.Now(), Payload: json.RawMessage(`{
+			"method":"thread/status/changed",
+			"params":{"threadId":"root","status":{"type":"active","activeFlags":["waitingOnApproval"]}}
+		}`)},
+	}
+	permission, ok := reduceStructured("codex", signals)
+	if !ok || permission.State != StateWaitingPermission {
+		t.Fatalf("permission observation = %#v, ok=%t", permission, ok)
+	}
+	signals = append(signals, storedSignal{
+		Provider: "codex", ReceivedAt: time.Now(), Payload: json.RawMessage(`{
+			"method":"thread/status/changed",
+			"params":{"threadId":"root","status":{"type":"systemError"}}
+		}`),
+	})
+	failed, ok := reduceStructured("codex", signals)
+	if !ok || failed.State != StateFailed {
+		t.Fatalf("failure observation = %#v, ok=%t", failed, ok)
 	}
 }
 
@@ -186,10 +253,35 @@ func TestPrepareClaudeAddsPrivateHookSettings(t *testing.T) {
 	}
 }
 
-func TestRecordHookRejectsUnsafeSessionID(t *testing.T) {
-	err := RecordHook(t.TempDir(), "../escape", "claude", strings.NewReader(`{"hook_event_name":"Stop"}`))
+func TestPrepareCodexAddsStructuredBridge(t *testing.T) {
+	stateDir := t.TempDir()
+	service, err := New(stateDir, "/path with spaces/atc-zmx", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command, err := service.Prepare("codex", "session-id", []string{"codex", "--model", "gpt-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"/path with spaces/atc-zmx", "__codex_status_bridge",
+		"--state-dir", stateDir, "--id", "session-id", "--",
+		"codex", "--model", "gpt-test",
+	}
+	if len(command) != len(want) {
+		t.Fatalf("prepared command = %#v, want %#v", command, want)
+	}
+	for index := range want {
+		if command[index] != want[index] {
+			t.Fatalf("prepared command = %#v, want %#v", command, want)
+		}
+	}
+}
+
+func TestRecordSignalRejectsUnsafeSessionID(t *testing.T) {
+	err := RecordSignal(t.TempDir(), "../escape", "claude", strings.NewReader(`{"hook_event_name":"Stop"}`))
 	if err == nil {
-		t.Fatal("RecordHook accepted a path-traversal session id")
+		t.Fatal("RecordSignal accepted a path-traversal session id")
 	}
 }
 
@@ -228,7 +320,14 @@ func recordTestHook(t *testing.T, stateDir, sessionID string, payload map[string
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := RecordHook(stateDir, sessionID, "claude", strings.NewReader(string(contents))); err != nil {
+	if err := RecordSignal(stateDir, sessionID, "claude", strings.NewReader(string(contents))); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func recordTestCodexSignal(t *testing.T, stateDir, sessionID, payload string) {
+	t.Helper()
+	if err := RecordSignal(stateDir, sessionID, "codex", strings.NewReader(payload)); err != nil {
 		t.Fatal(err)
 	}
 }

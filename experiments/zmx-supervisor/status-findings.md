@@ -1,8 +1,10 @@
 # ATC-231 findings
 
 Tested on 2026-08-22 with Go 1.26.4, zmx 0.6.0, Claude Code 2.1.237,
-and Codex 0.149.0. The Codex run used isolated `ZMX_DIR` and `CODEX_HOME`
-directories and its exact session was stopped and cleaned up afterward.
+and Codex 0.149.0. Codex mappings were checked against that CLI's generated
+experimental app-server schema. The Codex runs used isolated `ZMX_DIR` and
+`CODEX_HOME` directories and their exact sessions were stopped and cleaned up
+afterward.
 
 ## Exercised matrix
 
@@ -14,17 +16,18 @@ directories and its exact session was stopped and cleaned up afterward.
 | Claude blocked on `AskUserQuestion` | `waiting_for_input` | `PermissionRequest` identified the specific tool and retained the complete payload. |
 | Claude emitted a later generic permission reminder for that question | `waiting_for_input` | The stateful reducer preserved the more specific outstanding request for the same prompt. |
 | Claude blocked on a general tool approval | `waiting_for_permission` | `PermissionRequest` identified a non-question tool. |
-| Codex displayed its startup trust dialog | `unknown` | No structured adapter was present; process evidence did not guess from the screen. |
-| Codex displayed its ready composer | `unknown` | The ready glyph is not treated as lifecycle evidence. |
-| Codex completed a short no-tools turn between polls | `unknown` while running | Screen polling missed the working interval, demonstrating that absence of an indicator proves nothing. |
-| Codex displayed an interactive question | `unknown` | The question UI reused prompt and interrupt text that screen rules had misclassified. |
+| Codex displayed its startup trust dialog | `unknown` | No provider thread existed yet, so conservative process evidence remained authoritative. |
+| Codex created its root thread and displayed the ready composer | `idle` | `thread/started` carried the exact root thread id and an `idle` status. |
+| Codex completed a short no-tools turn between manual polls | `working` → `idle` | Persisted `thread/status/changed` events captured both transitions even though screen polling had missed the working interval. |
+| Codex displayed an interactive question | `waiting_for_input` | The root thread became `active` with `waitingOnUserInput`. |
+| Codex displayed a harmless command approval | `waiting_for_permission` | The root thread became `active` with `waitingOnApproval`; the command was not approved. |
 | ATC deliberately stopped a child | `completed` | Persisted stop intent and the exit marker override stale provider evidence. Unexpected nonzero exits normalize to `failed`. |
 | zmx inventory was unavailable | `unavailable` in deterministic test | Process evidence records the inventory failure while the underlying supervisor error still surfaces. |
 
 The race-enabled suite covers the observed Claude event ordering, structured
 state reduction, generic-notification de-duplication, generated hook settings,
-process completion and failure, Codex's conservative running state, and
-unavailable inventory.
+process completion and failure, Codex root-thread correlation and subagent
+rejection, idle/working/input/permission mappings, and unavailable inventory.
 
 ## Conclusions
 
@@ -41,10 +44,11 @@ unavailable inventory.
    Short turns can also start and finish between polls. Screen inference is
    therefore absent from the automatic status path, rather than labeled as a
    fallback.
-3. **Unknown is the correct Codex result for now.** Process evidence reliably
-   distinguishes running, completed, failed, and unavailable. It cannot say
-   whether a running Codex TUI is idle, working, or blocked, so the prototype
-   does not invent that distinction.
+3. **Codex app-server is a dependable structured source.** A passive client of
+   the same app-server used by a `codex --remote` TUI receives immediate,
+   thread-correlated status changes. It distinguished idle, working, waiting
+   for input, and waiting for permission in a real TUI without reading the
+   screen. Before the TUI creates its root thread, `unknown` remains correct.
 4. **Process exit is final.** Once the child exits, its marker overrides stale
    structured evidence so a previous `working` or waiting state cannot mask
    completion or failure.
@@ -56,6 +60,7 @@ unavailable inventory.
 ## Recommendation
 
 Carry the structured-or-process model into the unified Go core. Keep the
-stateful Claude hook reducer. Add rich Codex states only with a dedicated,
-structured `codex app-server` adapter whose lifecycle belongs to ATC; until
-then, a running Codex session should remain `unknown`.
+stateful Claude hook reducer. Own one long-lived Codex app-server per ATC
+profile, connect every Codex TUI to it with `--remote`, and retain a passive
+observer that correlates status by root thread id. Report `unknown` only before
+identity is established or when the structured connection is unavailable.

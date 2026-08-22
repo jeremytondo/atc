@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/elevenideas/atc/experiments/zmx-supervisor/internal/agentstatus"
+	"github.com/elevenideas/atc/experiments/zmx-supervisor/internal/codexbridge"
 	"github.com/elevenideas/atc/experiments/zmx-supervisor/internal/supervisor"
 	"github.com/elevenideas/atc/experiments/zmx-supervisor/internal/terminal"
 )
@@ -33,6 +34,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "__agent_status_hook" {
 		os.Exit(runAgentStatusHook(os.Args[2:]))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "__codex_status_bridge" {
+		os.Exit(runCodexStatusBridge(os.Args[2:]))
+	}
 	if err := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -50,11 +54,38 @@ func runAgentStatusHook(args []string) int {
 		fmt.Fprintln(os.Stderr, "invalid agent status hook arguments")
 		return 2
 	}
-	if err := agentstatus.RecordHook(stateDir, sessionID, provider, os.Stdin); err != nil {
+	if err := agentstatus.RecordSignal(stateDir, sessionID, provider, os.Stdin); err != nil {
 		fmt.Fprintln(os.Stderr, "record agent status hook:", err)
 		return 1
 	}
 	return 0
+}
+
+func runCodexStatusBridge(args []string) int {
+	flags := flag.NewFlagSet("__codex_status_bridge", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	var stateDir, sessionID string
+	flags.StringVar(&stateDir, "state-dir", "", "state directory")
+	flags.StringVar(&sessionID, "id", "", "session id")
+	if err := flags.Parse(args); err != nil || stateDir == "" || sessionID == "" || len(flags.Args()) == 0 {
+		fmt.Fprintln(os.Stderr, "invalid codex status bridge arguments")
+		return 2
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "resolve codex status bridge working directory:", err)
+		return 1
+	}
+	code, err := codexbridge.Run(codexbridge.Config{
+		StateDir:  stateDir,
+		SessionID: sessionID,
+		Command:   flags.Args(),
+		CWD:       cwd,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "codex status bridge:", err)
+	}
+	return code
 }
 
 func runChild(args []string) int {

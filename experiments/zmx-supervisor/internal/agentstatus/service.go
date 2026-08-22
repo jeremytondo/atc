@@ -38,15 +38,31 @@ func New(stateDir, executable string, now func() time.Time) (*Service, error) {
 	return &Service{dir: dir, executable: executable, now: now}, nil
 }
 
+func SessionDirectory(stateDir, sessionID string) (string, error) {
+	if err := validateSessionID(sessionID); err != nil {
+		return "", err
+	}
+	return filepath.Join(stateDir, "agent-status", sessionID), nil
+}
+
 func (s *Service) Prepare(kind, sessionID string, command []string) ([]string, error) {
-	if kind != "claude" {
+	if kind != "claude" && kind != "codex" {
 		return append([]string(nil), command...), nil
 	}
 	if len(command) == 0 {
-		return nil, errors.New("prepare claude status hooks: empty command")
+		return nil, fmt.Errorf("prepare %s status adapter: empty command", kind)
 	}
 	if err := validateSessionID(sessionID); err != nil {
 		return nil, err
+	}
+	if kind == "codex" {
+		prepared := []string{
+			s.executable, "__codex_status_bridge",
+			"--state-dir", filepath.Dir(s.dir),
+			"--id", sessionID,
+			"--",
+		}
+		return append(prepared, command...), nil
 	}
 	hookCommand := strings.Join([]string{
 		shellQuote(s.executable), "__agent_status_hook",
@@ -77,8 +93,8 @@ func (s *Service) Prepare(kind, sessionID string, command []string) ([]string, e
 	return append(prepared, command[1:]...), nil
 }
 
-func RecordHook(stateDir, sessionID, provider string, input io.Reader) error {
-	if provider != "claude" {
+func RecordSignal(stateDir, sessionID, provider string, input io.Reader) error {
+	if provider != "claude" && provider != "codex" {
 		return fmt.Errorf("unsupported structured status provider %q", provider)
 	}
 	if err := validateSessionID(sessionID); err != nil {

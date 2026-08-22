@@ -20,13 +20,21 @@ type reducedObservation struct {
 }
 
 func reduceStructured(kind string, signals []storedSignal) (Observation, bool) {
-	if kind != "claude" {
+	switch kind {
+	case "claude":
+		return reduceClaude(signals)
+	case "codex":
+		return reduceCodex(signals)
+	default:
 		return Observation{}, false
 	}
+}
+
+func reduceClaude(signals []storedSignal) (Observation, bool) {
 	var current reducedObservation
 	found := false
 	for _, signal := range signals {
-		if signal.Provider != kind {
+		if signal.Provider != "claude" {
 			continue
 		}
 		var event claudeEvent
@@ -38,7 +46,7 @@ func reduceStructured(kind string, signals []storedSignal) (Observation, bool) {
 			continue
 		}
 		current = reducedObservation{
-			observation: claudeObservation(kind, signal, event, state),
+			observation: claudeObservation(signal, event, state),
 			promptID:    event.PromptID,
 		}
 		found = true
@@ -88,7 +96,7 @@ func reduceClaudeNotification(event claudeEvent, current reducedObservation) (St
 	}
 }
 
-func claudeObservation(kind string, signal storedSignal, event claudeEvent, state State) Observation {
+func claudeObservation(signal storedSignal, event claudeEvent, state State) Observation {
 	rule := event.HookEvent
 	if event.Notification != "" {
 		rule += "." + event.Notification
@@ -107,8 +115,106 @@ func claudeObservation(kind string, signal storedSignal, event claudeEvent, stat
 		detail += " session_id=" + event.SessionID
 	}
 	return Observation{
-		Provider: kind, State: state, ObservedAt: signal.ReceivedAt,
+		Provider: "claude", State: state, ObservedAt: signal.ReceivedAt,
 		Evidence: Evidence{Source: SourceStructured, Rule: rule, Detail: detail, Raw: signal.Payload},
+	}
+}
+
+type codexStatus struct {
+	Type        string   `json:"type"`
+	ActiveFlags []string `json:"activeFlags"`
+}
+
+type codexEvent struct {
+	Method string `json:"method"`
+	Params struct {
+		ThreadID string      `json:"threadId"`
+		Status   codexStatus `json:"status"`
+		Thread   struct {
+			ID             string      `json:"id"`
+			ParentThreadID *string     `json:"parentThreadId"`
+			Status         codexStatus `json:"status"`
+		} `json:"thread"`
+	} `json:"params"`
+}
+
+func reduceCodex(signals []storedSignal) (Observation, bool) {
+	threadID := ""
+	var current Observation
+	found := false
+	for _, signal := range signals {
+		if signal.Provider != "codex" {
+			continue
+		}
+		var event codexEvent
+		if json.Unmarshal(signal.Payload, &event) != nil {
+			continue
+		}
+		status := codexStatus{}
+		switch event.Method {
+		case "thread/started":
+			if event.Params.Thread.ID == "" || event.Params.Thread.ParentThreadID != nil {
+				continue
+			}
+			if threadID == "" {
+				threadID = event.Params.Thread.ID
+			}
+			if event.Params.Thread.ID != threadID {
+				continue
+			}
+			status = event.Params.Thread.Status
+		case "thread/status/changed":
+			if threadID == "" || event.Params.ThreadID != threadID {
+				continue
+			}
+			status = event.Params.Status
+		default:
+			continue
+		}
+		state, suffix, ok := normalizeCodexStatus(status)
+		if !ok {
+			continue
+		}
+		current = codexObservation(signal, event.Method, threadID, status.Type, suffix, state)
+		found = true
+	}
+	return current, found
+}
+
+func normalizeCodexStatus(status codexStatus) (State, string, bool) {
+	switch status.Type {
+	case "idle":
+		return StateIdle, "idle", true
+	case "active":
+		for _, flag := range status.ActiveFlags {
+			if flag == "waitingOnUserInput" {
+				return StateWaitingInput, "active.waitingOnUserInput", true
+			}
+		}
+		for _, flag := range status.ActiveFlags {
+			if flag == "waitingOnApproval" {
+				return StateWaitingPermission, "active.waitingOnApproval", true
+			}
+		}
+		return StateWorking, "active", true
+	case "systemError":
+		return StateFailed, "systemError", true
+	case "notLoaded":
+		return StateUnknown, "notLoaded", true
+	default:
+		return "", "", false
+	}
+}
+
+func codexObservation(signal storedSignal, method, threadID, statusType, suffix string, state State) Observation {
+	return Observation{
+		Provider: "codex", State: state, ObservedAt: signal.ReceivedAt,
+		Evidence: Evidence{
+			Source: SourceStructured,
+			Rule:   method + "." + suffix,
+			Detail: method + " thread_id=" + threadID + " status=" + statusType,
+			Raw:    signal.Payload,
+		},
 	}
 }
 

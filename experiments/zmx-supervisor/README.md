@@ -4,9 +4,10 @@ This is an isolated Go prototype for testing zmx as the durable owner of ATC
 terminal-backed sessions. It does not import or modify the current app server.
 
 ATC-231 extends the same harness with an isolated `internal/agentstatus/`
-layer. Claude sessions receive launch-time lifecycle hooks. Codex deliberately
-reports only conservative process status until it has a structured adapter.
-The supervisor consumes only normalized agent status and evidence.
+layer. Claude sessions receive launch-time lifecycle hooks. Codex sessions run
+through a private app-server bridge that passively records the remote TUI's
+structured thread status. The supervisor consumes only normalized agent status
+and evidence.
 
 The zmx-specific implementation is confined to `internal/terminal/`. The
 supervisor above it deals only in terminal sessions, persisted metadata, exit
@@ -15,7 +16,10 @@ evidence, and the normalized states `running`, `exited`, `missing`,
 
 ## Build and test
 
-Requirements are Go 1.26 or newer and zmx 0.6.0 on `PATH`.
+Requirements are Go 1.26 or newer and zmx 0.6.0 on `PATH`. Real provider
+workloads also require their corresponding CLI; the Codex bridge was validated
+with Codex 0.149.0 and requires `app-server --listen` plus TUI `--remote`
+support.
 
 ```sh
 cd experiments/zmx-supervisor
@@ -113,8 +117,9 @@ For running Claude and Codex workloads, the status layer selects exactly one
 source:
 
 1. A recognized structured lifecycle signal. The prototype wires real Claude
-   hooks into the private state directory; Codex has no structured adapter in
-   this experiment.
+   hooks into the private state directory. Its Codex bridge launches a private
+   app-server, connects the zmx-backed TUI with `--remote`, and observes that
+   same server without sending turns or answering requests.
 2. Process evidence, which reports `unknown` while the child is running.
 
 Terminal-screen inference is intentionally not part of the status path. Live
@@ -122,6 +127,11 @@ Claude and Codex testing showed that prompts, trust dialogs, question dialogs,
 and transient working screens reuse the same glyphs and text. Polling can also
 miss short turns entirely, so matching screen contents would produce false
 confidence rather than a reliable fallback.
+
+The per-session Codex app-server exists only to isolate this status experiment.
+The unified ATC core should own one long-lived shared app-server per profile and
+attach every Codex TUI to it; the structured event and correlation model is the
+same.
 
 Once the child exits, its exit marker overrides stale provider evidence and
 produces `completed` or `failed`. Missing, stale, and disconnected sessions are
