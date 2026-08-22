@@ -31,7 +31,7 @@ export type ManagerResult =
   | { readonly type: "attach"; readonly threadId: string; readonly state: ManagerState }
   | {
       readonly type: "createThread"
-      readonly input: AppServer.CreateThreadInput
+      readonly input: AppServer.CreateTuiThreadInput
       readonly state: ManagerState
     }
   | {
@@ -574,7 +574,7 @@ const textPrompt = (
   )
 
 type ThreadWizardResult =
-  | { readonly type: "create"; readonly input: AppServer.CreateThreadInput }
+  | { readonly type: "create"; readonly input: AppServer.CreateTuiThreadInput }
   | { readonly type: "cancel"; readonly status: string }
   | { readonly type: "quit" }
 
@@ -772,12 +772,15 @@ const runManager = (
         if (result.type === "deleteProject") {
           return Ref.get(options.snapshotRef).pipe(
             Effect.flatMap((snapshot): Effect.Effect<ManagerResult, unknown> => {
-              const project = snapshot?.projects.find((item) => item.id === result.projectId)
+              if (snapshot === undefined) {
+                return loop({ ...result.state, status: "That Project is no longer available." })
+              }
+              const project = snapshot.projects.find((item) => item.id === result.projectId)
               if (project === undefined) {
                 return loop({ ...result.state, status: "That Project is no longer available." })
               }
-              const threadCount =
-                snapshot?.threads.filter((thread) => thread.projectId === project.id).length ?? 0
+              const counts = AppServer.threadCountsForProject(snapshot, project.id)
+              const threadCount = counts.active + counts.archived
               const threadNoun = threadCount === 1 ? "Thread" : "Threads"
               return selectPrompt(
                 shell,

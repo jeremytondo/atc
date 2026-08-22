@@ -91,7 +91,7 @@ export const run = Effect.scoped(
     const runAction: OpenTui.RunAction = (action) => {
       if (action.type === "attach") {
         return refreshAfter(
-          server.openThread(action.threadId).pipe(
+          server.openThreadTerminal(action.threadId).pipe(
             Effect.map((terminal) => ({
               type: "attach" as const,
               terminal,
@@ -251,9 +251,9 @@ export const run = Effect.scoped(
 
       if (action.type === "createThread") {
         return refreshAfter(
-          server.createThread(action.input).pipe(
+          server.createTuiThread(action.input).pipe(
             Effect.flatMap((thread) =>
-              server.openThread(thread.id).pipe(
+              server.openThreadTerminal(thread.id).pipe(
                 Effect.map((terminal) => ({
                   type: "attach" as const,
                   terminal,
