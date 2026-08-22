@@ -1,12 +1,12 @@
 # ATC-232 findings
 
-Status: deterministic composition path and isolated real-zmx smoke passing;
-opt-in real-provider matrix provided for review
+Status: deterministic gate, isolated real-zmx smoke, and isolated live-provider
+composition matrix passing
 
-Observed on 2026-08-22. The real-provider claims below distinguish evidence
-already established by ATC-229/230/231 from behavior newly exercised by this
-composition prototype. The expensive live matrix was not silently rerun while
-implementing this change.
+Observed on 2026-08-22. The live run used private Claude and Codex profiles,
+Claude Haiku at low TUI effort, and Codex `gpt-5.6-luna` at low effort. The
+prototype now selects and verifies ACP model configuration before sending a
+prompt and rejects Claude Fable or Codex Sol at the execution boundary.
 
 ## What the unified prototype establishes
 
@@ -48,8 +48,19 @@ The adapter owns its exact subprocess, maps provider permission option IDs to
 opaque API option IDs, tracks late tool updates as background activity, and
 keeps create and exact load separate. The deterministic subprocess test proves
 the wire boundary, allow response, normalized assistant/tool events, and
-fail-closed load. ATC-229 remains the reviewed real evidence that both current
-official adapters honor allow and deny while tools remain agent-owned.
+fail-closed load. ATC-229 originally established that both official adapters
+honor allow and deny while tools remain agent-owned.
+
+The composed live rerun now adds direct evidence against both pinned adapters.
+For Claude, a real file allow and deny, foreground cancellation, exact adapter
+restart/load, identity preservation, and context preservation passed on Haiku.
+For Codex, the same matrix passed on Luna/low. Codex's automatic reviewer can
+approve low-risk writes without consulting the ACP client, so the permission
+fixture uses the official adapter's read-only mode, human review, and an
+elevated retry to a test-owned localhost server: allow reached it and deny did
+not. Claude's current ACP adapter rejects a separate Haiku `effort=low` update;
+the verified Haiku selection remains enforced, while Claude TUI accepts its
+native `--effort low` flag.
 
 zmx runs only with a private socket directory, log directory, and
 `atc-unified-` prefix. The child wrapper records atomic start/exit evidence and
@@ -80,6 +91,10 @@ from Claude's stale `SubagentStop` snapshot.
 `make check` passes formatting, vet, the race detector, and the focused suite.
 `make smoke-zmx` also passes against the installed real zmx using a temporary
 socket directory, log directory, state directory, and exact test-owned session.
+`make smoke-acp` passes against private provider profiles and now performs real
+allow, deny, cancellation, fresh-adapter exact load, identity, and context
+checks for both providers.
+
 The suite covers:
 
 - both Thread kinds coexisting, wrong-kind typed errors, and local-only create;
@@ -101,6 +116,17 @@ The suite covers:
 
 Tests wait on channels, event cursors, inventories, and process exits. None use
 time sleeps as a success condition.
+
+The reviewed TUI composition run created one Claude and two Codex TUI Threads.
+The screens reported Haiku 4.5 and `gpt-5.6-luna low`; all returned distinct
+markers. Both Codex relays selected different exact roots and independently
+reported `working -> idle`. During a 12-second Codex tool call, the exact core
+PID was killed. All three zmx sessions and the shared app-server survived, the
+Codex TUI completed while the core was absent, and restart replayed its queued
+idle evidence without changing any public Terminal identity. Both Claude and a
+second Codex TUI then completed new turns through those same Terminals. Cleanup
+ignored the three linked sessions, exact deletion ended them, and the private
+zmx inventory was empty afterward.
 
 ## Keep, change, discard
 
@@ -146,13 +172,12 @@ Discard:
 3. **Truthful distinct state under restart:** yes for the automated failure and
    recovery matrix, including late/background evidence and process exit.
 4. **Exact ownership survives or fails closed:** yes in deterministic ACP and
-   zmx tests and the isolated real-zmx run. ATC-229 provides the underlying
-   real-adapter evidence; the full combined opt-in rerun remains a review
-   action.
+   zmx tests, the isolated real-zmx run, both live ACP adapters, and the live
+   core-crash TUI run.
 5. **Provider topologies compose without leaking:** yes structurally and under
-   deterministic event streams. The shared-server relay, Claude hook reducer,
-   ACP adapter, and zmx adapter run in one core composition; the opt-in live
-   two-TUI run is documented rather than claimed as newly executed evidence.
+   deterministic and live event streams. The shared-server relay, Claude hook
+   reducer, ACP adapter, and zmx adapter ran in one core composition with two
+   simultaneously independent Codex roots.
 6. **Enough evidence for production design:** yes. The keep/change/discard list
    identifies the durable architecture and the remaining lifecycle, storage,
    transport, and operational work explicitly.

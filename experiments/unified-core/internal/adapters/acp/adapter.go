@@ -128,23 +128,24 @@ func (a *Adapter) Open(ctx context.Context, open ports.ChatOpen) (ports.ChatSess
 		}
 	}
 	session.sessionID = identity
-	for _, option := range []struct {
+	type selection struct {
 		id    string
 		value string
-	}{{id: "model", value: model}, {id: effortConfigID(open.Agent), value: effort}} {
+	}
+	options := []selection{{id: "model", value: model}}
+	// Claude's current official ACP adapter can expose an effort option that its
+	// underlying SDK rejects for Haiku. The model is still selected and verified;
+	// Codex effort is independently selectable and materially affects cost.
+	if open.Agent == domain.AgentCodex {
+		options = append(options, selection{id: "reasoning_effort", value: effort})
+	}
+	for _, option := range options {
 		if err := session.setConfigOption(ctx, option.id, option.value); err != nil {
 			_ = session.stop(context.Background())
 			return nil, "", fmt.Errorf("select %s %s %q: %w", open.Agent, option.id, option.value, err)
 		}
 	}
 	return session, identity, nil
-}
-
-func effortConfigID(agent domain.Agent) string {
-	if agent == domain.AgentClaude {
-		return "effort"
-	}
-	return "reasoning_effort"
 }
 
 type pendingPermission struct {

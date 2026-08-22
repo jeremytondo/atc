@@ -129,9 +129,19 @@ type promptResult struct {
 }
 
 func helperAdapter() *Adapter {
-	command := Command{Path: os.Args[0], Args: []string{"-test.run=TestACPHelperProcess", "--"}, Env: []string{"ATC_ACP_HELPER=1"}}
+	claude := Command{
+		Path: os.Args[0], Args: []string{"-test.run=TestACPHelperProcess", "--"},
+		Env: []string{"ATC_ACP_HELPER=1", "ATC_ACP_EXPECT_MODEL=" + provider.ClaudeCheapModel},
+	}
+	codex := Command{
+		Path: os.Args[0], Args: []string{"-test.run=TestACPHelperProcess", "--"},
+		Env: []string{
+			"ATC_ACP_HELPER=1", "ATC_ACP_EXPECT_MODEL=" + provider.CodexCheapModel,
+			"ATC_ACP_EXPECT_EFFORT=" + provider.CheapEffort,
+		},
+	}
 	return New(Config{
-		Commands: map[domain.Agent]Command{domain.AgentClaude: command, domain.AgentCodex: command},
+		Commands: map[domain.Agent]Command{domain.AgentClaude: claude, domain.AgentCodex: codex},
 		Models: map[domain.Agent]string{
 			domain.AgentClaude: provider.ClaudeCheapModel,
 			domain.AgentCodex:  provider.CodexCheapModel,
@@ -158,6 +168,7 @@ func runHelper() error {
 	scanner := bufio.NewScanner(os.Stdin)
 	encoder := json.NewEncoder(os.Stdout)
 	var promptID json.RawMessage
+	var modelSelected, effortSelected bool
 	for scanner.Scan() {
 		var message struct {
 			ID     json.RawMessage            `json:"id"`
@@ -192,10 +203,21 @@ func runHelper() error {
 			var configID, value string
 			_ = json.Unmarshal(message.Params["configId"], &configID)
 			_ = json.Unmarshal(message.Params["value"], &value)
+			switch configID {
+			case "model":
+				modelSelected = value == os.Getenv("ATC_ACP_EXPECT_MODEL")
+			case "reasoning_effort":
+				effortSelected = value == os.Getenv("ATC_ACP_EXPECT_EFFORT")
+			default:
+				return fmt.Errorf("unexpected config selection %s=%s", configID, value)
+			}
 			respond(encoder, message.ID, map[string]any{
 				"configOptions": []map[string]string{{"id": configID, "currentValue": value}},
 			})
 		case "session/prompt":
+			if !modelSelected || (os.Getenv("ATC_ACP_EXPECT_EFFORT") != "" && !effortSelected) {
+				return fmt.Errorf("prompt arrived before expected model and effort selection")
+			}
 			promptID = append(json.RawMessage(nil), message.ID...)
 			_ = encoder.Encode(map[string]any{
 				"jsonrpc": "2.0", "id": "provider-permission", "method": "session/request_permission",

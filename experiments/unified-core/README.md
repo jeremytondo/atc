@@ -32,18 +32,20 @@ is intentionally independent of the Go core and survives core restarts:
 ```sh
 cd experiments/unified-core
 mkdir -p .state/codex-home
-CODEX_HOME="$PWD/.state/codex-home" codex app-server --listen ws://127.0.0.1:7444
+export CODEX_HOME="$PWD/.state/codex-home"
+export CLAUDE_CONFIG_DIR="$PWD/.state/claude-home"
 ```
 
-Authenticate that private profile first with `CODEX_HOME=... codex login` if
-needed. In another terminal, inherit the same `CODEX_HOME`, build, and start
-the prototype:
+Authenticate those private profiles first with `codex login` and `claude` if
+needed, then start the shared server with `codex app-server --listen
+ws://127.0.0.1:7444`. In another terminal, inherit both variables, build, and
+start the prototype with explicit model policy:
 
 ```sh
 cd experiments/unified-core
-export CODEX_HOME="$PWD/.state/codex-home"
 make build
-./bin/atc-unified serve --state .state --codex-remote ws://127.0.0.1:7444 --debug
+./bin/atc-unified serve --state .state --codex-remote ws://127.0.0.1:7444 \
+  --claude-model haiku --codex-model gpt-5.6-luna --effort low --debug
 ```
 
 The server binds to `127.0.0.1:7332` by default. Thread creation additionally
@@ -73,9 +75,10 @@ make smoke-acp
 make smoke-zmx
 ```
 
-`smoke-acp` calls both official ACP v1 adapters and therefore may use provider
-quota. `smoke-zmx` uses only `experiments/unified-core/.state`-independent test
-directories and the `atc-unified-` prefix.
+`smoke-acp` calls both official ACP v1 adapters several times to cover allow,
+deny, cancellation, and exact reload, so it uses provider quota and must be run
+with private `CODEX_HOME` and `CLAUDE_CONFIG_DIR` profiles. `smoke-zmx` uses
+temporary directories and the `atc-unified-` prefix.
 
 For the full reviewed matrix, keep the shared app-server and core processes in
 separate terminals, then use canonical API calls only:
