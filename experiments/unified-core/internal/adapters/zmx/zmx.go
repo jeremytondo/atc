@@ -22,6 +22,7 @@ import (
 	"github.com/creack/pty"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/domain"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/ports"
+	"github.com/elevenideas/atc/experiments/unified-core/internal/provider"
 )
 
 type Config struct {
@@ -31,6 +32,8 @@ type Config struct {
 	LogDir            string
 	HookBaseURL       string
 	CodexRemote       string
+	Models            map[domain.Agent]string
+	Efforts           map[domain.Agent]string
 	PollInterval      time.Duration
 	VerifyPasses      int
 }
@@ -42,6 +45,8 @@ type Adapter struct {
 	logDir            string
 	hookBaseURL       string
 	codexRemote       string
+	models            map[domain.Agent]string
+	efforts           map[domain.Agent]string
 	pollInterval      time.Duration
 	verifyPasses      int
 }
@@ -82,7 +87,8 @@ func New(config Config) (*Adapter, error) {
 	return &Adapter{
 		executable: executable, wrapperExecutable: wrapper, socketDir: socketDir,
 		logDir: logDir, hookBaseURL: strings.TrimRight(config.HookBaseURL, "/"),
-		codexRemote: config.CodexRemote, pollInterval: pollInterval, verifyPasses: verifyPasses,
+		codexRemote: config.CodexRemote, models: config.Models, efforts: config.Efforts,
+		pollInterval: pollInterval, verifyPasses: verifyPasses,
 	}, nil
 }
 
@@ -265,6 +271,11 @@ func (a *Adapter) providerCommand(open ports.TerminalOpen) ([]string, error) {
 	if len(open.Command) > 0 {
 		return append([]string(nil), open.Command...), nil
 	}
+	model := a.models[open.Agent]
+	effort := a.efforts[open.Agent]
+	if err := provider.ValidateSelection(open.Agent, model, effort); err != nil {
+		return nil, err
+	}
 	switch open.Agent {
 	case domain.AgentCodex:
 		if a.codexRemote == "" {
@@ -277,11 +288,12 @@ func (a *Adapter) providerCommand(open ports.TerminalOpen) ([]string, error) {
 		return []string{
 			a.wrapperExecutable, "__codex_tui", "--remote", a.codexRemote,
 			"--status-url", a.hookBaseURL + "/internal/hooks/codex/terminal/" + terminalID,
-			"--cwd", open.CWD, "--", "codex",
+			"--cwd", open.CWD, "--", "codex", "--model", model,
+			"--config", "model_reasoning_effort=\"" + effort + "\"",
 		}, nil
 	case domain.AgentClaude:
 		sessionID := stableUUID(open.TerminalID)
-		command := []string{"claude", "--session-id", sessionID}
+		command := []string{"claude", "--session-id", sessionID, "--model", model, "--effort", effort}
 		if a.hookBaseURL != "" {
 			settings, err := claudeHookSettings(a.hookBaseURL, strings.TrimPrefix(open.TerminalID, "atc-unified-"))
 			if err != nil {

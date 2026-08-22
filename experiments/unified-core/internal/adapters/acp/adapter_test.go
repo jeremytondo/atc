@@ -13,6 +13,7 @@ import (
 
 	"github.com/elevenideas/atc/experiments/unified-core/internal/domain"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/ports"
+	"github.com/elevenideas/atc/experiments/unified-core/internal/provider"
 )
 
 type capturedRequest struct {
@@ -129,7 +130,17 @@ type promptResult struct {
 
 func helperAdapter() *Adapter {
 	command := Command{Path: os.Args[0], Args: []string{"-test.run=TestACPHelperProcess", "--"}, Env: []string{"ATC_ACP_HELPER=1"}}
-	return New(Config{Commands: map[domain.Agent]Command{domain.AgentClaude: command, domain.AgentCodex: command}})
+	return New(Config{
+		Commands: map[domain.Agent]Command{domain.AgentClaude: command, domain.AgentCodex: command},
+		Models: map[domain.Agent]string{
+			domain.AgentClaude: provider.ClaudeCheapModel,
+			domain.AgentCodex:  provider.CodexCheapModel,
+		},
+		Efforts: map[domain.Agent]string{
+			domain.AgentClaude: provider.CheapEffort,
+			domain.AgentCodex:  provider.CheapEffort,
+		},
+	})
 }
 
 func TestACPHelperProcess(t *testing.T) {
@@ -177,6 +188,13 @@ func runHelper() error {
 				continue
 			}
 			respond(encoder, message.ID, map[string]any{})
+		case "session/set_config_option":
+			var configID, value string
+			_ = json.Unmarshal(message.Params["configId"], &configID)
+			_ = json.Unmarshal(message.Params["value"], &value)
+			respond(encoder, message.ID, map[string]any{
+				"configOptions": []map[string]string{{"id": configID, "currentValue": value}},
+			})
 		case "session/prompt":
 			promptID = append(json.RawMessage(nil), message.ID...)
 			_ = encoder.Encode(map[string]any{

@@ -7,7 +7,38 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/elevenideas/atc/experiments/unified-core/internal/domain"
+	"github.com/elevenideas/atc/experiments/unified-core/internal/ports"
+	"github.com/elevenideas/atc/experiments/unified-core/internal/provider"
 )
+
+func TestProviderCommandsPinCheapModels(t *testing.T) {
+	adapter := &Adapter{
+		wrapperExecutable: "/tmp/atc-unified", hookBaseURL: "http://127.0.0.1:1",
+		codexRemote: "ws://127.0.0.1:2",
+		models: map[domain.Agent]string{
+			domain.AgentClaude: provider.ClaudeCheapModel,
+			domain.AgentCodex:  provider.CodexCheapModel,
+		},
+		efforts: map[domain.Agent]string{
+			domain.AgentClaude: provider.CheapEffort,
+			domain.AgentCodex:  provider.CheapEffort,
+		},
+	}
+	for _, agent := range []domain.Agent{domain.AgentClaude, domain.AgentCodex} {
+		command, err := adapter.providerCommand(ports.TerminalOpen{
+			TerminalID: "atc-unified-test", Agent: agent, CWD: "/tmp",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		joined := strings.Join(command, " ")
+		if !strings.Contains(joined, adapter.models[agent]) || !strings.Contains(joined, provider.CheapEffort) {
+			t.Fatalf("%s command does not pin model and effort: %q", agent, joined)
+		}
+	}
+}
 
 func TestParseInventoryFiltersPrivateNamespaceAndPreservesUnreachable(t *testing.T) {
 	entries := ParseInventory("name=atc-unified-live\tpid=42\n" +

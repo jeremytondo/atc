@@ -10,19 +10,30 @@ import (
 
 	"github.com/elevenideas/atc/experiments/unified-core/internal/domain"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/ports"
+	"github.com/elevenideas/atc/experiments/unified-core/internal/provider"
 )
 
 func TestRealACP(t *testing.T) {
 	if os.Getenv("ATC_UNIFIED_ACP_SMOKE") != "1" {
 		t.Skip("set ATC_UNIFIED_ACP_SMOKE=1 to call the real official adapters")
 	}
-	for _, provider := range []domain.Agent{domain.AgentClaude, domain.AgentCodex} {
-		t.Run(string(provider), func(t *testing.T) {
+	for _, agent := range []domain.Agent{domain.AgentClaude, domain.AgentCodex} {
+		t.Run(string(agent), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 			events := &realEvents{}
-			session, identity, err := New(Config{Stderr: os.Stderr}).Open(ctx, ports.ChatOpen{
-				ThreadID: string(provider), Agent: provider, CWD: t.TempDir(), Events: events,
+			session, identity, err := New(Config{
+				Models: map[domain.Agent]string{
+					domain.AgentClaude: provider.ClaudeCheapModel,
+					domain.AgentCodex:  provider.CodexCheapModel,
+				},
+				Efforts: map[domain.Agent]string{
+					domain.AgentClaude: provider.CheapEffort,
+					domain.AgentCodex:  provider.CheapEffort,
+				},
+				Stderr: os.Stderr,
+			}).Open(ctx, ports.ChatOpen{
+				ThreadID: string(agent), Agent: agent, CWD: t.TempDir(), Events: events,
 			})
 			if err != nil {
 				t.Fatal(err)

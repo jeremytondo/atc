@@ -15,6 +15,7 @@ import (
 
 	"github.com/elevenideas/atc/experiments/unified-core/internal/domain"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/ports"
+	"github.com/elevenideas/atc/experiments/unified-core/internal/provider"
 )
 
 type Command struct {
@@ -25,11 +26,15 @@ type Command struct {
 
 type Config struct {
 	Commands map[domain.Agent]Command
+	Models   map[domain.Agent]string
+	Efforts  map[domain.Agent]string
 	Stderr   io.Writer
 }
 
 type Adapter struct {
 	commands map[domain.Agent]Command
+	models   map[domain.Agent]string
+	efforts  map[domain.Agent]string
 	stderr   io.Writer
 }
 
@@ -45,10 +50,15 @@ func New(config Config) *Adapter {
 	if stderr == nil {
 		stderr = io.Discard
 	}
-	return &Adapter{commands: commands, stderr: stderr}
+	return &Adapter{commands: commands, models: config.Models, efforts: config.Efforts, stderr: stderr}
 }
 
 func (a *Adapter) Open(ctx context.Context, open ports.ChatOpen) (ports.ChatSession, string, error) {
+	model := a.models[open.Agent]
+	effort := a.efforts[open.Agent]
+	if err := provider.ValidateSelection(open.Agent, model, effort); err != nil {
+		return nil, "", err
+	}
 	command, ok := a.commands[open.Agent]
 	if !ok {
 		return nil, "", fmt.Errorf("no ACP command configured for %s", open.Agent)
@@ -118,7 +128,23 @@ func (a *Adapter) Open(ctx context.Context, open ports.ChatOpen) (ports.ChatSess
 		}
 	}
 	session.sessionID = identity
+	for _, option := range []struct {
+		id    string
+		value string
+	}{{id: "model", value: model}, {id: effortConfigID(open.Agent), value: effort}} {
+		if err := session.setConfigOption(ctx, option.id, option.value); err != nil {
+			_ = session.stop(context.Background())
+			return nil, "", fmt.Errorf("select %s %s %q: %w", open.Agent, option.id, option.value, err)
+		}
+	}
 	return session, identity, nil
+}
+
+func effortConfigID(agent domain.Agent) string {
+	if agent == domain.AgentClaude {
+		return "effort"
+	}
+	return "reasoning_effort"
 }
 
 type pendingPermission struct {
@@ -139,6 +165,33 @@ type Session struct {
 	activeTools map[string]bool
 	activeTurn  string
 	closed      bool
+}
+
+func (s *Session) setConfigOption(ctx context.Context, configID, value string) error {
+	var response struct {
+		ConfigOptions []struct {
+			ID           string          `json:"id"`
+			CurrentValue json.RawMessage `json:"currentValue"`
+		} `json:"configOptions"`
+	}
+	request := map[string]string{"sessionId": s.sessionID, "configId": configID, "value": value}
+	if err := s.connection.call(ctx, "session/set_config_option", request, &response); err != nil {
+		return err
+	}
+	for _, option := range response.ConfigOptions {
+		if option.ID != configID {
+			continue
+		}
+		var current string
+		if err := json.Unmarshal(option.CurrentValue, &current); err != nil {
+			return fmt.Errorf("decode selected %s: %w", configID, err)
+		}
+		if current != value {
+			return fmt.Errorf("adapter reported %q", current)
+		}
+		return nil
+	}
+	return fmt.Errorf("adapter omitted %s confirmation", configID)
 }
 
 func (s *Session) Prompt(ctx context.Context, turnID, text string) (domain.TurnOutcome, error) {

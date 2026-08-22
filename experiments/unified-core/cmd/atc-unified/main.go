@@ -21,7 +21,9 @@ import (
 	"github.com/elevenideas/atc/experiments/unified-core/internal/child"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/codexproxy"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/core"
+	"github.com/elevenideas/atc/experiments/unified-core/internal/domain"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/httpapi"
+	"github.com/elevenideas/atc/experiments/unified-core/internal/provider"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/status"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/store"
 )
@@ -61,9 +63,19 @@ func serve(args []string) error {
 	stateDir := flags.String("state", ".state", "private prototype state directory")
 	zmxExecutable := flags.String("zmx", "zmx", "zmx executable")
 	codexRemote := flags.String("codex-remote", "", "shared codex app-server endpoint")
+	claudeModel := flags.String("claude-model", provider.ClaudeCheapModel, "Claude model for ACP and TUI sessions")
+	codexModel := flags.String("codex-model", provider.CodexCheapModel, "Codex model for ACP and TUI sessions")
+	effort := flags.String("effort", provider.CheapEffort, "provider reasoning effort")
 	debug := flags.Bool("debug", false, "enable raw diagnostic timeline endpoint")
 	if err := flags.Parse(args); err != nil {
 		return err
+	}
+	models := map[domain.Agent]string{domain.AgentClaude: *claudeModel, domain.AgentCodex: *codexModel}
+	efforts := map[domain.Agent]string{domain.AgentClaude: *effort, domain.AgentCodex: *effort}
+	for _, agent := range []domain.Agent{domain.AgentClaude, domain.AgentCodex} {
+		if err := provider.ValidateSelection(agent, models[agent], efforts[agent]); err != nil {
+			return err
+		}
 	}
 	absState, err := filepath.Abs(*stateDir)
 	if err != nil {
@@ -80,13 +92,13 @@ func serve(args []string) error {
 	terminal, err := zmx.New(zmx.Config{
 		Executable: *zmxExecutable, WrapperExecutable: executable,
 		SocketDir: filepath.Join(absState, "zmx"), LogDir: filepath.Join(absState, "logs"),
-		HookBaseURL: "http://" + *listen, CodexRemote: *codexRemote,
+		HookBaseURL: "http://" + *listen, CodexRemote: *codexRemote, Models: models, Efforts: efforts,
 	})
 	if err != nil {
 		return err
 	}
 	service, err := core.New(core.Config{
-		Repository: repository, Chat: acp.New(acp.Config{Stderr: os.Stderr}),
+		Repository: repository, Chat: acp.New(acp.Config{Models: models, Efforts: efforts, Stderr: os.Stderr}),
 		Terminal: terminal, Status: status.New(nil), StateDir: absState,
 	})
 	if err != nil {
