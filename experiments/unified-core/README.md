@@ -74,7 +74,7 @@ make smoke-zmx
 `smoke-acp` calls both official ACP v1 adapters several times to cover allow,
 deny, cancellation, and exact reload, so it uses provider quota. It reuses the
 private profiles initialized by `make play`. `smoke-zmx` uses temporary
-directories and the `atc-unified-` prefix.
+directories and the compact `atcu-` prefix.
 
 For the full reviewed matrix, keep the shared app-server and core processes in
 separate terminals, then use canonical API calls only:

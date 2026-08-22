@@ -19,6 +19,7 @@ import (
 	"github.com/elevenideas/atc/experiments/unified-core/internal/domain"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/ports"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/store"
+	"github.com/elevenideas/atc/experiments/unified-core/internal/terminalname"
 )
 
 type Config struct {
@@ -443,12 +444,16 @@ func (s *Service) OpenTerminal(ctx context.Context, threadID string, _ OpenTermi
 		terminal := domain.Terminal{ID: id, ThreadID: threadID, Lifecycle: domain.TerminalLive, CreatedAt: now}
 		exitPath := filepath.Join(s.stateDir, "exits", id+".json")
 		s.state.Terminals = append(s.state.Terminals, store.TerminalRecord{
-			Terminal: terminal, PrivateName: "atc-unified-" + id,
+			Terminal: terminal, PrivateName: terminalname.FromID(id),
 			State: store.TerminalMissing, ExitPath: exitPath,
 		})
 		record.Thread.TerminalID = id
 		terminalRecord = &s.state.Terminals[len(s.state.Terminals)-1]
 	} else {
+		// The original prototype name exceeded zmx's socket-path-dependent limit.
+		// Any reachable legacy session returned above; failed persisted attempts
+		// are safe to retry under the compact deterministic name.
+		terminalRecord.PrivateName = terminalname.FromID(terminalRecord.Terminal.ID)
 		terminalRecord.Terminal.Lifecycle = domain.TerminalLive
 		terminalRecord.Terminal.EndedAt = nil
 		terminalRecord.Terminal.Reason = ""
@@ -457,7 +462,7 @@ func (s *Service) OpenTerminal(ctx context.Context, threadID string, _ OpenTermi
 		terminalRecord.StopRequestedAt = nil
 	}
 	open := ports.TerminalOpen{
-		TerminalID: terminalRecord.PrivateName, Agent: record.Thread.Agent,
+		TerminalID: terminalRecord.Terminal.ID, SessionName: terminalRecord.PrivateName, Agent: record.Thread.Agent,
 		CWD: record.Thread.CWD, ExitPath: terminalRecord.ExitPath,
 	}
 	public := terminalRecord.Terminal

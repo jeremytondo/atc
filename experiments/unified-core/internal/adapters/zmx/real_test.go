@@ -32,7 +32,7 @@ func TestRealZmx(t *testing.T) {
 	defer cancel()
 	marker := filepath.Join(dir, "exits", "smoke.json")
 	err = adapter.Open(ctx, ports.TerminalOpen{
-		TerminalID: "atc-unified-smoke", Agent: domain.AgentClaude, CWD: dir,
+		TerminalID: "term_smoke", SessionName: "atcu-smoke", Agent: domain.AgentClaude, CWD: dir,
 		Command: []string{"sh", "-c", "trap 'exit 0' HUP TERM INT; while :; do sleep 60; done"}, ExitPath: marker,
 	})
 	if err != nil {
@@ -42,7 +42,7 @@ func TestRealZmx(t *testing.T) {
 	if err != nil || len(entries) != 1 || !entries[0].Reachable {
 		t.Fatalf("running inventory = %#v, %v", entries, err)
 	}
-	if err := adapter.Terminate(ctx, "atc-unified-smoke"); err != nil {
+	if err := adapter.Terminate(ctx, "atcu-smoke"); err != nil {
 		t.Fatal(err)
 	}
 	if entries, err := adapter.Inventory(ctx); err != nil || len(entries) != 0 {

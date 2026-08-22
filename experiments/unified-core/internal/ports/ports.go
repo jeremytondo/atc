@@ -43,11 +43,12 @@ type TerminalEntry struct {
 }
 
 type TerminalOpen struct {
-	TerminalID string
-	Agent      domain.Agent
-	CWD        string
-	Command    []string
-	ExitPath   string
+	TerminalID  string
+	SessionName string
+	Agent       domain.Agent
+	CWD         string
+	Command     []string
+	ExitPath    string
 }
 
 type TerminalAdapter interface {

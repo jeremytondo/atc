@@ -36,7 +36,7 @@ type apiTerminal struct {
 }
 
 func (a *apiTerminal) Open(_ context.Context, open ports.TerminalOpen) error {
-	a.entries[open.TerminalID] = ports.TerminalEntry{Name: open.TerminalID, Reachable: true, DaemonPID: 42}
+	a.entries[open.SessionName] = ports.TerminalEntry{Name: open.SessionName, Reachable: true, DaemonPID: 42}
 	return nil
 }
 func (a *apiTerminal) Inventory(context.Context) ([]ports.TerminalEntry, error) {

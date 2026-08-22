@@ -28,7 +28,7 @@ func TestProviderCommandsPinCheapModels(t *testing.T) {
 	}
 	for _, agent := range []domain.Agent{domain.AgentClaude, domain.AgentCodex} {
 		command, err := adapter.providerCommand(ports.TerminalOpen{
-			TerminalID: "atc-unified-test", Agent: agent, CWD: "/tmp",
+			TerminalID: "term_test", SessionName: "atcu-test", Agent: agent, CWD: "/tmp",
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -41,7 +41,7 @@ func TestProviderCommandsPinCheapModels(t *testing.T) {
 }
 
 func TestParseInventoryFiltersPrivateNamespaceAndPreservesUnreachable(t *testing.T) {
-	entries := ParseInventory("name=atc-unified-live\tpid=42\n" +
+	entries := ParseInventory("name=atcu-live\tpid=42\n" +
 		"name=user-session\tpid=99\n" +
 		"→ name=atc-unified-down\tpid=43\terr=connection refused\n")
 	if len(entries) != 2 {
@@ -50,7 +50,7 @@ func TestParseInventoryFiltersPrivateNamespaceAndPreservesUnreachable(t *testing
 	if entries[0].Name != "atc-unified-down" || entries[0].Reachable {
 		t.Fatalf("unreachable entry = %#v", entries[0])
 	}
-	if entries[1].Name != "atc-unified-live" || !entries[1].Reachable || entries[1].DaemonPID != 42 {
+	if entries[1].Name != "atcu-live" || !entries[1].Reachable || entries[1].DaemonPID != 42 {
 		t.Fatalf("live entry = %#v", entries[1])
 	}
 }
@@ -80,7 +80,7 @@ esac
 	if err := os.WriteFile(scriptPath, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(statePath, []byte("name=atc-unified-terminal\tpid=101\n"), 0o600); err != nil {
+	if err := os.WriteFile(statePath, []byte("name=atcu-terminal\tpid=101\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	adapter, err := New(Config{
@@ -91,7 +91,7 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = adapter.Attach(context.Background(), "atc-unified-terminal", strings.NewReader(""), &strings.Builder{})
+	err = adapter.Attach(context.Background(), "atcu-terminal", strings.NewReader(""), &strings.Builder{})
 	if err == nil || !strings.Contains(err.Error(), "refused auto-created replacement") {
 		t.Fatalf("attach error = %v", err)
 	}
@@ -103,10 +103,10 @@ esac
 		t.Fatalf("phantom replacement survived: %q", contents)
 	}
 
-	if err := os.WriteFile(statePath, []byte("name=atc-unified-terminal\tpid=303\n"), 0o600); err != nil {
+	if err := os.WriteFile(statePath, []byte("name=atcu-terminal\tpid=303\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.Terminate(context.Background(), "atc-unified-terminal"); err != nil {
+	if err := adapter.Terminate(context.Background(), "atcu-terminal"); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := adapter.Inventory(context.Background())

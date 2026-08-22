@@ -100,7 +100,7 @@ func (f *fakeTerminal) Open(_ context.Context, open ports.TerminalOpen) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.opened = append(f.opened, open)
-	f.entries[open.TerminalID] = ports.TerminalEntry{Name: open.TerminalID, Reachable: true, DaemonPID: 100 + len(f.opened)}
+	f.entries[open.SessionName] = ports.TerminalEntry{Name: open.SessionName, Reachable: true, DaemonPID: 100 + len(f.opened)}
 	return nil
 }
 
@@ -299,7 +299,10 @@ func TestTerminalEvidenceMatrixAndScopedCleanup(t *testing.T) {
 	if !opened.Reachable || opened.Lifecycle != domain.TerminalLive {
 		t.Fatalf("opened terminal = %#v", opened)
 	}
-	private := terminal.opened[0].TerminalID
+	private := terminal.opened[0].SessionName
+	if len(private) > 31 || !strings.HasPrefix(private, "atcu-") {
+		t.Fatalf("private terminal name = %q", private)
+	}
 
 	entry := terminal.entries[private]
 	entry.Reachable = false
@@ -333,16 +336,16 @@ func TestTerminalEvidenceMatrixAndScopedCleanup(t *testing.T) {
 	}
 
 	terminal.listErr = nil
-	terminal.entries["atc-unified-orphan-live"] = ports.TerminalEntry{Name: "atc-unified-orphan-live", Reachable: true}
-	terminal.entries["atc-unified-orphan-down"] = ports.TerminalEntry{Name: "atc-unified-orphan-down", Reachable: false}
+	terminal.entries["atcu-orphan-live"] = ports.TerminalEntry{Name: "atcu-orphan-live", Reachable: true}
+	terminal.entries["atcu-orphan-down"] = ports.TerminalEntry{Name: "atcu-orphan-down", Reachable: false}
 	cleanup, err := service.CleanupTerminals(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(cleanup.TerminatedOrphans, []string{"atc-unified-orphan-live"}) {
+	if !slices.Equal(cleanup.TerminatedOrphans, []string{"atcu-orphan-live"}) {
 		t.Fatalf("cleanup = %#v", cleanup)
 	}
-	if _, ok := terminal.entries["atc-unified-orphan-down"]; !ok {
+	if _, ok := terminal.entries["atcu-orphan-down"]; !ok {
 		t.Fatal("cleanup removed unreachable orphan")
 	}
 
@@ -356,6 +359,36 @@ func TestTerminalEvidenceMatrixAndScopedCleanup(t *testing.T) {
 	exited := reconcileOne(t, service)
 	if exited.Lifecycle != domain.TerminalEnded || !stringsContains(exited.Reason, "code 7") {
 		t.Fatalf("exited terminal = %#v", exited)
+	}
+}
+
+func TestOpenTerminalRepairsPersistedOversizedSessionName(t *testing.T) {
+	ctx := context.Background()
+	repository := store.NewMemory()
+	firstTerminal := newFakeTerminal()
+	first := newTestService(t, repository, &fakeChat{}, firstTerminal, nil)
+	thread := createThread(t, first, domain.ThreadTUI, domain.AgentClaude)
+	opened, err := first.OpenTerminal(ctx, thread.ID, OpenTerminal{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	legacyName := "atc-unified-" + opened.ID
+	repository.State.Terminals[0].PrivateName = legacyName
+	repository.State.Terminals[0].Terminal.Reachable = false
+	repository.State.Terminals[0].State = store.TerminalMissing
+
+	retryTerminal := newFakeTerminal()
+	restarted := newTestService(t, repository, &fakeChat{}, retryTerminal, nil)
+	if _, err := restarted.OpenTerminal(ctx, thread.ID, OpenTerminal{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(retryTerminal.opened) != 1 {
+		t.Fatalf("opens = %#v", retryTerminal.opened)
+	}
+	retried := retryTerminal.opened[0]
+	if retried.TerminalID != opened.ID || retried.SessionName == legacyName || len(retried.SessionName) > 31 {
+		t.Fatalf("retried terminal = %#v", retried)
 	}
 }
 

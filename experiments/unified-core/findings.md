@@ -62,8 +62,8 @@ not. Claude's current ACP adapter rejects a separate Haiku `effort=low` update;
 the verified Haiku selection remains enforced, while Claude TUI accepts its
 native `--effort low` flag.
 
-zmx runs only with a private socket directory, log directory, and
-`atc-unified-` prefix. The child wrapper records atomic start/exit evidence and
+zmx runs only with a private socket directory, log directory, and compact
+`atcu-` prefix. The child wrapper records atomic start/exit evidence and
 forwards HUP/INT/TERM while zmx remains the supervisor. Reconciliation keeps an
 unreachable inventory entry, distinguishes missing from stale and exited,
 persists stop intent before kill, verifies absence after kill, and refuses

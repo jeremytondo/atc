@@ -23,6 +23,7 @@ import (
 	"github.com/elevenideas/atc/experiments/unified-core/internal/domain"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/ports"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/provider"
+	"github.com/elevenideas/atc/experiments/unified-core/internal/terminalname"
 )
 
 type Config struct {
@@ -93,26 +94,25 @@ func New(config Config) (*Adapter, error) {
 }
 
 func (a *Adapter) Open(ctx context.Context, open ports.TerminalOpen) error {
-	if !strings.HasPrefix(open.TerminalID, "atc-unified-") {
+	if !terminalname.IsManaged(open.SessionName) {
 		return errors.New("refusing terminal name outside prototype namespace")
 	}
 	if _, err := os.Stat(open.CWD); err != nil {
 		return fmt.Errorf("inspect working directory: %w", err)
 	}
-	existing, err := a.find(ctx, open.TerminalID)
+	existing, err := a.find(ctx, open.SessionName)
 	if err != nil {
 		return err
 	}
 	if existing != nil {
-		return fmt.Errorf("terminal %s already exists", open.TerminalID)
+		return fmt.Errorf("terminal %s already exists", open.SessionName)
 	}
 	command, err := a.providerCommand(open)
 	if err != nil {
 		return err
 	}
-	terminalID := strings.TrimPrefix(open.TerminalID, "atc-unified-")
-	wrapped := append([]string{a.wrapperExecutable, "__child", "--marker", open.ExitPath, "--terminal", terminalID, "--"}, command...)
-	create := exec.CommandContext(ctx, a.executable, append([]string{"attach", open.TerminalID}, wrapped...)...)
+	wrapped := append([]string{a.wrapperExecutable, "__child", "--marker", open.ExitPath, "--terminal", open.TerminalID, "--"}, command...)
+	create := exec.CommandContext(ctx, a.executable, append([]string{"attach", open.SessionName}, wrapped...)...)
 	create.Dir = open.CWD
 	create.Env = a.environment(nil)
 	ptmx, err := pty.StartWithSize(create, &pty.Winsize{Rows: 24, Cols: 100})
@@ -127,7 +127,7 @@ func (a *Adapter) Open(ctx context.Context, open ports.TerminalOpen) error {
 	}()
 	reachable, pollErr := a.poll(ctx, func(entries []ports.TerminalEntry) bool {
 		for _, entry := range entries {
-			if entry.Name == open.TerminalID && entry.Reachable {
+			if entry.Name == open.SessionName && entry.Reachable {
 				return true
 			}
 		}
@@ -171,7 +171,7 @@ func ParseInventory(output string) []ports.TerminalEntry {
 			}
 		}
 		name := fields["name"]
-		if !strings.HasPrefix(name, "atc-unified-") {
+		if !terminalname.IsManaged(name) {
 			continue
 		}
 		pid, _ := strconv.Atoi(fields["pid"])
@@ -242,7 +242,7 @@ func (a *Adapter) Attach(ctx context.Context, name string, input io.Reader, outp
 }
 
 func (a *Adapter) Terminate(ctx context.Context, name string) error {
-	if !strings.HasPrefix(name, "atc-unified-") {
+	if !terminalname.IsManaged(name) {
 		return errors.New("refusing to terminate outside prototype namespace")
 	}
 	existing, err := a.find(ctx, name)
@@ -284,10 +284,9 @@ func (a *Adapter) providerCommand(open ports.TerminalOpen) ([]string, error) {
 		if a.hookBaseURL == "" {
 			return nil, errors.New("Codex TUI requires the core status ingestion URL")
 		}
-		terminalID := strings.TrimPrefix(open.TerminalID, "atc-unified-")
 		return []string{
 			a.wrapperExecutable, "__codex_tui", "--remote", a.codexRemote,
-			"--status-url", a.hookBaseURL + "/internal/hooks/codex/terminal/" + terminalID,
+			"--status-url", a.hookBaseURL + "/internal/hooks/codex/terminal/" + open.TerminalID,
 			"--cwd", open.CWD, "--", "codex", "--model", model,
 			"--config", "model_reasoning_effort=\"" + effort + "\"",
 		}, nil
@@ -295,7 +294,7 @@ func (a *Adapter) providerCommand(open ports.TerminalOpen) ([]string, error) {
 		sessionID := stableUUID(open.TerminalID)
 		command := []string{"claude", "--session-id", sessionID, "--model", model, "--effort", effort}
 		if a.hookBaseURL != "" {
-			settings, err := claudeHookSettings(a.hookBaseURL, strings.TrimPrefix(open.TerminalID, "atc-unified-"))
+			settings, err := claudeHookSettings(a.hookBaseURL, open.TerminalID)
 			if err != nil {
 				return nil, err
 			}
