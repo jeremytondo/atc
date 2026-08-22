@@ -41,16 +41,26 @@ type Adapter struct {
 func New(config Config) *Adapter {
 	commands := config.Commands
 	if commands == nil {
-		commands = map[domain.Agent]Command{
-			domain.AgentCodex:  {Path: "npx", Args: []string{"-y", "@agentclientprotocol/codex-acp@1.6.2"}},
-			domain.AgentClaude: {Path: "npx", Args: []string{"-y", "@agentclientprotocol/claude-agent-acp@0.70.0"}},
-		}
+		commands = defaultCommands()
 	}
 	stderr := config.Stderr
 	if stderr == nil {
 		stderr = io.Discard
 	}
 	return &Adapter{commands: commands, models: config.Models, efforts: config.Efforts, stderr: stderr}
+}
+
+func defaultCommands() map[domain.Agent]Command {
+	return map[domain.Agent]Command{
+		domain.AgentCodex: {
+			Path: "npx", Args: []string{"-y", "@agentclientprotocol/codex-acp@1.6.2"},
+			Env: []string{
+				"INITIAL_AGENT_MODE=read-only",
+				`CODEX_CONFIG={"approvals_reviewer":"user"}`,
+			},
+		},
+		domain.AgentClaude: {Path: "npx", Args: []string{"-y", "@agentclientprotocol/claude-agent-acp@0.70.0"}},
+	}
 }
 
 func (a *Adapter) Open(ctx context.Context, open ports.ChatOpen) (ports.ChatSession, string, error) {

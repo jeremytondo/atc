@@ -123,6 +123,24 @@ func TestACPExactLoadHasNoCreateFallback(t *testing.T) {
 	}
 }
 
+func TestDefaultCodexCommandRequiresHumanApproval(t *testing.T) {
+	command := defaultCommands()[domain.AgentCodex]
+	want := map[string]bool{
+		"INITIAL_AGENT_MODE=read-only":               false,
+		`CODEX_CONFIG={"approvals_reviewer":"user"}`: false,
+	}
+	for _, setting := range command.Env {
+		if _, ok := want[setting]; ok {
+			want[setting] = true
+		}
+	}
+	for setting, found := range want {
+		if !found {
+			t.Errorf("default Codex environment is missing %q", setting)
+		}
+	}
+}
+
 type promptResult struct {
 	outcome domain.TurnOutcome
 	err     error

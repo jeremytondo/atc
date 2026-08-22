@@ -124,18 +124,6 @@ func TestRealACP(t *testing.T) {
 
 func realAdapter() *Adapter {
 	return New(Config{
-		Commands: map[domain.Agent]Command{
-			domain.AgentClaude: {
-				Path: "npx", Args: []string{"-y", "@agentclientprotocol/claude-agent-acp@0.70.0"},
-			},
-			domain.AgentCodex: {
-				Path: "npx", Args: []string{"-y", "@agentclientprotocol/codex-acp@1.6.2"},
-				Env: []string{
-					"INITIAL_AGENT_MODE=read-only",
-					`CODEX_CONFIG={"approvals_reviewer":"user"}`,
-				},
-			},
-		},
 		Models: map[domain.Agent]string{
 			domain.AgentClaude: provider.ClaudeCheapModel,
 			domain.AgentCodex:  provider.CodexCheapModel,
