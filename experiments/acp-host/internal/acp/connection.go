@@ -32,6 +32,13 @@ type response struct {
 	err    error
 }
 
+type PendingCall struct {
+	connection *Connection
+	method     string
+	key        string
+	responseCh <-chan response
+}
+
 type RPCError struct {
 	Code    int
 	Message string
@@ -77,6 +84,16 @@ func (c *Connection) Done() <-chan struct{} {
 }
 
 func (c *Connection) Call(ctx context.Context, method string, params any, result any) error {
+	pending, err := c.BeginCall(method, params)
+	if err != nil {
+		return err
+	}
+	return pending.Await(ctx, result)
+}
+
+// BeginCall sends a request before returning, allowing callers to retain a
+// pending request while they continue handling notifications or cancellation.
+func (c *Connection) BeginCall(method string, params any) (*PendingCall, error) {
 	id, key, responseCh := c.addPending()
 	request := map[string]any{
 		"jsonrpc": "2.0",
@@ -86,11 +103,14 @@ func (c *Connection) Call(ctx context.Context, method string, params any, result
 	}
 	if err := c.send(request); err != nil {
 		c.removePending(key)
-		return err
+		return nil, err
 	}
+	return &PendingCall{connection: c, method: method, key: key, responseCh: responseCh}, nil
+}
 
+func (p *PendingCall) Await(ctx context.Context, result any) error {
 	select {
-	case received := <-responseCh:
+	case received := <-p.responseCh:
 		if received.err != nil {
 			return received.err
 		}
@@ -98,13 +118,13 @@ func (c *Connection) Call(ctx context.Context, method string, params any, result
 			return nil
 		}
 		if err := json.Unmarshal(received.result, result); err != nil {
-			return fmt.Errorf("decode %s response: %w", method, err)
+			return fmt.Errorf("decode %s response: %w", p.method, err)
 		}
 		return nil
 	case <-ctx.Done():
-		c.removePending(key)
+		p.connection.removePending(p.key)
 		return ctx.Err()
-	case <-c.done:
+	case <-p.connection.done:
 		return errors.New("ACP connection closed")
 	}
 }

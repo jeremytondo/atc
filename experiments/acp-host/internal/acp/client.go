@@ -16,11 +16,11 @@ func NewClient(connection *Connection) *Client {
 
 func (c *Client) Initialize(ctx context.Context) (InitializeResponse, error) {
 	request := InitializeRequest{
-		ProtocolVersion: ProtocolVersion,
-		Capabilities:    map[string]any{},
-		Info: Implementation{
-			Name:    "atc-acp-v2-host",
-			Title:   "ATC ACP v2 experiment",
+		ProtocolVersion:    ProtocolVersion,
+		ClientCapabilities: map[string]any{},
+		ClientInfo: Implementation{
+			Name:    "atc-acp-host",
+			Title:   "ATC ACP experiment",
 			Version: "0.1.0",
 		},
 	}
@@ -29,42 +29,46 @@ func (c *Client) Initialize(ctx context.Context) (InitializeResponse, error) {
 		return InitializeResponse{}, err
 	}
 	if response.ProtocolVersion != ProtocolVersion {
-		return response, fmt.Errorf("agent negotiated ACP v%d; this experiment requires ACP v%d and will not fall back", response.ProtocolVersion, ProtocolVersion)
+		return response, fmt.Errorf("agent negotiated ACP v%d; this experiment requires ACP v%d", response.ProtocolVersion, ProtocolVersion)
 	}
-	var capabilities map[string]json.RawMessage
-	if err := json.Unmarshal(response.Capabilities, &capabilities); err != nil {
+	if err := json.Unmarshal(response.AgentCapabilities, &response.Capabilities); err != nil {
 		return response, fmt.Errorf("decode agent capabilities: %w", err)
-	}
-	if _, ok := capabilities["session"]; !ok {
-		return response, fmt.Errorf("agent did not advertise the required ACP v2 session capability")
 	}
 	return response, nil
 }
 
 func (c *Client) NewSession(ctx context.Context, cwd string) (NewSessionResponse, error) {
 	var response NewSessionResponse
-	err := c.connection.Call(ctx, "session/new", NewSessionRequest{CWD: cwd}, &response)
+	err := c.connection.Call(ctx, "session/new", NewSessionRequest{CWD: cwd, MCPServers: []any{}}, &response)
 	if err == nil && response.SessionID == "" {
 		err = fmt.Errorf("session/new returned an empty sessionId")
 	}
 	return response, err
 }
 
-func (c *Client) ResumeSession(ctx context.Context, sessionID, cwd string, replay bool) (ResumeSessionResponse, error) {
-	request := ResumeSessionRequest{SessionID: sessionID, CWD: cwd}
-	if replay {
-		request.ReplayFrom = &ReplayFrom{Type: "start"}
-	}
+func (c *Client) LoadSession(ctx context.Context, sessionID, cwd string) error {
+	request := ExistingSessionRequest{SessionID: sessionID, CWD: cwd, MCPServers: []any{}}
+	return c.connection.Call(ctx, "session/load", request, nil)
+}
+
+func (c *Client) ResumeSession(ctx context.Context, sessionID, cwd string) (ResumeSessionResponse, error) {
+	request := ExistingSessionRequest{SessionID: sessionID, CWD: cwd, MCPServers: []any{}}
 	var response ResumeSessionResponse
 	err := c.connection.Call(ctx, "session/resume", request, &response)
 	return response, err
 }
 
-func (c *Client) Prompt(ctx context.Context, sessionID, prompt string) error {
-	return c.connection.Call(ctx, "session/prompt", PromptRequest{
+func (c *Client) BeginPrompt(sessionID, prompt string) (*PendingCall, error) {
+	return c.connection.BeginCall("session/prompt", PromptRequest{
 		SessionID: sessionID,
 		Prompt:    []ContentBlock{{Type: "text", Text: prompt}},
-	}, &struct{}{})
+	})
+}
+
+func (c *Client) AwaitPrompt(ctx context.Context, pending *PendingCall) (PromptResponse, error) {
+	var response PromptResponse
+	err := pending.Await(ctx, &response)
+	return response, err
 }
 
 func (c *Client) Cancel(sessionID string) error {
@@ -84,7 +88,7 @@ func (c *Client) CancelPermission(id json.RawMessage) error {
 }
 
 func (c *Client) RejectUnknownRequest(request IncomingRequest) error {
-	return c.connection.RespondError(request.ID, -32601, "method not supported by ATC ACP v2 experiment: "+request.Method)
+	return c.connection.RespondError(request.ID, -32601, "method not supported by ATC ACP experiment: "+request.Method)
 }
 
 func (c *Client) RespondError(id json.RawMessage, code int, message string) error {

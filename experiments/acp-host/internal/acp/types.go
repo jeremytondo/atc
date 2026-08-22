@@ -1,11 +1,11 @@
-// Package acp contains the complete draft ACP v2 dependency surface for the
-// experiment. Protocol churn should require edits here, not in the normalized
-// harness package.
+// Package acp contains the complete ACP v1 dependency surface for the
+// experiment. Protocol changes should require edits here, not in the
+// normalized harness package.
 package acp
 
 import "encoding/json"
 
-const ProtocolVersion = 2
+const ProtocolVersion = 1
 
 type Implementation struct {
 	Name    string `json:"name"`
@@ -14,21 +14,27 @@ type Implementation struct {
 }
 
 type InitializeRequest struct {
-	ProtocolVersion int            `json:"protocolVersion"`
-	Capabilities    map[string]any `json:"capabilities"`
-	Info            Implementation `json:"info"`
+	ProtocolVersion    int            `json:"protocolVersion"`
+	ClientCapabilities map[string]any `json:"clientCapabilities"`
+	ClientInfo         Implementation `json:"clientInfo"`
 }
 
 type InitializeResponse struct {
-	ProtocolVersion int             `json:"protocolVersion"`
-	Capabilities    json.RawMessage `json:"capabilities"`
-	Info            Implementation  `json:"info"`
-	AuthMethods     json.RawMessage `json:"authMethods,omitempty"`
+	ProtocolVersion   int               `json:"protocolVersion"`
+	AgentCapabilities json.RawMessage   `json:"agentCapabilities"`
+	Capabilities      AgentCapabilities `json:"-"`
+	AgentInfo         Implementation    `json:"agentInfo"`
+	AuthMethods       json.RawMessage   `json:"authMethods,omitempty"`
+}
+
+type AgentCapabilities struct {
+	LoadSession         bool                       `json:"loadSession,omitempty"`
+	SessionCapabilities map[string]json.RawMessage `json:"sessionCapabilities,omitempty"`
 }
 
 type NewSessionRequest struct {
 	CWD        string `json:"cwd"`
-	MCPServers []any  `json:"mcpServers,omitempty"`
+	MCPServers []any  `json:"mcpServers"`
 }
 
 type NewSessionResponse struct {
@@ -36,15 +42,10 @@ type NewSessionResponse struct {
 	ConfigOptions json.RawMessage `json:"configOptions,omitempty"`
 }
 
-type ResumeSessionRequest struct {
-	SessionID  string      `json:"sessionId"`
-	CWD        string      `json:"cwd"`
-	MCPServers []any       `json:"mcpServers,omitempty"`
-	ReplayFrom *ReplayFrom `json:"replayFrom,omitempty"`
-}
-
-type ReplayFrom struct {
-	Type string `json:"type"`
+type ExistingSessionRequest struct {
+	SessionID  string `json:"sessionId"`
+	CWD        string `json:"cwd"`
+	MCPServers []any  `json:"mcpServers"`
 }
 
 type ResumeSessionResponse struct {
@@ -54,6 +55,10 @@ type ResumeSessionResponse struct {
 type PromptRequest struct {
 	SessionID string         `json:"sessionId"`
 	Prompt    []ContentBlock `json:"prompt"`
+}
+
+type PromptResponse struct {
+	StopReason string `json:"stopReason"`
 }
 
 type ContentBlock struct {
@@ -72,8 +77,6 @@ type SessionUpdateParams struct {
 
 type SessionUpdate struct {
 	Kind       string          `json:"sessionUpdate"`
-	State      string          `json:"state,omitempty"`
-	StopReason string          `json:"stopReason,omitempty"`
 	MessageID  string          `json:"messageId,omitempty"`
 	ToolCallID string          `json:"toolCallId,omitempty"`
 	Status     string          `json:"status,omitempty"`
@@ -82,11 +85,14 @@ type SessionUpdate struct {
 }
 
 type PermissionRequest struct {
-	SessionID   string             `json:"sessionId"`
-	Title       string             `json:"title"`
-	Description string             `json:"description,omitempty"`
-	Subject     json.RawMessage    `json:"subject,omitempty"`
-	Options     []PermissionOption `json:"options"`
+	SessionID string             `json:"sessionId"`
+	ToolCall  ToolCallUpdate     `json:"toolCall"`
+	Options   []PermissionOption `json:"options"`
+}
+
+type ToolCallUpdate struct {
+	ToolCallID string `json:"toolCallId"`
+	Title      string `json:"title,omitempty"`
 }
 
 type PermissionOption struct {

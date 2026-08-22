@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/elevenideas/atc/experiments/acp-v2-host/internal/acp"
+	"github.com/elevenideas/atc/experiments/acp-host/internal/acp"
 )
 
 func TestFakeAgentProcess(t *testing.T) {
@@ -56,6 +56,32 @@ func TestLifecyclePermissionCancellationAndFreshProcessResume(t *testing.T) {
 		return snapshot.Status == StatusIdle && snapshot.Pending == 0
 	})
 
+	if err := host.Prompt(context.Background(), "permission"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, host, func(snapshot Snapshot) bool {
+		return snapshot.Status == StatusWaitingForPermission && snapshot.Pending == 1
+	})
+	if err := host.Decide("", "deny"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, host, func(snapshot Snapshot) bool {
+		return snapshot.Status == StatusIdle && snapshot.Pending == 0
+	})
+
+	if err := host.Prompt(context.Background(), "permission"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, host, func(snapshot Snapshot) bool {
+		return snapshot.Status == StatusWaitingForPermission && snapshot.Pending == 1
+	})
+	if err := host.Cancel(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, host, func(snapshot Snapshot) bool {
+		return snapshot.Status == StatusIdle && snapshot.Pending == 0 && snapshot.LastStopReason == "cancelled"
+	})
+
 	if err := host.Prompt(context.Background(), "cancel"); err != nil {
 		t.Fatal(err)
 	}
@@ -91,9 +117,63 @@ func TestLifecyclePermissionCancellationAndFreshProcessResume(t *testing.T) {
 	if !strings.Contains(string(contents), `"layer":"raw"`) || !strings.Contains(string(contents), `"layer":"normalized"`) {
 		t.Fatalf("log does not contain raw and normalized records:\n%s", contents)
 	}
+	if !strings.Contains(string(contents), `"method":"session/prompt"`) || !strings.Contains(string(contents), `"stopReason":"cancelled"`) {
+		t.Fatalf("log does not prove pending v1 prompt completion and cancellation:\n%s", contents)
+	}
+	resumedContents, err := os.ReadFile(resumedLogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(resumedContents), `"method":"session/load"`) {
+		t.Fatalf("replay did not use session/load:\n%s", resumedContents)
+	}
 }
 
-func TestRejectsProtocolV1WithoutFallback(t *testing.T) {
+func TestResumeWithoutReplayUsesSessionResume(t *testing.T) {
+	directory := t.TempDir()
+	statePath := filepath.Join(directory, "state.json")
+	host, logger := startFakeHost(t, directory, statePath, filepath.Join(directory, "created.jsonl"), true)
+	stopHost(t, host)
+	if err := logger.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	logPath := filepath.Join(directory, "resumed.jsonl")
+	logger, err := OpenJSONLLogger(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed := New(Config{
+		Provider:       "fake",
+		Command:        fakeCommand(directory, "1"),
+		CWD:            directory,
+		StatePath:      statePath,
+		ReplayOnResume: false,
+		Decision:       "ask",
+		Logger:         logger,
+		Stderr:         io.Discard,
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := resumed.Start(ctx); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	cancel()
+	stopHost(t, resumed)
+	if err := logger.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	contents, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contents), `"method":"session/resume"`) || strings.Contains(string(contents), `"method":"session/load"`) {
+		t.Fatalf("non-replay restore used the wrong method:\n%s", contents)
+	}
+}
+
+func TestRejectsProtocolV2(t *testing.T) {
 	directory := t.TempDir()
 	logger, err := OpenJSONLLogger(filepath.Join(directory, "events.jsonl"))
 	if err != nil {
@@ -101,8 +181,8 @@ func TestRejectsProtocolV1WithoutFallback(t *testing.T) {
 	}
 	defer logger.Close()
 	host := New(Config{
-		Provider:  "fake-v1",
-		Command:   fakeCommand(directory, "1"),
+		Provider:  "fake-v2",
+		Command:   fakeCommand(directory, "2"),
 		CWD:       directory,
 		StatePath: filepath.Join(directory, "state.json"),
 		ProbeOnly: true,
@@ -113,8 +193,8 @@ func TestRejectsProtocolV1WithoutFallback(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	err = host.Start(ctx)
 	cancel()
-	if err == nil || !strings.Contains(err.Error(), "requires ACP v2") {
-		t.Fatalf("expected explicit v1 downgrade rejection, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "requires ACP v1") {
+		t.Fatalf("expected explicit v2 rejection, got %v", err)
 	}
 	stopHost(t, host)
 }
@@ -149,7 +229,7 @@ func startFakeHost(t *testing.T, directory, statePath, logPath string, forceNew 
 	}
 	host := New(Config{
 		Provider:       "fake",
-		Command:        fakeCommand(directory, "2"),
+		Command:        fakeCommand(directory, "1"),
 		CWD:            directory,
 		StatePath:      statePath,
 		ReplayOnResume: true,
@@ -228,6 +308,7 @@ func runFakeAgent(input io.Reader, output io.Writer, version string) error {
 	writer := bufio.NewWriter(output)
 	defer writer.Flush()
 	permissionPending := false
+	var promptID json.RawMessage
 	for scanner.Scan() {
 		var message fakeWireMessage
 		if err := json.Unmarshal(scanner.Bytes(), &message); err != nil {
@@ -235,28 +316,34 @@ func runFakeAgent(input io.Reader, output io.Writer, version string) error {
 		}
 		if message.Method == "" && permissionPending && string(message.ID) == "99" {
 			permissionPending = false
-			if err := fakeNotify(writer, "session/update", updateParams("state_update", map[string]any{"state": "running"})); err != nil {
+			var permissionResponse acp.PermissionResponse
+			if err := json.Unmarshal(message.Result, &permissionResponse); err != nil {
 				return err
+			}
+			if permissionResponse.Outcome.Outcome == "cancelled" {
+				continue
 			}
 			if err := fakeNotify(writer, "session/update", updateParams("agent_message_chunk", map[string]any{"messageId": "permission-answer", "content": map[string]any{"type": "text", "text": "permission resolved"}})); err != nil {
 				return err
 			}
-			if err := fakeNotify(writer, "session/update", updateParams("state_update", map[string]any{"state": "idle", "stopReason": "end_turn"})); err != nil {
+			if err := fakeResult(writer, promptID, map[string]any{"stopReason": "end_turn"}); err != nil {
 				return err
 			}
+			promptID = nil
 			continue
 		}
 		switch message.Method {
 		case "initialize":
-			capabilities := map[string]any{"session": map[string]any{}}
-			if protocolVersion == 1 {
-				capabilities = nil
-			}
 			if err := fakeResult(writer, message.ID, map[string]any{
-				"protocolVersion":   protocolVersion,
-				"capabilities":      capabilities,
-				"agentCapabilities": map[string]any{"loadSession": true},
-				"info":              map[string]any{"name": "fake-agent", "version": "1.0.0"},
+				"protocolVersion": protocolVersion,
+				"agentCapabilities": map[string]any{
+					"loadSession": true,
+					"sessionCapabilities": map[string]any{
+						"resume": map[string]any{},
+						"close":  map[string]any{},
+					},
+				},
+				"agentInfo": map[string]any{"name": "fake-agent", "version": "1.0.0"},
 			}); err != nil {
 				return err
 			}
@@ -264,7 +351,7 @@ func runFakeAgent(input io.Reader, output io.Writer, version string) error {
 			if err := fakeResult(writer, message.ID, map[string]any{"sessionId": "fake-session"}); err != nil {
 				return err
 			}
-		case "session/resume":
+		case "session/load", "session/resume":
 			var params struct {
 				SessionID string `json:"sessionId"`
 			}
@@ -274,11 +361,13 @@ func runFakeAgent(input io.Reader, output io.Writer, version string) error {
 			if params.SessionID != "fake-session" {
 				return fmt.Errorf("unexpected resume ID %q", params.SessionID)
 			}
-			if err := fakeNotify(writer, "session/update", updateParams("agent_message", map[string]any{
-				"messageId": "replay-1",
-				"content":   []map[string]any{{"type": "text", "text": "replayed history"}},
-			})); err != nil {
-				return err
+			if message.Method == "session/load" {
+				if err := fakeNotify(writer, "session/update", updateParams("agent_message_chunk", map[string]any{
+					"messageId": "replay-1",
+					"content":   map[string]any{"type": "text", "text": "replayed history"},
+				})); err != nil {
+					return err
+				}
 			}
 			if err := fakeResult(writer, message.ID, map[string]any{}); err != nil {
 				return err
@@ -293,26 +382,21 @@ func runFakeAgent(input io.Reader, output io.Writer, version string) error {
 				return err
 			}
 			prompt := params.Prompt[0].Text
-			if err := fakeResult(writer, message.ID, map[string]any{}); err != nil {
-				return err
-			}
-			if err := fakeNotify(writer, "session/update", updateParams("state_update", map[string]any{"state": "running"})); err != nil {
-				return err
-			}
+			promptID = append(json.RawMessage(nil), message.ID...)
 			switch prompt {
 			case "permission":
 				permissionPending = true
 				if err := fakeRequest(writer, 99, "session/request_permission", map[string]any{
 					"sessionId": "fake-session",
-					"title":     "Run harmless command?",
+					"toolCall": map[string]any{
+						"toolCallId": "tool-1",
+						"title":      "Run harmless command?",
+					},
 					"options": []map[string]any{
 						{"optionId": "yes", "name": "Allow", "kind": "allow_once"},
 						{"optionId": "no", "name": "Deny", "kind": "reject_once"},
 					},
 				}); err != nil {
-					return err
-				}
-				if err := fakeNotify(writer, "session/update", updateParams("state_update", map[string]any{"state": "requires_action"})); err != nil {
 					return err
 				}
 			case "cancel":
@@ -323,14 +407,19 @@ func runFakeAgent(input io.Reader, output io.Writer, version string) error {
 				})); err != nil {
 					return err
 				}
-				if err := fakeNotify(writer, "session/update", updateParams("state_update", map[string]any{"state": "idle", "stopReason": "end_turn"})); err != nil {
+				if err := fakeResult(writer, promptID, map[string]any{"stopReason": "end_turn"}); err != nil {
 					return err
 				}
+				promptID = nil
 			}
 		case "session/cancel":
-			if err := fakeNotify(writer, "session/update", updateParams("state_update", map[string]any{"state": "idle", "stopReason": "cancelled"})); err != nil {
+			if len(promptID) == 0 {
+				return fmt.Errorf("cancel received without pending prompt")
+			}
+			if err := fakeResult(writer, promptID, map[string]any{"stopReason": "cancelled"}); err != nil {
 				return err
 			}
+			promptID = nil
 		case "session/close":
 			if err := fakeResult(writer, message.ID, map[string]any{}); err != nil {
 				return err

@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/elevenideas/atc/experiments/acp-v2-host/internal/acp"
+	"github.com/elevenideas/atc/experiments/acp-host/internal/acp"
 )
 
 type Metadata struct {

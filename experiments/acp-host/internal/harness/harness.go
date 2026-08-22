@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/elevenideas/atc/experiments/acp-v2-host/internal/acp"
+	"github.com/elevenideas/atc/experiments/acp-host/internal/acp"
 )
 
 type Status string
@@ -63,15 +63,17 @@ type Config struct {
 type Harness struct {
 	mu sync.Mutex
 
-	config     Config
-	client     *acp.Client
-	process    *acp.Process
-	metadata   Metadata
-	snapshot   Snapshot
-	pending    map[string]PendingPermission
-	rawVisible bool
-	stopping   bool
-	events     chan Event
+	config       Config
+	client       *acp.Client
+	process      *acp.Process
+	metadata     Metadata
+	capabilities acp.AgentCapabilities
+	snapshot     Snapshot
+	pending      map[string]PendingPermission
+	rawVisible   bool
+	stopping     bool
+	activePrompt bool
+	events       chan Event
 }
 
 func New(config Config) *Harness {
@@ -112,20 +114,22 @@ func (h *Harness) Start(ctx context.Context) error {
 		return err
 	}
 	metadata := Metadata{
+		Version:         1,
 		Provider:        h.config.Provider,
 		Command:         h.config.Command.Path,
 		Args:            append([]string(nil), h.config.Command.Args...),
 		CWD:             h.config.CWD,
 		ProtocolVersion: initialize.ProtocolVersion,
-		AgentInfo:       initialize.Info,
-		Capabilities:    cloneRaw(initialize.Capabilities),
+		AgentInfo:       initialize.AgentInfo,
+		Capabilities:    cloneRaw(initialize.AgentCapabilities),
 	}
 	h.mu.Lock()
 	h.metadata = metadata
+	h.capabilities = initialize.Capabilities
 	h.mu.Unlock()
 	h.log("normalized", "initialized", StatusConnecting, rawData(initialize))
 	if h.config.ProbeOnly {
-		h.transition(StatusIdle, "protocol_v2_supported", "", "")
+		h.transition(StatusIdle, "protocol_v1_supported", "", "")
 		return nil
 	}
 
@@ -140,11 +144,15 @@ func (h *Harness) Start(ctx context.Context) error {
 		h.metadata.SessionID = stored.SessionID
 		h.snapshot.SessionID = stored.SessionID
 		h.mu.Unlock()
-		if _, err := h.client.ResumeSession(ctx, stored.SessionID, h.config.CWD, h.config.ReplayOnResume); err != nil {
+		if err := h.restoreSession(ctx, stored.SessionID); err != nil {
 			h.fail("resume_session", err)
 			return fmt.Errorf("resume exact session %s: %w", stored.SessionID, err)
 		}
-		h.log("normalized", "session_resumed", StatusIdle, rawData(map[string]any{"replay": h.config.ReplayOnResume}))
+		kind := "session_resumed"
+		if h.config.ReplayOnResume {
+			kind = "session_loaded"
+		}
+		h.log("normalized", kind, StatusIdle, rawData(map[string]any{"replay": h.config.ReplayOnResume}))
 	} else {
 		created, err := h.client.NewSession(ctx, h.config.CWD)
 		if err != nil {
@@ -181,13 +189,19 @@ func (h *Harness) Prompt(ctx context.Context, prompt string) error {
 	h.snapshot.LastOutcome = ""
 	h.snapshot.LastStopReason = ""
 	h.snapshot.LastError = ""
+	h.activePrompt = true
 	h.mu.Unlock()
 	h.transition(StatusWorking, "prompt_submitted", "", "")
-	if err := h.client.Prompt(ctx, sessionID, prompt); err != nil {
+	pending, err := h.client.BeginPrompt(sessionID, prompt)
+	if err != nil {
+		h.mu.Lock()
+		h.activePrompt = false
+		h.mu.Unlock()
 		h.fail("prompt_rejected", err)
 		return err
 	}
-	h.log("normalized", "prompt_accepted", StatusWorking, nil)
+	h.log("normalized", "prompt_started", StatusWorking, nil)
+	go h.awaitPrompt(ctx, pending)
 	return nil
 }
 
@@ -198,6 +212,10 @@ func (h *Harness) Cancel() error {
 		return errors.New("no active session")
 	}
 	sessionID := h.snapshot.SessionID
+	if !h.activePrompt {
+		h.mu.Unlock()
+		return errors.New("no active prompt")
+	}
 	pending := make([]PendingPermission, 0, len(h.pending))
 	for _, permission := range h.pending {
 		pending = append(pending, permission)
@@ -231,6 +249,7 @@ func (h *Harness) Decide(permissionID, decision string) error {
 	}
 	delete(h.pending, key)
 	h.snapshot.Pending = len(h.pending)
+	remaining := len(h.pending)
 	h.mu.Unlock()
 	if err := h.client.RespondPermission(permission.ID, option.OptionID); err != nil {
 		return err
@@ -239,6 +258,9 @@ func (h *Harness) Decide(permissionID, decision string) error {
 		"requestId": key,
 		"optionId":  option.OptionID,
 	}))
+	if remaining == 0 {
+		h.transition(StatusWorking, "permission_resolved", "", "")
+	}
 	return nil
 }
 
@@ -281,13 +303,15 @@ func (h *Harness) Stop(ctx context.Context) error {
 		return nil
 	}
 	h.stopping = true
+	h.activePrompt = false
 	client := h.client
 	process := h.process
 	sessionID := h.snapshot.SessionID
 	h.mu.Unlock()
 
 	var closeErr error
-	if client != nil && sessionID != "" && !h.config.ProbeOnly {
+	_, canClose := h.capabilities.SessionCapabilities["close"]
+	if client != nil && sessionID != "" && !h.config.ProbeOnly && canClose {
 		if err := client.CloseSession(ctx, sessionID); err != nil {
 			closeErr = fmt.Errorf("close session: %w", err)
 		} else {
@@ -386,25 +410,6 @@ func (h *Harness) HandleDisconnect(err error) {
 
 func (h *Harness) applyUpdate(update acp.SessionUpdate) {
 	switch update.Kind {
-	case "state_update":
-		switch update.State {
-		case "running":
-			h.transition(StatusWorking, "state_changed", "", "")
-		case "requires_action":
-			status := StatusWaitingForInput
-			if h.Snapshot().Pending > 0 {
-				status = StatusWaitingForPermission
-			}
-			h.transition(status, "state_changed", "", "")
-		case "idle":
-			outcome := "completed"
-			if update.StopReason == "cancelled" {
-				outcome = "cancelled"
-			}
-			h.transition(StatusIdle, "turn_finished", outcome, update.StopReason)
-		default:
-			h.emit(Event{Kind: "activity", Text: "unknown ACP state: " + update.State})
-		}
 	case "agent_message", "agent_message_chunk":
 		if text := contentText(update.Content); text != "" {
 			h.emit(Event{Kind: "assistant", Text: text})
@@ -422,6 +427,40 @@ func (h *Harness) applyUpdate(update acp.SessionUpdate) {
 	default:
 		h.emit(Event{Kind: "activity", Text: update.Kind})
 	}
+}
+
+func (h *Harness) restoreSession(ctx context.Context, sessionID string) error {
+	if h.config.ReplayOnResume {
+		if !h.capabilities.LoadSession {
+			return errors.New("agent does not support session/load required for replay")
+		}
+		return h.client.LoadSession(ctx, sessionID, h.config.CWD)
+	}
+	if _, ok := h.capabilities.SessionCapabilities["resume"]; !ok {
+		return errors.New("agent does not support session/resume")
+	}
+	_, err := h.client.ResumeSession(ctx, sessionID, h.config.CWD)
+	return err
+}
+
+func (h *Harness) awaitPrompt(ctx context.Context, pending *acp.PendingCall) {
+	response, err := h.client.AwaitPrompt(ctx, pending)
+	h.mu.Lock()
+	stopping := h.stopping
+	h.activePrompt = false
+	h.mu.Unlock()
+	if stopping {
+		return
+	}
+	if err != nil {
+		h.fail("prompt_failed", err)
+		return
+	}
+	outcome := "completed"
+	if response.StopReason == "cancelled" {
+		outcome = "cancelled"
+	}
+	h.transition(StatusIdle, "turn_finished", outcome, response.StopReason)
 }
 
 func (h *Harness) transition(status Status, kind, outcome, stopReason string) {
@@ -509,7 +548,11 @@ func formatPermission(id string, permission acp.PermissionRequest) string {
 	for _, option := range permission.Options {
 		options = append(options, fmt.Sprintf("%s=%s (%s)", option.OptionID, option.Name, option.Kind))
 	}
-	return fmt.Sprintf("permission %s: %s\n%s\noptions: %s", id, permission.Title, permission.Description, strings.Join(options, ", "))
+	title := strings.TrimSpace(permission.ToolCall.Title)
+	if title == "" {
+		title = permission.ToolCall.ToolCallID
+	}
+	return fmt.Sprintf("permission %s: %s\noptions: %s", id, title, strings.Join(options, ", "))
 }
 
 func contentText(content json.RawMessage) string {

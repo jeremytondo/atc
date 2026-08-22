@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/elevenideas/atc/experiments/acp-v2-host/internal/acp"
-	"github.com/elevenideas/atc/experiments/acp-v2-host/internal/harness"
+	"github.com/elevenideas/atc/experiments/acp-host/internal/acp"
+	"github.com/elevenideas/atc/experiments/acp-host/internal/harness"
 )
 
 type stringList []string
@@ -85,7 +85,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	if parsed.probe {
 		metadata, _ := json.MarshalIndent(host.Metadata(), "", "  ")
-		fmt.Fprintf(stdout, "ACP v2 supported\n%s\n", metadata)
+		fmt.Fprintf(stdout, "ACP v1 supported\n%s\n", metadata)
 		stopCtx, stopCancel := harness.ShutdownContext()
 		defer stopCancel()
 		return host.Stop(stopCtx)
@@ -142,7 +142,7 @@ func parseOptions(args []string) (options, error) {
 	flags.BoolVar(&parsed.new, "new", false, "create a new session instead of resuming saved metadata")
 	flags.BoolVar(&parsed.replay, "replay", parsed.replay, "request full history replay on resume")
 	flags.BoolVar(&parsed.raw, "raw", false, "show raw ACP traffic (always written to JSONL)")
-	flags.BoolVar(&parsed.probe, "probe", false, "only test ACP v2 initialization")
+	flags.BoolVar(&parsed.probe, "probe", false, "only test ACP v1 initialization")
 	if err := flags.Parse(args); err != nil {
 		return options{}, err
 	}
