@@ -151,7 +151,7 @@ func (s *Supervisor) reconcileLocked(ctx context.Context) ([]Snapshot, error) {
 		for i := range s.records {
 			s.records[i].State = StateDisconnected
 			snapshot := snapshotFor(s.records[i], nil, nil, "zmx inventory unavailable")
-			s.enrichAgentStatus(ctx, &snapshot, s.records[i], nil, "zmx inventory unavailable")
+			s.enrichAgentStatus(&snapshot, s.records[i], nil, "zmx inventory unavailable")
 			snapshots = append(snapshots, snapshot)
 		}
 		_ = s.store.Save(s.records)
@@ -213,7 +213,7 @@ func (s *Supervisor) reconcileLocked(ctx context.Context) ([]Snapshot, error) {
 			session = &copy
 		}
 		snapshot := snapshotFor(*record, session, marker, reason)
-		s.enrichAgentStatus(ctx, &snapshot, *record, marker, reason)
+		s.enrichAgentStatus(&snapshot, *record, marker, reason)
 		snapshots = append(snapshots, snapshot)
 	}
 	for _, entry := range inventory {
@@ -454,13 +454,11 @@ func processEvidence(record Record, marker *ExitMarker, reason string) agentstat
 	}
 }
 
-func (s *Supervisor) enrichAgentStatus(ctx context.Context, snapshot *Snapshot, record Record, marker *ExitMarker, reason string) {
+func (s *Supervisor) enrichAgentStatus(snapshot *Snapshot, record Record, marker *ExitMarker, reason string) {
 	if record.Kind != "codex" && record.Kind != "claude" {
 		return
 	}
-	observation, err := s.agentStatus.Observe(ctx, record.Kind, record.ID, func(ctx context.Context) ([]byte, error) {
-		return s.terminal.History(ctx, record.ZmxName)
-	}, processEvidence(record, marker, reason))
+	observation, err := s.agentStatus.Observe(record.Kind, record.ID, processEvidence(record, marker, reason))
 	if err != nil {
 		snapshot.AgentStatusError = err.Error()
 		return

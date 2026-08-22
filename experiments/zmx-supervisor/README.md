@@ -4,9 +4,9 @@ This is an isolated Go prototype for testing zmx as the durable owner of ATC
 terminal-backed sessions. It does not import or modify the current app server.
 
 ATC-231 extends the same harness with an isolated `internal/agentstatus/`
-layer. Claude sessions receive launch-time lifecycle hooks, while Claude and
-Codex both have declarative terminal-screen fallbacks. The supervisor consumes
-only normalized agent status and evidence.
+layer. Claude sessions receive launch-time lifecycle hooks. Codex deliberately
+reports only conservative process status until it has a structured adapter.
+The supervisor consumes only normalized agent status and evidence.
 
 The zmx-specific implementation is confined to `internal/terminal/`. The
 supervisor above it deals only in terminal sessions, persisted metadata, exit
@@ -110,18 +110,23 @@ See [findings.md](findings.md) for the exercised matrix and conclusions.
 ## Agent status model
 
 For running Claude and Codex workloads, the status layer selects exactly one
-source in this order:
+source:
 
 1. A recognized structured lifecycle signal. The prototype wires real Claude
    hooks into the private state directory; Codex has no structured adapter in
    this experiment.
-2. The most recent matching declarative rule in zmx's terminal screen.
-3. Process evidence, which reports `unknown` while the child is running.
+2. Process evidence, which reports `unknown` while the child is running.
 
-Once the child exits, its exit marker overrides stale provider or screen
-evidence and produces `completed` or `failed`. Missing, stale, and disconnected
-sessions are `unavailable`. Every observed normalized transition records its
-source, rule, detail, timestamp, and raw evidence under
+Terminal-screen inference is intentionally not part of the status path. Live
+Claude and Codex testing showed that prompts, trust dialogs, question dialogs,
+and transient working screens reuse the same glyphs and text. Polling can also
+miss short turns entirely, so matching screen contents would produce false
+confidence rather than a reliable fallback.
+
+Once the child exits, its exit marker overrides stale provider evidence and
+produces `completed` or `failed`. Missing, stale, and disconnected sessions are
+`unavailable`. Every observed normalized transition records its source, rule,
+detail, timestamp, and raw evidence under
 `<state-dir>/agent-status/<session-id>/`.
 
 See [status-findings.md](status-findings.md) for the ATC-231 scenarios,

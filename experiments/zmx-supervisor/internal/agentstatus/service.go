@@ -2,7 +2,6 @@ package agentstatus
 
 import (
 	"bufio"
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -110,14 +109,18 @@ func RecordHook(stateDir, sessionID, provider string, input io.Reader) error {
 	if err := replaceFile(path, contents); err != nil {
 		return err
 	}
-	if observation, ok := structuredObservation(provider, signal); ok {
+	signals, err := service.loadSignals(sessionID)
+	if err != nil {
+		return err
+	}
+	if observation, ok := reduceStructured(provider, signals); ok {
 		return service.recordTransition(sessionID, observation)
 	}
 	return nil
 }
 
-func (s *Service) Observe(ctx context.Context, kind, sessionID string, screen func(context.Context) ([]byte, error), process ProcessEvidence) (Observation, error) {
-	if _, ok := providers[kind]; !ok {
+func (s *Service) Observe(kind, sessionID string, process ProcessEvidence) (Observation, error) {
+	if !isSupportedProvider(kind) {
 		return Observation{}, fmt.Errorf("unsupported agent status provider %q", kind)
 	}
 	if err := validateSessionID(sessionID); err != nil {
@@ -126,23 +129,11 @@ func (s *Service) Observe(ctx context.Context, kind, sessionID string, screen fu
 	if process.State == ProcessRunning {
 		if signals, err := s.loadSignals(sessionID); err != nil {
 			return Observation{}, err
-		} else {
-			for index := len(signals) - 1; index >= 0; index-- {
-				if observation, ok := structuredObservation(kind, signals[index]); ok {
-					return observation, s.recordTransition(sessionID, observation)
-				}
-			}
+		} else if observation, ok := reduceStructured(kind, signals); ok {
+			return observation, s.recordTransition(sessionID, observation)
 		}
 	}
 	now := s.now().UTC()
-	if process.State == ProcessRunning && screen != nil {
-		contents, err := screen(ctx)
-		if err == nil {
-			if observation, ok := screenObservation(kind, contents, now); ok {
-				return observation, s.recordTransition(sessionID, observation)
-			}
-		}
-	}
 	observation := processObservation(kind, process, now)
 	return observation, s.recordTransition(sessionID, observation)
 }

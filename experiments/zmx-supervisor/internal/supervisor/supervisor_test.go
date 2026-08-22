@@ -15,11 +15,12 @@ import (
 )
 
 type fakeTerminal struct {
-	sessions map[string]terminal.Session
-	listErr  error
-	killed   []string
-	lastSend []byte
-	history  []byte
+	sessions     map[string]terminal.Session
+	listErr      error
+	killed       []string
+	lastSend     []byte
+	history      []byte
+	historyCalls int
 }
 
 func newFakeTerminal() *fakeTerminal {
@@ -51,10 +52,11 @@ func (f *fakeTerminal) Send(_ context.Context, _ string, input []byte) error {
 }
 
 func (f *fakeTerminal) History(context.Context, string) ([]byte, error) {
+	f.historyCalls++
 	return append([]byte(nil), f.history...), nil
 }
 
-func TestAgentStatusUsesScreenThenProcessEvidence(t *testing.T) {
+func TestCodexAgentStatusUsesConservativeProcessEvidence(t *testing.T) {
 	ctx := context.Background()
 	clock := time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC)
 	adapter := newFakeTerminal()
@@ -68,9 +70,12 @@ func TestAgentStatusUsesScreenThenProcessEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if running.AgentStatus == nil || running.AgentStatus.State != agentstatus.StateIdle ||
-		running.AgentStatus.Evidence.Source != agentstatus.SourceScreen {
+	if running.AgentStatus == nil || running.AgentStatus.State != agentstatus.StateUnknown ||
+		running.AgentStatus.Evidence.Source != agentstatus.SourceProcess {
 		t.Fatalf("running agent status = %#v", running.AgentStatus)
+	}
+	if adapter.historyCalls != 0 {
+		t.Fatalf("agent status inspected terminal history %d times", adapter.historyCalls)
 	}
 
 	delete(adapter.sessions, running.ZmxName)

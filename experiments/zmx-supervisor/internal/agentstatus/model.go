@@ -1,7 +1,7 @@
-// Package agentstatus normalizes provider-specific TUI evidence without
-// exposing provider protocols or screen heuristics to the supervisor. Exactly
-// one source is authoritative for an observation: structured lifecycle
-// evidence first, then the terminal screen, then process state.
+// Package agentstatus normalizes provider lifecycle evidence without exposing
+// provider protocols to the supervisor. Structured evidence is authoritative
+// while a provider process is running; process state remains the conservative
+// fallback when no structured adapter is available.
 package agentstatus
 
 import (
@@ -26,7 +26,6 @@ type Source string
 
 const (
 	SourceStructured Source = "structured"
-	SourceScreen     Source = "screen"
 	SourceProcess    Source = "process"
 )
 
