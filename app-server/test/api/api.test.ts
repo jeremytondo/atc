@@ -258,7 +258,7 @@ describe("/api/v1/projects", () => {
         payload: { name: "Retryable", defaultWorkingDirectory: realDir },
       })
       const thread = yield* client.v1.createThread({
-        payload: { projectId: project.id, agentId: "codex" },
+        payload: { projectId: project.id, agentId: "codex", kind: "chat" },
       })
       yield* client.v1.createTerminal({ payload: { projectId: project.id } })
 
@@ -329,7 +329,7 @@ describe("/api/v1/events", () => {
       assert.deepStrictEqual(event, { resource: "project", id: project.id, change: "created" })
 
       const thread = yield* client.v1.createThread({
-        payload: { projectId: project.id, agentId: "codex" },
+        payload: { projectId: project.id, agentId: "codex", kind: "chat" },
       })
       assert.deepStrictEqual(yield* Queue.take(received), {
         resource: "thread",

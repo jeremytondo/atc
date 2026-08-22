@@ -41,13 +41,6 @@ struct WindowNavigationSnapshot: Equatable {
     let connections: [Connection]
 }
 
-/// How a window shows a Thread: its native transcript and composer (Chat)
-/// or its provider TUI in the linked Terminal (TUI). One at a time.
-enum ThreadViewMode: Equatable, Sendable {
-    case chat
-    case tui
-}
-
 /// Root domain model: owns the Connection list and one `ConnectionRuntime`
 /// per Connection, plus the terminal-controller registry that keeps attach
 /// WebSockets and Ghostty surfaces alive across navigation.
@@ -56,17 +49,9 @@ final class AppModel {
     let connections: ConnectionsStore
     private(set) var runtimes: [ConnectionRuntime] = []
 
-    /// The remembered Chat/TUI mode per thread, for this app session only —
-    /// app-level so every window on one thread agrees. Chat is the default
-    /// for any thread with no remembered mode, without exception: the
-    /// transcript is there either way because the server re-reads provider
-    /// history.
-    private(set) var threadViewModes: [ThreadRef: ThreadViewMode] = [:]
-
     /// Unsent composer drafts (text and images) per thread, for this app
-    /// session only — app-level like the view mode, so every window on one
-    /// thread shares one draft and switching views (TUI, another thread,
-    /// Dashboard) never loses it.
+    /// session only — app-level, so every window on one thread shares one
+    /// draft and navigating away (another thread, Dashboard) never loses it.
     private(set) var threadDrafts: [ThreadRef: ComposerDraft] = [:]
 
     /// Live terminal attaches by composite ref. Connections and surfaces
@@ -261,46 +246,12 @@ final class AppModel {
         runtime(id: ref.connectionID)?.threads.thread(id: ref.threadID)
     }
 
-    func viewMode(for ref: ThreadRef) -> ThreadViewMode {
-        threadViewModes[ref] ?? .chat
-    }
-
     func draft(for ref: ThreadRef) -> ComposerDraft {
         threadDrafts[ref] ?? ComposerDraft()
     }
 
     func setDraft(_ draft: ComposerDraft, for ref: ThreadRef) {
         threadDrafts[ref] = draft.isEmpty ? nil : draft
-    }
-
-    /// Remembers the mode and re-opens the thread in every window showing
-    /// it: TUI runs the idempotent terminal open, Chat needs nothing opened
-    /// (each window's `openThread` decides) but tells the server the TUI is
-    /// no longer shown (`closeTerminalIfChat`).
-    func setViewMode(_ mode: ThreadViewMode, for ref: ThreadRef) {
-        let previous = viewMode(for: ref)
-        threadViewModes[ref] = mode
-        if previous == .tui { closeTerminalIfChat(ref) }
-        for window in windowReconcilers.compactMap(\.value) where window.selectedThread == ref {
-            Task { await window.openThread(ref, in: self, reveal: false) }
-        }
-    }
-
-    /// Tells the server the TUI is no longer shown when the thread's mode
-    /// is Chat: the server hands a one-process (Claude) thread back to Chat,
-    /// ending its TUI once the current turn is on disk; a Codex TUI keeps
-    /// running. Called on the switch to Chat and after any TUI open that
-    /// completes once the mode has flipped back (the open and the close are
-    /// independent requests, so the later one must win). Best-effort: a
-    /// failed close leaves the TUI in charge until the next prompt or close.
-    func closeTerminalIfChat(_ ref: ThreadRef) {
-        guard viewMode(for: ref) == .chat, let runtime = runtime(id: ref.connectionID) else { return }
-        Task { [weak self] in
-            // A flip back to TUI before this Task ran makes the close stale:
-            // it must not end the terminal that open just made.
-            guard self?.viewMode(for: ref) == .chat else { return }
-            _ = try? await runtime.threads.closeTerminal(threadID: ref.threadID)
-        }
     }
 
     func terminal(for ref: TerminalRef) -> Terminal? {
@@ -430,7 +381,7 @@ final class AppModel {
 
     // MARK: - Thread and terminal opening
 
-    /// Every thread open (Chat or TUI) reports here first: any open
+    /// Every thread open (chat or tui) reports here first: any open
     /// supersedes a parked banner click — once the user navigates on their
     /// own, a click still waiting on an unreachable server must not replay
     /// later and yank their selection. (The click's own open passes
@@ -439,7 +390,7 @@ final class AppModel {
         pendingNotificationThread = nil
     }
 
-    /// Idempotently opens the thread's TUI terminal on the server, then
+    /// Idempotently opens a tui thread's terminal on the server, then
     /// attaches (or reuses) its controller. Returns the terminal ref the
     /// window should display.
     @discardableResult
@@ -506,9 +457,9 @@ final class AppModel {
     }
 
     /// Stops interaction for terminals the latest successful refresh says
-    /// are ended, keeping the controller and its surface registered — the
-    /// final frame stays visible under the relaunch affordance, and only
-    /// LRU eviction or teardown releases it. A terminal deleted outright is
+    /// are ended, keeping the controller and its surface registered (a
+    /// standalone terminal keeps its final frame; a tui thread shows its
+    /// Reopen empty state) — only LRU eviction or teardown releases it. A terminal deleted outright is
     /// fully disconnected. Failed refreshes are deliberately ignored so
     /// connection loss never manufactures a lifecycle transition.
     func reconcileTerminalLifecycle() {

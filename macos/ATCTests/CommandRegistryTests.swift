@@ -51,7 +51,7 @@ struct CommandRegistryTests {
             CommandID.allCases.map(\.rawValue) == [
                 "view.toggle-sidebar", "view.toggle-command-palette",
                 "view.search-threads", "view.search-terminals",
-                "view.show-dashboard", "thread.new", "thread.toggle-view-mode", "terminal.new",
+                "view.show-dashboard", "thread.new", "terminal.new",
                 "project.new", "data.refresh", "configuration.reload",
                 "configuration.reveal",
             ])
@@ -107,22 +107,6 @@ struct CommandRegistryTests {
         await state.openThread(test.threadRef("thr1"), in: test.model)
         #expect(state.activeProject != nil)
         #expect(CommandRegistry.descriptor(for: .newTerminal).availability(context).isAvailable)
-    }
-
-    @Test("Toggle Chat/TUI needs a displayed thread and flips its remembered mode")
-    func toggleThreadViewMode() async throws {
-        let (context, test) = try await connectedContext()
-        let ref = test.threadRef("thr1")
-        let descriptor = CommandRegistry.descriptor(for: .toggleThreadViewMode)
-        #expect(descriptor.availability(context).isAvailable)
-        #expect(test.model.viewMode(for: ref) == .chat)
-
-        CommandRegistry.execute(.toggleThreadViewMode, context: context)
-        #expect(test.model.viewMode(for: ref) == .tui)
-        await drainPendingTasks()
-
-        context.windowState.showDashboard()
-        #expect(!descriptor.availability(context).isAvailable)
     }
 
     @Test("the palette opener toggles and is unavailable while any sheet is up")

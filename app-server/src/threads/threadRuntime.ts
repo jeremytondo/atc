@@ -21,7 +21,6 @@ import type {
   AgentConnection,
   AgentEvent,
   AgentItemEvent,
-  AgentSessionEvent,
   AgentTurn,
   ProviderSettings,
   ThreadAttachment,
@@ -40,19 +39,17 @@ import {
   QueuedPromptNotFound,
   RequestNotFound,
   ThreadArchived,
-  ThreadBusy,
+  ThreadKindMismatch,
   ThreadNotFound,
 } from "../api/contract.ts"
-import type { ZmxUnavailable } from "../api/contract.ts"
 import { Events } from "../events/events.ts"
-import type { Terminal } from "../terminals/terminals.ts"
+import { makeKeyedLock } from "../platform/keyedLock.ts"
 import { Attachments } from "./attachments.ts"
 import { ThreadNaming } from "./threadNaming.ts"
-import { ThreadRepository } from "./threadRepository.ts"
+import { requireKind, ThreadRepository } from "./threadRepository.ts"
 import type { ThreadRecord } from "./threadRepository.ts"
 import { applyProviderSettings } from "./threadSettings.ts"
 import type { ThreadSettings } from "./threadSettings.ts"
-import { ThreadTui } from "./threadTui.ts"
 import { TranscriptRepository } from "./transcriptRepository.ts"
 import type { QueuedPromptRecord, TranscriptChange, TurnSource } from "./transcriptRepository.ts"
 
@@ -61,88 +58,53 @@ export type ThreadTranscript = typeof Contract.ThreadTranscript.Type
 export type QueuedPrompt = typeof Contract.QueuedPrompt.Type
 
 // The Thread runtime (ATC-193): the server-owned run, and everything live
-// about a thread's provider session. It drives a thread's conversation
+// about a chat thread's provider session. It drives a thread's conversation
 // through the AgentAdapter seam with no Terminal involved — prompts, the
 // durable prompt queue, the turn loop, parked provider requests, the
-// transcript projection with its per-thread event stream, the observation
-// of TUI-driven sessions, and the live activity ledger every surface reads.
-// Every surface (macOS, CLI, Linear) is a client of this one service;
-// nothing here is provider-specific beyond the seam's `sharedServer`
-// capability. Invariants:
+// transcript with its per-thread event stream, and the live activity
+// ledger every surface reads. Every surface (macOS, CLI, Linear) is a
+// client of this one service; nothing here is provider-specific beyond the
+// seam's `sharedServer` capability. A tui thread is never driven here —
+// prompt, interrupt, answer, and the queue refuse it (ThreadKindMismatch,
+// ATC-224); the ThreadObserver follows it through the seams at the end of
+// the service. Invariants:
 //
 //   - A prompt is admitted, always: it lands in the queue (durable), and if
 //     the thread is idle it starts a turn at once — the one exception being
 //     a provider that refuses that immediate start, which un-admits the
-//     prompt so the caller's error means "not accepted". A thread busy
-//     under a TUI (the ledger says so) queues the prompt and drains at the
-//     observed idle: no busy error, no lock between surfaces. A prompt
-//     marked `now` (ATC-216) is instead handed to the turn running on our
-//     writer — the seam's `steer` — and recorded against that turn; with no
-//     such turn, or one that ended first, it is an ordinary prompt. A turn runs
-//     on a writer connection the runtime holds; client connections never
+//     prompt so the caller's error means "not accepted" (a Codex thread
+//     mid-turn in another Codex client is the case that matters: nothing
+//     queues behind a turn ATC cannot see). A prompt marked `now`
+//     (ATC-216) is instead handed to the turn running on our writer — the
+//     seam's `steer` — and recorded against that turn; with no such turn,
+//     or one that ended first, it is an ordinary prompt. A turn runs on a
+//     writer connection the runtime holds; client connections never
 //     matter to a run's lifetime. A closing writer stays registered until
 //     its connection has closed, so the next prompt never races it.
 //   - Connection lifetime is not turn lifetime (ATC-207): the Run ends at
 //     turn end, the writer need not. A one-process provider's writer stays
 //     resident after a successful turn — the next prompt starts on it
 //     rather than re-spawning and resuming — and while held its feed owns
-//     the ledger; it must close before another process takes the session
-//     (the TUI hand-off), it closes when the provider ends it, on release
-//     and shutdown, and idle residency is bounded (`armIdleClose`). A
-//     shared-server provider's connection is a cheap subscription that
-//     coexists with its TUI: it holds nothing between turns, as before.
-//     A turn the provider starts by itself on a held one-process
-//     connection (Claude's root loop woken by a finished background task)
-//     is ATC's run: adopted at its turnStarted, ended by `finish` like a
-//     prompted turn, its requests answerable; a prompt admitted meanwhile
-//     waits for it (the connection refuses a second turn) and drains at
-//     its end. On a shared server the same event is another writer's turn
-//     and stays observed.
-//   - One live process per thread (ATC-203), on a provider whose sessions
-//     live in one process at a time (`sharedServer: false` — Claude; two
-//     live processes fork the session). The native side owns the thread by
-//     default; the TUI owns it only while clients want it: `tuiWanted` is a
-//     per-thread, last-writer-wins mark — openTui sets it, closeTui clears
-//     it, and a TUI found live at a thread's first observation (no client
-//     has spoken for it yet — after a restart) is wanted until a client
-//     says otherwise. It is deliberately not per-client presence
-//     (single user; a client that quits without closing leaves the TUI in
-//     charge until the next close, nothing worse). A native turn against a
-//     live TUI queues while the TUI is busy (the ledger), then ENDS the TUI
-//     and resumes the session itself; when the run ends with the queue
-//     drained and the TUI still wanted, the TUI is relaunched. The ledger
-//     is the only liveness evidence Claude offers (checkSession is
-//     `unknown`), so `unknown` — a TUI observed since a restart that has
-//     not spoken yet — is taken as idle: the settle gate below is the
-//     remaining guard, and a queue that could otherwise never drain is the
-//     worse failure. A TUI open
-//     during a native run is refused (ThreadBusy) and happens at the run's
-//     end instead, and no native turn starts while a TUI launch is in
-//     flight. Closing the TUI ends it at once when idle, at its next
-//     observed idle when busy. A TUI ends only after its last turn is on
-//     disk — `endTui`: the settled re-read (the adapter's readHistory)
-//     first, then the kill; a read that fails leaves the TUI alive (the
-//     prompt stays queued / the close fails retryably) rather than guess.
-//     While a writer is held, observed activity is ignored: the ended TUI's
-//     own SessionEnd must not read as the native turn's end. A
-//     shared-server provider (Codex) needs none of this — its TUI and
-//     native connection coexist — and its observation keeps writing the
-//     ledger between runs as before.
-//   - Observation is per thread and demand-driven: `observe` starts (once
-//     per provider session) the adapter's normalized subscription for a
-//     TUI-driven session and drains it into the ledger, the transcript copy
-//     (observed items), and ThreadNaming; `unobserve` ends it. A superseded
-//     session's subscription must never keep driving the thread, and a
-//     feed that ends on its own releases its claim so the next read
-//     re-subscribes instead of trusting a dead stream.
-//   - The transcript copy is a projection of provider history, never the
-//     authority: `seq` (allocated by the repository) orders durable changes
-//     and replays them (subscribe after=seq); a re-read (`readHistory`)
-//     replaces the copy wholesale and bumps snapshotVersion — triggered at
-//     startup for threads mid-work, when a TUI-driven thread goes idle, and
-//     before a TUI is ended (its last turn), never for a turn ATC drove
-//     itself. An empty history never replaces the copy (a swept Claude
-//     transcript keeps ATC's copy readable).
+//     the ledger; it closes when the provider ends it, on release and
+//     shutdown, and idle residency is bounded (`armIdleClose`). A
+//     shared-server provider's connection is a cheap subscription: it
+//     holds nothing between turns. A turn the provider starts by itself on
+//     a held one-process connection (Claude's root loop woken by a finished
+//     background task) is ATC's run: adopted at its turnStarted, ended by
+//     `finish` like a prompted turn, its requests answerable; a prompt
+//     admitted meanwhile waits for it (the connection refuses a second
+//     turn) and drains at its end.
+//   - A chat thread's transcript is ATC's own append-only record of the
+//     turns it drove: never re-read from the provider, never replaced —
+//     not at idle, not when a connection fails, not at startup — so
+//     `snapshot.invalidated` never reaches a chat thread's stream, and a
+//     turn run on the session from outside ATC leaves no trace here. Only
+//     a tui thread's copy is ever replaced (`reread`, the observer's
+//     trigger), and only its subscribers are ever told to refetch.
+//   - A confirmed provider session the provider no longer has
+//     (AgentResumeFailed on the resume, or on Claude's first turn after it)
+//     never bricks the thread: the turn starts a fresh session, the
+//     transcript is kept, and one `notice` item opens the turn.
 //   - Provider requests park in memory until answered through
 //     `answerRequest`; they die with their turn or the process (a re-run
 //     turn re-asks). Answers are validated against the request here, so
@@ -151,37 +113,29 @@ export type QueuedPrompt = typeof Contract.QueuedPrompt.Type
 //     settings (re-read under the start lock, so a change made while a
 //     prompt waited is what the turn runs with); the adapter pushes only
 //     what differs from the live session. The provider's own word on its
-//     session settings — the seam's `settings` events, on the writer feed
-//     and the observation feed alike — is adopted into the row as it
-//     arrives (provider state wins), which is how a change made in a TUI or
-//     another provider client shows up here — except that a report merely
+//     session settings — the seam's `settings` events — is adopted into
+//     the row as it arrives (provider state wins), except that a report merely
 //     confirming what the writer's last turn pushed is not news
 //     (applyProviderSettings): a confirmation that lands after the user
 //     changed a setting again must not roll that change back.
 //   - The activity ledger is the one place live activity lives (the
-//     observation drain and threads.ts's demand-driven re-derivation feed
-//     it too): a first busy confirms the thread, a busy→idle drop stamps
+//     observer feeds it too): a first busy confirms the thread, a busy→idle drop stamps
 //     last_finished_at (unread, ATC-160), and every transition publishes
 //     the thread as updated. Turn end forces idle (the turn is done; ATC-160
 //     stamps it); a resident connection's later evidence — background work
 //     re-busying the thread, then its idle — applies on top, and a
 //     connection that ends forces idle again, since nothing can report on
-//     it any more. While the runtime holds a writer on a thread, its ledger
-//     entry is authoritative: never re-derived, and observed activity is
-//     ignored. The ledger also feeds ThreadNaming every busy/idle edge,
+//     it any more. The ledger also feeds ThreadNaming every busy/idle edge,
 //     whichever surface produced it (ATC-202).
-//   - Startup: threads with a running turn re-read history (their status
-//     is whatever the provider says); a turn still running on a shared
-//     provider server (Codex) is reattached and followed to its end, any
+//   - Startup: a chat thread with a turn still running on a shared
+//     provider server (Codex) is reattached and followed to its end; any
 //     other still-running turn is marked interrupted; then queues drain.
-//     A provider that is unavailable at startup leaves prompts queued —
-//     the next prompt on that thread retries the drain.
+//     A provider that is unavailable at startup leaves prompts queued — the
+//     next prompt on that thread retries the drain.
 //   - Live-only events (text.delta, request.*, queue.updated) carry no seq
 //     and are never replayed; a replay re-sends changed rows as
 //     item.updated / turn.started|completed with the row's current state,
-//     in seq order. A subscriber rejoining from before the latest
-//     replacement gets snapshot.invalidated instead — the deleted rows
-//     cannot be replayed, so it refetches.
+//     in seq order.
 //   - Streamed text is durable while it streams (ATC-214): deltas stay
 //     live-only, and on a throttle the writer persists the text so far as
 //     an item.updated partial (complete stays false), so a reconnect, a
@@ -284,12 +238,15 @@ export class ThreadRuntime extends Context.Service<
       { readonly promptId: string; readonly turnId?: string },
       | ThreadNotFound
       | ThreadArchived
+      | ThreadKindMismatch
       | AttachmentNotFound
       | ProviderUnavailable
       | ProviderSessionConflict
     >
     /** Interrupt the running turn; an idle thread is a no-op. Queued prompts stay. */
-    readonly interrupt: (id: string) => Effect.Effect<void, ThreadNotFound | ProviderUnavailable>
+    readonly interrupt: (
+      id: string,
+    ) => Effect.Effect<void, ThreadNotFound | ThreadKindMismatch | ProviderUnavailable>
     readonly listRequests: (
       id: string,
     ) => Effect.Effect<ReadonlyArray<ThreadRequest>, ThreadNotFound>
@@ -299,13 +256,17 @@ export class ThreadRuntime extends Context.Service<
       answer: ThreadRequestAnswer,
     ) => Effect.Effect<
       void,
-      ThreadNotFound | RequestNotFound | InvalidRequestAnswer | ProviderUnavailable
+      | ThreadNotFound
+      | ThreadKindMismatch
+      | RequestNotFound
+      | InvalidRequestAnswer
+      | ProviderUnavailable
     >
     readonly listQueue: (id: string) => Effect.Effect<ReadonlyArray<QueuedPrompt>, ThreadNotFound>
     readonly deleteQueued: (
       id: string,
       promptId: string,
-    ) => Effect.Effect<void, ThreadNotFound | QueuedPromptNotFound>
+    ) => Effect.Effect<void, ThreadNotFound | ThreadKindMismatch | QueuedPromptNotFound>
     /** A page of the transcript (newest `limit`, default 200 — the contract
      * bounds it; or the page before `before`). */
     readonly transcript: (
@@ -322,15 +283,15 @@ export class ThreadRuntime extends Context.Service<
       id: string,
       after?: number | undefined,
     ) => Effect.Effect<Stream.Stream<ThreadEvent>, ThreadNotFound>
-    /** Replace the copy with provider history (see the header's rules). No
-     * route calls this — the triggers are internal; it exists for tests
-     * and manual repair. */
+
+    // --- The seams threads.ts and the observer consume --------------------
+
+    /** Replace a tui thread's copy with provider history (the header's
+     * rules; a no-op on a chat thread). The observer's idle re-read and
+     * startup are the triggers; no route calls this. */
     readonly reread: (
       id: string,
     ) => Effect.Effect<void, ThreadNotFound | ProviderUnavailable | ProviderSessionConflict>
-
-    // --- The seams threads.ts consumes -------------------------------------
-
     /** The ledger's current activity for a thread (undefined = no evidence). */
     readonly activity: (id: string) => Effect.Effect<AgentActivity | undefined>
     /** Whether the runtime holds a live writer on the thread — a turn in
@@ -342,42 +303,18 @@ export class ThreadRuntime extends Context.Service<
       record: ThreadRecord,
       activity: AgentActivity,
     ) => Effect.Effect<{ readonly previous: AgentActivity | undefined }>
-    /** The thread went idle under observation: re-read unless the busy was
-     * ours, end a TUI no client shows, drain the queue. */
-    readonly observedIdle: (record: ThreadRecord) => Effect.Effect<void>
-    /** Start (once) the thread's session observation — call it whenever a
-     * TUI is live or being launched on the record's session. */
-    readonly observe: (record: ThreadRecord) => Effect.Effect<void>
-    /** End the thread's observation (a superseded session, a put-away). */
-    readonly unobserve: (id: string) => Effect.Effect<void>
-    /** Whether the record's current session is under observation. */
-    readonly observing: (record: ThreadRecord) => Effect.Effect<boolean>
-    /**
-     * A client shows the TUI (openThreadTerminal): mark it wanted, then
-     * launch under the ownership rules — the live linked terminal is
-     * returned as-is (checked again once the launch claim is held, so an
-     * automatic relaunch and an explicit open can never both launch); on a
-     * one-process provider a native run in progress refuses (ThreadBusy;
-     * the run's end launches the TUI itself), and no native turn starts
-     * while the launch is in flight.
-     */
-    readonly openTui: <E, R>(
+    /** An item of a tui thread's turn, from the observer's feed, into the
+     * copy (and onto the thread's stream). */
+    readonly recordObservedItem: (threadId: string, event: AgentItemEvent) => Effect.Effect<void>
+    /** A provider settings report from the observer's feed, adopted over
+     * the row as it stands (the header's settings bullet). */
+    readonly adoptSettings: (
       record: ThreadRecord,
-      launch: Effect.Effect<Terminal, E, R>,
-    ) => Effect.Effect<Terminal, E | ThreadBusy, R>
-    /**
-     * A client stopped showing the TUI (closeThreadTerminal): the native
-     * side takes the thread back on a one-process provider — an idle TUI
-     * ends now (its last turn on disk first — a failed read fails the close
-     * retryably and leaves the TUI running), a busy one at its observed
-     * idle. A shared-server provider's TUI keeps running.
-     */
-    readonly closeTui: (
-      record: ThreadRecord,
-    ) => Effect.Effect<void, ProviderUnavailable | ProviderSessionConflict | ZmxUnavailable>
-    /** Release the run, the observation, the surface marks, and the thread's
-     * event streams (archive/delete): the connection closes, its turn is
-     * recorded interrupted, and the provider keeps its own state. */
+      reported: ProviderSettings,
+    ) => Effect.Effect<void>
+    /** Release the run and the thread's event streams (archive/delete): the
+     * connection closes, its turn is recorded interrupted, and the provider
+     * keeps its own state. */
     readonly release: (id: string) => Effect.Effect<void>
   }
 >()("app-server/ThreadRuntime") {}
@@ -390,10 +327,8 @@ const make = (options: ThreadRuntimeOptions) =>
     const registry = yield* AgentRegistry
     const events = yield* Events
     const naming = yield* ThreadNaming
-    const tui = yield* ThreadTui
-    // Writers, observations, and their drain fibers outlive their
-    // originating requests; they live in the service scope so shutdown
-    // releases every connection and subscription.
+    // Writers and their drain fibers outlive their originating requests;
+    // they live in the service scope so shutdown releases every connection.
     const serviceScope = yield* Effect.scope
     const residentIdleTimeout = options.residentIdleTimeout ?? "10 minutes"
     const streamingFlushInterval = options.streamingFlushInterval ?? "250 millis"
@@ -403,33 +338,10 @@ const make = (options: ThreadRuntimeOptions) =>
     const runOf = (id: string): Run | undefined => writers.get(id)?.run
     const hubs = new Map<string, Set<Queue.Queue<ThreadEvent, Cause.Done>>>()
     const liveActivity = new Map<string, AgentActivity>()
-    /** The observed session per thread; the child scope closes it. */
-    interface Observation {
-      readonly providerSessionId: string
-      readonly scope: Scope.Closeable
-    }
-    const observed = new Map<string, Observation>()
-    /** Threads whose clients want the TUI (the header's ownership rule). */
-    const tuiWanted = new Set<string>()
-    /** Threads whose TUI want is settled — a client said open or close, or
-     * a live TUI was adopted at first observation. Only an unsettled
-     * thread's observation may mark the TUI wanted: a feed that ends and is
-     * re-observed must not undo an explicit close. */
-    const tuiSettled = new Set<string>()
-    /** Threads with a TUI launch in flight: no native turn starts meanwhile. */
-    const tuiOpening = new Set<string>()
     // Threads the startup pass has not settled yet: their prompts wait.
     const recovering = new Set(yield* transcripts.threadsNeedingAttention())
     /** Per-thread serialization of "is a run active → start the next prompt". */
-    const startLocks = new Map<string, Semaphore.Semaphore>()
-    const withStartLock =
-      (id: string) =>
-      <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
-        Effect.suspend(() => {
-          const lock = startLocks.get(id) ?? Semaphore.makeUnsafe(1)
-          startLocks.set(id, lock)
-          return lock.withPermit(effect)
-        })
+    const withStartLock = makeKeyedLock().withLock
 
     const adapterFor = (record: ThreadRecord): AgentAdapter | undefined =>
       isAgentId(record.agentId) ? registry.adapterFor(record.agentId) : undefined
@@ -450,7 +362,7 @@ const make = (options: ThreadRuntimeOptions) =>
     const isBusy = isBusyActivity
 
     /** The thread's provider keeps a session in one process at a time (the
-     * header's ownership rule applies); an unknown agent needs no hand-off. */
+     * header's residency rule applies). */
     const oneProcess = (record: ThreadRecord): boolean => adapterFor(record)?.sharedServer === false
 
     // --- Per-thread event hub -------------------------------------------------
@@ -536,9 +448,8 @@ const make = (options: ThreadRuntimeOptions) =>
      * the item it produces lands after the Run that owns it, and — in one
      * uninterruptible step with it — the row stamped started against that
      * turn, so a provider that took the message never has it delivered
-     * again by the drain. Undefined when no turn of ours runs (a TUI-driven
-     * turn has no writer to hand to) or the turn ended first: the prompt
-     * stays waiting for the ordinary drain.
+     * again by the drain. Undefined when no turn of ours runs or the turn
+     * ended first: the prompt stays waiting for the ordinary drain.
      */
     const steerRunning = (
       id: string,
@@ -582,11 +493,14 @@ const make = (options: ThreadRuntimeOptions) =>
             turn: change.change.turn,
           }
 
-    /** Replace the copy with what the provider has; empty never wipes. */
+    /** Replace the copy with what the provider has; empty never wipes. A
+     * chat thread's copy is ATC's own record (the header): never replaced,
+     * whichever trigger asks — the one guard every re-read path shares. */
     const rereadRecord = (
       record: ThreadRecord,
     ): Effect.Effect<void, ProviderUnavailable | ProviderSessionConflict> =>
       Effect.gen(function* () {
+        if (record.kind !== "tui") return
         const adapter = yield* requireAdapter(record)
         const providerSessionId = record.providerSessionId
         if (providerSessionId === undefined) return
@@ -650,8 +564,8 @@ const make = (options: ThreadRuntimeOptions) =>
      * writer deregisters once that is done (a prompt admitted meanwhile
      * waits out the latch rather than racing the connection). One close per writer,
      * shared by every caller: a second Scope.close of a closing scope
-     * returns before the first's finalizers are done, and a TUI must not
-     * launch on a process still shutting down.
+     * returns before the first's finalizers are done, and the next prompt
+     * must not resume on a process still shutting down.
      */
     const beginClose = (id: string, writer: Writer): Effect.Effect<Deferred.Deferred<void>> =>
       Effect.suspend(() => {
@@ -679,8 +593,7 @@ const make = (options: ThreadRuntimeOptions) =>
     /**
      * Close the writer from one of its own fibers (the drain, the idle
      * timer): the close begins now; the wait for it, then `then`, then the
-     * next queued prompt (on a fresh connection) and a wanted TUI's return
-     * run in the service scope. Uninterruptible from the begin to the fork:
+     * next queued prompt (on a fresh connection) run in the service scope. Uninterruptible from the begin to the fork:
      * the close interrupts this very fiber, and the continuation is what
      * starts a prompt admitted during the close.
      */
@@ -695,7 +608,6 @@ const make = (options: ThreadRuntimeOptions) =>
             Deferred.await(closing).pipe(
               Effect.andThen(then),
               Effect.andThen(startNextLogged(id)),
-              Effect.andThen(relaunchTui(id)),
               Effect.forkIn(serviceScope),
             ),
           ),
@@ -737,11 +649,12 @@ const make = (options: ThreadRuntimeOptions) =>
 
     /**
      * End a run: the turn row takes its outcome, parked requests close, and
-     * the Run leaves the writer. A shared-server provider's writer drops
+     * the Run leaves the writer. Callers hold the writer's lock (every
+     * caller is the drain): the final flush below runs unsynchronized. A shared-server provider's writer drops
      * with it (nothing is held between turns), forcing the ledger idle —
      * nothing can report on it any more. A one-process provider's stays
-     * resident — the next queued prompt starts on it (or a wanted TUI
-     * takes over), the idle timer bounds it — and the ledger takes the
+     * resident — the next queued prompt starts on it, the idle timer
+     * bounds it — and the ledger takes the
      * connection's own snapshot: idle, or the background work that outlives
      * the turn, whose idle then lands on this same feed.
      */
@@ -781,10 +694,7 @@ const make = (options: ThreadRuntimeOptions) =>
         }
         yield* noteActivity(record, yield* writer.connection.activity)
         yield* armIdleClose(record, writer)
-        yield* startNextLogged(record.id).pipe(
-          Effect.andThen(relaunchTui(record.id)),
-          Effect.forkIn(serviceScope),
-        )
+        yield* startNextLogged(record.id).pipe(Effect.forkIn(serviceScope))
       })
 
     /**
@@ -926,38 +836,31 @@ const make = (options: ThreadRuntimeOptions) =>
           // A turn ATC did not start. On a one-process provider the held
           // connection IS the session's only process, so the turn is ours
           // to run (the provider woke itself: the header's provider-started
-          // bullet); on a shared server it is another writer's — a TUI
-          // mid-run — and only observed.
+          // bullet). On a shared server it is another client's — a chat
+          // thread's transcript takes nothing from it (the header).
           if (run === undefined && oneProcess(record)) {
             return adoptTurn(record, writer, { turnId: event.turnId })
           }
-          return recordTurn(
-            record.id,
-            { id: event.turnId, status: "running", startedAt: new Date().toISOString() },
-            "observed",
+          return Effect.logDebug("a turn another client started on the session is ignored").pipe(
+            Effect.annotateLogs({ threadId: record.id, turnId: event.turnId }),
           )
         }
         case "turnCompleted":
           return run !== undefined && event.turnId === run.turnId
             ? finish(record, writer, run, event.outcome, event.detail)
-            : recordTurn(
-                record.id,
-                { id: event.turnId, status: event.outcome, endedAt: new Date().toISOString() },
-                "observed",
-              )
+            : Effect.void
       }
     }
 
     /**
      * The feed ended on its own — cleanly (the provider ended the session:
      * a non-success turn on Claude, a resident child that exited) or with
-     * a failure (transport loss). With a run still open ATC no longer
-     * knows how that turn is doing — the provider may still be running it
-     * — so the run is dropped without guessing an outcome and the
-     * provider's history re-read for the truth (a turn history still calls
-     * running is the startup pass's job if the provider stays
-     * unreachable). Either way nothing can report on the connection any
-     * more: the writer drops, and the next prompt resumes afresh.
+     * a failure (transport loss). With a run still open the turn ends
+     * failed, with the reason, and the text streamed so far is kept (the
+     * last flush, as `finish` does); the transcript takes only what ATC
+     * saw (the header), nothing is re-read. Either way nothing can report
+     * on the connection any more: the writer drops, and the next prompt
+     * resumes afresh.
      */
     const writerEnded = (
       record: ThreadRecord,
@@ -976,26 +879,32 @@ const make = (options: ThreadRuntimeOptions) =>
         run.finished = true
         writer.run = undefined
         closeRequests(record.id, run)
-        yield* noteActivity(record, "unknown")
+        yield* writer.lock.withPermit(
+          Effect.forEach([...writer.streaming.keys()], (itemId) =>
+            flushStreaming(record, writer, itemId),
+          ),
+        )
+        writer.streaming.clear()
+        yield* recordTurn(
+          record.id,
+          {
+            id: run.turnId,
+            status: "failed",
+            error: `the provider connection ended mid-turn: ${reason ?? "the feed ended"}`,
+            endedAt: new Date().toISOString(),
+          },
+          "native",
+        )
+        yield* noteActivity(record, "idle")
         yield* naming.noteFeedEnded(record)
-        yield* Effect.logWarning("the turn's connection failed; re-reading provider history").pipe(
+        yield* Effect.logWarning("the turn's connection ended before the turn did").pipe(
           Effect.annotateLogs({
             threadId: record.id,
             turnId: run.turnId,
             reason: reason ?? "the feed ended without a turn end",
           }),
         )
-        yield* dropWriter(
-          record.id,
-          writer,
-          rereadRecord(record).pipe(
-            Effect.catch((error) =>
-              Effect.logWarning("re-read after a failed connection failed").pipe(
-                Effect.annotateLogs({ threadId: record.id, reason: error.message }),
-              ),
-            ),
-          ),
-        )
+        yield* dropWriter(record.id, writer)
       })
 
     /**
@@ -1031,52 +940,119 @@ const make = (options: ThreadRuntimeOptions) =>
     })
 
     /**
+     * Resume the confirmed session and start the turn on it, in a child of
+     * the writer's scope. `lost` when the provider no longer has the
+     * session — AgentResumeFailed on the resume (Codex), or on the first
+     * turn after it (Claude verifies there): the header's lost-session
+     * rule — with the child closed, so the dead connection never lingers
+     * in the writer's scope while the caller starts afresh. A turn the
+     * provider refuses because one is already running on the session —
+     * another Codex client's — is the header's busy-elsewhere refusal.
+     */
+    const resumeConfirmed = (
+      record: ThreadRecord,
+      adapter: AgentAdapter,
+      input: TurnInput,
+      scope: Scope.Closeable,
+      providerSessionId: string,
+    ): Effect.Effect<
+      { readonly connection: AgentConnection; readonly turn: AgentTurn } | { readonly lost: true },
+      ProviderUnavailable | ProviderSessionConflict
+    > =>
+      Effect.suspend(() => {
+        const child = Scope.forkUnsafe(scope)
+        return Effect.gen(function* () {
+          const connection = yield* adapter.resumeSession({
+            providerSessionId,
+            cwd: record.workingDirectory,
+            settings: record.settings,
+          })
+          const turn = yield* connection.startTurn(input, record.settings).pipe(
+            Effect.catchTag("AgentConflict", (error) =>
+              Effect.fail(
+                new ProviderSessionConflict({
+                  threadId: record.id,
+                  reason: `the provider is already running a turn on this thread (another client started it); the prompt was not queued — retry once that turn ends. ${error.reason}`,
+                }),
+              ),
+            ),
+          )
+          return { connection, turn }
+        }).pipe(
+          Scope.provide(child),
+          Effect.catchTag("AgentResumeFailed", (error) =>
+            Scope.close(child, Exit.void).pipe(
+              Effect.andThen(
+                Effect.logWarning(
+                  "the provider no longer has the thread's session; starting afresh",
+                ).pipe(
+                  Effect.annotateLogs({
+                    threadId: record.id,
+                    providerSessionId,
+                    reason: error.reason,
+                  }),
+                ),
+              ),
+              Effect.as({ lost: true as const }),
+            ),
+          ),
+          Effect.mapError((error) =>
+            error._tag === "ProviderSessionConflict" ? error : mapAgentError(record)(error),
+          ),
+        )
+      })
+
+    /**
      * Open a fresh writer for the prompt: a confirmed thread resumes its
-     * exact session; anything else creates a fresh one (the second
-     * `materialize` caller ATC-124 anticipated): identity is persisted —
-     * and confirmed, the prompt is durable provider history — before the
-     * caller registers the run. The connection lives in a child of the
-     * service scope; a failure here closes it again.
+     * exact session; anything else — an unconfirmed thread, or a confirmed
+     * one whose session the provider lost (resumeConfirmed) — creates a
+     * fresh one (the second `materialize` caller ATC-124 anticipated):
+     * identity is persisted — and confirmed, the prompt is durable
+     * provider history — before the caller registers the run. `lost` tells
+     * the caller to open the turn with the notice. The connection lives in
+     * a child of the service scope; a failure here closes it again.
      */
     const openWriter = (
       record: ThreadRecord,
       adapter: AgentAdapter,
       input: TurnInput,
     ): Effect.Effect<
-      { readonly writer: Writer; readonly turn: AgentTurn; readonly record: ThreadRecord },
+      {
+        readonly writer: Writer
+        readonly turn: AgentTurn
+        readonly record: ThreadRecord
+        readonly lost?: true
+      },
       ProviderUnavailable | ProviderSessionConflict
     > =>
       Effect.suspend(() => {
         const scope = Scope.forkUnsafe(serviceScope)
         return Effect.gen(function* () {
           const cwd = record.workingDirectory
-          if (record.providerSessionId !== undefined && record.confirmedAt !== undefined) {
-            const connection = yield* adapter.resumeSession({
-              providerSessionId: record.providerSessionId,
-              cwd,
-              settings: record.settings,
-            })
-            const turn = yield* connection.startTurn(input, record.settings)
+          const confirmed =
+            record.providerSessionId !== undefined && record.confirmedAt !== undefined
+              ? yield* resumeConfirmed(record, adapter, input, scope, record.providerSessionId)
+              : undefined
+          if (confirmed !== undefined && "connection" in confirmed) {
             return {
-              writer: { ...makeWriter(scope, connection), pushed: record.settings },
-              turn,
+              writer: { ...makeWriter(scope, confirmed.connection), pushed: record.settings },
+              turn: confirmed.turn,
               record,
             }
           }
-          // Unconfirmed (none, or zero completed turns): a fresh session,
-          // as openTerminal's materialize does — there is no history to
-          // protect, and the superseded session's adapter resources go.
+          // Unconfirmed (none, or zero completed turns) or lost: a fresh
+          // session, as openTerminal's materialize does — there is no
+          // history to protect (or none the provider still has), and the
+          // superseded session's adapter resources go.
           if (record.providerSessionId !== undefined) {
             yield* adapter.releaseSession({
               providerSessionId: record.providerSessionId,
               providerMetadata: record.providerMetadata,
             })
           }
-          const session = yield* adapter.createSession({
-            cwd,
-            input,
-            settings: record.settings,
-          })
+          const session = yield* adapter
+            .createSession({ cwd, input, settings: record.settings })
+            .pipe(Effect.mapError(mapAgentError(record)))
           const still = yield* repository.get(record.id)
           if (Option.isNone(still)) {
             return yield* Effect.die(new Error(`thread ${record.id} vanished mid-prompt`))
@@ -1092,24 +1068,33 @@ const make = (options: ThreadRuntimeOptions) =>
             writer: { ...makeWriter(scope, session.connection), pushed: record.settings },
             turn: session.turn,
             record: adopted,
+            ...(confirmed !== undefined ? { lost: true as const } : {}),
           }
         }).pipe(
           Scope.provide(scope),
-          Effect.mapError(mapAgentError(record)),
           Effect.onExit((exit) =>
             exit._tag === "Failure" ? Scope.close(scope, Exit.void) : Effect.void,
           ),
         )
       })
 
+    /** The lost-session line (the header). */
+    const recordLostSessionNotice = (threadId: string, turnId: string): Effect.Effect<void> =>
+      recordItem(threadId, {
+        type: "itemCompleted",
+        item: {
+          type: "notice",
+          id: `${turnId}-lost-session`,
+          turnId,
+          text: "Previous session was lost; the agent will not remember earlier turns.",
+        },
+      })
+
     /**
      * Start the oldest waiting prompt if the thread can take one: no turn
-     * running, not recovering, not archived, and — unless a resident writer
-     * is held (its feed is the ledger; the connection takes a turn whenever
-     * no turn is on it) — not busy under another surface (the ledger's word:
-     * a TUI turn in progress queues us until the observed idle drains).
-     * A resident writer takes the turn without reopening the session; one
-     * the provider has ended since closes here and a fresh resume follows.
+     * running, not recovering, not archived. A resident writer takes the
+     * turn without reopening the session; one the provider has ended since
+     * closes here and a fresh resume follows.
      * Under the per-thread start lock, with the record re-read inside it,
      * so two prompts cannot both start and an archive or delete that won
      * the lock first is honored.
@@ -1134,8 +1119,6 @@ const make = (options: ThreadRuntimeOptions) =>
           const found = yield* repository.get(id)
           if (Option.isNone(found) || found.value.archivedAt !== undefined) return Option.none()
           const record = found.value
-          if (held === undefined && isBusy(liveActivity.get(id) ?? "unknown")) return Option.none()
-          if (tuiOpening.has(id)) return Option.none()
           const next = yield* transcripts.peek(id)
           if (Option.isNone(next)) return Option.none()
           const adapter = yield* requireAdapter(record)
@@ -1150,13 +1133,6 @@ const make = (options: ThreadRuntimeOptions) =>
             }
             yield* closeWriter(id, held)
           }
-          // Native wins (the header's ownership rule): a live TUI on a
-          // one-process provider ends before this turn resumes the session
-          // — unless it turns out busy, in which case the observed idle
-          // drains this prompt.
-          if (!adapter.sharedServer && (yield* takeOverTui(record)) === "busy") {
-            return Option.none()
-          }
           const opened = yield* openWriter(record, adapter, input)
           // The adopted record predates this turn's confirm (a fresh
           // session is unconfirmed by construction), which is what makes a
@@ -1165,8 +1141,16 @@ const make = (options: ThreadRuntimeOptions) =>
           // From here the connection is ours until the writer owns it: no
           // interruption (a dropped request) may land between the two, or
           // the writer would stay open with nobody to close it.
+          // The turn row first (the notice belongs to it), the lost-session
+          // notice second, and only then the feed: the notice is durable
+          // before any item of the provider's can land, so it opens the turn.
           yield* Effect.uninterruptible(
             registerRun(opened.record, opened.writer, next.value, opened.turn).pipe(
+              Effect.andThen(
+                opened.lost === undefined
+                  ? Effect.void
+                  : recordLostSessionNotice(opened.record.id, opened.turn.turnId),
+              ),
               Effect.andThen(startWriter(opened.record, opened.writer)),
               Effect.onExit((exit) =>
                 exit._tag === "Failure" && writers.get(id) !== opened.writer
@@ -1289,299 +1273,14 @@ const make = (options: ThreadRuntimeOptions) =>
         ),
       )
 
-    // --- Surface ownership (the header's one-process rule) ---------------------------
-
-    /**
-     * End the thread's TUI terminal, its last turn on disk first: the
-     * settled re-read is the gate (Claude appends the assistant line after
-     * the Stop hook that reported idle) — and it lands the turn in the copy
-     * — then the kill. A read that fails leaves the TUI alive: unverified
-     * is not "on disk". So does a TUI that went busy during the read (a
-     * prompt typed into it meanwhile): "busy", and it keeps the thread
-     * until its idle.
-     */
-    const endTui = (
-      record: ThreadRecord,
-      terminalId: string,
-    ): Effect.Effect<
-      "ended" | "busy",
-      ProviderUnavailable | ProviderSessionConflict | ZmxUnavailable
-    > =>
-      Effect.gen(function* () {
-        yield* rereadRecord(record)
-        if (isBusy(liveActivity.get(record.id) ?? "unknown")) return "busy"
-        yield* tui.end(terminalId)
-        return "ended"
-      })
-
-    /** A native turn is about to start on a one-process provider: a live
-     * TUI (idle — the caller checked the ledger) ends first. "busy" when
-     * it is not idle after all: the turn waits for the observed idle. */
-    const takeOverTui = (
-      record: ThreadRecord,
-    ): Effect.Effect<"taken" | "busy", ProviderUnavailable | ProviderSessionConflict> =>
-      Effect.gen(function* () {
-        const linked = yield* tui.linked(record)
-        if (linked === undefined) return "taken"
-        const outcome = yield* endTui(record, linked.id).pipe(
-          Effect.catchTag("ZmxUnavailable", (error) =>
-            Effect.fail(
-              new ProviderUnavailable({
-                agentId: record.agentId,
-                reason: `the thread's TUI could not be ended: ${error.message}`,
-              }),
-            ),
-          ),
-        )
-        return outcome === "ended" ? "taken" : "busy"
-      })
-
-    /**
-     * The TUI takes the session over from a resident writer between turns:
-     * the connection (and the process behind it) is gone before the TUI's
-     * starts, and so is whatever it was doing — the ledger drops to idle,
-     * because nothing can report on it any more (a stale busy would queue
-     * every later native prompt behind work that no longer exists).
-     */
-    const handOff = (record: ThreadRecord, writer: Writer): Effect.Effect<void> =>
-      closeWriter(record.id, writer).pipe(Effect.andThen(noteActivity(record, "idle")))
-
-    /**
-     * The native side is done (no turn running, nothing queued): a TUI
-     * clients still want comes back on the thread's confirmed session — a
-     * resident writer closes first (one live process). Best-effort — a
-     * failed relaunch is logged, and the next open launches it. Under the
-     * start lock so it cannot interleave with a prompt starting.
-     */
-    const relaunchTui = (id: string): Effect.Effect<void> =>
-      withStartLock(id)(
-        Effect.gen(function* () {
-          const held = writers.get(id)
-          if (!tuiWanted.has(id) || held?.run !== undefined || tuiOpening.has(id)) return
-          const found = yield* repository.get(id)
-          if (Option.isNone(found) || found.value.archivedAt !== undefined) return
-          const record = found.value
-          const adapter = adapterFor(record)
-          if (adapter === undefined || adapter.sharedServer) return
-          if (record.providerSessionId === undefined || record.confirmedAt === undefined) return
-          // A waiting prompt drains first (or stays queued on a provider
-          // failure); the TUI comes back only once the queue is empty.
-          if (Option.isSome(yield* transcripts.peek(id))) return
-          if ((yield* tui.linked(record)) !== undefined) return
-          if (held !== undefined) yield* handOff(record, held)
-          const { record: current } = yield* tui.reopen(record, adapter)
-          yield* observe(current)
-          yield* events.publish({ resource: "thread", id, change: "updated" })
-        }).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("the TUI could not be relaunched; the next open launches it").pipe(
-              Effect.annotateLogs({ threadId: id, reason: error.message }),
-            ),
-          ),
-        ),
-      )
-
-    const openTui: ThreadRuntime["Service"]["openTui"] = (record, launch) =>
-      Effect.gen(function* () {
-        tuiWanted.add(record.id)
-        tuiSettled.add(record.id)
-        // The refusal, the linked re-check, the resident writer's close,
-        // and the launch claim are one step under the start lock: a prompt
-        // cannot start a run between them, and a relaunch (which holds the
-        // lock while it launches) is seen as the live terminal it produced.
-        const claimed = yield* withStartLock(record.id)(
-          Effect.gen(function* () {
-            const held = writers.get(record.id)
-            if (oneProcess(record) && held?.run !== undefined) {
-              return yield* Effect.fail(new ThreadBusy({ threadId: record.id }))
-            }
-            const linked = yield* tui.linked(record)
-            if (linked !== undefined) return linked
-            if (!oneProcess(record)) return undefined
-            if (held !== undefined) yield* handOff(record, held)
-            tuiOpening.add(record.id)
-            return undefined
-          }),
-        )
-        if (claimed !== undefined) return claimed
-        if (!oneProcess(record)) return yield* launch
-        return yield* launch.pipe(
-          Effect.ensuring(
-            Effect.sync(() => tuiOpening.delete(record.id)).pipe(
-              // Prompts that queued behind the launch drain now (native
-              // wins: they take the fresh TUI over).
-              Effect.andThen(startNextLogged(record.id)),
-            ),
-          ),
-        )
-      })
-
-    // Under the start lock: a relaunch in flight finishes first (and is
-    // then ended here), and none starts once the mark is gone.
-    const closeTui: ThreadRuntime["Service"]["closeTui"] = (record) =>
-      withStartLock(record.id)(
-        Effect.gen(function* () {
-          tuiWanted.delete(record.id)
-          tuiSettled.add(record.id)
-          if (!oneProcess(record)) return
-          // Busy: the observed idle ends it (observedIdle below).
-          if (isBusy(liveActivity.get(record.id) ?? "unknown")) return
-          const linked = yield* tui.linked(record)
-          if (linked === undefined) return
-          yield* endTui(record, linked.id)
-        }),
-      )
-
-    // --- Observation of TUI-driven sessions ---------------------------------------
-
-    /**
-     * The thread went idle under observation — a TUI turn's end (a native
-     * turn's own idle never comes this way: observed activity is ignored
-     * while the runtime drives): re-read the provider's history before the
-     * queue drains, so the next turn's live items survive it; then end a
-     * TUI no client wants any more (a Chat switch while it was busy) — the
-     * settled read that just landed is its on-disk gate, so a failed read
-     * leaves it running; then drain. The read and the end hold the start
-     * lock: a prompt admitted meanwhile starts after them, so the replaced
-     * copy can never wipe a native turn's fresh rows.
-     */
-    const observedIdle = (record: ThreadRecord): Effect.Effect<void> =>
-      withStartLock(record.id)(
-        Effect.gen(function* () {
-          if (writers.has(record.id)) return
-          const settled = yield* rereadRecord(record).pipe(
-            Effect.as(true),
-            Effect.catch((error) =>
-              Effect.logDebug("re-read after observed idle failed").pipe(
-                Effect.annotateLogs({ threadId: record.id, reason: error.message }),
-                Effect.as(false),
-              ),
-            ),
-          )
-          if (!settled || !oneProcess(record) || tuiWanted.has(record.id)) return
-          // A prompt typed into the TUI while the read was in flight keeps
-          // the thread (the rule endTui applies); its own idle ends it.
-          if (isBusy(liveActivity.get(record.id) ?? "unknown")) return
-          const linked = yield* tui.linked(record)
-          if (linked === undefined) return
-          yield* tui
-            .end(linked.id)
-            .pipe(
-              Effect.catch((error) =>
-                Effect.logWarning("the closed TUI could not be ended at its idle").pipe(
-                  Effect.annotateLogs({ threadId: record.id, reason: error.message }),
-                ),
-              ),
-            )
-        }),
-      ).pipe(Effect.andThen(startNextLogged(record.id)))
-
-    const unobserve = (id: string): Effect.Effect<void> =>
-      Effect.gen(function* () {
-        // The ledger entry goes with the observation — unless the runtime
-        // holds a writer on the thread, whose own evidence stays authoritative.
-        if (!writers.has(id)) liveActivity.delete(id)
-        tuiWanted.delete(id)
-        tuiSettled.delete(id)
-        const observation = observed.get(id)
-        if (observation === undefined) return
-        observed.delete(id)
-        yield* Scope.close(observation.scope, Exit.void)
-      })
-
-    const drainObserved = (record: ThreadRecord, event: AgentSessionEvent): Effect.Effect<void> =>
-      Effect.gen(function* () {
-        if (event.type === "userPrompt") return yield* naming.notePrompt(record, event.text)
-        // While the runtime holds a writer, its feed already carries every
-        // item, every activity edge, and every settings report; the observer
-        // copy of a shared server's fan-out would double the items, and a
-        // one-process provider's dead TUI can only report its own SessionEnd.
-        if (writers.has(record.id)) return
-        if (event.type === "settings")
-          return yield* adoptSettings(record, event.settings, undefined)
-        if (event.type !== "activity") return yield* recordItem(record.id, event)
-        const { previous } = yield* noteActivity(record, event.activity)
-        // The busy→idle drop is the turn's end (forked: the drain must never
-        // wait on the provider).
-        if (previous !== undefined && isBusy(previous) && event.activity === "idle") {
-          yield* observedIdle(record).pipe(Effect.forkIn(serviceScope))
-        }
-      })
-
-    /**
-     * Start (once) the thread's normalized session subscription. A TUI is
-     * live or launching whenever this is called, so the FIRST observation
-     * of a thread no client has spoken for marks the TUI wanted (a live TUI
-     * found after a restart stays in charge until a client says otherwise).
-     */
-    const observe = (record: ThreadRecord): Effect.Effect<void> =>
-      Effect.gen(function* () {
-        const adapter = adapterFor(record)
-        const providerSessionId = record.providerSessionId
-        if (adapter === undefined || providerSessionId === undefined) return
-        const existing = observed.get(record.id)
-        if (existing?.providerSessionId === providerSessionId) return
-        // A superseded session's subscription must never keep driving the
-        // thread (its feed would confirm a session it never saw).
-        if (existing !== undefined) yield* unobserve(record.id)
-        // The re-check, unsafe fork, and claim are ONE synchronous step:
-        // concurrent first reads of the same live thread (sidebar list +
-        // detail get at relaunch) race exactly here, and a loser that
-        // proceeded would leak its adapter subscription until shutdown.
-        // Whoever claimed during the unobserve above wins, whatever
-        // session it observes — the next read re-checks and heals.
-        if (observed.get(record.id) !== undefined) return
-        const child = Scope.forkUnsafe(serviceScope)
-        const observation: Observation = { providerSessionId, scope: child }
-        observed.set(record.id, observation)
-        if (!tuiSettled.has(record.id)) {
-          tuiWanted.add(record.id)
-          tuiSettled.add(record.id)
-        }
-        const releaseClaim = Effect.gen(function* () {
-          if (observed.get(record.id) !== observation) return
-          observed.delete(record.id)
-          yield* Scope.close(child, Exit.void)
-        })
-        yield* Effect.gen(function* () {
-          // The subscription is established HERE, before the caller
-          // proceeds — only the drain loop is forked. An unavailable
-          // evidence source yields an empty feed: `unknown` on reads,
-          // never a guess or a crash.
-          const stream = yield* adapter
-            .observeSession({ providerSessionId, providerMetadata: record.providerMetadata })
-            .pipe(
-              Effect.catchTag("AgentUnavailable", () =>
-                Effect.succeed(Stream.empty as Stream.Stream<AgentSessionEvent>),
-              ),
-              Scope.provide(child),
-            )
-          yield* stream.pipe(
-            Stream.runForEach((event) => drainObserved(record, event)),
-            // A feed that ends on its own must not pin the entry (the next
-            // read re-subscribes instead of trusting a dead stream) nor
-            // leak its child scope into the service scope. An ended
-            // observation also ends the refinement's wait — its turn-end
-            // evidence is gone, so the catch-up must not park forever.
-            Effect.ensuring(naming.noteFeedEnded(record).pipe(Effect.andThen(releaseClaim))),
-            Effect.forkIn(child),
-          )
-        }).pipe(
-          // A caller interrupted (a dropped read) or failing before the
-          // drain fiber arms must not leave a claim with no consumer — that
-          // would freeze the thread's activity until shutdown.
-          Effect.onExit((exit) => (exit._tag === "Failure" ? releaseClaim : Effect.void)),
-        )
-      })
-
     // --- Startup ---------------------------------------------------------------------
 
     /**
      * Follow a turn still running on a shared provider server after a
      * restart: resume the session and drain its feed to the turn's end.
-     * A session that is already idle has nothing to follow — the copy is
-     * re-read once more, and a turn history still calls running is marked
-     * interrupted.
+     * A session that is already idle has nothing to follow: the turn is
+     * marked interrupted (whatever it emitted while ATC was down is not in
+     * the transcript, by design).
      */
     const reattach = (record: ThreadRecord, turn: ThreadTurn): Effect.Effect<void> =>
       Effect.gen(function* () {
@@ -1598,12 +1297,7 @@ const make = (options: ThreadRuntimeOptions) =>
           .pipe(Scope.provide(scope))
         if (!isBusy(yield* connection.activity)) {
           yield* Scope.close(scope, Exit.void)
-          yield* rereadRecord(record)
-          const still = (yield* transcripts.runningTurns(record.id)).find(
-            (entry) => entry.id === turn.id,
-          )
-          if (still !== undefined) yield* markInterrupted(record, still)
-          return
+          return yield* markInterrupted(record, turn)
         }
         // The turn's own pushed baseline died with the old process, so the
         // provider's first report after reattach is adopted as its word —
@@ -1640,21 +1334,14 @@ const make = (options: ThreadRuntimeOptions) =>
           const found = yield* repository.get(id)
           if (Option.isNone(found)) return
           const record = found.value
+          // A tui thread is the observer's to settle.
+          if (record.kind !== "chat") return
           const running = yield* transcripts.runningTurns(id)
           if (running.length === 0) return
-          yield* rereadRecord(record).pipe(
-            Effect.catch((error) =>
-              Effect.logWarning("startup re-read failed").pipe(
-                Effect.annotateLogs({ threadId: id, reason: error.message }),
-              ),
-            ),
-          )
-          const still = yield* transcripts.runningTurns(id)
           const adapter = adapterFor(record)
-          for (const turn of still) {
-            // A shared provider server (the observation-outlives-TUI shape)
-            // keeps running our turn across ATC's restart; anything else
-            // died with the process.
+          for (const turn of running) {
+            // A shared provider server keeps running our turn across ATC's
+            // restart; anything else died with the process.
             yield* adapter?.sharedServer === true
               ? reattach(record, turn)
               : markInterrupted(record, turn)
@@ -1705,6 +1392,7 @@ const make = (options: ThreadRuntimeOptions) =>
           if (record.archivedAt !== undefined) {
             return yield* Effect.fail(new ThreadArchived({ threadId: id }))
           }
+          yield* requireKind(record, "chat")
           yield* requireAdapter(record)
           // The attachments must be this thread's own before the prompt is
           // admitted — an unknown id is the caller's error, not a queued
@@ -1762,6 +1450,7 @@ const make = (options: ThreadRuntimeOptions) =>
       interrupt: (id) =>
         Effect.gen(function* () {
           const record = yield* repository.require(id)
+          yield* requireKind(record, "chat")
           const writer = writers.get(id)
           const run = writer?.run
           // No run, or one already ending: idle is the goal state.
@@ -1780,6 +1469,7 @@ const make = (options: ThreadRuntimeOptions) =>
       answerRequest: (id, requestId, answer) =>
         Effect.gen(function* () {
           const record = yield* repository.require(id)
+          yield* requireKind(record, "chat")
           const writer = writers.get(id)
           const request = writer?.run?.requests.get(requestId)
           if (writer === undefined || request === undefined) {
@@ -1810,7 +1500,9 @@ const make = (options: ThreadRuntimeOptions) =>
       deleteQueued: (id, promptId) =>
         withStartLock(id)(
           Effect.gen(function* () {
-            yield* repository.require(id)
+            yield* repository
+              .require(id)
+              .pipe(Effect.flatMap((record) => requireKind(record, "chat")))
             const removed = yield* transcripts.deleteWaiting(id, promptId)
             if (!removed) {
               return yield* Effect.fail(new QueuedPromptNotFound({ threadId: id, promptId }))
@@ -1829,7 +1521,7 @@ const make = (options: ThreadRuntimeOptions) =>
         ),
       subscribe: (id, after) =>
         Effect.gen(function* () {
-          yield* repository.require(id)
+          const record = yield* repository.require(id)
           const queue = yield* Queue.make<ThreadEvent, Cause.Done>({
             capacity: SUBSCRIBER_CAPACITY,
           })
@@ -1852,9 +1544,12 @@ const make = (options: ThreadRuntimeOptions) =>
             .changesAfter(id, after)
             .pipe(Effect.onExit((exit) => (exit._tag === "Failure" ? unsubscribe : Effect.void)))
           // A copy replaced since `after`: what was deleted cannot be
-          // replayed, so the client is told to refetch instead.
+          // replayed, so the client is told to refetch instead. Only a tui
+          // thread's copy is ever replaced — a chat thread's counters may
+          // still carry a replacement from before it was a chat thread
+          // (the one-time migration), which must not read as one now.
           const replay: ReadonlyArray<ThreadEvent> =
-            counters.snapshotSeq > after
+            record.kind === "tui" && counters.snapshotSeq > after
               ? [
                   {
                     type: "snapshot.invalidated",
@@ -1874,19 +1569,12 @@ const make = (options: ThreadRuntimeOptions) =>
       activity: (id) => Effect.sync(() => liveActivity.get(id)),
       hasWriter: (id) => Effect.sync(() => writers.has(id)),
       noteActivity,
-      observedIdle,
-      observe,
-      unobserve,
-      observing: (record) =>
-        Effect.sync(() => observed.get(record.id)?.providerSessionId === record.providerSessionId),
-      openTui,
-      closeTui,
+      recordObservedItem: recordItem,
+      adoptSettings: (record, reported) => adoptSettings(record, reported, undefined),
       release: (id) =>
         withStartLock(id)(
           Effect.gen(function* () {
             const writer = writers.get(id)
-            liveActivity.delete(id)
-            yield* unobserve(id)
             const found = yield* repository.get(id)
             const run = writer?.run
             if (run !== undefined && !run.finished) {
@@ -1900,6 +1588,9 @@ const make = (options: ThreadRuntimeOptions) =>
               }
             }
             if (writer !== undefined) yield* closeWriter(id, writer)
+            // After the close: a late event on the feed can no longer
+            // re-insert the entry.
+            liveActivity.delete(id)
             // Subscribers of a thread being put away or deleted are done.
             for (const queue of hubs.get(id) ?? []) Queue.endUnsafe(queue)
             hubs.delete(id)

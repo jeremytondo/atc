@@ -11,6 +11,7 @@ public typealias Terminal = Components.Schemas.Terminal
 public typealias Agent = Components.Schemas.Agent
 public typealias AgentID = Components.Schemas.AgentId
 public typealias ThreadActivityState = Components.Schemas.ThreadActivityState
+public typealias ThreadKind = Components.Schemas.ThreadKind
 public typealias TerminalStatus = Components.Schemas.TerminalStatus
 public typealias ThreadItem = Components.Schemas.ThreadItem
 public typealias ThreadTurn = Components.Schemas.ThreadTurn
@@ -43,6 +44,16 @@ extension AgentID {
         switch self {
         case .codex: "hexagon"
         case .claudeCode: "asterisk"
+        }
+    }
+}
+
+extension ThreadKind {
+    /// The user-facing names of the two thread kinds (ATC-224).
+    public var displayName: String {
+        switch self {
+        case .chat: "Chat"
+        case .tui: "TUI"
         }
     }
 }
@@ -163,6 +174,7 @@ extension ThreadItem {
         case .mcpCall(let item): (item.id, item.turnId, item.parentItemId)
         case .toolCall(let item): (item.id, item.turnId, item.parentItemId)
         case .compaction(let item): (item.id, item.turnId, item.parentItemId)
+        case .notice(let item): (item.id, item.turnId, item.parentItemId)
         }
     }
 
@@ -177,7 +189,8 @@ extension ThreadItem {
         case .reasoning(var item) where !item.complete:
             item.text += delta
             self = .reasoning(item)
-        case .assistantText, .reasoning, .userMessage, .command, .fileChange, .mcpCall, .toolCall, .compaction:
+        case .assistantText, .reasoning, .userMessage, .command, .fileChange, .mcpCall, .toolCall, .compaction,
+            .notice:
             break
         }
     }

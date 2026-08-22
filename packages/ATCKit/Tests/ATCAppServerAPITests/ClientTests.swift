@@ -166,10 +166,12 @@ struct ClientTests {
     func pinThread() async throws {
         let (client, recorder) = try client(
             returning:
-                #"{"id":"t1","projectId":"p1","agentId":"codex","workingDirectory":"/code/atc","settings":{"model":"gpt-5.6-sol","reasoning":"high","mode":"chat","access":"auto"},"activityState":"idle","unread":false,"pinnedAt":"2026-08-06T12:34:56.789Z","createdAt":"2026-08-06T12:00:00.000Z","updatedAt":"2026-08-06T12:34:56.789Z"}"#
+                #"{"id":"t1","projectId":"p1","agentId":"codex","kind":"chat","workingDirectory":"/code/atc","settings":{"model":"gpt-5.6-sol","reasoning":"high","mode":"chat","access":"auto"},"activityState":"idle","unread":false,"pinnedAt":"2026-08-06T12:34:56.789Z","createdAt":"2026-08-06T12:00:00.000Z","updatedAt":"2026-08-06T12:34:56.789Z"}"#
         )
         let thread = try await client.pinThread(path: .init(threadId: "t1")).ok.body.json
         #expect(thread.pinnedAt == Date(timeIntervalSince1970: 1_786_019_696.789))
+        #expect(thread.kind == .chat)
+        #expect(thread.workingDirectory == "/code/atc")
         #expect(recorder.request?.path == "/api/v1/threads/t1/pin")
         #expect(recorder.request?.method == .post)
     }

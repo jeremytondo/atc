@@ -29,22 +29,19 @@ exited simply relaunches when opened in TUI.
 _Avoid_: Session, conversation
 
 **Chat**:
-One of the two views of a Thread, and the default: the Thread's transcript
-and a composer, driven natively through the App Server with no Terminal
-involved. Chat and TUI show the same conversation; which one a Thread is
-shown in is remembered for the app session and shared by every window. The
-App Server owns a Thread by default: switching a Claude Code Thread to Chat
-hands it back (its TUI ends once the current turn is on disk), and a Chat
-prompt sent while its TUI is live takes over the same way — the TUI comes
-back when the prompt is done. Codex Threads need no hand-off.
-_Avoid_: Native mode, transcript view
+One of the two kinds of Thread, chosen when the Thread is created and kept
+for life (the New Thread sheet picks it; General settings hold the
+default): the Thread's transcript and a composer, driven through the App
+Server with no Terminal involved. Its transcript is the App Server's own
+record; nothing the agent does outside atc shows up in it.
+_Avoid_: Native mode, transcript view, Chat mode
 
 **TUI**:
-The other view of a Thread: its provider TUI running in the linked Terminal.
-Opening a Thread in TUI launches or reuses that Terminal; while the App
-Server is driving a turn on a Claude Code Thread, the TUI opens once that
-turn ends.
-_Avoid_: Terminal mode, terminal view
+The other kind of Thread: its provider TUI running in the linked Terminal,
+launched or reused when the Thread is opened and never prompted from atc. A
+TUI Thread whose Terminal ended shows an empty state with Reopen; nothing
+relaunches it on its own.
+_Avoid_: Terminal mode, terminal view, TUI mode
 
 **Terminal**:
 A server-owned zmx-backed process. A Thread's TUI runs in a linked Terminal

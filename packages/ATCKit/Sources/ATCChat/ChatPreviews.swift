@@ -111,6 +111,10 @@ import SwiftUI
                             createdAt: date(72), text: markdown, complete: true)),
                     .compaction(
                         .init(_type: .compaction, id: "k1", turnId: "t2")),
+                    .notice(
+                        .init(
+                            _type: .notice, id: "n1", turnId: "t3",
+                            text: "Previous session was lost; the agent will not remember earlier turns.")),
                     .userMessage(
                         .init(
                             _type: .userMessage, id: "u2", turnId: "t3",

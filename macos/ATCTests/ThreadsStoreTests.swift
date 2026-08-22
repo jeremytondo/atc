@@ -159,10 +159,11 @@ struct ThreadsStoreTests {
     @Test("create merges the new thread at the head of the active list")
     func createMerges() async throws {
         let (store, client) = await loadedStore()
-        let created = try await store.create(.init(projectId: "prj", agentId: .claudeCode, name: "New"))
+        let created = try await store.create(.init(projectId: "prj", agentId: .claudeCode, kind: .chat, name: "New"))
         #expect(store.threads.first?.id == created.id)
         #expect(client.createdThreadRequests.map(\.name) == ["New"])
         #expect(client.createdThreadRequests.map(\.agentId) == [.claudeCode])
+        #expect(client.createdThreadRequests.map(\.kind) == [.chat])
     }
 
     @Test("updateSettings sends one patch and merges the server's settings in place")
@@ -275,6 +276,7 @@ struct ThreadsStoreTests {
     @Test("openTerminal is idempotent: a live linked terminal is returned as-is")
     func openTerminalIsIdempotent() async throws {
         let (store, client) = await loadedStore()
+        client.setThreadKind(.tui, threadID: "thr1")
         let first = try await store.openTerminal(threadID: "thr1")
         let second = try await store.openTerminal(threadID: "thr1")
         #expect(first.id == second.id)

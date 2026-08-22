@@ -44,9 +44,8 @@ struct KeymapResolutionTests {
         #expect(command(at: try stroke("cmd+shift+n"), in: keymap) == .newProject)
 
         let leader = try #require(prefix(at: try stroke("cmd+k"), in: keymap))
-        #expect(leader.count == 7)
+        #expect(leader.count == 6)
         #expect(command(in: leader[KeyStroke(key: "b", modifiers: [])]) == .toggleSidebar)
-        #expect(command(in: leader[KeyStroke(key: "c", modifiers: [])]) == .toggleThreadViewMode)
         #expect(command(in: leader[KeyStroke(key: "d", modifiers: [])]) == .showDashboard)
         #expect(command(in: leader[KeyStroke(key: "n", modifiers: [])]) == .newThread)
         #expect(command(in: leader[KeyStroke(key: "r", modifiers: [])]) == .refresh)

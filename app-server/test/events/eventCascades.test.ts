@@ -62,7 +62,7 @@ const setup = Effect.gen(function* () {
     payload: { name: "Cascades", defaultWorkingDirectory: realDir },
   })
   const thread = yield* client.v1.createThread({
-    payload: { projectId: project.id, agentId: "codex" },
+    payload: { projectId: project.id, agentId: "codex", kind: "tui" },
   })
   return { client, project, thread }
 })

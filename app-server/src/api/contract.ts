@@ -445,10 +445,20 @@ export const ThreadActivityState = Schema.Literals([
     "Normalized activity of the thread's agent session, derived from live provider evidence only; `unknown` means no evidence — never a guess.",
 })
 
+export const THREAD_KINDS = ["chat", "tui"] as const
+
+/** The thread's driver, chosen at creation and kept for life (ATC-224). */
+export const ThreadKind = Schema.Literals(THREAD_KINDS).annotate({
+  identifier: "ThreadKind",
+  description:
+    'The thread\'s driver, chosen at creation and never changed: "chat" is driven through ATC (prompted; its transcript is ATC\'s own append-only record), "tui" through the terminal ATC launches for it (never prompted; its transcript is a projection of the provider\'s). Operations of the other kind fail ThreadKindMismatch.',
+})
+
 export const Thread = Schema.Struct({
   id: Schema.String.annotate({ description: "UUIDv7 thread id." }),
   projectId: Schema.String.annotate({ description: "Owning project id." }),
   agentId: AgentId,
+  kind: ThreadKind,
   // Absent keys (not null) for optional fields — see UpdateProjectRequest.
   name: Schema.optionalKey(Schema.String.annotate({ description: "Mutable display label." })),
   workingDirectory: Schema.String.annotate({
@@ -464,7 +474,8 @@ export const Thread = Schema.Struct({
   }),
   linkedTerminalId: Schema.optionalKey(
     Schema.String.annotate({
-      description: "The thread's live TUI terminal, when one is open (derived; never required).",
+      description:
+        "The thread's live TUI terminal, when one is open (derived; never required). Only ever present on a tui thread.",
     }),
   ),
   pinnedAt: Schema.optionalKey(
@@ -487,6 +498,7 @@ export const ThreadList = Schema.Array(Thread).annotate({
 export const CreateThreadRequest = Schema.Struct({
   projectId: Schema.String.annotate({ description: "Owning project id." }),
   agentId: AgentId,
+  kind: ThreadKind,
   name: Schema.optionalKey(Schema.String.annotate({ description: "Display label." })),
   workingDirectory: Schema.optionalKey(
     AbsolutePath.annotate({
@@ -497,7 +509,7 @@ export const CreateThreadRequest = Schema.Struct({
 }).annotate({
   identifier: "CreateThreadRequest",
   description:
-    "Payload for creating a thread. Creation is local-only: the durable record is written and no provider session is created until the first interaction.",
+    "Payload for creating a thread. Creation is local-only: the durable record is written and no provider session is created until the first interaction. `kind` is required — the default is the client's choice, never the server's.",
 })
 
 export const UpdateThreadRequest = Schema.Struct({
@@ -706,6 +718,16 @@ export const ThreadItemCompaction = Schema.Struct({
   description: "Marker: the provider compacted the conversation context here.",
 })
 
+export const ThreadItemNotice = Schema.Struct({
+  type: Schema.Literal("notice"),
+  ...threadItemBase,
+  text: Schema.String.annotate({ description: "The one-line system notice." }),
+}).annotate({
+  identifier: "ThreadItemNotice",
+  description:
+    "A system notice ATC itself appended (never provider content): the previous provider session was lost and this turn started a fresh one.",
+})
+
 export const ThreadItem = Schema.Union(
   [
     ThreadItemUserMessage,
@@ -716,6 +738,7 @@ export const ThreadItem = Schema.Union(
     ThreadItemMcpCall,
     ThreadItemToolCall,
     ThreadItemCompaction,
+    ThreadItemNotice,
   ],
   { mode: "oneOf" },
 ).annotate({
@@ -1201,6 +1224,27 @@ export class ThreadArchived extends Schema.TaggedErrorClass<ThreadArchived>()(
   }
 }
 
+/** The operation belongs to the other thread kind (ATC-224). */
+export class ThreadKindMismatch extends Schema.TaggedErrorClass<ThreadKindMismatch>()(
+  "ThreadKindMismatch",
+  { threadId: Schema.String, kind: ThreadKind, message: errorMessage },
+  {
+    identifier: "ThreadKindMismatch",
+    description: "The operation is unavailable for the thread's kind (`kind` is the thread's).",
+    httpApiStatus: 409,
+  },
+) {
+  constructor(props: { readonly threadId: string; readonly kind: typeof ThreadKind.Type }) {
+    super({
+      ...props,
+      message:
+        props.kind === "tui"
+          ? `thread ${props.threadId} is a TUI thread: it is driven from its terminal, not from ATC`
+          : `thread ${props.threadId} is a Chat thread: it has no terminal to open or close`,
+    })
+  }
+}
+
 /** The thread's agent provider cannot be used right now. Retryable. */
 export class ProviderUnavailable extends Schema.TaggedErrorClass<ProviderUnavailable>()(
   "ProviderUnavailable",
@@ -1550,13 +1594,16 @@ export class V1 extends HttpApiGroup.make("v1")
               'omitted (or "false") lists active threads only.',
           }),
         ),
+        // Bare (no re-annotation): a second annotated AST of the same
+        // identifier is a duplicate to the OpenAPI compiler.
+        kind: Schema.optionalKey(ThreadKind),
       },
       success: ThreadList,
     })
       .annotate(OpenApi.Identifier, "listThreads")
       .annotate(
         OpenApi.Description,
-        "List threads, newest first. Archived threads are excluded unless requested.",
+        "List threads, newest first. Archived threads are excluded unless requested; `kind` narrows to one kind.",
       ),
     HttpApiEndpoint.post("createThread", "/threads", {
       payload: CreateThreadRequest,
@@ -1579,12 +1626,12 @@ export class V1 extends HttpApiGroup.make("v1")
       params: threadIdParam,
       payload: UpdateThreadRequest,
       success: Thread,
-      error: [ThreadNotFound, InvalidThreadSettings, ProviderUnavailable],
+      error: [ThreadNotFound, ThreadKindMismatch, InvalidThreadSettings, ProviderUnavailable],
     })
       .annotate(OpenApi.Identifier, "updateThread")
       .annotate(
         OpenApi.Description,
-        "Update a thread's display label and/or settings. A model or reasoning change is validated against the agent's model catalog (ProviderUnavailable when the catalog cannot be read); other fields never consult the provider.",
+        "Update a thread's display label and/or settings. A model or reasoning change is validated against the agent's model catalog (ProviderUnavailable when the catalog cannot be read); other fields never consult the provider. Settings are refused on a tui thread (ThreadKindMismatch): a change made here could never reach its terminal; the thread's settings are what its TUI reports, read-only.",
       ),
     HttpApiEndpoint.post("archiveThread", "/threads/:threadId/archive", {
       params: threadIdParam,
@@ -1646,7 +1693,7 @@ export class V1 extends HttpApiGroup.make("v1")
       error: [
         ThreadNotFound,
         ThreadArchived,
-        ThreadBusy,
+        ThreadKindMismatch,
         ProviderUnavailable,
         ProviderSessionConflict,
         DirectoryUnavailable,
@@ -1658,19 +1705,24 @@ export class V1 extends HttpApiGroup.make("v1")
       .annotate(OpenApi.Identifier, "openThreadTerminal")
       .annotate(
         OpenApi.Description,
-        "Open the thread's TUI terminal — the client is showing the TUI. Idempotent: a live linked terminal is returned as-is. Otherwise the provider TUI is launched in a new terminal — a confirmed session is relaunched against its exact persisted identity (ATC never adopts a different one), an unconfirmed one materializes a fresh provider session whose identity is established and persisted before this call returns. " +
-          "A provider that can be probed (Codex) fails fast when the persisted session no longer exists; one that cannot (Claude Code) launches blind — a successful open whose terminal dies within seconds is a state clients must expect and surface. " +
-          "One live process per thread (Claude Code): while the server is driving a turn the open fails ThreadBusy and the TUI launches by itself when that turn ends — watch the thread's `linkedTerminalId`; a prompt sent while the TUI is live takes the thread over (the TUI ends once idle, the turn runs, and the TUI relaunches when the queue drains). Codex, whose shared server lets both coexist, needs none of this.",
+        "Open a tui thread's terminal (a chat thread has none: ThreadKindMismatch). Idempotent: a live linked terminal is returned as-is. Otherwise the provider TUI is launched in a new terminal — a confirmed session is relaunched against its exact persisted identity (ATC never adopts a different one), an unconfirmed one materializes a fresh provider session whose identity is established and persisted before this call returns. " +
+          "A provider that can be probed (Codex) fails fast when the persisted session no longer exists; one that cannot (Claude Code) launches blind — a successful open whose terminal dies within seconds is a state clients must expect and surface. A terminal that ended is never relaunched by the server; open again to relaunch it.",
       ),
     HttpApiEndpoint.delete("closeThreadTerminal", "/threads/:threadId/terminal", {
       params: threadIdParam,
       success: Thread,
-      error: [ThreadNotFound, ProviderUnavailable, ProviderSessionConflict, ZmxUnavailable],
+      error: [
+        ThreadNotFound,
+        ThreadKindMismatch,
+        ProviderUnavailable,
+        ProviderSessionConflict,
+        ZmxUnavailable,
+      ],
     })
       .annotate(OpenApi.Identifier, "closeThreadTerminal")
       .annotate(
         OpenApi.Description,
-        "Close the thread's TUI — the client stopped showing it (switched to Chat). On a provider whose session lives in one process at a time (Claude Code) this hands the thread back to the App Server: an idle TUI ends now, a busy one when its turn completes — either way only once that turn is on disk (a history read that fails leaves the TUI running and fails the call retryably) — and the next prompt resumes the full conversation natively; opening the terminal again relaunches the TUI. On a shared-server provider (Codex) the TUI needs no hand-off and keeps running; the call changes nothing. Returns the thread.",
+        "End a tui thread's terminal (a chat thread has none: ThreadKindMismatch): an idle TUI ends now, a busy one at its observed idle, either way once its last turn is on disk. Returns the thread.",
       ),
     // --- The Thread runtime (ATC-193): drive a thread with no Terminal ---
     HttpApiEndpoint.post("promptThread", "/threads/:threadId/prompt", {
@@ -1680,6 +1732,7 @@ export class V1 extends HttpApiGroup.make("v1")
       error: [
         ThreadNotFound,
         ThreadArchived,
+        ThreadKindMismatch,
         AttachmentNotFound,
         ProviderUnavailable,
         ProviderSessionConflict,
@@ -1688,8 +1741,9 @@ export class V1 extends HttpApiGroup.make("v1")
       .annotate(OpenApi.Identifier, "promptThread")
       .annotate(
         OpenApi.Description,
-        'Prompt the thread. Always admitted: an idle thread starts a turn at once and a busy one queues the prompt for the next idle — or hands it to the running turn with `when: "now"` (see PromptThreadRequest); `turnId` tells which. There is no busy error and no lock between surfaces. On a one-process provider (Claude Code) a prompt while the TUI is live takes the thread over: the TUI ends once idle, the turn runs natively, and the TUI relaunches when the queue drains (see openThreadTerminal). ' +
-          "The turn is server-owned: the client's connection never matters to it. When the prompt would start now and the provider refuses, it is un-admitted (the error means not accepted; nothing stays queued); a prompt queued behind others is admitted regardless. Follow the turn on the per-thread event stream.",
+        'Prompt a chat thread (a tui thread is driven from its terminal: ThreadKindMismatch). Always admitted: an idle thread starts a turn at once and a busy one queues the prompt for the next idle — or hands it to the running turn with `when: "now"` (see PromptThreadRequest); `turnId` tells which. ' +
+          "The turn is server-owned: the client's connection never matters to it. When the prompt would start now and the provider refuses, it is un-admitted (the error means not accepted; nothing stays queued) — including a Codex thread mid-turn in another Codex client (ProviderSessionConflict: nothing queues behind outside turns); a prompt queued behind others is admitted regardless. " +
+          "A provider session that no longer exists (swept, deleted, moved) is not an error: the turn starts a fresh session, the transcript is kept, and a `notice` item says the agent will not remember earlier turns. Follow the turn on the per-thread event stream.",
       ),
     HttpApiEndpoint.get("getThreadTranscript", "/threads/:threadId/transcript", {
       params: threadIdParam,
@@ -1711,7 +1765,7 @@ export class V1 extends HttpApiGroup.make("v1")
       .annotate(
         OpenApi.Description,
         "Read the thread's transcript: the newest `limit` items (or the page before `before`), oldest first, with every turn they reference and any running turn, plus the head `seq` to subscribe after and the `snapshotVersion`. " +
-          "The transcript is ATC's copy of the provider's conversation — a re-read from the provider replaces it wholesale (snapshotVersion bumps, `snapshot.invalidated` on the stream).",
+          "A chat thread's transcript is ATC's own append-only record of the turns it drove; it is never re-read from the provider. A tui thread's is a projection of the provider's conversation — a re-read at idle replaces it wholesale (snapshotVersion bumps, `snapshot.invalidated` on the stream).",
       ),
     HttpApiEndpoint.get("subscribeThreadEvents", "/threads/:threadId/events", {
       params: threadIdParam,
@@ -1732,17 +1786,17 @@ export class V1 extends HttpApiGroup.make("v1")
       .annotate(
         OpenApi.Description,
         "Subscribe to one thread's live events (SSE): items as they start, stream (`text.delta`), update, and complete; turns; pending requests; the queue; and snapshot invalidations. " +
-          "Durable events carry `seq`; track the highest seen and reconnect with `after=<seq>` to replay every change you missed (current state per row, in seq order) — a rejoin from before a provider re-read gets `snapshot.invalidated` instead: refetch the transcript and resubscribe after its `seq`. " +
+          "Durable events carry `seq`; track the highest seen and reconnect with `after=<seq>` to replay every change you missed (current state per row, in seq order) — a rejoin from before a provider re-read (tui threads only; a chat thread's stream never carries it) gets `snapshot.invalidated` instead: refetch the transcript and resubscribe after its `seq`. " +
           "Framed like /events (see that endpoint's response); a subscriber that falls too far behind is ended and should resubscribe with `after`.",
       ),
     HttpApiEndpoint.post("interruptThread", "/threads/:threadId/interrupt", {
       params: threadIdParam,
-      error: [ThreadNotFound, ProviderUnavailable],
+      error: [ThreadNotFound, ThreadKindMismatch, ProviderUnavailable],
     })
       .annotate(OpenApi.Identifier, "interruptThread")
       .annotate(
         OpenApi.Description,
-        "Interrupt the turn the server is driving (its `turn.completed` reads interrupted). A thread with no server-driven turn is a no-op — a turn a TUI drives is interrupted from the TUI — and queued prompts stay queued; they run at the next idle.",
+        "Interrupt the turn the server is driving (its `turn.completed` reads interrupted). An idle chat thread is a no-op, and queued prompts stay queued; they run at the next idle. A tui thread is interrupted from its terminal (ThreadKindMismatch).",
       ),
     HttpApiEndpoint.get("listThreadRequests", "/threads/:threadId/requests", {
       params: threadIdParam,
@@ -1757,7 +1811,13 @@ export class V1 extends HttpApiGroup.make("v1")
     HttpApiEndpoint.post("answerThreadRequest", "/threads/:threadId/requests/:requestId/answer", {
       params: { threadId: Schema.String, requestId: Schema.String },
       payload: ThreadRequestAnswer,
-      error: [ThreadNotFound, RequestNotFound, InvalidRequestAnswer, ProviderUnavailable],
+      error: [
+        ThreadNotFound,
+        ThreadKindMismatch,
+        RequestNotFound,
+        InvalidRequestAnswer,
+        ProviderUnavailable,
+      ],
     })
       .annotate(OpenApi.Identifier, "answerThreadRequest")
       .annotate(
@@ -1773,7 +1833,7 @@ export class V1 extends HttpApiGroup.make("v1")
       .annotate(OpenApi.Description, "List the prompts still waiting to run, oldest first."),
     HttpApiEndpoint.delete("deleteQueuedPrompt", "/threads/:threadId/queue/:promptId", {
       params: { threadId: Schema.String, promptId: Schema.String },
-      error: [ThreadNotFound, QueuedPromptNotFound],
+      error: [ThreadNotFound, ThreadKindMismatch, QueuedPromptNotFound],
     })
       .annotate(OpenApi.Identifier, "deleteQueuedPrompt")
       .annotate(
@@ -1792,7 +1852,13 @@ export class V1 extends HttpApiGroup.make("v1")
       },
       payload: attachmentPayloads,
       success: ThreadAttachment,
-      error: [ThreadNotFound, ThreadArchived, AttachmentTooLarge, AttachmentInvalid],
+      error: [
+        ThreadNotFound,
+        ThreadArchived,
+        ThreadKindMismatch,
+        AttachmentTooLarge,
+        AttachmentInvalid,
+      ],
     })
       .annotate(OpenApi.Identifier, "createThreadAttachment")
       .annotate(

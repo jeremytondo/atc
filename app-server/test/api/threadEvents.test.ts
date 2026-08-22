@@ -89,7 +89,9 @@ describe("thread event stream: two clients, one remote", () => {
         ),
       )
       const thread = yield* Effect.promise(() =>
-        json<{ id: string }>(post("/api/v1/threads", { projectId: project.id, agentId: "codex" })),
+        json<{ id: string }>(
+          post("/api/v1/threads", { projectId: project.id, agentId: "codex", kind: "chat" }),
+        ),
       )
       const eventsPath = `${local}/api/v1/threads/${thread.id}/events`
 

@@ -141,6 +141,7 @@ struct AppModelRuntimeTests {
     func openThreadAttaches() async throws {
         let client = ScriptableAppServerClient()
         Fixtures.seed(client)
+        client.setThreadKind(.tui, threadID: "thr1")
         let test = try await makeModel(client: client)
         await test.runtime.refresh()
 

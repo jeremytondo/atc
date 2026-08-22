@@ -424,7 +424,18 @@ describe("atc thread (black box)", () => {
           (await run(["project", "create", "--name", "NoAgent", "--directory", scratch])).stdout,
         ) as { id: string }
         const thread = JSON.parse(
-          (await run(["thread", "create", "--project", project.id, "--agent", "codex"])).stdout,
+          (
+            await run([
+              "thread",
+              "create",
+              "--project",
+              project.id,
+              "--agent",
+              "codex",
+              "--kind",
+              "tui",
+            ])
+          ).stdout,
         ) as { id: string }
         const opened = await run(["thread", "open", thread.id])
         expect(opened.stdout).toBe("")

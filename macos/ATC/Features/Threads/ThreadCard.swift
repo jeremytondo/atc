@@ -67,6 +67,13 @@ struct ThreadCard: View {
                             .font(.caption.weight(.medium))
                             .foregroundStyle(thread.statusColor)
                     }
+                    if thread.kind == .tui {
+                        Image(systemName: "terminal")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .help("TUI thread")
+                            .accessibilityLabel("TUI")
+                    }
                     agentBadge
                 }
             }

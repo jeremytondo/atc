@@ -206,4 +206,30 @@ export const migrations: Record<string, Effect.Effect<void, unknown, SqlClient.S
     yield* sql`CREATE INDEX thread_attachments_thread_id ON thread_attachments(thread_id)`
     yield* sql`ALTER TABLE thread_queue ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'`
   }),
+  // Thread kinds (ATC-224): `kind` is 'chat' (ATC's own process drives the
+  // thread) or 'tui' (a terminal ATC launches and observes drives it),
+  // chosen at creation and never changed. One-time classification of
+  // existing rows, no compat path: a row is tui only when it has at least
+  // one turn, every turn was observed or read from history (never driven
+  // by ATC), and nothing is queued; everything else — threads with no
+  // turns included — is chat. A live TUI terminal still linked to a row
+  // that comes out chat is accepted residue: the thread never shows or
+  // observes it again, it stays an ordinary terminal in the terminal list
+  // until it exits or is deleted, and archive/delete still reap it.
+  "0010_thread_kind": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`
+      ALTER TABLE threads
+      ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat' CHECK (kind IN ('chat', 'tui'))
+    `
+    yield* sql`
+      UPDATE threads SET kind = 'tui'
+      WHERE EXISTS (SELECT 1 FROM thread_turns WHERE thread_turns.thread_id = threads.id)
+        AND NOT EXISTS (
+          SELECT 1 FROM thread_turns
+          WHERE thread_turns.thread_id = threads.id AND thread_turns.source = 'native'
+        )
+        AND NOT EXISTS (SELECT 1 FROM thread_queue WHERE thread_queue.thread_id = threads.id)
+    `
+  }),
 }

@@ -47,7 +47,21 @@ describe("ThreadRuntime", () => {
     const projects = yield* Projects
     const threads = yield* Threads
     const project = yield* projects.create({ name: "Runtime", defaultWorkingDirectory: scratch })
-    return yield* threads.create({ projectId: project.id, agentId: "codex" })
+    return yield* threads.create({ projectId: project.id, agentId: "codex", kind: "chat" })
+  })
+
+  /** A tui thread whose confirmed provider session the fake knows — the
+   * state a re-read (tui threads only) starts from. */
+  const tuiThread = Effect.gen(function* () {
+    const projects = yield* Projects
+    const threads = yield* Threads
+    const repository = yield* ThreadRepository
+    const project = yield* projects.create({ name: "Runtime", defaultWorkingDirectory: scratch })
+    const thread = yield* threads.create({ projectId: project.id, agentId: "codex", kind: "tui" })
+    const seeded = fake.seed(`tui-${crypto.randomUUID()}`, thread.workingDirectory)
+    yield* repository.setProviderSession(thread.id, seeded.providerSessionId, null)
+    yield* repository.confirm(thread.id)
+    return { thread, providerSessionId: seeded.providerSessionId }
   })
 
   it.live("a first prompt creates the session, streams items, and completes the turn", () =>
@@ -306,42 +320,6 @@ describe("ThreadRuntime", () => {
         item.type === "userMessage" ? [item.attachments] : [],
       )
       assert.deepStrictEqual(messages, [undefined, [shot]])
-    }).pipe(Effect.scoped, Effect.provide(kit.layer)),
-  )
-
-  it.live("a provider re-read keeps a prompt's images where its turn id is stable", () =>
-    Effect.gen(function* () {
-      const runtime = yield* ThreadRuntime
-      const attachments = yield* Attachments
-      const thread = yield* newThread
-      const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
-      const shot = yield* attachments.create(thread.id, { bytes: png, mediaType: "image/png" })
-      const started = yield* runtime.prompt(thread.id, { prompt: "keep", attachments: [shot.id] })
-      const turnId = started.turnId ?? ""
-      const session = [...fake.sessions.values()].find((entry) => entry.inputs.includes("keep"))
-      const providerSessionId = session?.providerSessionId ?? ""
-      yield* waitFor(runtime.transcript(thread.id).pipe(Effect.orDie), (current) =>
-        current.items.some((item) => item.type === "userMessage"),
-      )
-      fake.completeTurn(providerSessionId, "completed")
-      yield* waitFor(runtime.transcript(thread.id).pipe(Effect.orDie), (current) =>
-        current.turns.every((turn) => turn.status === "completed"),
-      )
-      // The provider's history keeps the turn id but re-numbers items and
-      // knows nothing of ATC's attachments (Codex echoes localImage paths).
-      fake.setHistory(providerSessionId, [
-        {
-          turn: { id: turnId, status: "completed" },
-          items: [{ type: "userMessage", id: "item-1", turnId, text: "keep" }],
-        },
-      ])
-      yield* runtime.reread(thread.id)
-      const page = yield* runtime.transcript(thread.id)
-      assert.strictEqual(page.snapshotVersion, 1)
-      const message = page.items.find((item) => item.type === "userMessage")
-      assert.deepStrictEqual(message?.type === "userMessage" ? message.attachments : undefined, [
-        shot,
-      ])
     }).pipe(Effect.scoped, Effect.provide(kit.layer)),
   )
 
@@ -680,67 +658,117 @@ describe("ThreadRuntime", () => {
     }).pipe(Effect.scoped, Effect.provide(kit.layer)),
   )
 
+  it.live("replay follows seq order", () =>
+    Effect.gen(function* () {
+      const runtime = yield* ThreadRuntime
+      const transcripts = yield* TranscriptRepository
+      const thread = yield* newThread
+      const started = yield* runtime.prompt(thread.id, { prompt: "order" })
+      const turnId = started.turnId ?? ""
+      const providerSessionId =
+        [...fake.sessions.values()].find((entry) => entry.inputs.includes("order"))
+          ?.providerSessionId ?? ""
+      // Two items, then the OLDER one is updated: its seq is now the newest.
+      fake.emitItem(providerSessionId, "itemStarted", {
+        type: "assistantText",
+        id: "o1",
+        turnId,
+        text: "",
+        complete: false,
+      })
+      fake.emitItem(providerSessionId, "itemCompleted", {
+        type: "assistantText",
+        id: "o2",
+        turnId,
+        text: "second",
+        complete: true,
+      })
+      fake.emitItem(providerSessionId, "itemCompleted", {
+        type: "assistantText",
+        id: "o1",
+        turnId,
+        text: "first, finished late",
+        complete: true,
+      })
+      yield* waitFor(transcripts.counters(thread.id), (counters) => counters.seq >= 5)
+      const rejoined = yield* collectEvents(runtime, thread.id, 0)
+      yield* waitFor(
+        Effect.sync(() => rejoined),
+        (list) => list.length >= 4,
+      )
+      const replayed = seqs(rejoined)
+      assert.deepStrictEqual(
+        replayed,
+        replayed.toSorted((left, right) => left - right),
+      )
+      // The late update of o1 replays after o2, at its own (higher) seq.
+      const ids = rejoined.flatMap((event) =>
+        event.type === "item.updated" ? [event.item.id] : [],
+      )
+      assert.deepStrictEqual(ids.slice(-2), ["o2", "o1"])
+      fake.completeTurn(providerSessionId, "completed")
+    }).pipe(Effect.scoped, Effect.provide(kit.layer)),
+  )
+
   it.live(
-    "replay follows seq order, and a rejoin from before a replacement is told to refetch",
+    "a tui re-read replaces the copy, bumps the snapshot, and never wipes on empty history",
     () =>
       Effect.gen(function* () {
         const runtime = yield* ThreadRuntime
         const transcripts = yield* TranscriptRepository
-        const thread = yield* newThread
-        const started = yield* runtime.prompt(thread.id, { prompt: "order" })
-        const turnId = started.turnId ?? ""
-        const providerSessionId =
-          [...fake.sessions.values()].find((entry) => entry.inputs.includes("order"))
-            ?.providerSessionId ?? ""
-        // Two items, then the OLDER one is updated: its seq is now the newest.
-        fake.emitItem(providerSessionId, "itemStarted", {
-          type: "assistantText",
-          id: "o1",
-          turnId,
-          text: "",
-          complete: false,
-        })
-        fake.emitItem(providerSessionId, "itemCompleted", {
-          type: "assistantText",
-          id: "o2",
-          turnId,
-          text: "second",
-          complete: true,
-        })
-        fake.emitItem(providerSessionId, "itemCompleted", {
-          type: "assistantText",
-          id: "o1",
-          turnId,
-          text: "first, finished late",
-          complete: true,
-        })
-        yield* waitFor(transcripts.counters(thread.id), (counters) => counters.seq >= 5)
-        const rejoined = yield* collectEvents(runtime, thread.id, 0)
-        yield* waitFor(
-          Effect.sync(() => rejoined),
-          (list) => list.length >= 4,
-        )
-        const replayed = seqs(rejoined)
-        assert.deepStrictEqual(
-          replayed,
-          replayed.toSorted((left, right) => left - right),
-        )
-        // The late update of o1 replays after o2, at its own (higher) seq.
-        const ids = rejoined.flatMap((event) =>
-          event.type === "item.updated" ? [event.item.id] : [],
-        )
-        assert.deepStrictEqual(ids.slice(-2), ["o2", "o1"])
-
-        // A replacement in between: a client that left before it must refetch.
-        const before = yield* transcripts.counters(thread.id)
-        fake.completeTurn(providerSessionId, "completed")
+        const { thread, providerSessionId } = yield* tuiThread
+        const events = yield* collectEvents(runtime, thread.id)
         fake.setHistory(providerSessionId, [
           {
-            turn: { id: "h-turn", status: "completed" },
-            items: [{ type: "userMessage", id: "h1", turnId: "h-turn", text: "order" }],
+            turn: { id: "first-turn", status: "completed" },
+            items: [{ type: "userMessage", id: "f1", turnId: "first-turn", text: "typed" }],
           },
         ])
         yield* runtime.reread(thread.id)
+        const before = yield* runtime.transcript(thread.id)
+        assert.strictEqual(before.snapshotVersion, 1)
+        assert.strictEqual(before.items.length, 1)
+
+        // Empty history: the copy stays.
+        fake.setHistory(providerSessionId, [])
+        yield* runtime.reread(thread.id)
+        const kept = yield* runtime.transcript(thread.id)
+        assert.strictEqual(kept.snapshotVersion, 1)
+        assert.strictEqual(kept.items.length, 1)
+
+        fake.setHistory(providerSessionId, [
+          {
+            turn: { id: "h-turn", status: "completed" },
+            items: [
+              { type: "userMessage", id: "h1", turnId: "h-turn", text: "history" },
+              { type: "assistantText", id: "h2", turnId: "h-turn", text: "done", complete: true },
+            ],
+          },
+        ])
+        yield* runtime.reread(thread.id)
+        const replaced = yield* runtime.transcript(thread.id)
+        assert.strictEqual(replaced.snapshotVersion, 2)
+        assert.deepStrictEqual(
+          replaced.items.map((item) => item.id),
+          ["h1", "h2"],
+        )
+        assert.deepStrictEqual(
+          replaced.turns.map((turn) => turn.id),
+          ["h-turn"],
+        )
+        assert.isTrue(replaced.seq > before.seq)
+        yield* waitFor(
+          Effect.sync(() => events),
+          (list) => list.filter((event) => event.type === "snapshot.invalidated").length >= 2,
+        )
+        const invalidated = events.findLast((event) => event.type === "snapshot.invalidated")
+        assert.isTrue(
+          invalidated?.type === "snapshot.invalidated" &&
+            invalidated.snapshotVersion === 2 &&
+            invalidated.seq === replaced.seq,
+        )
+        // A client that left before the replacement is told to refetch, and a
+        // cursor from the replaced copy reads as an empty page.
         const late = yield* collectEvents(runtime, thread.id, before.seq)
         yield* waitFor(
           Effect.sync(() => late),
@@ -749,121 +777,14 @@ describe("ThreadRuntime", () => {
         const first = late[0]
         assert.isTrue(
           first?.type === "snapshot.invalidated" &&
-            first.snapshotVersion === 1 &&
+            first.snapshotVersion === 2 &&
             first.seq > before.seq,
         )
-        // A cursor from the replaced copy reads as an empty page (the client
-        // sees the new snapshotVersion and restarts).
-        const stale = yield* runtime.transcript(thread.id, { before: "o2", limit: 10 })
+        const stale = yield* runtime.transcript(thread.id, { before: "f1", limit: 10 })
         assert.deepStrictEqual(stale.items, [])
         assert.isFalse(stale.hasMore)
-        assert.strictEqual(stale.snapshotVersion, 1)
+        assert.strictEqual((yield* transcripts.counters(thread.id)).snapshotVersion, 2)
       }).pipe(Effect.scoped, Effect.provide(kit.layer)),
-  )
-
-  it.live("a prompt during a TUI-driven turn queues and drains at the observed idle", () =>
-    Effect.gen(function* () {
-      const runtime = yield* ThreadRuntime
-      const thread = yield* newThread
-      // A confirmed thread whose session the provider knows.
-      const seeded = fake.seed(`tui-${crypto.randomUUID()}`, thread.workingDirectory)
-      const repo = yield* ThreadRepository
-      const record = yield* repo.setProviderSession(thread.id, seeded.providerSessionId, null)
-      yield* repo.confirm(record.id)
-      const confirmed = yield* repo.require(record.id)
-      // The TUI is mid-turn: the observation drain reports busy.
-      yield* runtime.noteActivity(confirmed, "working")
-      const queued = yield* runtime.prompt(thread.id, { prompt: "after the tui" })
-      assert.isUndefined(queued.turnId)
-      assert.deepStrictEqual(seeded.inputs, [])
-      assert.deepStrictEqual(
-        (yield* runtime.listQueue(thread.id)).map((entry) => entry.prompt),
-        ["after the tui"],
-      )
-      // The TUI turn ends: re-read, then the queued prompt runs.
-      fake.setHistory(seeded.providerSessionId, [
-        {
-          turn: { id: "tui-turn", status: "completed" },
-          items: [{ type: "userMessage", id: "t1", turnId: "tui-turn", text: "typed in the tui" }],
-        },
-      ])
-      yield* runtime.noteActivity(confirmed, "idle")
-      yield* runtime.observedIdle(confirmed)
-      yield* waitFor(
-        Effect.sync(() => seeded.inputs),
-        (inputs) => inputs.length === 1,
-      )
-      assert.deepStrictEqual(seeded.inputs, ["after the tui"])
-      const transcript = yield* runtime.transcript(thread.id)
-      // The re-read landed first (the TUI's turn), then the native turn.
-      assert.deepStrictEqual(
-        transcript.turns.map((turn) => [turn.id === "tui-turn" ? "tui" : "native", turn.status]),
-        [
-          ["tui", "completed"],
-          ["native", "running"],
-        ],
-      )
-      assert.strictEqual(transcript.snapshotVersion, 1)
-      fake.completeTurn(seeded.providerSessionId, "completed")
-    }).pipe(Effect.scoped, Effect.provide(kit.layer)),
-  )
-
-  it.live("a re-read replaces the copy, bumps the snapshot, and never wipes on empty history", () =>
-    Effect.gen(function* () {
-      const runtime = yield* ThreadRuntime
-      const thread = yield* newThread
-      const events = yield* collectEvents(runtime, thread.id)
-      const started = yield* runtime.prompt(thread.id, { prompt: "history" })
-      const providerSessionId =
-        [...fake.sessions.values()].find((entry) => entry.inputs.includes("history"))
-          ?.providerSessionId ?? ""
-      fake.completeTurn(providerSessionId, "completed")
-      yield* waitFor(
-        Effect.sync(() => events),
-        (list) => list.some((event) => event.type === "turn.completed"),
-      )
-      const before = yield* runtime.transcript(thread.id)
-      assert.strictEqual(before.snapshotVersion, 0)
-
-      // Empty history: the copy stays.
-      yield* runtime.reread(thread.id)
-      const kept = yield* runtime.transcript(thread.id)
-      assert.strictEqual(kept.snapshotVersion, 0)
-      assert.strictEqual(kept.items.length, 1)
-
-      fake.setHistory(providerSessionId, [
-        {
-          turn: { id: "h-turn", status: "completed" },
-          items: [
-            { type: "userMessage", id: "h1", turnId: "h-turn", text: "history" },
-            { type: "assistantText", id: "h2", turnId: "h-turn", text: "done", complete: true },
-          ],
-        },
-      ])
-      yield* runtime.reread(thread.id)
-      const replaced = yield* runtime.transcript(thread.id)
-      assert.strictEqual(replaced.snapshotVersion, 1)
-      assert.deepStrictEqual(
-        replaced.items.map((item) => item.id),
-        ["h1", "h2"],
-      )
-      assert.deepStrictEqual(
-        replaced.turns.map((turn) => turn.id),
-        ["h-turn"],
-      )
-      assert.isTrue(replaced.seq > before.seq)
-      yield* waitFor(
-        Effect.sync(() => events),
-        (list) => list.some((event) => event.type === "snapshot.invalidated"),
-      )
-      const invalidated = events.find((event) => event.type === "snapshot.invalidated")
-      assert.isTrue(
-        invalidated?.type === "snapshot.invalidated" &&
-          invalidated.snapshotVersion === 1 &&
-          invalidated.seq === replaced.seq,
-      )
-      assert.isString(started.turnId)
-    }).pipe(Effect.scoped, Effect.provide(kit.layer)),
   )
 
   it.live("a provider that refuses the immediate start un-admits the prompt", () =>
@@ -920,7 +841,11 @@ describe("ThreadRuntime restart", () => {
             name: "Reattach",
             defaultWorkingDirectory: scratch,
           })
-          const thread = yield* threads.create({ projectId: project.id, agentId: "codex" })
+          const thread = yield* threads.create({
+            projectId: project.id,
+            agentId: "codex",
+            kind: "chat",
+          })
           const started = yield* runtime.prompt(thread.id, { prompt: "long running" })
           yield* runtime.prompt(thread.id, { prompt: "afterwards" })
           yield* waitFor(
@@ -991,7 +916,11 @@ describe("ThreadRuntime restart", () => {
           name: "Restart",
           defaultWorkingDirectory: scratch,
         })
-        const thread = yield* threads.create({ projectId: project.id, agentId: "codex" })
+        const thread = yield* threads.create({
+          projectId: project.id,
+          agentId: "codex",
+          kind: "chat",
+        })
         yield* runtime.prompt(thread.id, { prompt: "before restart" })
         yield* runtime.prompt(thread.id, { prompt: "after restart" })
         // The prompt item has landed before the "crash".

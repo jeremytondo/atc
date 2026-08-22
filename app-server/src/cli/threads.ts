@@ -2,7 +2,7 @@ import { Console, Effect, Option, Schema, Stream } from "effect"
 import { Argument, Command, Flag } from "effect/unstable/cli"
 import * as path from "node:path"
 import type * as Contract from "../api/contract.ts"
-import { AGENT_IDS } from "../api/contract.ts"
+import { AGENT_IDS, THREAD_KINDS } from "../api/contract.ts"
 import * as Cli from "./cli.ts"
 import { attachAndReport } from "./terminals.ts"
 
@@ -30,18 +30,22 @@ const threadIdArgument = Argument.string("thread-id")
 
 const threadList = Cli.clientCommand(
   "thread list",
-  "List threads (archived threads only with --archived)",
+  "List threads (archived threads only with --archived; one kind with --kind)",
   {
     project: Flag.optional(Cli.projectFlag),
     archived: Flag.boolean("archived").pipe(
       Flag.withDescription("List archived threads instead of active ones"),
     ),
+    kind: Flag.optional(
+      Flag.choice("kind", THREAD_KINDS).pipe(Flag.withDescription("List one kind only")),
+    ),
   },
-  (client, { project, archived }) =>
+  (client, { project, archived, kind }) =>
     client.v1.listThreads({
       query: {
         ...Cli.optionalKey("projectId", project),
         ...(archived ? { archived: "true" as const } : {}),
+        ...Cli.optionalKey("kind", kind),
       },
     }),
 )
@@ -61,16 +65,25 @@ const threadCreate = Cli.clientCommand(
     agent: Flag.choice("agent", AGENT_IDS).pipe(
       Flag.withDescription("Agent to converse with (codex or claude-code)"),
     ),
+    // The kind default is the client's (the contract requires it on the
+    // wire): the CLI's is chat, the agent-gateway's natural driver.
+    kind: Flag.choice("kind", THREAD_KINDS).pipe(
+      Flag.withDescription(
+        "Who drives the thread: chat (prompt it through ATC) or tui (open its terminal)",
+      ),
+      Flag.withDefault("chat" as const),
+    ),
     name: Flag.optional(Cli.nameFlag("Display label")),
     directory: Flag.optional(
       Cli.directoryFlag("Working directory (may be relative; defaults to the project's default)"),
     ),
   },
-  (client, { project, agent, name, directory }) =>
+  (client, { project, agent, kind, name, directory }) =>
     client.v1.createThread({
       payload: {
         projectId: project,
         agentId: agent,
+        kind,
         ...Cli.optionalKey("name", name),
         ...Cli.optionalKey("workingDirectory", directory, path.resolve),
       },
@@ -102,21 +115,21 @@ const threadUnarchive = Cli.clientCommand(
 const threadOpen = Command.make("open", { threadId: threadIdArgument }, ({ threadId }) =>
   Cli.withClient("thread open", (client, baseUrl) =>
     Effect.gen(function* () {
-      // Open-terminal + raw-TTY attach in one command: the terminal-first
-      // thread workflow's front door.
+      // Open-terminal + raw-TTY attach in one command: the tui thread
+      // workflow's front door.
       const terminal = yield* client.v1.openThreadTerminal({ params: { threadId } })
       yield* attachAndReport(client, baseUrl, terminal.id)
     }),
   ),
 ).pipe(
   Command.withDescription(
-    "Open the thread's TUI terminal (launching the agent if needed) and attach in raw mode",
+    "Open a tui thread's terminal (launching the agent if needed) and attach in raw mode",
   ),
 )
 
 const threadClose = Cli.clientCommand(
   "thread close",
-  "Close the thread's TUI: hand the thread back to Chat/API prompts (a Claude TUI ends once its turn is on disk; a Codex TUI keeps running)",
+  "End a tui thread's terminal (at once when idle, at its next idle when busy)",
   { threadId: threadIdArgument },
   (client, { threadId }) => client.v1.closeThreadTerminal({ params: { threadId } }),
 )
@@ -172,7 +185,7 @@ const threadPrompt = Command.make(
     ),
 ).pipe(
   Command.withDescription(
-    "Prompt the thread (queued if a turn is running, or --now to join it); --follow streams the thread's events (JSON lines) until this prompt's turn ends",
+    "Prompt a chat thread (queued if a turn is running, or --now to join it); --follow streams the thread's events (JSON lines) until this prompt's turn ends",
   ),
 )
 

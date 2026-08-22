@@ -111,6 +111,13 @@ export interface FakeAgentAdapter {
   readonly emitActivity: (providerSessionId: string, activity: AgentActivity) => void
   /** Push one userPrompt event to every observer of `providerSessionId`. */
   readonly emitUserPrompt: (providerSessionId: string, text: string) => void
+  /** Push one item event to every observer of `providerSessionId` (the
+   * TUI's turn, as a shared server fans it out). */
+  readonly emitObservedItem: (
+    providerSessionId: string,
+    phase: "itemStarted" | "itemUpdated" | "itemCompleted",
+    item: ThreadItem,
+  ) => void
   /** generateTitle calls observed, in order. */
   readonly titleRequests: Array<{
     cwd: string
@@ -725,6 +732,11 @@ export const makeFakeAgentAdapter = (options: FakeAgentAdapterOptions = {}): Fak
     emitUserPrompt: (providerSessionId, text) => {
       for (const queue of observers.get(providerSessionId) ?? []) {
         Queue.offerUnsafe(queue, { type: "userPrompt", text })
+      }
+    },
+    emitObservedItem: (providerSessionId, phase, item) => {
+      for (const queue of observers.get(providerSessionId) ?? []) {
+        Queue.offerUnsafe(queue, { type: phase, item })
       }
     },
     emitSettings: (providerSessionId, settings) => {

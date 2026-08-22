@@ -390,9 +390,9 @@ export interface AgentAdapter {
    * one session. Without it (Claude) each process holds the session in
    * memory: the hooks feed dies silently with the TUI (a busy state must
    * re-derive through checkSession), and two live processes FORK the
-   * session — so the Thread runtime keeps one live process per thread
-   * (its surface-ownership rules, threadRuntime.ts) and keeps that one
-   * process's writer connection resident across native turns (ATC-207).
+   * session — so ATC's process is the only process ATC runs on a chat
+   * thread (ATC-224), and the Thread runtime keeps that process's writer
+   * connection resident across its turns (ATC-207).
    */
   readonly sharedServer: boolean
   /**

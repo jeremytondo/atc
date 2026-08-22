@@ -22,11 +22,13 @@ import { claudeAdapterLayer, collectAgentEvents, waitForAgentEvent } from "./age
 //     and must report the exact minted id through its own hook delivery,
 //     before any prompt is typed. A possible first-run trust dialog is
 //     answered with Enter.
-//   - The one-process hand-off (ATC-203): a native SDK turn, then a TUI
+//   - Session continuity across processes: a native SDK turn, then a TUI
 //     turn on the same session (`--resume`) once the SDK process is gone,
 //     then — the TUI ended after its last turn is on disk — a native turn
 //     again that must answer with the context of BOTH earlier turns. One
-//     conversation, one leaf; getSessionMessages agrees.
+//     conversation, one leaf; getSessionMessages agrees. (ATC never hands
+//     a thread between the two any more — ATC-224 — but the adapter's
+//     resume must still hold for a user doing it by hand.)
 
 /** Cheap real-provider settings for the smoke turns (a real, small model). */
 const SMOKE_SETTINGS = { model: "haiku", mode: "chat", access: "supervised" } as const

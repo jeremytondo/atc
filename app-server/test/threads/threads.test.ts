@@ -51,7 +51,7 @@ describe("/api/v1/threads", () => {
       // Create is local-only, defaults to the project directory, and starts
       // idle: no provider session exists, so nothing can be running.
       const created = yield* client.v1.createThread({
-        payload: { projectId: project.id, agentId: "codex" },
+        payload: { projectId: project.id, agentId: "codex", kind: "chat" },
       })
       assert.match(
         created.id,
@@ -73,6 +73,7 @@ describe("/api/v1/threads", () => {
         payload: {
           projectId: project.id,
           agentId: "claude-code",
+          kind: "chat",
           name: "Canonical",
           workingDirectory: linkedDir,
         },
@@ -198,7 +199,9 @@ describe("/api/v1/threads", () => {
     Effect.gen(function* () {
       const { client, makeProject } = yield* testClient
       const unknownProject = yield* Effect.flip(
-        client.v1.createThread({ payload: { projectId: "missing", agentId: "codex" } }),
+        client.v1.createThread({
+          payload: { projectId: "missing", agentId: "codex", kind: "chat" },
+        }),
       )
       assert.strictEqual(unknownProject._tag, "ProjectNotFound")
 
@@ -208,6 +211,7 @@ describe("/api/v1/threads", () => {
           payload: {
             projectId: project.id,
             agentId: "codex",
+            kind: "chat",
             workingDirectory: join(realDir, "nope"),
           },
         }),
@@ -223,10 +227,10 @@ describe("/api/v1/threads", () => {
       const { client, makeProject } = yield* testClient
       const project = yield* makeProject
       const active = yield* client.v1.createThread({
-        payload: { projectId: project.id, agentId: "codex" },
+        payload: { projectId: project.id, agentId: "codex", kind: "chat" },
       })
       const archived = yield* client.v1.createThread({
-        payload: { projectId: project.id, agentId: "codex" },
+        payload: { projectId: project.id, agentId: "codex", kind: "chat" },
       })
       yield* client.v1.archiveThread({ params: { threadId: archived.id } })
 
@@ -248,7 +252,7 @@ describe("/api/v1/threads", () => {
       const repository = yield* ThreadRepository
       const project = yield* makeProject
       const thread = yield* client.v1.createThread({
-        payload: { projectId: project.id, agentId: "codex" },
+        payload: { projectId: project.id, agentId: "codex", kind: "chat" },
       })
       yield* client.v1.archiveThread({ params: { threadId: thread.id } })
 
@@ -269,7 +273,7 @@ describe("/api/v1/threads", () => {
       const repository = yield* TerminalRepository
       const project = yield* makeProject
       const thread = yield* client.v1.createThread({
-        payload: { projectId: project.id, agentId: "codex" },
+        payload: { projectId: project.id, agentId: "codex", kind: "tui" },
       })
 
       // Seed a live linked TUI terminal the way ATC-141's openTerminal will:
@@ -337,7 +341,7 @@ describe("/api/v1/threads", () => {
       const repository = yield* TerminalRepository
       const project = yield* makeProject
       const thread = yield* client.v1.createThread({
-        payload: { projectId: project.id, agentId: "claude-code" },
+        payload: { projectId: project.id, agentId: "claude-code", kind: "tui" },
       })
       const record = yield* repository.create({
         projectId: project.id,

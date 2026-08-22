@@ -69,7 +69,7 @@ struct ChatNodeView: View {
     private var isToolRow: Bool {
         switch node.box.item {
         case .command, .fileChange, .mcpCall, .toolCall: true
-        case .userMessage, .assistantText, .reasoning, .compaction: false
+        case .userMessage, .assistantText, .reasoning, .compaction, .notice: false
         }
     }
 
@@ -97,6 +97,8 @@ struct ChatNodeView: View {
                 .copyable(text.text)
         case .compaction:
             ChatDividerRow(label: "Context compacted")
+        case .notice(let notice):
+            ChatNoticeRow(text: notice.text)
         case .reasoning(let reasoning):
             ChatThinkingRow(box: node.box, text: reasoning.text, complete: reasoning.complete)
         case .command(let command):
@@ -213,6 +215,21 @@ struct ChatDividerRow: View {
             Rectangle().fill(Surface.chipBorder).frame(height: 1)
         }
         .padding(.vertical, Spacing.xs)
+    }
+}
+
+/// A quiet centered system line: what ATC itself appended to the transcript
+/// (a lost provider session), never provider content.
+struct ChatNoticeRow: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, Spacing.xs)
     }
 }
 

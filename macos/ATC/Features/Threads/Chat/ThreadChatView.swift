@@ -4,8 +4,8 @@
 // under the window toolbar above and that bar below, fading into both. The
 // view holds the thread's Chat model for exactly as long as it is on screen
 // (`acquireChat` / `releaseChat` on the Connection's runtime), so navigating
-// away or flipping to TUI drops the subscription while a second window on
-// the same thread keeps it. The composer draft lives on `AppModel`, so it
+// away drops the subscription while a second window on the same thread
+// keeps it. The composer draft lives on `AppModel`, so it
 // survives leaving Chat.
 //
 // Requests split by where they render: one blocked on a transcript item
@@ -111,7 +111,6 @@ private struct ChatPane: View {
         ChatTranscriptView(
             chat: chat,
             emptyTitle: thread.displayName,
-            isBusyOutside: thread.activityState == .working,
             followRequest: followRequest,
             jumpRequest: jumpRequest
         )

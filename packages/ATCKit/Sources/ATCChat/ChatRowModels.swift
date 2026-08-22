@@ -114,7 +114,7 @@ struct ChatNodeModel: Identifiable {
 }
 
 enum ChatRowModel: Identifiable {
-    /// A prompt, an answer, or a compaction divider — prose at top level.
+    /// A prompt, an answer, a compaction divider, or a notice — prose at top level.
     case item(ChatNodeModel)
     /// A turn's folded work.
     case work(ChatWorkModel)
@@ -288,7 +288,7 @@ extension ThreadItem {
     var isWorkStep: Bool {
         switch self {
         case .reasoning, .command, .fileChange, .mcpCall, .toolCall: true
-        case .userMessage, .assistantText, .compaction: false
+        case .userMessage, .assistantText, .compaction, .notice: false
         }
     }
 }

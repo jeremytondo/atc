@@ -1,7 +1,7 @@
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import { SqlClient, SqlSchema } from "effect/unstable/sql"
 import { requireFound, rowHelpers } from "../platform/repositoryHelpers.ts"
-import { ThreadNotFound } from "../api/contract.ts"
+import { ThreadKind, ThreadKindMismatch, ThreadNotFound } from "../api/contract.ts"
 import type { AgentId } from "../api/contract.ts"
 import { sameSettings, settingsFromColumns, settingsToColumns } from "./threadSettings.ts"
 import type { ThreadSettings } from "./threadSettings.ts"
@@ -16,12 +16,15 @@ import type { ThreadSettings } from "./threadSettings.ts"
 // decoded permissively as a plain string: a row holding a slug this build
 // does not know (written by a newer build) must never brick reads — above
 // all delete, the recovery path. The settings columns (ATC-205) are read
-// the same way (threadSettings.ts settingsFromColumns).
+// the same way (threadSettings.ts settingsFromColumns). `kind` (ATC-224)
+// is not: its two literals are fixed by a CHECK, so a row can only ever
+// hold one of them.
 
 export interface ThreadRecord {
   readonly id: string
   readonly projectId: string
   readonly agentId: string
+  readonly kind: typeof ThreadKind.Type
   readonly name?: string
   readonly workingDirectory: string
   /** What the thread's next turn runs with (ATC-205). */
@@ -46,6 +49,7 @@ const ThreadRow = Schema.Struct({
   id: Schema.String,
   project_id: Schema.String,
   agent_id: Schema.String,
+  kind: ThreadKind,
   name: Schema.NullOr(Schema.String),
   working_directory: Schema.String,
   model: Schema.String,
@@ -63,10 +67,27 @@ const ThreadRow = Schema.Struct({
   updated_at: Schema.String,
 })
 
+/**
+ * The kind gate (ATC-224) every driving and terminal operation applies in
+ * its own service — the runtime's prompt/interrupt/answer/queue,
+ * Attachments' upload, Threads' terminal and settings operations — so HTTP
+ * and internal callers meet one policy and handlers check nothing. `kind`
+ * is immutable, so one check per call suffices however long the call
+ * waits afterwards.
+ */
+export const requireKind = (
+  record: ThreadRecord,
+  expected: typeof ThreadKind.Type,
+): Effect.Effect<void, ThreadKindMismatch> =>
+  record.kind === expected
+    ? Effect.void
+    : Effect.fail(new ThreadKindMismatch({ threadId: record.id, kind: record.kind }))
+
 const toRecord = (row: typeof ThreadRow.Type): ThreadRecord => ({
   id: row.id,
   projectId: row.project_id,
   agentId: row.agent_id,
+  kind: row.kind,
   ...(row.name !== null ? { name: row.name } : {}),
   workingDirectory: row.working_directory,
   settings: settingsFromColumns(row),
@@ -88,6 +109,7 @@ export class ThreadRepository extends Context.Service<
     readonly create: (input: {
       readonly projectId: string
       readonly agentId: typeof AgentId.Type
+      readonly kind: typeof ThreadKind.Type
       readonly name?: string | undefined
       readonly workingDirectory: string
       readonly settings: ThreadSettings
@@ -395,6 +417,7 @@ export const layer = Layer.effect(ThreadRepository)(
             id: Bun.randomUUIDv7(),
             project_id: input.projectId,
             agent_id: input.agentId,
+            kind: input.kind,
             name: input.name ?? null,
             working_directory: input.workingDirectory,
             ...settingsToColumns(input.settings),
