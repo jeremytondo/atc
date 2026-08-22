@@ -13,7 +13,7 @@ Tested on 2026-08-22 with Go 1.26.4 and zmx 0.6.0.
 | Missing session without exit evidence | Pass in deterministic test | Starts as `missing`, becomes `stale` only after the configured grace period. |
 | Inventory unavailable | Pass in deterministic test | Managed state becomes `disconnected`, and cleanup refuses to act without a complete inventory. |
 | Orphan in the private namespace | Pass in deterministic test | A reachable orphan is reported as stale and removed only by explicit cleanup; an unreachable orphan is preserved. |
-| Real Codex TUI | Not yet exercised | Codex CLI 0.149.0 is installed, but the credentialed TUI launch was not authorized in this environment. The same `create NAME codex` path is ready for an explicit manual run. |
+| Real authenticated Codex TUI | Pass | Codex CLI 0.149.0 (authenticated with ChatGPT) started read-only with no prompt, rendered its trust screen, detached through zmx, survived two fresh Go host processes with unchanged daemon and child PIDs, reattached, and stopped with exit code 0. |
 
 The standard race-enabled suite covers the recovery decisions using a fake
 terminal boundary. The opt-in real-zmx smoke covers PTY-backed creation,
@@ -39,10 +39,10 @@ throwaway socket directory.
    environment traps, list formatting, PTY creation, polling, or zmx's
    attach-auto-creates behavior. The supervisor depends on a six-method
    terminal interface.
-5. **Does the model work for real agent TUIs?** The byte/PTY path is identical
-   and a dedicated Codex/Claude workload command exists, but this final claim
-   remains open until a credentialed TUI is explicitly launched, attached,
-   detached, recovered, and stopped.
+5. **Does the model work for real agent TUIs?** Yes for the authenticated Codex
+   TUI. It exercised the same PTY path without submitting an agent prompt or
+   approving a tool: startup output, attach, detach, restart recovery, reattach,
+   deliberate stop, structured exit evidence, and cleanup all passed.
 
 ## Important behavior
 
