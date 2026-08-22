@@ -41,8 +41,11 @@ const agent: AppServer.Agent = {
 
 const config: Config.ClientConfig["Service"] = {
   endpoint: new URL("http://127.0.0.1:7331"),
-  zmxExecutable: "zmx",
-  zmxDir: "/tmp/atc/terminals",
+  connection: {
+    type: "local",
+    zmxExecutable: "zmx",
+    zmxDir: "/tmp/atc/terminals",
+  },
   environment: {},
 }
 

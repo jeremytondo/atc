@@ -83,6 +83,10 @@ run = "mise run -C atc-tui test"
 description = "Compile the standalone atc-tui executable for this machine"
 run = "mise run -C atc-tui build"
 
+[tasks."tui:install"]
+description = "Build and install atc-tui locally"
+run = "mise run -C atc-tui install"
+
 # --- Swift surfaces ---
 
 # SwiftLint covers macos/ and packages/ATCKit per .swiftlint.yml; the pinned

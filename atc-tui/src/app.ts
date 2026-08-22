@@ -1,14 +1,15 @@
 import { Cause, Effect, Queue, Ref } from "effect"
 import * as AppServer from "./appServer.ts"
 import * as OpenTui from "./openTui.ts"
-import * as Zmx from "./zmx.ts"
+import * as Remote from "./remote.ts"
+import * as TerminalAttachment from "./terminalAttachment.ts"
 import * as View from "./view.ts"
 
 // Application coordinator: one scoped SSE subscription maintains an
 // authoritative snapshot. The manager keeps its renderer across server
-// interactions and releases it only while a direct zmx client owns the TTY.
-// A Thread remains viewed while zmx is attached, so finishes reconciled under
-// that attachment are acknowledged before the manager can render them unread.
+// interactions and releases it only while a terminal client owns the TTY.
+// A Thread remains viewed while attached, so finishes reconciled under that
+// attachment are acknowledged before the manager can render them unread.
 
 const describeError = (error: unknown): string =>
   error instanceof Error && error.message !== "" ? error.message : String(error)
@@ -97,8 +98,10 @@ export const run = Effect.scoped(
       return yield* Effect.fail(new Error("an interactive terminal is required"))
     }
 
+    const remote = yield* Remote.Remote
+    yield* remote.start
     const server = yield* AppServer.AppServer
-    const zmx = yield* Zmx.Zmx
+    const terminalAttachment = yield* TerminalAttachment.TerminalAttachment
     const snapshotRef = yield* Ref.make<AppServer.Snapshot | undefined>(undefined)
     const reachabilityRef = yield* Ref.make<View.Reachability>("connecting")
     const backgroundStatusRef = yield* Ref.make<string | undefined>(undefined)
@@ -332,6 +335,7 @@ export const run = Effect.scoped(
       OpenTui.run(
         {
           endpoint: server.config.endpoint,
+          endpointLabel: remote.label,
           listDirectory: server.listDirectory,
           snapshotRef,
           reachabilityRef,
@@ -345,7 +349,7 @@ export const run = Effect.scoped(
 
     const attach = (threadId: string, terminal: AppServer.Terminal) =>
       Ref.set(attachedThreadIdRef, threadId).pipe(
-        Effect.andThen(zmx.attach(terminal)),
+        Effect.andThen(terminalAttachment.attach(terminal)),
         Effect.tap(() =>
           server.markThreadViewed(threadId).pipe(
             Effect.flatMap((thread) => mergeThread(snapshotRef, thread)),
@@ -353,7 +357,11 @@ export const run = Effect.scoped(
           ),
         ),
         Effect.ensuring(Ref.set(attachedThreadIdRef, undefined)),
-        Effect.as("Returned from zmx; session state refreshed."),
+        Effect.as(
+          server.config.connection.type === "remote"
+            ? "Returned from remote terminal; session state refreshed."
+            : "Returned from zmx; session state refreshed.",
+        ),
       )
 
     const loop = (state: OpenTui.ManagerState): Effect.Effect<void, unknown> =>

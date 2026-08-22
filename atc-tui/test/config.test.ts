@@ -28,8 +28,11 @@ describe("resolve", () => {
         },
       ),
     ).toMatchObject({
-      zmxExecutable: "/flag/zmx",
-      zmxDir: "/flag/state/terminals",
+      connection: {
+        type: "local",
+        zmxExecutable: "/flag/zmx",
+        zmxDir: "/flag/state/terminals",
+      },
     })
     expect(
       resolve(
@@ -40,12 +43,44 @@ describe("resolve", () => {
         },
       ),
     ).toMatchObject({
-      zmxExecutable: "/env/zmx",
-      zmxDir: "/env/state/atc/terminals",
+      connection: {
+        type: "local",
+        zmxExecutable: "/env/zmx",
+        zmxDir: "/env/state/atc/terminals",
+      },
     })
     expect(resolve({}, { HOME: "/home/test" })).toMatchObject({
-      zmxExecutable: DEFAULT_ZMX_EXECUTABLE,
-      zmxDir: "/home/test/.local/state/atc/terminals",
+      connection: {
+        type: "local",
+        zmxExecutable: DEFAULT_ZMX_EXECUTABLE,
+        zmxDir: "/home/test/.local/state/atc/terminals",
+      },
+    })
+  })
+
+  it("derives a private local endpoint and SSH settings for remote mode", () => {
+    expect(
+      resolve(
+        {
+          remote: "dev@workstation",
+          sshExecutable: "/usr/bin/ssh",
+          remoteAtcExecutable: "/opt/atc/bin/atc",
+          remotePort: 8331,
+          tunnelPort: 18331,
+        },
+        { ATC_ENDPOINT: "https://ignored.example", ATC_TOKEN: "ignored" },
+      ),
+    ).toStrictEqual({
+      endpoint: new URL("http://127.0.0.1:18331"),
+      connection: {
+        type: "remote",
+        host: "dev@workstation",
+        sshExecutable: "/usr/bin/ssh",
+        remoteAtcExecutable: "/opt/atc/bin/atc",
+        remotePort: 8331,
+        tunnelPort: 18331,
+      },
+      environment: { ATC_ENDPOINT: "https://ignored.example", ATC_TOKEN: "ignored" },
     })
   })
 
@@ -67,6 +102,11 @@ describe("resolve", () => {
     expect(resolve({ endpoint: "https://server.example#events" }, {})).toBeInstanceOf(ConfigError)
     expect(resolve({ zmxExecutable: "./zmx" }, {})).toBeInstanceOf(ConfigError)
     expect(resolve({ zmxDir: "relative/zmx" }, {})).toBeInstanceOf(ConfigError)
+    expect(resolve({ remote: "-oProxyCommand=bad" }, {})).toBeInstanceOf(ConfigError)
+    expect(resolve({ remote: "two hosts" }, {})).toBeInstanceOf(ConfigError)
+    expect(resolve({ remote: "host", sshExecutable: "./ssh" }, {})).toBeInstanceOf(ConfigError)
+    expect(resolve({ remote: "host", remotePort: 0 }, {})).toBeInstanceOf(ConfigError)
+    expect(resolve({ remote: "host", tunnelPort: 65_536 }, {})).toBeInstanceOf(ConfigError)
   })
 })
 

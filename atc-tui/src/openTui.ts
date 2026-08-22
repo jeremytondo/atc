@@ -14,7 +14,7 @@ import * as View from "./view.ts"
 // OpenTUI owns only the interactive manager surface. Callbacks publish typed
 // events into Effect queues, and the read-only directory browser receives its
 // API capability from the application coordinator. One renderer spans manager
-// actions and is destroyed only before zmx inherits the real TTY.
+// actions and is destroyed only before a terminal client inherits the real TTY.
 
 export type ManagerSection = "threads" | "archived" | "projects" | "settings"
 
@@ -73,6 +73,7 @@ export type RunAction = (action: ManagerAction) => Effect.Effect<ManagerTransiti
 
 export interface ManagerOptions {
   readonly endpoint: URL
+  readonly endpointLabel?: string | undefined
   readonly listDirectory: DirectoryPrompt.ListDirectory
   readonly snapshotRef: Ref.Ref<AppServer.Snapshot | undefined>
   readonly reachabilityRef: Ref.Ref<View.Reachability>
@@ -363,7 +364,7 @@ const runMainScreen = (
           empty.content =
             section === "settings"
               ? [
-                  `App Server    ${options.endpoint.origin}`,
+                  `App Server    ${options.endpointLabel ?? options.endpoint.origin}`,
                   `Connection    ${View.connectionLabel(reachability)}`,
                   `Last synced   ${snapshot?.fetchedAt.toLocaleTimeString() ?? "Never"}`,
                 ].join("\n")

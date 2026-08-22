@@ -15,6 +15,16 @@ description = "Compile the standalone atc-tui executable for this machine"
 depends = ["deps"]
 run = "bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --outfile=dist/atc-tui src/main.ts"
 
+[tasks.install]
+description = "Build and install atc-tui under ATC_INSTALL_DIR (defaults to ~/.local/bin)"
+depends = ["build"]
+run = '''
+install_dir="${ATC_INSTALL_DIR:-$HOME/.local/bin}"
+mkdir -p "$install_dir"
+install -m 0755 dist/atc-tui "$install_dir/atc-tui"
+echo "installed atc-tui to $install_dir/atc-tui"
+'''
+
 [tasks.deps]
 description = "Install dependencies from the committed lockfile"
 run = "bun install --frozen-lockfile"

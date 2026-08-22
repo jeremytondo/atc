@@ -13,8 +13,11 @@ import {
 
 const config = {
   endpoint: new URL("http://127.0.0.1:7331"),
-  zmxExecutable: "zmx",
-  zmxDir: "/tmp/atc/terminals",
+  connection: {
+    type: "local" as const,
+    zmxExecutable: "zmx",
+    zmxDir: "/tmp/atc/terminals",
+  },
   environment: {},
 }
 
