@@ -52,5 +52,8 @@ describe("directory completion", () => {
       { name: "projects", path: home + "/projects" },
     ])
     expect(suggestions("~/missing", home, listing)).toEqual([])
+    expect(suggestions("", home, listing)).toEqual(listing.entries)
+    expect(suggestions("~", home, listing)).toEqual(listing.entries)
+    expect(suggestions("~/", home, listing)).toEqual(listing.entries)
   })
 })

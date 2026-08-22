@@ -200,7 +200,6 @@ export const makeSelect = (
     options: options.items.map((item) => ({ ...item })),
     ...(options.selectedIndex === undefined ? {} : { selectedIndex: options.selectedIndex }),
     wrapSelection: options.wrapSelection ?? false,
-    showDescription: true,
     showScrollIndicator: true,
     selectedBackgroundColor: colors.selection,
     selectedTextColor: "#ffffff",

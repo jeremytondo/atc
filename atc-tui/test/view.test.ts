@@ -7,6 +7,7 @@ import {
   normalizeSelection,
   projectOptions,
   projectIdForSelection,
+  threadLabel,
   threadOptions,
 } from "../src/view.ts"
 
@@ -22,11 +23,12 @@ const thread = (
   id: string,
   projectId: string,
   activityState: AppServer.Thread["activityState"] = "idle",
+  name: string | undefined = id,
 ): AppServer.Thread => ({
   id,
   projectId,
   agentId: "codex",
-  name: id,
+  ...(name === undefined ? {} : { name }),
   workingDirectory: "/work/" + projectId,
   settings: { model: "gpt-5", reasoning: "medium", mode: "chat", access: "auto" },
   activityState,
@@ -51,6 +53,12 @@ const snapshot: AppServer.Snapshot = {
 }
 
 describe("manager view model", () => {
+  it("falls back to the Thread id when an unnamed Thread has no directory basename", () => {
+    expect(threadLabel({ ...thread("t1", "p1", "idle", undefined), workingDirectory: "/" })).toBe(
+      "t1",
+    )
+  })
+
   it("normalizes selection and resolves its Project", () => {
     expect(normalizeSelection(snapshot, "missing")).toBe("t1")
     expect(normalizeSelection(snapshot, "t2")).toBe("t2")

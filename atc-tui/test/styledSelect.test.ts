@@ -29,7 +29,8 @@ describe("StyledSelectRenderable", () => {
         .captureSpans()
         .lines.slice(0, 2)
         .flatMap((line) => line.spans.map((span) => span.bg.toInts()))
-      expect(new Set(backgrounds.map((color) => color.join(",")))).toHaveLength(1)
+      expect(new Set(backgrounds.map((color) => color.join(","))).size).toBe(1)
+      expect(setup.captureCharFrame()).toContain("Alpha")
     } finally {
       setup.renderer.destroy()
     }

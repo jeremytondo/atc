@@ -69,6 +69,12 @@ export const resolve = (
       message: "endpoint credentials are not allowed; use ATC_TOKEN",
     })
   }
+  if (endpoint.pathname !== "/" || endpoint.search !== "" || endpoint.hash !== "") {
+    return new ConfigError({
+      source: "--endpoint / ATC_ENDPOINT",
+      message: "endpoint must be an origin without a path, query, or fragment",
+    })
+  }
 
   const zmxExecutable =
     nonEmpty(overrides.zmxExecutable) ??

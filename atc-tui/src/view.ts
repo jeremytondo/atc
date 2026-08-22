@@ -52,8 +52,11 @@ export const projectIdForSelection = (
   snapshot.threads.find((thread) => thread.id === selectedThreadId)?.projectId ??
   snapshot.projects[0]?.id
 
-export const threadLabel = (thread: AppServer.Thread): string =>
-  thread.name ?? path.posix.basename(thread.workingDirectory) ?? thread.id
+export const threadLabel = (thread: AppServer.Thread): string => {
+  if (thread.name !== undefined && thread.name !== "") return thread.name
+  const directoryName = path.posix.basename(thread.workingDirectory)
+  return directoryName === "" ? thread.id : directoryName
+}
 
 const status = (
   thread: AppServer.Thread,

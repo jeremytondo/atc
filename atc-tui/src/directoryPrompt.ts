@@ -116,6 +116,7 @@ export const run = (
         browser.pending.add(key)
         return Effect.forkScoped(
           listDirectory(requestedPath).pipe(
+            Effect.timeout("10 seconds"),
             Effect.map((listing): Event => ({ type: "listed", requestedPath, listing })),
             Effect.catch((error) =>
               Effect.succeed<Event>({

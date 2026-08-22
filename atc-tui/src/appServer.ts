@@ -27,6 +27,8 @@ export type UpdateProjectInput = typeof Contract.UpdateProjectRequest.Type
 export type CreateThreadInput = typeof Contract.CreateThreadRequest.Type
 export type UpdateThreadInput = typeof Contract.UpdateThreadRequest.Type
 
+// The facade intentionally erases generated client error unions because this
+// prototype presents every operation failure at the same UI boundary.
 export class AppServer extends Context.Service<
   AppServer,
   {
@@ -61,9 +63,14 @@ const make = Effect.gen(function* () {
   })
 
   const snapshot = Effect.gen(function* () {
-    const projects = yield* client.v1.listProjects()
-    const threads = yield* client.v1.listThreads({ query: { archived: "all" } })
-    const agents = yield* client.v1.listAgents()
+    const [projects, threads, agents] = yield* Effect.all(
+      [
+        client.v1.listProjects(),
+        client.v1.listThreads({ query: { archived: "all" } }),
+        client.v1.listAgents(),
+      ],
+      { concurrency: 3 },
+    )
     return { projects, threads, agents, fetchedAt: new Date() }
   })
 
@@ -83,7 +90,9 @@ const make = Effect.gen(function* () {
     openThread: (threadId) =>
       client.v1
         .openThreadTerminal({ params: { threadId } })
-        .pipe(Effect.tap(() => client.v1.markThreadViewed({ params: { threadId } }))),
+        .pipe(
+          Effect.tap(() => Effect.ignore(client.v1.markThreadViewed({ params: { threadId } }))),
+        ),
     subscribe: (publish) => Sse.subscribe(config, publish),
   })
 })

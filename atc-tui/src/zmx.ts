@@ -74,6 +74,16 @@ const attach = (
               } catch {
                 // The client exited between the exitCode check and kill.
               }
+              const escalate = setTimeout(() => {
+                try {
+                  owned.kill("SIGKILL")
+                } catch {
+                  // The client exited during the grace period.
+                }
+              }, 2_000)
+              await owned.exited.catch(() => undefined)
+              clearTimeout(escalate)
+              return
             }
             await owned.exited.catch(() => undefined)
           }),

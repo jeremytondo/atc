@@ -62,6 +62,9 @@ describe("resolve", () => {
 
   it("rejects invalid endpoints and local zmx paths", () => {
     expect(resolve({ endpoint: "ssh://server.example" }, {})).toBeInstanceOf(ConfigError)
+    expect(resolve({ endpoint: "https://server.example/atc" }, {})).toBeInstanceOf(ConfigError)
+    expect(resolve({ endpoint: "https://server.example?mode=tui" }, {})).toBeInstanceOf(ConfigError)
+    expect(resolve({ endpoint: "https://server.example#events" }, {})).toBeInstanceOf(ConfigError)
     expect(resolve({ zmxExecutable: "./zmx" }, {})).toBeInstanceOf(ConfigError)
     expect(resolve({ zmxDir: "relative/zmx" }, {})).toBeInstanceOf(ConfigError)
   })

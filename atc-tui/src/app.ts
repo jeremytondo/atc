@@ -1,4 +1,4 @@
-import { Effect, Queue, Ref } from "effect"
+import { Cause, Effect, Queue, Ref } from "effect"
 import * as AppServer from "./appServer.ts"
 import * as OpenTui from "./openTui.ts"
 import * as Zmx from "./zmx.ts"
@@ -27,8 +27,8 @@ const startLiveState = (
         Effect.andThen(server.snapshot),
         Effect.tap((snapshot) => Ref.set(snapshotRef, snapshot)),
         Effect.tap(() => Ref.set(backgroundStatusRef, undefined)),
-        Effect.catch((error) =>
-          Ref.set(backgroundStatusRef, `Refresh failed: ${describeError(error)}`),
+        Effect.catchCause((cause) =>
+          Ref.set(backgroundStatusRef, `Refresh failed: ${Cause.pretty(cause)}`),
         ),
         Effect.andThen(Queue.offer(uiUpdates, void 0)),
       ),
@@ -249,41 +249,46 @@ export const run = Effect.scoped(
         )
       }
 
-      return refreshAfter(
-        server.createThread(action.input).pipe(
-          Effect.flatMap((thread) =>
-            server.openThread(thread.id).pipe(
-              Effect.map((terminal) => ({
-                type: "attach" as const,
-                terminal,
-                state: {
-                  ...action.state,
-                  section: "threads" as const,
-                  selectedThreadId: thread.id,
-                },
-              })),
-              Effect.catch((error) =>
-                Effect.succeed(
-                  continueWith({
+      if (action.type === "createThread") {
+        return refreshAfter(
+          server.createThread(action.input).pipe(
+            Effect.flatMap((thread) =>
+              server.openThread(thread.id).pipe(
+                Effect.map((terminal) => ({
+                  type: "attach" as const,
+                  terminal,
+                  state: {
                     ...action.state,
-                    section: "threads",
+                    section: "threads" as const,
                     selectedThreadId: thread.id,
-                    status: `Thread created, but could not open: ${describeError(error)}`,
-                  }),
+                  },
+                })),
+                Effect.catch((error) =>
+                  Effect.succeed(
+                    continueWith({
+                      ...action.state,
+                      section: "threads",
+                      selectedThreadId: thread.id,
+                      status: `Thread created, but could not open: ${describeError(error)}`,
+                    }),
+                  ),
                 ),
               ),
             ),
-          ),
-          Effect.catch((error) =>
-            Effect.succeed(
-              continueWith({
-                ...action.state,
-                status: `Could not create Thread: ${describeError(error)}`,
-              }),
+            Effect.catch((error) =>
+              Effect.succeed(
+                continueWith({
+                  ...action.state,
+                  status: `Could not create Thread: ${describeError(error)}`,
+                }),
+              ),
             ),
           ),
-        ),
-      )
+        )
+      }
+
+      const exhaustive: never = action
+      return exhaustive
     }
 
     const manager = (initial: OpenTui.ManagerState) =>

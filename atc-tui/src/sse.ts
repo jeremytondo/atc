@@ -26,6 +26,7 @@ type ConnectionSignal =
 
 export class SseError extends Schema.TaggedErrorClass<SseError>()("SseError", {
   message: Schema.String,
+  wasConnected: Schema.optional(Schema.Boolean),
 }) {}
 
 const decodeChange = Schema.decodeUnknownOption(ResourceChangedEvent)
@@ -71,7 +72,7 @@ export class SseParser {
 
 const stripFieldSpace = (value: string): string => (value.startsWith(" ") ? value.slice(1) : value)
 
-const parseConnectionSignal = (item: ParsedItem): ConnectionSignal | undefined => {
+export const parseConnectionSignal = (item: ParsedItem): ConnectionSignal | undefined => {
   if (item.type === "comment") {
     if (item.value === "connected") return { type: "connected" }
     return { type: "heartbeat" }
@@ -85,7 +86,7 @@ const parseConnectionSignal = (item: ParsedItem): ConnectionSignal | undefined =
   }
 }
 
-const headers = (config: Config.ClientConfig["Service"]): Record<string, string> => ({
+export const headers = (config: Config.ClientConfig["Service"]): Record<string, string> => ({
   accept: "text/event-stream",
   ...(config.token === undefined ? {} : { authorization: `Bearer ${config.token}` }),
 })
@@ -101,7 +102,11 @@ const connection = (
       )
       const url = new URL("/api/v1/events", config.endpoint)
       const response = yield* Effect.tryPromise({
-        try: () => fetch(url, { headers: headers(config), signal: controller.signal }),
+        try: () =>
+          fetch(url, {
+            headers: headers(config),
+            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
+          }),
         catch: (error) =>
           new SseError({
             message: error instanceof Error ? error.message : String(error),
@@ -166,6 +171,13 @@ const runConnection = (
       ),
     )
     return yield* consume.pipe(
+      Effect.catch((error) =>
+        Ref.get(connected).pipe(
+          Effect.flatMap((wasConnected) =>
+            Effect.fail(new SseError({ message: error.message, wasConnected })),
+          ),
+        ),
+      ),
       Effect.ensuring(
         Ref.get(connected).pipe(
           Effect.flatMap((wasConnected) =>
@@ -183,10 +195,13 @@ export const subscribe = (
   const loop = (attempt: number): Effect.Effect<never> =>
     runConnection(config, publish).pipe(
       Effect.catch((error) =>
-        publish({ type: "disconnected", reason: error.message }).pipe(
-          Effect.andThen(Effect.sleep(`${backoffMillis(attempt)} millis`)),
-          Effect.andThen(Effect.suspend(() => loop(attempt + 1))),
-        ),
+        Effect.suspend(() => {
+          const retryAttempt = error.wasConnected === true ? 0 : attempt
+          return publish({ type: "disconnected", reason: error.message }).pipe(
+            Effect.andThen(Effect.sleep(`${backoffMillis(retryAttempt)} millis`)),
+            Effect.andThen(loop(retryAttempt + 1)),
+          )
+        }),
       ),
     )
   return loop(0)

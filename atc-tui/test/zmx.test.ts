@@ -18,7 +18,7 @@ describe("direct zmx attachment", () => {
         },
         { sessionName: "atc-1234" },
       ),
-    ).toEqual({
+    ).toStrictEqual({
       executable: "/usr/local/bin/zmx",
       args: ["attach", "atc-1234"],
       env: {

@@ -31,7 +31,6 @@ export interface StyledSelectOptions extends RenderableOptions<StyledSelectRende
   readonly descriptionColor?: ColorInput
   readonly selectedDescriptionColor?: ColorInput
   readonly showScrollIndicator?: boolean
-  readonly showDescription?: boolean
 }
 
 export class StyledSelectRenderable extends Renderable {
