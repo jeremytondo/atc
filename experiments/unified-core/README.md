@@ -26,41 +26,23 @@ in `findings.md`.
 
 ## Run locally
 
-Use a private profile. In one terminal, start the shared Codex app-server; it
-is intentionally independent of the Go core and survives core restarts:
+Install Go, `codex`, `claude`, and `zmx`, then run:
 
 ```sh
 cd experiments/unified-core
-mkdir -p .state/codex-home
-export CODEX_HOME="$PWD/.state/codex-home"
-export CLAUDE_CONFIG_DIR="$PWD/.state/claude-home"
+make play
 ```
 
-Authenticate those private profiles first with `codex login` and `claude` if
-needed, then start the shared server with `codex app-server --listen
-ws://127.0.0.1:7444`. In another terminal, inherit both variables, build, and
-start the prototype with explicit model policy:
+On the first run, the launcher opens the Codex and Claude login flows. Those
+credentials, core data, zmx sessions, and logs stay isolated under `.state/`;
+later runs go straight to the TUI. The launcher builds the binary, starts the
+private Codex app-server and unified core, waits for both, opens `play`, and
+stops only the two background processes it created when `play` exits.
 
-```sh
-cd experiments/unified-core
-make build
-./bin/atc-unified serve --state .state --codex-remote ws://127.0.0.1:7444 \
-  --claude-model haiku --codex-model gpt-5.6-luna --effort low --debug
-```
-
-The server binds to `127.0.0.1:7332` by default. Thread creation additionally
-rejects non-loopback callers. `play` is the human client; it lists lifecycle
-state, creates Threads, drives chats and pending requests, and temporarily
-hands the terminal to a TUI attach before restoring its own screen:
-
-```sh
-./bin/atc-unified play
-```
-
-The footer shows the available keys. `--base` points it at another core. The
-client polls canonical cursor events and retains its last snapshot while the
-core is unavailable, so it reconnects and catches up after restart. See
-`play-findings.md` for the reviewed behavior and remaining live matrix.
+The footer shows the available keys. The client retains its last snapshot while
+the core is unavailable, then reconnects and catches up. Logs are under
+`.state/logs/`. Ports and model policy can be overridden with the
+`ATC_UNIFIED_*` variables at the top of `scripts/play.sh`.
 
 The lower-level CLI remains deliberately thin: `api` sends an arbitrary
 canonical request and `repl` offers the same operation interactively. For
@@ -89,9 +71,9 @@ make smoke-zmx
 ```
 
 `smoke-acp` calls both official ACP v1 adapters several times to cover allow,
-deny, cancellation, and exact reload, so it uses provider quota and must be run
-with private `CODEX_HOME` and `CLAUDE_CONFIG_DIR` profiles. `smoke-zmx` uses
-temporary directories and the `atc-unified-` prefix.
+deny, cancellation, and exact reload, so it uses provider quota. It reuses the
+private profiles initialized by `make play`. `smoke-zmx` uses temporary
+directories and the `atc-unified-` prefix.
 
 For the full reviewed matrix, keep the shared app-server and core processes in
 separate terminals, then use canonical API calls only:
