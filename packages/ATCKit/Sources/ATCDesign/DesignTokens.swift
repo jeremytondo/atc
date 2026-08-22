@@ -34,6 +34,31 @@ public enum Spacing {
     public static let xxl: CGFloat = 32
 }
 
+/// Chat prose — assistant text and the user's own messages. Sized to T3Code's
+/// chat (14px at a ~1.6 line-height) rather than the 13pt system body: one
+/// point up keeps it a clear step above the 12pt `.callout` chrome (tool
+/// rows, chips, captions) without drifting from the system scale. Headings
+/// land on system styles where one fits (`.title2` 17, `.title3` 15) and on
+/// the prose size for h4+, so a heading never reads smaller than its body.
+public enum Prose {
+    public static let size: CGFloat = 14
+    public static let font = Font.system(size: size)
+    /// Extra points between wrapped lines, on top of the font's natural
+    /// ~17pt line box — together they land at T3Code's 1.625 ratio.
+    public static let lineSpacing: CGFloat = 6
+
+    /// The font for a markdown heading at `level` (1-based; 4 and deeper
+    /// share the prose size in semibold).
+    public static func heading(_ level: Int) -> Font {
+        switch level {
+        case 1: .system(size: 20, weight: .semibold)
+        case 2: .title2.weight(.semibold)
+        case 3: .title3.weight(.semibold)
+        default: font.weight(.semibold)
+        }
+    }
+}
+
 /// Corner radii: small controls, chip controls, cards, and floating panels.
 /// Text pills use `Capsule`.
 public enum Radius {

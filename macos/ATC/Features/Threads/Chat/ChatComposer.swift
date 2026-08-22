@@ -450,7 +450,8 @@ struct ChatComposer: View {
     private var editor: some View {
         ZStack(alignment: .topLeading) {
             Text(text.isEmpty ? " " : text)
-                .font(.body)
+                .font(Prose.font)
+                .lineSpacing(Prose.lineSpacing)
                 .lineLimit(3...10)
                 .padding(.vertical, Spacing.xs)
                 .padding(.horizontal, Spacing.xs + 1)
@@ -462,7 +463,8 @@ struct ChatComposer: View {
                     editorHeight = $0
                 }
             TextEditor(text: $text, selection: $selection)
-                .font(.body)
+                .font(Prose.font)
+                .lineSpacing(Prose.lineSpacing)
                 .scrollContentBackground(.hidden)
                 .scrollIndicators(.never)
                 .focused($isFocused)
@@ -507,6 +509,8 @@ struct ChatComposer: View {
                 }
             if text.isEmpty {
                 Text(attachments.isEmpty ? "Message the agent…" : "Add a message, or send the images…")
+                    .font(Prose.font)
+                    .lineSpacing(Prose.lineSpacing)
                     .foregroundStyle(.secondary)
                     .padding(.vertical, Spacing.xs)
                     .padding(.horizontal, Spacing.xs + 1)

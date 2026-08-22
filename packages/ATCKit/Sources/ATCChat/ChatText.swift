@@ -16,6 +16,8 @@ struct MarkdownText: View {
 
     var body: some View {
         Text(attributed)
+            .font(Prose.font)
+            .lineSpacing(Prose.lineSpacing)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
