@@ -1,9 +1,11 @@
 import { BunHttpClient } from "@effect/platform-bun"
 import { Context, Effect, Layer } from "effect"
+import { HttpClient } from "effect/unstable/http"
 import type * as Contract from "../../app-server/src/api/contract.ts"
 import * as Client from "../../app-server/src/api/client.ts"
 import * as Config from "./config.ts"
 import * as Sse from "./sse.ts"
+import * as Transport from "./transport.ts"
 
 // Public App Server facade for the terminal client. Thread objects crossing
 // this boundary are TUI-only; all-kind server results survive only as
@@ -90,10 +92,14 @@ export class AppServer extends Context.Service<
 
 export const make = Effect.gen(function* () {
   const config = yield* Config.ClientConfig
+  const httpClient = yield* HttpClient.HttpClient
+  const transportClient = HttpClient.transformResponse(httpClient, (request) =>
+    Transport.provideFetchOptions(request, config),
+  )
   const client = yield* Client.make({
     baseUrl: config.endpoint,
     ...(config.token === undefined ? {} : { token: config.token }),
-  })
+  }).pipe(Effect.provideService(HttpClient.HttpClient, transportClient))
 
   const snapshot = Effect.gen(function* () {
     const [projects, allThreads, agents] = yield* Effect.all(

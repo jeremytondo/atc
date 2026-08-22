@@ -20,9 +20,10 @@ atc-tui --remote workstation
 ```
 
 The controller keeps the remote App Server loopback-only through a supervised
-SSH forward. Opening a Thread gives the TTY to a second interactive SSH client.
-If that connection is lost, the controller retries the same terminal with
-backoff; the zmx session survives and repaints after reconnection.
+SSH forward on a private per-run Unix socket; it does not reserve a laptop TCP
+port. Opening a Thread gives the TTY to a second interactive SSH client. If that
+connection is lost, the controller retries the same terminal with backoff; the
+zmx session survives and repaints after reconnection.
 
 The footer shows the keys available in the current view. Ctrl-Space temporarily
 replaces them with global navigation keys for active Threads, archived Threads,

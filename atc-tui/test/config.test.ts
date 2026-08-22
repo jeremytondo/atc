@@ -4,6 +4,7 @@ import {
   DEFAULT_ENDPOINT,
   DEFAULT_ZMX_EXECUTABLE,
   defaultZmxDir,
+  makeRemoteSocketPath,
   resolve,
 } from "../src/config.ts"
 
@@ -66,19 +67,19 @@ describe("resolve", () => {
           sshExecutable: "/usr/bin/ssh",
           remoteAtcExecutable: "/opt/atc/bin/atc",
           remotePort: 8331,
-          tunnelPort: 18331,
         },
         { ATC_ENDPOINT: "https://ignored.example", ATC_TOKEN: "ignored" },
+        "/tmp/atc-tui-test.sock",
       ),
     ).toStrictEqual({
-      endpoint: new URL("http://127.0.0.1:18331"),
+      endpoint: new URL("http://127.0.0.1:8331"),
       connection: {
         type: "remote",
         host: "dev@workstation",
         sshExecutable: "/usr/bin/ssh",
         remoteAtcExecutable: "/opt/atc/bin/atc",
         remotePort: 8331,
-        tunnelPort: 18331,
+        socketPath: "/tmp/atc-tui-test.sock",
       },
       environment: { ATC_ENDPOINT: "https://ignored.example", ATC_TOKEN: "ignored" },
     })
@@ -106,7 +107,13 @@ describe("resolve", () => {
     expect(resolve({ remote: "two hosts" }, {})).toBeInstanceOf(ConfigError)
     expect(resolve({ remote: "host", sshExecutable: "./ssh" }, {})).toBeInstanceOf(ConfigError)
     expect(resolve({ remote: "host", remotePort: 0 }, {})).toBeInstanceOf(ConfigError)
-    expect(resolve({ remote: "host", tunnelPort: 65_536 }, {})).toBeInstanceOf(ConfigError)
+  })
+})
+
+describe("makeRemoteSocketPath", () => {
+  it("uses a short absolute per-process path suitable for macOS Unix sockets", () => {
+    expect(makeRemoteSocketPath(42, "abcdef12")).toBe("/tmp/atc-tui-42-abcdef12.sock")
+    expect(makeRemoteSocketPath(42, "abcdef12").length).toBeLessThan(100)
   })
 })
 

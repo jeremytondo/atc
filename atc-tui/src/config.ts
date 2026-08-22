@@ -1,4 +1,5 @@
 import { Context, Effect, Layer, Schema } from "effect"
+import { randomUUID } from "node:crypto"
 import * as os from "node:os"
 import * as path from "node:path"
 
@@ -12,7 +13,6 @@ export const DEFAULT_ZMX_EXECUTABLE = "zmx"
 export const DEFAULT_SSH_EXECUTABLE = "ssh"
 export const DEFAULT_REMOTE_ATC_EXECUTABLE = ".local/bin/atc"
 export const DEFAULT_REMOTE_PORT = 7331
-export const DEFAULT_TUNNEL_PORT = 17331
 export const Port = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 }))
 
 export interface Overrides {
@@ -23,7 +23,6 @@ export interface Overrides {
   readonly sshExecutable?: string | undefined
   readonly remoteAtcExecutable?: string | undefined
   readonly remotePort?: number | undefined
-  readonly tunnelPort?: number | undefined
 }
 
 export class ConfigError extends Schema.TaggedErrorClass<ConfigError>()("ConfigError", {
@@ -43,7 +42,7 @@ export interface RemoteConnection {
   readonly sshExecutable: string
   readonly remoteAtcExecutable: string
   readonly remotePort: number
-  readonly tunnelPort: number
+  readonly socketPath: string
 }
 
 export type Connection = LocalConnection | RemoteConnection
@@ -66,7 +65,11 @@ const validExecutable = (value: string): boolean => !value.includes("/") || path
 const validPort = (value: number): boolean =>
   Number.isInteger(value) && value >= 1 && value <= 65535
 
-const remoteConnection = (overrides: Overrides, remote: string): RemoteConnection | ConfigError => {
+const remoteConnection = (
+  overrides: Overrides,
+  remote: string,
+  socketPath: string,
+): RemoteConnection | ConfigError => {
   if (remote.startsWith("-") || /[\t\r\n ]/.test(remote)) {
     return new ConfigError({
       source: "--remote",
@@ -88,10 +91,6 @@ const remoteConnection = (overrides: Overrides, remote: string): RemoteConnectio
   if (!validPort(remotePort)) {
     return new ConfigError({ source: "--remote-port", message: `invalid port ${remotePort}` })
   }
-  const tunnelPort = overrides.tunnelPort ?? DEFAULT_TUNNEL_PORT
-  if (!validPort(tunnelPort)) {
-    return new ConfigError({ source: "--tunnel-port", message: `invalid port ${tunnelPort}` })
-  }
 
   return {
     type: "remote",
@@ -99,9 +98,13 @@ const remoteConnection = (overrides: Overrides, remote: string): RemoteConnectio
     sshExecutable,
     remoteAtcExecutable,
     remotePort,
-    tunnelPort,
+    socketPath,
   }
 }
+
+/** Short absolute path: macOS Unix-domain sockets have a small path limit. */
+export const makeRemoteSocketPath = (pid = process.pid, nonce = randomUUID().slice(0, 8)): string =>
+  `/tmp/atc-tui-${pid}-${nonce}.sock`
 
 export const defaultZmxDir = (
   env: Readonly<Record<string, string | undefined>>,
@@ -115,13 +118,14 @@ export const defaultZmxDir = (
 export const resolve = (
   overrides: Overrides,
   env: Readonly<Record<string, string | undefined>>,
+  remoteSocketPath = makeRemoteSocketPath(),
 ): ClientConfig["Service"] | ConfigError => {
   const remote = nonEmpty(overrides.remote)
   if (remote !== undefined) {
-    const connection = remoteConnection(overrides, remote)
+    const connection = remoteConnection(overrides, remote, remoteSocketPath)
     if (connection instanceof ConfigError) return connection
     return {
-      endpoint: new URL(`http://127.0.0.1:${connection.tunnelPort}`),
+      endpoint: new URL(`http://127.0.0.1:${connection.remotePort}`),
       connection,
       environment: env,
     }

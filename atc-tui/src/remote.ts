@@ -1,14 +1,17 @@
 import { Context, Deferred, Duration, Effect, Layer, Ref, Schedule, Schema, Stream } from "effect"
 import type { Scope } from "effect"
+import { unlink } from "node:fs/promises"
 import * as Poll from "../../app-server/src/platform/poll.ts"
 import * as Subprocess from "../../app-server/src/platform/subprocess.ts"
 import * as Config from "./config.ts"
+import * as Transport from "./transport.ts"
 
-// Remote-controller mode owns one quiet SSH port forward for HTTP/SSE. The
+// Remote-controller mode owns one quiet SSH socket forward for HTTP/SSE. The
 // forward is an implementation detail: the App Server stays loopback-only,
 // and every request still crosses the canonical HTTP API. A failed SSH
 // connection is retried for the life of the TUI; initial startup is bounded
-// so a bad host, missing key, or occupied local port remains actionable.
+// so a bad host or missing key remains actionable. Each invocation gets a
+// private Unix socket, eliminating fixed-port conflicts and stale adoption.
 
 const STARTUP_TIMEOUT = "15 seconds"
 
@@ -44,30 +47,36 @@ export const tunnelSpec = (connection: Config.RemoteConnection): TunnelSpec => (
     "ExitOnForwardFailure=yes",
     // The tunnel must belong to this exact child process. User SSH config may
     // otherwise hand the forward to a persistent ControlMaster or background
-    // the client, leaving the port alive after the TUI's scope closes.
+    // the client, leaving the forward alive after the TUI's scope closes.
     "-o",
     "ControlMaster=no",
     "-o",
     "ControlPath=none",
     "-o",
     "ForkAfterAuthentication=no",
+    "-o",
+    "StreamLocalBindUnlink=yes",
+    "-o",
+    "StreamLocalBindMask=0177",
     ...connectionArgs,
     "-L",
-    `127.0.0.1:${connection.tunnelPort}:127.0.0.1:${connection.remotePort}`,
+    `${connection.socketPath}:127.0.0.1:${connection.remotePort}`,
     connection.host,
   ],
 })
 
-const probe = (endpoint: URL): Effect.Effect<boolean> =>
+const probe = (config: Config.ClientConfig["Service"]): Effect.Effect<boolean> =>
   Effect.tryPromise(() =>
-    fetch(new URL("/api/v1/health", endpoint), { signal: AbortSignal.timeout(1_000) }),
+    Transport.fetch(config, new URL("/api/v1/health", config.endpoint), {
+      signal: AbortSignal.timeout(1_000),
+    }),
   ).pipe(
     Effect.map((response) => response.ok),
     Effect.catch(() => Effect.succeed(false)),
   )
 
-const waitUntilReachable = (endpoint: URL) =>
-  Poll.pollUntil(probe(endpoint), {
+const waitUntilReachable = (config: Config.ClientConfig["Service"]) =>
+  Poll.pollUntil(probe(config), {
     until: (reachable) => reachable,
     schedule: Schedule.spaced("100 millis").pipe(Schedule.upTo({ times: 50 })),
   }).pipe(
@@ -107,7 +116,7 @@ const superviseAttempt = (
       yield* child.stdoutLines.pipe(Stream.runDrain, Effect.ignore, Effect.forkScoped)
 
       const startup = yield* Effect.raceFirst(
-        waitUntilReachable(config.endpoint).pipe(Effect.as({ type: "ready" as const })),
+        waitUntilReachable(config).pipe(Effect.as({ type: "ready" as const })),
         child.exitCode.pipe(Effect.map((exitCode) => ({ type: "exited" as const, exitCode }))),
       )
       if (startup.type === "exited") {
@@ -147,6 +156,9 @@ const retrySchedule = Schedule.exponential("500 millis").pipe(
   ),
 )
 
+const removeSocket = (socketPath: string): Effect.Effect<void> =>
+  Effect.tryPromise(() => unlink(socketPath)).pipe(Effect.ignore)
+
 export class Remote extends Context.Service<
   Remote,
   {
@@ -164,16 +176,7 @@ export const make = Effect.gen(function* () {
   const connection = config.connection
   const subprocess = yield* Subprocess.Subprocess
   const start = Effect.gen(function* () {
-    if (yield* probe(config.endpoint)) {
-      return yield* Effect.fail(
-        new TunnelError({
-          reason:
-            `local tunnel port ${connection.tunnelPort} is already serving an App Server; ` +
-            "choose another with --tunnel-port",
-        }),
-      )
-    }
-
+    yield* Effect.addFinalizer(() => removeSocket(connection.socketPath))
     const ready = yield* Deferred.make<void>()
     const lastFailure = yield* Ref.make<string | undefined>(undefined)
     const attempt = superviseAttempt(subprocess, config, connection, ready).pipe(

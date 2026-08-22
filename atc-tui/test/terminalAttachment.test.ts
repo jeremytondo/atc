@@ -38,11 +38,11 @@ const remoteConnection: Config.RemoteConnection = {
   sshExecutable: "/usr/bin/ssh",
   remoteAtcExecutable: ".local/bin/atc",
   remotePort: 7331,
-  tunnelPort: 17331,
+  socketPath: "/tmp/atc-tui-test.sock",
 }
 
 const remoteConfig: Config.ClientConfig["Service"] = {
-  endpoint: new URL("http://127.0.0.1:17331"),
+  endpoint: new URL("http://127.0.0.1:7331"),
   connection: remoteConnection,
   environment: { HOME: "/home/test", PATH: "/bin" },
 }

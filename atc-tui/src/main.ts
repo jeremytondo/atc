@@ -59,15 +59,9 @@ const remotePort = Flag.integer("remote-port").pipe(
   Flag.withDescription("remote loopback App Server port (defaults to 7331)"),
 )
 
-const tunnelPort = Flag.integer("tunnel-port").pipe(
-  Flag.withSchema(Config.Port),
-  Flag.optional,
-  Flag.withDescription("local SSH-forward port (defaults to 17331)"),
-)
-
 const command = Command.make(
   "atc-tui",
-  { endpoint, zmxBin, zmxDir, remote, sshBin, remoteAtc, remotePort, tunnelPort },
+  { endpoint, zmxBin, zmxDir, remote, sshBin, remoteAtc, remotePort },
   (options) =>
     App.run.pipe(
       Effect.provide(TerminalAttachment.layer),
@@ -83,7 +77,6 @@ const command = Command.make(
           sshExecutable: Option.getOrUndefined(options.sshBin),
           remoteAtcExecutable: Option.getOrUndefined(options.remoteAtc),
           remotePort: Option.getOrUndefined(options.remotePort),
-          tunnelPort: Option.getOrUndefined(options.tunnelPort),
         }),
       ),
       Effect.catch((error) => {
