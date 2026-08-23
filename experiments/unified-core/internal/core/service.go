@@ -442,7 +442,10 @@ func (s *Service) OpenTerminal(ctx context.Context, threadID string, _ OpenTermi
 			return domain.Terminal{}, err
 		}
 		now := s.now().UTC()
-		terminal := domain.Terminal{ID: id, ThreadID: threadID, Lifecycle: domain.TerminalLive, CreatedAt: now}
+		terminal := domain.Terminal{
+			ID: id, ThreadID: threadID, ActiveThreadID: threadID,
+			Lifecycle: domain.TerminalLive, CreatedAt: now,
+		}
 		exitPath := filepath.Join(s.stateDir, "exits", id+".json")
 		s.state.Terminals = append(s.state.Terminals, store.TerminalRecord{
 			Terminal: terminal, State: store.TerminalMissing, ExitPath: exitPath,
@@ -605,8 +608,11 @@ func (s *Service) ReconcileTerminals(ctx context.Context) ([]domain.Terminal, er
 			}
 		}
 		if record.Terminal.Lifecycle == domain.TerminalEnded {
-			thread := s.threadLocked(record.Terminal.ThreadID)
-			if thread != nil {
+			for j := range s.state.Threads {
+				thread := &s.state.Threads[j]
+				if thread.Thread.TerminalID != record.Terminal.ID {
+					continue
+				}
 				thread.Foreground = domain.ActivityIdle
 				thread.Thread.Background = domain.ActivityIdle
 				s.recomputeActivityLocked(thread)
@@ -717,6 +723,124 @@ func (s *Service) ApplyStatus(threadID string, provider domain.Agent, raw []byte
 	s.recomputeActivityLocked(record)
 	s.emitLocked(domain.Event{ThreadID: threadID, Resource: "thread", Type: "thread.activity", Activity: record.Thread.Activity})
 	return s.saveLocked()
+}
+
+// ApplyTerminalEvidence first reconciles the exact provider conversation
+// selected by a TUI, then attributes the same payload's status to that ATC
+// Thread. The private provider identity is stable; Terminal activity is not.
+func (s *Service) ApplyTerminalEvidence(terminalID string, provider domain.Agent, raw []byte) error {
+	if s.status == nil {
+		return domain.NewError("status_unavailable", "no provider status adapter is configured")
+	}
+	identity, hasIdentity := s.status.Identify(provider, raw)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	terminal := s.terminalLocked(terminalID)
+	if terminal == nil {
+		return notFound("terminal", terminalID)
+	}
+	launchThread := s.threadLocked(terminal.Terminal.ThreadID)
+	if launchThread == nil {
+		return notFound("thread", terminal.Terminal.ThreadID)
+	}
+	if launchThread.Thread.Agent != provider {
+		return domain.NewError("provider_mismatch", "status evidence does not match the terminal agent")
+	}
+
+	threadID := terminal.Terminal.ActiveThreadID
+	if threadID == "" {
+		threadID = terminal.Terminal.ThreadID
+		terminal.Terminal.ActiveThreadID = threadID
+	}
+	if hasIdentity {
+		resolved, created, err := s.resolveProviderThreadLocked(terminal, launchThread, provider, identity)
+		if err != nil {
+			return err
+		}
+		threadID = resolved.Thread.ID
+		previous := terminal.Terminal.ActiveThreadID
+		terminal.Terminal.ActiveThreadID = threadID
+		resolved.Thread.TerminalID = terminalID
+		resolved.Thread.Background = domain.ActivityUnknown
+		s.recomputeActivityLocked(resolved)
+		s.rawLocked(threadID, "identity."+string(provider), raw)
+		if created {
+			s.emitLocked(domain.Event{
+				ThreadID: threadID, Resource: "thread", Type: "thread.created",
+				Activity: resolved.Thread.Activity,
+			})
+		}
+		if previous != threadID {
+			if old := s.threadLocked(previous); old != nil {
+				old.Thread.Background = domain.ActivityUnknown
+				s.recomputeActivityLocked(old)
+				s.emitLocked(domain.Event{
+					ThreadID: previous, Resource: "thread", Type: "thread.activity",
+					Activity: old.Thread.Activity,
+				})
+			}
+			s.emitLocked(domain.Event{
+				ThreadID: threadID, Resource: "terminal", Type: "terminal.active_thread_changed",
+				Terminal: cloneTerminal(&terminal.Terminal), Text: identity.Cause,
+			})
+		}
+	}
+
+	record := s.threadLocked(threadID)
+	if record == nil {
+		return notFound("thread", threadID)
+	}
+	s.rawLocked(threadID, "status."+string(provider), raw)
+	observation, recognized := s.status.Observe(threadID, provider, raw)
+	if !recognized || terminal.Terminal.Lifecycle == domain.TerminalEnded {
+		return s.saveLocked()
+	}
+	record.Thread.Background = observation.Activity
+	s.recomputeActivityLocked(record)
+	s.emitLocked(domain.Event{ThreadID: threadID, Resource: "thread", Type: "thread.activity", Activity: record.Thread.Activity})
+	return s.saveLocked()
+}
+
+func (s *Service) resolveProviderThreadLocked(
+	terminal *store.TerminalRecord,
+	launchThread *store.ThreadRecord,
+	provider domain.Agent,
+	observation ports.ProviderThreadObservation,
+) (*store.ThreadRecord, bool, error) {
+	var matched *store.ThreadRecord
+	for i := range s.state.Threads {
+		record := &s.state.Threads[i]
+		if record.Thread.Kind != domain.ThreadTUI || record.Thread.Agent != provider || record.ProviderRoot != observation.Identity {
+			continue
+		}
+		if matched != nil {
+			return nil, false, domain.NewError("provider_identity_conflict", "provider conversation maps to multiple ATC threads")
+		}
+		matched = record
+	}
+	if matched != nil {
+		return matched, false, nil
+	}
+	if launchThread.ProviderRoot == "" {
+		launchThread.ProviderRoot = observation.Identity
+		launchThread.Thread.TerminalID = terminal.Terminal.ID
+		return launchThread, false, nil
+	}
+	id, err := randomID("thr")
+	if err != nil {
+		return nil, false, err
+	}
+	now := s.now().UTC()
+	thread := domain.Thread{
+		ID: id, Kind: domain.ThreadTUI, Agent: provider, CWD: launchThread.Thread.CWD,
+		Activity: domain.ActivityUnknown, Background: domain.ActivityUnknown,
+		TerminalID: terminal.Terminal.ID, CreatedAt: now, UpdatedAt: now,
+	}
+	s.state.Threads = append(s.state.Threads, store.ThreadRecord{
+		Thread: thread, ProviderRoot: observation.Identity, Foreground: domain.ActivityIdle,
+	})
+	return &s.state.Threads[len(s.state.Threads)-1], true, nil
 }
 
 // ChatEvents implementation. Adapter callbacks may arrive after Prompt has

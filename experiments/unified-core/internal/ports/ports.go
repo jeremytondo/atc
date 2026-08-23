@@ -62,7 +62,13 @@ type ProviderObservation struct {
 	Raw        []byte
 }
 
+type ProviderThreadObservation struct {
+	Identity string
+	Cause    string
+}
+
 type StatusAdapter interface {
+	Identify(domain.Agent, []byte) (ProviderThreadObservation, bool)
 	Observe(threadID string, provider domain.Agent, raw []byte) (ProviderObservation, bool)
 	Restore(context.Context, string, domain.Agent, string) (ProviderObservation, error)
 }

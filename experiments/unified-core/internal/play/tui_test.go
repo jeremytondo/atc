@@ -109,6 +109,28 @@ func TestTUISessionShowsDirectZmxAttachCommand(t *testing.T) {
 	}
 }
 
+func TestTUIThreadsShareTerminalAndExposeItsActiveThread(t *testing.T) {
+	m := newModel(t.Context(), nil, defaultBase)
+	terminal := Terminal{
+		ID: "term-one", ThreadID: "thr-launch", ActiveThreadID: "thr-discovered",
+		Lifecycle: "live", Reachable: true,
+	}
+	updated, _ := m.Update(syncMsg{
+		threads: []Thread{
+			{ID: "thr-launch", Kind: "tui", TerminalID: terminal.ID},
+			{ID: "thr-discovered", Kind: "tui", TerminalID: terminal.ID},
+		},
+		terminals: []Terminal{terminal}, terminalsChecked: true, terminalsOK: true,
+	})
+	m = updated.(model)
+	if got := threadLifecycle(m.threads[0], m.terminals["thr-launch"]); !strings.Contains(got, "terminal:live/inactive") {
+		t.Fatalf("launch lifecycle = %q", got)
+	}
+	if got := threadLifecycle(m.threads[1], m.terminals["thr-discovered"]); !strings.Contains(got, "terminal:live/active") {
+		t.Fatalf("active lifecycle = %q", got)
+	}
+}
+
 func TestConversationCoalescesStreamedACPResponse(t *testing.T) {
 	request := PendingRequest{Prompt: "Allow the edit?"}
 	lines := conversationLines([]Event{

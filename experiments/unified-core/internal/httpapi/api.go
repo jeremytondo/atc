@@ -179,12 +179,14 @@ func (a *API) streamEvents(response http.ResponseWriter, request *http.Request, 
 }
 
 func (a *API) providerHook(response http.ResponseWriter, request *http.Request) {
-	terminal, err := a.core.Terminal(request.PathValue("terminal"))
+	raw, err := io.ReadAll(io.LimitReader(request.Body, 4<<20))
 	if err != nil {
-		write(response, http.StatusOK, nil, err)
+		write(response, http.StatusBadRequest, nil, err)
 		return
 	}
-	a.applyProviderEvidence(response, request, terminal.ThreadID)
+	provider := domain.Agent(request.PathValue("provider"))
+	err = a.core.ApplyTerminalEvidence(request.PathValue("terminal"), provider, raw)
+	write(response, http.StatusNoContent, nil, err)
 }
 
 func (a *API) providerStatus(response http.ResponseWriter, request *http.Request) {

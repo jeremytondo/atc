@@ -41,6 +41,31 @@ func TestTrackerSupportsStringRequestIDsAndResume(t *testing.T) {
 	assertExactRoot(t, evidence, "saved-root")
 }
 
+func TestTrackerFollowsInProcessTUIThreadChanges(t *testing.T) {
+	tracker := newTracker()
+	tracker.client([]byte(`{"id":1,"method":"thread/start"}`))
+	started, ok := tracker.server([]byte(`{"id":1,"result":{"thread":{"id":"root-one"}}}`))
+	if !ok {
+		t.Fatal("initial thread was not correlated")
+	}
+	assertTransition(t, started, "root-one", "start")
+
+	tracker.client([]byte(`{"id":2,"method":"thread/fork"}`))
+	forked, ok := tracker.server([]byte(`{"id":2,"result":{"thread":{"id":"root-two"}}}`))
+	if !ok {
+		t.Fatal("fork was not correlated")
+	}
+	assertTransition(t, forked, "root-two", "fork")
+	if _, ok := tracker.server([]byte(`{"method":"thread/status/changed","params":{"threadId":"root-one","status":{"type":"active"}}}`)); ok {
+		t.Fatal("forwarded the previously active root after a TUI switch")
+	}
+	current, ok := tracker.server([]byte(`{"method":"thread/status/changed","params":{"threadId":"root-two","status":{"type":"active"}}}`))
+	if !ok {
+		t.Fatal("did not forward the newly active root")
+	}
+	assertExactRoot(t, current, "root-two")
+}
+
 func assertExactRoot(t *testing.T, payload []byte, expected string) {
 	t.Helper()
 	var decoded struct {
@@ -48,5 +73,16 @@ func assertExactRoot(t *testing.T, payload []byte, expected string) {
 	}
 	if err := json.Unmarshal(payload, &decoded); err != nil || decoded.Root != expected {
 		t.Fatalf("exact root payload = %s, %v", payload, err)
+	}
+}
+
+func assertTransition(t *testing.T, payload []byte, root, transition string) {
+	t.Helper()
+	var decoded struct {
+		Root       string `json:"atcExactRoot"`
+		Transition string `json:"atcThreadTransition"`
+	}
+	if err := json.Unmarshal(payload, &decoded); err != nil || decoded.Root != root || decoded.Transition != transition {
+		t.Fatalf("transition payload = %s, %v", payload, err)
 	}
 }

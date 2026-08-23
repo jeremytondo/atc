@@ -27,6 +27,36 @@ func New(now func() time.Time) *Registry {
 	return &Registry{claude: make(map[string]*claudeState), codex: make(map[string]*codexState), now: now}
 }
 
+// Identify extracts only authoritative provider conversation transitions.
+// Status events carry identities too, but accepting them would let delayed
+// broadcasts switch the Terminal away from the conversation selected by its
+// TUI writer.
+func (r *Registry) Identify(provider domain.Agent, raw []byte) (ports.ProviderThreadObservation, bool) {
+	switch provider {
+	case domain.AgentClaude:
+		var event struct {
+			SessionID string `json:"session_id"`
+			HookEvent string `json:"hook_event_name"`
+			Source    string `json:"source"`
+		}
+		if json.Unmarshal(raw, &event) != nil || event.HookEvent != "SessionStart" || event.SessionID == "" {
+			return ports.ProviderThreadObservation{}, false
+		}
+		return ports.ProviderThreadObservation{Identity: event.SessionID, Cause: event.Source}, true
+	case domain.AgentCodex:
+		var event struct {
+			Identity   string `json:"atcExactRoot"`
+			Transition string `json:"atcThreadTransition"`
+		}
+		if json.Unmarshal(raw, &event) != nil || event.Identity == "" || event.Transition == "" {
+			return ports.ProviderThreadObservation{}, false
+		}
+		return ports.ProviderThreadObservation{Identity: event.Identity, Cause: event.Transition}, true
+	default:
+		return ports.ProviderThreadObservation{}, false
+	}
+}
+
 func (r *Registry) Observe(threadID string, provider domain.Agent, raw []byte) (ports.ProviderObservation, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

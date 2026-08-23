@@ -178,9 +178,16 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastTerminalSync = time.Now()
 		}
 		if message.terminalsOK {
-			m.terminals = make(map[string]Terminal, len(message.terminals))
+			m.terminals = make(map[string]Terminal, len(message.threads))
+			byID := make(map[string]Terminal, len(message.terminals))
 			for _, terminal := range message.terminals {
 				m.terminals[terminal.ThreadID] = terminal
+				byID[terminal.ID] = terminal
+			}
+			for _, thread := range message.threads {
+				if terminal, ok := byID[thread.TerminalID]; ok {
+					m.terminals[thread.ID] = terminal
+				}
 			}
 		}
 		m.restoreSelection(selectedID)
@@ -530,6 +537,9 @@ func (m model) threadDetail(width, height int) string {
 		if terminal.Reason != "" {
 			detail += " • " + terminal.Reason
 		}
+		if terminal.ActiveThreadID != "" {
+			detail += " • active " + shortID(terminal.ActiveThreadID)
+		}
 		lines = append(lines, truncate(detail, width-2))
 		if terminal.Reachable {
 			lines = append(lines, truncate("attach elsewhere: make attach TERMINAL="+terminal.ID, width-2))
@@ -799,6 +809,11 @@ func threadLifecycle(thread Thread, terminal Terminal) string {
 			terminalState = "terminal:" + terminal.Lifecycle
 			if !terminal.Reachable {
 				terminalState += "/unreachable"
+			}
+			if terminal.ActiveThreadID == thread.ID {
+				terminalState += "/active"
+			} else if terminal.ActiveThreadID != "" {
+				terminalState += "/inactive"
 			}
 		}
 		parts = append(parts, terminalState)

@@ -13,6 +13,7 @@ import (
 	"github.com/elevenideas/atc/experiments/unified-core/internal/child"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/domain"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/ports"
+	"github.com/elevenideas/atc/experiments/unified-core/internal/status"
 	"github.com/elevenideas/atc/experiments/unified-core/internal/store"
 )
 
@@ -473,6 +474,94 @@ func TestRestartReconstructionDoesNotDuplicateTerminalEvents(t *testing.T) {
 	}
 	if duplicated := second.EventsAfter(cursor, ""); len(duplicated) != 0 {
 		t.Fatalf("restart duplicated terminal events: %#v", duplicated)
+	}
+}
+
+func TestTUIProviderThreadsMapExactlyAndTerminalFollowsSelectionAcrossRestart(t *testing.T) {
+	ctx := context.Background()
+	repository := store.NewMemory()
+	terminalAdapter := newFakeTerminal()
+	first, err := New(Config{
+		Repository: repository, Chat: &fakeChat{}, Terminal: terminalAdapter,
+		Status: status.New(nil), StateDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	launchThread := createThread(t, first, domain.ThreadTUI, domain.AgentCodex)
+	terminal, err := first.OpenTerminal(ctx, launchThread.ID, OpenTerminal{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rootOne := []byte(`{"method":"thread/started","atcExactRoot":"root-one","atcThreadTransition":"start","params":{"thread":{"id":"root-one","status":{"type":"idle"}}}}`)
+	if err := first.ApplyTerminalEvidence(terminal.ID, domain.AgentCodex, rootOne); err != nil {
+		t.Fatal(err)
+	}
+	bound, _ := first.Terminal(terminal.ID)
+	if bound.ActiveThreadID != launchThread.ID || len(first.Threads()) != 1 {
+		t.Fatalf("initial binding = %#v, threads = %#v", bound, first.Threads())
+	}
+
+	rootTwo := []byte(`{"method":"thread/started","atcExactRoot":"root-two","atcThreadTransition":"fork","params":{"thread":{"id":"root-two","status":{"type":"idle"}}}}`)
+	if err := first.ApplyTerminalEvidence(terminal.ID, domain.AgentCodex, rootTwo); err != nil {
+		t.Fatal(err)
+	}
+	threads := first.Threads()
+	if len(threads) != 2 {
+		t.Fatalf("threads after fork = %#v", threads)
+	}
+	discovered := threads[1]
+	if discovered.ID == launchThread.ID || discovered.TerminalID != terminal.ID {
+		t.Fatalf("discovered thread = %#v", discovered)
+	}
+	forked, _ := first.Terminal(terminal.ID)
+	if forked.ActiveThreadID != discovered.ID {
+		t.Fatalf("terminal after fork = %#v", forked)
+	}
+
+	rootOneResume := []byte(`{"method":"thread/started","atcExactRoot":"root-one","atcThreadTransition":"resume","params":{"thread":{"id":"root-one","status":{"type":"idle"}}}}`)
+	if err := first.ApplyTerminalEvidence(terminal.ID, domain.AgentCodex, rootOneResume); err != nil {
+		t.Fatal(err)
+	}
+	resumed, _ := first.Terminal(terminal.ID)
+	if resumed.ActiveThreadID != launchThread.ID || len(first.Threads()) != 2 {
+		t.Fatalf("terminal after resume = %#v, threads = %#v", resumed, first.Threads())
+	}
+
+	persisted, err := repository.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Threads[0].ProviderRoot != "root-one" || persisted.Threads[1].ProviderRoot != "root-two" {
+		t.Fatalf("private identity map = %#v", persisted.Threads)
+	}
+	restarted, err := New(Config{
+		Repository: repository, Chat: &fakeChat{}, Terminal: terminalAdapter,
+		Status: status.New(nil), StateDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.ApplyTerminalEvidence(terminal.ID, domain.AgentCodex, rootTwo); err != nil {
+		t.Fatal(err)
+	}
+	recovered, _ := restarted.Terminal(terminal.ID)
+	if recovered.ActiveThreadID != discovered.ID || len(restarted.Threads()) != 2 {
+		t.Fatalf("restart mapping = %#v, threads = %#v", recovered, restarted.Threads())
+	}
+
+	changes := 0
+	for _, event := range restarted.EventsAfter(0, "") {
+		if event.Type == "terminal.active_thread_changed" {
+			changes++
+			if event.Terminal == nil || event.Terminal.ActiveThreadID != event.ThreadID {
+				t.Fatalf("active-thread event = %#v", event)
+			}
+		}
+	}
+	if changes != 3 {
+		t.Fatalf("active-thread changes = %d", changes)
 	}
 }
 

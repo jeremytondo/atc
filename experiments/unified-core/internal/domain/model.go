@@ -100,13 +100,14 @@ type RequestOption struct {
 }
 
 type Terminal struct {
-	ID        string            `json:"id"`
-	ThreadID  string            `json:"threadId"`
-	Lifecycle TerminalLifecycle `json:"lifecycle"`
-	Reachable bool              `json:"reachable"`
-	Reason    string            `json:"reason,omitempty"`
-	CreatedAt time.Time         `json:"createdAt"`
-	EndedAt   *time.Time        `json:"endedAt,omitempty"`
+	ID             string            `json:"id"`
+	ThreadID       string            `json:"threadId"`
+	ActiveThreadID string            `json:"activeThreadId,omitempty"`
+	Lifecycle      TerminalLifecycle `json:"lifecycle"`
+	Reachable      bool              `json:"reachable"`
+	Reason         string            `json:"reason,omitempty"`
+	CreatedAt      time.Time         `json:"createdAt"`
+	EndedAt        *time.Time        `json:"endedAt,omitempty"`
 }
 
 type Event struct {

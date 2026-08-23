@@ -198,17 +198,19 @@ func (t *tracker) server(payload []byte) ([]byte, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if len(message.ID) > 0 {
-		if _, ok := t.requests[idKey(message.ID)]; ok {
+		if transition, ok := t.requests[idKey(message.ID)]; ok {
 			delete(t.requests, idKey(message.ID))
 			root := message.Result.Thread.ID
 			if root == "" {
 				root = message.Result.ThreadID
 			}
-			if root != "" && (t.root == "" || t.root == root) {
+			if root != "" {
 				t.root = root
+				t.parents = make(map[string]string)
 				synthetic := map[string]any{
 					"method": "thread/started", "atcExactRoot": root,
-					"params": map[string]any{"thread": map[string]any{"id": root, "status": map[string]string{"type": "unknown"}}},
+					"atcThreadTransition": strings.TrimPrefix(transition, "thread/"),
+					"params":              map[string]any{"thread": map[string]any{"id": root, "status": map[string]string{"type": "unknown"}}},
 				}
 				encoded, _ := json.Marshal(synthetic)
 				return encoded, true

@@ -249,7 +249,7 @@ func (a *Adapter) providerCommand(open ports.TerminalOpen) ([]string, error) {
 func claudeHookSettings(baseURL, terminalID string) (string, error) {
 	endpoint := baseURL + "/internal/hooks/claude/terminal/" + terminalID
 	hook := map[string]any{"type": "command", "command": "curl -fsS -X POST --data-binary @- " + endpoint}
-	names := []string{"UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Notification", "Stop", "StopFailure", "SessionEnd", "SubagentStart", "SubagentStop"}
+	names := []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "Notification", "Stop", "StopFailure", "SessionEnd", "SubagentStart", "SubagentStop"}
 	hooks := make(map[string]any, len(names))
 	for _, name := range names {
 		hooks[name] = []any{map[string]any{"hooks": []any{hook}}}

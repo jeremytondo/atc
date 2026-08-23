@@ -53,11 +53,12 @@ type RequestOption struct {
 }
 
 type Terminal struct {
-	ID        string `json:"id"`
-	ThreadID  string `json:"threadId"`
-	Lifecycle string `json:"lifecycle"`
-	Reachable bool   `json:"reachable"`
-	Reason    string `json:"reason,omitempty"`
+	ID             string `json:"id"`
+	ThreadID       string `json:"threadId"`
+	ActiveThreadID string `json:"activeThreadId,omitempty"`
+	Lifecycle      string `json:"lifecycle"`
+	Reachable      bool   `json:"reachable"`
+	Reason         string `json:"reason,omitempty"`
 }
 
 type Event struct {
