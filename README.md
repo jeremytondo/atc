@@ -1,91 +1,24 @@
-# atc
+# ATC
 
-atc is a product and development workspace for working with remote Terminal
-Sessions: a standalone server that owns Projects and Terminal Sessions, plus
-native client apps that attach to it.
+ATC is being rebuilt from a clean foundation under
+[ATC-243](https://linear.app/elevenideas/issue/ATC-243).
 
-The server is useful on its own — no native client required. It runs on the
-workstation where your terminal sessions live.
+The active tree is intentionally between implementations. The previous
+TypeScript App Server, macOS app, shared packages, release tooling, and CI have
+been removed so their assumptions do not become accidental constraints on the
+Go rebuild.
 
-The server and `atc` CLI live in [`app-server/`](app-server/) (TypeScript,
-Effect + Bun).
+## Repository status
 
-## Install
+- The complete previous product is preserved at
+  [`legacy-product-2026-08`](https://github.com/jeremytondo/atc/tree/legacy-product-2026-08).
+- [`experiments/`](experiments/) contains research prototypes and findings
+  that may inform the rebuild. They are evidence, not production code or
+  settled architecture.
+- There is currently no supported build, install, release, or test command on
+  the active tree. Those will be introduced with the new foundation.
 
-### App Server and CLI
+Existing GitHub releases are artifacts of the archived product and should not
+be treated as builds of the new implementation.
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/jeremytondo/atc/main/install.sh | sh
-```
-
-This downloads the latest stable GitHub Release for your platform, verifies
-its checksum, and installs `atc` to `~/.local/bin` (`ATC_INSTALL_DIR`
-overrides). Every successful relevant change on `main` replaces the rolling
-dev-channel prerelease. To install it, pass the channel option to `sh`:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/jeremytondo/atc/main/install.sh | sh -s -- --channel dev
-```
-
-Start the server as a detached background process with `atc start`. It keeps
-running after the terminal closes, but does not return after a reboot. For a
-supervised process that starts at login and restarts if it exits, run
-`atc service install` instead. Use `atc serve` when you want the server in the
-foreground.
-
-A running server serves its console at `http://127.0.0.1:7331/` and the API
-reference at `/docs`. To update, run `atc upgrade` — it reinstalls from the
-binary's own channel and restarts an installed login service. A server started
-with `atc start` keeps running until you stop and start it again.
-
-### macOS App
-
-On an Apple Silicon Mac, download the
-[latest stable DMG](https://github.com/jeremytondo/atc/releases/latest/download/atc-macos-arm64.dmg),
-open it, and drag `atc` to Applications. The app is a native client for the
-App Server, so install and start the server above on the workstation that owns
-your terminal sessions.
-
-## Development
-
-Local builds never publish or carry a release channel. GitHub Actions publishes
-both product surfaces together; `main` rolls the dev release forward and
-`mise run release patch|minor|major` explicitly promotes a stable release.
-
-Tasks run with [mise](https://mise.jdx.dev), which also installs the pinned
-toolchains. `mise tasks` lists everything; from the repo root:
-
-```sh
-mise run dev            # run the App Server in the foreground (http://127.0.0.1:7331)
-mise run install        # build the App Server and install it as ~/.local/bin/atc
-mise run build          # build the App Server and developer macOS app in parallel
-mise run check          # every gate: App Server, ATCKit, macOS app
-mise run test           # every test suite
-mise run refs           # fetch read-only reference source into repos/ (gitignored)
-```
-
-Working on one surface? Run only its gate:
-
-```sh
-mise run app-server:check   # fmt, typecheck, tests, OpenAPI drift
-mise run kit:test           # ATCKit package tests
-mise run macos:test         # macOS app tests
-mise run contract:check     # after any API contract change
-```
-
-Tasks scoped to a surface can also be run from its own directory with
-`mise run -C <dir> <task>` (for example `mise run -C app-server dev`).
-
-CI runs these same mise tasks on every push, so a green local `check` means a
-green build.
-
-## Where to look next
-
-- [`AGENTS.md`](AGENTS.md) — working conventions, code style, and the
-  invariants that hold across surfaces. Read this before changing code.
-- [`app-server/README.md`](app-server/README.md) — server and CLI setup,
-  configuration, and data locations.
-- [`macos/README.md`](macos/README.md) — macOS app configuration.
-
-Subsystem architecture is documented in module header comments, next to the
-code it describes, rather than in this file.
+Read [`AGENTS.md`](AGENTS.md) before making changes.

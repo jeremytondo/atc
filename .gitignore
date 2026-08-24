@@ -1,18 +1,8 @@
-# macOS
+# Operating systems and editors
 .DS_Store
-
-# Editors
 .idea/
 *.swp
 *.swo
-
-# Xcode
-xcuserdata/
-DerivedData/
-
-# SwiftPM
-.build/
-.swiftpm/
 
 # Environment and local configuration
 .env
@@ -20,29 +10,33 @@ DerivedData/
 !.env.example
 !.env.*.example
 
-# Release signing credentials
-*.p12
-*.p8
-
-# JavaScript / TypeScript / Bun
+# JavaScript / TypeScript experiment artifacts
 node_modules/
 dist/
 coverage/
 .cache/
 .bun/
-*.tsbuildinfo
 .svelte-kit/
+*.tsbuildinfo
 
-# Logs
+# Native build artifacts that may remain in an existing checkout
+.build/
+.swiftpm/
+xcuserdata/
+DerivedData/
+.spm-packages*/
+
+# Local signing credentials
+*.p12
+*.p8
+
+# Logs and profiling
 *.log
-
-# Read-only reference checkouts (mise run refs)
-/repos/
-
-# Provider POC artifacts
-experiments/provider-identity-resume/.generated/
-experiments/provider-identity-resume/runs/
 *.profraw
 
-# xcodebuild SPM clone dir (ATC_XCODE_SPM_DIR; cached in CI)
-.spm-packages*/
+# Read-only reference checkouts
+/repos/
+
+# Provider research artifacts
+experiments/provider-identity-resume/.generated/
+experiments/provider-identity-resume/runs/
