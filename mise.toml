@@ -37,3 +37,20 @@ depends = ["build", "lint", "vet", "test"]
 [tasks.clean]
 description = "Remove build artifacts"
 run = "rm -rf bin"
+
+[tasks.refs]
+description = "Fetch read-only reference source into repos/ (gitignored); delete a checkout and re-run to update"
+run = """
+#!/usr/bin/env bash
+set -euo pipefail
+clone() {
+  if [ -d "repos/$1" ]; then
+    echo "repos/$1 already present; delete it and re-run to update"
+  else
+    git clone --depth 1 "${@:2}" "repos/$1"
+  fi
+}
+clone t3code https://github.com/pingdotgg/t3code.git
+clone opencode https://github.com/sst/opencode.git
+clone zmx --branch 'v0.6.0' https://github.com/neurosnap/zmx.git
+"""
