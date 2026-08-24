@@ -77,8 +77,9 @@ func serverRun(ctx context.Context, stderr io.Writer) error {
 
 // versionString resolves the binary's version from embedded build info.
 // Released builds carry the module version; source builds fall back to the
-// VCS revision. `atc server status` will later compare client and server
-// values of this string to detect version skew.
+// VCS revision. The value is a build identity suitable for client/server
+// skew comparison, with one limit: builds without VCS metadata all report
+// "devel" and cannot be told apart.
 func versionString() string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
