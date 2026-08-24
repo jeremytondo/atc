@@ -20,5 +20,3 @@ Go rebuild.
 
 Existing GitHub releases are artifacts of the archived product and should not
 be treated as builds of the new implementation.
-
-Read [`AGENTS.md`](AGENTS.md) before making changes.

@@ -25,7 +25,7 @@ convenience.
 
 Long-term maintainability is a core priority. Prefer shared, plainly named
 logic over duplication, and change an existing design when that produces a
-simpler system. This is not a complex enterprise app: code should be easy to
+simpler system. Code should be easy to
 understand, work with, and test.
 
 ## Documentation
@@ -72,16 +72,6 @@ work to the Git remote.
 
 Run `gh` commands as standalone shell commands; do not combine them with
 other commands.
-
-## Verification
-
-The reset tree intentionally has no product-wide build or CI gate. Until the
-new foundation introduces one, validate documentation and repository structure
-directly. After tasks exist, run the smallest gate covering the change and the
-root check before publishing a pull request.
-
-Tests should wait on observable conditions, never fixed sleeps. A test that
-needs timing luck to pass is wrong.
 
 ## Project Tools
 
