@@ -51,6 +51,7 @@ clone() {
   fi
 }
 clone t3code https://github.com/pingdotgg/t3code.git
-clone opencode https://github.com/sst/opencode.git
+clone herdr https://github.com/herdrdev/herdr.git
+clone agent-client-protocol https://github.com/agentclientprotocol/agent-client-protocol.git
 clone zmx --branch 'v0.6.0' https://github.com/neurosnap/zmx.git
 """
