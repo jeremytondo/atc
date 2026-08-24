@@ -40,3 +40,6 @@ DerivedData/
 # Provider research artifacts
 experiments/provider-identity-resume/.generated/
 experiments/provider-identity-resume/runs/
+
+# Go build artifacts
+/bin/
