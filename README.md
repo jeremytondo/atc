@@ -9,12 +9,12 @@ rooted at the repository with one entrypoint, [`cmd/atc`](cmd/atc/). Run
 
 ## Building and testing
 
-Requires Go (version in [`go.mod`](go.mod)) and `make`.
+Tools and tasks are managed by [mise](https://mise.jdx.dev) via
+[`mise.toml`](mise.toml); `mise install` provisions the toolchain.
 
-- `make` — build a static `atc` binary into `bin/`
-- `make check` — lint, vet, and test
-- See the [`Makefile`](Makefile) for individual targets; CI runs the same
-  targets.
+- `mise run build` — build a static `atc` binary into `bin/`
+- `mise run check` — build, lint, vet, and test (CI runs the same task)
+- `mise tasks` — list all tasks
 
 ## Repository status
 
