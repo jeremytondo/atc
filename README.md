@@ -14,6 +14,8 @@ Tools and tasks are managed by [mise](https://mise.jdx.dev) via
 
 - `mise run build` — build a static `atc` binary into `bin/`
 - `mise run check` — build, lint, vet, and test (CI runs the same task)
+- `mise run refs` — fetch read-only T3 Code, Herdr, Agent Client Protocol,
+  and zmx v0.6.0 source into `repos/`
 - `mise tasks` — list all tasks
 
 ## Repository status
