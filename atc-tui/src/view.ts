@@ -1,5 +1,5 @@
 import * as path from "node:path"
-import type * as AppServer from "./appServer.ts"
+import * as AppServer from "./appServer.ts"
 
 // Pure presentation models for the OpenTUI manager. Each resource maps to one
 // selectable option, so navigation and scrolling stay owned by the shared list.
@@ -145,13 +145,11 @@ export const projectOptions = (
 ): ReadonlyArray<ProjectOption> => {
   if (snapshot === undefined) return []
   return snapshot.projects.map((project) => {
-    const owned = snapshot.threads.filter((thread) => thread.projectId === project.id)
-    const archived = owned.filter((thread) => thread.archivedAt !== undefined).length
-    const active = owned.length - archived
+    const counts = AppServer.threadCountsForProject(snapshot, project.id)
     return {
       projectId: project.id,
       name: project.name,
-      description: `${project.defaultWorkingDirectory}  ·  ${active} active  ·  ${archived} archived`,
+      description: `${project.defaultWorkingDirectory}  ·  ${counts.active} active  ·  ${counts.archived} archived`,
     }
   })
 }

@@ -14,7 +14,7 @@ import * as View from "./view.ts"
 // OpenTUI owns only the interactive manager surface. Callbacks publish typed
 // events into Effect queues, and the read-only directory browser receives its
 // API capability from the application coordinator. One renderer spans manager
-// actions and is destroyed only before zmx inherits the real TTY.
+// actions and is destroyed only before a terminal client inherits the real TTY.
 
 export type ManagerSection = "threads" | "archived" | "projects" | "settings"
 
@@ -31,7 +31,7 @@ export type ManagerResult =
   | { readonly type: "attach"; readonly threadId: string; readonly state: ManagerState }
   | {
       readonly type: "createThread"
-      readonly input: AppServer.CreateThreadInput
+      readonly input: AppServer.CreateTuiThreadInput
       readonly state: ManagerState
     }
   | {
@@ -59,6 +59,7 @@ export type ManagerAction = Exclude<ManagerResult, { readonly type: "quit" }>
 
 type ManagerAttachExit = {
   readonly type: "attach"
+  readonly threadId: string
   readonly terminal: AppServer.Terminal
   readonly state: ManagerState
 }
@@ -72,6 +73,7 @@ export type RunAction = (action: ManagerAction) => Effect.Effect<ManagerTransiti
 
 export interface ManagerOptions {
   readonly endpoint: URL
+  readonly endpointLabel?: string | undefined
   readonly listDirectory: DirectoryPrompt.ListDirectory
   readonly snapshotRef: Ref.Ref<AppServer.Snapshot | undefined>
   readonly reachabilityRef: Ref.Ref<View.Reachability>
@@ -362,7 +364,7 @@ const runMainScreen = (
           empty.content =
             section === "settings"
               ? [
-                  `App Server    ${options.endpoint.origin}`,
+                  `App Server    ${options.endpointLabel ?? options.endpoint.origin}`,
                   `Connection    ${View.connectionLabel(reachability)}`,
                   `Last synced   ${snapshot?.fetchedAt.toLocaleTimeString() ?? "Never"}`,
                 ].join("\n")
@@ -574,7 +576,7 @@ const textPrompt = (
   )
 
 type ThreadWizardResult =
-  | { readonly type: "create"; readonly input: AppServer.CreateThreadInput }
+  | { readonly type: "create"; readonly input: AppServer.CreateTuiThreadInput }
   | { readonly type: "cancel"; readonly status: string }
   | { readonly type: "quit" }
 
@@ -772,12 +774,15 @@ const runManager = (
         if (result.type === "deleteProject") {
           return Ref.get(options.snapshotRef).pipe(
             Effect.flatMap((snapshot): Effect.Effect<ManagerResult, unknown> => {
-              const project = snapshot?.projects.find((item) => item.id === result.projectId)
+              if (snapshot === undefined) {
+                return loop({ ...result.state, status: "That Project is no longer available." })
+              }
+              const project = snapshot.projects.find((item) => item.id === result.projectId)
               if (project === undefined) {
                 return loop({ ...result.state, status: "That Project is no longer available." })
               }
-              const threadCount =
-                snapshot?.threads.filter((thread) => thread.projectId === project.id).length ?? 0
+              const counts = AppServer.threadCountsForProject(snapshot, project.id)
+              const threadCount = counts.active + counts.archived
               const threadNoun = threadCount === 1 ? "Thread" : "Threads"
               return selectPrompt(
                 shell,

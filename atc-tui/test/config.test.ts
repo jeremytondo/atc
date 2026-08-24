@@ -4,6 +4,7 @@ import {
   DEFAULT_ENDPOINT,
   DEFAULT_ZMX_EXECUTABLE,
   defaultZmxDir,
+  makeRemoteSocketPath,
   resolve,
 } from "../src/config.ts"
 
@@ -28,8 +29,11 @@ describe("resolve", () => {
         },
       ),
     ).toMatchObject({
-      zmxExecutable: "/flag/zmx",
-      zmxDir: "/flag/state/terminals",
+      connection: {
+        type: "local",
+        zmxExecutable: "/flag/zmx",
+        zmxDir: "/flag/state/terminals",
+      },
     })
     expect(
       resolve(
@@ -40,12 +44,44 @@ describe("resolve", () => {
         },
       ),
     ).toMatchObject({
-      zmxExecutable: "/env/zmx",
-      zmxDir: "/env/state/atc/terminals",
+      connection: {
+        type: "local",
+        zmxExecutable: "/env/zmx",
+        zmxDir: "/env/state/atc/terminals",
+      },
     })
     expect(resolve({}, { HOME: "/home/test" })).toMatchObject({
-      zmxExecutable: DEFAULT_ZMX_EXECUTABLE,
-      zmxDir: "/home/test/.local/state/atc/terminals",
+      connection: {
+        type: "local",
+        zmxExecutable: DEFAULT_ZMX_EXECUTABLE,
+        zmxDir: "/home/test/.local/state/atc/terminals",
+      },
+    })
+  })
+
+  it("derives a private local endpoint and SSH settings for remote mode", () => {
+    expect(
+      resolve(
+        {
+          remote: "dev@workstation",
+          sshExecutable: "/usr/bin/ssh",
+          remoteAtcExecutable: "/opt/atc/bin/atc",
+          remotePort: 8331,
+        },
+        { ATC_ENDPOINT: "https://ignored.example", ATC_TOKEN: "ignored" },
+        "/tmp/atc-tui-test.sock",
+      ),
+    ).toStrictEqual({
+      endpoint: new URL("http://127.0.0.1:8331"),
+      connection: {
+        type: "remote",
+        host: "dev@workstation",
+        sshExecutable: "/usr/bin/ssh",
+        remoteAtcExecutable: "/opt/atc/bin/atc",
+        remotePort: 8331,
+        socketPath: "/tmp/atc-tui-test.sock",
+      },
+      environment: { ATC_ENDPOINT: "https://ignored.example", ATC_TOKEN: "ignored" },
     })
   })
 
@@ -67,6 +103,17 @@ describe("resolve", () => {
     expect(resolve({ endpoint: "https://server.example#events" }, {})).toBeInstanceOf(ConfigError)
     expect(resolve({ zmxExecutable: "./zmx" }, {})).toBeInstanceOf(ConfigError)
     expect(resolve({ zmxDir: "relative/zmx" }, {})).toBeInstanceOf(ConfigError)
+    expect(resolve({ remote: "-oProxyCommand=bad" }, {})).toBeInstanceOf(ConfigError)
+    expect(resolve({ remote: "two hosts" }, {})).toBeInstanceOf(ConfigError)
+    expect(resolve({ remote: "host", sshExecutable: "./ssh" }, {})).toBeInstanceOf(ConfigError)
+    expect(resolve({ remote: "host", remotePort: 0 }, {})).toBeInstanceOf(ConfigError)
+  })
+})
+
+describe("makeRemoteSocketPath", () => {
+  it("uses a short absolute per-process path suitable for macOS Unix sockets", () => {
+    expect(makeRemoteSocketPath(42, "abcdef12")).toBe("/tmp/atc-tui-42-abcdef12.sock")
+    expect(makeRemoteSocketPath(42, "abcdef12").length).toBeLessThan(100)
   })
 })
 

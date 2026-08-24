@@ -21,7 +21,7 @@
   "ignorePatterns": ["dist"],
   "overrides": [
     {
-      "files": ["src/zmx.ts"],
+      "files": ["src/terminalAttachment.ts"],
       "rules": { "atc/no-adhoc-spawn": "off" }
     },
     {

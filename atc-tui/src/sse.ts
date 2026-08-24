@@ -3,6 +3,7 @@ import type * as Scope from "effect/Scope"
 import type * as Contract from "../../app-server/src/api/contract.ts"
 import { ResourceChangedEvent } from "../../app-server/src/api/contract.ts"
 import type * as Config from "./config.ts"
+import * as Transport from "./transport.ts"
 
 // Reconnecting consumer for the public resource-change SSE stream. The
 // opening comment is surfaced before any refetch, heartbeats feed the silence
@@ -102,16 +103,21 @@ const connection = (
       )
       const url = new URL("/api/v1/events", config.endpoint)
       const response = yield* Effect.tryPromise({
-        try: () =>
-          fetch(url, {
+        try: (connectSignal) =>
+          Transport.fetch(config, url, {
             headers: headers(config),
-            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
+            signal: AbortSignal.any([controller.signal, connectSignal]),
           }),
         catch: (error) =>
           new SseError({
             message: error instanceof Error ? error.message : String(error),
           }),
-      })
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: "10 seconds",
+          orElse: () => Effect.fail(new SseError({ message: "event stream connection timed out" })),
+        }),
+      )
       if (!response.ok) {
         return yield* Effect.fail(
           new SseError({ message: `event stream returned HTTP ${response.status}` }),

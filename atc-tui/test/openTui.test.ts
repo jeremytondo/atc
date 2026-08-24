@@ -35,6 +35,7 @@ const snapshot: AppServer.Snapshot = {
       id: "t1",
       projectId: "p1",
       agentId: "codex",
+      kind: "tui",
       name: "First",
       workingDirectory: "/work/alpha",
       settings: defaults,
@@ -47,6 +48,7 @@ const snapshot: AppServer.Snapshot = {
       id: "t2",
       projectId: "p2",
       agentId: "codex",
+      kind: "tui",
       name: "Second",
       workingDirectory: "/work/beta",
       settings: defaults,
@@ -59,6 +61,7 @@ const snapshot: AppServer.Snapshot = {
       id: "t3",
       projectId: "p1",
       agentId: "codex",
+      kind: "tui",
       name: "Archived First",
       workingDirectory: "/work/alpha",
       settings: defaults,
@@ -69,6 +72,12 @@ const snapshot: AppServer.Snapshot = {
       updatedAt: "2026-08-21T00:00:00.000Z",
     },
   ],
+  // The Project-wide aggregate includes a Chat Thread that is intentionally
+  // absent from this TUI-only snapshot's Thread objects.
+  threadCountsByProject: new Map([
+    ["p1", { active: 2, archived: 1 }],
+    ["p2", { active: 1, archived: 0 }],
+  ]),
   agents: [
     { id: "claude-code", available: true, detectedVersion: "1.0.0", defaults },
     { id: "codex", available: true, detectedVersion: "1.0.0", defaults },
@@ -181,7 +190,7 @@ describe("OpenTUI manager", () => {
     }),
   )
 
-  it.effect("creates an unnamed Thread in the selected Project with the preferred agent", () =>
+  it.effect("creates an unnamed TUI Thread input without exposing a kind picker", () =>
     Effect.gen(function* () {
       const result = yield* runManager(snapshot, { selectedThreadId: "t2" }, ({ setup }) =>
         Effect.gen(function* () {
@@ -541,7 +550,7 @@ describe("OpenTUI manager", () => {
     }),
   )
 
-  it.effect("guards permanent Project deletion", () =>
+  it.effect("guards permanent Project deletion with the all-kind Thread count", () =>
     Effect.gen(function* () {
       const result = yield* runManager(
         snapshot,
@@ -554,7 +563,7 @@ describe("OpenTUI manager", () => {
             setup.mockInput.pressEnter()
             yield* waitForFrame(setup, "Project deletion cancelled.")
             setup.mockInput.pressKey("d")
-            yield* waitForFrame(setup, "Delete 2 Threads and their Terminals")
+            yield* waitForFrame(setup, "Delete 3 Threads and their Terminals")
             setup.mockInput.pressArrow("down")
             setup.mockInput.pressEnter()
           }),

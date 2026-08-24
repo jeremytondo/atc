@@ -24,10 +24,11 @@ const thread = (
   projectId: string,
   activityState: AppServer.Thread["activityState"] = "idle",
   name: string | undefined = id,
-): AppServer.Thread => ({
+): AppServer.TuiThread => ({
   id,
   projectId,
   agentId: "codex",
+  kind: "tui",
   ...(name === undefined ? {} : { name }),
   workingDirectory: "/work/" + projectId,
   settings: { model: "gpt-5", reasoning: "medium", mode: "chat", access: "auto" },
@@ -41,6 +42,10 @@ const thread = (
 const snapshot: AppServer.Snapshot = {
   projects: [project("p1", "Alpha"), project("p2", "Beta")],
   threads: [thread("t1", "p1"), thread("t2", "p2", "working")],
+  threadCountsByProject: new Map([
+    ["p1", { active: 1, archived: 0 }],
+    ["p2", { active: 1, archived: 0 }],
+  ]),
   agents: [
     {
       id: "codex",
@@ -73,6 +78,10 @@ describe("manager view model", () => {
         ...snapshot.threads,
         { ...thread("t3", "p1"), archivedAt: "2026-08-21T00:00:00.000Z" },
       ],
+      threadCountsByProject: new Map([
+        ["p1", { active: 1, archived: 1 }],
+        ["p2", { active: 1, archived: 0 }],
+      ]),
     }
 
     expect(threadOptions(archivedSnapshot)).toEqual([
@@ -129,6 +138,10 @@ describe("manager view model", () => {
         ...snapshot.threads,
         { ...thread("t3", "p1"), archivedAt: "2026-08-21T00:00:00.000Z" },
       ],
+      threadCountsByProject: new Map([
+        ["p1", { active: 1, archived: 1 }],
+        ["p2", { active: 1, archived: 0 }],
+      ]),
     }
 
     expect(normalizeProjectSelection(archivedSnapshot, "missing")).toBe("p1")
