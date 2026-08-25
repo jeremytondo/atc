@@ -6,13 +6,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"sync"
@@ -24,6 +24,7 @@ import (
 	"github.com/jeremytondo/atc/internal/config"
 	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/server"
+	"github.com/jeremytondo/atc/internal/service"
 	"github.com/jeremytondo/atc/internal/tailscale"
 )
 
@@ -31,6 +32,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
+		// An ExitError's report is already on stdout (e.g. `server status`
+		// exit codes); it only picks the process exit code.
+		var exit *service.ExitError
+		if errors.As(err, &exit) {
+			os.Exit(exit.Code)
+		}
 		fmt.Fprintln(os.Stderr, "atc:", err)
 		os.Exit(1)
 	}
@@ -51,6 +58,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 }
 
 func newRootCmd() *cobra.Command {
+	// Help lists commands in the order they are added, so the advanced
+	// foreground `run` can sit last under `atc server`.
+	cobra.EnableCommandSorting = false
 	root := &cobra.Command{
 		Use:   "atc",
 		Short: "The ATC terminal client and server",
@@ -88,19 +98,134 @@ func newServerCmd() *cobra.Command {
 		Short: "Run and administer the ATC server",
 		Args:  cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
-			return fmt.Errorf("usage: atc server <run|token>")
+			return fmt.Errorf("usage: atc server <start|stop|restart|status|logs|token|uninstall|run>")
 		},
 	}
-	cmd.AddCommand(newServerRunCmd(), newServerTokenCmd())
+	// Display order is deliberate (EnableCommandSorting is off): the
+	// supervised lifecycle first, the advanced foreground primitive last.
+	cmd.AddCommand(newServerStartCmd(), newServerStopCmd(), newServerRestartCmd(),
+		newServerStatusCmd(), newServerLogsCmd(), newServerTokenCmd(),
+		newServerUninstallCmd(), newServerRunCmd())
 	return cmd
+}
+
+// lifecycleOptions settles the configuration the supervised daemon itself
+// will read: config file and defaults only. The unit stamps no ATC_*
+// environment (supervisors start services with a minimal environment), so
+// honoring the invoking shell's ATC_PORT here would probe a port the daemon
+// never serves.
+func lifecycleOptions(cmd *cobra.Command) (service.Options, error) {
+	configPath, err := paths.ConfigFile()
+	if err != nil {
+		return service.Options{}, err
+	}
+	cfg, err := config.Load(configPath, func(string) (string, bool) { return "", false })
+	if err != nil {
+		return service.Options{}, err
+	}
+	return service.Options{
+		Config:  cfg,
+		Version: versionString(),
+		Stdout:  cmd.OutOrStdout(),
+		Stderr:  cmd.ErrOrStderr(),
+	}, nil
+}
+
+func lifecycleCmd(use, short, long string, action func(context.Context, service.Options) error) *cobra.Command {
+	return &cobra.Command{
+		Use:   use,
+		Short: short,
+		Long:  long,
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			opts, err := lifecycleOptions(cmd)
+			if err != nil {
+				return err
+			}
+			return action(cmd.Context(), opts)
+		},
+	}
+}
+
+func newServerStartCmd() *cobra.Command {
+	return lifecycleCmd("start",
+		"Register and start the supervised server",
+		`Register the server with the user supervisor (launchd on macOS, systemd user
+units on Linux) and start it. Registration happens on every start: the unit is
+re-rendered from the current binary, so upgrades only need `+"`atc server restart`"+`.
+A healthy running server is left untouched. The first start prints what was
+registered and how to undo it (atc server uninstall).`,
+		service.Start)
+}
+
+func newServerStopCmd() *cobra.Command {
+	return lifecycleCmd("stop",
+		"Stop the supervised server until next login",
+		`Stop the supervised server process. The unit stays installed, so the server
+returns at next login; use `+"`atc server uninstall`"+` to remove it entirely.`,
+		service.Stop)
+}
+
+func newServerRestartCmd() *cobra.Command {
+	return lifecycleCmd("restart",
+		"Restart the supervised server",
+		`Re-render the unit and restart the server process. This is the remedy for
+upgrades, config edits, and client/server version skew.`,
+		service.Restart)
+}
+
+func newServerStatusCmd() *cobra.Command {
+	return lifecycleCmd("status",
+		"Report server health, versions, and API URLs",
+		`Probe the server's health endpoint (the source of truth for liveness), report
+unit state, client and server versions, and ready-to-paste API URLs.
+Exit codes: 0 healthy, 1 installed but not responding, 2 not installed.`,
+		service.Status)
+}
+
+func newServerLogsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "logs",
+		Short: "Show the supervised server's logs",
+		Long: `Show the supervised server's captured output: the systemd journal on Linux,
+the launchd-captured log file on macOS.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			opts, err := lifecycleOptions(cmd)
+			if err != nil {
+				return err
+			}
+			follow, err := cmd.Flags().GetBool("follow")
+			if err != nil {
+				return err
+			}
+			lines, err := cmd.Flags().GetInt("lines")
+			if err != nil {
+				return err
+			}
+			return service.Logs(cmd.Context(), opts, follow, lines)
+		},
+	}
+	cmd.Flags().BoolP("follow", "f", false, "keep printing new log lines as they arrive")
+	cmd.Flags().IntP("lines", "n", 100, "number of recent lines to show")
+	return cmd
+}
+
+func newServerUninstallCmd() *cobra.Command {
+	return lifecycleCmd("uninstall",
+		"Stop the server and remove its registration",
+		`Stop the supervised server and remove its unit. Data is never deleted; the
+config, token, and (on macOS) log files that remain are listed.`,
+		service.Uninstall)
 }
 
 func newServerRunCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run",
-		Short: "Run the ATC server in the foreground",
-		Long: `Run the ATC server in the foreground until SIGINT or SIGTERM. This is the
-permanent foreground primitive a supervisor will exec (ATC-246).`,
+		Short: "Run the ATC server in the foreground (advanced)",
+		Long: `Run the ATC server in the foreground until SIGINT or SIGTERM, logging to
+stderr. This is the primitive the supervised unit execs; most users want
+` + "`atc server start`" + `.`,
 		Args: cobra.NoArgs,
 		RunE: serverRun,
 	}
@@ -198,21 +323,10 @@ func serverRun(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	// JSON lines at the state-dir log (adopted legacy convention; no
-	// rotation, deliberately), mirrored to stderr for the foreground case.
-	logPath, err := paths.LogFile()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
-		return err
-	}
-	logFile, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = logFile.Close() }()
-	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(logFile, stderr), nil))
+	// Supervisor-owned logging (ATC-260): logfmt on stderr only. The
+	// journal captures it on Linux; the LaunchAgent redirects it to the
+	// state-dir log file on macOS; foreground runs see it directly.
+	logger := slog.New(slog.NewTextHandler(stderr, nil))
 
 	// With auth required everywhere, a server that cannot verify tokens
 	// serves nothing but 401s — refuse to start instead (deliberate

@@ -2,9 +2,16 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jeremytondo/atc/internal/service"
 )
 
 func TestRunNoArgsPrintsUsage(t *testing.T) {
@@ -36,6 +43,12 @@ func TestRunRejectsBadInvocations(t *testing.T) {
 		{"server", "run", "extra"},
 		{"server", "token", "frobnicate"},
 		{"server", "token", "rotate", "extra"},
+		{"server", "start", "extra"},
+		{"server", "stop", "extra"},
+		{"server", "restart", "extra"},
+		{"server", "status", "extra"},
+		{"server", "logs", "extra"},
+		{"server", "uninstall", "extra"},
 	} {
 		var stdout, stderr strings.Builder
 		if err := run(context.Background(), args, &stdout, &stderr); err == nil {
@@ -87,6 +100,43 @@ func TestServerRunRejectsInvalidFlagValues(t *testing.T) {
 		if err := run(context.Background(), args, &stdout, &stderr); err == nil {
 			t.Errorf("%s: run(%q) = nil, want validation error", name, args)
 		}
+	}
+}
+
+// closedPort finds a port nothing is listening on, so the status probe
+// cannot accidentally reach a real server running on the developer machine.
+func closedPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
+func TestServerStatusNotInstalled(t *testing.T) {
+	isolateXDG(t)
+	configDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "atc")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := fmt.Sprintf("port = %d\n", closedPort(t))
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr strings.Builder
+	err := run(context.Background(), []string{"server", "status"}, &stdout, &stderr)
+	var exit *service.ExitError
+	if !errors.As(err, &exit) || exit.Code != 2 {
+		t.Fatalf("server status = %v, want ExitError with code 2", err)
+	}
+	if !strings.Contains(stdout.String(), "not installed") {
+		t.Errorf("stdout = %q, want a not-installed report", stdout.String())
 	}
 }
 
