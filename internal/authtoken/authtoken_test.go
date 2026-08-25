@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -77,6 +78,48 @@ func TestEnsureRefusesMalformedFile(t *testing.T) {
 	}
 	if store.Verify("Bearer hand-typed-secret") {
 		t.Error("Verify accepted contents Ensure refused")
+	}
+}
+
+// Concurrent Ensures (server boot racing `atc server token` on a fresh
+// install) must all hand out the one on-disk token; a loser observing the
+// winner's file mid-write would instead fail as malformed.
+func TestEnsureConcurrentCallersAgree(t *testing.T) {
+	store := newStore(t)
+	const callers = 16
+	tokens := make([]string, callers)
+	errs := make([]error, callers)
+	var wg sync.WaitGroup
+	for i := range callers {
+		wg.Go(func() {
+			tokens[i], errs[i] = store.Ensure()
+		})
+	}
+	wg.Wait()
+	for i := range callers {
+		if errs[i] != nil {
+			t.Fatalf("caller %d: Ensure() = %v", i, errs[i])
+		}
+		if tokens[i] != tokens[0] {
+			t.Fatalf("caller %d got %q, caller 0 got %q; all callers must agree", i, tokens[i], tokens[0])
+		}
+	}
+	if !store.Verify("Bearer " + tokens[0]) {
+		t.Error("agreed token does not verify against the file")
+	}
+	assertNoTempFiles(t, store)
+}
+
+func assertNoTempFiles(t *testing.T, store Store) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Dir(store.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".tmp") {
+			t.Errorf("temp file %s left behind", entry.Name())
+		}
 	}
 }
 

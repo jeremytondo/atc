@@ -178,6 +178,13 @@ func serverRun(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 	}
+	// Flags are the final precedence layer, and Load's validation ran
+	// before they applied — revalidate so a flag cannot smuggle in a value
+	// the lower layers would have refused (e.g. --bind= binding every
+	// interface).
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
 
 	// Exposure misconfiguration is a boot error; everything after this
 	// point self-heals instead of blocking the loopback server.

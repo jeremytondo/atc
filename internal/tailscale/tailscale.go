@@ -72,6 +72,11 @@ type Supervisor struct {
 	// https://<node>:Port.
 	Port   int
 	Logger *slog.Logger
+
+	// readyTimeout and waitDelay shrink the readiness and kill delays in
+	// tests; zero means the production values.
+	readyTimeout time.Duration
+	waitDelay    time.Duration
 }
 
 // Run supervises exposure until ctx is cancelled. It never returns an
@@ -160,13 +165,21 @@ func (s *Supervisor) preflight(ctx context.Context) (string, error) {
 // is cancelled. Exposure is logged as serving only once the child's
 // https banner is observed on either output stream.
 func (s *Supervisor) serve(ctx context.Context, dnsName string) error {
-	cmd := exec.CommandContext(ctx, s.Executable,
+	// Attempt-scoped context: cancelling it drives the same
+	// interrupt → WaitDelay → kill teardown as parent cancellation. The
+	// readiness-timeout path depends on that — see below.
+	serveCtx, cancelServe := context.WithCancel(ctx)
+	defer cancelServe()
+	cmd := exec.CommandContext(serveCtx, s.Executable,
 		"serve", fmt.Sprintf("--https=%d", s.Port), fmt.Sprintf("localhost:%d", s.Port))
 	cmd.Env = cliEnv()
 	// Graceful stop: interrupt on ctx cancel so serve tears its route
 	// down, SIGKILL only if it lingers past WaitDelay.
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 5 * time.Second
+	if s.waitDelay != 0 {
+		cmd.WaitDelay = s.waitDelay
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -180,6 +193,12 @@ func (s *Supervisor) serve(ctx context.Context, dnsName string) error {
 		return fmt.Errorf("cannot run tailscale serve: %w", err)
 	}
 
+	// Only this node's own URL is the Serve banner. Tailscale also prints
+	// https:// consent/login URLs when Serve or tailnet HTTPS still needs
+	// enabling; counting those as ready would log "tailscale serving"
+	// while exposure is still blocked on setup (fail-closed rule). The
+	// port is matched loosely because the banner omits :443.
+	banner := "https://" + dnsName
 	ready := make(chan struct{})
 	var readyOnce sync.Once
 	var errTail tail
@@ -192,7 +211,7 @@ func (s *Supervisor) serve(ctx context.Context, dnsName string) error {
 			if keep {
 				errTail.add(line)
 			}
-			if strings.Contains(line, "https://") {
+			if strings.Contains(line, banner) {
 				readyOnce.Do(func() { close(ready) })
 			}
 		}
@@ -208,7 +227,11 @@ func (s *Supervisor) serve(ctx context.Context, dnsName string) error {
 		exited <- cmd.Wait()
 	}()
 
-	bannerTimeout := time.NewTimer(serveReadyTimeout)
+	readyTimeout := serveReadyTimeout
+	if s.readyTimeout != 0 {
+		readyTimeout = s.readyTimeout
+	}
+	bannerTimeout := time.NewTimer(readyTimeout)
 	defer bannerTimeout.Stop()
 	select {
 	case <-ready:
@@ -218,9 +241,13 @@ func (s *Supervisor) serve(ctx context.Context, dnsName string) error {
 		}
 		return fmt.Errorf("tailscale serve exited: %s", exitReason(err, &errTail))
 	case <-bannerTimeout.C:
-		cmd.Cancel()
+		// Cancel the attempt context instead of calling cmd.Cancel
+		// directly: only context cancellation arms WaitDelay's kill, and
+		// without it a child that ignores the interrupt and keeps its
+		// pipes open would block <-exited forever.
+		cancelServe()
 		<-exited
-		return fmt.Errorf("tailscale serve did not become ready within %s", serveReadyTimeout)
+		return fmt.Errorf("tailscale serve did not become ready within %s", readyTimeout)
 	}
 
 	s.Logger.Info("tailscale serving", "url", fmt.Sprintf("https://%s:%d", dnsName, s.Port))

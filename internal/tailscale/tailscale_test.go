@@ -115,6 +115,40 @@ func TestServeReadyThenReapedOnCancel(t *testing.T) {
 	}
 }
 
+// Tailscale prints https:// consent/login URLs when Serve or tailnet HTTPS
+// still needs enabling; those must not be mistaken for the Serve banner.
+func TestServeIgnoresUnrelatedHTTPSURLs(t *testing.T) {
+	var logs lockedBuffer
+	s := fake(t, `echo "To approve, visit: https://login.tailscale.com/f/serve?node=x"; exec sleep 30`, &logs)
+	s.readyTimeout = 200 * time.Millisecond
+	err := s.serve(context.Background(), "host.tailnet.ts.net")
+	if err == nil || !strings.Contains(err.Error(), "did not become ready") {
+		t.Errorf("err = %v, want readiness timeout", err)
+	}
+	if strings.Contains(logs.String(), "tailscale serving") {
+		t.Error("consent URL was logged as serving")
+	}
+}
+
+// A child that ignores the interrupt and keeps its pipes open must still be
+// killed after the readiness timeout, or the retry loop never resumes.
+func TestServeTimeoutKillsHungChild(t *testing.T) {
+	s := fake(t, `trap '' INT TERM
+while :; do sleep 0.05; done`, io.Discard)
+	s.readyTimeout = 200 * time.Millisecond
+	s.waitDelay = 200 * time.Millisecond
+	done := make(chan error, 1)
+	go func() { done <- s.serve(context.Background(), "host.tailnet.ts.net") }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "did not become ready") {
+			t.Errorf("err = %v, want readiness timeout", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("hung serve child was never killed after the readiness timeout")
+	}
+}
+
 func TestServeFailureCarriesStderr(t *testing.T) {
 	s := fake(t, `echo "serve not permitted" >&2; exit 1`, io.Discard)
 	err := s.serve(context.Background(), "host.tailnet.ts.net")

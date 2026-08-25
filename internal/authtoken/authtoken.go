@@ -59,69 +59,15 @@ func (s Store) read() (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-// Ensure returns the persisted token, generating and persisting one if
-// absent. Safe against a concurrent Ensure (server boot racing `atc server
-// token` on a fresh install): exclusive create, and the loser adopts the
-// winner's token — otherwise each caller could mint and hand out a
-// different credential.
-func (s Store) Ensure() (string, error) {
-	existing, err := s.read()
-	if err != nil {
-		return "", err
-	}
-	if existing != "" {
-		if !format.MatchString(existing) {
-			return "", s.malformed()
-		}
-		// Re-assert 0600: a copy or restore may have widened the mode, and
-		// a world-readable bearer credential defeats the point of one.
-		if err := os.Chmod(s.Path, 0o600); err != nil {
-			return "", err
-		}
-		return existing, nil
-	}
+// writeTemp fully writes token to a fresh 0600 temp file beside Path and
+// returns the temp path. Complete-before-visible is the invariant both
+// issuance paths build on: the token only ever reaches Path by an atomic
+// install of this finished file, so no reader — and no crash — can observe
+// a partial credential at the final path.
+func (s Store) writeTemp(token string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
 		return "", err
 	}
-	token := generate()
-	f, err := os.OpenFile(s.Path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, fs.ErrExist) {
-		// A concurrent Ensure won the create. Adopt its token; when the
-		// winner's contents cannot be read back as a valid token, fail —
-		// returning our own value here would hand out a credential that is
-		// not on disk and will never verify.
-		winner, err := s.read()
-		if err != nil {
-			return "", err
-		}
-		if !format.MatchString(winner) {
-			return "", s.malformed()
-		}
-		return winner, nil
-	}
-	if err != nil {
-		return "", err
-	}
-	if _, err := f.WriteString(token + "\n"); err != nil {
-		f.Close()
-		return "", err
-	}
-	if err := f.Close(); err != nil {
-		return "", err
-	}
-	return token, nil
-}
-
-// Rotate unconditionally reissues the token; the old one stops working at
-// once. Atomic replace: a fresh 0600 temp file renamed over the target, so
-// a concurrent Verify never observes a truncated or half-written token and
-// the mode is honored unconditionally (it applies at creation of the temp,
-// which rename preserves).
-func (s Store) Rotate() (string, error) {
-	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
-		return "", err
-	}
-	token := generate()
 	f, err := os.CreateTemp(filepath.Dir(s.Path), filepath.Base(s.Path)+".*.tmp")
 	if err != nil {
 		return "", err
@@ -139,6 +85,68 @@ func (s Store) Rotate() (string, error) {
 	}
 	if err := f.Close(); err != nil {
 		os.Remove(temp)
+		return "", err
+	}
+	return temp, nil
+}
+
+// Ensure returns the persisted token, generating and persisting one if
+// absent. Safe against a concurrent Ensure (server boot racing `atc server
+// token` on a fresh install): the candidate is fully written to a temp file
+// and installed by hard link — atomic and refusing to replace — so creator
+// election stays exclusive without ever exposing a partial file at Path,
+// and the loser adopts the winner's token — otherwise each caller could
+// mint and hand out a different credential.
+func (s Store) Ensure() (string, error) {
+	existing, err := s.read()
+	if err != nil {
+		return "", err
+	}
+	if existing != "" {
+		if !format.MatchString(existing) {
+			return "", s.malformed()
+		}
+		// Re-assert 0600: a copy or restore may have widened the mode, and
+		// a world-readable bearer credential defeats the point of one.
+		if err := os.Chmod(s.Path, 0o600); err != nil {
+			return "", err
+		}
+		return existing, nil
+	}
+	token := generate()
+	temp, err := s.writeTemp(token)
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(temp)
+	if err := os.Link(temp, s.Path); errors.Is(err, fs.ErrExist) {
+		// A concurrent Ensure won the install. Adopt its token — it is
+		// complete by the invariant above; when it still cannot be read
+		// back as valid, fail: returning our own value here would hand out
+		// a credential that is not on disk and will never verify.
+		winner, err := s.read()
+		if err != nil {
+			return "", err
+		}
+		if !format.MatchString(winner) {
+			return "", s.malformed()
+		}
+		return winner, nil
+	} else if err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+// Rotate unconditionally reissues the token; the old one stops working at
+// once. Atomic replace: the finished temp file renamed over the target, so
+// a concurrent Verify never observes a truncated or half-written token and
+// the mode is honored unconditionally (it applies at creation of the temp,
+// which rename preserves).
+func (s Store) Rotate() (string, error) {
+	token := generate()
+	temp, err := s.writeTemp(token)
+	if err != nil {
 		return "", err
 	}
 	if err := os.Rename(temp, s.Path); err != nil {

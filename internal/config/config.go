@@ -90,14 +90,25 @@ func Load(path string, lookupEnv func(string) (string, bool)) (Config, error) {
 		cfg.TailscaleExecutable = value
 	}
 
-	if cfg.Port < 0 || cfg.Port > 65535 {
-		return Config{}, fmt.Errorf("port %d is outside 0-65535", cfg.Port)
-	}
-	if cfg.Bind == "" {
-		return Config{}, errors.New("bind must not be empty")
-	}
-	if cfg.TailscaleExecutable == "" {
-		return Config{}, errors.New("tailscale_executable must not be empty")
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// Validate checks value constraints. Load runs it, but flags apply above
+// this package (at the command seam), so the caller must run it again after
+// the final precedence layer — otherwise a flag could smuggle in a value
+// every lower layer would have refused.
+func (c Config) Validate() error {
+	if c.Port < 0 || c.Port > 65535 {
+		return fmt.Errorf("port %d is outside 0-65535", c.Port)
+	}
+	if c.Bind == "" {
+		return errors.New("bind must not be empty")
+	}
+	if c.TailscaleExecutable == "" {
+		return errors.New("tailscale_executable must not be empty")
+	}
+	return nil
 }

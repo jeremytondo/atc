@@ -74,6 +74,22 @@ func TestServerRunStopsOnContextCancel(t *testing.T) {
 	}
 }
 
+// Flags apply after config.Load's validation, so validation must run again
+// on the settled values — an empty --bind would otherwise fall through to
+// net.Listen and bind every interface.
+func TestServerRunRejectsInvalidFlagValues(t *testing.T) {
+	isolateXDG(t)
+	for name, args := range map[string][]string{
+		"empty bind":        {"server", "run", "--bind=", "--port", "0"},
+		"port out of range": {"server", "run", "--port", "70000"},
+	} {
+		var stdout, stderr strings.Builder
+		if err := run(context.Background(), args, &stdout, &stderr); err == nil {
+			t.Errorf("%s: run(%q) = nil, want validation error", name, args)
+		}
+	}
+}
+
 func TestServerTokenPrintsAndRotates(t *testing.T) {
 	isolateXDG(t)
 	tokenOut := func(args ...string) string {
