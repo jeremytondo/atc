@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func noEnv(string) (string, bool) { return "", false }
@@ -54,8 +56,9 @@ func TestEnvBeatsFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Port != 9001 || cfg.Bind != "::1" {
-		t.Errorf("cfg = %+v, want env values 9001/::1", cfg)
+	want := Config{Port: 9001, Bind: "::1", TailscaleExecutable: "tailscale"}
+	if diff := cmp.Diff(want, cfg); diff != "" {
+		t.Errorf("Load mismatch (-want +got):\n%s", diff)
 	}
 }
 

@@ -74,17 +74,17 @@ func (s Store) writeTemp(token string) (string, error) {
 	}
 	temp := f.Name()
 	if err := f.Chmod(0o600); err != nil {
-		f.Close()
-		os.Remove(temp)
+		_ = f.Close()
+		_ = os.Remove(temp)
 		return "", err
 	}
 	if _, err := f.WriteString(token + "\n"); err != nil {
-		f.Close()
-		os.Remove(temp)
+		_ = f.Close()
+		_ = os.Remove(temp)
 		return "", err
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(temp)
+		_ = os.Remove(temp)
 		return "", err
 	}
 	return temp, nil
@@ -118,7 +118,7 @@ func (s Store) Ensure() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer os.Remove(temp)
+	defer func() { _ = os.Remove(temp) }()
 	if err := os.Link(temp, s.Path); errors.Is(err, fs.ErrExist) {
 		// A concurrent Ensure won the install. Adopt its token — it is
 		// complete by the invariant above; when it still cannot be read
@@ -150,7 +150,7 @@ func (s Store) Rotate() (string, error) {
 		return "", err
 	}
 	if err := os.Rename(temp, s.Path); err != nil {
-		os.Remove(temp)
+		_ = os.Remove(temp)
 		return "", err
 	}
 	return token, nil
