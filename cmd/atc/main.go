@@ -15,12 +15,14 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
+	"sync"
 	"syscall"
 
 	"github.com/jeremytondo/atc/internal/authtoken"
 	"github.com/jeremytondo/atc/internal/config"
 	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/server"
+	"github.com/jeremytondo/atc/internal/tailscale"
 )
 
 func main() {
@@ -109,11 +111,12 @@ func serverRun(ctx context.Context, stderr io.Writer, args []string) error {
 	flags.SetOutput(stderr)
 	flagPort := flags.Int("port", 0, "listen port (overrides ATC_PORT and config.toml)")
 	flagBind := flags.String("bind", "", "bind address (overrides ATC_BIND and config.toml)")
+	flagTailscale := flags.Bool("tailscale", false, "expose the server on the tailnet via a supervised `tailscale serve` (overrides ATC_TAILSCALE and config.toml)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return fmt.Errorf("usage: atc server run [--port N] [--bind ADDR]")
+		return fmt.Errorf("usage: atc server run [--port N] [--bind ADDR] [--tailscale]")
 	}
 
 	configPath, err := paths.ConfigFile()
@@ -130,8 +133,20 @@ func serverRun(ctx context.Context, stderr io.Writer, args []string) error {
 			cfg.Port = *flagPort
 		case "bind":
 			cfg.Bind = *flagBind
+		case "tailscale":
+			cfg.Tailscale = *flagTailscale
 		}
 	})
+
+	// Exposure misconfiguration is a boot error; everything after this
+	// point self-heals instead of blocking the loopback server.
+	var tailscaleExecutable string
+	if cfg.Tailscale {
+		var err error
+		if tailscaleExecutable, err = tailscale.ResolveExecutable(cfg.TailscaleExecutable); err != nil {
+			return err
+		}
+	}
 
 	// JSON lines at the state-dir log (adopted legacy convention; no
 	// rotation, deliberately), mirrored to stderr for the foreground case.
@@ -168,7 +183,28 @@ func serverRun(ctx context.Context, stderr io.Writer, args []string) error {
 		Verify:  store.Verify,
 		Logger:  logger,
 	})
-	return server.ListenAndServe(ctx, net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port)), handler, logger)
+
+	listener, err := net.Listen("tcp", net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port)))
+	if err != nil {
+		return err
+	}
+
+	// The exposure supervisor fronts the actual bound port (they are one
+	// port by contract) and is waited on so shutdown reaps the serve
+	// child before the process exits.
+	var exposure sync.WaitGroup
+	if cfg.Tailscale {
+		supervisor := &tailscale.Supervisor{
+			Executable: tailscaleExecutable,
+			Port:       listener.Addr().(*net.TCPAddr).Port,
+			Logger:     logger,
+		}
+		exposure.Go(func() { supervisor.Run(ctx) })
+	}
+
+	serveErr := server.Serve(ctx, listener, handler, logger)
+	exposure.Wait()
+	return serveErr
 }
 
 // versionString resolves the binary's version from embedded build info.
@@ -212,15 +248,16 @@ Usage:
 
 Commands:
 
-  server run [--port N] [--bind ADDR]
-               run the ATC server in the foreground (stop with SIGINT or SIGTERM)
+  server run [--port N] [--bind ADDR] [--tailscale]
+               run the ATC server in the foreground (stop with SIGINT or SIGTERM);
+               --tailscale exposes it on the tailnet for the server's lifetime
   server token [rotate]
                print the API bearer token, creating it if absent; rotate reissues it
   version      print the atc version
   help         print this help
 
-Configuration precedence: flags > ATC_PORT/ATC_BIND > ~/.config/atc/config.toml > defaults.
-Remote access: front the loopback listener with
-  tailscale serve --https=7331 localhost:7331
+Configuration precedence: flags > ATC_<KEY> environment > ~/.config/atc/config.toml > defaults.
+Keys: port, bind, tailscale, tailscale_executable. Set tailscale = true to
+expose on the tailnet without the flag.
 `)
 }

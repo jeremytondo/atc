@@ -28,12 +28,18 @@ type Config struct {
 	// the loopback listener and breaks local clients. Documented, not
 	// policed — any address is accepted (legacy-observed semantics).
 	Bind string `toml:"bind"`
+	// Tailscale supervises a loopback-fronting `tailscale serve` exposure
+	// for the server's lifetime.
+	Tailscale bool `toml:"tailscale"`
+	// TailscaleExecutable names the tailscale CLI; a custom value is exact
+	// user intent and disables the macOS app-bundle fallback.
+	TailscaleExecutable string `toml:"tailscale_executable"`
 }
 
 // Default is the configuration with no file, environment, or flags present.
 // Port 7331 is the stable contract port (ATC-245).
 func Default() Config {
-	return Config{Port: 7331, Bind: "127.0.0.1"}
+	return Config{Port: 7331, Bind: "127.0.0.1", TailscaleExecutable: "tailscale"}
 }
 
 // Load resolves the file and environment levels: defaults, overlaid with
@@ -73,12 +79,25 @@ func Load(path string, lookupEnv func(string) (string, bool)) (Config, error) {
 	if value, ok := lookupEnv("ATC_BIND"); ok {
 		cfg.Bind = value
 	}
+	if value, ok := lookupEnv("ATC_TAILSCALE"); ok {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("ATC_TAILSCALE=%q is not a boolean", value)
+		}
+		cfg.Tailscale = enabled
+	}
+	if value, ok := lookupEnv("ATC_TAILSCALE_EXECUTABLE"); ok {
+		cfg.TailscaleExecutable = value
+	}
 
 	if cfg.Port < 0 || cfg.Port > 65535 {
 		return Config{}, fmt.Errorf("port %d is outside 0-65535", cfg.Port)
 	}
 	if cfg.Bind == "" {
 		return Config{}, errors.New("bind must not be empty")
+	}
+	if cfg.TailscaleExecutable == "" {
+		return Config{}, errors.New("tailscale_executable must not be empty")
 	}
 	return cfg, nil
 }

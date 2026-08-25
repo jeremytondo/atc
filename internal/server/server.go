@@ -110,15 +110,12 @@ func withAuth(opts Options, next http.Handler) http.Handler {
 	})
 }
 
-// ListenAndServe serves handler on addr until ctx is cancelled, then shuts
-// down gracefully with a bounded drain. It logs "server started" once the
-// listener is bound — the line `atc server run` tests and supervisors key
-// on.
-func ListenAndServe(ctx context.Context, addr string, handler http.Handler, logger *slog.Logger) error {
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		return err
-	}
+// Serve serves handler on an already-bound listener until ctx is
+// cancelled, then shuts down gracefully with a bounded drain. It logs
+// "server started" immediately — the line `atc server run` tests and
+// supervisors key on. The listener is bound by the caller so the actual
+// port is known before serving (tailnet exposure fronts the same port).
+func Serve(ctx context.Context, listener net.Listener, handler http.Handler, logger *slog.Logger) error {
 	logger.Info("server started", "addr", listener.Addr().String())
 
 	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
