@@ -66,17 +66,27 @@ func ResolveExecutable(configured string) (string, error) {
 // Supervisor exposes the loopback listener over the tailnet. Same port,
 // same API, the bearer token doing the auth work.
 type Supervisor struct {
-	// Executable is the resolved tailscale CLI path (ResolveExecutable).
-	Executable string
-	// Port is the bound listener port; serve fronts localhost:Port at
-	// https://<node>:Port.
-	Port   int
-	Logger *slog.Logger
+	// executable is the resolved tailscale CLI path (ResolveExecutable).
+	executable string
+	// port is the bound listener port; serve fronts localhost:port at
+	// https://<node>:port.
+	port   int
+	logger *slog.Logger
 
 	// readyTimeout and waitDelay shrink the readiness and kill delays in
 	// tests; zero means the production values.
 	readyTimeout time.Duration
 	waitDelay    time.Duration
+}
+
+// NewSupervisor builds a Supervisor for the resolved tailscale CLI path
+// (ResolveExecutable) fronting the bound listener port. A nil logger
+// discards supervision events.
+func NewSupervisor(executable string, port int, logger *slog.Logger) *Supervisor {
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+	return &Supervisor{executable: executable, port: port, logger: logger}
 }
 
 // Run supervises exposure until ctx is cancelled. It never returns an
@@ -91,7 +101,7 @@ func (s *Supervisor) Run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		s.Logger.Warn("tailscale exposure failed", "error", err)
+		s.logger.Warn("tailscale exposure failed", "error", err)
 		if time.Since(started) > healthyRunReset {
 			delay = retryBaseDelay
 		}
@@ -120,7 +130,7 @@ func (s *Supervisor) attempt(ctx context.Context) error {
 // attempted against a running backend, so the retry loop reports "logged
 // out" instead of an opaque serve failure.
 func (s *Supervisor) preflight(ctx context.Context) (string, error) {
-	return DNSName(ctx, s.Executable)
+	return DNSName(ctx, s.executable)
 }
 
 // DNSName asks tailscaled for its state and this node's DNS name, reported
@@ -178,8 +188,8 @@ func (s *Supervisor) serve(ctx context.Context, dnsName string) error {
 	// readiness-timeout path depends on that — see below.
 	serveCtx, cancelServe := context.WithCancel(ctx)
 	defer cancelServe()
-	cmd := exec.CommandContext(serveCtx, s.Executable,
-		"serve", fmt.Sprintf("--https=%d", s.Port), fmt.Sprintf("localhost:%d", s.Port))
+	cmd := exec.CommandContext(serveCtx, s.executable,
+		"serve", fmt.Sprintf("--https=%d", s.port), fmt.Sprintf("localhost:%d", s.port))
 	cmd.Env = cliEnv()
 	// Graceful stop: interrupt on ctx cancel so serve tears its route
 	// down, SIGKILL only if it lingers past WaitDelay.
@@ -258,7 +268,7 @@ func (s *Supervisor) serve(ctx context.Context, dnsName string) error {
 		return fmt.Errorf("tailscale serve did not become ready within %s", readyTimeout)
 	}
 
-	s.Logger.Info("tailscale serving", "url", fmt.Sprintf("https://%s:%d", dnsName, s.Port))
+	s.logger.Info("tailscale serving", "url", fmt.Sprintf("https://%s:%d", dnsName, s.port))
 	err = <-exited
 	if ctx.Err() != nil {
 		return ctx.Err()

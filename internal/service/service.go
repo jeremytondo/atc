@@ -1,5 +1,5 @@
 // Package service manages the supervised ATC server (ATC-260, the ATC-246
-// lifecycle family on the ATC-259 chassis): a user-scope launchd
+// lifecycle family on the ATC-259 server): a user-scope launchd
 // LaunchAgent on macOS, a systemd user unit on Linux. Supervisor-only —
 // there is no pidfile family. The unit execs `atc server run`, keeping the
 // daemon structurally unable to call back into the supervisor.
