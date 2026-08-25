@@ -76,8 +76,8 @@ func newVersionCmd() *cobra.Command {
 		Short: "Print the atc version",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			fmt.Fprintln(cmd.OutOrStdout(), versionString())
-			return nil
+			_, err := fmt.Fprintln(cmd.OutOrStdout(), versionString())
+			return err
 		},
 	}
 }
@@ -143,8 +143,10 @@ func printToken(stdout io.Writer, issue func(*authtoken.Store) (string, error)) 
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(stdout, token)
-	return nil
+	// A failed or truncated write matters here: the printed token is the
+	// credential the user pastes into a remote client.
+	_, err = fmt.Fprintln(stdout, token)
+	return err
 }
 
 // serverRun runs the server in the foreground until the command context is
@@ -209,7 +211,7 @@ func serverRun(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	defer logFile.Close()
+	defer func() { _ = logFile.Close() }()
 	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(logFile, stderr), nil))
 
 	// With auth required everywhere, a server that cannot verify tokens

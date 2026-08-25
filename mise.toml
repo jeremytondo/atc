@@ -1,5 +1,6 @@
 [tools]
 go = "1.26.7"
+golangci-lint = "2.13.1"
 
 [tasks.build]
 description = "Build a static atc binary into bin/"
@@ -9,30 +10,13 @@ run = "CGO_ENABLED=0 go build -o bin/atc ./cmd/atc"
 description = "Run tests with the race detector"
 run = "go test -race ./..."
 
-# gofmt has no module awareness, so scope it to the root module's packages;
-# this keeps experiments/ and repos/ out without a hand-maintained list.
 [tasks.lint]
-description = "Check gofmt on root-module packages"
-shell = "bash -c"
-run = '''
-{% raw %}
-set -euo pipefail
-unformatted="$(go list -f '{{.Dir}}' ./... | while IFS= read -r dir; do gofmt -l "$dir" || exit 1; done)"
-if [ -n "$unformatted" ]; then
-  echo "gofmt required on:"
-  echo "$unformatted"
-  exit 1
-fi
-{% endraw %}
-'''
-
-[tasks.vet]
-description = "Run go vet"
-run = "go vet ./..."
+description = "Run golangci-lint (includes gofmt and go vet)"
+run = "golangci-lint run ./..."
 
 [tasks.check]
-description = "Build, lint, vet, and test"
-depends = ["build", "lint", "vet", "test"]
+description = "Build, lint, and test"
+depends = ["build", "lint", "test"]
 
 [tasks.clean]
 description = "Remove build artifacts"

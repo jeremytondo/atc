@@ -1,0 +1,23 @@
+# Enumerated linter set (ATC-263): never inherit defaults, so a golangci-lint
+# upgrade cannot silently move the bar. Each addition earns its way in.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - errorlint
+    - govet
+    - ineffassign
+    - nolintlint
+    - staticcheck
+    - unused
+  settings:
+    nolintlint:
+      # Any //nolint must name the linter it silences and carry a reason.
+      require-explanation: true
+      require-specific: true
+
+formatters:
+  enable:
+    - gofmt

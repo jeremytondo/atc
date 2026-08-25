@@ -50,6 +50,20 @@ reading the implementation. READMEs cover how to run a thing, where its data
 lives, and which task to use. They should point to generated references and
 `--help` rather than enumerate details that can drift.
 
+## Testing
+
+- Use the stdlib `testing` package, with go-cmp for structural diffs
+  (`cmp.Diff` against a full want value; see `internal/config` for the
+  pattern).
+- No assertion or mocking frameworks. Test doubles are hand-written fakes
+  behind the interfaces the code already defines.
+- The race detector stays on (`mise test` runs it).
+- Use table tests where they clarify a set of cases, not as ritual.
+- Tests are serial by default. Add `t.Parallel()` deliberately, when a
+  package's tests become slow enough to pay for it — cross-package
+  parallelism from `go test ./...` already carries the wall-clock win for a
+  tree of many small packages.
+
 ## Experiments and Reference Source
 
 Everything under `experiments/` is historical research material, not
