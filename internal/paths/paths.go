@@ -23,7 +23,10 @@ func AuthTokenFile() (string, error) {
 	return resolve("XDG_DATA_HOME", []string{".local", "share"}, "auth-token")
 }
 
-// LogFile is the server's JSON-lines log.
+// LogFile is where the macOS LaunchAgent captures the supervised server's
+// output (launchd has no journal, so the unit redirects both streams here).
+// The server itself logs only to stderr (ATC-260); on Linux the systemd
+// journal owns capture and this file is unused.
 func LogFile() (string, error) {
 	return resolve("XDG_STATE_HOME", []string{".local", "state"}, "atc.log")
 }

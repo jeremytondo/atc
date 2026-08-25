@@ -116,13 +116,21 @@ func (s *Supervisor) attempt(ctx context.Context) error {
 	return s.serve(ctx, dnsName)
 }
 
-// preflight asks tailscaled for its state and this node's DNS name; serve
-// is only attempted against a running backend, so the retry loop reports
-// "logged out" instead of an opaque serve failure.
+// preflight asks tailscaled for this node's DNS name; serve is only
+// attempted against a running backend, so the retry loop reports "logged
+// out" instead of an opaque serve failure.
 func (s *Supervisor) preflight(ctx context.Context) (string, error) {
+	return DNSName(ctx, s.Executable)
+}
+
+// DNSName asks tailscaled for its state and this node's DNS name, reported
+// only for a running backend so callers see "logged out" instead of an
+// opaque failure. The serve supervisor preflights with it, and `atc server
+// status` uses it to print the paste-ready tailnet URL.
+func DNSName(ctx context.Context, executable string) (string, error) {
 	statusCtx, cancel := context.WithTimeout(ctx, statusTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(statusCtx, s.Executable, "status", "--json")
+	cmd := exec.CommandContext(statusCtx, executable, "status", "--json")
 	cmd.Env = cliEnv()
 	out, err := cmd.Output()
 	if statusCtx.Err() != nil && ctx.Err() == nil {
