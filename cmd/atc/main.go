@@ -131,14 +131,26 @@ func lifecycleOptions(cmd *cobra.Command) (service.Options, error) {
 	}, nil
 }
 
-func lifecycleCmd(use, short, long string, action func(context.Context, service.Options) error) *cobra.Command {
+// recoveryOptions builds Options without settling configuration. Stop,
+// logs, and uninstall never consume it, and they must keep working when
+// config.toml is broken — the same condition that can keep the daemon from
+// booting must not block diagnostics, stopping, or the promised total undo.
+func recoveryOptions(cmd *cobra.Command) (service.Options, error) {
+	return service.Options{
+		Version: versionString(),
+		Stdout:  cmd.OutOrStdout(),
+		Stderr:  cmd.ErrOrStderr(),
+	}, nil
+}
+
+func lifecycleCmd(use, short, long string, options func(*cobra.Command) (service.Options, error), action func(context.Context, service.Options) error) *cobra.Command {
 	return &cobra.Command{
 		Use:   use,
 		Short: short,
 		Long:  long,
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			opts, err := lifecycleOptions(cmd)
+			opts, err := options(cmd)
 			if err != nil {
 				return err
 			}
@@ -153,9 +165,10 @@ func newServerStartCmd() *cobra.Command {
 		`Register the server with the user supervisor (launchd on macOS, systemd user
 units on Linux) and start it. Registration happens on every start: the unit is
 re-rendered from the current binary, so upgrades only need `+"`atc server restart`"+`.
-A healthy running server is left untouched. The first start prints what was
-registered and how to undo it (atc server uninstall).`,
-		service.Start)
+A healthy server running the current unit is left untouched; a changed unit
+bounces it. The first start prints what was registered and how to undo it
+(atc server uninstall).`,
+		lifecycleOptions, service.Start)
 }
 
 func newServerStopCmd() *cobra.Command {
@@ -163,7 +176,7 @@ func newServerStopCmd() *cobra.Command {
 		"Stop the supervised server until next login",
 		`Stop the supervised server process. The unit stays installed, so the server
 returns at next login; use `+"`atc server uninstall`"+` to remove it entirely.`,
-		service.Stop)
+		recoveryOptions, service.Stop)
 }
 
 func newServerRestartCmd() *cobra.Command {
@@ -171,7 +184,7 @@ func newServerRestartCmd() *cobra.Command {
 		"Restart the supervised server",
 		`Re-render the unit and restart the server process. This is the remedy for
 upgrades, config edits, and client/server version skew.`,
-		service.Restart)
+		lifecycleOptions, service.Restart)
 }
 
 func newServerStatusCmd() *cobra.Command {
@@ -180,7 +193,7 @@ func newServerStatusCmd() *cobra.Command {
 		`Probe the server's health endpoint (the source of truth for liveness), report
 unit state, client and server versions, and ready-to-paste API URLs.
 Exit codes: 0 healthy, 1 installed but not responding, 2 not installed.`,
-		service.Status)
+		lifecycleOptions, service.Status)
 }
 
 func newServerLogsCmd() *cobra.Command {
@@ -191,7 +204,7 @@ func newServerLogsCmd() *cobra.Command {
 the launchd-captured log file on macOS.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			opts, err := lifecycleOptions(cmd)
+			opts, err := recoveryOptions(cmd)
 			if err != nil {
 				return err
 			}
@@ -216,7 +229,7 @@ func newServerUninstallCmd() *cobra.Command {
 		"Stop the server and remove its registration",
 		`Stop the supervised server and remove its unit. Data is never deleted; the
 config, token, and (on macOS) log files that remain are listed.`,
-		service.Uninstall)
+		recoveryOptions, service.Uninstall)
 }
 
 func newServerRunCmd() *cobra.Command {

@@ -140,6 +140,46 @@ func TestServerStatusNotInstalled(t *testing.T) {
 	}
 }
 
+// A config.toml the server refuses to load must not block the recovery
+// commands: stop, logs, and uninstall never consume configuration, and they
+// are the diagnostics and the undo for exactly that broken state.
+func TestRecoveryCommandsSurviveBrokenConfig(t *testing.T) {
+	isolateXDG(t)
+	configDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "atc")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte("bogus_key = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// status settles config and must surface the parse error.
+	var stdout, stderr strings.Builder
+	if err := run(context.Background(), []string{"server", "status"}, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "bogus_key") {
+		t.Errorf("server status = %v, want the config parse error", err)
+	}
+
+	// stop and uninstall proceed to their not-installed reports.
+	for _, args := range [][]string{{"server", "stop"}, {"server", "uninstall"}} {
+		var stdout, stderr strings.Builder
+		if err := run(context.Background(), args, &stdout, &stderr); err != nil {
+			t.Errorf("run(%q) = %v, want nil despite broken config", args, err)
+		}
+		if !strings.Contains(stdout.String(), "not installed") {
+			t.Errorf("run(%q) stdout = %q, want a not-installed report", args, stdout.String())
+		}
+	}
+
+	// logs reports the uninstalled state rather than a config error (or an
+	// empty journal).
+	stdout.Reset()
+	stderr.Reset()
+	err := run(context.Background(), []string{"server", "logs"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "not installed") {
+		t.Errorf("server logs = %v, want a not-installed explanation", err)
+	}
+}
+
 func TestServerTokenPrintsAndRotates(t *testing.T) {
 	isolateXDG(t)
 	tokenOut := func(args ...string) string {

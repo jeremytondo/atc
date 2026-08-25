@@ -25,13 +25,38 @@ func unitArgs(executable string) []string {
 
 var xmlEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;")
 
+// unitEnv is the environment stamped into the unit as ordered name/value
+// pairs. Supervisors start services with a minimal environment, so the unit
+// carries the installing shell's PATH (without it the daemon could not
+// resolve the tools it shells out to) plus any XDG overrides that move the
+// paths package: the daemon must resolve the same config, token, and state
+// files as the CLI that installed and health-gated it.
+func unitEnv() [][2]string {
+	pathEnv := os.Getenv("PATH")
+	if pathEnv == "" {
+		pathEnv = "/usr/local/bin:/usr/bin:/bin"
+	}
+	env := [][2]string{{"PATH", pathEnv}}
+	for _, name := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"} {
+		if value := os.Getenv(name); value != "" {
+			env = append(env, [2]string{name, value})
+		}
+	}
+	return env
+}
+
 // launchAgentPlist renders the macOS unit. KeepAlive relaunches the server
 // whenever it exits; launchd redirects both streams to logFile because it
 // has no journal.
-func launchAgentPlist(args []string, logFile, pathEnv string) string {
+func launchAgentPlist(args []string, logFile string, env [][2]string) string {
 	var lines strings.Builder
 	for _, arg := range args {
 		fmt.Fprintf(&lines, "    <string>%s</string>\n", xmlEscaper.Replace(arg))
+	}
+	var envLines strings.Builder
+	for _, pair := range env {
+		fmt.Fprintf(&envLines, "    <key>%s</key>\n    <string>%s</string>\n",
+			xmlEscaper.Replace(pair[0]), xmlEscaper.Replace(pair[1]))
 	}
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -44,9 +69,7 @@ func launchAgentPlist(args []string, logFile, pathEnv string) string {
 %s  </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key>
-    <string>%s</string>
-  </dict>
+%s  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -57,7 +80,7 @@ func launchAgentPlist(args []string, logFile, pathEnv string) string {
   <string>%s</string>
 </dict>
 </plist>
-`, UnitName, lines.String(), xmlEscaper.Replace(pathEnv),
+`, UnitName, lines.String(), envLines.String(),
 		xmlEscaper.Replace(logFile), xmlEscaper.Replace(logFile))
 }
 
@@ -68,10 +91,14 @@ var unitValueEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "%", "%%")
 
 // systemdUnit renders the Linux unit: Restart=always with backoff, output
 // left to the journal's default capture (no log file of our own).
-func systemdUnit(args []string, pathEnv string) string {
+func systemdUnit(args []string, env [][2]string) string {
 	quoted := make([]string, len(args))
 	for i, arg := range args {
 		quoted[i] = `"` + unitValueEscaper.Replace(arg) + `"`
+	}
+	var envLines strings.Builder
+	for _, pair := range env {
+		fmt.Fprintf(&envLines, "Environment=\"%s=%s\"\n", pair[0], unitValueEscaper.Replace(pair[1]))
 	}
 	return fmt.Sprintf(`[Unit]
 Description=ATC server
@@ -79,13 +106,12 @@ Description=ATC server
 [Service]
 Type=simple
 ExecStart=%s
-Environment="PATH=%s"
-Restart=always
+%sRestart=always
 RestartSec=5
 
 [Install]
 WantedBy=default.target
-`, strings.Join(quoted, " "), unitValueEscaper.Replace(pathEnv))
+`, strings.Join(quoted, " "), envLines.String())
 }
 
 // UnitPath is where this platform's unit file lives: the LaunchAgents
@@ -110,30 +136,35 @@ func unitPath(goos, xdgConfigHome, home string) string {
 	return filepath.Join(configHome, "systemd", "user", UnitName+".service")
 }
 
-// writeUnit renders and installs the unit for this platform. Every start
-// runs it, so the unit always reflects the current binary and PATH.
-func writeUnit(unitFile string) error {
+// renderUnit produces the unit content for this platform from the current
+// binary and environment. Start compares it against the installed file to
+// decide whether the running daemon must be bounced onto it.
+func renderUnit() (string, error) {
 	executable, err := os.Executable()
 	if err != nil {
-		return err
+		return "", err
 	}
-	pathEnv := os.Getenv("PATH")
-	if pathEnv == "" {
-		pathEnv = "/usr/local/bin:/usr/bin:/bin"
+	if runtime.GOOS == "darwin" {
+		logFile, err := paths.LogFile()
+		if err != nil {
+			return "", err
+		}
+		return launchAgentPlist(unitArgs(executable), logFile, unitEnv()), nil
 	}
-	var content string
+	return systemdUnit(unitArgs(executable), unitEnv()), nil
+}
+
+// writeUnit installs rendered unit content, creating the directories the
+// unit depends on (launchd creates its log file, but not the directory).
+func writeUnit(unitFile, content string) error {
 	if runtime.GOOS == "darwin" {
 		logFile, err := paths.LogFile()
 		if err != nil {
 			return err
 		}
-		// launchd creates the log file itself, but not its directory.
 		if err := os.MkdirAll(filepath.Dir(logFile), 0o700); err != nil {
 			return err
 		}
-		content = launchAgentPlist(unitArgs(executable), logFile, pathEnv)
-	} else {
-		content = systemdUnit(unitArgs(executable), pathEnv)
 	}
 	if err := os.MkdirAll(filepath.Dir(unitFile), 0o755); err != nil {
 		return err

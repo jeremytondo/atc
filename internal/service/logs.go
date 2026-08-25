@@ -23,6 +23,16 @@ func Logs(ctx context.Context, opts Options, follow bool, lines int) error {
 		if _, err := exec.LookPath("journalctl"); err != nil {
 			return errors.New("journalctl not found: no supervisor captures logs on this machine; foreground `atc server run` logs to stderr")
 		}
+		// An installed unit is what makes the journal worth consulting; on
+		// a never-supervised machine an empty journal would masquerade as
+		// "no recent output".
+		unitFile, err := UnitPath()
+		if err != nil {
+			return err
+		}
+		if _, err := os.Stat(unitFile); errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("%s is not installed, so no supervised logs exist; foreground `atc server run` logs to stderr", UnitName)
+		}
 		args := []string{"--user", "-u", UnitName, "--no-pager", "-n", strconv.Itoa(lines)}
 		if follow {
 			args = append(args, "-f")

@@ -48,6 +48,13 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 	if err != nil {
 		return err
 	}
+	content, err := renderUnit()
+	if err != nil {
+		return err
+	}
+	existing, readErr := os.ReadFile(unitFile)
+	firstRun := errors.Is(readErr, fs.ErrNotExist)
+	unchanged := readErr == nil && string(existing) == content
 
 	supervised := supervisorRunning(ctx)
 	if !supervised && portAnswering(opts.Config) {
@@ -55,26 +62,28 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 		// foreground `atc server run`.
 		return fmt.Errorf("something is already serving on port %d (a foreground `atc server run`?); stop it first", opts.Config.Port)
 	}
-	if supervised && !bounce && probeOnce(ctx, opts, token).healthy {
-		if err := rewriteUnit(ctx, unitFile); err != nil {
-			return err
+	if supervised && !bounce && unchanged && probeOnce(ctx, opts, token).healthy {
+		// Idempotent: healthy and running the current unit — leave the
+		// process untouched. enable still runs so an active-but-disabled
+		// unit returns at next login.
+		if runtime.GOOS == "linux" {
+			if err := runSupervisor(ctx, "systemctl", "--user", "enable", UnitName); err != nil {
+				return err
+			}
 		}
 		say(opts.Stdout, "%s is already running and healthy: %s\n", UnitName, loopbackURL(opts.Config.Port))
 		return nil
 	}
+	// A supervised daemon whose unit changed must be bounced onto the new
+	// one: daemon-reload alone leaves the running process (and launchd's
+	// loaded job) on the stale configuration.
+	if supervised && !unchanged {
+		bounce = true
+	}
 
-	_, statErr := os.Stat(unitFile)
-	firstRun := errors.Is(statErr, fs.ErrNotExist)
-	if err := writeUnit(unitFile); err != nil {
+	if err := writeUnit(unitFile, content); err != nil {
 		return err
 	}
-	if firstRun {
-		// Consent-after-the-fact (ATC-246 grill decision): no prompt, no
-		// TTY branch — identical interactive or scripted. Honest because
-		// uninstall is one cheap, total undo.
-		say(opts.Stderr, "%s", firstRunNotice(runtime.GOOS, unitFile))
-	}
-
 	if runtime.GOOS == "linux" {
 		if err := runSupervisor(ctx, "systemctl", "--user", "daemon-reload"); err != nil {
 			return err
@@ -94,14 +103,23 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 		// so every path that (re)starts the process unloads first and
 		// bootstraps the freshly rendered unit. (`kickstart -k` would bounce
 		// the process but leave launchd running the stale configuration —
-		// the healthy-and-untouched case already returned above.)
+		// the healthy-and-current case already returned above.)
 		if launchdLoadedDomain(ctx) != "" {
-			launchdUnload(ctx)
+			if err := launchdUnload(ctx); err != nil {
+				return err
+			}
 		}
 		// Loading starts it (RunAtLoad).
 		if err := launchdBootstrap(ctx, unitFile); err != nil {
 			return err
 		}
+	}
+	if firstRun {
+		// Consent-after-the-fact (ATC-246 grill decision): no prompt, no
+		// TTY branch — identical interactive or scripted. Honest because
+		// uninstall is one cheap, total undo. Printed only after the
+		// supervisor accepted the unit, so the notice reports a fact.
+		say(opts.Stderr, "%s", firstRunNotice(runtime.GOOS, unitFile))
 	}
 
 	if err := awaitHealthy(ctx, opts, token); err != nil {
@@ -113,18 +131,6 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 		verb = "restarted"
 	}
 	say(opts.Stdout, "%s %s: %s\n", verb, UnitName, loopbackURL(opts.Config.Port))
-	return nil
-}
-
-// rewriteUnit refreshes the unit without touching the process, keeping
-// systemd's loaded view in sync on Linux.
-func rewriteUnit(ctx context.Context, unitFile string) error {
-	if err := writeUnit(unitFile); err != nil {
-		return err
-	}
-	if runtime.GOOS == "linux" {
-		return runSupervisor(ctx, "systemctl", "--user", "daemon-reload")
-	}
 	return nil
 }
 
@@ -148,7 +154,9 @@ func Stop(ctx context.Context, opts Options) error {
 			say(opts.Stdout, "%s is not running\n", UnitName)
 			return nil
 		}
-		launchdBootout(ctx)
+		if err := launchdUnload(ctx); err != nil {
+			return err
+		}
 	} else {
 		if err := requireSystemctl(); err != nil {
 			return err
@@ -173,18 +181,25 @@ func Uninstall(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
-	if runtime.GOOS == "darwin" {
-		launchdBootout(ctx)
-	} else if requireSystemctl() == nil {
-		// Non-zero here means "not loaded/enabled", an expected state.
-		exitCode(ctx, "systemctl", "--user", "disable", "--now", UnitName)
-	}
 	_, statErr := os.Stat(unitFile)
 	existed := statErr == nil
+	if runtime.GOOS == "darwin" {
+		if err := launchdUnload(ctx); err != nil {
+			return err
+		}
+	} else if existed && requireSystemctl() == nil {
+		// Surfaced, not ignored: proceeding past a failed disable/stop
+		// would remove the unit under a still-running daemon and defeat
+		// uninstall as the total undo. (On an installed unit, disable and
+		// stop are both no-op successes when already disabled/inactive.)
+		if err := runSupervisor(ctx, "systemctl", "--user", "disable", "--now", UnitName); err != nil {
+			return err
+		}
+	}
 	if err := os.Remove(unitFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	if runtime.GOOS == "linux" && requireSystemctl() == nil {
+	if existed && runtime.GOOS == "linux" && requireSystemctl() == nil {
 		exitCode(ctx, "systemctl", "--user", "daemon-reload")
 	}
 	say(opts.Stdout, "%s", uninstallReport(existed, remainingFiles()))

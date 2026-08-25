@@ -10,7 +10,10 @@ func TestLaunchAgentPlist(t *testing.T) {
 	got := launchAgentPlist(
 		[]string{`/Users/a b/bin/atc<&>"`, "server", "run"},
 		"/Users/ab/.local/state/atc/atc.log",
-		`/usr/local/bin:/odd"<path>&`,
+		[][2]string{
+			{"PATH", `/usr/local/bin:/odd"<path>&`},
+			{"XDG_STATE_HOME", "/Users/ab/state"},
+		},
 	)
 	want := `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -28,6 +31,8 @@ func TestLaunchAgentPlist(t *testing.T) {
   <dict>
     <key>PATH</key>
     <string>/usr/local/bin:/odd&quot;&lt;path&gt;&amp;</string>
+    <key>XDG_STATE_HOME</key>
+    <string>/Users/ab/state</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -48,7 +53,10 @@ func TestLaunchAgentPlist(t *testing.T) {
 func TestSystemdUnit(t *testing.T) {
 	got := systemdUnit(
 		[]string{`/home/a b/bin/100% "atc"\x`, "server", "run"},
-		`/usr/bin:/50% "quoted"\path`,
+		[][2]string{
+			{"PATH", `/usr/bin:/50% "quoted"\path`},
+			{"XDG_CONFIG_HOME", "/home/ab/cfg"},
+		},
 	)
 	want := `[Unit]
 Description=ATC server
@@ -57,6 +65,7 @@ Description=ATC server
 Type=simple
 ExecStart="/home/a b/bin/100%% \"atc\"\\x" "server" "run"
 Environment="PATH=/usr/bin:/50%% \"quoted\"\\path"
+Environment="XDG_CONFIG_HOME=/home/ab/cfg"
 Restart=always
 RestartSec=5
 
@@ -65,6 +74,24 @@ WantedBy=default.target
 `
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("systemdUnit mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// The daemon must resolve the same config, token, and state files as the
+// CLI that installed it, so shell XDG overrides ride along with PATH; unset
+// ones are omitted.
+func TestUnitEnvStampsXDGOverrides(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin")
+	t.Setenv("XDG_CONFIG_HOME", "/custom/config")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "/custom/state")
+	want := [][2]string{
+		{"PATH", "/usr/bin"},
+		{"XDG_CONFIG_HOME", "/custom/config"},
+		{"XDG_STATE_HOME", "/custom/state"},
+	}
+	if diff := cmp.Diff(want, unitEnv()); diff != "" {
+		t.Errorf("unitEnv mismatch (-want +got):\n%s", diff)
 	}
 }
 

@@ -44,7 +44,9 @@ const UnitName = "atc.server"
 // file and default layers only — the supervised daemon runs with a minimal
 // environment where ATC_* variables do not exist, so probing a port taken
 // from the invoking shell's environment would target a server that will
-// never serve it.
+// never serve it. Stop, Logs, and Uninstall never consume Config; their
+// callers leave it zero so a broken config.toml cannot block diagnostics,
+// stopping, or the total undo.
 type Options struct {
 	Config config.Config
 	// Version is the client build identity, for skew reporting.
@@ -140,28 +142,38 @@ func launchdBootstrap(ctx context.Context, unitFile string) error {
 	return runSupervisor(ctx, "launchctl", "bootstrap", domains[len(domains)-1], unitFile)
 }
 
-// launchdBootout unloads the agent from every domain; failures mean "not
-// loaded there", an expected state.
-func launchdBootout(ctx context.Context) {
+// launchdUnload boots the agent out of every domain it is loaded in and
+// confirms launchd forgot the label — bootstrapping again while the old
+// instance is still winding down fails, and reporting "stopped" while the
+// job survives would be a lie. Success is judged by observation (the label
+// gone from every domain) rather than bootout's exit status alone; a label
+// still loaded at the deadline is a failure carrying the supervisor's own
+// diagnostic. Domains proven absent are skipped, not "ignored on error".
+func launchdUnload(ctx context.Context) error {
+	var bootoutErr error
 	for _, domain := range launchdDomains() {
-		exitCode(ctx, "launchctl", "bootout", domain+"/"+UnitName)
+		if exitCode(ctx, "launchctl", "print", domain+"/"+UnitName) != 0 {
+			continue // not loaded there
+		}
+		if err := runSupervisor(ctx, "launchctl", "bootout", domain+"/"+UnitName); err != nil {
+			bootoutErr = err
+		}
 	}
-}
-
-// launchdUnload boots the agent out of every domain and waits until launchd
-// forgets the label — bootstrapping again while the old instance is still
-// winding down fails. On timeout it returns anyway and lets the bootstrap's
-// own error surface.
-func launchdUnload(ctx context.Context) {
-	launchdBootout(ctx)
 	deadline := time.Now().Add(5 * time.Second)
-	for launchdLoadedDomain(ctx) != "" && time.Now().Before(deadline) {
+	for launchdLoadedDomain(ctx) != "" {
+		if time.Now().After(deadline) {
+			if bootoutErr != nil {
+				return fmt.Errorf("%s is still loaded: %w", UnitName, bootoutErr)
+			}
+			return fmt.Errorf("%s is still loaded after bootout", UnitName)
+		}
 		select {
 		case <-time.After(100 * time.Millisecond):
 		case <-ctx.Done():
-			return
+			return ctx.Err()
 		}
 	}
+	return nil
 }
 
 // supervisorRunning reports whether the supervised daemon is under active
