@@ -14,6 +14,14 @@ archived TypeScript App Server, macOS app, packages, workflows, or release
 tooling in the active tree. Compatibility with legacy state and configuration
 is a separate implementation decision tracked by ATC-245.
 
+## Recorded Decisions
+
+Recorded decisions — charters and decided records in Linear — capture the
+best understanding at the time, not permanent truth. When the work surfaces
+evidence that a prior decision is wrong or improvable, challenge it openly
+and propose amending the record; do not follow it blindly or deviate from it
+silently.
+
 ## Core Priorities
 
 - Performance
