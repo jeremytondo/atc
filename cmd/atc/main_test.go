@@ -34,6 +34,8 @@ func TestRunRejectsBadInvocations(t *testing.T) {
 		{"server"},
 		{"server", "frobnicate"},
 		{"server", "run", "extra"},
+		{"server", "token", "frobnicate"},
+		{"server", "token", "rotate", "extra"},
 	} {
 		var stdout, stderr strings.Builder
 		if err := run(context.Background(), args, &stdout, &stderr); err == nil {
@@ -42,11 +44,22 @@ func TestRunRejectsBadInvocations(t *testing.T) {
 	}
 }
 
+// isolateXDG points every ATC file location at a temp directory so tests
+// never touch the developer's real state.
+func isolateXDG(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir+"/config")
+	t.Setenv("XDG_DATA_HOME", dir+"/data")
+	t.Setenv("XDG_STATE_HOME", dir+"/state")
+}
+
 func TestServerRunStopsOnContextCancel(t *testing.T) {
+	isolateXDG(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	var stdout, stderr strings.Builder
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, []string{"server", "run"}, &stdout, &stderr) }()
+	go func() { done <- run(ctx, []string{"server", "run", "--port", "0"}, &stdout, &stderr) }()
 	cancel()
 	select {
 	case err := <-done:
@@ -58,5 +71,42 @@ func TestServerRunStopsOnContextCancel(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "server started") {
 		t.Errorf("stderr = %q, want start log", stderr.String())
+	}
+}
+
+// Flags apply after config.Load's validation, so validation must run again
+// on the settled values — an empty --bind would otherwise fall through to
+// net.Listen and bind every interface.
+func TestServerRunRejectsInvalidFlagValues(t *testing.T) {
+	isolateXDG(t)
+	for name, args := range map[string][]string{
+		"empty bind":        {"server", "run", "--bind=", "--port", "0"},
+		"port out of range": {"server", "run", "--port", "70000"},
+	} {
+		var stdout, stderr strings.Builder
+		if err := run(context.Background(), args, &stdout, &stderr); err == nil {
+			t.Errorf("%s: run(%q) = nil, want validation error", name, args)
+		}
+	}
+}
+
+func TestServerTokenPrintsAndRotates(t *testing.T) {
+	isolateXDG(t)
+	tokenOut := func(args ...string) string {
+		var stdout, stderr strings.Builder
+		if err := run(context.Background(), args, &stdout, &stderr); err != nil {
+			t.Fatalf("run(%q) = %v", args, err)
+		}
+		return strings.TrimSpace(stdout.String())
+	}
+	first := tokenOut("server", "token")
+	if !strings.HasPrefix(first, "atc_") || len(first) != len("atc_")+43 {
+		t.Fatalf("token %q does not match the contract format", first)
+	}
+	if again := tokenOut("server", "token"); again != first {
+		t.Errorf("second print minted a new token")
+	}
+	if rotated := tokenOut("server", "token", "rotate"); rotated == first {
+		t.Errorf("rotate returned the old token")
 	}
 }
