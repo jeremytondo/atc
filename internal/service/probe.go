@@ -7,6 +7,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -18,10 +19,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/authtoken"
 	"github.com/jeremytondo/atc/internal/config"
 	"github.com/jeremytondo/atc/internal/paths"
-	"github.com/jeremytondo/atc/internal/server"
 )
 
 // Health-gate contract (ATC-260, carried from legacy): 15s total, 150ms
@@ -40,27 +41,20 @@ type probeOutcome struct {
 }
 
 func probeOnce(ctx context.Context, opts Options, token string) probeOutcome {
-	url := "http://" + probeAddr(opts.Config) + "/v1/health"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return probeOutcome{}
+	client := api.NewClient("http://"+probeAddr(opts.Config), token, opts.Version,
+		&http.Client{Timeout: probeTimeout})
+	health, err := client.Health(ctx)
+	if err == nil {
+		return probeOutcome{responding: true, healthy: true, serverVersion: health.Version}
 	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	problem, ok := errors.AsType[*api.Problem](err)
+	if !ok {
+		return probeOutcome{} // no HTTP response at all
 	}
-	req.Header.Set(server.ClientVersionHeader, opts.Version)
-	client := &http.Client{Timeout: probeTimeout}
-	resp, err := client.Do(req)
-	if err != nil {
-		return probeOutcome{}
-	}
-	defer func() { _ = resp.Body.Close() }()
-	_, _ = io.Copy(io.Discard, resp.Body)
 	return probeOutcome{
 		responding:    true,
-		healthy:       resp.StatusCode == http.StatusOK,
-		unauthorized:  resp.StatusCode == http.StatusUnauthorized,
-		serverVersion: resp.Header.Get(server.ServerVersionHeader),
+		unauthorized:  problem.Status == http.StatusUnauthorized,
+		serverVersion: problem.ServerVersion,
 	}
 }
 
