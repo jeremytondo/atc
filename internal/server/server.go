@@ -20,22 +20,15 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
+
+	"github.com/jeremytondo/atc/internal/api"
 )
 
-// Version headers both ways on every request/response — the entire skew
-// handshake (ATC-247 §6).
-const (
-	ClientVersionHeader = "Atc-Client-Version"
-	ServerVersionHeader = "Atc-Server-Version"
-)
-
-// HealthOutput doubles as the response contract and its documentation; the
-// generated OpenAPI schema is derived from it.
+// HealthOutput is Huma routing machinery around the shared body; the
+// contract itself is api.Health (ATC-264), from which the OpenAPI schema
+// is derived. Wrappers like this stay server-side, never in internal/api.
 type HealthOutput struct {
-	Body struct {
-		Status  string `json:"status" enum:"ok" doc:"Liveness state of the server."`
-		Version string `json:"version" doc:"Version of the running server binary."`
-	}
+	Body api.Health
 }
 
 // NewHandler builds the /v1 API surface plus /openapi.json and /docs.
@@ -65,19 +58,16 @@ func NewHandler(verify func(authorization string) bool, version string, logger *
 	// Declared globally so the generated document tells adapter authors
 	// every operation needs the token; enforcement is the middleware's.
 	config.Security = []map[string][]string{{"bearerAuth": {}}}
-	api := humago.New(mux, config)
+	humaAPI := humago.New(mux, config)
 
-	huma.Register(api, huma.Operation{
+	huma.Register(humaAPI, huma.Operation{
 		OperationID: "get-health",
 		Method:      http.MethodGet,
 		Path:        "/v1/health",
 		Summary:     "Server liveness",
 		Description: "Source of truth for whether the server is up; `atc server status` probes this first.",
 	}, func(ctx context.Context, _ *struct{}) (*HealthOutput, error) {
-		out := &HealthOutput{}
-		out.Body.Status = "ok"
-		out.Body.Version = version
-		return out, nil
+		return &HealthOutput{Body: api.Health{Status: "ok", Version: version}}, nil
 	})
 
 	return withVersionHeaders(version, logger, withAuth(verify, mux))
@@ -85,8 +75,8 @@ func NewHandler(verify func(authorization string) bool, version string, logger *
 
 func withVersionHeaders(version string, logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(ServerVersionHeader, version)
-		if client := r.Header.Get(ClientVersionHeader); client != "" && client != version {
+		w.Header().Set(api.ServerVersionHeader, version)
+		if client := r.Header.Get(api.ClientVersionHeader); client != "" && client != version {
 			logger.Debug("client version skew", "client", client, "server", version)
 		}
 		next.ServeHTTP(w, r)
@@ -97,14 +87,15 @@ func withAuth(verify func(authorization string) bool, next http.Handler) http.Ha
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !verify(r.Header.Get("Authorization")) {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="atc"`)
-			// Same RFC 7807 shape Huma uses for its own errors, so clients
-			// see one error contract regardless of which layer rejected.
+			// Same RFC 7807 shape Huma uses for its own errors, emitted from
+			// the shared struct, so clients see one error contract regardless
+			// of which layer rejected.
 			w.Header().Set("Content-Type", "application/problem+json")
 			w.WriteHeader(http.StatusUnauthorized)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"title":  "Unauthorized",
-				"status": http.StatusUnauthorized,
-				"detail": "invalid or missing bearer token",
+			_ = json.NewEncoder(w).Encode(api.Problem{
+				Title:  "Unauthorized",
+				Status: http.StatusUnauthorized,
+				Detail: "invalid or missing bearer token",
 			})
 			return
 		}

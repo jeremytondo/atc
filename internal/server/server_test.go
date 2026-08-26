@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/jeremytondo/atc/internal/api"
 )
 
 const (
@@ -47,10 +49,9 @@ func TestHealthWithToken(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("got %d, want 200; body: %s", rec.Code, rec.Body)
 	}
-	var body struct {
-		Status  string `json:"status"`
-		Version string `json:"version"`
-	}
+	// Decoding into the shared contract type is the point of ATC-264: the
+	// wire body and api.Health are one definition.
+	var body api.Health
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decoding %q: %v", rec.Body, err)
 	}
@@ -68,8 +69,8 @@ func TestServerVersionHeaderOnEveryResponse(t *testing.T) {
 		"unauthorized": get(handler, "/v1/health", false),
 		"not found":    get(handler, "/v1/nope", true),
 	} {
-		if got := rec.Header().Get(ServerVersionHeader); got != testVersion {
-			t.Errorf("%s: %s = %q, want %q", name, ServerVersionHeader, got, testVersion)
+		if got := rec.Header().Get(api.ServerVersionHeader); got != testVersion {
+			t.Errorf("%s: %s = %q, want %q", name, api.ServerVersionHeader, got, testVersion)
 		}
 	}
 }
@@ -80,7 +81,7 @@ func TestNilLoggerDefaultsToDiscard(t *testing.T) {
 	handler := NewHandler(testVerify, testVersion, nil)
 	req := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
 	req.Header.Set("Authorization", "Bearer "+testToken)
-	req.Header.Set(ClientVersionHeader, "v0.0.0-skewed")
+	req.Header.Set(api.ClientVersionHeader, "v0.0.0-skewed")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
