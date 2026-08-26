@@ -43,7 +43,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # GoReleaser derives changelogs and previous tags from history.
+          # GoReleaser derives versions and GitHub-native release notes from
+          # the complete tag history.
           fetch-depth: 0
       - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
       - name: Cut production release
@@ -95,6 +96,7 @@ jobs:
         run: |
           goreleaser release --snapshot --clean
           version=$(jq -r .version dist/metadata.json)
+          title="ATC Dev v${version} (rolling)"
           # Move the fixed dev tag to the built commit before touching the
           # release: the release page's source provenance (and GitHub's
           # generated source archives) must match the binaries uploaded
@@ -128,8 +130,8 @@ jobs:
             'The `dev` tag and attached downloads are replaced whenever a new development build is published.'
           if ! gh release view dev >/dev/null 2>&1; then
             gh release create dev --prerelease \
-              --title "ATC development build (rolling)" --notes "$notes"
+              --title "$title" --notes "$notes"
           fi
           gh release upload dev dist/*.tar.gz dist/checksums.txt --clobber
           gh release edit dev --prerelease \
-            --title "ATC development build (rolling)" --notes "$notes"
+            --title "$title" --notes "$notes"

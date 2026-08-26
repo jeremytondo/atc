@@ -41,6 +41,9 @@ checksum:
   name_template: checksums.txt
 
 release:
+  # Keep the immutable tag machine-oriented while giving the GitHub release a
+  # recognizable product title.
+  name_template: "ATC v{{ .Version }}"
   # Retry safety (release.yml resumes a tag whose release is incomplete): a
   # rerun over a partially published release must overwrite its assets
   # instead of failing on name collisions.
@@ -53,4 +56,7 @@ snapshot:
   version_template: "{{ incpatch .Version }}-dev.{{ .ShortCommit }}"
 
 changelog:
-  use: git
+  # GitHub's native notes list merged PRs instead of every implementation
+  # commit. PR titles provide the summary; their links lead to the detailed
+  # descriptions and validation notes.
+  use: github-native
