@@ -1,20 +1,15 @@
 # ATC Agent Instructions
 
-ATC is being rebuilt in Go under
-[ATC-243](https://linear.app/elevenideas/issue/ATC-243). The active tree is
+## Current Rebuild Notes
+
+ATC is being rebuilt in Go under [ATC-243](https://linear.app/elevenideas/issue/ATC-243). The active tree is
 the rebuild's scaffold: a single Go module at the repository root with one
 entrypoint, `cmd/atc`, plus the research archive under `experiments/`. The
 superseded product is preserved at the `legacy-product-2026-08` tag.
 
-## Recorded Decisions
+## Core Principles
 
-Recorded decisions — charters and decided records in Linear — capture the
-best understanding at the time, not permanent truth. When the work surfaces
-evidence that a prior decision is wrong or improvable, challenge it openly
-and propose amending the record; do not follow it blindly or deviate from it
-silently.
-
-## Core Priorities
+It's important we maintain the following core principles as we iterate on ATC:
 
 - Performance
 - Reliability
@@ -23,6 +18,14 @@ silently.
 
 If a tradeoff is required, choose correctness and robustness over short-term
 convenience.
+
+## Recorded Decisions
+
+Recorded decisions and rules capture the
+best understanding at the time, not permanent truth. When the work surfaces
+evidence that a prior decision is wrong or improvable, challenge it openly
+and propose amending the record; do not follow it blindly or deviate from it
+silently.
 
 ## Maintainability
 
@@ -62,7 +65,7 @@ Everything under `experiments/` is historical research material, not
 production source:
 
 - Read findings before code.
-- Treat findings as evidence, not decisions; ATC-243 takes precedence.
+- Treat findings as evidence, not decisions
 - Do not import, extend, or make production depend on experiment code.
 - Do not rewrite old findings. Capture new evidence in a new experiment.
 

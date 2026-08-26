@@ -57,10 +57,14 @@ want=$(awk -v asset="$asset" '$2 == asset { print $1 }' "$tmp/checksums.txt")
 [ "$got" = "$want" ] || fail "checksum mismatch for $asset: checksums.txt says $want, the download is $got"
 
 tar -xzf "$tmp/$asset" -C "$tmp" atc || fail "could not extract atc from $asset"
+# Prove the downloaded binary runs on this machine before installing it; a
+# bare `echo "$(...)"` would mask its failure.
+version=$("$tmp/atc" version) || fail "downloaded binary failed to run"
+[ -n "$version" ] || fail "downloaded binary printed no version"
 mkdir -p "$INSTALL_DIR" || fail "cannot create $INSTALL_DIR"
 mv -f "$tmp/atc" "$INSTALL_DIR/atc" || fail "cannot write to $INSTALL_DIR (this script never invokes sudo; set ATC_INSTALL_DIR to a writable directory)"
 
-echo "installed atc $("$INSTALL_DIR/atc" version) to $INSTALL_DIR/atc"
+echo "installed atc $version to $INSTALL_DIR/atc"
 
 case ":$PATH:" in
 *":$INSTALL_DIR:"*) ;;

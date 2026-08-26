@@ -21,7 +21,7 @@ depends = ["build", "lint", "test"]
 
 [tasks.install]
 description = "Build a static atc binary into ~/.local/bin"
-run = "CGO_ENABLED=0 go build -o ~/.local/bin/atc ./cmd/atc"
+run = "mkdir -p ~/.local/bin && CGO_ENABLED=0 go build -o ~/.local/bin/atc ./cmd/atc"
 
 [tasks."release:patch"]
 description = "Dispatch the release workflow to cut a patch release"

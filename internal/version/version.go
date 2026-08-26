@@ -3,9 +3,9 @@
 // Version is stamped by the release workflow via `-ldflags -X` (see
 // .goreleaser.yaml); only workflow-built binaries ever claim a
 // vX.Y.Z-shaped version. That property is what makes client/server skew
-// detection and `atc upgrade`'s staleness comparison trustworthy: local
-// builds deliberately stay on the buildinfo fallback (devel-<sha>) instead
-// of `git describe`-style release-shaped names.
+// detection and `atc upgrade`'s staleness comparison trustworthy, so every
+// unstamped build — including `go install ...@vX.Y.Z`, whose buildinfo
+// carries the module version — resolves to a devel identity instead.
 package version
 
 import "runtime/debug"
@@ -15,20 +15,25 @@ import "runtime/debug"
 var Version string
 
 // String returns the build identity used everywhere a version is shown or
-// compared. Released builds carry the stamped version; source builds fall
-// back to the VCS revision. One limit: builds without VCS metadata all
-// report "devel" and cannot be told apart.
+// compared.
 func String() string {
-	if Version != "" {
-		return Version
-	}
 	info, ok := debug.ReadBuildInfo()
+	return resolve(Version, info, ok)
+}
+
+// resolve is the pure resolution order: the workflow stamp wins, then VCS
+// metadata (devel-<sha>, devel-<sha>-dirty), then devel/unknown.
+// info.Main.Version is deliberately ignored — `go install ...@vX.Y.Z`
+// embeds it, and a non-workflow build claiming a release-shaped version
+// would break the "only workflow builds" invariant and make `atc upgrade`
+// short-circuit. One limit: builds without VCS metadata all report "devel"
+// and cannot be told apart.
+func resolve(stamped string, info *debug.BuildInfo, ok bool) string {
+	if stamped != "" {
+		return stamped
+	}
 	if !ok {
 		return "unknown"
-	}
-	version := info.Main.Version
-	if version != "" && version != "(devel)" {
-		return version
 	}
 	revision, dirty := "", false
 	for _, setting := range info.Settings {

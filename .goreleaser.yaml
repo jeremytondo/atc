@@ -40,6 +40,12 @@ archives:
 checksum:
   name_template: checksums.txt
 
+release:
+  # Retry safety (release.yml resumes a tag whose release is incomplete): a
+  # rerun over a partially published release must overwrite its assets
+  # instead of failing on name collisions.
+  replace_existing_artifacts: true
+
 snapshot:
   # Dev-channel version: last production tag with the patch auto-bumped,
   # plus the short sha. Claims ordering only (above the last release, below
