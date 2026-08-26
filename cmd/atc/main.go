@@ -13,7 +13,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"runtime/debug"
 	"strconv"
 	"sync"
 	"syscall"
@@ -26,6 +25,8 @@ import (
 	"github.com/jeremytondo/atc/internal/server"
 	"github.com/jeremytondo/atc/internal/service"
 	"github.com/jeremytondo/atc/internal/tailscale"
+	"github.com/jeremytondo/atc/internal/upgrade"
+	"github.com/jeremytondo/atc/internal/version"
 )
 
 func main() {
@@ -76,7 +77,7 @@ expose on the tailnet without the flag.`,
 			return cmd.Help()
 		},
 	}
-	root.AddCommand(newVersionCmd(), newServerCmd())
+	root.AddCommand(newVersionCmd(), newUpgradeCmd(), newServerCmd())
 	return root
 }
 
@@ -86,10 +87,75 @@ func newVersionCmd() *cobra.Command {
 		Short: "Print the atc version",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			_, err := fmt.Fprintln(cmd.OutOrStdout(), versionString())
+			_, err := fmt.Fprintln(cmd.OutOrStdout(), version.String())
 			return err
 		},
 	}
+}
+
+func newUpgradeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "upgrade",
+		Short: "Replace this binary with the latest release",
+		Long: `Download the latest production release, verify its checksum, and atomically
+replace this binary. A machine running a dev build is moved to the latest
+production release even when that is semver-backwards; with --dev, the
+current rolling dev build is installed unconditionally instead.
+
+A server left running the old version is never restarted silently:
+interactive runs are asked (terminals persist; in-flight agent turns are
+interrupted), headless runs print a reminder unless --restart or
+--no-restart pre-answers.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			flags := cmd.Flags()
+			dev, err := flags.GetBool("dev")
+			if err != nil {
+				return err
+			}
+			always, err := flags.GetBool("restart")
+			if err != nil {
+				return err
+			}
+			never, err := flags.GetBool("no-restart")
+			if err != nil {
+				return err
+			}
+			mode := upgrade.RestartAsk
+			if always {
+				mode = upgrade.RestartAlways
+			}
+			if never {
+				mode = upgrade.RestartNever
+			}
+			opts := upgrade.Options{
+				Dev:         dev,
+				Restart:     mode,
+				Interactive: stdinIsTerminal(),
+				Version:     version.String(),
+				Stdin:       cmd.InOrStdin(),
+				Stdout:      cmd.OutOrStdout(),
+				Stderr:      cmd.ErrOrStderr(),
+			}
+			// A broken config.toml must not block the swap — the new binary
+			// may be the fix. Only the post-swap server check needs it.
+			if opts.Service, err = lifecycleOptions(cmd); err != nil {
+				opts.ConfigErr = err
+			}
+			return upgrade.Run(cmd.Context(), opts)
+		},
+	}
+	cmd.Flags().Bool("dev", false, "install the current rolling dev build (always reinstalls)")
+	cmd.Flags().Bool("restart", false, "restart a server left on the old version, without asking")
+	cmd.Flags().Bool("no-restart", false, "never restart the server")
+	cmd.MarkFlagsMutuallyExclusive("restart", "no-restart")
+	return cmd
+}
+
+// stdinIsTerminal gates the restart prompt: only a human at a TTY is asked.
+func stdinIsTerminal() bool {
+	info, err := os.Stdin.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
 func newServerCmd() *cobra.Command {
@@ -125,7 +191,7 @@ func lifecycleOptions(cmd *cobra.Command) (service.Options, error) {
 	}
 	return service.Options{
 		Config:  cfg,
-		Version: versionString(),
+		Version: version.String(),
 		Stdout:  cmd.OutOrStdout(),
 		Stderr:  cmd.ErrOrStderr(),
 	}, nil
@@ -137,7 +203,7 @@ func lifecycleOptions(cmd *cobra.Command) (service.Options, error) {
 // booting must not block diagnostics, stopping, or the promised total undo.
 func recoveryOptions(cmd *cobra.Command) (service.Options, error) {
 	return service.Options{
-		Version: versionString(),
+		Version: version.String(),
 		Stdout:  cmd.OutOrStdout(),
 		Stderr:  cmd.ErrOrStderr(),
 	}, nil
@@ -353,9 +419,9 @@ func serverRun(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	version := versionString()
-	logger.Info("server starting", "version", version, "pid", os.Getpid())
-	handler := server.NewHandler(store.Verify, version, logger)
+	versionValue := version.String()
+	logger.Info("server starting", "version", versionValue, "pid", os.Getpid())
+	handler := server.NewHandler(store.Verify, versionValue, logger)
 
 	listener, err := net.Listen("tcp", net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port)))
 	if err != nil {
@@ -374,36 +440,4 @@ func serverRun(cmd *cobra.Command, _ []string) error {
 	serveErr := server.Serve(ctx, listener, handler, logger)
 	exposure.Wait()
 	return serveErr
-}
-
-// versionString resolves the binary's version from embedded build info.
-// Released builds carry the module version; source builds fall back to the
-// VCS revision. The value is a build identity suitable for client/server
-// skew comparison, with one limit: builds without VCS metadata all report
-// "devel" and cannot be told apart.
-func versionString() string {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return "unknown"
-	}
-	version := info.Main.Version
-	if version != "" && version != "(devel)" {
-		return version
-	}
-	revision, dirty := "", false
-	for _, setting := range info.Settings {
-		switch setting.Key {
-		case "vcs.revision":
-			revision = setting.Value
-		case "vcs.modified":
-			dirty = setting.Value == "true"
-		}
-	}
-	if revision == "" {
-		return "devel"
-	}
-	if dirty {
-		return "devel-" + revision + "-dirty"
-	}
-	return "devel-" + revision
 }

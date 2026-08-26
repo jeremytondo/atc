@@ -64,6 +64,14 @@ func probeOnce(ctx context.Context, opts Options, token string) probeOutcome {
 	}
 }
 
+// Probe reports whether a server answers on the configured address and the
+// version it claims. Tokenless: the Atc-Server-Version header rides every
+// response, 401s included. This is `atc upgrade`'s post-swap check.
+func Probe(ctx context.Context, opts Options) (responding bool, serverVersion string) {
+	outcome := probeOnce(ctx, opts, "")
+	return outcome.responding, outcome.serverVersion
+}
+
 // awaitHealthy gates start/restart success on the daemon answering
 // /v1/health with the local token.
 func awaitHealthy(ctx context.Context, opts Options, token string) error {

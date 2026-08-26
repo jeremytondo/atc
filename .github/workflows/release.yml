@@ -1,0 +1,75 @@
+name: Release
+
+# One workflow, one input (ATC-261). patch/minor/major cut an immutable
+# production release: the next version is computed from the remote's
+# authoritative tags and stamped onto the head of the dispatched ref, so a
+# cut is safe from any machine regardless of checkout state. dev refreshes
+# the single rolling `dev` prerelease (GoReleaser snapshot + asset clobber)
+# and can be dispatched from any branch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "patch/minor/major cut a production release from this ref; dev refreshes the rolling dev build"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - dev
+
+concurrency: release
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # GoReleaser derives changelogs and previous tags from history.
+          fetch-depth: 0
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+      - name: Cut production release
+        if: inputs.bump != 'dev'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BUMP: ${{ inputs.bump }}
+        run: |
+          git fetch --tags --force origin
+          latest=$(git tag --list 'v*' | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V | tail -n1)
+          latest=${latest:-v0.0.0}
+          IFS=. read -r major minor patch <<<"${latest#v}"
+          case "$BUMP" in
+            major) next="v$((major + 1)).0.0" ;;
+            minor) next="v${major}.$((minor + 1)).0" ;;
+            patch) next="v${major}.${minor}.$((patch + 1))" ;;
+          esac
+          echo "cutting $next (previous: $latest) from $GITHUB_SHA"
+          git tag "$next"
+          git push origin "$next"
+          goreleaser release --clean
+      - name: Refresh dev build
+        if: inputs.bump == 'dev'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          goreleaser release --snapshot --clean
+          version=$(jq -r .version dist/metadata.json)
+          if ! gh release view dev >/dev/null 2>&1; then
+            gh release create dev --prerelease --title "dev (rolling)" \
+              --notes "Rolling development build." --target "$GITHUB_SHA"
+          fi
+          gh release upload dev dist/*.tar.gz dist/checksums.txt --clobber
+          gh release edit dev --prerelease \
+            --notes "Rolling development build; every dev cut clobbers these assets. Current: v${version} (${GITHUB_REF_NAME}@${GITHUB_SHA}). Install with \`atc upgrade --dev\`."

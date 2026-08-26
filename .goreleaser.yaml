@@ -1,0 +1,50 @@
+# GoReleaser configuration (ATC-261): one static build, three targets,
+# tar.gz + checksums.txt. Asset names are version-independent so the
+# releases/latest/download URLs stay static and the rolling dev prerelease
+# can clobber them in place; internal/upgrade mirrors this naming.
+version: 2
+
+project_name: atc
+
+git:
+  # Neither the archived product's dev tags nor the rolling dev prerelease
+  # tag may feed version computation; the v0.0.x production tags stay
+  # visible so bumps and changelogs chain from them.
+  ignore_tags:
+    - dev
+    - dev-20260813-073333
+    - dev-20260813-074116
+    - legacy-product-2026-08
+
+builds:
+  - main: ./cmd/atc
+    env:
+      - CGO_ENABLED=0
+    # darwin/amd64 is deliberately absent; install.sh and `atc upgrade`
+    # both name the unsupported platform instead of 404ing.
+    targets:
+      - darwin_arm64
+      - linux_amd64
+      - linux_arm64
+    ldflags:
+      # The stamp that makes a build claim a release-shaped version; local
+      # builds stay on the buildinfo fallback (internal/version).
+      - -s -w -X github.com/jeremytondo/atc/internal/version.Version=v{{ .Version }}
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  # Dev-channel version: last production tag with the patch auto-bumped,
+  # plus the short sha. Claims ordering only (above the last release, below
+  # the next); two dev builds are compared for equality, never for age.
+  version_template: "{{ incpatch .Version }}-dev.{{ .ShortCommit }}"
+
+changelog:
+  use: git

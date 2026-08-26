@@ -38,6 +38,8 @@ func TestRunRejectsBadInvocations(t *testing.T) {
 	for _, args := range [][]string{
 		{"frobnicate"},
 		{"version", "extra"},
+		{"upgrade", "extra"},
+		{"upgrade", "--restart", "--no-restart"},
 		{"server"},
 		{"server", "frobnicate"},
 		{"server", "run", "extra"},

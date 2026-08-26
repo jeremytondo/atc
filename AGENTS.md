@@ -6,14 +6,6 @@ the rebuild's scaffold: a single Go module at the repository root with one
 entrypoint, `cmd/atc`, plus the research archive under `experiments/`. The
 superseded product is preserved at the `legacy-product-2026-08` tag.
 
-Do not create packages ahead of need — `internal/` grows only when real
-code lands in it.
-
-ATC-243 is the source of truth for the rebuild. Do not restore or extend the
-archived TypeScript App Server, macOS app, packages, workflows, or release
-tooling in the active tree. Compatibility with legacy state and configuration
-is a separate implementation decision tracked by ATC-245.
-
 ## Recorded Decisions
 
 Recorded decisions — charters and decided records in Linear — capture the
