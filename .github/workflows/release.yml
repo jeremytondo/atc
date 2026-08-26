@@ -1,0 +1,110 @@
+name: Release
+
+# One workflow, one input (ATC-261). patch/minor/major cut a production
+# release: the next version is computed from the remote's authoritative
+# tags and stamped onto the head of the dispatched ref, so a cut is safe
+# from any machine regardless of checkout state. dev refreshes the single
+# rolling `dev` prerelease (GoReleaser snapshot + asset clobber) and can be
+# dispatched from any branch.
+#
+# Production immutability is a convention — tags and completed releases are
+# never moved, edited, or deleted — not GitHub's enforced immutable-release
+# setting: that setting is repository-wide and would prevent the rolling
+# dev prerelease from clobbering its assets, so it stays off (ATC-261
+# review decision, amended in the Linear record).
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "patch/minor/major cut a production release from this ref; dev refreshes the rolling dev build"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - dev
+
+concurrency: release
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # GoReleaser derives changelogs and previous tags from history.
+          fetch-depth: 0
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+      - name: Cut production release
+        if: inputs.bump != 'dev'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
+          BUMP: ${{ inputs.bump }}
+        run: |
+          git fetch --tags --force origin
+          latest=$(git tag --list 'v*' | { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V | tail -n1)
+
+          # Retry safety: a failed run can leave the newest tag with no
+          # release, or a partial one. Resume that tag rather than bumping
+          # past it — a failed publication must never advance the version
+          # chain. Complete means all four assets (three archives plus
+          # checksums.txt); reruns overwrite partial uploads via
+          # replace_existing_artifacts in .goreleaser.yaml.
+          next=""
+          if [ -n "$latest" ]; then
+            assets=$(gh release view "$latest" --json assets --jq '.assets | length' 2>/dev/null || echo 0)
+            if [ "$assets" -lt 4 ]; then
+              tagged=$(git rev-parse "${latest}^{commit}")
+              if [ "$tagged" != "$GITHUB_SHA" ]; then
+                echo "::error::$latest has no complete release and points at $tagged, not this ref's head $GITHUB_SHA; re-dispatch from that commit, or delete the tag to abandon that version"
+                exit 1
+              fi
+              next="$latest"
+              echo "resuming $next: its tag exists without a complete release"
+            fi
+          fi
+          if [ -z "$next" ]; then
+            latest=${latest:-v0.0.0}
+            IFS=. read -r major minor patch <<<"${latest#v}"
+            case "$BUMP" in
+              major) next="v$((major + 1)).0.0" ;;
+              minor) next="v${major}.$((minor + 1)).0" ;;
+              patch) next="v${major}.${minor}.$((patch + 1))" ;;
+            esac
+            echo "cutting $next (previous: $latest) from $GITHUB_SHA"
+            git tag "$next"
+            git push origin "$next"
+          fi
+          goreleaser release --clean
+      - name: Refresh dev build
+        if: inputs.bump == 'dev'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          goreleaser release --snapshot --clean
+          version=$(jq -r .version dist/metadata.json)
+          # Move the fixed dev tag to the built commit before touching the
+          # release: the release page's source provenance (and GitHub's
+          # generated source archives) must match the binaries uploaded
+          # below. Editing the release cannot do this — target_commitish is
+          # ignored once a tag exists.
+          git push --force origin "$GITHUB_SHA:refs/tags/dev"
+          if ! gh release view dev >/dev/null 2>&1; then
+            gh release create dev --prerelease --title "dev (rolling)" \
+              --notes "Rolling development build."
+          fi
+          gh release upload dev dist/*.tar.gz dist/checksums.txt --clobber
+          gh release edit dev --prerelease \
+            --notes "Rolling development build; every dev cut clobbers these assets and moves the dev tag. Current: v${version} (${GITHUB_REF_NAME}@${GITHUB_SHA}). Install with \`atc upgrade --dev\`."

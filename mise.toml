@@ -1,6 +1,7 @@
 [tools]
 go = "1.26.7"
 golangci-lint = "2.13.1"
+goreleaser = "2.17.1"
 
 [tasks.build]
 description = "Build a static atc binary into bin/"
@@ -17,6 +18,26 @@ run = "golangci-lint run ./..."
 [tasks.check]
 description = "Build, lint, and test"
 depends = ["build", "lint", "test"]
+
+[tasks.install]
+description = "Build a static atc binary into ~/.local/bin"
+run = "mkdir -p ~/.local/bin && CGO_ENABLED=0 go build -o ~/.local/bin/atc ./cmd/atc"
+
+[tasks."release:patch"]
+description = "Dispatch the release workflow to cut a patch release"
+run = "gh workflow run release.yml -f bump=patch"
+
+[tasks."release:minor"]
+description = "Dispatch the release workflow to cut a minor release"
+run = "gh workflow run release.yml -f bump=minor"
+
+[tasks."release:major"]
+description = "Dispatch the release workflow to cut a major release"
+run = "gh workflow run release.yml -f bump=major"
+
+[tasks."release:dev"]
+description = "Dispatch the release workflow to refresh the rolling dev build from main (use `gh workflow run release.yml -f bump=dev --ref <branch>` for a branch)"
+run = "gh workflow run release.yml -f bump=dev"
 
 [tasks.clean]
 description = "Remove build artifacts"

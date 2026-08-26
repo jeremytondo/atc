@@ -7,6 +7,24 @@ The active tree holds the Go scaffold for the rebuild: a single Go module
 rooted at the repository with one entrypoint, [`cmd/atc`](cmd/atc/). Run
 `atc help` (or a bare `atc`) for the command reference.
 
+## Installing and upgrading
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jeremytondo/atc/main/install.sh | sh
+```
+
+Installs the latest release into `~/.local/bin` (override with
+`ATC_INSTALL_DIR`, pin a tag with `ATC_VERSION`). Supported platforms:
+macOS arm64, Linux amd64/arm64. After the first install the binary keeps
+itself current:
+
+- `atc upgrade` — move to the latest production release
+- `atc upgrade --dev` — install the current rolling dev build
+
+Releases are cut by the [Release workflow](.github/workflows/release.yml):
+`mise run release:patch|minor|major|dev`, `gh workflow run release.yml`, or
+the Actions "Run workflow" button.
+
 ## Building and testing
 
 Tools and tasks are managed by [mise](https://mise.jdx.dev) via
@@ -29,5 +47,5 @@ Tools and tasks are managed by [mise](https://mise.jdx.dev) via
   that may inform the rebuild. They are evidence, not production code or
   settled architecture.
 
-Existing GitHub releases are artifacts of the archived product and should not
-be treated as builds of the new implementation.
+GitHub releases `v0.0.x` and older are artifacts of the archived product;
+the rebuild's releases start at `v0.1.0`.
