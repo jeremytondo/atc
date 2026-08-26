@@ -101,10 +101,35 @@ jobs:
           # below. Editing the release cannot do this — target_commitish is
           # ignored once a tag exists.
           git push --force origin "$GITHUB_SHA:refs/tags/dev"
+          short_sha=${GITHUB_SHA:0:7}
+          printf -v notes '%s\n' \
+            'The latest development build of ATC. It may be unstable.' \
+            '' \
+            '### Install on a new machine' \
+            '' \
+            '```sh' \
+            'curl -fsSL https://raw.githubusercontent.com/jeremytondo/atc/main/install.sh | env ATC_VERSION=dev sh' \
+            '```' \
+            '' \
+            '### Update an existing installation' \
+            '' \
+            '```sh' \
+            'atc upgrade --dev' \
+            '```' \
+            '' \
+            'To return to the latest production release:' \
+            '' \
+            '```sh' \
+            'atc upgrade' \
+            '```' \
+            '' \
+            "Current build: \`v${version}\` from [\`${GITHUB_REF_NAME}@${short_sha}\`](https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA})." \
+            '' \
+            'The `dev` tag and attached downloads are replaced whenever a new development build is published.'
           if ! gh release view dev >/dev/null 2>&1; then
-            gh release create dev --prerelease --title "dev (rolling)" \
-              --notes "Rolling development build."
+            gh release create dev --prerelease \
+              --title "ATC development build (rolling)" --notes "$notes"
           fi
           gh release upload dev dist/*.tar.gz dist/checksums.txt --clobber
           gh release edit dev --prerelease \
-            --notes "Rolling development build; every dev cut clobbers these assets and moves the dev tag. Current: v${version} (${GITHUB_REF_NAME}@${GITHUB_SHA}). Install with \`atc upgrade --dev\`."
+            --title "ATC development build (rolling)" --notes "$notes"

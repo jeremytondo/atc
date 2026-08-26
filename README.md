@@ -14,9 +14,15 @@ curl -fsSL https://raw.githubusercontent.com/jeremytondo/atc/main/install.sh | s
 ```
 
 Installs the latest release into `~/.local/bin` (override with
-`ATC_INSTALL_DIR`, pin a tag with `ATC_VERSION`). Supported platforms:
-macOS arm64, Linux amd64/arm64. After the first install the binary keeps
-itself current:
+`ATC_INSTALL_DIR`, select a tag with `ATC_VERSION`). To install the rolling
+development build directly on a new machine:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jeremytondo/atc/main/install.sh | env ATC_VERSION=dev sh
+```
+
+Supported platforms: macOS arm64, Linux amd64/arm64. After the first install
+the binary keeps itself current:
 
 - `atc upgrade` — move to the latest production release
 - `atc upgrade --dev` — install the current rolling dev build

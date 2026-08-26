@@ -3,14 +3,14 @@
 # release, verifies it against checksums.txt, and installs it to
 # ~/.local/bin on macOS and Linux alike. First install only: after this,
 # `atc upgrade` owns staying current (and `atc upgrade --dev` moves a
-# machine onto the rolling dev build — there is deliberately no dev knob
-# here).
+# machine onto the rolling dev build). Set ATC_VERSION=dev to install the
+# rolling dev build directly on a new machine.
 #
 #   curl -fsSL https://raw.githubusercontent.com/jeremytondo/atc/main/install.sh | sh
 #
 # Knobs:
 #   ATC_INSTALL_DIR  install directory (default: ~/.local/bin)
-#   ATC_VERSION      pin a release tag (e.g. v0.1.0) instead of the latest
+#   ATC_VERSION      release tag (e.g. immutable v0.1.0 or rolling dev)
 set -eu
 
 REPO="jeremytondo/atc"
