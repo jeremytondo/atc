@@ -1,4 +1,4 @@
-// Package server is the ATC HTTP chassis (ATC-259): a Huma v2 API mounted
+// Package server is the ATC HTTP server (ATC-259): a Huma v2 API mounted
 // on a standard http.ServeMux, fronted by transport-level middleware for
 // auth and version headers.
 //
@@ -29,17 +29,6 @@ const (
 	ServerVersionHeader = "Atc-Server-Version"
 )
 
-// Options configures the chassis.
-type Options struct {
-	// Version is the server build identity, sent on every response.
-	Version string
-	// Verify reports whether an Authorization header value presents the
-	// current bearer token (authtoken.Store.Verify in production).
-	Verify func(authorization string) bool
-	// Logger receives request-level events. Required.
-	Logger *slog.Logger
-}
-
 // HealthOutput doubles as the response contract and its documentation; the
 // generated OpenAPI schema is derived from it.
 type HealthOutput struct {
@@ -50,13 +39,26 @@ type HealthOutput struct {
 }
 
 // NewHandler builds the /v1 API surface plus /openapi.json and /docs.
+// verify reports whether an Authorization header value presents the
+// current bearer token (authtoken.Store.Verify in production). version is
+// the server build identity, sent on every response. A nil logger
+// discards request-level events.
+//
 // Middleware order (outermost first): version headers, then auth, then
 // routing — headers appear on every response including 401s, and
 // unauthenticated callers cannot probe which routes exist.
-func NewHandler(opts Options) http.Handler {
+func NewHandler(verify func(authorization string) bool, version string, logger *slog.Logger) http.Handler {
+	if verify == nil {
+		// Without auth the server would panic on the first request; fail
+		// at construction instead.
+		panic("server.NewHandler: verify must not be nil")
+	}
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
 	mux := http.NewServeMux()
 
-	config := huma.DefaultConfig("ATC API", opts.Version)
+	config := huma.DefaultConfig("ATC API", version)
 	config.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
 		"bearerAuth": {Type: "http", Scheme: "bearer"},
 	}
@@ -74,26 +76,26 @@ func NewHandler(opts Options) http.Handler {
 	}, func(ctx context.Context, _ *struct{}) (*HealthOutput, error) {
 		out := &HealthOutput{}
 		out.Body.Status = "ok"
-		out.Body.Version = opts.Version
+		out.Body.Version = version
 		return out, nil
 	})
 
-	return withVersionHeaders(opts, withAuth(opts, mux))
+	return withVersionHeaders(version, logger, withAuth(verify, mux))
 }
 
-func withVersionHeaders(opts Options, next http.Handler) http.Handler {
+func withVersionHeaders(version string, logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(ServerVersionHeader, opts.Version)
-		if client := r.Header.Get(ClientVersionHeader); client != "" && client != opts.Version {
-			opts.Logger.Debug("client version skew", "client", client, "server", opts.Version)
+		w.Header().Set(ServerVersionHeader, version)
+		if client := r.Header.Get(ClientVersionHeader); client != "" && client != version {
+			logger.Debug("client version skew", "client", client, "server", version)
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-func withAuth(opts Options, next http.Handler) http.Handler {
+func withAuth(verify func(authorization string) bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !opts.Verify(r.Header.Get("Authorization")) {
+		if !verify(r.Header.Get("Authorization")) {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="atc"`)
 			// Same RFC 7807 shape Huma uses for its own errors, so clients
 			// see one error contract regardless of which layer rejected.

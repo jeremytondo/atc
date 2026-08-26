@@ -22,11 +22,7 @@ func fake(t *testing.T, script string, logs io.Writer) *Supervisor {
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script+"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return &Supervisor{
-		Executable: path,
-		Port:       7331,
-		Logger:     slog.New(slog.NewTextHandler(logs, nil)),
-	}
+	return NewSupervisor(path, 7331, slog.New(slog.NewTextHandler(logs, nil)))
 }
 
 func waitFor(t *testing.T, what string, cond func() bool) {
@@ -50,12 +46,12 @@ func TestResolveExecutableNotFound(t *testing.T) {
 
 func TestResolveExecutableCustomPath(t *testing.T) {
 	s := fake(t, "exit 0", io.Discard)
-	resolved, err := ResolveExecutable(s.Executable)
+	resolved, err := ResolveExecutable(s.executable)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved != s.Executable {
-		t.Errorf("resolved %q, want %q", resolved, s.Executable)
+	if resolved != s.executable {
+		t.Errorf("resolved %q, want %q", resolved, s.executable)
 	}
 }
 
@@ -154,6 +150,21 @@ func TestServeFailureCarriesStderr(t *testing.T) {
 	err := s.serve(context.Background(), "host.tailnet.ts.net")
 	if err == nil || !strings.Contains(err.Error(), "serve not permitted") {
 		t.Errorf("err = %v, want stderr detail", err)
+	}
+}
+
+// A nil logger must default to discard: Run logs every failed attempt and
+// previously dereferenced the logger unguarded.
+func TestNilLoggerDefaultsToDiscard(t *testing.T) {
+	s := NewSupervisor(fake(t, "exit 1", io.Discard).executable, 7331, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	done := make(chan struct{})
+	go func() { s.Run(ctx); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not stop after cancellation")
 	}
 }
 

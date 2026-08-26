@@ -14,12 +14,12 @@ const (
 	testVersion = "v1.2.3-test"
 )
 
+func testVerify(authorization string) bool {
+	return authorization == "Bearer "+testToken
+}
+
 func newHandler() http.Handler {
-	return NewHandler(Options{
-		Version: testVersion,
-		Verify:  func(authorization string) bool { return authorization == "Bearer "+testToken },
-		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
+	return NewHandler(testVerify, testVersion, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 func get(handler http.Handler, path string, token bool) *httptest.ResponseRecorder {
@@ -71,6 +71,20 @@ func TestServerVersionHeaderOnEveryResponse(t *testing.T) {
 		if got := rec.Header().Get(ServerVersionHeader); got != testVersion {
 			t.Errorf("%s: %s = %q, want %q", name, ServerVersionHeader, got, testVersion)
 		}
+	}
+}
+
+// A nil logger must default to discard: the skew log on a version-skewed
+// request was previously a latent nil dereference.
+func TestNilLoggerDefaultsToDiscard(t *testing.T) {
+	handler := NewHandler(testVerify, testVersion, nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set(ClientVersionHeader, "v0.0.0-skewed")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("skewed request with nil logger: got %d, want 200", rec.Code)
 	}
 }
 

@@ -355,11 +355,7 @@ func serverRun(cmd *cobra.Command, _ []string) error {
 
 	version := versionString()
 	logger.Info("server starting", "version", version, "pid", os.Getpid())
-	handler := server.NewHandler(server.Options{
-		Version: version,
-		Verify:  store.Verify,
-		Logger:  logger,
-	})
+	handler := server.NewHandler(store.Verify, version, logger)
 
 	listener, err := net.Listen("tcp", net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port)))
 	if err != nil {
@@ -371,11 +367,7 @@ func serverRun(cmd *cobra.Command, _ []string) error {
 	// child before the process exits.
 	var exposure sync.WaitGroup
 	if cfg.Tailscale {
-		supervisor := &tailscale.Supervisor{
-			Executable: tailscaleExecutable,
-			Port:       listener.Addr().(*net.TCPAddr).Port,
-			Logger:     logger,
-		}
+		supervisor := tailscale.NewSupervisor(tailscaleExecutable, listener.Addr().(*net.TCPAddr).Port, logger)
 		exposure.Go(func() { supervisor.Run(ctx) })
 	}
 
