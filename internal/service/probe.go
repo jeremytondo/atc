@@ -41,20 +41,24 @@ type probeOutcome struct {
 }
 
 func probeOnce(ctx context.Context, opts Options, token string) probeOutcome {
+	var serverVersion string
 	client := api.NewClient("http://"+probeAddr(opts.Config), token, opts.Version,
-		&http.Client{Timeout: probeTimeout})
-	health, err := client.Health(ctx)
+		&http.Client{Timeout: probeTimeout},
+		func(version string) { serverVersion = version })
+	_, err := client.Health(ctx)
 	if err == nil {
-		return probeOutcome{responding: true, healthy: true, serverVersion: health.Version}
+		return probeOutcome{responding: true, healthy: true, serverVersion: serverVersion}
 	}
+	// Any *Problem means an HTTP response arrived — including a 2xx whose
+	// body was not decodable; anything else means nothing answered.
 	problem, ok := errors.AsType[*api.Problem](err)
 	if !ok {
-		return probeOutcome{} // no HTTP response at all
+		return probeOutcome{}
 	}
 	return probeOutcome{
 		responding:    true,
 		unauthorized:  problem.Status == http.StatusUnauthorized,
-		serverVersion: problem.ServerVersion,
+		serverVersion: serverVersion,
 	}
 }
 

@@ -41,7 +41,7 @@ func testServer(t *testing.T) *httptest.Server {
 
 func TestHealth(t *testing.T) {
 	srv := testServer(t)
-	client := NewClient(srv.URL, testToken, testClientVersion, nil)
+	client := NewClient(srv.URL, testToken, testClientVersion, nil, nil)
 	health, err := client.Health(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +61,7 @@ func TestRequestCarriesTokenAndClientVersion(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := NewClient(srv.URL, testToken, testClientVersion, nil).Health(context.Background()); err != nil {
+	if _, err := NewClient(srv.URL, testToken, testClientVersion, nil, nil).Health(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if authorization != "Bearer "+testToken {
@@ -78,7 +78,7 @@ func TestRequestCarriesTokenAndClientVersion(t *testing.T) {
 // credentials.
 func TestTokenlessProbeReadsVersionOffUnauthorized(t *testing.T) {
 	srv := testServer(t)
-	_, err := NewClient(srv.URL, "", testClientVersion, nil).Health(context.Background())
+	_, err := NewClient(srv.URL, "", testClientVersion, nil, nil).Health(context.Background())
 	problem, ok := errors.AsType[*Problem](err)
 	if !ok {
 		t.Fatalf("err = %v, want *Problem", err)
@@ -94,6 +94,68 @@ func TestTokenlessProbeReadsVersionOffUnauthorized(t *testing.T) {
 	}
 }
 
+// The Atc-Server-Version header is reported to the callback on every
+// response that carries one, success and rejection alike — the client's
+// half of the skew handshake.
+func TestServerVersionCallbackOnEveryResponse(t *testing.T) {
+	srv := testServer(t)
+	for name, token := range map[string]string{"success": testToken, "unauthorized": ""} {
+		var reported string
+		client := NewClient(srv.URL, token, testClientVersion, nil,
+			func(version string) { reported = version })
+		_, _ = client.Health(context.Background())
+		if reported != testServerVersion {
+			t.Errorf("%s: callback got %q, want %q", name, reported, testServerVersion)
+		}
+	}
+}
+
+// A 2xx whose body cannot be decoded is still an HTTP response: it must
+// surface as *Problem carrying the real status and server version, not as
+// a plain error a caller would mistake for "nothing answered".
+func TestMalformedSuccessBodyIsAProblem(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(ServerVersionHeader, testServerVersion)
+		_, _ = w.Write([]byte("<html>not json</html>"))
+	}))
+	defer srv.Close()
+
+	_, err := NewClient(srv.URL, testToken, testClientVersion, nil, nil).Health(context.Background())
+	problem, ok := errors.AsType[*Problem](err)
+	if !ok {
+		t.Fatalf("err = %v, want *Problem", err)
+	}
+	if problem.Status != http.StatusOK {
+		t.Errorf("Status = %d, want 200", problem.Status)
+	}
+	if problem.ServerVersion != testServerVersion {
+		t.Errorf("ServerVersion = %q, want %q", problem.ServerVersion, testServerVersion)
+	}
+}
+
+// The problem body's status member is advisory; branching trusts what the
+// transport actually said, immune to a lying or rewritten body.
+func TestProblemStatusComesFromTransport(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(Problem{Title: "Server Error", Status: http.StatusInternalServerError, Detail: "lying body"})
+	}))
+	defer srv.Close()
+
+	_, err := NewClient(srv.URL, "", testClientVersion, nil, nil).Health(context.Background())
+	problem, ok := errors.AsType[*Problem](err)
+	if !ok {
+		t.Fatalf("err = %v, want *Problem", err)
+	}
+	if problem.Status != http.StatusUnauthorized {
+		t.Errorf("Status = %d, want the transport's 401", problem.Status)
+	}
+	if problem.Detail != "lying body" {
+		t.Errorf("Detail = %q, want the body's fields retained", problem.Detail)
+	}
+}
+
 // A non-problem error body (a proxy page, some other process on the port)
 // degrades to the status line; the caller still gets a typed error.
 func TestNonProblemBodyDegradesToStatus(t *testing.T) {
@@ -103,7 +165,7 @@ func TestNonProblemBodyDegradesToStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := NewClient(srv.URL, testToken, testClientVersion, nil).Health(context.Background())
+	_, err := NewClient(srv.URL, testToken, testClientVersion, nil, nil).Health(context.Background())
 	problem, ok := errors.AsType[*Problem](err)
 	if !ok {
 		t.Fatalf("err = %v, want *Problem", err)
@@ -120,7 +182,7 @@ func TestTransportErrorIsNotAProblem(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	srv.Close() // nothing listening anymore
 
-	_, err := NewClient(srv.URL, testToken, testClientVersion, nil).Health(context.Background())
+	_, err := NewClient(srv.URL, testToken, testClientVersion, nil, nil).Health(context.Background())
 	if err == nil {
 		t.Fatal("want an error from a dead server")
 	}
