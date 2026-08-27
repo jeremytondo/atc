@@ -12,6 +12,9 @@ const (
 	idPrefix       = "term-"
 	idSuffixLength = 5
 	idAlphabet     = "23456789bcdfghjkmnpqrstvwxyz"
+	// IDLength is the fixed byte length of every terminal ID — what the
+	// zmx adapter budgets socket paths against.
+	IDLength = len(idPrefix) + idSuffixLength
 )
 
 // randomID mints one candidate ID; the caller collision-checks it against
