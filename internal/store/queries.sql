@@ -1,15 +1,16 @@
 -- Terminals repository queries (sqlc input). Nothing outside a repository
 -- speaks SQL; internal/store/terminals.go is the only consumer.
 
--- name: InsertTerminal :exec
+-- Insertion doubles as the mint-time ID collision check: a conflicting id
+-- inserts zero rows and the caller re-rolls, with no check-then-insert
+-- window.
+-- name: InsertTerminal :execrows
 INSERT INTO terminals (id, name, directory, app, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?);
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (id) DO NOTHING;
 
 -- name: ListTerminals :many
 SELECT * FROM terminals ORDER BY created_at, id;
-
--- name: TerminalIDTaken :one
-SELECT EXISTS (SELECT 1 FROM terminals WHERE id = ?);
 
 -- name: UpdateTerminalName :execrows
 UPDATE terminals SET name = ?, updated_at = ? WHERE id = ?;

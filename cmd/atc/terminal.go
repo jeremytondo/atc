@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -62,6 +63,19 @@ func newAPIClient(cmd *cobra.Command) (*api.Client, string, error) {
 	return api.NewClient(baseURL, token, clientVersion, nil, onServerVersion), baseURL, nil
 }
 
+// runWithClient wraps an API-backed command body with the shared client
+// construction and error path — every terminal/api command starts the same
+// way.
+func runWithClient(body func(cmd *cobra.Command, args []string, client *api.Client, baseURL string) error) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		client, baseURL, err := newAPIClient(cmd)
+		if err != nil {
+			return err
+		}
+		return body(cmd, args, client, baseURL)
+	}
+}
+
 func newTerminalCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "terminal",
@@ -85,7 +99,7 @@ disconnects and ATC server restarts; attach with ` + "`atc terminal attach <id>`
 With --app the command runs through your login shell (profile and rc files
 loaded); without it you get a plain interactive shell.`,
 		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: runWithClient(func(cmd *cobra.Command, _ []string, client *api.Client, _ string) error {
 			flags := cmd.Flags()
 			params := api.TerminalCreateParams{}
 			var err error
@@ -98,17 +112,13 @@ loaded); without it you get a plain interactive shell.`,
 			if params.App, err = flags.GetString("app"); err != nil {
 				return err
 			}
-			client, _, err := newAPIClient(cmd)
-			if err != nil {
-				return err
-			}
 			terminal, err := client.CreateTerminal(cmd.Context(), params)
 			if err != nil {
 				return err
 			}
 			printTerminal(cmd.OutOrStdout(), terminal)
 			return nil
-		},
+		}),
 	}
 	cmd.Flags().String("name", "", "display name (defaults from --app, else \"Shell\")")
 	cmd.Flags().String("dir", "", "working directory (defaults to the server user's home)")
@@ -121,18 +131,14 @@ func newTerminalGetCmd() *cobra.Command {
 		Use:   "get <id>",
 		Short: "Show one terminal",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, _, err := newAPIClient(cmd)
-			if err != nil {
-				return err
-			}
+		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, _ string) error {
 			terminal, err := client.Terminal(cmd.Context(), args[0])
 			if err != nil {
 				return err
 			}
 			printTerminal(cmd.OutOrStdout(), terminal)
 			return nil
-		},
+		}),
 	}
 }
 
@@ -143,11 +149,7 @@ func newTerminalListCmd() *cobra.Command {
 		Long: `List every terminal. Exited and missing terminals stay listed — an exit you
 never saw is information, not garbage — until you delete them.`,
 		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			client, _, err := newAPIClient(cmd)
-			if err != nil {
-				return err
-			}
+		RunE: runWithClient(func(cmd *cobra.Command, _ []string, client *api.Client, _ string) error {
 			terminals, err := client.Terminals(cmd.Context())
 			if err != nil {
 				return err
@@ -163,7 +165,7 @@ never saw is information, not garbage — until you delete them.`,
 				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", terminal.ID, statusLabel(terminal), terminal.Name, terminal.Directory)
 			}
 			return w.Flush()
-		},
+		}),
 	}
 }
 
@@ -172,12 +174,8 @@ func newTerminalUpdateCmd() *cobra.Command {
 		Use:   "update <id>",
 		Short: "Update a terminal (name is the only mutable field)",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, _ string) error {
 			name, err := cmd.Flags().GetString("name")
-			if err != nil {
-				return err
-			}
-			client, _, err := newAPIClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -187,7 +185,7 @@ func newTerminalUpdateCmd() *cobra.Command {
 			}
 			printTerminal(cmd.OutOrStdout(), terminal)
 			return nil
-		},
+		}),
 	}
 	cmd.Flags().String("name", "", "new display name")
 	_ = cmd.MarkFlagRequired("name")
@@ -201,17 +199,13 @@ func newTerminalDeleteCmd() *cobra.Command {
 		Long: `Stop the session (best-effort — the record is removed even when zmx is
 unhealthy) and delete the terminal.`,
 		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, _, err := newAPIClient(cmd)
-			if err != nil {
-				return err
-			}
+		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, _ string) error {
 			if err := client.DeleteTerminal(cmd.Context(), args[0]); err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "deleted %s\n", args[0])
+			_, err := fmt.Fprintf(cmd.OutOrStdout(), "deleted %s\n", args[0])
 			return err
-		},
+		}),
 	}
 }
 
@@ -223,11 +217,7 @@ func newTerminalAttachCmd() *cobra.Command {
 the session's socket lives on the server's machine. The terminal must be
 running — attach never resurrects or creates sessions.`,
 		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, baseURL, err := newAPIClient(cmd)
-			if err != nil {
-				return err
-			}
+		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, baseURL string) error {
 			if !isLoopback(baseURL) {
 				return fmt.Errorf("atc terminal attach is local-only (the session socket lives on the server's machine); this client targets %s", baseURL)
 			}
@@ -245,6 +235,14 @@ running — attach never resurrects or creates sessions.`,
 			if err != nil {
 				return err
 			}
+			// A loopback URL does not prove the server shares this
+			// process's namespace (an SSH-forwarded remote server, a
+			// different XDG_STATE_HOME). A session the API calls running
+			// must have its socket here; anything else would hand the TTY
+			// to zmx's auto-create.
+			if _, err := os.Stat(filepath.Join(socketDir, terminal.ID)); err != nil {
+				return fmt.Errorf("terminal %s has no session socket under %s — the server appears to be remote (an SSH-forwarded port?) or running with a different state directory", terminal.ID, socketDir)
+			}
 			executable, argv, env, err := zmx.AttachCommand(socketDir, terminal.ID)
 			if err != nil {
 				return err
@@ -252,7 +250,7 @@ running — attach never resurrects or creates sessions.`,
 			// Exec replaces this process: the user's real TTY belongs to
 			// zmx until detach.
 			return syscall.Exec(executable, argv, env)
-		},
+		}),
 	}
 }
 
@@ -303,7 +301,7 @@ Examples:
   atc api -X POST -d '{"app":"hx"}' /v1/terminals
   atc api /v1/events`,
 		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, _ string) error {
 			flags := cmd.Flags()
 			method, err := flags.GetString("method")
 			if err != nil {
@@ -325,10 +323,6 @@ Examples:
 					method = "POST"
 				}
 			}
-			client, _, err := newAPIClient(cmd)
-			if err != nil {
-				return err
-			}
 			resp, err := client.Raw(cmd.Context(), strings.ToUpper(method), args[0], body)
 			if err != nil {
 				return err
@@ -343,7 +337,7 @@ Examples:
 				return fmt.Errorf("HTTP %s", resp.Status)
 			}
 			return nil
-		},
+		}),
 	}
 	cmd.Flags().StringP("method", "X", "", "HTTP method (default GET, or POST with --data)")
 	cmd.Flags().StringP("data", "d", "", "request body; \"-\" reads stdin")

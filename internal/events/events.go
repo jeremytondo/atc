@@ -6,12 +6,17 @@
 // is disconnected to catch up over a fresh connection — the notification
 // pipe is not durable history.
 //
-// Sequence numbers restart at 1 with the server process; a cursor from an
-// earlier run is off the backlog by definition and answered with a resync,
-// the same signal as falling behind (the Kubernetes watch/relist contract).
+// Sequence numbers restart with the server process at a random base, so a
+// cursor from an earlier run cannot alias into the new run's narrow live
+// window: it lands outside the backlog and is answered with a resync, the
+// same signal as falling behind (the Kubernetes watch/relist contract).
 package events
 
-import "sync"
+import (
+	"crypto/rand"
+	"encoding/binary"
+	"sync"
+)
 
 // Change is one numbered change event: what changed, never the state
 // itself.
@@ -42,11 +47,22 @@ type Hub struct {
 }
 
 // NewHub returns a hub retaining the last backlog events for catch-up.
+// Sequences start at a random per-process base (see the package comment).
 func NewHub(backlog int) *Hub {
+	var buf [8]byte
+	rand.Read(buf[:])
+	// Confined well under 2^53 so a sequence survives JSON number decoding
+	// in any future client, with headroom that no run ever overflows.
+	base := binary.BigEndian.Uint64(buf[:])%(1<<50) + 1<<20
+	return NewHubAt(backlog, base)
+}
+
+// NewHubAt pins the first sequence number — deterministic hubs for tests.
+func NewHubAt(backlog int, firstSeq uint64) *Hub {
 	return &Hub{
 		ring:        make([]Change, 0, backlog),
 		capacity:    backlog,
-		nextSeq:     1,
+		nextSeq:     firstSeq,
 		subscribers: make(map[chan Change]struct{}),
 	}
 }

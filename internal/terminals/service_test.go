@@ -137,7 +137,7 @@ func newFixture(t *testing.T) *fixture {
 	service := NewService(Options{
 		Repository: s.Terminals(),
 		Adapter:    adapter,
-		Markers:    MarkerDir(markers),
+		MarkerDir:  markers,
 		Hub:        events.NewHub(64),
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:        clock.Now,
@@ -421,6 +421,86 @@ func TestDeleteAbsentIsNotFound(t *testing.T) {
 	}
 }
 
+// A second delete of the same terminal is a 404, not a second success with
+// a duplicate deleted event.
+func TestSecondDeleteIsNotFound(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	terminal, err := f.service.Create(ctx, api.TerminalCreateParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := f.hub.Subscribe(0, false)
+	defer sub.Close()
+	if err := f.service.Delete(ctx, terminal.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.service.Delete(ctx, terminal.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second Delete = %v, want ErrNotFound", err)
+	}
+	deleted := 0
+	for {
+		select {
+		case change := <-sub.C:
+			if change.Type == api.EventTerminalDeleted {
+				deleted++
+			}
+			continue
+		default:
+		}
+		break
+	}
+	if deleted != 1 {
+		t.Errorf("terminal.deleted published %d times, want 1", deleted)
+	}
+}
+
+// A delete whose request context is already cancelled still completes: the
+// user's intent, once durable, must not be abandoned by a disconnect.
+func TestDeleteSurvivesCancelledContext(t *testing.T) {
+	f := newFixture(t)
+	terminal, err := f.service.Create(context.Background(), api.TerminalCreateParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := f.service.Delete(cancelled, terminal.ID); err != nil {
+		t.Fatalf("Delete with cancelled context = %v, want nil", err)
+	}
+	if _, err := f.service.Get(terminal.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("record survived a cancelled-context delete: %v", err)
+	}
+}
+
+// Exit evidence predating the record belongs to an earlier incarnation of
+// a reused ID and is never adopted.
+func TestStaleMarkerFromEarlierIncarnationIgnored(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	terminal, err := f.service.Create(ctx, api.TerminalCreateParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.adapter.remove(terminal.ID)
+	// The marker's exit predates the record's creation (fixture clock
+	// starts 2026-08-27T12:00) — a leftover from a dead incarnation.
+	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	code := 3
+	marker := exitmarker.Marker{TerminalID: terminal.ID, PID: 1, StartedAt: old, ExitedAt: &old, Code: &code}
+	if err := exitmarker.Write(exitmarker.Path(f.markers, terminal.ID), marker); err != nil {
+		t.Fatal(err)
+	}
+	f.service.Reconcile(ctx)
+	got, err := f.service.Get(terminal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != api.TerminalMissing {
+		t.Errorf("status = %s, want missing (stale evidence rejected)", got.Status)
+	}
+}
+
 // The view rebuilds from the database after a restart and the startup
 // reconcile settles statuses before anything reads.
 func TestLoadRebuildsView(t *testing.T) {
@@ -440,7 +520,7 @@ func TestLoadRebuildsView(t *testing.T) {
 	restarted := NewService(Options{
 		Repository: f.service.repository,
 		Adapter:    f.adapter,
-		Markers:    MarkerDir(f.markers),
+		MarkerDir:  f.markers,
 		Hub:        events.NewHub(64),
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:        f.clock.Now,

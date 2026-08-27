@@ -94,21 +94,28 @@ func (c *Client) DeleteTerminal(ctx context.Context, id string) error {
 
 // Raw performs one authenticated request over the contract and returns the
 // HTTP response for the caller to stream and close — the `atc api` gateway.
-// It adds the same auth and version headers as every typed method and
-// reports the server version, but leaves status handling to the caller.
+// It rides the same request path as every typed method (auth, version
+// headers, skew callback) but leaves status handling to the caller.
 func (c *Client) Raw(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
+	return c.send(ctx, method, path, body)
+}
+
+// send is the one place requests are built and executed: bearer token,
+// version header both ways, and the server-version callback live here for
+// every exchange, typed or raw.
+func (c *Client) send(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
 	if err != nil {
 		return nil, err
 	}
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 	req.Header.Set(ClientVersionHeader, c.version)
 	resp, err := c.httpClient.Do(req)
@@ -137,18 +144,7 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 		}
 		body = bytes.NewReader(encoded)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
-	if err != nil {
-		return fmt.Errorf("building %s %s request: %w", method, path, err)
-	}
-	if in != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-	req.Header.Set(ClientVersionHeader, c.version)
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.send(ctx, method, path, body)
 	if err != nil {
 		return fmt.Errorf("%s %s: %w", method, path, err)
 	}
@@ -160,9 +156,6 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 		_ = resp.Body.Close()
 	}()
 	serverVersion := resp.Header.Get(ServerVersionHeader)
-	if c.onServerVersion != nil && serverVersion != "" {
-		c.onServerVersion(serverVersion)
-	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return problemFrom(resp, serverVersion)
 	}

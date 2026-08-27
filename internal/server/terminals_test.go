@@ -10,7 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
+
 	"path/filepath"
 	"strings"
 	"sync"
@@ -21,6 +21,7 @@ import (
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/events"
+	"github.com/jeremytondo/atc/internal/exitmarker"
 	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/terminals"
 )
@@ -93,7 +94,9 @@ func newFixture(t *testing.T) *fixture {
 	t.Cleanup(func() { _ = db.Close() })
 
 	adapter := &fakeAdapter{sessions: map[string]bool{}}
-	hub := events.NewHub(8) // small ring so overflow is testable
+	// A small ring so overflow is testable, pinned to sequence 1 so the
+	// SSE assertions are deterministic (production bases are random).
+	hub := events.NewHubAt(8, 1)
 	var clock struct {
 		sync.Mutex
 		now time.Time
@@ -103,7 +106,7 @@ func newFixture(t *testing.T) *fixture {
 	service := terminals.NewService(terminals.Options{
 		Repository: db.Terminals(),
 		Adapter:    adapter,
-		Markers:    terminals.MarkerDir(markers),
+		MarkerDir:  markers,
 		Hub:        hub,
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now: func() time.Time {
@@ -250,18 +253,10 @@ func TestDeleteUnderUnreachableBackend(t *testing.T) {
 func writeExitMarker(t *testing.T, dir, id string, code int) {
 	t.Helper()
 	now := time.Now().UTC()
-	marker := struct {
-		Version    int        `json:"version"`
-		TerminalID string     `json:"terminalId"`
-		StartedAt  time.Time  `json:"startedAt"`
-		ExitedAt   *time.Time `json:"exitedAt"`
-		Code       *int       `json:"code"`
-	}{1, id, now.Add(-time.Second), &now, &code}
-	data, err := json.Marshal(marker)
+	err := exitmarker.Write(exitmarker.Path(dir, id), exitmarker.Marker{
+		TerminalID: id, StartedAt: now.Add(-time.Second), ExitedAt: &now, Code: &code,
+	})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, id+".json"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 }

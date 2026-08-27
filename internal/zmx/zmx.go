@@ -61,19 +61,15 @@ type Options struct {
 	MarkerDir string
 	// WrapperExecutable is the atc binary, re-exec'd as `atc __child`.
 	WrapperExecutable string
-	// Executable names the zmx binary; a bare name resolves on PATH,
-	// lazily, so a missing zmx degrades statuses instead of failing boot.
-	Executable string
-	Logger     *slog.Logger
+	Logger            *slog.Logger
 }
 
 // Adapter implements terminals.Adapter over the zmx CLI.
 type Adapter struct {
-	socketDir  string
-	markerDir  string
-	wrapper    string
-	executable string
-	logger     *slog.Logger
+	socketDir string
+	markerDir string
+	wrapper   string
+	logger    *slog.Logger
 
 	mu       sync.Mutex
 	resolved string // memoized successful LookPath result
@@ -103,39 +99,42 @@ func New(opts Options) (*Adapter, error) {
 	if err := os.Chmod(socketDir, 0o700); err != nil {
 		return nil, err
 	}
-	if opts.Executable == "" {
-		opts.Executable = "zmx"
-	}
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)
 	}
 	return &Adapter{
-		socketDir:  socketDir,
-		markerDir:  opts.MarkerDir,
-		wrapper:    opts.WrapperExecutable,
-		executable: opts.Executable,
-		logger:     opts.Logger,
+		socketDir: socketDir,
+		markerDir: opts.MarkerDir,
+		wrapper:   opts.WrapperExecutable,
+		logger:    opts.Logger,
 	}, nil
 }
 
-// zmx resolves the executable, memoizing success so a transiently missing
-// binary heals on a later call.
+// zmx resolves the executable on PATH, memoizing success so a transiently
+// missing binary heals on a later call.
 func (a *Adapter) zmx() (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.resolved != "" {
 		return a.resolved, nil
 	}
-	if strings.Contains(a.executable, string(os.PathSeparator)) {
-		a.resolved = a.executable
-		return a.resolved, nil
-	}
-	path, err := exec.LookPath(a.executable)
+	path, err := exec.LookPath("zmx")
 	if err != nil {
-		return "", fmt.Errorf("zmx executable %q not found on PATH", a.executable)
+		return "", errors.New("zmx executable not found on PATH")
 	}
 	a.resolved = path
 	return path, nil
+}
+
+// lookupSession scans one inventory for a name: present reports whether
+// the session exists at all, reachable whether it answered its probe.
+func lookupSession(sessions []terminals.Session, name string) (present, reachable bool) {
+	for _, session := range sessions {
+		if session.Name == name {
+			return true, session.Reachable
+		}
+	}
+	return false, false
 }
 
 // Env returns the environment for zmx child processes: the parent
@@ -235,10 +234,8 @@ func (a *Adapter) Create(ctx context.Context, id string, spec terminals.CreateSp
 	if err != nil {
 		return fmt.Errorf("create %s: %w", id, err)
 	}
-	for _, session := range inventory {
-		if session.Name == id {
-			return fmt.Errorf("create %s: session already exists", id)
-		}
+	if present, _ := lookupSession(inventory, id); present {
+		return fmt.Errorf("create %s: session already exists", id)
 	}
 
 	argv := []string{"attach", id, a.wrapper, "__child",
@@ -264,12 +261,8 @@ func (a *Adapter) Create(ctx context.Context, id string, spec terminals.CreateSp
 	}()
 
 	settled, err := a.pollInventory(ctx, clientExited, func(sessions []terminals.Session) bool {
-		for _, session := range sessions {
-			if session.Name == id && session.Reachable {
-				return true
-			}
-		}
-		return false
+		_, reachable := lookupSession(sessions, id)
+		return reachable
 	})
 	// Detach: closing the PTY is stdin EOF to the attach client, which
 	// detaches cleanly; the session daemon persists.
@@ -296,13 +289,7 @@ func (a *Adapter) Kill(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("kill %s: %w", id, err)
 	}
-	present := false
-	for _, session := range inventory {
-		if session.Name == id {
-			present = true
-		}
-	}
-	if !present {
+	if present, _ := lookupSession(inventory, id); !present {
 		return nil
 	}
 
@@ -313,12 +300,8 @@ func (a *Adapter) Kill(ctx context.Context, id string) error {
 	_ = cmd.Run()
 
 	gone, err := a.pollInventory(ctx, nil, func(sessions []terminals.Session) bool {
-		for _, session := range sessions {
-			if session.Name == id {
-				return false
-			}
-		}
-		return true
+		present, _ := lookupSession(sessions, id)
+		return !present
 	})
 	if gone {
 		return nil
@@ -344,6 +327,7 @@ func (a *Adapter) pollInventory(ctx context.Context, earlyStop <-chan struct{}, 
 			lastErr = err
 		} else {
 			passes++
+			failures = 0 // the cap is on consecutive failures
 			if done(sessions) {
 				return true, nil
 			}

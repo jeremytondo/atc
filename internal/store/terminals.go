@@ -37,10 +37,11 @@ type Terminals struct {
 	writes *gen.Queries
 }
 
-// Insert persists a new record. Create persists before starting the
-// session, so a record exists for every session ATC ever starts.
-func (t *Terminals) Insert(ctx context.Context, record TerminalRecord) error {
-	return t.writes.InsertTerminal(ctx, gen.InsertTerminalParams{
+// Insert persists a new record; false reports an ID collision (the caller
+// re-rolls). Create persists before starting the session, so a record
+// exists for every session ATC ever starts.
+func (t *Terminals) Insert(ctx context.Context, record TerminalRecord) (bool, error) {
+	n, err := t.writes.InsertTerminal(ctx, gen.InsertTerminalParams{
 		ID:        record.ID,
 		Name:      record.Name,
 		Directory: record.Directory,
@@ -48,6 +49,7 @@ func (t *Terminals) Insert(ctx context.Context, record TerminalRecord) error {
 		CreatedAt: formatTime(record.CreatedAt),
 		UpdatedAt: formatTime(record.UpdatedAt),
 	})
+	return n > 0, err
 }
 
 // List returns every record in creation order.
@@ -67,12 +69,6 @@ func (t *Terminals) List(ctx context.Context) ([]TerminalRecord, error) {
 	return records, nil
 }
 
-// IDTaken reports whether id already names a record (the mint-time
-// collision check).
-func (t *Terminals) IDTaken(ctx context.Context, id string) (bool, error) {
-	return t.reads.TerminalIDTaken(ctx, id)
-}
-
 // UpdateName renames the terminal; false means no such record.
 func (t *Terminals) UpdateName(ctx context.Context, id, name string, at time.Time) (bool, error) {
 	n, err := t.writes.UpdateTerminalName(ctx, gen.UpdateTerminalNameParams{
@@ -90,15 +86,17 @@ func (t *Terminals) RecordStopIntent(ctx context.Context, id string, at time.Tim
 	return n > 0, err
 }
 
-// RecordExit persists exit evidence. The first observation wins: a row
-// that already carries evidence is left untouched.
-func (t *Terminals) RecordExit(ctx context.Context, id string, at time.Time, code *int) error {
+// RecordExit persists exit evidence: exitedAt is the wrapper's recorded
+// exit time, observedAt the reconciliation time stamping updated_at (so a
+// late-observed marker never rewinds the record). The first observation
+// wins: a row that already carries evidence is left untouched.
+func (t *Terminals) RecordExit(ctx context.Context, id string, exitedAt, observedAt time.Time, code *int) error {
 	var exitCode sql.NullInt64
 	if code != nil {
 		exitCode = sql.NullInt64{Int64: int64(*code), Valid: true}
 	}
 	_, err := t.writes.RecordTerminalExit(ctx, gen.RecordTerminalExitParams{
-		ExitedAt: nullString(formatTime(at)), ExitCode: exitCode, UpdatedAt: formatTime(at), ID: id,
+		ExitedAt: nullString(formatTime(exitedAt)), ExitCode: exitCode, UpdatedAt: formatTime(observedAt), ID: id,
 	})
 	return err
 }

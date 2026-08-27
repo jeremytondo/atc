@@ -481,7 +481,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	terminalService := terminals.NewService(terminals.Options{
 		Repository: database.Terminals(),
 		Adapter:    adapter,
-		Markers:    terminals.MarkerDir(markerDir),
+		MarkerDir:  markerDir,
 		Hub:        hub,
 		Logger:     logger,
 		HomeDir:    home,

@@ -65,7 +65,7 @@ func startTestServer(t *testing.T) *cliAdapter {
 	service := terminals.NewService(terminals.Options{
 		Repository: db.Terminals(),
 		Adapter:    adapter,
-		Markers:    terminals.MarkerDir(t.TempDir()),
+		MarkerDir:  t.TempDir(),
 		Hub:        hub,
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		HomeDir:    "/home/tester",

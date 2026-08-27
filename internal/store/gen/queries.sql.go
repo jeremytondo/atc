@@ -22,10 +22,11 @@ func (q *Queries) DeleteTerminal(ctx context.Context, id string) (int64, error) 
 	return result.RowsAffected()
 }
 
-const insertTerminal = `-- name: InsertTerminal :exec
+const insertTerminal = `-- name: InsertTerminal :execrows
 
 INSERT INTO terminals (id, name, directory, app, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (id) DO NOTHING
 `
 
 type InsertTerminalParams struct {
@@ -39,8 +40,11 @@ type InsertTerminalParams struct {
 
 // Terminals repository queries (sqlc input). Nothing outside a repository
 // speaks SQL; internal/store/terminals.go is the only consumer.
-func (q *Queries) InsertTerminal(ctx context.Context, arg InsertTerminalParams) error {
-	_, err := q.db.ExecContext(ctx, insertTerminal,
+// Insertion doubles as the mint-time ID collision check: a conflicting id
+// inserts zero rows and the caller re-rolls, with no check-then-insert
+// window.
+func (q *Queries) InsertTerminal(ctx context.Context, arg InsertTerminalParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertTerminal,
 		arg.ID,
 		arg.Name,
 		arg.Directory,
@@ -48,7 +52,10 @@ func (q *Queries) InsertTerminal(ctx context.Context, arg InsertTerminalParams) 
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const listTerminals = `-- name: ListTerminals :many
@@ -131,17 +138,6 @@ func (q *Queries) RecordTerminalStopIntent(ctx context.Context, arg RecordTermin
 		return 0, err
 	}
 	return result.RowsAffected()
-}
-
-const terminalIDTaken = `-- name: TerminalIDTaken :one
-SELECT EXISTS (SELECT 1 FROM terminals WHERE id = ?)
-`
-
-func (q *Queries) TerminalIDTaken(ctx context.Context, id string) (bool, error) {
-	row := q.db.QueryRowContext(ctx, terminalIDTaken, id)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
 }
 
 const updateTerminalName = `-- name: UpdateTerminalName :execrows

@@ -14,7 +14,7 @@ func publishN(h *Hub, n int) {
 }
 
 func TestSubscribeFreshHasNoReplayOrResync(t *testing.T) {
-	h := NewHub(4)
+	h := NewHubAt(4, 1)
 	publishN(h, 3)
 	sub := h.Subscribe(0, false)
 	defer sub.Close()
@@ -27,7 +27,7 @@ func TestSubscribeFreshHasNoReplayOrResync(t *testing.T) {
 }
 
 func TestCursorCatchUpFromBacklog(t *testing.T) {
-	h := NewHub(8)
+	h := NewHubAt(8, 1)
 	publishN(h, 5)
 	sub := h.Subscribe(3, true)
 	defer sub.Close()
@@ -44,7 +44,7 @@ func TestCursorCatchUpFromBacklog(t *testing.T) {
 }
 
 func TestCursorAtHeadReplaysNothing(t *testing.T) {
-	h := NewHub(8)
+	h := NewHubAt(8, 1)
 	publishN(h, 5)
 	sub := h.Subscribe(5, true)
 	defer sub.Close()
@@ -54,7 +54,7 @@ func TestCursorAtHeadReplaysNothing(t *testing.T) {
 }
 
 func TestCursorOffBacklogResyncs(t *testing.T) {
-	h := NewHub(4)
+	h := NewHubAt(4, 1)
 	publishN(h, 10) // ring holds 7..10
 	for name, after := range map[string]uint64{
 		"fallen behind":    2,
@@ -81,7 +81,7 @@ func TestCursorOffBacklogResyncs(t *testing.T) {
 }
 
 func TestLiveDelivery(t *testing.T) {
-	h := NewHub(4)
+	h := NewHubAt(4, 1)
 	sub := h.Subscribe(0, false)
 	defer sub.Close()
 	h.Publish("terminal.created", "terminal", "term-aaaaa")
@@ -95,7 +95,7 @@ func TestLiveDelivery(t *testing.T) {
 // A subscriber that stops draining is dropped once its fixed buffer fills;
 // its channel closes and later subscribers are unaffected.
 func TestSlowSubscriberIsDropped(t *testing.T) {
-	h := NewHub(4)
+	h := NewHubAt(4, 1)
 	slow := h.Subscribe(0, false)
 	publishN(h, subscriberBuffer+1)
 	if _, open := <-slow.C; !open {
@@ -113,4 +113,20 @@ func TestSlowSubscriberIsDropped(t *testing.T) {
 	}
 	// Closing after the hub already dropped it must not panic.
 	slow.Close()
+}
+
+// A cursor from a previous server run must always resync: each process
+// numbers events from a random base, so an old cursor cannot alias into
+// the new run's live window.
+func TestOldRunCursorResyncs(t *testing.T) {
+	h := NewHub(4)
+	publishN(h, 3)
+	sub := h.Subscribe(7, true) // a plausible cursor from an earlier run
+	defer sub.Close()
+	if !sub.Resync {
+		t.Error("old-run cursor did not resync")
+	}
+	if h.nextSeq <= 1<<20 {
+		t.Errorf("random base = %d, suspiciously low", h.nextSeq)
+	}
 }

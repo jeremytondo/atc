@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -22,15 +23,33 @@ const defaultHeartbeatInterval = 15 * time.Second
 // this: without it every send warns on stderr and a stalled client can
 // block a write forever; with it a send that cannot complete within the
 // SSE write timeout fails and ends that client's stream.
+//
+// The wrapper also records write failures, reachable from the request
+// context: Huma's comment path swallows write errors, so a stalled client
+// receiving only heartbeats would otherwise keep its handler and hub
+// subscription alive forever.
 func withWriteDeadlines(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(&deadlineWriter{ResponseWriter: w, controller: http.NewResponseController(w)}, r)
+		wrapped := &deadlineWriter{ResponseWriter: w, controller: http.NewResponseController(w)}
+		ctx := context.WithValue(r.Context(), writerStateKey{}, wrapped)
+		next.ServeHTTP(wrapped, r.WithContext(ctx))
 	})
 }
+
+type writerStateKey struct{}
 
 type deadlineWriter struct {
 	http.ResponseWriter
 	controller *http.ResponseController
+	failed     atomic.Bool
+}
+
+func (w *deadlineWriter) Write(p []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(p)
+	if err != nil {
+		w.failed.Store(true)
+	}
+	return n, err
 }
 
 func (w *deadlineWriter) SetWriteDeadline(deadline time.Time) error {
@@ -41,6 +60,13 @@ func (w *deadlineWriter) SetWriteDeadline(deadline time.Time) error {
 // underlying writer.
 func (w *deadlineWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
+}
+
+// writeFailed reports whether any response write on this request has
+// failed — the disconnect signal Huma's comment sends do not surface.
+func writeFailed(ctx context.Context) bool {
+	wrapped, ok := ctx.Value(writerStateKey{}).(*deadlineWriter)
+	return ok && wrapped.failed.Load()
 }
 
 type eventsInput struct {
@@ -101,7 +127,10 @@ func registerEvents(humaAPI huma.API, hub *events.Hub, heartbeat time.Duration) 
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := send.Comment("heartbeat"); err != nil {
+				// Comment sends swallow write errors in Huma's SSE path;
+				// the recorded writer state is what ends a stalled
+				// heartbeat-only stream.
+				if err := send.Comment("heartbeat"); err != nil || writeFailed(ctx) {
 					return
 				}
 			case change, open := <-subscription.C:
@@ -110,7 +139,7 @@ func registerEvents(humaAPI huma.API, hub *events.Hub, heartbeat time.Duration) 
 					// reconnects and catches up.
 					return
 				}
-				if err := sendChange(send, change); err != nil {
+				if err := sendChange(send, change); err != nil || writeFailed(ctx) {
 					return
 				}
 			}

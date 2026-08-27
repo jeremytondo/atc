@@ -14,8 +14,6 @@ package terminals
 import (
 	"context"
 	"time"
-
-	"github.com/jeremytondo/atc/internal/exitmarker"
 )
 
 // Every cadence the domain uses, in one place (spec decision). No jitter,
@@ -69,21 +67,4 @@ type Adapter interface {
 	// Kill terminates the session best-effort and verifies absence by
 	// polling the inventory. A session that is already absent is success.
 	Kill(ctx context.Context, id string) error
-}
-
-// Markers is the exit-evidence seam (exitmarker files in production).
-type Markers interface {
-	Read(terminalID string) (*exitmarker.Marker, error)
-	Remove(terminalID string) error
-}
-
-// MarkerDir reads markers from a directory — the production Markers.
-type MarkerDir string
-
-func (d MarkerDir) Read(terminalID string) (*exitmarker.Marker, error) {
-	return exitmarker.Read(string(d), terminalID)
-}
-
-func (d MarkerDir) Remove(terminalID string) error {
-	return exitmarker.Remove(string(d), terminalID)
 }
