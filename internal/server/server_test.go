@@ -21,7 +21,7 @@ func testVerify(authorization string) bool {
 }
 
 func newHandler() http.Handler {
-	return NewHandler(testVerify, testVersion, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return NewHandler(Options{Verify: testVerify, Version: testVersion, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 }
 
 func get(handler http.Handler, path string, token bool) *httptest.ResponseRecorder {
@@ -78,7 +78,7 @@ func TestServerVersionHeaderOnEveryResponse(t *testing.T) {
 // A nil logger must default to discard: the skew log on a version-skewed
 // request was previously a latent nil dereference.
 func TestNilLoggerDefaultsToDiscard(t *testing.T) {
-	handler := NewHandler(testVerify, testVersion, nil)
+	handler := NewHandler(Options{Verify: testVerify, Version: testVersion})
 	req := httptest.NewRequest(http.MethodGet, "/v1/health", nil)
 	req.Header.Set("Authorization", "Bearer "+testToken)
 	req.Header.Set(api.ClientVersionHeader, "v0.0.0-skewed")

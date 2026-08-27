@@ -23,6 +23,11 @@ type Change struct {
 	ID       string
 }
 
+// DefaultBacklog is the production ring size behind /v1/events — enough
+// for any realistic reconnect gap at "what changed" granularity, small
+// enough to never matter in memory.
+const DefaultBacklog = 256
+
 // subscriberBuffer is each subscriber's fixed send buffer. A slow consumer
 // overflows it and is dropped, by design.
 const subscriberBuffer = 64

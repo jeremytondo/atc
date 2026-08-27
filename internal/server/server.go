@@ -22,6 +22,8 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/events"
+	"github.com/jeremytondo/atc/internal/terminals"
 )
 
 // HealthOutput is Huma routing machinery around the shared body; the
@@ -31,27 +33,40 @@ type HealthOutput struct {
 	Body api.Health
 }
 
+// Options wires the handler. Verify reports whether an Authorization
+// header value presents the current bearer token (authtoken.Store.Verify
+// in production); Version is the server build identity, sent on every
+// response. A nil Logger discards request-level events.
+type Options struct {
+	Verify    func(authorization string) bool
+	Version   string
+	Logger    *slog.Logger
+	Terminals *terminals.Service
+	Events    *events.Hub
+	// HeartbeatInterval paces SSE heartbeats; zero means the default.
+	HeartbeatInterval time.Duration
+}
+
 // NewHandler builds the /v1 API surface plus /openapi.json and /docs.
-// verify reports whether an Authorization header value presents the
-// current bearer token (authtoken.Store.Verify in production). version is
-// the server build identity, sent on every response. A nil logger
-// discards request-level events.
 //
 // Middleware order (outermost first): version headers, then auth, then
 // routing — headers appear on every response including 401s, and
 // unauthenticated callers cannot probe which routes exist.
-func NewHandler(verify func(authorization string) bool, version string, logger *slog.Logger) http.Handler {
-	if verify == nil {
+func NewHandler(opts Options) http.Handler {
+	if opts.Verify == nil {
 		// Without auth the server would panic on the first request; fail
 		// at construction instead.
-		panic("server.NewHandler: verify must not be nil")
+		panic("server.NewHandler: Verify must not be nil")
 	}
-	if logger == nil {
-		logger = slog.New(slog.DiscardHandler)
+	if opts.Logger == nil {
+		opts.Logger = slog.New(slog.DiscardHandler)
+	}
+	if opts.HeartbeatInterval == 0 {
+		opts.HeartbeatInterval = defaultHeartbeatInterval
 	}
 	mux := http.NewServeMux()
 
-	config := huma.DefaultConfig("ATC API", version)
+	config := huma.DefaultConfig("ATC API", opts.Version)
 	config.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
 		"bearerAuth": {Type: "http", Scheme: "bearer"},
 	}
@@ -67,10 +82,17 @@ func NewHandler(verify func(authorization string) bool, version string, logger *
 		Summary:     "Server liveness",
 		Description: "Source of truth for whether the server is up; `atc server status` probes this first.",
 	}, func(ctx context.Context, _ *struct{}) (*HealthOutput, error) {
-		return &HealthOutput{Body: api.Health{Status: "ok", Version: version}}, nil
+		return &HealthOutput{Body: api.Health{Status: "ok", Version: opts.Version}}, nil
 	})
 
-	return withVersionHeaders(version, logger, withAuth(verify, mux))
+	if opts.Terminals != nil {
+		registerTerminals(humaAPI, opts.Terminals)
+	}
+	if opts.Events != nil {
+		registerEvents(humaAPI, opts.Events, opts.HeartbeatInterval)
+	}
+
+	return withVersionHeaders(opts.Version, opts.Logger, withAuth(opts.Verify, withWriteDeadlines(mux)))
 }
 
 func withVersionHeaders(version string, logger *slog.Logger, next http.Handler) http.Handler {
