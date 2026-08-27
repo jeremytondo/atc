@@ -5,7 +5,10 @@
 //
 //	config  $XDG_CONFIG_HOME/atc/config.toml  (~/.config/atc/config.toml)
 //	data    $XDG_DATA_HOME/atc/auth-token     (~/.local/share/atc/auth-token)
+//	data    $XDG_DATA_HOME/atc/atc.db         (~/.local/share/atc/atc.db)
 //	state   $XDG_STATE_HOME/atc/atc.log       (~/.local/state/atc/atc.log)
+//	state   $XDG_STATE_HOME/atc/terminals     (~/.local/state/atc/terminals)
+//	state   $XDG_STATE_HOME/atc/exits         (~/.local/state/atc/exits)
 package paths
 
 import (
@@ -29,6 +32,26 @@ func AuthTokenFile() (string, error) {
 // journal owns capture and this file is unused.
 func LogFile() (string, error) {
 	return resolve("XDG_STATE_HOME", []string{".local", "state"}, "atc.log")
+}
+
+// DatabaseFile is the SQLite database holding ATC-owned durable facts
+// (ATC-262). It lives beside auth-token in the data dir — legacy's exact
+// location.
+func DatabaseFile() (string, error) {
+	return resolve("XDG_DATA_HOME", []string{".local", "share"}, "atc.db")
+}
+
+// TerminalSocketDir is ATC's private zmx socket directory (ATC-251).
+// Sessions created here are invisible to hand-run zmx, which is the whole
+// isolation story — ATC never touches sessions outside this directory.
+func TerminalSocketDir() (string, error) {
+	return resolve("XDG_STATE_HOME", []string{".local", "state"}, "terminals")
+}
+
+// ExitMarkerDir holds the wrapper's exit-evidence marker files, one
+// <terminal-id>.json per session (ATC-251).
+func ExitMarkerDir() (string, error) {
+	return resolve("XDG_STATE_HOME", []string{".local", "state"}, "exits")
 }
 
 func resolve(envVar string, fallback []string, file string) (string, error) {
