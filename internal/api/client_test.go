@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -188,6 +190,98 @@ func TestTransportErrorIsNotAProblem(t *testing.T) {
 	}
 	if problem, ok := errors.AsType[*Problem](err); ok {
 		t.Errorf("transport failure decoded as *Problem: %v", problem)
+	}
+}
+
+// The terminal methods are thin typed wrappers over one request path;
+// method, path, and body round-trip is what there is to verify.
+func TestTerminalMethods(t *testing.T) {
+	type call struct {
+		Method, Path, Body string
+	}
+	var got call
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		got = call{Method: r.Method, Path: r.URL.Path, Body: strings.TrimSpace(string(body))}
+		switch r.URL.Path {
+		case "/v1/terminals":
+			if r.Method == http.MethodPost {
+				_ = json.NewEncoder(w).Encode(Terminal{ID: "term-x7k2f", Status: TerminalRunning})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(TerminalList{Terminals: []Terminal{{ID: "term-x7k2f"}}})
+		default:
+			if r.Method == http.MethodDelete {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(Terminal{ID: "term-x7k2f"})
+		}
+	}))
+	defer srv.Close()
+	client := NewClient(srv.URL, testToken, testClientVersion, nil, nil)
+	ctx := context.Background()
+
+	terminal, err := client.CreateTerminal(ctx, TerminalCreateParams{App: "hx", Directory: "/proj"})
+	if err != nil || terminal.ID != "term-x7k2f" {
+		t.Fatalf("CreateTerminal = %+v, %v", terminal, err)
+	}
+	want := call{http.MethodPost, "/v1/terminals", `{"directory":"/proj","app":"hx"}`}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("create request (-want +got):\n%s", diff)
+	}
+
+	if _, err := client.Terminals(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got.Method != http.MethodGet || got.Path != "/v1/terminals" {
+		t.Errorf("list request = %+v", got)
+	}
+
+	if _, err := client.Terminal(ctx, "term-x7k2f"); err != nil {
+		t.Fatal(err)
+	}
+	if got.Path != "/v1/terminals/term-x7k2f" {
+		t.Errorf("get path = %q", got.Path)
+	}
+
+	if _, err := client.UpdateTerminal(ctx, "term-x7k2f", TerminalUpdateParams{Name: "build"}); err != nil {
+		t.Fatal(err)
+	}
+	want = call{http.MethodPatch, "/v1/terminals/term-x7k2f", `{"name":"build"}`}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("update request (-want +got):\n%s", diff)
+	}
+
+	if err := client.DeleteTerminal(ctx, "term-x7k2f"); err != nil {
+		t.Fatal(err)
+	}
+	if got.Method != http.MethodDelete {
+		t.Errorf("delete method = %q", got.Method)
+	}
+}
+
+// Raw is the `atc api` gateway: same auth and version headers, response
+// returned as-is for streaming, status handling left to the caller.
+func TestRawCarriesHeadersAndReturnsResponse(t *testing.T) {
+	srv := testServer(t)
+	var reported string
+	client := NewClient(srv.URL, testToken, testClientVersion, nil,
+		func(version string) { reported = version })
+	resp, err := client.Raw(context.Background(), http.MethodGet, "v1/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 (leading slash added)", resp.StatusCode)
+	}
+	if reported != testServerVersion {
+		t.Errorf("version callback got %q, want %q", reported, testServerVersion)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `"ok"`) {
+		t.Errorf("body = %q, want the health document", body)
 	}
 }
 
