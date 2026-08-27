@@ -120,7 +120,7 @@ func (s *Service) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.Reconcile(ctx)
+			s.reconcile(ctx, true)
 		}
 	}
 }
@@ -135,10 +135,18 @@ func (s *Service) Run(ctx context.Context) {
 //	absent with marker exit evidence  → exited (evidence recorded now)
 //	absent without evidence           → missing
 //
-// Absence from the inventory is never by itself an exit. With a complete
-// inventory it also reaps orphans: reachable sessions in ATC's private
-// namespace that no record claims. Without one it refuses to act.
+// Absence from the inventory is never by itself an exit. Reconcile is
+// status-only — it is called on the request path (startup, mutations), and
+// orphan reaping means bounded kill verification (~seconds per orphan)
+// that must never block an HTTP handler. The background loop reaps.
 func (s *Service) Reconcile(ctx context.Context) {
+	s.reconcile(ctx, false)
+}
+
+// reconcile with reap additionally kills orphans: reachable sessions in
+// ATC's private namespace that no record claims. It requires a complete
+// inventory and refuses to act without one.
+func (s *Service) reconcile(ctx context.Context, reap bool) {
 	inventory, inventoryErr := s.adapter.Inventory(ctx)
 	if inventoryErr != nil {
 		s.logger.Warn("terminal inventory unavailable", "error", inventoryErr)
@@ -161,7 +169,7 @@ func (s *Service) Reconcile(ctx context.Context) {
 			changed = append(changed, id)
 		}
 	}
-	if inventoryErr == nil {
+	if reap && inventoryErr == nil {
 		for _, session := range inventory {
 			if _, claimed := s.view[session.Name]; !claimed && session.Reachable {
 				orphans = append(orphans, session.Name)

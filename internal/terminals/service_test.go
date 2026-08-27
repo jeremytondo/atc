@@ -384,14 +384,21 @@ func TestDeleteBestEffortAndOrphanReaping(t *testing.T) {
 	f.adapter.killed = nil
 	f.adapter.invErr = errors.New("zmx down")
 	f.adapter.mu.Unlock()
-	f.service.Reconcile(ctx)
+	f.service.reconcile(ctx, true)
 	if killed := f.adapter.killedNames(); len(killed) != 0 {
 		t.Fatalf("cleanup acted without a complete inventory: %v", killed)
 	}
 
-	// Inventory back and the session reachable: provably ours, reaped.
+	// The request-path Reconcile never reaps: kill verification is bounded
+	// but slow, and must not block HTTP handlers.
 	f.adapter.setInvErr(nil)
 	f.service.Reconcile(ctx)
+	if killed := f.adapter.killedNames(); len(killed) != 0 {
+		t.Fatalf("request-path reconcile reaped: %v", killed)
+	}
+
+	// The background pass with the session reachable: provably ours, reaped.
+	f.service.reconcile(ctx, true)
 	if killed := f.adapter.killedNames(); len(killed) != 1 || killed[0] != id {
 		t.Fatalf("orphan not reaped: killed = %v", killed)
 	}
@@ -401,7 +408,7 @@ func TestDeleteBestEffortAndOrphanReaping(t *testing.T) {
 	f.adapter.mu.Lock()
 	f.adapter.killed = nil
 	f.adapter.mu.Unlock()
-	f.service.Reconcile(ctx)
+	f.service.reconcile(ctx, true)
 	if killed := f.adapter.killedNames(); len(killed) != 0 {
 		t.Fatalf("cleanup killed an unreachable session: %v", killed)
 	}
