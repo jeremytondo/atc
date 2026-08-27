@@ -21,12 +21,16 @@ import (
 
 	"github.com/jeremytondo/atc/internal/authtoken"
 	"github.com/jeremytondo/atc/internal/config"
+	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/server"
 	"github.com/jeremytondo/atc/internal/service"
+	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/tailscale"
+	"github.com/jeremytondo/atc/internal/terminals"
 	"github.com/jeremytondo/atc/internal/upgrade"
 	"github.com/jeremytondo/atc/internal/version"
+	"github.com/jeremytondo/atc/internal/zmx"
 )
 
 func main() {
@@ -77,7 +81,8 @@ expose on the tailnet without the flag.`,
 			return cmd.Help()
 		},
 	}
-	root.AddCommand(newVersionCmd(), newUpgradeCmd(), newServerCmd())
+	root.AddCommand(newTerminalCmd(), newAPICmd(), newVersionCmd(), newUpgradeCmd(),
+		newServerCmd(), newChildCmd())
 	return root
 }
 
@@ -354,8 +359,17 @@ func printToken(stdout io.Writer, issue func(*authtoken.Store) (string, error)) 
 }
 
 // serverRun runs the server in the foreground until the command context is
-// cancelled.
-func serverRun(cmd *cobra.Command, _ []string) error {
+// cancelled. A SIGINT that lands during boot (migrations, the startup
+// reconcile) is the same clean shutdown as one that lands while serving.
+func serverRun(cmd *cobra.Command, args []string) error {
+	err := serverRunUntilCancelled(cmd, args)
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
+}
+
+func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	ctx := cmd.Context()
 	stderr := cmd.ErrOrStderr()
 
@@ -414,19 +428,84 @@ func serverRun(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	store := authtoken.Store{Path: tokenPath}
-	if _, err := store.Ensure(); err != nil {
+	tokens := authtoken.Store{Path: tokenPath}
+	if _, err := tokens.Ensure(); err != nil {
 		return err
 	}
 
 	versionValue := version.String()
 	logger.Info("server starting", "version", versionValue, "pid", os.Getpid())
-	handler := server.NewHandler(store.Verify, versionValue, logger)
+
+	// Storage opens (and migrates) before any domain state exists; a
+	// database that will not open or migrate fails the boot closed.
+	databasePath, err := paths.DatabaseFile()
+	if err != nil {
+		return err
+	}
+	database, err := store.Open(ctx, databasePath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = database.Close() }()
+
+	socketDir, err := paths.TerminalSocketDir()
+	if err != nil {
+		return err
+	}
+	markerDir, err := paths.ExitMarkerDir()
+	if err != nil {
+		return err
+	}
+	selfExecutable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	// New validates the socket-path budget — a state dir too deep for
+	// unix sockets is a boot error with the remedy in the message. A
+	// missing zmx binary deliberately is not: statuses degrade to
+	// unreachable and delete keeps working.
+	adapter, err := zmx.New(zmx.Options{
+		SocketDir:         socketDir,
+		MarkerDir:         markerDir,
+		WrapperExecutable: selfExecutable,
+		Logger:            logger,
+	})
+	if err != nil {
+		return err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	hub := events.NewHub(events.DefaultBacklog)
+	terminalService := terminals.NewService(terminals.Options{
+		Repository: database.Terminals(),
+		Adapter:    adapter,
+		Markers:    terminals.MarkerDir(markerDir),
+		Hub:        hub,
+		Logger:     logger,
+		HomeDir:    home,
+	})
+	if err := terminalService.Load(ctx); err != nil {
+		return err
+	}
+	// One blocking reconcile before the listener exists: no request ever
+	// observes pre-reconcile state (legacy's rule).
+	terminalService.Reconcile(ctx)
+
+	handler := server.NewHandler(server.Options{
+		Verify:    tokens.Verify,
+		Version:   versionValue,
+		Logger:    logger,
+		Terminals: terminalService,
+		Events:    hub,
+	})
 
 	listener, err := net.Listen("tcp", net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port)))
 	if err != nil {
 		return err
 	}
+	go terminalService.Run(ctx)
 
 	// The exposure supervisor fronts the actual bound port (they are one
 	// port by contract) and is waited on so shutdown reaps the serve
