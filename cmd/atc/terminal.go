@@ -3,79 +3,17 @@ package main
 import (
 	"fmt"
 	"io"
-	"net"
-	"net/url"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
-	"syscall"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
 	"github.com/jeremytondo/atc/internal/api"
-	"github.com/jeremytondo/atc/internal/authtoken"
-	"github.com/jeremytondo/atc/internal/config"
-	"github.com/jeremytondo/atc/internal/paths"
+	"github.com/jeremytondo/atc/internal/cli"
 	"github.com/jeremytondo/atc/internal/service"
-	"github.com/jeremytondo/atc/internal/version"
 	"github.com/jeremytondo/atc/internal/wrapper"
-	"github.com/jeremytondo/atc/internal/zmx"
 )
-
-// newAPIClient builds the shared API client every CLI command speaks
-// through — never server internals. The server URL comes from ATC_SERVER
-// (a remote client's paste-once setup) or the settled local config port;
-// the token from ATC_TOKEN or the local token file. Version skew prints
-// one stderr warning line with the restart remedy.
-func newAPIClient(cmd *cobra.Command) (*api.Client, string, error) {
-	baseURL := os.Getenv("ATC_SERVER")
-	if baseURL == "" {
-		configPath, err := paths.ConfigFile()
-		if err != nil {
-			return nil, "", err
-		}
-		cfg, err := config.Load(configPath, os.LookupEnv)
-		if err != nil {
-			return nil, "", err
-		}
-		baseURL = fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
-	}
-	token := os.Getenv("ATC_TOKEN")
-	if token == "" {
-		tokenPath, err := paths.AuthTokenFile()
-		if err != nil {
-			return nil, "", err
-		}
-		if token, err = (&authtoken.Store{Path: tokenPath}).Ensure(); err != nil {
-			return nil, "", err
-		}
-	}
-	stderr := cmd.ErrOrStderr()
-	clientVersion := version.String()
-	warned := false
-	onServerVersion := func(serverVersion string) {
-		if serverVersion != clientVersion && !warned {
-			warned = true
-			_, _ = fmt.Fprintf(stderr, "atc: server is %s, client is %s; run `atc server restart`\n", serverVersion, clientVersion)
-		}
-	}
-	return api.NewClient(baseURL, token, clientVersion, nil, onServerVersion), baseURL, nil
-}
-
-// runWithClient wraps an API-backed command body with the shared client
-// construction and error path — every terminal/api command starts the same
-// way.
-func runWithClient(body func(cmd *cobra.Command, args []string, client *api.Client, baseURL string) error) func(*cobra.Command, []string) error {
-	return func(cmd *cobra.Command, args []string) error {
-		client, baseURL, err := newAPIClient(cmd)
-		if err != nil {
-			return err
-		}
-		return body(cmd, args, client, baseURL)
-	}
-}
 
 func newTerminalCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -111,7 +49,7 @@ loaded); without it you get a plain interactive shell.`,
 				return err
 			}
 			if attach {
-				if err := attachPreflight(baseURL); err != nil {
+				if err := cli.AttachPreflight(baseURL, stdioIsTerminal()); err != nil {
 					return err
 				}
 				if _, err := exec.LookPath("zmx"); err != nil {
@@ -129,7 +67,7 @@ loaded); without it you get a plain interactive shell.`,
 				return err
 			}
 			if params.ProjectID == "" {
-				if params.ProjectID, err = resolveProjectID(cmd, client); err != nil {
+				if params.ProjectID, err = cli.ResolveProjectID(cmd.Context(), client, cmd.InOrStdin(), cmd.ErrOrStderr(), stdinIsTTY()); err != nil {
 					return err
 				}
 			}
@@ -139,7 +77,7 @@ loaded); without it you get a plain interactive shell.`,
 			}
 			printTerminal(cmd.OutOrStdout(), terminal)
 			if attach {
-				if err := attachSession(terminal); err != nil {
+				if err := cli.AttachSession(terminal); err != nil {
 					return fmt.Errorf("%w; the terminal was created; retry with: atc terminal attach %s", err, terminal.ID)
 				}
 			}
@@ -252,7 +190,7 @@ the session's socket lives on the server's machine. The terminal must be
 running — attach never resurrects or creates sessions.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, baseURL string) error {
-			if err := attachPreflight(baseURL); err != nil {
+			if err := cli.AttachPreflight(baseURL, stdioIsTerminal()); err != nil {
 				return err
 			}
 			// The API check keeps zmx's attach-auto-creates behavior from
@@ -262,68 +200,9 @@ running — attach never resurrects or creates sessions.`,
 			if err != nil {
 				return err
 			}
-			return attachSession(terminal)
+			return cli.AttachSession(terminal)
 		}),
 	}
-}
-
-// stdioIsTerminal reports whether stdin and stdout are both real TTYs.
-// It is a variable so tests, which never have a TTY, can force it.
-var stdioIsTerminal = func() bool {
-	stdin, err := os.Stdin.Stat()
-	if err != nil || stdin.Mode()&os.ModeCharDevice == 0 {
-		return false
-	}
-	stdout, err := os.Stdout.Stat()
-	return err == nil && stdout.Mode()&os.ModeCharDevice != 0
-}
-
-func attachPreflight(baseURL string) error {
-	if !stdioIsTerminal() {
-		return fmt.Errorf("attaching requires an interactive terminal (stdin and stdout must be TTYs)")
-	}
-	if !isLoopback(baseURL) {
-		return fmt.Errorf("atc terminal attach is local-only (the session socket lives on the server's machine); this client targets %s", baseURL)
-	}
-	return nil
-}
-
-func attachSession(terminal api.Terminal) error {
-	if terminal.Status != api.TerminalRunning {
-		return fmt.Errorf("terminal %s is %s, not running", terminal.ID, terminal.Status)
-	}
-	socketDir, err := paths.TerminalSocketDir()
-	if err != nil {
-		return err
-	}
-	// A loopback URL does not prove the server shares this
-	// process's namespace (an SSH-forwarded remote server, a
-	// different XDG_STATE_HOME). A session the API calls running
-	// must have its socket here; anything else would hand the TTY
-	// to zmx's auto-create.
-	if _, err := os.Stat(filepath.Join(socketDir, terminal.ID)); err != nil {
-		return fmt.Errorf("terminal %s has no session socket under %s — the server appears to be remote (an SSH-forwarded port?) or running with a different state directory", terminal.ID, socketDir)
-	}
-	executable, argv, env, err := zmx.AttachCommand(socketDir, terminal.ID)
-	if err != nil {
-		return err
-	}
-	// Exec replaces this process: the user's real TTY belongs to
-	// zmx until detach.
-	return syscall.Exec(executable, argv, env)
-}
-
-func isLoopback(baseURL string) bool {
-	parsed, err := url.Parse(baseURL)
-	if err != nil {
-		return false
-	}
-	host := parsed.Hostname()
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 func statusLabel(terminal api.Terminal) string {

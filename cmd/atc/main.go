@@ -19,7 +19,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/authtoken"
+	"github.com/jeremytondo/atc/internal/cli"
 	"github.com/jeremytondo/atc/internal/config"
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/paths"
@@ -86,6 +88,27 @@ expose on the tailnet without the flag.`,
 	root.AddCommand(newTerminalCmd(), newProjectCmd(), newAPICmd(), newVersionCmd(),
 		newUpgradeCmd(), newServerCmd(), newChildCmd())
 	return root
+}
+
+// stdioIsTerminal and stdinIsTTY are this binary's TTY detection, held in
+// variables so tests, which never have a TTY, can force them. The cli
+// package takes the results as explicit arguments and holds no such state.
+var (
+	stdioIsTerminal = cli.StdioIsTerminal
+	stdinIsTTY      = cli.StdinIsTTY
+)
+
+// runWithClient wraps an API-backed command body with the shared client
+// construction and error path — every terminal/project/api command starts
+// the same way.
+func runWithClient(body func(cmd *cobra.Command, args []string, client *api.Client, baseURL string) error) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		client, baseURL, err := cli.NewClient(cmd.ErrOrStderr())
+		if err != nil {
+			return err
+		}
+		return body(cmd, args, client, baseURL)
+	}
 }
 
 func newVersionCmd() *cobra.Command {
