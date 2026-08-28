@@ -31,9 +31,9 @@ import (
 	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/tailscale"
 	"github.com/jeremytondo/atc/internal/terminals"
+	"github.com/jeremytondo/atc/internal/terminals/zmx"
 	"github.com/jeremytondo/atc/internal/upgrade"
 	"github.com/jeremytondo/atc/internal/version"
-	"github.com/jeremytondo/atc/internal/zmx"
 )
 
 func main() {
