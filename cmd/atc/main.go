@@ -19,7 +19,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/authtoken"
+	"github.com/jeremytondo/atc/internal/cli"
 	"github.com/jeremytondo/atc/internal/config"
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/paths"
@@ -88,6 +90,19 @@ expose on the tailnet without the flag.`,
 	return root
 }
 
+// runWithClient wraps an API-backed command body with the shared client
+// construction and error path — every terminal/project/api command starts
+// the same way.
+func runWithClient(body func(cmd *cobra.Command, args []string, client *api.Client, baseURL string) error) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		client, baseURL, err := cli.NewClient(cmd.ErrOrStderr())
+		if err != nil {
+			return err
+		}
+		return body(cmd, args, client, baseURL)
+	}
+}
+
 func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
@@ -138,7 +153,7 @@ interrupted), headless runs print a reminder unless --restart or
 			opts := upgrade.Options{
 				Dev:         dev,
 				Restart:     mode,
-				Interactive: stdinIsTTY(),
+				Interactive: cli.StdinIsTTY(),
 				Version:     version.String(),
 				Stdin:       cmd.InOrStdin(),
 				Stdout:      cmd.OutOrStdout(),
