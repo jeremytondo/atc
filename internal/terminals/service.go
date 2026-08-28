@@ -354,7 +354,10 @@ func (s *Service) Create(ctx context.Context, params api.TerminalCreateParams) (
 	s.mu.Lock()
 	delete(s.settling, record.ID)
 	s.mu.Unlock()
-	s.Reconcile(ctx)
+	// Detached: a client that disconnects here must not hand the reconcile
+	// a dead context, whose failed inventory would flip every terminal to
+	// unreachable until the next background pass.
+	s.Reconcile(context.WithoutCancel(ctx))
 	return s.Get(record.ID)
 }
 
@@ -434,6 +437,11 @@ func (s *Service) UpdateName(ctx context.Context, id, name string) (api.Terminal
 		terminal = e.terminal()
 	}
 	s.mu.Unlock()
+	if terminal.ID == "" {
+		// The row updated but the view has no entry — impossible while ops
+		// serializes commits, and never worth answering with a zero value.
+		return api.Terminal{}, ErrNotFound
+	}
 	s.hub.Publish(api.EventTerminalUpdated, resource, id)
 	return terminal, nil
 }
