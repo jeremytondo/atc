@@ -505,7 +505,15 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	go terminalService.Run(ctx)
+	// The reconcile loop is waited on before the deferred database close,
+	// so shutdown never races an in-flight pass against it. The wait is
+	// cheap: every step of the loop is context-aware, and the loop's
+	// context is cancelled by the time Serve returns — either by the
+	// shutdown signal or, for a server error, explicitly here.
+	loopCtx, stopLoop := context.WithCancel(ctx)
+	defer stopLoop()
+	var background sync.WaitGroup
+	background.Go(func() { terminalService.Run(loopCtx) })
 
 	// The exposure supervisor fronts the actual bound port (they are one
 	// port by contract) and is waited on so shutdown reaps the serve
@@ -517,6 +525,8 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	}
 
 	serveErr := server.Serve(ctx, listener, handler, logger)
+	stopLoop()
+	background.Wait()
 	exposure.Wait()
 	return serveErr
 }
