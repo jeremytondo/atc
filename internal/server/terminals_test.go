@@ -21,10 +21,10 @@ import (
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/events"
-	"github.com/jeremytondo/atc/internal/exitmarker"
 	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/terminals"
+	"github.com/jeremytondo/atc/internal/terminals/exitmarker"
 )
 
 // fakeAdapter is the hand-written session backend for API-contract tests:

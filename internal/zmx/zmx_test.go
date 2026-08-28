@@ -13,9 +13,9 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	"github.com/jeremytondo/atc/internal/exitmarker"
 	"github.com/jeremytondo/atc/internal/terminals"
-	"github.com/jeremytondo/atc/internal/wrapper"
+	"github.com/jeremytondo/atc/internal/terminals/exitmarker"
+	"github.com/jeremytondo/atc/internal/terminals/wrapper"
 )
 
 // TestMain doubles as the wrapper executable for the real-zmx integration

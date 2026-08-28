@@ -12,7 +12,7 @@ import (
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/cli"
 	"github.com/jeremytondo/atc/internal/service"
-	"github.com/jeremytondo/atc/internal/wrapper"
+	"github.com/jeremytondo/atc/internal/terminals/wrapper"
 )
 
 func newTerminalCmd() *cobra.Command {

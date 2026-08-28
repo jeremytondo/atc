@@ -20,7 +20,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jeremytondo/atc/internal/exitmarker"
+	"github.com/jeremytondo/atc/internal/terminals/exitmarker"
 )
 
 // LaunchFailureCode is recorded when the workload never started (bad

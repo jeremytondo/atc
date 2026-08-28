@@ -32,8 +32,8 @@ import (
 
 	"github.com/creack/pty"
 
-	"github.com/jeremytondo/atc/internal/exitmarker"
 	"github.com/jeremytondo/atc/internal/terminals"
+	"github.com/jeremytondo/atc/internal/terminals/exitmarker"
 )
 
 // commandTimeout bounds every zmx invocation: a hung zmx must not hang its
