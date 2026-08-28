@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -90,6 +91,22 @@ func runCLI(t *testing.T, args ...string) (string, string, error) {
 	return stdout.String(), stderr.String(), err
 }
 
+func forceTTY(t *testing.T) {
+	t.Helper()
+	prev := stdioIsTerminal
+	stdioIsTerminal = func() bool { return true }
+	t.Cleanup(func() { stdioIsTerminal = prev })
+}
+
+func installFakeZmx(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "zmx"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+}
+
 func TestTerminalCLILifecycle(t *testing.T) {
 	adapter := startTestServer(t)
 
@@ -152,9 +169,80 @@ func TestTerminalGetUnknownIsError(t *testing.T) {
 	}
 }
 
+func TestTerminalCreateAttachWithoutTTYCreatesNothing(t *testing.T) {
+	startTestServer(t)
+	_, _, err := runCLI(t, "terminal", "create", "--attach")
+	if err == nil || !strings.Contains(err.Error(), "stdin and stdout must be TTYs") {
+		t.Errorf("create attach without TTY = %v, want a TTY refusal", err)
+	}
+	stdout, _, listErr := runCLI(t, "terminal", "list")
+	if listErr != nil || !strings.Contains(stdout, "no terminals") {
+		t.Errorf("list after TTY refusal = %q, %v", stdout, listErr)
+	}
+}
+
+func TestTerminalCreateAttachRemoteCreatesNothing(t *testing.T) {
+	forceTTY(t)
+	t.Setenv("ATC_SERVER", "http://100.64.0.5:7331")
+	t.Setenv("ATC_TOKEN", cliTestToken)
+
+	_, _, err := runCLI(t, "terminal", "create", "--attach")
+	if err == nil || !strings.Contains(err.Error(), "local-only") {
+		t.Errorf("remote create attach = %v, want the local-only refusal", err)
+	}
+}
+
+func TestTerminalCreateAttachMissingZmxCreatesNothing(t *testing.T) {
+	forceTTY(t)
+	startTestServer(t)
+	t.Setenv("PATH", "")
+
+	_, _, err := runCLI(t, "terminal", "create", "--attach")
+	if err == nil || err.Error() != "zmx executable not found on PATH; install zmx to attach" {
+		t.Errorf("create attach without zmx = %v", err)
+	}
+	stdout, _, listErr := runCLI(t, "terminal", "list")
+	if listErr != nil || !strings.Contains(stdout, "no terminals") {
+		t.Errorf("list after zmx refusal = %q, %v", stdout, listErr)
+	}
+}
+
+func TestTerminalCreateAttachMissingSocketKeepsTerminal(t *testing.T) {
+	forceTTY(t)
+	installFakeZmx(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	startTestServer(t)
+
+	stdout, _, err := runCLI(t, "terminal", "create", "--attach")
+	id := regexp.MustCompile(`term-[a-z2-9]{5}`).FindString(stdout)
+	if id == "" || !strings.Contains(stdout, "running") {
+		t.Fatalf("create attach output does not show the created terminal:\n%s", stdout)
+	}
+	if err == nil || !strings.Contains(err.Error(), "has no session socket") {
+		t.Fatalf("create attach without socket = %v, want the missing-socket refusal", err)
+	}
+	if !strings.Contains(err.Error(), "the terminal was created; retry with: atc terminal attach "+id) {
+		t.Errorf("create attach error has no retry instruction: %v", err)
+	}
+	stdout, _, getErr := runCLI(t, "terminal", "get", id)
+	if getErr != nil || !strings.Contains(stdout, id) {
+		t.Errorf("get created terminal = %q, %v", stdout, getErr)
+	}
+}
+
+func TestTerminalAttachWithoutTTY(t *testing.T) {
+	t.Setenv("ATC_SERVER", "http://100.64.0.5:7331")
+	t.Setenv("ATC_TOKEN", cliTestToken)
+	_, _, err := runCLI(t, "terminal", "attach", "term-zzzzz")
+	if err == nil || !strings.Contains(err.Error(), "stdin and stdout must be TTYs") {
+		t.Errorf("attach without TTY = %v, want a TTY refusal", err)
+	}
+}
+
 // Attach is local-only: against a non-loopback server it refuses before
 // touching anything.
 func TestAttachRemoteFailsClearly(t *testing.T) {
+	forceTTY(t)
 	t.Setenv("ATC_SERVER", "http://100.64.0.5:7331")
 	t.Setenv("ATC_TOKEN", cliTestToken)
 	_, _, err := runCLI(t, "terminal", "attach", "term-zzzzz")
@@ -165,6 +253,7 @@ func TestAttachRemoteFailsClearly(t *testing.T) {
 
 // Attach never resurrects: anything but running refuses before zmx runs.
 func TestAttachRefusesNonRunning(t *testing.T) {
+	forceTTY(t)
 	// Defense in depth: if a regression ever let attach proceed, an empty
 	// PATH fails the zmx lookup and an isolated state dir keeps even that
 	// failure away from the developer's real sessions.

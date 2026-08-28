@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -95,14 +96,26 @@ func newTerminalCreateCmd() *cobra.Command {
 		Use:   "create",
 		Short: "Create a terminal and start its session",
 		Long: `Create a terminal and start its session immediately. The session survives
-disconnects and ATC server restarts; attach with ` + "`atc terminal attach <id>`" + `.
+disconnects and ATC server restarts; attach with ` + "`atc terminal attach <id>`" + `,
+or pass ` + "`--attach`" + ` to attach immediately.
 With --app the command runs through your login shell (profile and rc files
 loaded); without it you get a plain interactive shell.`,
 		Args: cobra.NoArgs,
-		RunE: runWithClient(func(cmd *cobra.Command, _ []string, client *api.Client, _ string) error {
+		RunE: runWithClient(func(cmd *cobra.Command, _ []string, client *api.Client, baseURL string) error {
 			flags := cmd.Flags()
+			attach, err := flags.GetBool("attach")
+			if err != nil {
+				return err
+			}
+			if attach {
+				if err := attachPreflight(baseURL); err != nil {
+					return err
+				}
+				if _, err := exec.LookPath("zmx"); err != nil {
+					return fmt.Errorf("zmx executable not found on PATH; install zmx to attach")
+				}
+			}
 			params := api.TerminalCreateParams{}
-			var err error
 			if params.Name, err = flags.GetString("name"); err != nil {
 				return err
 			}
@@ -117,12 +130,18 @@ loaded); without it you get a plain interactive shell.`,
 				return err
 			}
 			printTerminal(cmd.OutOrStdout(), terminal)
+			if attach {
+				if err := attachSession(terminal); err != nil {
+					return fmt.Errorf("%w; the terminal was created; retry with: atc terminal attach %s", err, terminal.ID)
+				}
+			}
 			return nil
 		}),
 	}
 	cmd.Flags().String("name", "", "display name (defaults from --app, else \"Shell\")")
 	cmd.Flags().String("dir", "", "working directory (defaults to the server user's home)")
 	cmd.Flags().String("app", "", "command to run through your shell; omit for a plain shell")
+	cmd.Flags().Bool("attach", false, "attach to the terminal after creation")
 	return cmd
 }
 
@@ -218,8 +237,8 @@ the session's socket lives on the server's machine. The terminal must be
 running — attach never resurrects or creates sessions.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, baseURL string) error {
-			if !isLoopback(baseURL) {
-				return fmt.Errorf("atc terminal attach is local-only (the session socket lives on the server's machine); this client targets %s", baseURL)
+			if err := attachPreflight(baseURL); err != nil {
+				return err
 			}
 			// The API check keeps zmx's attach-auto-creates behavior from
 			// resurrecting anything: only a verified-running session is
@@ -228,30 +247,55 @@ running — attach never resurrects or creates sessions.`,
 			if err != nil {
 				return err
 			}
-			if terminal.Status != api.TerminalRunning {
-				return fmt.Errorf("terminal %s is %s, not running", terminal.ID, terminal.Status)
-			}
-			socketDir, err := paths.TerminalSocketDir()
-			if err != nil {
-				return err
-			}
-			// A loopback URL does not prove the server shares this
-			// process's namespace (an SSH-forwarded remote server, a
-			// different XDG_STATE_HOME). A session the API calls running
-			// must have its socket here; anything else would hand the TTY
-			// to zmx's auto-create.
-			if _, err := os.Stat(filepath.Join(socketDir, terminal.ID)); err != nil {
-				return fmt.Errorf("terminal %s has no session socket under %s — the server appears to be remote (an SSH-forwarded port?) or running with a different state directory", terminal.ID, socketDir)
-			}
-			executable, argv, env, err := zmx.AttachCommand(socketDir, terminal.ID)
-			if err != nil {
-				return err
-			}
-			// Exec replaces this process: the user's real TTY belongs to
-			// zmx until detach.
-			return syscall.Exec(executable, argv, env)
+			return attachSession(terminal)
 		}),
 	}
+}
+
+// stdioIsTerminal reports whether stdin and stdout are both real TTYs.
+// It is a variable so tests, which never have a TTY, can force it.
+var stdioIsTerminal = func() bool {
+	stdin, err := os.Stdin.Stat()
+	if err != nil || stdin.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	stdout, err := os.Stdout.Stat()
+	return err == nil && stdout.Mode()&os.ModeCharDevice != 0
+}
+
+func attachPreflight(baseURL string) error {
+	if !stdioIsTerminal() {
+		return fmt.Errorf("attaching requires an interactive terminal (stdin and stdout must be TTYs)")
+	}
+	if !isLoopback(baseURL) {
+		return fmt.Errorf("atc terminal attach is local-only (the session socket lives on the server's machine); this client targets %s", baseURL)
+	}
+	return nil
+}
+
+func attachSession(terminal api.Terminal) error {
+	if terminal.Status != api.TerminalRunning {
+		return fmt.Errorf("terminal %s is %s, not running", terminal.ID, terminal.Status)
+	}
+	socketDir, err := paths.TerminalSocketDir()
+	if err != nil {
+		return err
+	}
+	// A loopback URL does not prove the server shares this
+	// process's namespace (an SSH-forwarded remote server, a
+	// different XDG_STATE_HOME). A session the API calls running
+	// must have its socket here; anything else would hand the TTY
+	// to zmx's auto-create.
+	if _, err := os.Stat(filepath.Join(socketDir, terminal.ID)); err != nil {
+		return fmt.Errorf("terminal %s has no session socket under %s — the server appears to be remote (an SSH-forwarded port?) or running with a different state directory", terminal.ID, socketDir)
+	}
+	executable, argv, env, err := zmx.AttachCommand(socketDir, terminal.ID)
+	if err != nil {
+		return err
+	}
+	// Exec replaces this process: the user's real TTY belongs to
+	// zmx until detach.
+	return syscall.Exec(executable, argv, env)
 }
 
 func isLoopback(baseURL string) bool {
