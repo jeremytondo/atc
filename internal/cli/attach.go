@@ -10,7 +10,7 @@ import (
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/paths"
-	"github.com/jeremytondo/atc/internal/zmx"
+	"github.com/jeremytondo/atc/internal/terminals/zmx"
 )
 
 // StdioIsTerminal reports whether this process's stdin and stdout are both
