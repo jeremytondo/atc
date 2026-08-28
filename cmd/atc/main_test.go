@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -69,23 +70,62 @@ func isolateXDG(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", dir+"/state")
 }
 
+// syncBuffer is a strings.Builder safe to read while the server goroutine
+// writes it.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
 func TestServerRunStopsOnContextCancel(t *testing.T) {
 	isolateXDG(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	var stdout, stderr strings.Builder
+	defer cancel()
+	var stdout strings.Builder
+	var stderr syncBuffer
 	done := make(chan error, 1)
 	go func() { done <- run(ctx, []string{"server", "run", "--port", "0"}, &stdout, &stderr) }()
+
+	// Boot now includes storage migration and the blocking startup
+	// reconcile; wait for the serve log before requesting shutdown.
+	deadline := time.Now().Add(15 * time.Second)
+	for !strings.Contains(stderr.String(), "server started") {
+		if time.Now().After(deadline) {
+			t.Fatalf("server never started; stderr:\n%s", stderr.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	cancel()
 	select {
 	case err := <-done:
 		if err != nil {
 			t.Fatalf("server run = %v, want nil", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("server run did not stop after context cancellation")
 	}
-	if !strings.Contains(stderr.String(), "server started") {
-		t.Errorf("stderr = %q, want start log", stderr.String())
+}
+
+// A cancellation that lands during boot is a clean exit too, not an error.
+func TestServerRunCancelledDuringBoot(t *testing.T) {
+	isolateXDG(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var stdout, stderr strings.Builder
+	if err := run(ctx, []string{"server", "run", "--port", "0"}, &stdout, &stderr); err != nil {
+		t.Fatalf("server run with pre-cancelled context = %v, want nil", err)
 	}
 }
 

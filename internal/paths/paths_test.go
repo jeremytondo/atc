@@ -13,9 +13,12 @@ func TestXDGOverridesHonored(t *testing.T) {
 		got  func() (string, error)
 		want string
 	}{
-		"config": {ConfigFile, "/custom/config/atc/config.toml"},
-		"token":  {AuthTokenFile, "/custom/data/atc/auth-token"},
-		"log":    {LogFile, "/custom/state/atc/atc.log"},
+		"config":    {ConfigFile, "/custom/config/atc/config.toml"},
+		"token":     {AuthTokenFile, "/custom/data/atc/auth-token"},
+		"log":       {LogFile, "/custom/state/atc/atc.log"},
+		"database":  {DatabaseFile, "/custom/data/atc/atc.db"},
+		"terminals": {TerminalSocketDir, "/custom/state/atc/terminals"},
+		"exits":     {ExitMarkerDir, "/custom/state/atc/exits"},
 	} {
 		path, err := tc.got()
 		if err != nil {

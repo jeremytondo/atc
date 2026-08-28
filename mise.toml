@@ -2,6 +2,7 @@
 go = "1.26.7"
 golangci-lint = "2.13.1"
 goreleaser = "2.17.1"
+sqlc = "1.31.1"
 
 [tasks.build]
 description = "Build a static atc binary into bin/"
@@ -15,9 +16,17 @@ run = "go test -race ./..."
 description = "Run golangci-lint (includes gofmt and go vet)"
 run = "golangci-lint run ./..."
 
+[tasks.generate]
+description = "Regenerate sqlc query code in internal/store"
+run = "sqlc generate -f internal/store/sqlc.yaml"
+
+[tasks."generate:check"]
+description = "Fail when sqlc-generated code is stale (run mise generate)"
+run = "sqlc diff -f internal/store/sqlc.yaml"
+
 [tasks.check]
-description = "Build, lint, and test"
-depends = ["build", "lint", "test"]
+description = "Build, lint, generate-check, and test"
+depends = ["build", "lint", "generate:check", "test"]
 
 [tasks.install]
 description = "Build a static atc binary into ~/.local/bin"

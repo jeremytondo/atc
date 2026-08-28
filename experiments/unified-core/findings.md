@@ -188,3 +188,17 @@ not this implementation. Retain exact identity, conservative recovery, and the
 separate resource/activity dimensions as invariants. Do not carry forward the
 prototype store, raw CLI, unauthenticated ingestion routes, or the unresolved
 assumption that foreground cancellation stops agent-owned processes.
+
+## Addendum (2026-08-27): scope of the terminal-transport caution
+
+The "keep terminal transport out of the status/control API" item above keeps
+being cited as evidence that ATC should not support direct attach through the
+API. That overreads it. This experiment only exercised attach from a terminal
+UI (zmx attach from another terminal), which is the weakest case for an
+API-served transport and the source of the raw-mode/resize concerns. The
+stronger case — a macOS app embedding libghostty as the terminal emulator,
+receiving session IO over the API — was proven by the legacy product
+(`legacy-product-2026-08`) and worked well. Read the original item as "do not
+rush a transport that a TUI-attach client makes hard," not "direct attach is
+out." API-served attach for emulator-embedding clients remains a supported
+future feature, not a foreclosed one.
