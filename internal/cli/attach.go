@@ -5,12 +5,9 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"path/filepath"
 	"syscall"
 
 	"github.com/jeremytondo/atc/internal/api"
-	"github.com/jeremytondo/atc/internal/paths"
-	"github.com/jeremytondo/atc/internal/terminals/zmx"
 )
 
 // StdioIsTerminal reports whether this process's stdin and stdout are both
@@ -39,31 +36,33 @@ func AttachPreflight(baseURL string, stdioIsTerminal bool) error {
 	return nil
 }
 
+// SessionAttacher supplies the adapter-specific mechanics of attach: a
+// cheap availability check and the exec handover for one session. The
+// composition root wires the concrete adapter (zmx today) — this package
+// knows only the capability, never an adapter, mirroring how the server
+// side reaches its adapter solely through terminals.Adapter.
+type SessionAttacher interface {
+	// Preflight reports whether attach can possibly succeed on this
+	// machine (the adapter's attach tooling is present).
+	Preflight() error
+	// AttachCommand validates that the session is reachable in this
+	// process's namespace and returns the exec handover for it.
+	AttachCommand(id string) (executable string, argv, env []string, err error)
+}
+
 // AttachSession hands this process's TTY over to the terminal's running
-// session. On success it never returns: the process is replaced by zmx
-// until detach.
-func AttachSession(terminal api.Terminal) error {
+// session. On success it never returns: the process is replaced by the
+// adapter's attach client until detach.
+func AttachSession(terminal api.Terminal, attacher SessionAttacher) error {
 	if terminal.Status != api.TerminalRunning {
 		return fmt.Errorf("terminal %s is %s, not running", terminal.ID, terminal.Status)
 	}
-	socketDir, err := paths.TerminalSocketDir()
+	executable, argv, env, err := attacher.AttachCommand(terminal.ID)
 	if err != nil {
 		return err
 	}
-	// A loopback URL does not prove the server shares this
-	// process's namespace (an SSH-forwarded remote server, a
-	// different XDG_STATE_HOME). A session the API calls running
-	// must have its socket here; anything else would hand the TTY
-	// to zmx's auto-create.
-	if _, err := os.Stat(filepath.Join(socketDir, terminal.ID)); err != nil {
-		return fmt.Errorf("terminal %s has no session socket under %s — the server appears to be remote (an SSH-forwarded port?) or running with a different state directory", terminal.ID, socketDir)
-	}
-	executable, argv, env, err := zmx.AttachCommand(socketDir, terminal.ID)
-	if err != nil {
-		return err
-	}
-	// Exec replaces this process: the user's real TTY belongs to
-	// zmx until detach.
+	// Exec replaces this process: the user's real TTY belongs to the
+	// session until detach.
 	return syscall.Exec(executable, argv, env)
 }
 

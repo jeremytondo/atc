@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"os/exec"
 	"strings"
 	"text/tabwriter"
 
@@ -11,8 +10,10 @@ import (
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/cli"
+	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/service"
 	"github.com/jeremytondo/atc/internal/terminals/wrapper"
+	"github.com/jeremytondo/atc/internal/terminals/zmx"
 )
 
 func newTerminalCmd() *cobra.Command {
@@ -27,6 +28,17 @@ func newTerminalCmd() *cobra.Command {
 	cmd.AddCommand(newTerminalCreateCmd(), newTerminalGetCmd(), newTerminalListCmd(),
 		newTerminalUpdateCmd(), newTerminalDeleteCmd(), newTerminalAttachCmd())
 	return cmd
+}
+
+// newSessionAttacher wires the concrete adapter's attach mechanics for
+// this local client — the client-side counterpart of main.go wiring
+// terminals.Adapter for the server.
+func newSessionAttacher() (cli.SessionAttacher, error) {
+	socketDir, err := paths.TerminalSocketDir()
+	if err != nil {
+		return nil, err
+	}
+	return zmx.NewAttacher(socketDir), nil
 }
 
 func newTerminalCreateCmd() *cobra.Command {
@@ -48,12 +60,16 @@ loaded); without it you get a plain interactive shell.`,
 			if err != nil {
 				return err
 			}
+			var attacher cli.SessionAttacher
 			if attach {
 				if err := cli.AttachPreflight(baseURL, stdioIsTerminal()); err != nil {
 					return err
 				}
-				if _, err := exec.LookPath("zmx"); err != nil {
-					return fmt.Errorf("zmx executable not found on PATH; install zmx to attach")
+				if attacher, err = newSessionAttacher(); err != nil {
+					return err
+				}
+				if err := attacher.Preflight(); err != nil {
+					return err
 				}
 			}
 			params := api.TerminalCreateParams{}
@@ -77,7 +93,7 @@ loaded); without it you get a plain interactive shell.`,
 			}
 			printTerminal(cmd.OutOrStdout(), terminal)
 			if attach {
-				if err := cli.AttachSession(terminal); err != nil {
+				if err := cli.AttachSession(terminal, attacher); err != nil {
 					return fmt.Errorf("%w; the terminal was created; retry with: atc terminal attach %s", err, terminal.ID)
 				}
 			}
@@ -200,7 +216,11 @@ running — attach never resurrects or creates sessions.`,
 			if err != nil {
 				return err
 			}
-			return cli.AttachSession(terminal)
+			attacher, err := newSessionAttacher()
+			if err != nil {
+				return err
+			}
+			return cli.AttachSession(terminal, attacher)
 		}),
 	}
 }

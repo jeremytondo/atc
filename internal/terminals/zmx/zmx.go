@@ -359,16 +359,56 @@ func (a *Adapter) reap(cmd *exec.Cmd, exited <-chan struct{}) {
 	}
 }
 
+// Attacher is the client-side half of the zmx boundary: how a local
+// process hands its real TTY to a session. It implements
+// cli.SessionAttacher — an interface the cli package owns — so only this
+// package and the composition root know the adapter is zmx.
+type Attacher struct {
+	socketDir string
+}
+
+// NewAttacher returns an Attacher over ATC's private socket directory
+// (paths.TerminalSocketDir), the same namespace the server's Adapter uses.
+func NewAttacher(socketDir string) Attacher {
+	return Attacher{socketDir: socketDir}
+}
+
+// Preflight reports whether attach can possibly succeed on this machine:
+// zmx must be on PATH. Callers use it to fail before creating a terminal
+// they could never attach.
+func (a Attacher) Preflight() error {
+	_, err := lookPathZmx()
+	return err
+}
+
 // AttachCommand resolves the argv and environment for handing the caller's
-// real TTY to zmx — what `atc terminal attach` execs. The user's TERM is
-// kept (the client renders on their terminal); the namespace env contract
-// is the same as every other invocation.
-func AttachCommand(socketDir, id string) (executable string, argv, env []string, err error) {
-	executable, err = exec.LookPath("zmx")
-	if err != nil {
-		return "", nil, nil, errors.New("zmx executable not found on PATH; install zmx to attach")
+// real TTY to the session — what `atc terminal attach` execs. The user's
+// TERM is kept (the client renders on their terminal); the namespace env
+// contract is the same as every other invocation.
+//
+// A loopback API URL does not prove the server shares this process's
+// namespace (an SSH-forwarded remote server, a different XDG_STATE_HOME).
+// A session the API calls running must have its socket here; anything
+// else would hand the TTY to zmx's attach-auto-creates behavior.
+func (a Attacher) AttachCommand(id string) (executable string, argv, env []string, err error) {
+	if _, statErr := os.Stat(filepath.Join(a.socketDir, id)); statErr != nil {
+		return "", nil, nil, fmt.Errorf(
+			"terminal %s has no session socket under %s — the server appears to be remote (an SSH-forwarded port?) or running with a different state directory",
+			id, a.socketDir)
 	}
-	return executable, []string{"zmx", "attach", id}, Env(socketDir, false), nil
+	executable, err = lookPathZmx()
+	if err != nil {
+		return "", nil, nil, err
+	}
+	return executable, []string{"zmx", "attach", id}, Env(a.socketDir, false), nil
+}
+
+func lookPathZmx() (string, error) {
+	path, err := exec.LookPath("zmx")
+	if err != nil {
+		return "", errors.New("zmx executable not found on PATH; install zmx to attach")
+	}
+	return path, nil
 }
 
 // tailBuffer keeps the last window of client PTY output for diagnostics.
