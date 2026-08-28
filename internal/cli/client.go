@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/authtoken"
@@ -47,11 +48,15 @@ func NewClient(stderr io.Writer) (*api.Client, string, error) {
 		}
 	}
 	clientVersion := version.String()
-	warned := false
+	// The callback runs on whichever goroutine issued the request, and the
+	// client supports concurrent calls — Once keeps the warning single and
+	// race-free.
+	var warn sync.Once
 	onServerVersion := func(serverVersion string) {
-		if serverVersion != clientVersion && !warned {
-			warned = true
-			_, _ = fmt.Fprintf(stderr, "atc: server is %s, client is %s; run `atc server restart`\n", serverVersion, clientVersion)
+		if serverVersion != clientVersion {
+			warn.Do(func() {
+				_, _ = fmt.Fprintf(stderr, "atc: server is %s, client is %s; run `atc server restart`\n", serverVersion, clientVersion)
+			})
 		}
 	}
 	return api.NewClient(baseURL, token, clientVersion, nil, onServerVersion), baseURL, nil

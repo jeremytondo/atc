@@ -49,7 +49,7 @@ loaded); without it you get a plain interactive shell.`,
 				return err
 			}
 			if attach {
-				if err := cli.AttachPreflight(baseURL); err != nil {
+				if err := cli.AttachPreflight(baseURL, stdioIsTerminal()); err != nil {
 					return err
 				}
 				if _, err := exec.LookPath("zmx"); err != nil {
@@ -67,7 +67,7 @@ loaded); without it you get a plain interactive shell.`,
 				return err
 			}
 			if params.ProjectID == "" {
-				if params.ProjectID, err = cli.ResolveProjectID(cmd.Context(), client, cmd.InOrStdin(), cmd.ErrOrStderr()); err != nil {
+				if params.ProjectID, err = cli.ResolveProjectID(cmd.Context(), client, cmd.InOrStdin(), cmd.ErrOrStderr(), stdinIsTTY()); err != nil {
 					return err
 				}
 			}
@@ -190,7 +190,7 @@ the session's socket lives on the server's machine. The terminal must be
 running — attach never resurrects or creates sessions.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, baseURL string) error {
-			if err := cli.AttachPreflight(baseURL); err != nil {
+			if err := cli.AttachPreflight(baseURL, stdioIsTerminal()); err != nil {
 				return err
 			}
 			// The API check keeps zmx's attach-auto-creates behavior from

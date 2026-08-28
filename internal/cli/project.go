@@ -14,11 +14,10 @@ import (
 	"github.com/jeremytondo/atc/internal/paths"
 )
 
-// StdinIsTTY gates the create-offer prompt: a question is only asked of a
-// human on an interactive stdin. Stdout deliberately does not matter — a
-// redirected stdout still deserves the prompt (on stderr) rather than a
-// refusal. A variable so tests, which never have a TTY, can force it.
-var StdinIsTTY = func() bool {
+// StdinIsTTY reports whether this process's stdin is a real TTY. Callers
+// pass the result (or their own knowledge) into ResolveProjectID, so the
+// check stays an explicit capability rather than package state.
+func StdinIsTTY() bool {
 	info, err := os.Stdin.Stat()
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
@@ -26,10 +25,12 @@ var StdinIsTTY = func() bool {
 // ResolveProjectID finds the project owning the current directory the way
 // git finds a repository (ATC-256): canonicalize the cwd, then walk up —
 // the nearest ancestor (or the directory itself) matching a project's
-// directory wins. On no match, an interactive run is offered a project
-// rooted at the default (git toplevel, else cwd) on stderr; a
-// non-interactive run refuses with the fixes instead of prompting.
-func ResolveProjectID(ctx context.Context, client *api.Client, stdin io.Reader, stderr io.Writer) (string, error) {
+// directory wins. On no match, an interactive run (stdinIsTTY — a question
+// is only asked of a human; stdout deliberately does not matter, since a
+// redirected stdout still deserves the prompt on stderr) is offered a
+// project rooted at the default (git toplevel, else cwd); a non-interactive
+// run refuses with the fixes instead of prompting.
+func ResolveProjectID(ctx context.Context, client *api.Client, stdin io.Reader, stderr io.Writer, stdinIsTTY bool) (string, error) {
 	canonical, err := paths.CanonicalDir(".")
 	if err != nil {
 		return "", err
@@ -53,10 +54,10 @@ func ResolveProjectID(ctx context.Context, client *api.Client, stdin io.Reader, 
 		dir = parent
 	}
 
-	if !StdinIsTTY() {
+	if !stdinIsTTY {
 		return "", fmt.Errorf("no project contains %s; pass --project <id> or run `atc project create`", canonical)
 	}
-	defaultDir := ProjectRootFor(canonical)
+	defaultDir := projectRootFor(canonical)
 	// The conversation goes to stderr: stdout stays the command's
 	// redirectable output (the created terminal).
 	_, _ = fmt.Fprintf(stderr, "no project contains %s\ncreate a project at %s? [y/N] ", canonical, defaultDir)
@@ -81,14 +82,14 @@ func DefaultProjectDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return ProjectRootFor(canonical), nil
+	return projectRootFor(canonical), nil
 }
 
-// ProjectRootFor asks git for the toplevel of the repository containing
+// projectRootFor asks git for the toplevel of the repository containing
 // the canonical directory — git itself is the authority on what counts as
 // a repository (a stray or malformed .git entry is not one). Outside a
 // repository, or without git installed, the directory is its own root.
-func ProjectRootFor(canonical string) string {
+func projectRootFor(canonical string) string {
 	output, err := exec.Command("git", "-C", canonical, "rev-parse", "--show-toplevel").Output()
 	if err != nil {
 		return canonical

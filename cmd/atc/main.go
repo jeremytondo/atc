@@ -90,6 +90,14 @@ expose on the tailnet without the flag.`,
 	return root
 }
 
+// stdioIsTerminal and stdinIsTTY are this binary's TTY detection, held in
+// variables so tests, which never have a TTY, can force them. The cli
+// package takes the results as explicit arguments and holds no such state.
+var (
+	stdioIsTerminal = cli.StdioIsTerminal
+	stdinIsTTY      = cli.StdinIsTTY
+)
+
 // runWithClient wraps an API-backed command body with the shared client
 // construction and error path — every terminal/project/api command starts
 // the same way.
@@ -153,7 +161,7 @@ interrupted), headless runs print a reminder unless --restart or
 			opts := upgrade.Options{
 				Dev:         dev,
 				Restart:     mode,
-				Interactive: cli.StdinIsTTY(),
+				Interactive: stdinIsTTY(),
 				Version:     version.String(),
 				Stdin:       cmd.InOrStdin(),
 				Stdout:      cmd.OutOrStdout(),

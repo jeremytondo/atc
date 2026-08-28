@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeremytondo/atc/internal/cli"
 	"github.com/jeremytondo/atc/internal/paths"
 )
 
@@ -246,9 +245,10 @@ func TestProjectCreateDefaultPath(t *testing.T) {
 	}
 
 	plain := canonical(t, t.TempDir())
-	// The walk honestly finds any ancestor repo (a stray /tmp/.git on a
+	// The default honestly finds any ancestor repo (a stray /tmp/.git on a
 	// developer machine, say); only a truly repo-free cwd tests this case.
-	if cli.ProjectRootFor(plain) != plain {
+	// git itself is the probe, the same authority the CLI consults.
+	if exec.Command("git", "-C", plain, "rev-parse", "--show-toplevel").Run() == nil {
 		t.Skipf("an ancestor of %s is a git repository; skipping the no-repo case", plain)
 	}
 	t.Chdir(plain)

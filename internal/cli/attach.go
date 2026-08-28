@@ -13,9 +13,11 @@ import (
 	"github.com/jeremytondo/atc/internal/zmx"
 )
 
-// StdioIsTerminal reports whether stdin and stdout are both real TTYs.
-// It is a variable so tests, which never have a TTY, can force it.
-var StdioIsTerminal = func() bool {
+// StdioIsTerminal reports whether this process's stdin and stdout are both
+// real TTYs. Callers pass the result (or their own knowledge) into
+// AttachPreflight, so the check stays an explicit capability rather than
+// package state.
+func StdioIsTerminal() bool {
 	stdin, err := os.Stdin.Stat()
 	if err != nil || stdin.Mode()&os.ModeCharDevice == 0 {
 		return false
@@ -25,10 +27,10 @@ var StdioIsTerminal = func() bool {
 }
 
 // AttachPreflight refuses attach attempts that can never succeed: a
-// non-interactive stdio pair, or a non-loopback server (the session socket
-// lives on the server's machine).
-func AttachPreflight(baseURL string) error {
-	if !StdioIsTerminal() {
+// non-interactive stdio pair (stdioIsTerminal, supplied by the caller), or
+// a non-loopback server (the session socket lives on the server's machine).
+func AttachPreflight(baseURL string, stdioIsTerminal bool) error {
+	if !stdioIsTerminal {
 		return fmt.Errorf("attaching requires an interactive terminal (stdin and stdout must be TTYs)")
 	}
 	if !isLoopback(baseURL) {

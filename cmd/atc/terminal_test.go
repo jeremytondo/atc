@@ -13,7 +13,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jeremytondo/atc/internal/cli"
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/server"
@@ -123,10 +122,10 @@ func createProjectCLI(t *testing.T, dir string) string {
 
 func forceTTY(t *testing.T) {
 	t.Helper()
-	prevStdio, prevStdin := cli.StdioIsTerminal, cli.StdinIsTTY
-	cli.StdioIsTerminal = func() bool { return true }
-	cli.StdinIsTTY = func() bool { return true }
-	t.Cleanup(func() { cli.StdioIsTerminal, cli.StdinIsTTY = prevStdio, prevStdin })
+	prevStdio, prevStdin := stdioIsTerminal, stdinIsTTY
+	stdioIsTerminal = func() bool { return true }
+	stdinIsTTY = func() bool { return true }
+	t.Cleanup(func() { stdioIsTerminal, stdinIsTTY = prevStdio, prevStdin })
 }
 
 func installFakeZmx(t *testing.T) {
