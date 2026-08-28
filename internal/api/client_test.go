@@ -197,12 +197,12 @@ func TestTransportErrorIsNotAProblem(t *testing.T) {
 // method, path, and body round-trip is what there is to verify.
 func TestTerminalMethods(t *testing.T) {
 	type call struct {
-		Method, Path, Body string
+		Method, Path, Query, Body string
 	}
 	var got call
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		got = call{Method: r.Method, Path: r.URL.Path, Body: strings.TrimSpace(string(body))}
+		got = call{Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, Body: strings.TrimSpace(string(body))}
 		switch r.URL.Path {
 		case "/v1/terminals":
 			if r.Method == http.MethodPost {
@@ -222,20 +222,27 @@ func TestTerminalMethods(t *testing.T) {
 	client := NewClient(srv.URL, testToken, testClientVersion, nil, nil)
 	ctx := context.Background()
 
-	terminal, err := client.CreateTerminal(ctx, TerminalCreateParams{App: "hx", Directory: "/proj"})
+	terminal, err := client.CreateTerminal(ctx, TerminalCreateParams{ProjectID: "proj-x7k2f", App: "hx"})
 	if err != nil || terminal.ID != "term-x7k2f" {
 		t.Fatalf("CreateTerminal = %+v, %v", terminal, err)
 	}
-	want := call{http.MethodPost, "/v1/terminals", `{"directory":"/proj","app":"hx"}`}
+	want := call{http.MethodPost, "/v1/terminals", "", `{"projectId":"proj-x7k2f","app":"hx"}`}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("create request (-want +got):\n%s", diff)
 	}
 
-	if _, err := client.Terminals(ctx); err != nil {
+	if _, err := client.Terminals(ctx, ""); err != nil {
 		t.Fatal(err)
 	}
 	if got.Method != http.MethodGet || got.Path != "/v1/terminals" {
 		t.Errorf("list request = %+v", got)
+	}
+
+	if _, err := client.Terminals(ctx, "proj-x7k2f"); err != nil {
+		t.Fatal(err)
+	}
+	if got.Query != "project=proj-x7k2f" {
+		t.Errorf("filtered list query = %q", got.Query)
 	}
 
 	if _, err := client.Terminal(ctx, "term-x7k2f"); err != nil {
@@ -248,12 +255,74 @@ func TestTerminalMethods(t *testing.T) {
 	if _, err := client.UpdateTerminal(ctx, "term-x7k2f", TerminalUpdateParams{Name: "build"}); err != nil {
 		t.Fatal(err)
 	}
-	want = call{http.MethodPatch, "/v1/terminals/term-x7k2f", `{"name":"build"}`}
+	want = call{http.MethodPatch, "/v1/terminals/term-x7k2f", "", `{"name":"build"}`}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("update request (-want +got):\n%s", diff)
 	}
 
 	if err := client.DeleteTerminal(ctx, "term-x7k2f"); err != nil {
+		t.Fatal(err)
+	}
+	if got.Method != http.MethodDelete {
+		t.Errorf("delete method = %q", got.Method)
+	}
+}
+
+func TestProjectMethods(t *testing.T) {
+	type call struct {
+		Method, Path, Body string
+	}
+	var got call
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		got = call{Method: r.Method, Path: r.URL.Path, Body: strings.TrimSpace(string(body))}
+		switch {
+		case r.URL.Path == "/v1/projects" && r.Method == http.MethodPost:
+			_ = json.NewEncoder(w).Encode(Project{ID: "proj-x7k2f"})
+		case r.URL.Path == "/v1/projects":
+			_ = json.NewEncoder(w).Encode(ProjectList{Projects: []Project{{ID: "proj-x7k2f"}}})
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			_ = json.NewEncoder(w).Encode(Project{ID: "proj-x7k2f"})
+		}
+	}))
+	defer srv.Close()
+	client := NewClient(srv.URL, testToken, testClientVersion, nil, nil)
+	ctx := context.Background()
+
+	project, err := client.CreateProject(ctx, ProjectCreateParams{Directory: "/proj", Name: "p"})
+	if err != nil || project.ID != "proj-x7k2f" {
+		t.Fatalf("CreateProject = %+v, %v", project, err)
+	}
+	want := call{http.MethodPost, "/v1/projects", `{"directory":"/proj","name":"p"}`}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("create request (-want +got):\n%s", diff)
+	}
+
+	if _, err := client.Projects(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got.Method != http.MethodGet || got.Path != "/v1/projects" {
+		t.Errorf("list request = %+v", got)
+	}
+
+	if _, err := client.Project(ctx, "proj-x7k2f"); err != nil {
+		t.Fatal(err)
+	}
+	if got.Path != "/v1/projects/proj-x7k2f" {
+		t.Errorf("get path = %q", got.Path)
+	}
+
+	if _, err := client.UpdateProject(ctx, "proj-x7k2f", ProjectUpdateParams{Name: "renamed"}); err != nil {
+		t.Fatal(err)
+	}
+	want = call{http.MethodPatch, "/v1/projects/proj-x7k2f", `{"name":"renamed"}`}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("update request (-want +got):\n%s", diff)
+	}
+
+	if err := client.DeleteProject(ctx, "proj-x7k2f"); err != nil {
 		t.Fatal(err)
 	}
 	if got.Method != http.MethodDelete {

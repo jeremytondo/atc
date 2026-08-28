@@ -3,7 +3,9 @@ package terminals
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -17,6 +19,16 @@ import (
 // ErrNotFound reports an id with no record; the API layer maps it to 404.
 var ErrNotFound = errors.New("terminal not found")
 
+// ErrProjectUnknown rejects a create naming a project with no record.
+var ErrProjectUnknown = errors.New("unknown project")
+
+// ErrProjectDirectoryMissing refuses a create whose project directory does
+// not exist at that moment (the project folder was deleted after project
+// creation). This deliberately reverses the domain's previous skip-the-
+// existence-check choice (ATC-256); the launch-failure path remains as the
+// backstop for races.
+var ErrProjectDirectoryMissing = errors.New("project directory does not exist")
+
 // resource is the event-payload resource kind.
 const resource = "terminal"
 
@@ -24,13 +36,14 @@ const resource = "terminal"
 type Options struct {
 	Repository *store.Terminals
 	Adapter    Adapter
+	// Projects is read on create: the required project reference is
+	// validated and its directory copied (ATC-256).
+	Projects *store.Projects
 	// MarkerDir is where wrappers record exit evidence.
 	MarkerDir string
 	Hub       *events.Hub
 	Logger    *slog.Logger
 	Now       func() time.Time
-	// HomeDir is the default directory for created terminals.
-	HomeDir string
 }
 
 // Service owns the in-memory view and the reconciliation that keeps it
@@ -51,11 +64,11 @@ type Options struct {
 type Service struct {
 	repository *store.Terminals
 	adapter    Adapter
+	projects   *store.Projects
 	markerDir  string
 	hub        *events.Hub
 	logger     *slog.Logger
 	now        func() time.Time
-	home       string
 	// verifyInterval is VerifyInterval in production; tests shrink it.
 	verifyInterval time.Duration
 
@@ -76,6 +89,12 @@ type entry struct {
 }
 
 func NewService(opts Options) *Service {
+	if opts.Projects == nil {
+		// A nil projects repository would panic on the first create request
+		// rather than at boot; fail at construction instead (the
+		// server.NewHandler Verify precedent).
+		panic("terminals.NewService: Projects must not be nil")
+	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
@@ -85,11 +104,11 @@ func NewService(opts Options) *Service {
 	return &Service{
 		repository:     opts.Repository,
 		adapter:        opts.Adapter,
+		projects:       opts.Projects,
 		markerDir:      opts.MarkerDir,
 		hub:            opts.Hub,
 		logger:         opts.Logger,
 		now:            opts.Now,
-		home:           opts.HomeDir,
 		verifyInterval: VerifyInterval,
 		view:           make(map[string]*entry),
 		settling:       make(map[string]struct{}),
@@ -295,12 +314,26 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 	}
 }
 
-// Create mints the ID, persists the record before starting the session (no
+// Create validates the required project reference, copies its directory,
+// mints the ID, persists the record before starting the session (no
 // orphan window), starts it, and waits a short verification window so the
 // common case returns running and a fast-failing app returns exited with
-// real evidence. Failures surface through the normal status machinery —
-// there is no separate launch-error path.
+// real evidence. Failures after the record exists surface through the
+// normal status machinery — there is no separate launch-error path.
 func (s *Service) Create(ctx context.Context, params api.TerminalCreateParams) (api.Terminal, error) {
+	project, ok, err := s.projects.Get(ctx, params.ProjectID)
+	if err != nil {
+		return api.Terminal{}, err
+	}
+	if !ok {
+		return api.Terminal{}, fmt.Errorf("%w %q", ErrProjectUnknown, params.ProjectID)
+	}
+	// The project's directory must exist right now; a vanished folder
+	// refuses the create before any record is written.
+	if info, err := os.Stat(project.Directory); err != nil || !info.IsDir() {
+		return api.Terminal{}, fmt.Errorf("%w: %s", ErrProjectDirectoryMissing, project.Directory)
+	}
+
 	name := params.Name
 	if name == "" {
 		name = params.App
@@ -308,14 +341,10 @@ func (s *Service) Create(ctx context.Context, params api.TerminalCreateParams) (
 	if name == "" {
 		name = "Shell"
 	}
-	directory := params.Directory
-	if directory == "" {
-		directory = s.home
-	}
 
 	now := s.now()
 	record := store.TerminalRecord{
-		Name: name, Directory: directory, App: params.App,
+		ProjectID: project.ID, Name: name, Directory: project.Directory, App: params.App,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	s.ops.Lock()
@@ -324,6 +353,13 @@ func (s *Service) Create(ctx context.Context, params api.TerminalCreateParams) (
 	for {
 		record.ID = randomID()
 		inserted, err := s.repository.Insert(ctx, record)
+		if errors.Is(err, store.ErrForeignKeyViolation) {
+			// The project was deleted between the lookup above and this
+			// insert; the foreign key kept the state consistent, so answer
+			// as if the lookup had missed.
+			s.ops.Unlock()
+			return api.Terminal{}, fmt.Errorf("%w %q", ErrProjectUnknown, params.ProjectID)
+		}
 		if err != nil {
 			s.ops.Unlock()
 			return api.Terminal{}, err
@@ -344,7 +380,7 @@ func (s *Service) Create(ctx context.Context, params api.TerminalCreateParams) (
 	s.hub.Publish(api.EventTerminalCreated, resource, record.ID)
 	s.ops.Unlock()
 
-	if err := s.adapter.Create(ctx, record.ID, CreateSpec{Directory: directory, App: params.App}); err != nil {
+	if err := s.adapter.Create(ctx, record.ID, CreateSpec{Directory: record.Directory, App: params.App}); err != nil {
 		// The record stays: the session may have been born after the
 		// client gave up, and the status machinery reports the truth.
 		s.logger.Warn("session create failed", "terminal", record.ID, "error", err)
@@ -400,12 +436,17 @@ func (s *Service) Get(id string) (api.Terminal, error) {
 	return e.terminal(), nil
 }
 
-// List serves every terminal from the in-memory view in creation order.
-func (s *Service) List() []api.Terminal {
+// List serves terminals from the in-memory view in creation order. A
+// non-empty projectID filters to that project's terminals; empty returns
+// everything (the API imposes no scoping — presentation belongs to UIs).
+func (s *Service) List(projectID string) []api.Terminal {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	terminals := make([]api.Terminal, 0, len(s.view))
 	for _, e := range s.view {
+		if projectID != "" && e.record.ProjectID != projectID {
+			continue
+		}
 		terminals = append(terminals, e.terminal())
 	}
 	sort.Slice(terminals, func(i, j int) bool {
@@ -507,6 +548,7 @@ func (e *entry) terminal() api.Terminal {
 	terminal := api.Terminal{
 		ID:        e.record.ID,
 		Name:      e.record.Name,
+		ProjectID: e.record.ProjectID,
 		Directory: e.record.Directory,
 		App:       e.record.App,
 		Status:    e.status,

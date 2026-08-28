@@ -23,6 +23,7 @@ import (
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/events"
+	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/terminals"
 )
 
@@ -42,6 +43,7 @@ type Options struct {
 	Version   string
 	Logger    *slog.Logger
 	Terminals *terminals.Service
+	Projects  *projects.Service
 	Events    *events.Hub
 	// HeartbeatInterval paces SSE heartbeats; zero means the default.
 	HeartbeatInterval time.Duration
@@ -87,6 +89,9 @@ func NewHandler(opts Options) http.Handler {
 
 	if opts.Terminals != nil {
 		registerTerminals(humaAPI, opts.Terminals)
+	}
+	if opts.Projects != nil {
+		registerProjects(humaAPI, opts.Projects)
 	}
 	if opts.Events != nil {
 		registerEvents(humaAPI, opts.Events, opts.HeartbeatInterval)

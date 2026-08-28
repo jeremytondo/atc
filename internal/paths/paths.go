@@ -9,12 +9,40 @@
 //	state   $XDG_STATE_HOME/atc/atc.log       (~/.local/state/atc/atc.log)
 //	state   $XDG_STATE_HOME/atc/terminals     (~/.local/state/atc/terminals)
 //	state   $XDG_STATE_HOME/atc/exits         (~/.local/state/atc/exits)
+//
+// It also owns CanonicalDir, the one rule for canonicalizing user-supplied
+// directories (ATC-256) — project identity and CLI project resolution must
+// agree on it exactly.
 package paths
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 )
+
+// CanonicalDir resolves path to the canonical form ATC stores and compares
+// (ATC-256): absolute, cleaned, symlinks resolved. It fails when the path
+// does not exist or is not a directory (symlink resolution already
+// requires existence; this is one check, not two).
+func CanonicalDir(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%s is not a directory", path)
+	}
+	return resolved, nil
+}
 
 // ConfigFile is the TOML configuration file the server reads.
 func ConfigFile() (string, error) {

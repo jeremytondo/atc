@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sync"
@@ -103,13 +104,16 @@ func (a *fakeAdapter) setInvErr(err error) {
 }
 
 // fixture wires a Service over a real temp-file store, the fake adapter, a
-// real marker directory, and a fake clock.
+// real marker directory, and a fake clock, with one project (rooted at a
+// real temp directory) for terminals to belong to.
 type fixture struct {
-	service *Service
-	adapter *fakeAdapter
-	hub     *events.Hub
-	markers string
-	clock   *fakeClock
+	service    *Service
+	adapter    *fakeAdapter
+	hub        *events.Hub
+	markers    string
+	clock      *fakeClock
+	projectID  string
+	projectDir string
 }
 
 type fakeClock struct {
@@ -134,17 +138,33 @@ func newFixture(t *testing.T) *fixture {
 	adapter := newFakeAdapter()
 	markers := t.TempDir()
 	clock := &fakeClock{now: time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)}
+	projectDir := t.TempDir()
+	projectID := "proj-aaaaa"
+	if ok, err := s.Projects().Insert(context.Background(), store.ProjectRecord{
+		ID: projectID, Name: "p", Directory: projectDir, CreatedAt: clock.Now(), UpdatedAt: clock.Now(),
+	}); err != nil || !ok {
+		t.Fatalf("planting project = %v, %v", ok, err)
+	}
 	service := NewService(Options{
 		Repository: s.Terminals(),
 		Adapter:    adapter,
+		Projects:   s.Projects(),
 		MarkerDir:  markers,
 		Hub:        events.NewHub(64),
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:        clock.Now,
-		HomeDir:    "/home/tester",
 	})
 	service.verifyInterval = time.Millisecond
-	return &fixture{service: service, adapter: adapter, hub: service.hub, markers: markers, clock: clock}
+	return &fixture{service: service, adapter: adapter, hub: service.hub, markers: markers,
+		clock: clock, projectID: projectID, projectDir: projectDir}
+}
+
+// create is Create against the fixture's project.
+func (f *fixture) create(ctx context.Context, params api.TerminalCreateParams) (api.Terminal, error) {
+	if params.ProjectID == "" {
+		params.ProjectID = f.projectID
+	}
+	return f.service.Create(ctx, params)
 }
 
 func plantExitMarker(t *testing.T, dir, id string, code int, exited bool) {
@@ -181,7 +201,7 @@ func TestCreateHappyPath(t *testing.T) {
 		}
 	}
 
-	terminal, err := f.service.Create(ctx, api.TerminalCreateParams{App: "hx", Directory: "/proj"})
+	terminal, err := f.create(ctx, api.TerminalCreateParams{App: "hx"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +212,7 @@ func TestCreateHappyPath(t *testing.T) {
 		t.Error("session started before the record was persisted")
 	}
 	want := terminal
-	want.Name, want.Directory, want.App, want.Status = "hx", "/proj", "hx", api.TerminalRunning
+	want.Name, want.ProjectID, want.Directory, want.App, want.Status = "hx", f.projectID, f.projectDir, "hx", api.TerminalRunning
 	if diff := cmp.Diff(want, terminal); diff != "" {
 		t.Errorf("terminal (-want +got):\n%s", diff)
 	}
@@ -200,12 +220,12 @@ func TestCreateHappyPath(t *testing.T) {
 
 func TestCreateDefaults(t *testing.T) {
 	f := newFixture(t)
-	terminal, err := f.service.Create(context.Background(), api.TerminalCreateParams{})
+	terminal, err := f.create(context.Background(), api.TerminalCreateParams{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if terminal.Name != "Shell" || terminal.Directory != "/home/tester" || terminal.App != "" {
-		t.Errorf("defaults = %q %q %q, want Shell /home/tester \"\"", terminal.Name, terminal.Directory, terminal.App)
+	if terminal.Name != "Shell" || terminal.Directory != f.projectDir || terminal.App != "" {
+		t.Errorf("defaults = %q %q %q, want Shell %q \"\"", terminal.Name, terminal.Directory, terminal.App, f.projectDir)
 	}
 }
 
@@ -217,7 +237,7 @@ func TestCreateFastFailingApp(t *testing.T) {
 	f.adapter.onCreate = func(id string, _ CreateSpec) {
 		plantExitMarker(t, f.markers, id, 127, true)
 	}
-	terminal, err := f.service.Create(context.Background(), api.TerminalCreateParams{App: "no-such-tool"})
+	terminal, err := f.create(context.Background(), api.TerminalCreateParams{App: "no-such-tool"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +254,7 @@ func TestCreateFastFailingApp(t *testing.T) {
 func TestCreateNeverSettles(t *testing.T) {
 	f := newFixture(t)
 	f.adapter.createErr = errors.New("session never settled")
-	terminal, err := f.service.Create(context.Background(), api.TerminalCreateParams{})
+	terminal, err := f.create(context.Background(), api.TerminalCreateParams{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +289,7 @@ func TestReconcileDecisionTable(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t)
 			ctx := context.Background()
-			terminal, err := f.service.Create(ctx, api.TerminalCreateParams{})
+			terminal, err := f.create(ctx, api.TerminalCreateParams{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -315,7 +335,7 @@ func TestReconcileDecisionTable(t *testing.T) {
 func TestExitedIsStickyAndStaysListed(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	terminal, err := f.service.Create(ctx, api.TerminalCreateParams{App: "build"})
+	terminal, err := f.create(ctx, api.TerminalCreateParams{App: "build"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +351,7 @@ func TestExitedIsStickyAndStaysListed(t *testing.T) {
 	f.adapter.setInvErr(nil)
 	f.service.Reconcile(ctx)
 
-	list := f.service.List()
+	list := f.service.List("")
 	if len(list) != 1 || list[0].Status != api.TerminalExited || list[0].ExitCode == nil || *list[0].ExitCode != 3 {
 		t.Errorf("list = %+v, want one exited terminal with code 3", list)
 	}
@@ -340,7 +360,7 @@ func TestExitedIsStickyAndStaysListed(t *testing.T) {
 func TestUpdateName(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	terminal, err := f.service.Create(ctx, api.TerminalCreateParams{})
+	terminal, err := f.create(ctx, api.TerminalCreateParams{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +382,7 @@ func TestUpdateName(t *testing.T) {
 func TestDeleteBestEffortAndOrphanReaping(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	terminal, err := f.service.Create(ctx, api.TerminalCreateParams{})
+	terminal, err := f.create(ctx, api.TerminalCreateParams{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +446,7 @@ func TestDeleteAbsentIsNotFound(t *testing.T) {
 func TestSecondDeleteIsNotFound(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	terminal, err := f.service.Create(ctx, api.TerminalCreateParams{})
+	terminal, err := f.create(ctx, api.TerminalCreateParams{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +479,7 @@ func TestSecondDeleteIsNotFound(t *testing.T) {
 // user's intent, once durable, must not be abandoned by a disconnect.
 func TestDeleteSurvivesCancelledContext(t *testing.T) {
 	f := newFixture(t)
-	terminal, err := f.service.Create(context.Background(), api.TerminalCreateParams{})
+	terminal, err := f.create(context.Background(), api.TerminalCreateParams{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +498,7 @@ func TestDeleteSurvivesCancelledContext(t *testing.T) {
 func TestStaleMarkerFromEarlierIncarnationIgnored(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	terminal, err := f.service.Create(ctx, api.TerminalCreateParams{})
+	terminal, err := f.create(ctx, api.TerminalCreateParams{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -506,11 +526,11 @@ func TestStaleMarkerFromEarlierIncarnationIgnored(t *testing.T) {
 func TestLoadRebuildsView(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	running, err := f.service.Create(ctx, api.TerminalCreateParams{Name: "keep"})
+	running, err := f.create(ctx, api.TerminalCreateParams{Name: "keep"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	gone, err := f.service.Create(ctx, api.TerminalCreateParams{Name: "gone"})
+	gone, err := f.create(ctx, api.TerminalCreateParams{Name: "gone"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -520,11 +540,11 @@ func TestLoadRebuildsView(t *testing.T) {
 	restarted := NewService(Options{
 		Repository: f.service.repository,
 		Adapter:    f.adapter,
+		Projects:   f.service.projects,
 		MarkerDir:  f.markers,
 		Hub:        events.NewHub(64),
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:        f.clock.Now,
-		HomeDir:    "/home/tester",
 	})
 	if err := restarted.Load(ctx); err != nil {
 		t.Fatal(err)
@@ -532,7 +552,7 @@ func TestLoadRebuildsView(t *testing.T) {
 	restarted.Reconcile(ctx)
 
 	byName := map[string]api.TerminalStatus{}
-	for _, terminal := range restarted.List() {
+	for _, terminal := range restarted.List("") {
 		byName[terminal.Name] = terminal.Status
 	}
 	want := map[string]api.TerminalStatus{"keep": api.TerminalRunning, "gone": api.TerminalMissing}
@@ -549,7 +569,7 @@ func TestEventsEmitted(t *testing.T) {
 	sub := f.hub.Subscribe(0, false)
 	defer sub.Close()
 
-	terminal, err := f.service.Create(ctx, api.TerminalCreateParams{})
+	terminal, err := f.create(ctx, api.TerminalCreateParams{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -581,5 +601,64 @@ func TestEventsEmitted(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, types); diff != "" {
 		t.Errorf("event types (-want +got):\n%s", diff)
+	}
+}
+
+// The ATC-256 create contract: the project must exist, and its directory
+// must exist at that moment — refused before any record is written.
+func TestCreateRequiresLiveProject(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	if _, err := f.service.Create(ctx, api.TerminalCreateParams{ProjectID: "proj-zzzzz"}); !errors.Is(err, ErrProjectUnknown) {
+		t.Errorf("Create(unknown project) = %v, want ErrProjectUnknown", err)
+	}
+
+	if err := os.RemoveAll(f.projectDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.create(ctx, api.TerminalCreateParams{}); !errors.Is(err, ErrProjectDirectoryMissing) {
+		t.Errorf("Create(vanished directory) = %v, want ErrProjectDirectoryMissing", err)
+	}
+
+	// Refused means refused: no terminal row was written and nothing is
+	// listed.
+	records, err := f.service.repository.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 || len(f.service.List("")) != 0 {
+		t.Errorf("refused creates left records: %+v", records)
+	}
+}
+
+// List's project filter scopes the view; unfiltered returns everything.
+func TestListFiltersByProject(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	otherDir := t.TempDir()
+	if ok, err := f.service.projects.Insert(ctx, store.ProjectRecord{
+		ID: "proj-bbbbb", Name: "other", Directory: otherDir,
+		CreatedAt: f.clock.Now(), UpdatedAt: f.clock.Now(),
+	}); err != nil || !ok {
+		t.Fatalf("planting project = %v, %v", ok, err)
+	}
+	mine, err := f.create(ctx, api.TerminalCreateParams{Name: "mine"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := f.service.Create(ctx, api.TerminalCreateParams{ProjectID: "proj-bbbbb", Name: "other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all := f.service.List(""); len(all) != 2 {
+		t.Errorf("unfiltered list = %+v, want both terminals", all)
+	}
+	filtered := f.service.List("proj-bbbbb")
+	if len(filtered) != 1 || filtered[0].ID != other.ID {
+		t.Errorf("filtered list = %+v, want only %s", filtered, other.ID)
+	}
+	if other.Directory != otherDir || mine.Directory != f.projectDir {
+		t.Errorf("directories not copied from projects: %q %q", mine.Directory, other.Directory)
 	}
 }

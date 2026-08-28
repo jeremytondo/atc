@@ -11,6 +11,9 @@ const (
 	EventTerminalCreated = "terminal.created"
 	EventTerminalUpdated = "terminal.updated"
 	EventTerminalDeleted = "terminal.deleted"
+	EventProjectCreated  = "project.created"
+	EventProjectUpdated  = "project.updated"
+	EventProjectDeleted  = "project.deleted"
 	EventResync          = "resync"
 )
 
@@ -31,6 +34,15 @@ type TerminalUpdatedEvent struct{ ChangeEvent }
 
 // TerminalDeletedEvent is the terminal.deleted payload.
 type TerminalDeletedEvent struct{ ChangeEvent }
+
+// ProjectCreatedEvent is the project.created payload.
+type ProjectCreatedEvent struct{ ChangeEvent }
+
+// ProjectUpdatedEvent is the project.updated payload.
+type ProjectUpdatedEvent struct{ ChangeEvent }
+
+// ProjectDeletedEvent is the project.deleted payload.
+type ProjectDeletedEvent struct{ ChangeEvent }
 
 // ResyncEvent tells a reconnecting client its cursor has fallen off the
 // backlog: refetch snapshots once, then resume from the live stream.

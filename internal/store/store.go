@@ -18,6 +18,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/pressly/goose/v3"
@@ -167,6 +168,28 @@ func (s *Store) Close() error {
 // Terminals returns the terminals repository.
 func (s *Store) Terminals() *Terminals {
 	return &Terminals{reads: gen.New(s.reads), writes: gen.New(s.writes)}
+}
+
+// Projects returns the projects repository.
+func (s *Store) Projects() *Projects {
+	return &Projects{reads: gen.New(s.reads), writes: gen.New(s.writes)}
+}
+
+// ErrForeignKeyViolation marks a write the schema's foreign keys refused —
+// the database-level backstop behind the domains' own referential checks
+// (terminal create racing a project delete, and vice versa). Domain
+// services translate it to their typed errors instead of surfacing a raw
+// constraint failure.
+var ErrForeignKeyViolation = errors.New("foreign key constraint violated")
+
+// foreignKeyError wraps a driver error in ErrForeignKeyViolation when it
+// is a foreign-key constraint failure; anything else passes through. The
+// driver exposes constraint failures only through the message text.
+func foreignKeyError(err error) error {
+	if err != nil && strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
+		return fmt.Errorf("%w: %w", ErrForeignKeyViolation, err)
+	}
+	return err
 }
 
 func formatTime(t time.Time) string {

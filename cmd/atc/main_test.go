@@ -17,7 +17,7 @@ import (
 
 func TestRunNoArgsPrintsUsage(t *testing.T) {
 	var stdout, stderr strings.Builder
-	if err := run(context.Background(), nil, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), nil, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatalf("run() = %v, want nil", err)
 	}
 	if !strings.Contains(stdout.String(), "Usage:") {
@@ -27,7 +27,7 @@ func TestRunNoArgsPrintsUsage(t *testing.T) {
 
 func TestRunVersion(t *testing.T) {
 	var stdout, stderr strings.Builder
-	if err := run(context.Background(), []string{"version"}, &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"version"}, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatalf("run() = %v, want nil", err)
 	}
 	if strings.TrimSpace(stdout.String()) == "" {
@@ -54,7 +54,7 @@ func TestRunRejectsBadInvocations(t *testing.T) {
 		{"server", "uninstall", "extra"},
 	} {
 		var stdout, stderr strings.Builder
-		if err := run(context.Background(), args, &stdout, &stderr); err == nil {
+		if err := run(context.Background(), args, strings.NewReader(""), &stdout, &stderr); err == nil {
 			t.Errorf("run(%q) = nil, want error", args)
 		}
 	}
@@ -96,7 +96,9 @@ func TestServerRunStopsOnContextCancel(t *testing.T) {
 	var stdout strings.Builder
 	var stderr syncBuffer
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, []string{"server", "run", "--port", "0"}, &stdout, &stderr) }()
+	go func() {
+		done <- run(ctx, []string{"server", "run", "--port", "0"}, strings.NewReader(""), &stdout, &stderr)
+	}()
 
 	// Boot now includes storage migration and the blocking startup
 	// reconcile; wait for the serve log before requesting shutdown.
@@ -124,7 +126,7 @@ func TestServerRunCancelledDuringBoot(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var stdout, stderr strings.Builder
-	if err := run(ctx, []string{"server", "run", "--port", "0"}, &stdout, &stderr); err != nil {
+	if err := run(ctx, []string{"server", "run", "--port", "0"}, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatalf("server run with pre-cancelled context = %v, want nil", err)
 	}
 }
@@ -139,7 +141,7 @@ func TestServerRunRejectsInvalidFlagValues(t *testing.T) {
 		"port out of range": {"server", "run", "--port", "70000"},
 	} {
 		var stdout, stderr strings.Builder
-		if err := run(context.Background(), args, &stdout, &stderr); err == nil {
+		if err := run(context.Background(), args, strings.NewReader(""), &stdout, &stderr); err == nil {
 			t.Errorf("%s: run(%q) = nil, want validation error", name, args)
 		}
 	}
@@ -172,7 +174,7 @@ func TestServerStatusNotInstalled(t *testing.T) {
 	}
 
 	var stdout, stderr strings.Builder
-	err := run(context.Background(), []string{"server", "status"}, &stdout, &stderr)
+	err := run(context.Background(), []string{"server", "status"}, strings.NewReader(""), &stdout, &stderr)
 	var exit *service.ExitError
 	if !errors.As(err, &exit) || exit.Code != 2 {
 		t.Fatalf("server status = %v, want ExitError with code 2", err)
@@ -197,14 +199,14 @@ func TestRecoveryCommandsSurviveBrokenConfig(t *testing.T) {
 
 	// status settles config and must surface the parse error.
 	var stdout, stderr strings.Builder
-	if err := run(context.Background(), []string{"server", "status"}, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "bogus_key") {
+	if err := run(context.Background(), []string{"server", "status"}, strings.NewReader(""), &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "bogus_key") {
 		t.Errorf("server status = %v, want the config parse error", err)
 	}
 
 	// stop and uninstall proceed to their not-installed reports.
 	for _, args := range [][]string{{"server", "stop"}, {"server", "uninstall"}} {
 		var stdout, stderr strings.Builder
-		if err := run(context.Background(), args, &stdout, &stderr); err != nil {
+		if err := run(context.Background(), args, strings.NewReader(""), &stdout, &stderr); err != nil {
 			t.Errorf("run(%q) = %v, want nil despite broken config", args, err)
 		}
 		if !strings.Contains(stdout.String(), "not installed") {
@@ -216,7 +218,7 @@ func TestRecoveryCommandsSurviveBrokenConfig(t *testing.T) {
 	// empty journal).
 	stdout.Reset()
 	stderr.Reset()
-	err := run(context.Background(), []string{"server", "logs"}, &stdout, &stderr)
+	err := run(context.Background(), []string{"server", "logs"}, strings.NewReader(""), &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "not installed") {
 		t.Errorf("server logs = %v, want a not-installed explanation", err)
 	}
@@ -226,7 +228,7 @@ func TestServerTokenPrintsAndRotates(t *testing.T) {
 	isolateXDG(t)
 	tokenOut := func(args ...string) string {
 		var stdout, stderr strings.Builder
-		if err := run(context.Background(), args, &stdout, &stderr); err != nil {
+		if err := run(context.Background(), args, strings.NewReader(""), &stdout, &stderr); err != nil {
 			t.Fatalf("run(%q) = %v", args, err)
 		}
 		return strings.TrimSpace(stdout.String())

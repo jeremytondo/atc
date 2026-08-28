@@ -22,6 +22,7 @@ import (
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/exitmarker"
+	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/terminals"
 )
@@ -76,13 +77,17 @@ func (a *fakeAdapter) Kill(_ context.Context, id string) error {
 }
 
 // fixture is a full chassis over fakes: real store in a temp dir, real
-// hub, fake adapter, fake clock — the server's existing test seam.
+// hub, fake adapter, fake clock — the server's existing test seam. One
+// project rooted at a real temp directory exists for terminals to belong
+// to.
 type fixture struct {
-	handler http.Handler
-	adapter *fakeAdapter
-	hub     *events.Hub
-	service *terminals.Service
-	markers string
+	handler    http.Handler
+	adapter    *fakeAdapter
+	hub        *events.Hub
+	service    *terminals.Service
+	markers    string
+	projectID  string
+	projectDir string
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -103,29 +108,79 @@ func newFixture(t *testing.T) *fixture {
 	}
 	clock.now = time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
 	markers := t.TempDir()
+	now := func() time.Time {
+		clock.Lock()
+		defer clock.Unlock()
+		clock.now = clock.now.Add(time.Millisecond)
+		return clock.now
+	}
 	service := terminals.NewService(terminals.Options{
 		Repository: db.Terminals(),
 		Adapter:    adapter,
+		Projects:   db.Projects(),
 		MarkerDir:  markers,
 		Hub:        hub,
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Now: func() time.Time {
-			clock.Lock()
-			defer clock.Unlock()
-			clock.now = clock.now.Add(time.Millisecond)
-			return clock.now
-		},
-		HomeDir: "/home/tester",
+		Now:        now,
+	})
+	projectService := projects.NewService(projects.Options{
+		Repository: db.Projects(),
+		Terminals:  db.Terminals(),
+		Hub:        hub,
+		Now:        now,
 	})
 	handler := NewHandler(Options{
 		Verify:            testVerify,
 		Version:           testVersion,
 		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Terminals:         service,
+		Projects:          projectService,
 		Events:            hub,
 		HeartbeatInterval: 50 * time.Millisecond,
 	})
-	return &fixture{handler: handler, adapter: adapter, hub: hub, service: service, markers: markers}
+	f := &fixture{handler: handler, adapter: adapter, hub: hub, service: service, markers: markers}
+	// Planted through the repository, not the API: the fixture project must
+	// not consume an event sequence number the SSE assertions rely on.
+	f.projectDir = t.TempDir()
+	f.projectID = "proj-fixtr"
+	if ok, err := db.Projects().Insert(context.Background(), store.ProjectRecord{
+		ID: f.projectID, Name: "fixture", Directory: f.projectDir,
+		CreatedAt: now(), UpdatedAt: now(),
+	}); err != nil || !ok {
+		t.Fatalf("planting fixture project = %v, %v", ok, err)
+	}
+	return f
+}
+
+// createProject registers a project over the wire and returns it.
+func (f *fixture) createProject(t *testing.T, dir string) api.Project {
+	t.Helper()
+	body, err := json.Marshal(api.ProjectCreateParams{Directory: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := f.request(t, http.MethodPost, "/v1/projects", string(body))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create project: got %d; body %s", rec.Code, rec.Body)
+	}
+	var project api.Project
+	if err := json.Unmarshal(rec.Body.Bytes(), &project); err != nil {
+		t.Fatal(err)
+	}
+	return project
+}
+
+// createTerminalBody is a create request body against the fixture project.
+func (f *fixture) createTerminalBody(t *testing.T, params api.TerminalCreateParams) string {
+	t.Helper()
+	if params.ProjectID == "" {
+		params.ProjectID = f.projectID
+	}
+	body, err := json.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
 }
 
 // request drives the handler with the test token and returns the recorder.
@@ -157,12 +212,13 @@ func decodeTerminal(t *testing.T, rec *httptest.ResponseRecorder) api.Terminal {
 func TestTerminalCRUDOverTheWire(t *testing.T) {
 	f := newFixture(t)
 
-	rec := f.request(t, http.MethodPost, "/v1/terminals", `{"app":"hx","directory":"/proj"}`)
+	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{App: "hx"}))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create: got %d, want 201; body %s", rec.Code, rec.Body)
 	}
 	created := decodeTerminal(t, rec)
-	if created.Status != api.TerminalRunning || created.Name != "hx" || created.Directory != "/proj" {
+	if created.Status != api.TerminalRunning || created.Name != "hx" ||
+		created.ProjectID != f.projectID || created.Directory != f.projectDir {
 		t.Fatalf("created = %+v", created)
 	}
 
@@ -204,7 +260,7 @@ func TestTerminalCRUDOverTheWire(t *testing.T) {
 // schema, so the contract cannot silently widen.
 func TestUpdateRejectsUnknownAndImmutableFields(t *testing.T) {
 	f := newFixture(t)
-	created := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", `{}`))
+	created := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{})))
 	for name, body := range map[string]string{
 		"immutable directory": `{"name":"x","directory":"/elsewhere"}`,
 		"immutable app":       `{"app":"vim"}`,
@@ -224,7 +280,7 @@ func TestCreateWithFailingApp(t *testing.T) {
 		writeExitMarker(t, f.markers, id, 127)
 		return errors.New("client exited before the session settled")
 	}
-	rec := f.request(t, http.MethodPost, "/v1/terminals", `{"app":"no-such-tool"}`)
+	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{App: "no-such-tool"}))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("got %d; body %s", rec.Code, rec.Body)
 	}
@@ -236,7 +292,7 @@ func TestCreateWithFailingApp(t *testing.T) {
 
 func TestDeleteUnderUnreachableBackend(t *testing.T) {
 	f := newFixture(t)
-	created := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", `{}`))
+	created := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{})))
 	f.adapter.mu.Lock()
 	f.adapter.killErr = errors.New("session still present after inventory passes")
 	f.adapter.invErr = errors.New("zmx down")

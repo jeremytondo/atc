@@ -8,8 +8,17 @@ import (
 	"database/sql"
 )
 
+type Project struct {
+	ID        string
+	Name      string
+	Directory string
+	CreatedAt string
+	UpdatedAt string
+}
+
 type Terminal struct {
 	ID              string
+	ProjectID       string
 	Name            string
 	Directory       string
 	App             sql.NullString

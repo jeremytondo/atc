@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/jeremytondo/atc/internal/events"
+	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/server"
 	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/terminals"
@@ -66,15 +67,21 @@ func startTestServer(t *testing.T) *cliAdapter {
 	service := terminals.NewService(terminals.Options{
 		Repository: db.Terminals(),
 		Adapter:    adapter,
+		Projects:   db.Projects(),
 		MarkerDir:  t.TempDir(),
 		Hub:        hub,
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
-		HomeDir:    "/home/tester",
+	})
+	projectService := projects.NewService(projects.Options{
+		Repository: db.Projects(),
+		Terminals:  db.Terminals(),
+		Hub:        hub,
 	})
 	handler := server.NewHandler(server.Options{
 		Verify:    func(authorization string) bool { return authorization == "Bearer "+cliTestToken },
 		Version:   "v0.0.0-test",
 		Terminals: service,
+		Projects:  projectService,
 		Events:    hub,
 	})
 	srv := httptest.NewServer(handler)
@@ -86,16 +93,39 @@ func startTestServer(t *testing.T) *cliAdapter {
 
 func runCLI(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
+	return runCLIInput(t, "", args...)
+}
+
+// runCLIInput drives the CLI with stdin content — the create-offer prompt.
+func runCLIInput(t *testing.T, input string, args ...string) (string, string, error) {
+	t.Helper()
 	var stdout, stderr strings.Builder
-	err := run(context.Background(), args, &stdout, &stderr)
+	err := run(context.Background(), args, strings.NewReader(input), &stdout, &stderr)
 	return stdout.String(), stderr.String(), err
+}
+
+var projectIDFormat = regexp.MustCompile(`proj-[a-z2-9]{5}`)
+
+// createProjectCLI registers a project rooted at dir and returns its id.
+func createProjectCLI(t *testing.T, dir string) string {
+	t.Helper()
+	stdout, _, err := runCLI(t, "project", "create", dir)
+	if err != nil {
+		t.Fatalf("project create: %v", err)
+	}
+	id := projectIDFormat.FindString(stdout)
+	if id == "" {
+		t.Fatalf("project create output has no id:\n%s", stdout)
+	}
+	return id
 }
 
 func forceTTY(t *testing.T) {
 	t.Helper()
-	prev := stdioIsTerminal
+	prevStdio, prevStdin := stdioIsTerminal, stdinIsTTY
 	stdioIsTerminal = func() bool { return true }
-	t.Cleanup(func() { stdioIsTerminal = prev })
+	stdinIsTTY = func() bool { return true }
+	t.Cleanup(func() { stdioIsTerminal, stdinIsTTY = prevStdio, prevStdin })
 }
 
 func installFakeZmx(t *testing.T) {
@@ -109,8 +139,11 @@ func installFakeZmx(t *testing.T) {
 
 func TestTerminalCLILifecycle(t *testing.T) {
 	adapter := startTestServer(t)
+	// --project skips cwd resolution entirely; the cwd (this repo) owns no
+	// project on the test server.
+	projectID := createProjectCLI(t, t.TempDir())
 
-	stdout, _, err := runCLI(t, "terminal", "create", "--app", "hx", "--dir", "/proj")
+	stdout, _, err := runCLI(t, "terminal", "create", "--app", "hx", "--project", projectID)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -126,8 +159,9 @@ func TestTerminalCLILifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// IDs beside names and statuses — the list contract.
-	if !strings.Contains(stdout, id) || !strings.Contains(stdout, "hx") || !strings.Contains(stdout, "running") {
+	// IDs beside names, statuses, and projects — the list contract.
+	if !strings.Contains(stdout, id) || !strings.Contains(stdout, "hx") ||
+		!strings.Contains(stdout, "running") || !strings.Contains(stdout, projectID) {
 		t.Errorf("list output:\n%s", stdout)
 	}
 
@@ -213,7 +247,8 @@ func TestTerminalCreateAttachMissingSocketKeepsTerminal(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	startTestServer(t)
 
-	stdout, _, err := runCLI(t, "terminal", "create", "--attach")
+	projectID := createProjectCLI(t, t.TempDir())
+	stdout, _, err := runCLI(t, "terminal", "create", "--attach", "--project", projectID)
 	id := regexp.MustCompile(`term-[a-z2-9]{5}`).FindString(stdout)
 	if id == "" || !strings.Contains(stdout, "running") {
 		t.Fatalf("create attach output does not show the created terminal:\n%s", stdout)
@@ -261,7 +296,8 @@ func TestAttachRefusesNonRunning(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	adapter := startTestServer(t)
-	stdout, _, err := runCLI(t, "terminal", "create")
+	projectID := createProjectCLI(t, t.TempDir())
+	stdout, _, err := runCLI(t, "terminal", "create", "--project", projectID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +307,7 @@ func TestAttachRefusesNonRunning(t *testing.T) {
 	adapter.mu.Lock()
 	delete(adapter.sessions, id)
 	adapter.mu.Unlock()
-	if _, _, err := runCLI(t, "terminal", "create", "--name", "other"); err != nil {
+	if _, _, err := runCLI(t, "terminal", "create", "--name", "other", "--project", projectID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -295,7 +331,8 @@ func TestAPICommand(t *testing.T) {
 	}
 
 	// POST with a body creates a terminal through the raw gateway.
-	stdout, _, err = runCLI(t, "api", "-d", `{"app":"hx"}`, "/v1/terminals")
+	projectID := createProjectCLI(t, t.TempDir())
+	stdout, _, err = runCLI(t, "api", "-d", `{"app":"hx","projectId":"`+projectID+`"}`, "/v1/terminals")
 	if err != nil {
 		t.Fatal(err)
 	}
