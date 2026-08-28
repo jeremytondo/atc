@@ -20,17 +20,17 @@ import (
 
 // TestMain doubles as the wrapper executable for the real-zmx integration
 // tests: re-exec'd as `<test-binary> __child --marker … --id … --dir …
-// [--app …]`, it runs the real wrapper exactly the way cmd/atc does.
+// [--command …]`, it runs the real wrapper exactly the way cmd/atc does.
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "__child" {
 		flags := flag.NewFlagSet("__child", flag.ExitOnError)
 		marker := flags.String("marker", "", "")
 		id := flags.String("id", "", "")
 		dir := flags.String("dir", "", "")
-		app := flags.String("app", "", "")
+		command := flags.String("command", "", "")
 		_ = flags.Parse(os.Args[2:])
 		os.Exit(wrapper.Run(wrapper.Options{
-			MarkerPath: *marker, TerminalID: *id, Directory: *dir, App: *app,
+			MarkerPath: *marker, TerminalID: *id, Directory: *dir, Command: *command,
 		}))
 	}
 	os.Exit(m.Run())
@@ -181,7 +181,7 @@ func TestRealZmxLifecycle(t *testing.T) {
 	}
 
 	t.Setenv("SHELL", "/bin/sh")
-	if err := adapter.Create(ctx, id, terminals.CreateSpec{Directory: "/", App: "sleep 60"}); err != nil {
+	if err := adapter.Create(ctx, id, terminals.CreateSpec{Directory: "/", Command: "sleep 60"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	sessions, err := adapter.Inventory(ctx)
@@ -203,7 +203,7 @@ func TestRealZmxLifecycle(t *testing.T) {
 		}
 		if marker != nil {
 			if marker.Exited() {
-				t.Fatalf("marker = %+v, want un-exited while the app runs", marker)
+				t.Fatalf("marker = %+v, want un-exited while the command runs", marker)
 			}
 			break
 		}

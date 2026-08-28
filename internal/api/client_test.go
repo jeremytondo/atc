@@ -222,11 +222,11 @@ func TestTerminalMethods(t *testing.T) {
 	client := NewClient(srv.URL, testToken, testClientVersion, nil, nil)
 	ctx := context.Background()
 
-	terminal, err := client.CreateTerminal(ctx, TerminalCreateParams{ProjectID: "proj-x7k2f", App: "hx"})
+	terminal, err := client.CreateTerminal(ctx, TerminalCreateParams{ProjectID: "proj-x7k2f", Command: "hx"})
 	if err != nil || terminal.ID != "term-x7k2f" {
 		t.Fatalf("CreateTerminal = %+v, %v", terminal, err)
 	}
-	want := call{http.MethodPost, "/v1/terminals", "", `{"projectId":"proj-x7k2f","app":"hx"}`}
+	want := call{http.MethodPost, "/v1/terminals", "", `{"projectId":"proj-x7k2f","command":"hx"}`}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("create request (-want +got):\n%s", diff)
 	}

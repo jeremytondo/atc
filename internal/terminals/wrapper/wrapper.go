@@ -4,12 +4,12 @@
 // process supervision in the containerd-shim/tini shape. zmx remains the
 // sole durable supervisor; the wrapper only records.
 //
-// Shell invocation (decided in the spec): with no app it execs $SHELL
+// Shell invocation (decided in the spec): with no command it execs $SHELL
 // (fallback /bin/sh) with the traditional login convention
 // (argv[0] = "-zsh") — byte-for-byte what zmx does for a hand-opened
-// session. With an app it runs $SHELL -i -l -c "<app>", so profile and rc
-// files load before the app, exactly as if the user had opened a terminal
-// and typed it. App exit (or shell exit) ends the terminal.
+// session. With a command it runs $SHELL -i -l -c "<command>", so profile
+// and rc files load before the command, exactly as if the user had opened
+// a terminal and typed it. Command exit (or shell exit) ends the terminal.
 package wrapper
 
 import (
@@ -36,9 +36,9 @@ type Options struct {
 	TerminalID string
 	// Directory the workload starts in.
 	Directory string
-	// App is the free-form command to run through the shell; empty starts
-	// a plain interactive login shell.
-	App string
+	// Command is the free-form command to run through the shell; empty
+	// starts a plain interactive login shell.
+	Command string
 }
 
 // Run supervises the workload and returns the wrapper's own exit code
@@ -53,11 +53,11 @@ func Run(opts Options) int {
 		shell = "/bin/sh"
 	}
 	var cmd *exec.Cmd
-	if opts.App == "" {
+	if opts.Command == "" {
 		cmd = exec.Command(shell)
 		cmd.Args = []string{"-" + filepath.Base(shell)}
 	} else {
-		cmd = exec.Command(shell, "-i", "-l", "-c", opts.App)
+		cmd = exec.Command(shell, "-i", "-l", "-c", opts.Command)
 	}
 	cmd.Dir = opts.Directory
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr

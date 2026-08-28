@@ -19,9 +19,9 @@ type TerminalRecord struct {
 	ProjectID string
 	Name      string
 	Directory string
-	// App is the free-form command the terminal was created with; empty
-	// means a plain interactive shell.
-	App       string
+	// Command is the free-form command the terminal was created with;
+	// empty means a plain interactive shell.
+	Command   string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	// StopRequestedAt is the persisted stop intent (set before the kill is
@@ -50,7 +50,7 @@ func (t *Terminals) Insert(ctx context.Context, record TerminalRecord) (bool, er
 		ProjectID: record.ProjectID,
 		Name:      record.Name,
 		Directory: record.Directory,
-		App:       nullString(record.App),
+		Command:   nullString(record.Command),
 		CreatedAt: formatTime(record.CreatedAt),
 		UpdatedAt: formatTime(record.UpdatedAt),
 	})
@@ -124,7 +124,7 @@ func recordFrom(row gen.Terminal) (TerminalRecord, error) {
 		ProjectID: row.ProjectID,
 		Name:      row.Name,
 		Directory: row.Directory,
-		App:       row.App.String,
+		Command:   row.Command.String,
 	}
 	var err error
 	if record.CreatedAt, err = parseTime(row.CreatedAt); err != nil {

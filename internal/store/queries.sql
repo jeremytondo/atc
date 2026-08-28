@@ -6,7 +6,7 @@
 -- inserts zero rows and the caller re-rolls, with no check-then-insert
 -- window.
 -- name: InsertTerminal :execrows
-INSERT INTO terminals (id, project_id, name, directory, app, created_at, updated_at)
+INSERT INTO terminals (id, project_id, name, directory, command, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING;
 

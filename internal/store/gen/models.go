@@ -21,7 +21,7 @@ type Terminal struct {
 	ProjectID       string
 	Name            string
 	Directory       string
-	App             sql.NullString
+	Command         sql.NullString
 	CreatedAt       string
 	UpdatedAt       string
 	StopRequestedAt sql.NullString

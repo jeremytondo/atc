@@ -24,11 +24,11 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func runWrapper(t *testing.T, app string, directory string) (int, *exitmarker.Marker) {
+func runWrapper(t *testing.T, command string, directory string) (int, *exitmarker.Marker) {
 	t.Helper()
 	dir := t.TempDir()
 	path := exitmarker.Path(dir, "term-aaaaa")
-	code := Run(Options{MarkerPath: path, TerminalID: "term-aaaaa", Directory: directory, App: app})
+	code := Run(Options{MarkerPath: path, TerminalID: "term-aaaaa", Directory: directory, Command: command})
 	marker, err := exitmarker.Read(dir, "term-aaaaa")
 	if err != nil {
 		t.Fatal(err)
@@ -36,7 +36,7 @@ func runWrapper(t *testing.T, app string, directory string) (int, *exitmarker.Ma
 	return code, marker
 }
 
-func TestAppExitCodeRecorded(t *testing.T) {
+func TestCommandExitCodeRecorded(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
 	code, marker := runWrapper(t, "exit 3", t.TempDir())
 	if code != 3 {
@@ -83,13 +83,13 @@ func TestForwardsSignalsToChild(t *testing.T) {
 	ready := filepath.Join(t.TempDir(), "ready")
 	// The backgrounded sleep must not inherit the test's output pipes, or
 	// an orphan holds go test's stdout open for the full 30 seconds.
-	app := "trap 'exit 42' HUP; : > " + ready + "; sleep 30 >/dev/null 2>&1 & wait"
+	command := "trap 'exit 42' HUP; : > " + ready + "; sleep 30 >/dev/null 2>&1 & wait"
 
 	dir := t.TempDir()
 	path := exitmarker.Path(dir, "term-aaaaa")
 	done := make(chan int, 1)
 	go func() {
-		done <- Run(Options{MarkerPath: path, TerminalID: "term-aaaaa", Directory: "/", App: app})
+		done <- Run(Options{MarkerPath: path, TerminalID: "term-aaaaa", Directory: "/", Command: command})
 	}()
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -117,29 +117,29 @@ func TestForwardsSignalsToChild(t *testing.T) {
 	}
 }
 
-// The exact shell argv is the fidelity contract: a plain terminal gets the
-// traditional login convention (argv[0] = "-shell", nothing else); an app
-// gets `$SHELL -i -l -c "<app>"`.
+// The exact shell argv is the fidelity contract: a plain terminal gets
+// the traditional login convention (argv[0] = "-shell", nothing else); a
+// command gets `$SHELL -i -l -c "<command>"`.
 func TestShellInvocation(t *testing.T) {
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for name, tc := range map[string]struct {
-		app  string
-		want func() []string
+		command string
+		want    func() []string
 	}{
 		"plain shell": {"", func() []string {
 			return []string{"-" + filepath.Base(self)}
 		}},
-		"app": {"hx .", func() []string {
+		"command": {"hx .", func() []string {
 			return []string{self, "-i", "-l", "-c", "hx ."}
 		}},
 	} {
 		record := filepath.Join(t.TempDir(), "argv")
 		t.Setenv("SHELL", self)
 		t.Setenv("WRAPPER_TEST_RECORD", record)
-		code, marker := runWrapper(t, tc.app, "/")
+		code, marker := runWrapper(t, tc.command, "/")
 		if code != 0 || !marker.Exited() {
 			t.Fatalf("%s: Run = %d, marker %+v", name, code, marker)
 		}

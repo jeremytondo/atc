@@ -212,7 +212,7 @@ func decodeTerminal(t *testing.T, rec *httptest.ResponseRecorder) api.Terminal {
 func TestTerminalCRUDOverTheWire(t *testing.T) {
 	f := newFixture(t)
 
-	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{App: "hx"}))
+	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Command: "hx"}))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create: got %d, want 201; body %s", rec.Code, rec.Body)
 	}
@@ -263,7 +263,7 @@ func TestUpdateRejectsUnknownAndImmutableFields(t *testing.T) {
 	created := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{})))
 	for name, body := range map[string]string{
 		"immutable directory": `{"name":"x","directory":"/elsewhere"}`,
-		"immutable app":       `{"app":"vim"}`,
+		"immutable command":   `{"command":"vim"}`,
 		"unknown field":       `{"name":"x","frobnicate":true}`,
 		"missing name":        `{}`,
 	} {
@@ -274,13 +274,13 @@ func TestUpdateRejectsUnknownAndImmutableFields(t *testing.T) {
 	}
 }
 
-func TestCreateWithFailingApp(t *testing.T) {
+func TestCreateWithFailingCommand(t *testing.T) {
 	f := newFixture(t)
 	f.adapter.onCreate = func(id string, _ terminals.CreateSpec) error {
 		writeExitMarker(t, f.markers, id, 127)
 		return errors.New("client exited before the session settled")
 	}
-	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{App: "no-such-tool"}))
+	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Command: "no-such-tool"}))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("got %d; body %s", rec.Code, rec.Body)
 	}
