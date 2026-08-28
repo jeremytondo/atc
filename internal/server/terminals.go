@@ -50,9 +50,11 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service) {
 		Method:      http.MethodGet,
 		Path:        "/v1/terminals",
 		Summary:     "List terminals",
-		Description: "Served from the reconciled in-memory view; exited and missing terminals stay listed until deleted.",
-	}, func(ctx context.Context, _ *struct{}) (*terminalListOutput, error) {
-		return &terminalListOutput{Body: api.TerminalList{Terminals: service.List()}}, nil
+		Description: "Served from the reconciled in-memory view; exited and missing terminals stay listed until deleted. Unfiltered, returns every terminal.",
+	}, func(ctx context.Context, input *struct {
+		Project string `query:"project" doc:"Only terminals belonging to this project."`
+	}) (*terminalListOutput, error) {
+		return &terminalListOutput{Body: api.TerminalList{Terminals: service.List(input.Project)}}, nil
 	})
 
 	huma.Register(humaAPI, huma.Operation{
@@ -101,8 +103,13 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service) {
 }
 
 func mapError(err error) error {
-	if errors.Is(err, terminals.ErrNotFound) {
+	switch {
+	case errors.Is(err, terminals.ErrNotFound):
 		return huma.Error404NotFound("terminal not found")
+	case errors.Is(err, terminals.ErrProjectUnknown):
+		return huma.Error422UnprocessableEntity(err.Error())
+	case errors.Is(err, terminals.ErrProjectDirectoryMissing):
+		return huma.Error409Conflict(err.Error())
 	}
 	return err
 }

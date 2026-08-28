@@ -23,6 +23,7 @@ import (
 	"github.com/jeremytondo/atc/internal/config"
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/paths"
+	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/server"
 	"github.com/jeremytondo/atc/internal/service"
 	"github.com/jeremytondo/atc/internal/store"
@@ -36,7 +37,7 @@ import (
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr); err != nil {
+	if err := run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
 		// An ExitError's report is already on stdout (e.g. `server status`
 		// exit codes); it only picks the process exit code.
 		var exit *service.ExitError
@@ -48,10 +49,11 @@ func main() {
 	}
 }
 
-// run executes the command tree. It is the seam tests drive: output streams
-// are injected, and errors return here so main owns the exit path.
-func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+// run executes the command tree. It is the seam tests drive: the standard
+// streams are injected, and errors return here so main owns the exit path.
+func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	root := newRootCmd()
+	root.SetIn(stdin)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
 	if args == nil {
@@ -81,8 +83,8 @@ expose on the tailnet without the flag.`,
 			return cmd.Help()
 		},
 	}
-	root.AddCommand(newTerminalCmd(), newAPICmd(), newVersionCmd(), newUpgradeCmd(),
-		newServerCmd(), newChildCmd())
+	root.AddCommand(newTerminalCmd(), newProjectCmd(), newAPICmd(), newVersionCmd(),
+		newUpgradeCmd(), newServerCmd(), newChildCmd())
 	return root
 }
 
@@ -473,18 +475,19 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
 	hub := events.NewHub(events.DefaultBacklog)
+	projectService := projects.NewService(projects.Options{
+		Repository: database.Projects(),
+		Terminals:  database.Terminals(),
+		Hub:        hub,
+	})
 	terminalService := terminals.NewService(terminals.Options{
 		Repository: database.Terminals(),
 		Adapter:    adapter,
+		Projects:   database.Projects(),
 		MarkerDir:  markerDir,
 		Hub:        hub,
 		Logger:     logger,
-		HomeDir:    home,
 	})
 	if err := terminalService.Load(ctx); err != nil {
 		return err
@@ -498,6 +501,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		Version:   versionValue,
 		Logger:    logger,
 		Terminals: terminalService,
+		Projects:  projectService,
 		Events:    hub,
 	})
 

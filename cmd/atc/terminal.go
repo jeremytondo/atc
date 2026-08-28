@@ -95,8 +95,11 @@ func newTerminalCreateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create a terminal and start its session",
-		Long: `Create a terminal and start its session immediately. The session survives
-disconnects and ATC server restarts; attach with ` + "`atc terminal attach <id>`" + `,
+		Long: `Create a terminal and start its session immediately. The terminal lands in
+the project owning the current directory (found by walking up, the way git
+finds a repository) and starts in that project's directory; pass --project
+to pick one explicitly. The session survives disconnects and ATC server
+restarts; attach with ` + "`atc terminal attach <id>`" + `,
 or pass ` + "`--attach`" + ` to attach immediately.
 With --app the command runs through your login shell (profile and rc files
 loaded); without it you get a plain interactive shell.`,
@@ -119,11 +122,16 @@ loaded); without it you get a plain interactive shell.`,
 			if params.Name, err = flags.GetString("name"); err != nil {
 				return err
 			}
-			if params.Directory, err = flags.GetString("dir"); err != nil {
-				return err
-			}
 			if params.App, err = flags.GetString("app"); err != nil {
 				return err
+			}
+			if params.ProjectID, err = flags.GetString("project"); err != nil {
+				return err
+			}
+			if params.ProjectID == "" {
+				if params.ProjectID, err = resolveProjectID(cmd, client); err != nil {
+					return err
+				}
 			}
 			terminal, err := client.CreateTerminal(cmd.Context(), params)
 			if err != nil {
@@ -139,7 +147,7 @@ loaded); without it you get a plain interactive shell.`,
 		}),
 	}
 	cmd.Flags().String("name", "", "display name (defaults from --app, else \"Shell\")")
-	cmd.Flags().String("dir", "", "working directory (defaults to the server user's home)")
+	cmd.Flags().String("project", "", "project the terminal belongs to (defaults to the project owning the current directory)")
 	cmd.Flags().String("app", "", "command to run through your shell; omit for a plain shell")
 	cmd.Flags().Bool("attach", false, "attach to the terminal after creation")
 	return cmd
@@ -162,14 +170,19 @@ func newTerminalGetCmd() *cobra.Command {
 }
 
 func newTerminalListCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List terminals with their statuses",
-		Long: `List every terminal. Exited and missing terminals stay listed — an exit you
-never saw is information, not garbage — until you delete them.`,
+		Long: `List every terminal (pass --project to scope to one project). Exited and
+missing terminals stay listed — an exit you never saw is information, not
+garbage — until you delete them.`,
 		Args: cobra.NoArgs,
 		RunE: runWithClient(func(cmd *cobra.Command, _ []string, client *api.Client, _ string) error {
-			terminals, err := client.Terminals(cmd.Context())
+			project, err := cmd.Flags().GetString("project")
+			if err != nil {
+				return err
+			}
+			terminals, err := client.Terminals(cmd.Context(), project)
 			if err != nil {
 				return err
 			}
@@ -179,13 +192,15 @@ never saw is information, not garbage — until you delete them.`,
 				return err
 			}
 			w := tabwriter.NewWriter(out, 2, 8, 2, ' ', 0)
-			_, _ = fmt.Fprintln(w, "ID\tSTATUS\tNAME\tDIRECTORY")
+			_, _ = fmt.Fprintln(w, "ID\tSTATUS\tNAME\tPROJECT\tDIRECTORY")
 			for _, terminal := range terminals {
-				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", terminal.ID, statusLabel(terminal), terminal.Name, terminal.Directory)
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", terminal.ID, statusLabel(terminal), terminal.Name, terminal.ProjectID, terminal.Directory)
 			}
 			return w.Flush()
 		}),
 	}
+	cmd.Flags().String("project", "", "only terminals belonging to this project")
+	return cmd
 }
 
 func newTerminalUpdateCmd() *cobra.Command {
@@ -323,6 +338,7 @@ func printTerminal(out io.Writer, terminal api.Terminal) {
 	_, _ = fmt.Fprintf(w, "id\t%s\n", terminal.ID)
 	_, _ = fmt.Fprintf(w, "name\t%s\n", terminal.Name)
 	_, _ = fmt.Fprintf(w, "status\t%s\n", statusLabel(terminal))
+	_, _ = fmt.Fprintf(w, "project\t%s\n", terminal.ProjectID)
 	_, _ = fmt.Fprintf(w, "directory\t%s\n", terminal.Directory)
 	if terminal.App != "" {
 		_, _ = fmt.Fprintf(w, "app\t%s\n", terminal.App)
@@ -342,7 +358,7 @@ error status.
 
 Examples:
   atc api /v1/terminals
-  atc api -X POST -d '{"app":"hx"}' /v1/terminals
+  atc api -X POST -d '{"projectId":"proj-x7k2f","app":"hx"}' /v1/terminals
   atc api /v1/events`,
 		Args: cobra.ExactArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, _ string) error {

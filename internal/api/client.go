@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -73,10 +74,15 @@ func (c *Client) Terminal(ctx context.Context, id string) (Terminal, error) {
 	return terminal, err
 }
 
-// Terminals lists every terminal, exited and missing ones included.
-func (c *Client) Terminals(ctx context.Context) ([]Terminal, error) {
+// Terminals lists every terminal, exited and missing ones included. A
+// non-empty projectID filters to that project's terminals.
+func (c *Client) Terminals(ctx context.Context, projectID string) ([]Terminal, error) {
+	path := "/v1/terminals"
+	if projectID != "" {
+		path += "?project=" + url.QueryEscape(projectID)
+	}
 	var list TerminalList
-	err := c.do(ctx, http.MethodGet, "/v1/terminals", nil, &list)
+	err := c.do(ctx, http.MethodGet, path, nil, &list)
 	return list.Terminals, err
 }
 
@@ -90,6 +96,40 @@ func (c *Client) UpdateTerminal(ctx context.Context, id string, params TerminalU
 // DeleteTerminal stops the session best-effort and removes the record.
 func (c *Client) DeleteTerminal(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/terminals/"+id, nil, nil)
+}
+
+// CreateProject registers a project rooted at a directory.
+func (c *Client) CreateProject(ctx context.Context, params ProjectCreateParams) (Project, error) {
+	var project Project
+	err := c.do(ctx, http.MethodPost, "/v1/projects", params, &project)
+	return project, err
+}
+
+// Project fetches one project by ID.
+func (c *Client) Project(ctx context.Context, id string) (Project, error) {
+	var project Project
+	err := c.do(ctx, http.MethodGet, "/v1/projects/"+id, nil, &project)
+	return project, err
+}
+
+// Projects lists every project.
+func (c *Client) Projects(ctx context.Context) ([]Project, error) {
+	var list ProjectList
+	err := c.do(ctx, http.MethodGet, "/v1/projects", nil, &list)
+	return list.Projects, err
+}
+
+// UpdateProject renames a project; name is the only mutable field.
+func (c *Client) UpdateProject(ctx context.Context, id string, params ProjectUpdateParams) (Project, error) {
+	var project Project
+	err := c.do(ctx, http.MethodPatch, "/v1/projects/"+id, params, &project)
+	return project, err
+}
+
+// DeleteProject removes an empty project; a project that still holds
+// terminals is refused.
+func (c *Client) DeleteProject(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/projects/"+id, nil, nil)
 }
 
 // Raw performs one authenticated request over the contract and returns the

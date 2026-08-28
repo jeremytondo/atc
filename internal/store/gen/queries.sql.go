@@ -10,6 +10,18 @@ import (
 	"database/sql"
 )
 
+const deleteProject = `-- name: DeleteProject :execrows
+DELETE FROM projects WHERE id = ?
+`
+
+func (q *Queries) DeleteProject(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteProject, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deleteTerminal = `-- name: DeleteTerminal :execrows
 DELETE FROM terminals WHERE id = ?
 `
@@ -22,15 +34,79 @@ func (q *Queries) DeleteTerminal(ctx context.Context, id string) (int64, error) 
 	return result.RowsAffected()
 }
 
+const getProject = `-- name: GetProject :one
+SELECT id, name, directory, created_at, updated_at FROM projects WHERE id = ?
+`
+
+func (q *Queries) GetProject(ctx context.Context, id string) (Project, error) {
+	row := q.db.QueryRowContext(ctx, getProject, id)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Directory,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getProjectByDirectory = `-- name: GetProjectByDirectory :one
+SELECT id, name, directory, created_at, updated_at FROM projects WHERE directory = ?
+`
+
+// The canonical-directory uniqueness pre-check on project create.
+func (q *Queries) GetProjectByDirectory(ctx context.Context, directory string) (Project, error) {
+	row := q.db.QueryRowContext(ctx, getProjectByDirectory, directory)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Directory,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const insertProject = `-- name: InsertProject :execrows
+INSERT INTO projects (id, name, directory, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (id) DO NOTHING
+`
+
+type InsertProjectParams struct {
+	ID        string
+	Name      string
+	Directory string
+	CreatedAt string
+	UpdatedAt string
+}
+
+func (q *Queries) InsertProject(ctx context.Context, arg InsertProjectParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertProject,
+		arg.ID,
+		arg.Name,
+		arg.Directory,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const insertTerminal = `-- name: InsertTerminal :execrows
 
-INSERT INTO terminals (id, name, directory, app, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO terminals (id, project_id, name, directory, app, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING
 `
 
 type InsertTerminalParams struct {
 	ID        string
+	ProjectID string
 	Name      string
 	Directory string
 	App       sql.NullString
@@ -38,14 +114,16 @@ type InsertTerminalParams struct {
 	UpdatedAt string
 }
 
-// Terminals repository queries (sqlc input). Nothing outside a repository
-// speaks SQL; internal/store/terminals.go is the only consumer.
+// Repository queries (sqlc input). Nothing outside a repository speaks
+// SQL; internal/store/terminals.go and internal/store/projects.go are the
+// only consumers.
 // Insertion doubles as the mint-time ID collision check: a conflicting id
 // inserts zero rows and the caller re-rolls, with no check-then-insert
 // window.
 func (q *Queries) InsertTerminal(ctx context.Context, arg InsertTerminalParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, insertTerminal,
 		arg.ID,
+		arg.ProjectID,
 		arg.Name,
 		arg.Directory,
 		arg.App,
@@ -58,8 +136,69 @@ func (q *Queries) InsertTerminal(ctx context.Context, arg InsertTerminalParams) 
 	return result.RowsAffected()
 }
 
+const listProjects = `-- name: ListProjects :many
+SELECT id, name, directory, created_at, updated_at FROM projects ORDER BY created_at, id
+`
+
+func (q *Queries) ListProjects(ctx context.Context) ([]Project, error) {
+	rows, err := q.db.QueryContext(ctx, listProjects)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Project
+	for rows.Next() {
+		var i Project
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Directory,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTerminalIDsByProject = `-- name: ListTerminalIDsByProject :many
+SELECT id FROM terminals WHERE project_id = ? ORDER BY created_at, id
+`
+
+// The project-empty check behind project delete's refusal.
+func (q *Queries) ListTerminalIDsByProject(ctx context.Context, projectID string) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listTerminalIDsByProject, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTerminals = `-- name: ListTerminals :many
-SELECT id, name, directory, app, created_at, updated_at, stop_requested_at, exited_at, exit_code FROM terminals ORDER BY created_at, id
+SELECT id, project_id, name, directory, app, created_at, updated_at, stop_requested_at, exited_at, exit_code FROM terminals ORDER BY created_at, id
 `
 
 func (q *Queries) ListTerminals(ctx context.Context) ([]Terminal, error) {
@@ -73,6 +212,7 @@ func (q *Queries) ListTerminals(ctx context.Context) ([]Terminal, error) {
 		var i Terminal
 		if err := rows.Scan(
 			&i.ID,
+			&i.ProjectID,
 			&i.Name,
 			&i.Directory,
 			&i.App,
@@ -134,6 +274,24 @@ type RecordTerminalStopIntentParams struct {
 
 func (q *Queries) RecordTerminalStopIntent(ctx context.Context, arg RecordTerminalStopIntentParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, recordTerminalStopIntent, arg.StopRequestedAt, arg.UpdatedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updateProjectName = `-- name: UpdateProjectName :execrows
+UPDATE projects SET name = ?, updated_at = ? WHERE id = ?
+`
+
+type UpdateProjectNameParams struct {
+	Name      string
+	UpdatedAt string
+	ID        string
+}
+
+func (q *Queries) UpdateProjectName(ctx context.Context, arg UpdateProjectNameParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateProjectName, arg.Name, arg.UpdatedAt, arg.ID)
 	if err != nil {
 		return 0, err
 	}

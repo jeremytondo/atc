@@ -169,6 +169,11 @@ func (s *Store) Terminals() *Terminals {
 	return &Terminals{reads: gen.New(s.reads), writes: gen.New(s.writes)}
 }
 
+// Projects returns the projects repository.
+func (s *Store) Projects() *Projects {
+	return &Projects{reads: gen.New(s.reads), writes: gen.New(s.writes)}
+}
+
 func formatTime(t time.Time) string {
 	return t.UTC().Format(TimeFormat)
 }

@@ -13,7 +13,10 @@ import (
 // nullable facts, time.Time for the text timestamps. The SQL row shape
 // never leaves this package.
 type TerminalRecord struct {
-	ID        string
+	ID string
+	// ProjectID is the owning project; required, immutable, and enforced
+	// by the schema's foreign key.
+	ProjectID string
 	Name      string
 	Directory string
 	// App is the free-form command the terminal was created with; empty
@@ -43,6 +46,7 @@ type Terminals struct {
 func (t *Terminals) Insert(ctx context.Context, record TerminalRecord) (bool, error) {
 	n, err := t.writes.InsertTerminal(ctx, gen.InsertTerminalParams{
 		ID:        record.ID,
+		ProjectID: record.ProjectID,
 		Name:      record.Name,
 		Directory: record.Directory,
 		App:       nullString(record.App),
@@ -50,6 +54,12 @@ func (t *Terminals) Insert(ctx context.Context, record TerminalRecord) (bool, er
 		UpdatedAt: formatTime(record.UpdatedAt),
 	})
 	return n > 0, err
+}
+
+// ListIDsByProject returns the IDs of the project's terminals in creation
+// order — the project-empty check behind project delete's refusal.
+func (t *Terminals) ListIDsByProject(ctx context.Context, projectID string) ([]string, error) {
+	return t.reads.ListTerminalIDsByProject(ctx, projectID)
 }
 
 // List returns every record in creation order.
@@ -110,6 +120,7 @@ func (t *Terminals) Delete(ctx context.Context, id string) (bool, error) {
 func recordFrom(row gen.Terminal) (TerminalRecord, error) {
 	record := TerminalRecord{
 		ID:        row.ID,
+		ProjectID: row.ProjectID,
 		Name:      row.Name,
 		Directory: row.Directory,
 		App:       row.App.String,

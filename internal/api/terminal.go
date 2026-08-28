@@ -24,7 +24,8 @@ const (
 type Terminal struct {
 	ID        string         `json:"id" doc:"Server-minted identifier; also the zmx session name."`
 	Name      string         `json:"name" doc:"Display name; the only mutable field."`
-	Directory string         `json:"directory" doc:"Working directory the session started in. Immutable."`
+	ProjectID string         `json:"projectId" doc:"Project the terminal belongs to. Immutable; terminals never move between projects."`
+	Directory string         `json:"directory" doc:"Working directory the session started in, copied from the project at create time. Immutable."`
 	App       string         `json:"app,omitempty" doc:"Command launched in the session; empty means a plain shell. Immutable."`
 	Status    TerminalStatus `json:"status" enum:"running,exited,unreachable,missing" doc:"Server-owned session state."`
 	ExitCode  *int           `json:"exitCode,omitempty" doc:"Recorded exit evidence: exit code, 128+signal for signal deaths, 127 for launch failure. Omitted while running and for ATC-initiated stops."`
@@ -32,11 +33,12 @@ type Terminal struct {
 	UpdatedAt time.Time      `json:"updatedAt"`
 }
 
-// TerminalCreateParams is the POST /v1/terminals request body. Every field
-// is optional.
+// TerminalCreateParams is the POST /v1/terminals request body. The project
+// is required (ATC-256) and supplies the working directory; everything
+// else is optional.
 type TerminalCreateParams struct {
+	ProjectID string `json:"projectId" minLength:"1" doc:"Project the terminal belongs to; its directory becomes the terminal's working directory."`
 	Name      string `json:"name,omitempty" doc:"Display name; defaults from app, else \"Shell\"."`
-	Directory string `json:"directory,omitempty" doc:"Working directory; defaults to the server user's home."`
 	App       string `json:"app,omitempty" doc:"Free-form command run through the user's shell; empty starts a plain interactive shell."`
 }
 
