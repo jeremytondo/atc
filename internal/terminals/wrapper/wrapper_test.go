@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jeremytondo/atc/internal/exitmarker"
+	"github.com/jeremytondo/atc/internal/terminals/exitmarker"
 )
 
 func TestMain(m *testing.M) {

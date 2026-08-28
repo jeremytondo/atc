@@ -12,8 +12,8 @@ import (
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/events"
-	"github.com/jeremytondo/atc/internal/exitmarker"
 	"github.com/jeremytondo/atc/internal/store"
+	"github.com/jeremytondo/atc/internal/terminals/exitmarker"
 )
 
 // ErrNotFound reports an id with no record; the API layer maps it to 404.

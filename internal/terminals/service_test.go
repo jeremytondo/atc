@@ -16,8 +16,8 @@ import (
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/events"
-	"github.com/jeremytondo/atc/internal/exitmarker"
 	"github.com/jeremytondo/atc/internal/store"
+	"github.com/jeremytondo/atc/internal/terminals/exitmarker"
 )
 
 // fakeAdapter is a hand-written in-memory session backend. Create births a
