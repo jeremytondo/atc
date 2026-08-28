@@ -51,7 +51,7 @@ finds a repository) and starts in that project's directory; pass --project
 to pick one explicitly. The session survives disconnects and ATC server
 restarts; attach with ` + "`atc terminal attach <id>`" + `,
 or pass ` + "`--attach`" + ` to attach immediately.
-With --app the command runs through your login shell (profile and rc files
+With --command it runs through your login shell (profile and rc files
 loaded); without it you get a plain interactive shell.`,
 		Args: cobra.NoArgs,
 		RunE: runWithClient(func(cmd *cobra.Command, _ []string, client *api.Client, baseURL string) error {
@@ -76,7 +76,7 @@ loaded); without it you get a plain interactive shell.`,
 			if params.Name, err = flags.GetString("name"); err != nil {
 				return err
 			}
-			if params.App, err = flags.GetString("app"); err != nil {
+			if params.Command, err = flags.GetString("command"); err != nil {
 				return err
 			}
 			if params.ProjectID, err = flags.GetString("project"); err != nil {
@@ -100,9 +100,9 @@ loaded); without it you get a plain interactive shell.`,
 			return nil
 		}),
 	}
-	cmd.Flags().String("name", "", "display name (defaults from --app, else \"Shell\")")
+	cmd.Flags().String("name", "", "display name (defaults from --command, else \"Shell\")")
 	cmd.Flags().String("project", "", "project the terminal belongs to (defaults to the project owning the current directory)")
-	cmd.Flags().String("app", "", "command to run through your shell; omit for a plain shell")
+	cmd.Flags().String("command", "", "command to run through your shell; omit for a plain shell")
 	cmd.Flags().Bool("attach", false, "attach to the terminal after creation")
 	return cmd
 }
@@ -239,8 +239,8 @@ func printTerminal(out io.Writer, terminal api.Terminal) {
 	_, _ = fmt.Fprintf(w, "status\t%s\n", statusLabel(terminal))
 	_, _ = fmt.Fprintf(w, "project\t%s\n", terminal.ProjectID)
 	_, _ = fmt.Fprintf(w, "directory\t%s\n", terminal.Directory)
-	if terminal.App != "" {
-		_, _ = fmt.Fprintf(w, "app\t%s\n", terminal.App)
+	if terminal.Command != "" {
+		_, _ = fmt.Fprintf(w, "command\t%s\n", terminal.Command)
 	}
 	_, _ = fmt.Fprintf(w, "created\t%s\n", terminal.CreatedAt.Format("2006-01-02 15:04:05 MST"))
 	_ = w.Flush()
@@ -257,7 +257,7 @@ error status.
 
 Examples:
   atc api /v1/terminals
-  atc api -X POST -d '{"projectId":"proj-x7k2f","app":"hx"}' /v1/terminals
+  atc api -X POST -d '{"projectId":"proj-x7k2f","command":"hx"}' /v1/terminals
   atc api /v1/events`,
 		Args: cobra.ExactArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, _ string) error {
@@ -325,7 +325,7 @@ func newChildCmd() *cobra.Command {
 			if opts.Directory, err = flags.GetString("dir"); err != nil {
 				return err
 			}
-			if opts.App, err = flags.GetString("app"); err != nil {
+			if opts.Command, err = flags.GetString("command"); err != nil {
 				return err
 			}
 			if code := wrapper.Run(opts); code != 0 {
@@ -337,7 +337,7 @@ func newChildCmd() *cobra.Command {
 	cmd.Flags().String("marker", "", "exit marker file path")
 	cmd.Flags().String("id", "", "terminal id")
 	cmd.Flags().String("dir", "", "working directory")
-	cmd.Flags().String("app", "", "command to run through the shell")
+	cmd.Flags().String("command", "", "command to run through the shell")
 	_ = cmd.MarkFlagRequired("marker")
 	_ = cmd.MarkFlagRequired("id")
 	_ = cmd.MarkFlagRequired("dir")

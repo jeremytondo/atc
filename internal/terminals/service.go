@@ -317,7 +317,7 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 // Create validates the required project reference, copies its directory,
 // mints the ID, persists the record before starting the session (no
 // orphan window), starts it, and waits a short verification window so the
-// common case returns running and a fast-failing app returns exited with
+// common case returns running and a fast-failing command returns exited with
 // real evidence. Failures after the record exists surface through the
 // normal status machinery — there is no separate launch-error path.
 func (s *Service) Create(ctx context.Context, params api.TerminalCreateParams) (api.Terminal, error) {
@@ -336,7 +336,7 @@ func (s *Service) Create(ctx context.Context, params api.TerminalCreateParams) (
 
 	name := params.Name
 	if name == "" {
-		name = params.App
+		name = params.Command
 	}
 	if name == "" {
 		name = "Shell"
@@ -344,7 +344,7 @@ func (s *Service) Create(ctx context.Context, params api.TerminalCreateParams) (
 
 	now := s.now()
 	record := store.TerminalRecord{
-		ProjectID: project.ID, Name: name, Directory: project.Directory, App: params.App,
+		ProjectID: project.ID, Name: name, Directory: project.Directory, Command: params.Command,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	s.ops.Lock()
@@ -380,7 +380,7 @@ func (s *Service) Create(ctx context.Context, params api.TerminalCreateParams) (
 	s.hub.Publish(api.EventTerminalCreated, resource, record.ID)
 	s.ops.Unlock()
 
-	if err := s.adapter.Create(ctx, record.ID, CreateSpec{Directory: record.Directory, App: params.App}); err != nil {
+	if err := s.adapter.Create(ctx, record.ID, CreateSpec{Directory: record.Directory, Command: params.Command}); err != nil {
 		// The record stays: the session may have been born after the
 		// client gave up, and the status machinery reports the truth.
 		s.logger.Warn("session create failed", "terminal", record.ID, "error", err)
@@ -550,7 +550,7 @@ func (e *entry) terminal() api.Terminal {
 		Name:      e.record.Name,
 		ProjectID: e.record.ProjectID,
 		Directory: e.record.Directory,
-		App:       e.record.App,
+		Command:   e.record.Command,
 		Status:    e.status,
 		CreatedAt: e.record.CreatedAt,
 		UpdatedAt: e.record.UpdatedAt,

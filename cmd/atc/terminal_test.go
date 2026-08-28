@@ -143,7 +143,7 @@ func TestTerminalCLILifecycle(t *testing.T) {
 	// project on the test server.
 	projectID := createProjectCLI(t, t.TempDir())
 
-	stdout, _, err := runCLI(t, "terminal", "create", "--app", "hx", "--project", projectID)
+	stdout, _, err := runCLI(t, "terminal", "create", "--command", "hx", "--project", projectID)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestAPICommand(t *testing.T) {
 
 	// POST with a body creates a terminal through the raw gateway.
 	projectID := createProjectCLI(t, t.TempDir())
-	stdout, _, err = runCLI(t, "api", "-d", `{"app":"hx","projectId":"`+projectID+`"}`, "/v1/terminals")
+	stdout, _, err = runCLI(t, "api", "-d", `{"command":"hx","projectId":"`+projectID+`"}`, "/v1/terminals")
 	if err != nil {
 		t.Fatal(err)
 	}

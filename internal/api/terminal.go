@@ -26,7 +26,7 @@ type Terminal struct {
 	Name      string         `json:"name" doc:"Display name; the only mutable field."`
 	ProjectID string         `json:"projectId" doc:"Project the terminal belongs to. Immutable; terminals never move between projects."`
 	Directory string         `json:"directory" doc:"Working directory the session started in, copied from the project at create time. Immutable."`
-	App       string         `json:"app,omitempty" doc:"Command launched in the session; empty means a plain shell. Immutable."`
+	Command   string         `json:"command,omitempty" doc:"Command launched in the session; empty means a plain shell. Immutable."`
 	Status    TerminalStatus `json:"status" enum:"running,exited,unreachable,missing" doc:"Server-owned session state."`
 	ExitCode  *int           `json:"exitCode,omitempty" doc:"Recorded exit evidence: exit code, 128+signal for signal deaths, 127 for launch failure. Omitted while running and for ATC-initiated stops."`
 	CreatedAt time.Time      `json:"createdAt"`
@@ -38,8 +38,8 @@ type Terminal struct {
 // else is optional.
 type TerminalCreateParams struct {
 	ProjectID string `json:"projectId" minLength:"1" doc:"Project the terminal belongs to; its directory becomes the terminal's working directory."`
-	Name      string `json:"name,omitempty" doc:"Display name; defaults from app, else \"Shell\"."`
-	App       string `json:"app,omitempty" doc:"Free-form command run through the user's shell; empty starts a plain interactive shell."`
+	Name      string `json:"name,omitempty" doc:"Display name; defaults from command, else \"Shell\"."`
+	Command   string `json:"command,omitempty" doc:"Free-form command run through the user's shell; empty starts a plain interactive shell."`
 }
 
 // TerminalUpdateParams is the PATCH /v1/terminals/{id} request body. Name

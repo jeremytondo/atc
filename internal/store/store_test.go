@@ -37,7 +37,7 @@ func TestTerminalsRoundTrip(t *testing.T) {
 
 	records := []TerminalRecord{
 		{ID: "term-aaaaa", ProjectID: "proj-aaaaa", Name: "Shell", Directory: "/home/x", CreatedAt: at(0), UpdatedAt: at(0)},
-		{ID: "term-bbbbb", ProjectID: "proj-aaaaa", Name: "hx", Directory: "/home/x/proj", App: "hx .", CreatedAt: at(1), UpdatedAt: at(1)},
+		{ID: "term-bbbbb", ProjectID: "proj-aaaaa", Name: "hx", Directory: "/home/x/proj", Command: "hx .", CreatedAt: at(1), UpdatedAt: at(1)},
 	}
 	for _, record := range records {
 		if ok, err := terminals.Insert(ctx, record); err != nil || !ok {

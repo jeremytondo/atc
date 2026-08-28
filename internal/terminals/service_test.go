@@ -201,7 +201,7 @@ func TestCreateHappyPath(t *testing.T) {
 		}
 	}
 
-	terminal, err := f.create(ctx, api.TerminalCreateParams{App: "hx"})
+	terminal, err := f.create(ctx, api.TerminalCreateParams{Command: "hx"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestCreateHappyPath(t *testing.T) {
 		t.Error("session started before the record was persisted")
 	}
 	want := terminal
-	want.Name, want.ProjectID, want.Directory, want.App, want.Status = "hx", f.projectID, f.projectDir, "hx", api.TerminalRunning
+	want.Name, want.ProjectID, want.Directory, want.Command, want.Status = "hx", f.projectID, f.projectDir, "hx", api.TerminalRunning
 	if diff := cmp.Diff(want, terminal); diff != "" {
 		t.Errorf("terminal (-want +got):\n%s", diff)
 	}
@@ -224,20 +224,20 @@ func TestCreateDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if terminal.Name != "Shell" || terminal.Directory != f.projectDir || terminal.App != "" {
-		t.Errorf("defaults = %q %q %q, want Shell %q \"\"", terminal.Name, terminal.Directory, terminal.App, f.projectDir)
+	if terminal.Name != "Shell" || terminal.Directory != f.projectDir || terminal.Command != "" {
+		t.Errorf("defaults = %q %q %q, want Shell %q \"\"", terminal.Name, terminal.Directory, terminal.Command, f.projectDir)
 	}
 }
 
-// A fast-failing app never becomes a session; the wrapper's marker is the
-// evidence and create reports exited with it — no separate error path.
-func TestCreateFastFailingApp(t *testing.T) {
+// A fast-failing command never becomes a session; the wrapper's marker is
+// the evidence and create reports exited with it — no separate error path.
+func TestCreateFastFailingCommand(t *testing.T) {
 	f := newFixture(t)
 	f.adapter.createErr = errors.New("client exited before the session settled")
 	f.adapter.onCreate = func(id string, _ CreateSpec) {
 		plantExitMarker(t, f.markers, id, 127, true)
 	}
-	terminal, err := f.create(context.Background(), api.TerminalCreateParams{App: "no-such-tool"})
+	terminal, err := f.create(context.Background(), api.TerminalCreateParams{Command: "no-such-tool"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +335,7 @@ func TestReconcileDecisionTable(t *testing.T) {
 func TestExitedIsStickyAndStaysListed(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	terminal, err := f.create(ctx, api.TerminalCreateParams{App: "build"})
+	terminal, err := f.create(ctx, api.TerminalCreateParams{Command: "build"})
 	if err != nil {
 		t.Fatal(err)
 	}

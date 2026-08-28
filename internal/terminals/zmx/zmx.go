@@ -240,8 +240,8 @@ func (a *Adapter) Create(ctx context.Context, id string, spec terminals.CreateSp
 
 	argv := []string{"attach", id, a.wrapper, "__child",
 		"--marker", exitmarker.Path(a.markerDir, id), "--id", id, "--dir", spec.Directory}
-	if spec.App != "" {
-		argv = append(argv, "--app", spec.App)
+	if spec.Command != "" {
+		argv = append(argv, "--command", spec.Command)
 	}
 	cmd := exec.Command(executable, argv...)
 	cmd.Env = Env(a.socketDir, true)

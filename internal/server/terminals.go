@@ -33,7 +33,7 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service) {
 		Method:        http.MethodPost,
 		Path:          "/v1/terminals",
 		Summary:       "Create a terminal",
-		Description:   "Persists the record, starts the session, and waits a short verification window; a fast-failing app returns exited with its evidence.",
+		Description:   "Persists the record, starts the session, and waits a short verification window; a fast-failing command returns exited with its evidence.",
 		DefaultStatus: http.StatusCreated,
 	}, func(ctx context.Context, input *struct {
 		Body api.TerminalCreateParams

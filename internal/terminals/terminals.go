@@ -48,9 +48,9 @@ type CreateSpec struct {
 	// Directory the workload starts in (the wrapper chdirs; a bad
 	// directory surfaces as launch-failure evidence, not a create error).
 	Directory string
-	// App is the free-form command run through the user's shell; empty
+	// Command is the free-form command run through the user's shell; empty
 	// starts a plain interactive login shell.
-	App string
+	Command string
 }
 
 // Adapter is the session backend seam. Implementations own every backend
