@@ -89,6 +89,12 @@ type entry struct {
 }
 
 func NewService(opts Options) *Service {
+	if opts.Projects == nil {
+		// A nil projects repository would panic on the first create request
+		// rather than at boot; fail at construction instead (the
+		// server.NewHandler Verify precedent).
+		panic("terminals.NewService: Projects must not be nil")
+	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
