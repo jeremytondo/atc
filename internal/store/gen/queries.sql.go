@@ -51,24 +51,6 @@ func (q *Queries) GetProject(ctx context.Context, id string) (Project, error) {
 	return i, err
 }
 
-const getProjectByDirectory = `-- name: GetProjectByDirectory :one
-SELECT id, name, directory, created_at, updated_at FROM projects WHERE directory = ?
-`
-
-// The canonical-directory uniqueness pre-check on project create.
-func (q *Queries) GetProjectByDirectory(ctx context.Context, directory string) (Project, error) {
-	row := q.db.QueryRowContext(ctx, getProjectByDirectory, directory)
-	var i Project
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.Directory,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
 const insertProject = `-- name: InsertProject :execrows
 INSERT INTO projects (id, name, directory, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?)
@@ -280,8 +262,8 @@ func (q *Queries) RecordTerminalStopIntent(ctx context.Context, arg RecordTermin
 	return result.RowsAffected()
 }
 
-const updateProjectName = `-- name: UpdateProjectName :execrows
-UPDATE projects SET name = ?, updated_at = ? WHERE id = ?
+const updateProjectName = `-- name: UpdateProjectName :one
+UPDATE projects SET name = ?, updated_at = ? WHERE id = ? RETURNING id, name, directory, created_at, updated_at
 `
 
 type UpdateProjectNameParams struct {
@@ -290,12 +272,20 @@ type UpdateProjectNameParams struct {
 	ID        string
 }
 
-func (q *Queries) UpdateProjectName(ctx context.Context, arg UpdateProjectNameParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, updateProjectName, arg.Name, arg.UpdatedAt, arg.ID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
+// RETURNING makes the mutation and the read one operation: a rename either
+// fails with nothing committed or returns the committed row, so the caller
+// can never observe a committed write as an error.
+func (q *Queries) UpdateProjectName(ctx context.Context, arg UpdateProjectNameParams) (Project, error) {
+	row := q.db.QueryRowContext(ctx, updateProjectName, arg.Name, arg.UpdatedAt, arg.ID)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Directory,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const updateTerminalName = `-- name: UpdateTerminalName :execrows

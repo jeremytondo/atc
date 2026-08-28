@@ -40,15 +40,14 @@ ON CONFLICT (id) DO NOTHING;
 -- name: GetProject :one
 SELECT * FROM projects WHERE id = ?;
 
--- The canonical-directory uniqueness pre-check on project create.
--- name: GetProjectByDirectory :one
-SELECT * FROM projects WHERE directory = ?;
-
 -- name: ListProjects :many
 SELECT * FROM projects ORDER BY created_at, id;
 
--- name: UpdateProjectName :execrows
-UPDATE projects SET name = ?, updated_at = ? WHERE id = ?;
+-- RETURNING makes the mutation and the read one operation: a rename either
+-- fails with nothing committed or returns the committed row, so the caller
+-- can never observe a committed write as an error.
+-- name: UpdateProjectName :one
+UPDATE projects SET name = ?, updated_at = ? WHERE id = ? RETURNING *;
 
 -- name: DeleteProject :execrows
 DELETE FROM projects WHERE id = ?;

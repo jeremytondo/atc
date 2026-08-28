@@ -347,6 +347,13 @@ func (s *Service) Create(ctx context.Context, params api.TerminalCreateParams) (
 	for {
 		record.ID = randomID()
 		inserted, err := s.repository.Insert(ctx, record)
+		if errors.Is(err, store.ErrForeignKeyViolation) {
+			// The project was deleted between the lookup above and this
+			// insert; the foreign key kept the state consistent, so answer
+			// as if the lookup had missed.
+			s.ops.Unlock()
+			return api.Terminal{}, fmt.Errorf("%w %q", ErrProjectUnknown, params.ProjectID)
+		}
 		if err != nil {
 			s.ops.Unlock()
 			return api.Terminal{}, err

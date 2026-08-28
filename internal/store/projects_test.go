@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"io/fs"
 	"path/filepath"
 	"testing"
@@ -58,23 +59,14 @@ func TestProjectsRoundTrip(t *testing.T) {
 	if _, found, err := projects.Get(ctx, "proj-zzzzz"); err != nil || found {
 		t.Errorf("Get(absent) = %v, %v; want false", found, err)
 	}
-	record, found, err = projects.GetByDirectory(ctx, "/home/x/notes")
-	if err != nil || !found || record.ID != "proj-bbbbb" {
-		t.Errorf("GetByDirectory = %+v, %v, %v", record, found, err)
-	}
-	if _, found, err := projects.GetByDirectory(ctx, "/nowhere"); err != nil || found {
-		t.Errorf("GetByDirectory(absent) = %v, %v; want false", found, err)
-	}
 
-	if ok, err := projects.UpdateName(ctx, "proj-aaaaa", "renamed", at(2)); err != nil || !ok {
-		t.Fatalf("UpdateName = %v, %v; want true", ok, err)
+	// The rename returns the committed row in the same operation.
+	renamed, ok, err := projects.UpdateName(ctx, "proj-aaaaa", "renamed", at(2))
+	if err != nil || !ok || renamed.Name != "renamed" || !renamed.UpdatedAt.Equal(at(2)) {
+		t.Fatalf("UpdateName = %+v, %v, %v", renamed, ok, err)
 	}
-	if ok, err := projects.UpdateName(ctx, "proj-zzzzz", "x", at(2)); err != nil || ok {
+	if _, ok, err := projects.UpdateName(ctx, "proj-zzzzz", "x", at(2)); err != nil || ok {
 		t.Fatalf("UpdateName(absent) = %v, %v; want false", ok, err)
-	}
-	record, _, err = projects.Get(ctx, "proj-aaaaa")
-	if err != nil || record.Name != "renamed" || !record.UpdatedAt.Equal(at(2)) {
-		t.Errorf("after rename = %+v, %v", record, err)
 	}
 
 	if ok, err := projects.Delete(ctx, "proj-bbbbb"); err != nil || !ok {
@@ -110,17 +102,18 @@ func TestTerminalsByProjectAndDeleteBackstop(t *testing.T) {
 		t.Errorf("ListIDsByProject (-want +got):\n%s", diff)
 	}
 
-	// A terminal can never reference a missing project.
+	// A terminal can never reference a missing project, and the violation
+	// is typed so the domain can answer with its own error.
 	if _, err := terminals.Insert(ctx, TerminalRecord{
 		ID: "term-ddddd", ProjectID: "proj-zzzzz", Name: "stray", Directory: "/",
 		CreatedAt: at(9), UpdatedAt: at(9),
-	}); err == nil {
-		t.Error("Insert(unknown project) succeeded, want a foreign-key error")
+	}); !errors.Is(err, ErrForeignKeyViolation) {
+		t.Errorf("Insert(unknown project) = %v, want ErrForeignKeyViolation", err)
 	}
 	// And a project with terminals can never be deleted — the backstop
 	// behind the domain's refuse-when-non-empty check.
-	if _, err := s.Projects().Delete(ctx, "proj-aaaaa"); err == nil {
-		t.Error("Delete(project with terminals) succeeded, want a foreign-key error")
+	if _, err := s.Projects().Delete(ctx, "proj-aaaaa"); !errors.Is(err, ErrForeignKeyViolation) {
+		t.Errorf("Delete(project with terminals) = %v, want ErrForeignKeyViolation", err)
 	}
 }
 

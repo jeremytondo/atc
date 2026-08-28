@@ -41,8 +41,9 @@ type Terminals struct {
 }
 
 // Insert persists a new record; false reports an ID collision (the caller
-// re-rolls). Create persists before starting the session, so a record
-// exists for every session ATC ever starts.
+// re-rolls), and a vanished project surfaces as ErrForeignKeyViolation.
+// Create persists before starting the session, so a record exists for
+// every session ATC ever starts.
 func (t *Terminals) Insert(ctx context.Context, record TerminalRecord) (bool, error) {
 	n, err := t.writes.InsertTerminal(ctx, gen.InsertTerminalParams{
 		ID:        record.ID,
@@ -53,7 +54,7 @@ func (t *Terminals) Insert(ctx context.Context, record TerminalRecord) (bool, er
 		CreatedAt: formatTime(record.CreatedAt),
 		UpdatedAt: formatTime(record.UpdatedAt),
 	})
-	return n > 0, err
+	return n > 0, foreignKeyError(err)
 }
 
 // ListIDsByProject returns the IDs of the project's terminals in creation

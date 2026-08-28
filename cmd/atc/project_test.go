@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -26,6 +27,18 @@ func mkdirAll(t *testing.T, dir string) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+// gitInit makes dir a real git repository — toplevel detection asks git
+// itself, so a bare .git entry would not count.
+func gitInit(t *testing.T, dir string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	if out, err := exec.Command("git", "init", "-q", dir).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
 }
 
 func TestProjectCLILifecycle(t *testing.T) {
@@ -172,20 +185,24 @@ func TestTerminalCreateOffersProjectAtGitToplevel(t *testing.T) {
 	forceTTY(t)
 	startTestServer(t)
 	repo := t.TempDir()
-	mkdirAll(t, filepath.Join(repo, ".git"))
+	gitInit(t, repo)
 	sub := mkdirAll(t, filepath.Join(repo, "pkg"))
 
 	t.Chdir(sub)
-	stdout, _, err := runCLIInput(t, "y\n", "terminal", "create")
+	stdout, stderr, err := runCLIInput(t, "y\n", "terminal", "create")
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The conversation rides stderr; stdout carries the created terminal.
 	toplevel := canonical(t, repo)
-	if !strings.Contains(stdout, "create a project at "+toplevel+"?") {
-		t.Errorf("offer does not name the git toplevel:\n%s", stdout)
+	if !strings.Contains(stderr, "create a project at "+toplevel+"?") {
+		t.Errorf("offer does not name the git toplevel:\n%s", stderr)
 	}
-	if !strings.Contains(stdout, "created project proj-") || !strings.Contains(stdout, "running") {
-		t.Errorf("accepting the offer did not create project and terminal:\n%s", stdout)
+	if !strings.Contains(stderr, "created project proj-") {
+		t.Errorf("accepting the offer did not report the created project:\n%s", stderr)
+	}
+	if !strings.Contains(stdout, "running") {
+		t.Errorf("accepting the offer did not create the terminal:\n%s", stdout)
 	}
 	if listOut, _, err := runCLI(t, "project", "list"); err != nil || !strings.Contains(listOut, toplevel) {
 		t.Errorf("project list = %q, %v; want the toplevel project", listOut, err)
@@ -215,7 +232,7 @@ func TestTerminalCreateOfferDeclinedCreatesNothing(t *testing.T) {
 func TestProjectCreateDefaultPath(t *testing.T) {
 	startTestServer(t)
 	repo := t.TempDir()
-	mkdirAll(t, filepath.Join(repo, ".git"))
+	gitInit(t, repo)
 	sub := mkdirAll(t, filepath.Join(repo, "pkg"))
 
 	t.Chdir(sub)

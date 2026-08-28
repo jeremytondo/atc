@@ -55,20 +55,6 @@ func (p *Projects) Get(ctx context.Context, id string) (ProjectRecord, bool, err
 	return record, err == nil, err
 }
 
-// GetByDirectory returns the record owning a canonical directory; false
-// means none does.
-func (p *Projects) GetByDirectory(ctx context.Context, directory string) (ProjectRecord, bool, error) {
-	row, err := p.reads.GetProjectByDirectory(ctx, directory)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ProjectRecord{}, false, nil
-	}
-	if err != nil {
-		return ProjectRecord{}, false, err
-	}
-	record, err := projectFrom(row)
-	return record, err == nil, err
-}
-
 // List returns every record in creation order.
 func (p *Projects) List(ctx context.Context) ([]ProjectRecord, error) {
 	rows, err := p.reads.ListProjects(ctx)
@@ -86,20 +72,29 @@ func (p *Projects) List(ctx context.Context) ([]ProjectRecord, error) {
 	return records, nil
 }
 
-// UpdateName renames the project; false means no such record.
-func (p *Projects) UpdateName(ctx context.Context, id, name string, at time.Time) (bool, error) {
-	n, err := p.writes.UpdateProjectName(ctx, gen.UpdateProjectNameParams{
+// UpdateName renames the project and returns the committed row in the
+// same operation (RETURNING), so a committed rename can never surface as
+// an error; false means no such record.
+func (p *Projects) UpdateName(ctx context.Context, id, name string, at time.Time) (ProjectRecord, bool, error) {
+	row, err := p.writes.UpdateProjectName(ctx, gen.UpdateProjectNameParams{
 		Name: name, UpdatedAt: formatTime(at), ID: id,
 	})
-	return n > 0, err
+	if errors.Is(err, sql.ErrNoRows) {
+		return ProjectRecord{}, false, nil
+	}
+	if err != nil {
+		return ProjectRecord{}, false, err
+	}
+	record, err := projectFrom(row)
+	return record, err == nil, err
 }
 
 // Delete removes the record; false means no such record. A project that
-// still owns terminals fails on the foreign key — the domain refuses
-// first and this is the backstop.
+// still owns terminals fails with ErrForeignKeyViolation — the domain
+// refuses first and this is the backstop.
 func (p *Projects) Delete(ctx context.Context, id string) (bool, error) {
 	n, err := p.writes.DeleteProject(ctx, id)
-	return n > 0, err
+	return n > 0, foreignKeyError(err)
 }
 
 func projectFrom(row gen.Project) (ProjectRecord, error) {

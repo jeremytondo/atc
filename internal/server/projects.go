@@ -104,7 +104,6 @@ func registerProjects(humaAPI huma.API, service *projects.Service) {
 }
 
 func mapProjectError(err error) error {
-	var notEmpty *projects.NotEmptyError
 	switch {
 	case errors.Is(err, projects.ErrNotFound):
 		return huma.Error404NotFound("project not found")
@@ -112,7 +111,7 @@ func mapProjectError(err error) error {
 		return huma.Error422UnprocessableEntity(err.Error())
 	case errors.Is(err, projects.ErrDirectoryTaken):
 		return huma.Error409Conflict(err.Error())
-	case errors.As(err, &notEmpty):
+	case errors.Is(err, projects.ErrNotEmpty):
 		return huma.Error409Conflict(err.Error())
 	}
 	return err

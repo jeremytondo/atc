@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
@@ -35,8 +36,10 @@ func newProjectCreateCmd() *cobra.Command {
 		Short: "Create a project rooted at a directory",
 		Long: `Create a project rooted at path. Without a path, the project is rooted at
 the git toplevel when inside a repository, at the current directory
-otherwise. The directory is canonicalized (symlinks resolved) and is the
-project's identity: one project per real folder, immutable after create.`,
+otherwise. The server canonicalizes the directory (symlinks resolved) and
+it is the project's identity: one project per real folder, immutable after
+create. A relative path is resolved against this shell's directory; the
+directory itself must exist on the server's machine.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, _ string) error {
 			name, err := cmd.Flags().GetString("name")
@@ -45,9 +48,11 @@ project's identity: one project per real folder, immutable after create.`,
 			}
 			var directory string
 			if len(args) == 1 {
-				// Canonicalized client-side: a relative path must mean this
-				// process's working directory, never the server's.
-				if directory, err = paths.CanonicalDir(args[0]); err != nil {
+				// Absolutized client-side so a relative path means this
+				// process's working directory, never the server's — but
+				// only absolutized: existence and canonicalization are the
+				// server's, whose filesystem the directory lives on.
+				if directory, err = filepath.Abs(args[0]); err != nil {
 					return err
 				}
 			} else if directory, err = defaultProjectDir(); err != nil {
@@ -148,6 +153,15 @@ those first; there is no cascade.`,
 	}
 }
 
+// stdinIsTTY gates the create-offer prompt: a question is only asked of a
+// human on an interactive stdin. Stdout deliberately does not matter — a
+// redirected stdout still deserves the prompt (on stderr) rather than a
+// refusal. A variable so tests, which never have a TTY, can force it.
+var stdinIsTTY = func() bool {
+	info, err := os.Stdin.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
 // resolveProjectID finds the project owning the current directory the way
 // git finds a repository (ATC-256): canonicalize the cwd, then walk up —
 // the nearest ancestor (or the directory itself) matching a project's
@@ -155,11 +169,7 @@ those first; there is no cascade.`,
 // rooted at the default (git toplevel, else cwd); a non-interactive run
 // refuses with the fixes instead of prompting.
 func resolveProjectID(cmd *cobra.Command, client *api.Client) (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	canonical, err := paths.CanonicalDir(cwd)
+	canonical, err := paths.CanonicalDir(".")
 	if err != nil {
 		return "", err
 	}
@@ -167,13 +177,13 @@ func resolveProjectID(cmd *cobra.Command, client *api.Client) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	byDir := make(map[string]api.Project, len(projects))
+	byDir := make(map[string]string, len(projects))
 	for _, project := range projects {
-		byDir[project.Directory] = project
+		byDir[project.Directory] = project.ID
 	}
 	for dir := canonical; ; {
-		if project, ok := byDir[dir]; ok {
-			return project.ID, nil
+		if id, ok := byDir[dir]; ok {
+			return id, nil
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -182,12 +192,14 @@ func resolveProjectID(cmd *cobra.Command, client *api.Client) (string, error) {
 		dir = parent
 	}
 
-	if !stdioIsTerminal() {
+	if !stdinIsTTY() {
 		return "", fmt.Errorf("no project contains %s; pass --project <id> or run `atc project create`", canonical)
 	}
 	defaultDir := projectRootFor(canonical)
-	out := cmd.OutOrStdout()
-	_, _ = fmt.Fprintf(out, "no project contains %s\ncreate a project at %s? [y/N] ", canonical, defaultDir)
+	// The conversation goes to stderr: stdout stays the command's
+	// redirectable output (the created terminal).
+	console := cmd.ErrOrStderr()
+	_, _ = fmt.Fprintf(console, "no project contains %s\ncreate a project at %s? [y/N] ", canonical, defaultDir)
 	answer, _ := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
 	switch strings.ToLower(strings.TrimSpace(answer)) {
 	case "y", "yes":
@@ -198,39 +210,34 @@ func resolveProjectID(cmd *cobra.Command, client *api.Client) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	_, _ = fmt.Fprintf(out, "created project %s at %s\n", project.ID, project.Directory)
+	_, _ = fmt.Fprintf(console, "created project %s at %s\n", project.ID, project.Directory)
 	return project.ID, nil
 }
 
 // defaultProjectDir is where an unspecified project is rooted: the git
 // toplevel when inside a repository, the current directory otherwise.
 func defaultProjectDir() (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	canonical, err := paths.CanonicalDir(cwd)
+	canonical, err := paths.CanonicalDir(".")
 	if err != nil {
 		return "", err
 	}
 	return projectRootFor(canonical), nil
 }
 
-// projectRootFor walks up from a canonical directory looking for a .git
-// entry (a directory in a normal checkout, a file in linked worktrees);
-// the first hit is the innermost repository's toplevel. Without one the
-// directory is its own root.
+// projectRootFor asks git for the toplevel of the repository containing
+// the canonical directory — git itself is the authority on what counts as
+// a repository (a stray or malformed .git entry is not one). Outside a
+// repository, or without git installed, the directory is its own root.
 func projectRootFor(canonical string) string {
-	for dir := canonical; ; {
-		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return canonical
-		}
-		dir = parent
+	output, err := exec.Command("git", "-C", canonical, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return canonical
 	}
+	toplevel, err := paths.CanonicalDir(strings.TrimSpace(string(output)))
+	if err != nil {
+		return canonical
+	}
+	return toplevel
 }
 
 func printProject(out io.Writer, project api.Project) {

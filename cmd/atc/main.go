@@ -138,7 +138,7 @@ interrupted), headless runs print a reminder unless --restart or
 			opts := upgrade.Options{
 				Dev:         dev,
 				Restart:     mode,
-				Interactive: stdinIsTerminal(),
+				Interactive: stdinIsTTY(),
 				Version:     version.String(),
 				Stdin:       cmd.InOrStdin(),
 				Stdout:      cmd.OutOrStdout(),
@@ -157,12 +157,6 @@ interrupted), headless runs print a reminder unless --restart or
 	cmd.Flags().Bool("no-restart", false, "never restart the server")
 	cmd.MarkFlagsMutuallyExclusive("restart", "no-restart")
 	return cmd
-}
-
-// stdinIsTerminal gates the restart prompt: only a human at a TTY is asked.
-func stdinIsTerminal() bool {
-	info, err := os.Stdin.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
 func newServerCmd() *cobra.Command {

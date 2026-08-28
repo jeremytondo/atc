@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -31,21 +32,14 @@ var (
 	// ErrDirectoryInvalid wraps a create directory that cannot be
 	// canonicalized: it does not exist or is not a directory.
 	ErrDirectoryInvalid = errors.New("invalid project directory")
-	// ErrDirectoryTaken reports a create whose canonical directory already
-	// belongs to a project.
+	// ErrDirectoryTaken reports a create whose directory already belongs to
+	// a project — same canonical form or the same real folder.
 	ErrDirectoryTaken = errors.New("directory already belongs to a project")
+	// ErrNotEmpty refuses a delete while terminals still belong to the
+	// project; the wrapped message reports what remains. There is no
+	// cascade and no --force.
+	ErrNotEmpty = errors.New("project is not empty")
 )
-
-// NotEmptyError refuses a delete while terminals still belong to the
-// project, reporting what remains. There is no cascade and no --force.
-type NotEmptyError struct {
-	TerminalIDs []string
-}
-
-func (e *NotEmptyError) Error() string {
-	return fmt.Sprintf("project still has %d terminal(s): %s",
-		len(e.TerminalIDs), strings.Join(e.TerminalIDs, ", "))
-}
 
 // resource is the event-payload resource kind.
 const resource = "project"
@@ -108,13 +102,28 @@ func (s *Service) Create(ctx context.Context, params api.ProjectCreateParams) (a
 
 	s.ops.Lock()
 	defer s.ops.Unlock()
-	// Uniqueness compares canonical forms only; a symlinked spelling of a
-	// claimed folder is the same project. ops serializes the check against
-	// the insert, and the schema's UNIQUE backstops external writers.
-	if _, taken, err := s.repository.GetByDirectory(ctx, canonical); err != nil {
+	// One project per real folder: a symlinked spelling canonicalizes to
+	// the claimed string, and a differently-spelled path to the same folder
+	// (a case-insensitive filesystem) is caught by filesystem identity.
+	// ops serializes the check against the insert, and the schema's UNIQUE
+	// backstops external writers.
+	info, err := os.Stat(canonical)
+	if err != nil {
+		return api.Project{}, fmt.Errorf("%w: %w", ErrDirectoryInvalid, err)
+	}
+	existing, err := s.repository.List(ctx)
+	if err != nil {
 		return api.Project{}, err
-	} else if taken {
-		return api.Project{}, fmt.Errorf("%w: %s", ErrDirectoryTaken, canonical)
+	}
+	for _, project := range existing {
+		if project.Directory == canonical {
+			return api.Project{}, fmt.Errorf("%w: %s", ErrDirectoryTaken, canonical)
+		}
+		// A project whose folder is gone cannot be the same folder; its
+		// canonical string above is still its claim.
+		if projectInfo, err := os.Stat(project.Directory); err == nil && os.SameFile(info, projectInfo) {
+			return api.Project{}, fmt.Errorf("%w: %s is %s", ErrDirectoryTaken, canonical, project.Directory)
+		}
 	}
 	// Insertion is the collision check: a taken ID inserts nothing and
 	// re-rolls, with no check-then-insert window.
@@ -157,24 +166,17 @@ func (s *Service) List(ctx context.Context) ([]api.Project, error) {
 	return projects, nil
 }
 
-// UpdateName renames the project — the only mutable field.
+// UpdateName renames the project — the only mutable field. The rename
+// returns the committed row in one repository operation, so a committed
+// write can never surface as an error with its event unpublished.
 func (s *Service) UpdateName(ctx context.Context, id, name string) (api.Project, error) {
 	s.ops.Lock()
 	defer s.ops.Unlock()
-	ok, err := s.repository.UpdateName(ctx, id, name, s.now())
+	record, ok, err := s.repository.UpdateName(ctx, id, name, s.now())
 	if err != nil {
 		return api.Project{}, err
 	}
 	if !ok {
-		return api.Project{}, ErrNotFound
-	}
-	record, ok, err := s.repository.Get(ctx, id)
-	if err != nil {
-		return api.Project{}, err
-	}
-	if !ok {
-		// The row updated but is gone — impossible while ops serializes
-		// mutations, and never worth answering with a zero value.
 		return api.Project{}, ErrNotFound
 	}
 	s.hub.Publish(api.EventProjectUpdated, resource, id)
@@ -192,9 +194,15 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 		return err
 	}
 	if len(terminalIDs) > 0 {
-		return &NotEmptyError{TerminalIDs: terminalIDs}
+		return fmt.Errorf("%w: %d terminal(s) remain: %s",
+			ErrNotEmpty, len(terminalIDs), strings.Join(terminalIDs, ", "))
 	}
 	deleted, err := s.repository.Delete(ctx, id)
+	if errors.Is(err, store.ErrForeignKeyViolation) {
+		// A terminal create slipped in after the empty check; the foreign
+		// key kept the state consistent, so answer with the refusal.
+		return fmt.Errorf("%w: a terminal was just created in it", ErrNotEmpty)
+	}
 	if err != nil {
 		return err
 	}

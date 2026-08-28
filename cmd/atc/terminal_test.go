@@ -122,9 +122,10 @@ func createProjectCLI(t *testing.T, dir string) string {
 
 func forceTTY(t *testing.T) {
 	t.Helper()
-	prev := stdioIsTerminal
+	prevStdio, prevStdin := stdioIsTerminal, stdinIsTTY
 	stdioIsTerminal = func() bool { return true }
-	t.Cleanup(func() { stdioIsTerminal = prev })
+	stdinIsTTY = func() bool { return true }
+	t.Cleanup(func() { stdioIsTerminal, stdinIsTTY = prevStdio, prevStdin })
 }
 
 func installFakeZmx(t *testing.T) {
