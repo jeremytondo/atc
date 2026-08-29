@@ -21,6 +21,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
+	"github.com/jeremytondo/atc/internal/agents"
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/projects"
@@ -44,6 +45,7 @@ type Options struct {
 	Logger    *slog.Logger
 	Terminals *terminals.Service
 	Projects  *projects.Service
+	Agents    *agents.Service
 	Events    *events.Hub
 	// HeartbeatInterval paces SSE heartbeats; zero means the default.
 	HeartbeatInterval time.Duration
@@ -88,10 +90,13 @@ func NewHandler(opts Options) http.Handler {
 	})
 
 	if opts.Terminals != nil {
-		registerTerminals(humaAPI, opts.Terminals)
+		registerTerminals(humaAPI, opts.Terminals, opts.Agents)
 	}
 	if opts.Projects != nil {
 		registerProjects(humaAPI, opts.Projects)
+	}
+	if opts.Agents != nil {
+		registerAgents(humaAPI, opts.Agents)
 	}
 	if opts.Events != nil {
 		registerEvents(humaAPI, opts.Events, opts.HeartbeatInterval)

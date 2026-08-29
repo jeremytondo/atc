@@ -7,6 +7,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"github.com/jeremytondo/atc/internal/agents"
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/terminals"
 )
@@ -27,17 +28,35 @@ type terminalIDInput struct {
 	ID string `path:"id" doc:"Terminal identifier."`
 }
 
-func registerTerminals(humaAPI huma.API, service *terminals.Service) {
+func registerTerminals(humaAPI huma.API, service *terminals.Service, agentService *agents.Service) {
 	huma.Register(humaAPI, huma.Operation{
 		OperationID:   "create-terminal",
 		Method:        http.MethodPost,
 		Path:          "/v1/terminals",
 		Summary:       "Create a terminal",
-		Description:   "Persists the record, starts the session, and waits a short verification window; a fast-failing command returns exited with its evidence.",
+		Description:   "Persists the record, starts the session, and waits a short verification window; a fast-failing command returns exited with its evidence. An agent reference resolves the command through the agent catalog instead — equivalent to POST /v1/agents/{id}/launch.",
 		DefaultStatus: http.StatusCreated,
 	}, func(ctx context.Context, input *struct {
 		Body api.TerminalCreateParams
 	}) (*terminalOutput, error) {
+		if input.Body.Agent != "" {
+			if input.Body.Command != "" {
+				return nil, huma.Error422UnprocessableEntity("agent and command are mutually exclusive")
+			}
+			if agentService == nil {
+				return nil, huma.Error422UnprocessableEntity("this server has no agent catalog")
+			}
+			// The one launch path (ATC-254): the same composition the alias
+			// route runs, so both routes surface identical errors and
+			// terminals. The service, not this handler, records the agent id
+			// it resolved.
+			terminal, err := agentService.Launch(ctx, input.Body.Agent,
+				api.AgentLaunchParams{ProjectID: input.Body.ProjectID, Name: input.Body.Name})
+			if err != nil {
+				return nil, mapAgentError(err)
+			}
+			return &terminalOutput{Body: terminal}, nil
+		}
 		terminal, err := service.Create(ctx, input.Body)
 		if err != nil {
 			return nil, mapError(err)
