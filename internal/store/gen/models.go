@@ -29,3 +29,29 @@ type Terminal struct {
 	ExitCode        sql.NullInt64
 	Agent           sql.NullString
 }
+
+type Thread struct {
+	ID             string
+	Agent          string
+	ProjectID      string
+	TerminalID     sql.NullString
+	Title          sql.NullString
+	TitleUserSet   int64
+	Model          sql.NullString
+	Effort         sql.NullString
+	Cwd            sql.NullString
+	PermissionMode sql.NullString
+	Status         string
+	LastError      sql.NullString
+	LastEvidenceAt sql.NullString
+	Archived       int64
+	ArchivedAt     sql.NullString
+	CreatedAt      string
+	UpdatedAt      string
+}
+
+type ThreadIdentity struct {
+	Agent                  string
+	ProviderConversationID string
+	ThreadID               string
+}

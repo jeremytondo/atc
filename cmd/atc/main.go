@@ -35,6 +35,7 @@ import (
 	"github.com/jeremytondo/atc/internal/tailscale"
 	"github.com/jeremytondo/atc/internal/terminals"
 	"github.com/jeremytondo/atc/internal/terminals/zmx"
+	"github.com/jeremytondo/atc/internal/threads"
 	"github.com/jeremytondo/atc/internal/upgrade"
 	"github.com/jeremytondo/atc/internal/version"
 )
@@ -88,7 +89,7 @@ expose on the tailnet without the flag.`,
 			return cmd.Help()
 		},
 	}
-	root.AddCommand(newAgentCmd(), newTerminalCmd(), newProjectCmd(), newAPICmd(), newVersionCmd(),
+	root.AddCommand(newAgentCmd(), newThreadCmd(), newTerminalCmd(), newProjectCmd(), newAPICmd(), newVersionCmd(),
 		newUpgradeCmd(), newServerCmd(), newChildCmd())
 	return root
 }
@@ -526,6 +527,18 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// Threads load after terminals so the boot-time status coercion and
+	// the sweep read a settled terminal view.
+	threadService := threads.NewService(threads.Options{
+		Repository: database.Threads(),
+		Terminals:  terminalService,
+		Hub:        hub,
+		Logger:     logger,
+	})
+	if err := threadService.Load(ctx); err != nil {
+		return err
+	}
+
 	handler := server.NewHandler(server.Options{
 		Verify:    tokens.Verify,
 		Version:   versionValue,
@@ -533,6 +546,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		Terminals: terminalService,
 		Projects:  projectService,
 		Agents:    agentService,
+		Threads:   threadService,
 		Events:    hub,
 	})
 
@@ -549,6 +563,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	defer stopLoop()
 	var background sync.WaitGroup
 	background.Go(func() { terminalService.Run(loopCtx) })
+	background.Go(func() { threadService.Run(loopCtx) })
 
 	// The exposure supervisor fronts the actual bound port (they are one
 	// port by contract) and is waited on so shutdown reaps the serve

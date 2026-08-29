@@ -28,6 +28,7 @@ import (
 	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/terminals"
 	"github.com/jeremytondo/atc/internal/terminals/exitmarker"
+	"github.com/jeremytondo/atc/internal/threads"
 )
 
 // fakeAdapter is the hand-written session backend for API-contract tests:
@@ -90,6 +91,7 @@ type fixture struct {
 	adapter    *fakeAdapter
 	hub        *events.Hub
 	service    *terminals.Service
+	threads    *threads.Service
 	binaries   map[string]bool
 	markers    string
 	projectID  string
@@ -149,6 +151,15 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	threadService := threads.NewService(threads.Options{
+		Repository: db.Threads(),
+		Terminals:  service,
+		Hub:        hub,
+		Now:        now,
+	})
+	if err := threadService.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	handler := NewHandler(Options{
 		Verify:            testVerify,
 		Version:           testVersion,
@@ -156,10 +167,11 @@ func newFixture(t *testing.T) *fixture {
 		Terminals:         service,
 		Projects:          projectService,
 		Agents:            agentService,
+		Threads:           threadService,
 		Events:            hub,
 		HeartbeatInterval: 50 * time.Millisecond,
 	})
-	f := &fixture{handler: handler, adapter: adapter, hub: hub, service: service, binaries: binaries, markers: markers}
+	f := &fixture{handler: handler, adapter: adapter, hub: hub, service: service, threads: threadService, binaries: binaries, markers: markers}
 	// Planted through the repository, not the API: the fixture project must
 	// not consume an event sequence number the SSE assertions rely on.
 	f.projectDir = t.TempDir()

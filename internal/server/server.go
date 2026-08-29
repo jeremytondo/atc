@@ -26,6 +26,7 @@ import (
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/terminals"
+	"github.com/jeremytondo/atc/internal/threads"
 )
 
 // HealthOutput is Huma routing machinery around the shared body; the
@@ -46,6 +47,7 @@ type Options struct {
 	Terminals *terminals.Service
 	Projects  *projects.Service
 	Agents    *agents.Service
+	Threads   *threads.Service
 	Events    *events.Hub
 	// HeartbeatInterval paces SSE heartbeats; zero means the default.
 	HeartbeatInterval time.Duration
@@ -90,13 +92,16 @@ func NewHandler(opts Options) http.Handler {
 	})
 
 	if opts.Terminals != nil {
-		registerTerminals(humaAPI, opts.Terminals, opts.Agents)
+		registerTerminals(humaAPI, opts.Terminals, opts.Agents, opts.Threads)
 	}
 	if opts.Projects != nil {
-		registerProjects(humaAPI, opts.Projects)
+		registerProjects(humaAPI, opts.Projects, opts.Threads)
 	}
 	if opts.Agents != nil {
 		registerAgents(humaAPI, opts.Agents)
+	}
+	if opts.Threads != nil {
+		registerThreads(humaAPI, opts.Threads)
 	}
 	if opts.Events != nil {
 		registerEvents(humaAPI, opts.Events, opts.HeartbeatInterval)
