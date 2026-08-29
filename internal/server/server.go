@@ -13,9 +13,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -49,6 +51,12 @@ type Options struct {
 	Agents    *agents.Service
 	Threads   *threads.Service
 	Events    *events.Hub
+	// InternalRoutes are handlers mounted outside the public /v1 contract
+	// and outside bearer auth (ATC-255): each authenticates itself — the
+	// Claude hook route validates its per-launch secret, and the bearer
+	// token is deliberately never used for hook delivery. Keys are
+	// http.ServeMux patterns, e.g. "POST /internal/claude/hooks".
+	InternalRoutes map[string]http.Handler
 	// HeartbeatInterval paces SSE heartbeats; zero means the default.
 	HeartbeatInterval time.Duration
 }
@@ -107,7 +115,22 @@ func NewHandler(opts Options) http.Handler {
 		registerEvents(humaAPI, opts.Events, opts.HeartbeatInterval)
 	}
 
-	return withVersionHeaders(opts.Version, opts.Logger, withAuth(opts.Verify, withWriteDeadlines(mux)))
+	handler := withAuth(opts.Verify, withWriteDeadlines(mux))
+	if len(opts.InternalRoutes) > 0 {
+		root := http.NewServeMux()
+		for pattern, route := range opts.InternalRoutes {
+			// The bearer bypass is exactly as wide as /internal/: a
+			// pattern that could shadow the public surface is a wiring
+			// bug, refused at construction.
+			if !strings.HasPrefix(pattern, "POST /internal/") {
+				panic(fmt.Sprintf("server.NewHandler: internal route %q outside POST /internal/", pattern))
+			}
+			root.Handle(pattern, route)
+		}
+		root.Handle("/", handler)
+		handler = root
+	}
+	return withVersionHeaders(opts.Version, opts.Logger, handler)
 }
 
 func withVersionHeaders(version string, logger *slog.Logger, next http.Handler) http.Handler {

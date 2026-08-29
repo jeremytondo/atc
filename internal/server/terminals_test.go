@@ -137,9 +137,28 @@ func newFixture(t *testing.T) *fixture {
 		Hub:        hub,
 		Now:        now,
 	})
+	threadService := threads.NewService(threads.Options{
+		Repository: db.Threads(),
+		Terminals:  service,
+		Hub:        hub,
+		Now:        now,
+	})
+	if err := threadService.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	claudeHooks, err := claude.NewHooks(claude.HooksOptions{
+		Dir:       t.TempDir(),
+		BaseURL:   "http://127.0.0.1:0",
+		Threads:   threadService,
+		Terminals: service,
+		Now:       now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	binaries := map[string]bool{"claude": true}
 	agentService, err := agents.NewService(agents.Options{
-		Entries:   []agents.Entry{claude.Entry(), codex.Entry()},
+		Entries:   []agents.Entry{claude.Entry(claudeHooks), codex.Entry()},
 		Terminals: service,
 		LookPath: func(name string) (string, error) {
 			if binaries[name] {
@@ -151,15 +170,6 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	threadService := threads.NewService(threads.Options{
-		Repository: db.Threads(),
-		Terminals:  service,
-		Hub:        hub,
-		Now:        now,
-	})
-	if err := threadService.Load(context.Background()); err != nil {
-		t.Fatal(err)
-	}
 	handler := NewHandler(Options{
 		Verify:            testVerify,
 		Version:           testVersion,
@@ -169,9 +179,11 @@ func newFixture(t *testing.T) *fixture {
 		Agents:            agentService,
 		Threads:           threadService,
 		Events:            hub,
+		InternalRoutes:    map[string]http.Handler{"POST " + claude.HooksPath: claudeHooks.Handler()},
 		HeartbeatInterval: 50 * time.Millisecond,
 	})
-	f := &fixture{handler: handler, adapter: adapter, hub: hub, service: service, threads: threadService, binaries: binaries, markers: markers}
+	f := &fixture{handler: handler, adapter: adapter, hub: hub, service: service, threads: threadService,
+		binaries: binaries, markers: markers}
 	// Planted through the repository, not the API: the fixture project must
 	// not consume an event sequence number the SSE assertions rely on.
 	f.projectDir = t.TempDir()

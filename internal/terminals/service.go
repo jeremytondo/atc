@@ -321,20 +321,24 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 // real evidence. Failures after the record exists surface through the
 // normal status machinery — there is no separate launch-error path.
 func (s *Service) Create(ctx context.Context, params api.TerminalCreateParams) (api.Terminal, error) {
-	return s.create(ctx, params, "")
+	return s.create(ctx, params, "", nil)
 }
 
 // CreateForAgent is Create for a launch the API layer resolved through the
-// agent catalog (ATC-254): params.Command carries the adapter-composed
-// command and agent is the catalog id recorded on the terminal — this is
-// the only writer of the immutable agent field. The domain stays
-// agent-agnostic: the id is an opaque label here, and everything past the
-// label is the normal create path.
-func (s *Service) CreateForAgent(ctx context.Context, params api.TerminalCreateParams, agent string) (api.Terminal, error) {
-	return s.create(ctx, params, agent)
+// agent catalog (ATC-254): agent is the catalog id recorded on the
+// terminal — this is the only writer of the immutable agent field — and
+// compose supplies the adapter-composed command once the terminal id is
+// minted, so per-launch context (ATC-255 hook settings, --remote wiring)
+// can reference the identity before the session starts. The domain stays
+// agent-agnostic: the id is an opaque label, compose an opaque command
+// factory, and everything past them is the normal create path.
+func (s *Service) CreateForAgent(ctx context.Context, params api.TerminalCreateParams, agent string,
+	compose func(terminalID, directory string) (string, error)) (api.Terminal, error) {
+	return s.create(ctx, params, agent, compose)
 }
 
-func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, agent string) (api.Terminal, error) {
+func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, agent string,
+	compose func(terminalID, directory string) (string, error)) (api.Terminal, error) {
 	project, ok, err := s.projects.Get(ctx, params.ProjectID)
 	if err != nil {
 		return api.Terminal{}, err
@@ -364,9 +368,29 @@ func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, a
 	}
 	s.ops.Lock()
 	// Insertion is the collision check: a taken ID inserts nothing and
-	// re-rolls, with no check-then-insert window.
+	// re-rolls, with no check-then-insert window. compose runs inside the
+	// loop so the composed command always references the id that actually
+	// inserts — but only after the candidate clears the in-memory view
+	// (authoritative under ops), so its side effects (hook files, secret
+	// registrations) can never overwrite a live terminal's. Side effects
+	// for a candidate that still fails to insert are keyed by an id no
+	// session will ever use; boot-time cleanup reaps them.
 	for {
 		record.ID = randomID()
+		s.mu.Lock()
+		_, taken := s.view[record.ID]
+		s.mu.Unlock()
+		if taken {
+			continue
+		}
+		if compose != nil {
+			command, err := compose(record.ID, record.Directory)
+			if err != nil {
+				s.ops.Unlock()
+				return api.Terminal{}, err
+			}
+			record.Command = command
+		}
 		inserted, err := s.repository.Insert(ctx, record)
 		if errors.Is(err, store.ErrForeignKeyViolation) {
 			// The project was deleted between the lookup above and this
@@ -395,7 +419,7 @@ func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, a
 	s.hub.Publish(api.EventTerminalCreated, resource, record.ID)
 	s.ops.Unlock()
 
-	if err := s.adapter.Create(ctx, record.ID, CreateSpec{Directory: record.Directory, Command: params.Command}); err != nil {
+	if err := s.adapter.Create(ctx, record.ID, CreateSpec{Directory: record.Directory, Command: record.Command}); err != nil {
 		// The record stays: the session may have been born after the
 		// client gave up, and the status machinery reports the truth.
 		s.logger.Warn("session create failed", "terminal", record.ID, "error", err)

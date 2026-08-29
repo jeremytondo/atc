@@ -91,8 +91,25 @@ func startTestServerWithThreads(t *testing.T) (*cliAdapter, *threads.Service) {
 		Terminals:  db.Terminals(),
 		Hub:        hub,
 	})
+	threadService := threads.NewService(threads.Options{
+		Repository: db.Threads(),
+		Terminals:  service,
+		Hub:        hub,
+	})
+	if err := threadService.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	claudeHooks, err := claude.NewHooks(claude.HooksOptions{
+		Dir:       t.TempDir(),
+		BaseURL:   "http://127.0.0.1:0",
+		Threads:   threadService,
+		Terminals: service,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	agentService, err := agents.NewService(agents.Options{
-		Entries:   []agents.Entry{claude.Entry(), codex.Entry()},
+		Entries:   []agents.Entry{claude.Entry(claudeHooks), codex.Entry()},
 		Terminals: service,
 		// The probe never consults this machine's PATH: claude "exists",
 		// codex does not.
@@ -104,14 +121,6 @@ func startTestServerWithThreads(t *testing.T) (*cliAdapter, *threads.Service) {
 		},
 	})
 	if err != nil {
-		t.Fatal(err)
-	}
-	threadService := threads.NewService(threads.Options{
-		Repository: db.Threads(),
-		Terminals:  service,
-		Hub:        hub,
-	})
-	if err := threadService.Load(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	handler := server.NewHandler(server.Options{

@@ -9,6 +9,7 @@
 //	state   $XDG_STATE_HOME/atc/atc.log       (~/.local/state/atc/atc.log)
 //	state   $XDG_STATE_HOME/atc/terminals     (~/.local/state/atc/terminals)
 //	state   $XDG_STATE_HOME/atc/exits         (~/.local/state/atc/exits)
+//	state   $XDG_STATE_HOME/atc/hooks         (~/.local/state/atc/hooks)
 //
 // It also owns CanonicalDir, the one rule for canonicalizing user-supplied
 // directories (ATC-256) — project identity and CLI project resolution must
@@ -80,6 +81,13 @@ func TerminalSocketDir() (string, error) {
 // <terminal-id>.json per session (ATC-251).
 func ExitMarkerDir() (string, error) {
 	return resolve("XDG_STATE_HOME", []string{".local", "state"}, "exits")
+}
+
+// HookDir holds the per-launch agent hook files (ATC-255): for each
+// Claude launch, <terminal-id>.json hook settings and <terminal-id>.header
+// carrying the hook secret, both mode 0600.
+func HookDir() (string, error) {
+	return resolve("XDG_STATE_HOME", []string{".local", "state"}, "hooks")
 }
 
 func resolve(envVar string, fallback []string, file string) (string, error) {

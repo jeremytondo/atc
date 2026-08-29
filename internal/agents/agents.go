@@ -14,18 +14,38 @@
 // agents (ATC-251 doctrine).
 package agents
 
+import (
+	"context"
+	"strings"
+)
+
 // CapabilityTUI is the one capability in ATC-254: the agent can be
 // launched as a TUI in an ATC-managed terminal.
 const CapabilityTUI = "tui"
 
+// LaunchContext is the per-launch context the composition injects into an
+// adapter's command (ATC-255): the minted terminal identity and its
+// working directory. Adapters use it to wire observation — Claude hook
+// settings, the Codex --remote socket — without any of it appearing in
+// the API contract.
+type LaunchContext struct {
+	// TerminalID is the terminal being created for this launch.
+	TerminalID string
+	// Directory is the terminal's working directory (the project's).
+	Directory string
+}
+
 // TUIAdapter is the per-tool seam behind the tui capability, written once
-// and implemented per agent. Launch-only in this ticket; the threads
-// effort owns extending it with status wiring.
+// and implemented per agent.
 type TUIAdapter interface {
-	// Command is the command string a launch terminal runs through the
-	// user's login shell. It never appears in the API contract, so flags
-	// can change without a wire-visible change.
-	Command() string
+	// Command composes the command string a launch terminal runs through
+	// the user's login shell. It never appears in the API contract, so
+	// flags can change without a wire-visible change. Any injected path
+	// must be shell-quoted (Quote) — the command is a single string run
+	// through the user's login shell. An error refuses the launch before
+	// the terminal record exists; the context bounds launch-time work
+	// like starting the shared Codex app-server.
+	Command(ctx context.Context, launch LaunchContext) (string, error)
 	// Binary is the executable name the availability probe resolves on the
 	// server's PATH.
 	Binary() string
@@ -34,10 +54,18 @@ type TUIAdapter interface {
 }
 
 // Entry is one catalog registration: a stable id (persisted by terminals
-// and later threads — never renamed), a display name, and the tool's
-// adapters. A nil adapter simply means the entry lacks that capability.
+// and threads — never renamed), a display name, and the tool's adapters.
+// A nil adapter simply means the entry lacks that capability.
 type Entry struct {
 	ID   string
 	Name string
 	TUI  TUIAdapter
+}
+
+// Quote wraps a string in single quotes for the user's login shell, the
+// one quoting that is safe across POSIX shells: injected paths ride a
+// single command string, and an unquoted space or metacharacter would
+// split or execute.
+func Quote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

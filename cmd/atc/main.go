@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -381,6 +382,21 @@ func printToken(stdout io.Writer, issue func(*authtoken.Store) (string, error)) 
 	return err
 }
 
+// hookHost is the address hook deliveries dial. Hooks always run on the
+// server's own machine, so an unspecified bind means plain loopback; a
+// specific bind (including ::1, which would make 127.0.0.1 unreachable)
+// is dialed as bound, bracketed for IPv6 literals.
+func hookHost(bind string) string {
+	ip := net.ParseIP(bind)
+	if ip == nil || ip.IsUnspecified() {
+		return "127.0.0.1"
+	}
+	if ip.To4() == nil {
+		return "[" + bind + "]"
+	}
+	return bind
+}
+
 // serverRun runs the server in the foreground until the command context is
 // cancelled. A SIGINT that lands during boot (migrations, the startup
 // reconcile) is the same clean shutdown as one that lands while serving.
@@ -517,16 +533,6 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	// observes pre-reconcile state (legacy's rule).
 	terminalService.Reconcile(ctx)
 
-	// One registration line per built-in agent; a duplicate id fails the
-	// boot.
-	agentService, err := agents.NewService(agents.Options{
-		Entries:   []agents.Entry{claude.Entry(), codex.Entry()},
-		Terminals: terminalService,
-	})
-	if err != nil {
-		return err
-	}
-
 	// Threads load after terminals so the boot-time status coercion and
 	// the sweep read a settled terminal view.
 	threadService := threads.NewService(threads.Options{
@@ -539,6 +545,45 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// The listener binds before the handler exists: the hook plumbing
+	// bakes the actual bound port into every launch's settings file.
+	listener, err := net.Listen("tcp", net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port)))
+	if err != nil {
+		return err
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	// Claude hook plumbing (ATC-255): per-launch settings under the state
+	// dir, POSTing to the loopback ingest route. Registrations reload so
+	// TUIs launched by an earlier server process keep validating.
+	hookDir, err := paths.HookDir()
+	if err != nil {
+		return err
+	}
+	claudeHooks, err := claude.NewHooks(claude.HooksOptions{
+		Dir:       hookDir,
+		BaseURL:   fmt.Sprintf("http://%s:%d", hookHost(cfg.Bind), port),
+		Threads:   threadService,
+		Terminals: terminalService,
+		Logger:    logger,
+	})
+	if err != nil {
+		return err
+	}
+	if err := claudeHooks.LoadRegistrations(); err != nil {
+		return err
+	}
+
+	// One registration line per built-in agent; a duplicate id fails the
+	// boot.
+	agentService, err := agents.NewService(agents.Options{
+		Entries:   []agents.Entry{claude.Entry(claudeHooks), codex.Entry()},
+		Terminals: terminalService,
+	})
+	if err != nil {
+		return err
+	}
+
 	handler := server.NewHandler(server.Options{
 		Verify:    tokens.Verify,
 		Version:   versionValue,
@@ -548,12 +593,10 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		Agents:    agentService,
 		Threads:   threadService,
 		Events:    hub,
+		InternalRoutes: map[string]http.Handler{
+			"POST " + claude.HooksPath: claudeHooks.Handler(),
+		},
 	})
-
-	listener, err := net.Listen("tcp", net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port)))
-	if err != nil {
-		return err
-	}
 	// The reconcile loop is waited on before the deferred database close,
 	// so shutdown never races an in-flight pass against it. The wait is
 	// cheap: every step of the loop is context-aware, and the loop's
