@@ -27,4 +27,5 @@ type Terminal struct {
 	StopRequestedAt sql.NullString
 	ExitedAt        sql.NullString
 	ExitCode        sql.NullInt64
+	Agent           sql.NullString
 }

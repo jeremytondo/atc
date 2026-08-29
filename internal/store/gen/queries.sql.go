@@ -81,8 +81,8 @@ func (q *Queries) InsertProject(ctx context.Context, arg InsertProjectParams) (i
 
 const insertTerminal = `-- name: InsertTerminal :execrows
 
-INSERT INTO terminals (id, project_id, name, directory, command, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO terminals (id, project_id, name, directory, command, agent, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING
 `
 
@@ -92,6 +92,7 @@ type InsertTerminalParams struct {
 	Name      string
 	Directory string
 	Command   sql.NullString
+	Agent     sql.NullString
 	CreatedAt string
 	UpdatedAt string
 }
@@ -109,6 +110,7 @@ func (q *Queries) InsertTerminal(ctx context.Context, arg InsertTerminalParams) 
 		arg.Name,
 		arg.Directory,
 		arg.Command,
+		arg.Agent,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
@@ -180,7 +182,7 @@ func (q *Queries) ListTerminalIDsByProject(ctx context.Context, projectID string
 }
 
 const listTerminals = `-- name: ListTerminals :many
-SELECT id, project_id, name, directory, command, created_at, updated_at, stop_requested_at, exited_at, exit_code FROM terminals ORDER BY created_at, id
+SELECT id, project_id, name, directory, command, created_at, updated_at, stop_requested_at, exited_at, exit_code, agent FROM terminals ORDER BY created_at, id
 `
 
 func (q *Queries) ListTerminals(ctx context.Context) ([]Terminal, error) {
@@ -203,6 +205,7 @@ func (q *Queries) ListTerminals(ctx context.Context) ([]Terminal, error) {
 			&i.StopRequestedAt,
 			&i.ExitedAt,
 			&i.ExitCode,
+			&i.Agent,
 		); err != nil {
 			return nil, err
 		}

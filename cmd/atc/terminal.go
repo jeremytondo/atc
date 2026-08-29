@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -55,49 +56,13 @@ With --command it runs through your login shell (profile and rc files
 loaded); without it you get a plain interactive shell.`,
 		Args: cobra.NoArgs,
 		RunE: runWithClient(func(cmd *cobra.Command, _ []string, client *api.Client, baseURL string) error {
-			flags := cmd.Flags()
-			attach, err := flags.GetBool("attach")
+			command, err := cmd.Flags().GetString("command")
 			if err != nil {
 				return err
 			}
-			var attacher cli.SessionAttacher
-			if attach {
-				if err := cli.AttachPreflight(baseURL, stdioIsTerminal()); err != nil {
-					return err
-				}
-				if attacher, err = newSessionAttacher(); err != nil {
-					return err
-				}
-				if err := attacher.Preflight(); err != nil {
-					return err
-				}
-			}
-			params := api.TerminalCreateParams{}
-			if params.Name, err = flags.GetString("name"); err != nil {
-				return err
-			}
-			if params.Command, err = flags.GetString("command"); err != nil {
-				return err
-			}
-			if params.ProjectID, err = flags.GetString("project"); err != nil {
-				return err
-			}
-			if params.ProjectID == "" {
-				if params.ProjectID, err = cli.ResolveProjectID(cmd.Context(), client, cmd.InOrStdin(), cmd.ErrOrStderr(), stdinIsTTY()); err != nil {
-					return err
-				}
-			}
-			terminal, err := client.CreateTerminal(cmd.Context(), params)
-			if err != nil {
-				return err
-			}
-			printTerminal(cmd.OutOrStdout(), terminal)
-			if attach {
-				if err := cli.AttachSession(terminal, attacher); err != nil {
-					return fmt.Errorf("%w; the terminal was created; retry with: atc terminal attach %s", err, terminal.ID)
-				}
-			}
-			return nil
+			return createAndMaybeAttach(cmd, client, baseURL, func(ctx context.Context, projectID, name string) (api.Terminal, error) {
+				return client.CreateTerminal(ctx, api.TerminalCreateParams{ProjectID: projectID, Name: name, Command: command})
+			})
 		}),
 	}
 	cmd.Flags().String("name", "", "display name (defaults from --command, else \"Shell\")")
@@ -105,6 +70,55 @@ loaded); without it you get a plain interactive shell.`,
 	cmd.Flags().String("command", "", "command to run through your shell; omit for a plain shell")
 	cmd.Flags().Bool("attach", false, "attach to the terminal after creation")
 	return cmd
+}
+
+// createAndMaybeAttach is the workflow shared by terminal create and
+// agent launch: attach preflights run before anything is created, the
+// project defaults from the current directory, and a failed attach after
+// a successful create reports the terminal and the retry remedy. create
+// performs the API call with the resolved project and name flags.
+func createAndMaybeAttach(cmd *cobra.Command, client *api.Client, baseURL string, create func(ctx context.Context, projectID, name string) (api.Terminal, error)) error {
+	flags := cmd.Flags()
+	attach, err := flags.GetBool("attach")
+	if err != nil {
+		return err
+	}
+	var attacher cli.SessionAttacher
+	if attach {
+		if err := cli.AttachPreflight(baseURL, stdioIsTerminal()); err != nil {
+			return err
+		}
+		if attacher, err = newSessionAttacher(); err != nil {
+			return err
+		}
+		if err := attacher.Preflight(); err != nil {
+			return err
+		}
+	}
+	name, err := flags.GetString("name")
+	if err != nil {
+		return err
+	}
+	projectID, err := flags.GetString("project")
+	if err != nil {
+		return err
+	}
+	if projectID == "" {
+		if projectID, err = cli.ResolveProjectID(cmd.Context(), client, cmd.InOrStdin(), cmd.ErrOrStderr(), stdinIsTTY()); err != nil {
+			return err
+		}
+	}
+	terminal, err := create(cmd.Context(), projectID, name)
+	if err != nil {
+		return err
+	}
+	printTerminal(cmd.OutOrStdout(), terminal)
+	if attach {
+		if err := cli.AttachSession(terminal, attacher); err != nil {
+			return fmt.Errorf("%w; the terminal was created; retry with: atc terminal attach %s", err, terminal.ID)
+		}
+	}
+	return nil
 }
 
 func newTerminalGetCmd() *cobra.Command {
@@ -241,6 +255,9 @@ func printTerminal(out io.Writer, terminal api.Terminal) {
 	_, _ = fmt.Fprintf(w, "directory\t%s\n", terminal.Directory)
 	if terminal.Command != "" {
 		_, _ = fmt.Fprintf(w, "command\t%s\n", terminal.Command)
+	}
+	if terminal.Agent != "" {
+		_, _ = fmt.Fprintf(w, "agent\t%s\n", terminal.Agent)
 	}
 	_, _ = fmt.Fprintf(w, "created\t%s\n", terminal.CreatedAt.Format("2006-01-02 15:04:05 MST"))
 	_ = w.Flush()

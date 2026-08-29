@@ -27,6 +27,7 @@ type Terminal struct {
 	ProjectID string         `json:"projectId" doc:"Project the terminal belongs to. Immutable; terminals never move between projects."`
 	Directory string         `json:"directory" doc:"Working directory the session started in, copied from the project at create time. Immutable."`
 	Command   string         `json:"command,omitempty" doc:"Command launched in the session; empty means a plain shell. Immutable."`
+	Agent     string         `json:"agent,omitempty" doc:"Agent catalog id the terminal was launched for; omitted for plain terminals. Server-set launch intent only, immutable, no liveness meaning."`
 	Status    TerminalStatus `json:"status" enum:"running,exited,unreachable,missing" doc:"Server-owned session state."`
 	ExitCode  *int           `json:"exitCode,omitempty" doc:"Recorded exit evidence: exit code, 128+signal for signal deaths, 127 for launch failure. Omitted while running and for ATC-initiated stops."`
 	CreatedAt time.Time      `json:"createdAt"`
@@ -40,6 +41,7 @@ type TerminalCreateParams struct {
 	ProjectID string `json:"projectId" minLength:"1" doc:"Project the terminal belongs to; its directory becomes the terminal's working directory."`
 	Name      string `json:"name,omitempty" doc:"Display name; defaults from command, else \"Shell\"."`
 	Command   string `json:"command,omitempty" doc:"Free-form command run through the user's shell; empty starts a plain interactive shell."`
+	Agent     string `json:"agent,omitempty" doc:"Agent catalog id to launch; the server resolves the launch command through the agent's tui adapter and records the id on the terminal. Mutually exclusive with command."`
 }
 
 // TerminalUpdateParams is the PATCH /v1/terminals/{id} request body. Name

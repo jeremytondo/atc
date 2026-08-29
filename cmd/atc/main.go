@@ -19,6 +19,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/jeremytondo/atc/internal/agents"
+	"github.com/jeremytondo/atc/internal/agents/claude"
+	"github.com/jeremytondo/atc/internal/agents/codex"
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/authtoken"
 	"github.com/jeremytondo/atc/internal/cli"
@@ -85,7 +88,7 @@ expose on the tailnet without the flag.`,
 			return cmd.Help()
 		},
 	}
-	root.AddCommand(newTerminalCmd(), newProjectCmd(), newAPICmd(), newVersionCmd(),
+	root.AddCommand(newAgentCmd(), newTerminalCmd(), newProjectCmd(), newAPICmd(), newVersionCmd(),
 		newUpgradeCmd(), newServerCmd(), newChildCmd())
 	return root
 }
@@ -513,12 +516,23 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	// observes pre-reconcile state (legacy's rule).
 	terminalService.Reconcile(ctx)
 
+	// One registration line per built-in agent; a duplicate id fails the
+	// boot.
+	agentService, err := agents.NewService(agents.Options{
+		Entries:   []agents.Entry{claude.Entry(), codex.Entry()},
+		Terminals: terminalService,
+	})
+	if err != nil {
+		return err
+	}
+
 	handler := server.NewHandler(server.Options{
 		Verify:    tokens.Verify,
 		Version:   versionValue,
 		Logger:    logger,
 		Terminals: terminalService,
 		Projects:  projectService,
+		Agents:    agentService,
 		Events:    hub,
 	})
 

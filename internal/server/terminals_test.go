@@ -19,6 +19,9 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
+	"github.com/jeremytondo/atc/internal/agents"
+	"github.com/jeremytondo/atc/internal/agents/claude"
+	"github.com/jeremytondo/atc/internal/agents/codex"
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/projects"
@@ -79,12 +82,15 @@ func (a *fakeAdapter) Kill(_ context.Context, id string) error {
 // fixture is a full chassis over fakes: real store in a temp dir, real
 // hub, fake adapter, fake clock — the server's existing test seam. One
 // project rooted at a real temp directory exists for terminals to belong
-// to.
+// to; the agent catalog is the shipped one (claude, codex), probing
+// binaries against the fixture map (claude available by default), never
+// the developer machine's PATH.
 type fixture struct {
 	handler    http.Handler
 	adapter    *fakeAdapter
 	hub        *events.Hub
 	service    *terminals.Service
+	binaries   map[string]bool
 	markers    string
 	projectID  string
 	projectDir string
@@ -129,16 +135,31 @@ func newFixture(t *testing.T) *fixture {
 		Hub:        hub,
 		Now:        now,
 	})
+	binaries := map[string]bool{"claude": true}
+	agentService, err := agents.NewService(agents.Options{
+		Entries:   []agents.Entry{claude.Entry(), codex.Entry()},
+		Terminals: service,
+		LookPath: func(name string) (string, error) {
+			if binaries[name] {
+				return "/bin/" + name, nil
+			}
+			return "", errors.New("executable file not found in $PATH")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler := NewHandler(Options{
 		Verify:            testVerify,
 		Version:           testVersion,
 		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Terminals:         service,
 		Projects:          projectService,
+		Agents:            agentService,
 		Events:            hub,
 		HeartbeatInterval: 50 * time.Millisecond,
 	})
-	f := &fixture{handler: handler, adapter: adapter, hub: hub, service: service, markers: markers}
+	f := &fixture{handler: handler, adapter: adapter, hub: hub, service: service, binaries: binaries, markers: markers}
 	// Planted through the repository, not the API: the fixture project must
 	// not consume an event sequence number the SSE assertions rely on.
 	f.projectDir = t.TempDir()
@@ -264,6 +285,7 @@ func TestUpdateRejectsUnknownAndImmutableFields(t *testing.T) {
 	for name, body := range map[string]string{
 		"immutable directory": `{"name":"x","directory":"/elsewhere"}`,
 		"immutable command":   `{"command":"vim"}`,
+		"immutable agent":     `{"name":"x","agent":"claude"}`,
 		"unknown field":       `{"name":"x","frobnicate":true}`,
 		"missing name":        `{}`,
 	} {
