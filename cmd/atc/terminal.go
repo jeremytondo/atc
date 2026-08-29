@@ -242,6 +242,9 @@ func printTerminal(out io.Writer, terminal api.Terminal) {
 	if terminal.Command != "" {
 		_, _ = fmt.Fprintf(w, "command\t%s\n", terminal.Command)
 	}
+	if terminal.Agent != "" {
+		_, _ = fmt.Fprintf(w, "agent\t%s\n", terminal.Agent)
+	}
 	_, _ = fmt.Fprintf(w, "created\t%s\n", terminal.CreatedAt.Format("2006-01-02 15:04:05 MST"))
 	_ = w.Flush()
 }

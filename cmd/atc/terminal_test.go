@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -13,6 +14,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jeremytondo/atc/internal/agents"
+	"github.com/jeremytondo/atc/internal/agents/claude"
+	"github.com/jeremytondo/atc/internal/agents/codex"
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/server"
@@ -77,11 +81,28 @@ func startTestServer(t *testing.T) *cliAdapter {
 		Terminals:  db.Terminals(),
 		Hub:        hub,
 	})
+	catalog, err := agents.NewCatalog(claude.Entry(), codex.Entry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentService := agents.NewService(agents.Options{
+		Catalog:   catalog,
+		Terminals: service,
+		// The probe never consults this machine's PATH: claude "exists",
+		// codex does not.
+		LookPath: func(name string) (string, error) {
+			if name == "claude" {
+				return "/bin/claude", nil
+			}
+			return "", errors.New("executable file not found in $PATH")
+		},
+	})
 	handler := server.NewHandler(server.Options{
 		Verify:    func(authorization string) bool { return authorization == "Bearer "+cliTestToken },
 		Version:   "v0.0.0-test",
 		Terminals: service,
 		Projects:  projectService,
+		Agents:    agentService,
 		Events:    hub,
 	})
 	srv := httptest.NewServer(handler)

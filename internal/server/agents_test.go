@@ -119,8 +119,12 @@ func TestLaunchMissingBinaryCreatesNothing(t *testing.T) {
 	f := newFixture(t)
 
 	for name, launch := range map[string]func() *httptest.ResponseRecorder{
-		"alias":           func() *httptest.ResponseRecorder { return f.request(t, http.MethodPost, "/v1/agents/codex/launch", `{"projectId":"`+f.projectID+`"}`) },
-		"terminal create": func() *httptest.ResponseRecorder { return f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Agent: "codex"})) },
+		"alias": func() *httptest.ResponseRecorder {
+			return f.request(t, http.MethodPost, "/v1/agents/codex/launch", `{"projectId":"`+f.projectID+`"}`)
+		},
+		"terminal create": func() *httptest.ResponseRecorder {
+			return f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Agent: "codex"}))
+		},
 	} {
 		rec := launch()
 		if rec.Code != http.StatusConflict {
