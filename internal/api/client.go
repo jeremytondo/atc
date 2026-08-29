@@ -106,10 +106,12 @@ func (c *Client) Agents(ctx context.Context) ([]Agent, error) {
 	return list.Agents, err
 }
 
-// Agent fetches one agent catalog entry by id.
+// Agent fetches one agent catalog entry by id. The id is user-typed on
+// the CLI, so it is escaped: reserved characters make an unknown id, not
+// a different route.
 func (c *Client) Agent(ctx context.Context, id string) (Agent, error) {
 	var agent Agent
-	err := c.do(ctx, http.MethodGet, "/v1/agents/"+id, nil, &agent)
+	err := c.do(ctx, http.MethodGet, "/v1/agents/"+url.PathEscape(id), nil, &agent)
 	return agent, err
 }
 
@@ -117,7 +119,7 @@ func (c *Client) Agent(ctx context.Context, id string) (Agent, error) {
 // terminal — equivalent to CreateTerminal with an agent reference.
 func (c *Client) LaunchAgent(ctx context.Context, id string, params AgentLaunchParams) (Terminal, error) {
 	var terminal Terminal
-	err := c.do(ctx, http.MethodPost, "/v1/agents/"+id+"/launch", params, &terminal)
+	err := c.do(ctx, http.MethodPost, "/v1/agents/"+url.PathEscape(id)+"/launch", params, &terminal)
 	return terminal, err
 }
 

@@ -19,8 +19,10 @@ func TestAgentListCLI(t *testing.T) {
 		!strings.Contains(stdout, "tui (available)") {
 		t.Errorf("list output missing claude's availability:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "codex") || !strings.Contains(stdout, "tui (unavailable)") {
-		t.Errorf("list output missing codex's unavailability:\n%s", stdout)
+	// The acceptance bar: an unavailable capability names its install
+	// command right in the list.
+	if !strings.Contains(stdout, "codex") || !strings.Contains(stdout, "tui (unavailable; install: npm install -g @openai/codex)") {
+		t.Errorf("list output missing codex's unavailability and install hint:\n%s", stdout)
 	}
 }
 

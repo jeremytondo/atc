@@ -516,16 +516,15 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	// observes pre-reconcile state (legacy's rule).
 	terminalService.Reconcile(ctx)
 
-	// The agent catalog: one registration line per built-in agent; a
-	// duplicate id fails the boot.
-	catalog, err := agents.NewCatalog(claude.Entry(), codex.Entry())
+	// One registration line per built-in agent; a duplicate id fails the
+	// boot.
+	agentService, err := agents.NewService(agents.Options{
+		Entries:   []agents.Entry{claude.Entry(), codex.Entry()},
+		Terminals: terminalService,
+	})
 	if err != nil {
 		return err
 	}
-	agentService := agents.NewService(agents.Options{
-		Catalog:   catalog,
-		Terminals: terminalService,
-	})
 
 	handler := server.NewHandler(server.Options{
 		Verify:    tokens.Verify,

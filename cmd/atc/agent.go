@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -9,7 +10,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jeremytondo/atc/internal/api"
-	"github.com/jeremytondo/atc/internal/cli"
 )
 
 // The atc agent family (ATC-254): the catalog reads plus launch — the one
@@ -35,7 +35,7 @@ func newAgentListCmd() *cobra.Command {
 		Short: "List agents with per-capability availability",
 		Long: `List the agents this ATC server can work with. Availability is probed
 against the server's machine on every call: an unavailable capability
-names how to install the missing tool (see ` + "`atc agent get <id>`" + `).`,
+names how to install the missing tool.`,
 		Args: cobra.NoArgs,
 		RunE: runWithClient(func(cmd *cobra.Command, _ []string, client *api.Client, _ string) error {
 			agents, err := client.Agents(cmd.Context())
@@ -47,7 +47,11 @@ names how to install the missing tool (see ` + "`atc agent get <id>`" + `).`,
 			for _, agent := range agents {
 				capabilities := make([]string, 0, len(agent.Capabilities))
 				for _, capability := range agent.Capabilities {
-					capabilities = append(capabilities, fmt.Sprintf("%s (%s)", capability.Capability, availabilityLabel(capability.Available)))
+					label := fmt.Sprintf("%s (%s)", capability.Capability, availabilityLabel(capability.Available))
+					if !capability.Available {
+						label = fmt.Sprintf("%s (unavailable; install: %s)", capability.Capability, capability.InstallHint)
+					}
+					capabilities = append(capabilities, label)
 				}
 				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", agent.ID, agent.Name, strings.Join(capabilities, ", "))
 			}
@@ -85,46 +89,9 @@ command; a missing agent binary is refused with its install hint before
 anything is created.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, baseURL string) error {
-			flags := cmd.Flags()
-			attach, err := flags.GetBool("attach")
-			if err != nil {
-				return err
-			}
-			var attacher cli.SessionAttacher
-			if attach {
-				if err := cli.AttachPreflight(baseURL, stdioIsTerminal()); err != nil {
-					return err
-				}
-				if attacher, err = newSessionAttacher(); err != nil {
-					return err
-				}
-				if err := attacher.Preflight(); err != nil {
-					return err
-				}
-			}
-			params := api.AgentLaunchParams{}
-			if params.Name, err = flags.GetString("name"); err != nil {
-				return err
-			}
-			if params.ProjectID, err = flags.GetString("project"); err != nil {
-				return err
-			}
-			if params.ProjectID == "" {
-				if params.ProjectID, err = cli.ResolveProjectID(cmd.Context(), client, cmd.InOrStdin(), cmd.ErrOrStderr(), stdinIsTTY()); err != nil {
-					return err
-				}
-			}
-			terminal, err := client.LaunchAgent(cmd.Context(), args[0], params)
-			if err != nil {
-				return err
-			}
-			printTerminal(cmd.OutOrStdout(), terminal)
-			if attach {
-				if err := cli.AttachSession(terminal, attacher); err != nil {
-					return fmt.Errorf("%w; the terminal was created; retry with: atc terminal attach %s", err, terminal.ID)
-				}
-			}
-			return nil
+			return createAndMaybeAttach(cmd, client, baseURL, func(ctx context.Context, projectID, name string) (api.Terminal, error) {
+				return client.LaunchAgent(ctx, args[0], api.AgentLaunchParams{ProjectID: projectID, Name: name})
+			})
 		}),
 	}
 	cmd.Flags().String("name", "", "display name (defaults to the agent's display name)")

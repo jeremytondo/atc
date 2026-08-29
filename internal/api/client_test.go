@@ -368,3 +368,59 @@ func TestProblemErrorFallbacks(t *testing.T) {
 		}
 	}
 }
+
+// The agent methods are thin typed wrappers; the id path segment is
+// escaped so a user-typed id with reserved characters stays one unknown
+// segment instead of changing the route.
+func TestAgentMethods(t *testing.T) {
+	type call struct {
+		Method, Path, Body string
+	}
+	var got call
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		got = call{Method: r.Method, Path: r.URL.EscapedPath(), Body: strings.TrimSpace(string(body))}
+		switch {
+		case r.URL.Path == "/v1/agents":
+			_ = json.NewEncoder(w).Encode(AgentList{Agents: []Agent{{ID: "claude"}}})
+		case strings.HasSuffix(r.URL.Path, "/launch"):
+			_ = json.NewEncoder(w).Encode(Terminal{ID: "term-x7k2f", Agent: "claude"})
+		default:
+			_ = json.NewEncoder(w).Encode(Agent{ID: "claude"})
+		}
+	}))
+	defer srv.Close()
+	client := NewClient(srv.URL, testToken, testClientVersion, nil, nil)
+	ctx := context.Background()
+
+	agents, err := client.Agents(ctx)
+	if err != nil || len(agents) != 1 {
+		t.Fatalf("Agents = %+v, %v", agents, err)
+	}
+	if got.Method != http.MethodGet || got.Path != "/v1/agents" {
+		t.Errorf("list request = %+v", got)
+	}
+
+	if _, err := client.Agent(ctx, "claude"); err != nil {
+		t.Fatal(err)
+	}
+	if got.Path != "/v1/agents/claude" {
+		t.Errorf("get path = %q", got.Path)
+	}
+
+	terminal, err := client.LaunchAgent(ctx, "claude", AgentLaunchParams{ProjectID: "proj-x7k2f"})
+	if err != nil || terminal.Agent != "claude" {
+		t.Fatalf("LaunchAgent = %+v, %v", terminal, err)
+	}
+	want := call{http.MethodPost, "/v1/agents/claude/launch", `{"projectId":"proj-x7k2f"}`}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("launch request (-want +got):\n%s", diff)
+	}
+
+	if _, err := client.Agent(ctx, "claude/launch?x"); err != nil {
+		t.Fatal(err)
+	}
+	if got.Path != "/v1/agents/claude%2Flaunch%3Fx" {
+		t.Errorf("escaped get path = %q", got.Path)
+	}
+}

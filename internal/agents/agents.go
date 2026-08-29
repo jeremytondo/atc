@@ -14,8 +14,6 @@
 // agents (ATC-251 doctrine).
 package agents
 
-import "fmt"
-
 // CapabilityTUI is the one capability in ATC-254: the agent can be
 // launched as a TUI in an ATC-managed terminal.
 const CapabilityTUI = "tui"
@@ -42,38 +40,4 @@ type Entry struct {
 	ID   string
 	Name string
 	TUI  TUIAdapter
-}
-
-// Catalog is the compiled-in registry: fixed at construction, listed in
-// registration order, no create/update/delete.
-type Catalog struct {
-	entries []Entry
-	index   map[string]int
-}
-
-// NewCatalog assembles the catalog from built-in registrations. A
-// duplicate id is a startup error — the composition root fails the boot.
-func NewCatalog(entries ...Entry) (*Catalog, error) {
-	catalog := &Catalog{entries: entries, index: make(map[string]int, len(entries))}
-	for i, entry := range entries {
-		if _, taken := catalog.index[entry.ID]; taken {
-			return nil, fmt.Errorf("duplicate agent id %q", entry.ID)
-		}
-		catalog.index[entry.ID] = i
-	}
-	return catalog, nil
-}
-
-// Entries returns the catalog in registration order.
-func (c *Catalog) Entries() []Entry {
-	return c.entries
-}
-
-// Get returns the entry for id, if registered.
-func (c *Catalog) Get(id string) (Entry, bool) {
-	i, ok := c.index[id]
-	if !ok {
-		return Entry{}, false
-	}
-	return c.entries[i], true
 }

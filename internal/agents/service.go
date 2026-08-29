@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"slices"
 
 	"github.com/jeremytondo/atc/internal/api"
 )
@@ -30,7 +31,9 @@ type TerminalCreator interface {
 
 // Options wires a Service.
 type Options struct {
-	Catalog   *Catalog
+	// Entries is the compiled-in catalog, one registration per built-in
+	// agent, listed in registration order.
+	Entries   []Entry
 	Terminals TerminalCreator
 	// LookPath resolves a binary name on the server's PATH — the
 	// availability probe's injectable seam, so tests control which binaries
@@ -38,34 +41,51 @@ type Options struct {
 	LookPath func(name string) (string, error)
 }
 
-// Service serves the catalog and owns the launch composition: resolve the
-// entry, probe its binary, compose the command, and hand the terminals
-// domain a normal create. Reads re-probe availability on every call — no
-// cache, no version probing.
+// Service is the read-only catalog plus the launch composition: resolve
+// the entry, probe its binary, compose the command, and hand the
+// terminals domain a normal create. Reads re-probe availability on every
+// call — no cache, no version probing.
 type Service struct {
-	catalog   *Catalog
+	entries   []Entry
+	index     map[string]int
 	terminals TerminalCreator
 	lookPath  func(name string) (string, error)
 }
 
-func NewService(opts Options) *Service {
-	if opts.Catalog == nil || opts.Terminals == nil {
-		// Either nil would panic on the first request; fail at construction
-		// instead (the server.NewHandler Verify precedent).
-		panic("agents.NewService: Catalog and Terminals must not be nil")
+// NewService assembles the catalog. A duplicate id is an error — the
+// composition root fails the boot.
+func NewService(opts Options) (*Service, error) {
+	if opts.Terminals == nil {
+		// A nil terminals service would panic on the first launch request;
+		// fail at construction instead (the server.NewHandler Verify
+		// precedent).
+		panic("agents.NewService: Terminals must not be nil")
 	}
 	if opts.LookPath == nil {
 		opts.LookPath = exec.LookPath
 	}
-	return &Service{catalog: opts.Catalog, terminals: opts.Terminals, lookPath: opts.LookPath}
+	service := &Service{
+		// Cloned so no caller-held slice can mutate the catalog after the
+		// duplicate check.
+		entries:   slices.Clone(opts.Entries),
+		index:     make(map[string]int, len(opts.Entries)),
+		terminals: opts.Terminals,
+		lookPath:  opts.LookPath,
+	}
+	for i, entry := range service.entries {
+		if _, taken := service.index[entry.ID]; taken {
+			return nil, fmt.Errorf("duplicate agent id %q", entry.ID)
+		}
+		service.index[entry.ID] = i
+	}
+	return service, nil
 }
 
 // List returns every catalog entry in registration order, availability
 // freshly probed.
 func (s *Service) List() []api.Agent {
-	entries := s.catalog.Entries()
-	agents := make([]api.Agent, 0, len(entries))
-	for _, entry := range entries {
+	agents := make([]api.Agent, 0, len(s.entries))
+	for _, entry := range s.entries {
 		agents = append(agents, s.agent(entry))
 	}
 	return agents
@@ -73,7 +93,7 @@ func (s *Service) List() []api.Agent {
 
 // Get returns one catalog entry, availability freshly probed.
 func (s *Service) Get(id string) (api.Agent, error) {
-	entry, ok := s.catalog.Get(id)
+	entry, ok := s.entry(id)
 	if !ok {
 		return api.Agent{}, ErrNotFound
 	}
@@ -86,7 +106,7 @@ func (s *Service) Get(id string) (api.Agent, error) {
 // the normal terminal create path — persistence, wrapper, verification
 // window, status, and events all belong to the terminals domain.
 func (s *Service) Launch(ctx context.Context, id string, params api.AgentLaunchParams) (api.Terminal, error) {
-	entry, ok := s.catalog.Get(id)
+	entry, ok := s.entry(id)
 	if !ok {
 		return api.Terminal{}, ErrNotFound
 	}
@@ -106,6 +126,14 @@ func (s *Service) Launch(ctx context.Context, id string, params api.AgentLaunchP
 		Name:      name,
 		Command:   entry.TUI.Command(),
 	}, entry.ID)
+}
+
+func (s *Service) entry(id string) (Entry, bool) {
+	i, ok := s.index[id]
+	if !ok {
+		return Entry{}, false
+	}
+	return s.entries[i], true
 }
 
 // agent converts an entry to its wire shape, probing availability per

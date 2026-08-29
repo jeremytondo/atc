@@ -79,40 +79,18 @@ func (a *fakeAdapter) Kill(_ context.Context, id string) error {
 	return nil
 }
 
-// fakeLookPath is the agents domain's injectable binary probe: only
-// binaries a test marks available "exist", never the developer machine's
-// PATH.
-type fakeLookPath struct {
-	mu        sync.Mutex
-	available map[string]bool
-}
-
-func (l *fakeLookPath) look(name string) (string, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.available[name] {
-		return "/bin/" + name, nil
-	}
-	return "", errors.New("executable file not found in $PATH")
-}
-
-func (l *fakeLookPath) set(name string, available bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.available[name] = available
-}
-
 // fixture is a full chassis over fakes: real store in a temp dir, real
 // hub, fake adapter, fake clock — the server's existing test seam. One
 // project rooted at a real temp directory exists for terminals to belong
-// to; the agent catalog is the shipped one (claude, codex) with claude's
-// binary available by default.
+// to; the agent catalog is the shipped one (claude, codex), probing
+// binaries against the fixture map (claude available by default), never
+// the developer machine's PATH.
 type fixture struct {
 	handler    http.Handler
 	adapter    *fakeAdapter
 	hub        *events.Hub
 	service    *terminals.Service
-	lookPath   *fakeLookPath
+	binaries   map[string]bool
 	markers    string
 	projectID  string
 	projectDir string
@@ -157,16 +135,20 @@ func newFixture(t *testing.T) *fixture {
 		Hub:        hub,
 		Now:        now,
 	})
-	lookPath := &fakeLookPath{available: map[string]bool{"claude": true}}
-	catalog, err := agents.NewCatalog(claude.Entry(), codex.Entry())
+	binaries := map[string]bool{"claude": true}
+	agentService, err := agents.NewService(agents.Options{
+		Entries:   []agents.Entry{claude.Entry(), codex.Entry()},
+		Terminals: service,
+		LookPath: func(name string) (string, error) {
+			if binaries[name] {
+				return "/bin/" + name, nil
+			}
+			return "", errors.New("executable file not found in $PATH")
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	agentService := agents.NewService(agents.Options{
-		Catalog:   catalog,
-		Terminals: service,
-		LookPath:  lookPath.look,
-	})
 	handler := NewHandler(Options{
 		Verify:            testVerify,
 		Version:           testVersion,
@@ -177,7 +159,7 @@ func newFixture(t *testing.T) *fixture {
 		Events:            hub,
 		HeartbeatInterval: 50 * time.Millisecond,
 	})
-	f := &fixture{handler: handler, adapter: adapter, hub: hub, service: service, lookPath: lookPath, markers: markers}
+	f := &fixture{handler: handler, adapter: adapter, hub: hub, service: service, binaries: binaries, markers: markers}
 	// Planted through the repository, not the API: the fixture project must
 	// not consume an event sequence number the SSE assertions rely on.
 	f.projectDir = t.TempDir()

@@ -58,7 +58,7 @@ func TestAgentCatalogListAndGet(t *testing.T) {
 	}
 
 	// No cache: installing the binary flips the next read's availability.
-	f.lookPath.set("codex", true)
+	f.binaries["codex"] = true
 	if got := decodeAgent(t, f.request(t, http.MethodGet, "/v1/agents/codex", "")); !got.Capabilities[0].Available {
 		t.Errorf("availability not re-probed: %+v", got)
 	}

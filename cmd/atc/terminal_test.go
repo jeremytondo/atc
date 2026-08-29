@@ -81,12 +81,8 @@ func startTestServer(t *testing.T) *cliAdapter {
 		Terminals:  db.Terminals(),
 		Hub:        hub,
 	})
-	catalog, err := agents.NewCatalog(claude.Entry(), codex.Entry())
-	if err != nil {
-		t.Fatal(err)
-	}
-	agentService := agents.NewService(agents.Options{
-		Catalog:   catalog,
+	agentService, err := agents.NewService(agents.Options{
+		Entries:   []agents.Entry{claude.Entry(), codex.Entry()},
 		Terminals: service,
 		// The probe never consults this machine's PATH: claude "exists",
 		// codex does not.
@@ -97,6 +93,9 @@ func startTestServer(t *testing.T) *cliAdapter {
 			return "", errors.New("executable file not found in $PATH")
 		},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler := server.NewHandler(server.Options{
 		Verify:    func(authorization string) bool { return authorization == "Bearer "+cliTestToken },
 		Version:   "v0.0.0-test",

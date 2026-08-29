@@ -41,13 +41,9 @@ func testEntries() []Entry {
 
 func newTestService(t *testing.T, available ...string) (*Service, *fakeCreator) {
 	t.Helper()
-	catalog, err := NewCatalog(testEntries()...)
-	if err != nil {
-		t.Fatal(err)
-	}
 	creator := &fakeCreator{}
-	return NewService(Options{
-		Catalog:   catalog,
+	service, err := NewService(Options{
+		Entries:   testEntries(),
 		Terminals: creator,
 		LookPath: func(name string) (string, error) {
 			if slices.Contains(available, name) {
@@ -55,18 +51,23 @@ func newTestService(t *testing.T, available ...string) (*Service, *fakeCreator) 
 			}
 			return "", errors.New("executable file not found in $PATH")
 		},
-	}), creator
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service, creator
 }
 
-func TestNewCatalogRejectsDuplicateIDs(t *testing.T) {
-	_, err := NewCatalog(Entry{ID: "alpha"}, Entry{ID: "alpha"})
+func TestNewServiceRejectsDuplicateIDs(t *testing.T) {
+	_, err := NewService(Options{
+		Entries:   []Entry{{ID: "alpha"}, {ID: "alpha"}},
+		Terminals: &fakeCreator{},
+	})
 	if err == nil || !strings.Contains(err.Error(), `duplicate agent id "alpha"`) {
-		t.Errorf("NewCatalog(duplicate) = %v, want the duplicate-id error", err)
+		t.Errorf("NewService(duplicate) = %v, want the duplicate-id error", err)
 	}
 }
 
-// List is registration order with capabilities derived from the adapters
-// each entry registers, availability probed per capability.
 func TestListDerivesCapabilitiesInRegistrationOrder(t *testing.T) {
 	service, _ := newTestService(t, "alpha")
 	want := []api.Agent{

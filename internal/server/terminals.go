@@ -46,10 +46,8 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, agentServic
 			if agentService == nil {
 				return nil, huma.Error422UnprocessableEntity("this server has no agent catalog")
 			}
-			// The one launch path (ATC-254): the same composition the alias
-			// route runs, so both routes surface identical errors and
-			// terminals. The service, not this handler, records the agent id
-			// it resolved.
+			// The same composition the alias route runs, so both routes
+			// surface identical errors and terminals.
 			terminal, err := agentService.Launch(ctx, input.Body.Agent,
 				api.AgentLaunchParams{ProjectID: input.Body.ProjectID, Name: input.Body.Name})
 			if err != nil {
