@@ -108,8 +108,18 @@ func startTestServerWithThreads(t *testing.T) (*cliAdapter, *threads.Service) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	codexObserver := codex.NewObserver(codex.ObserverOptions{
+		Supervisor: codex.NewSupervisor(codex.SupervisorOptions{
+			CodexHome:    t.TempDir(),
+			IdentityFile: filepath.Join(t.TempDir(), "codex-app-server.json"),
+			LogFile:      filepath.Join(t.TempDir(), "codex-app-server.log"),
+			SpawnDir:     t.TempDir(),
+		}),
+		Threads:   threadService,
+		Terminals: service,
+	})
 	agentService, err := agents.NewService(agents.Options{
-		Entries:   []agents.Entry{claude.Entry(claudeHooks), codex.Entry()},
+		Entries:   []agents.Entry{claude.Entry(claudeHooks), codex.Entry(codexObserver)},
 		Terminals: service,
 		// The probe never consults this machine's PATH: claude "exists",
 		// codex does not.

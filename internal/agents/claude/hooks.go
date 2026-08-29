@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/jeremytondo/atc/internal/agents"
 	"github.com/jeremytondo/atc/internal/api"
@@ -448,7 +447,7 @@ func (h *Hooks) reduce(ctx context.Context, reg *registration, p payload) {
 	if p.HookEventName == "UserPromptSubmit" && p.AgentID == "" {
 		// The first-prompt title fallback: an observed title only ever
 		// fills an untitled thread, so sending it on every prompt is safe.
-		metadata.Title = titleFrom(p.Prompt)
+		metadata.Title = agents.CondenseTitle(p.Prompt)
 	}
 	if err := h.threads.ObserveStatus(ctx, threads.StatusObservation{
 		Agent: "claude", ProviderID: p.SessionID, At: h.now(),
@@ -464,24 +463,6 @@ func metadataFrom(p payload) threads.Metadata {
 		PermissionMode: p.PermissionMode,
 		Effort:         p.Effort.Level,
 	}
-}
-
-// titleFrom condenses a first prompt into an observed default title,
-// cutting on a word boundary, else a rune boundary — never mid-character.
-func titleFrom(prompt string) string {
-	const limit = 50
-	title := strings.Join(strings.Fields(prompt), " ")
-	if len(title) <= limit {
-		return title
-	}
-	if cut := strings.LastIndexByte(title[:limit], ' '); cut > 0 {
-		return title[:cut]
-	}
-	cut := limit
-	for cut > 0 && !utf8.RuneStart(title[cut]) {
-		cut--
-	}
-	return title[:cut]
 }
 
 func newSecret() (string, error) {

@@ -90,6 +90,18 @@ func HookDir() (string, error) {
 	return resolve("XDG_STATE_HOME", []string{".local", "state"}, "hooks")
 }
 
+// CodexServerFile persists the shared Codex app-server identity
+// ({pid, startedAt}, ATC-255) — re-verified against the live process
+// before it is ever trusted or signaled.
+func CodexServerFile() (string, error) {
+	return resolve("XDG_STATE_HOME", []string{".local", "state"}, "codex-app-server.json")
+}
+
+// CodexServerLogFile captures the detached Codex app-server's output.
+func CodexServerLogFile() (string, error) {
+	return resolve("XDG_STATE_HOME", []string{".local", "state"}, "codex-app-server.log")
+}
+
 func resolve(envVar string, fallback []string, file string) (string, error) {
 	if dir := os.Getenv(envVar); dir != "" {
 		return filepath.Join(dir, "atc", file), nil

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"syscall"
@@ -574,10 +575,42 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// Codex thread evidence (ATC-255): the shared app-server supervisor
+	// and the passive observer. Boot re-adopts a running server only when
+	// a persisted identity or running codex terminals suggest live work;
+	// otherwise the server starts lazily at the first codex launch.
+	codexHome, err := codex.CodexHome()
+	if err != nil {
+		return err
+	}
+	codexIdentity, err := paths.CodexServerFile()
+	if err != nil {
+		return err
+	}
+	codexLog, err := paths.CodexServerLogFile()
+	if err != nil {
+		return err
+	}
+	codexObserver := codex.NewObserver(codex.ObserverOptions{
+		Supervisor: codex.NewSupervisor(codex.SupervisorOptions{
+			CodexHome:    codexHome,
+			IdentityFile: codexIdentity,
+			LogFile:      codexLog,
+			SpawnDir:     filepath.Dir(codexIdentity),
+			Logger:       logger,
+		}),
+		Threads:   threadService,
+		Terminals: terminalService,
+		Logger:    logger,
+	})
+	// Async: adoption can wait on a silent pid for ~20s worst case, and boot
+	// must not.
+	go codexObserver.AdoptAtBoot(ctx)
+
 	// One registration line per built-in agent; a duplicate id fails the
 	// boot.
 	agentService, err := agents.NewService(agents.Options{
-		Entries:   []agents.Entry{claude.Entry(claudeHooks), codex.Entry()},
+		Entries:   []agents.Entry{claude.Entry(claudeHooks), codex.Entry(codexObserver)},
 		Terminals: terminalService,
 	})
 	if err != nil {
@@ -607,6 +640,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	var background sync.WaitGroup
 	background.Go(func() { terminalService.Run(loopCtx) })
 	background.Go(func() { threadService.Run(loopCtx) })
+	background.Go(func() { codexObserver.Run(loopCtx) })
 
 	// The exposure supervisor fronts the actual bound port (they are one
 	// port by contract) and is waited on so shutdown reaps the serve

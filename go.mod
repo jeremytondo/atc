@@ -3,6 +3,7 @@ module github.com/jeremytondo/atc
 go 1.26.7
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/creack/pty v1.1.24
 	github.com/danielgtaylor/huma/v2 v2.39.1
 	github.com/google/go-cmp v0.7.0

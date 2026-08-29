@@ -156,9 +156,23 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A codex observer over a private temp CODEX_HOME: constructed for
+	// registration only — codex stays unavailable in the fixture, so no
+	// launch ever reaches the supervisor.
+	codexObserver := codex.NewObserver(codex.ObserverOptions{
+		Supervisor: codex.NewSupervisor(codex.SupervisorOptions{
+			CodexHome:    t.TempDir(),
+			IdentityFile: filepath.Join(t.TempDir(), "codex-app-server.json"),
+			LogFile:      filepath.Join(t.TempDir(), "codex-app-server.log"),
+			SpawnDir:     t.TempDir(),
+		}),
+		Threads:   threadService,
+		Terminals: service,
+		Now:       now,
+	})
 	binaries := map[string]bool{"claude": true}
 	agentService, err := agents.NewService(agents.Options{
-		Entries:   []agents.Entry{claude.Entry(claudeHooks), codex.Entry()},
+		Entries:   []agents.Entry{claude.Entry(claudeHooks), codex.Entry(codexObserver)},
 		Terminals: service,
 		LookPath: func(name string) (string, error) {
 			if binaries[name] {

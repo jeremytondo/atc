@@ -125,6 +125,17 @@ func (s *Service) Launch(ctx context.Context, id string, params api.AgentLaunchP
 	if name == "" {
 		name = entry.Name
 	}
+	// Prewarm runs slow launch-time work (starting and connecting the
+	// shared Codex app-server) before the terminals domain takes its
+	// commit lock — compose runs under that lock, and a cold provider
+	// start there would block every terminal mutation server-wide.
+	if warmer, ok := entry.TUI.(interface {
+		Prewarm(ctx context.Context) error
+	}); ok {
+		if err := warmer.Prewarm(ctx); err != nil {
+			return api.Terminal{}, fmt.Errorf("%w: %w", ErrUnavailable, err)
+		}
+	}
 	return s.terminals.CreateForAgent(ctx, api.TerminalCreateParams{
 		ProjectID: params.ProjectID,
 		Name:      name,

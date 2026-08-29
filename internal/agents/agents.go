@@ -17,6 +17,7 @@ package agents
 import (
 	"context"
 	"strings"
+	"unicode/utf8"
 )
 
 // CapabilityTUI is the one capability in ATC-254: the agent can be
@@ -68,4 +69,23 @@ type Entry struct {
 // split or execute.
 func Quote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// CondenseTitle trims provider-reported text (a first prompt, a thread
+// preview) into a one-line observed default title, cutting on a word
+// boundary, else a rune boundary — never mid-character.
+func CondenseTitle(s string) string {
+	const limit = 50
+	title := strings.Join(strings.Fields(s), " ")
+	if len(title) <= limit {
+		return title
+	}
+	if cut := strings.LastIndexByte(title[:limit], ' '); cut > 0 {
+		return title[:cut]
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(title[cut]) {
+		cut--
+	}
+	return title[:cut]
 }
