@@ -321,6 +321,20 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 // real evidence. Failures after the record exists surface through the
 // normal status machinery — there is no separate launch-error path.
 func (s *Service) Create(ctx context.Context, params api.TerminalCreateParams) (api.Terminal, error) {
+	return s.create(ctx, params, "")
+}
+
+// CreateForAgent is Create for a launch the API layer resolved through the
+// agent catalog (ATC-254): params.Command carries the adapter-composed
+// command and agent is the catalog id recorded on the terminal — this is
+// the only writer of the immutable agent field. The domain stays
+// agent-agnostic: the id is an opaque label here, and everything past the
+// label is the normal create path.
+func (s *Service) CreateForAgent(ctx context.Context, params api.TerminalCreateParams, agent string) (api.Terminal, error) {
+	return s.create(ctx, params, agent)
+}
+
+func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, agent string) (api.Terminal, error) {
 	project, ok, err := s.projects.Get(ctx, params.ProjectID)
 	if err != nil {
 		return api.Terminal{}, err
@@ -345,6 +359,7 @@ func (s *Service) Create(ctx context.Context, params api.TerminalCreateParams) (
 	now := s.now()
 	record := store.TerminalRecord{
 		ProjectID: project.ID, Name: name, Directory: project.Directory, Command: params.Command,
+		Agent:     agent,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	s.ops.Lock()
@@ -551,6 +566,7 @@ func (e *entry) terminal() api.Terminal {
 		ProjectID: e.record.ProjectID,
 		Directory: e.record.Directory,
 		Command:   e.record.Command,
+		Agent:     e.record.Agent,
 		Status:    e.status,
 		CreatedAt: e.record.CreatedAt,
 		UpdatedAt: e.record.UpdatedAt,

@@ -98,6 +98,29 @@ func (c *Client) DeleteTerminal(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/terminals/"+id, nil, nil)
 }
 
+// Agents lists the agent catalog with per-capability availability, probed
+// against the server's machine at request time.
+func (c *Client) Agents(ctx context.Context) ([]Agent, error) {
+	var list AgentList
+	err := c.do(ctx, http.MethodGet, "/v1/agents", nil, &list)
+	return list.Agents, err
+}
+
+// Agent fetches one agent catalog entry by id.
+func (c *Client) Agent(ctx context.Context, id string) (Agent, error) {
+	var agent Agent
+	err := c.do(ctx, http.MethodGet, "/v1/agents/"+id, nil, &agent)
+	return agent, err
+}
+
+// LaunchAgent launches the agent's TUI in a new terminal and returns the
+// terminal — equivalent to CreateTerminal with an agent reference.
+func (c *Client) LaunchAgent(ctx context.Context, id string, params AgentLaunchParams) (Terminal, error) {
+	var terminal Terminal
+	err := c.do(ctx, http.MethodPost, "/v1/agents/"+id+"/launch", params, &terminal)
+	return terminal, err
+}
+
 // CreateProject registers a project rooted at a directory.
 func (c *Client) CreateProject(ctx context.Context, params ProjectCreateParams) (Project, error) {
 	var project Project
