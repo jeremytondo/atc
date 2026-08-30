@@ -163,6 +163,14 @@ func hookSettings(command string) map[string]any {
 	return map[string]any{"hooks": events}
 }
 
+// Deregister drops a deleted terminal's secret and per-launch files —
+// wired by the composition root to the terminal delete, so the secret
+// stops validating immediately rather than at the next boot's cleanup.
+func (h *Hooks) Deregister(terminalID string) {
+	h.registry.Deregister(terminalID)
+	_ = os.Remove(h.settingsPath(terminalID))
+}
+
 // LoadRegistrations rebuilds the secret registry from the hook directory
 // at boot, so TUIs launched by an earlier server process keep validating.
 // Files whose terminal no longer exists are launch leftovers (deleted
@@ -183,18 +191,17 @@ func (h *Hooks) LoadRegistrations() error {
 // snapshot from an empty one — an empty background_tasks array is the
 // authoritative "no background work".
 type payload struct {
-	SessionID        string             `json:"session_id"`
-	HookEventName    string             `json:"hook_event_name"`
-	AgentID          string             `json:"agent_id"`
-	TaskID           string             `json:"task_id"`
-	BackgroundTasks  *[]task            `json:"background_tasks"`
-	SessionCrons     *[]json.RawMessage `json:"session_crons"`
-	NotificationType string             `json:"notification_type"`
-	ToolName         string             `json:"tool_name"`
-	Prompt           string             `json:"prompt"`
-	Reason           string             `json:"reason"`
-	Cwd              string             `json:"cwd"`
-	PermissionMode   string             `json:"permission_mode"`
+	SessionID        string  `json:"session_id"`
+	HookEventName    string  `json:"hook_event_name"`
+	AgentID          string  `json:"agent_id"`
+	TaskID           string  `json:"task_id"`
+	BackgroundTasks  *[]task `json:"background_tasks"`
+	NotificationType string  `json:"notification_type"`
+	ToolName         string  `json:"tool_name"`
+	Prompt           string  `json:"prompt"`
+	Reason           string  `json:"reason"`
+	Cwd              string  `json:"cwd"`
+	PermissionMode   string  `json:"permission_mode"`
 	Effort           struct {
 		Level string `json:"level"`
 	} `json:"effort"`
@@ -235,7 +242,17 @@ func (h *Hooks) apply(ctx context.Context, terminalID string, st *session, p pay
 		}
 		if st.sessionID == "" {
 			// Post-restart seed: accept evidence only for a conversation the
-			// identity mapping already ties to this same terminal.
+			// identity mapping already ties to this same terminal, and only
+			// from a root UserPromptSubmit — the one event a conversation
+			// the TUI does not display can never produce (the Codex gate's
+			// reasoning). A displaced session's straggler (a late
+			// TaskCompleted, a notification) must not seed the wrong
+			// conversation as active and wedge the displayed one behind the
+			// session-match check; anything the gate drops is re-covered at
+			// the next prompt or SessionStart.
+			if p.HookEventName != "UserPromptSubmit" || p.AgentID != "" {
+				return http.StatusBadRequest
+			}
 			_, mapped, known := h.threads.LookupIdentity("claude", p.SessionID)
 			if !known || mapped != terminalID {
 				return http.StatusBadRequest
@@ -314,14 +331,18 @@ func (h *Hooks) observe(ctx context.Context, terminalID string, p payload, statu
 // sessionEnd closes the reducer's book on the session. A clear or resume
 // is a switch — the successor's SessionStart is already on its way and
 // moves the active thread itself; anything else means the TUI is leaving
-// the conversation without a successor, so the terminal deactivates.
-// The registry holds the launch's lock.
+// the conversation without a successor, so the terminal deactivates. The
+// end is still evidence — lastEvidenceAt and metadata refresh — but no
+// status claim rides it: a SessionEnd can land mid-turn (the TUI killed
+// while working), so the last status stands and the threads domain
+// coerces unverifiable live states — never an idle claim the evidence
+// does not back. The registry holds the launch's lock.
 func (h *Hooks) sessionEnd(ctx context.Context, terminalID string, st *session, p payload) {
 	st.tracker = nil
 	st.ended = true
 	if err := h.threads.ObserveStatus(ctx, threads.StatusObservation{
 		Agent: "claude", ProviderID: p.SessionID, At: h.now(),
-		Status: api.ThreadIdle, Metadata: metadataFrom(p),
+		Metadata: metadataFrom(p),
 	}); err != nil {
 		h.logger.Warn("recording session end", "terminal", terminalID, "error", err)
 	}

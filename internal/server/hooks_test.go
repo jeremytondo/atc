@@ -95,8 +95,9 @@ func TestClaudeHooksDriveThreads(t *testing.T) {
 		t.Errorf("after prompt: %+v", got)
 	}
 
-	// /clear mid-flight: the old thread persists inactive (working
-	// coerces), the new one takes the projection.
+	// /clear mid-flight: the old thread persists inactive — its mid-turn
+	// working was never verified to finish, so it coerces to unknown, not
+	// idle — and the new one takes the projection.
 	f.postHook(t, secret, `{"session_id":"s1","hook_event_name":"SessionEnd","reason":"clear"}`)
 	f.postHook(t, secret, `{"session_id":"s2","hook_event_name":"SessionStart","source":"clear"}`)
 	rec = f.request(t, http.MethodGet, "/v1/threads", "")
@@ -104,8 +105,8 @@ func TestClaudeHooksDriveThreads(t *testing.T) {
 	if len(list.Threads) != 2 {
 		t.Fatalf("threads after clear = %+v", list.Threads)
 	}
-	if got := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+thread.ID, "")); got.Status != api.ThreadIdle {
-		t.Errorf("old thread after clear = %s, want idle (SessionEnd evidence)", got.Status)
+	if got := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+thread.ID, "")); got.Status != api.ThreadUnknown {
+		t.Errorf("old thread after clear = %s, want unknown (mid-turn liveness unverifiable)", got.Status)
 	}
 	active := decodeTerminal(t, f.request(t, http.MethodGet, "/v1/terminals/"+terminal.ID, "")).ActiveThreadID
 	if active == thread.ID || active == "" {
@@ -116,6 +117,36 @@ func TestClaudeHooksDriveThreads(t *testing.T) {
 	rec = f.request(t, http.MethodGet, "/openapi.json", "")
 	if strings.Contains(rec.Body.String(), "internal/claude") {
 		t.Error("openapi document leaks the internal hook route")
+	}
+}
+
+// Deleting the terminal revokes its hook launch over the wire: once the
+// DELETE returns, the launch's secret no longer validates and its
+// per-launch files are gone.
+func TestTerminalDeleteRevokesHookSecret(t *testing.T) {
+	f := newFixture(t)
+
+	rec := f.request(t, http.MethodPost, "/v1/agents/claude/launch", `{"projectId":"`+f.projectID+`"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("launch: got %d; body %s", rec.Code, rec.Body)
+	}
+	terminal := decodeTerminal(t, rec)
+	secret := hookSecret(t, terminal)
+	if rec := f.postHook(t, secret, `{"session_id":"s1","hook_event_name":"SessionStart","source":"startup"}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("hook before delete: got %d", rec.Code)
+	}
+
+	if rec := f.request(t, http.MethodDelete, "/v1/terminals/"+terminal.ID, ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete: got %d; body %s", rec.Code, rec.Body)
+	}
+	if rec := f.postHook(t, secret, `{"session_id":"s1","hook_event_name":"Stop"}`); rec.Code != http.StatusNotFound {
+		t.Errorf("hook after delete: got %d, want 404", rec.Code)
+	}
+	settings := regexp.MustCompile(`--settings '([^']+)'`).FindStringSubmatch(terminal.Command)[1]
+	for _, path := range []string{settings, strings.TrimSuffix(settings, ".json") + ".header"} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("per-launch file %s survived the delete", path)
+		}
 	}
 }
 

@@ -134,9 +134,35 @@ func (r *Registry[S]) Deliver(secret string, deliver func(terminalID string, sta
 	return deliver(reg.terminalID, &reg.state)
 }
 
+// Deregister drops a terminal's registration and header file: the
+// terminal was deleted, so its secret must stop validating now rather
+// than at the next boot's cleanup. It is a revocation barrier — it
+// returns only after any in-flight delivery for the launch has finished,
+// so once the caller regains control no delivery can mutate state on the
+// launch's behalf. Unknown terminals are a no-op.
+func (r *Registry[S]) Deregister(terminalID string) {
+	r.mu.Lock()
+	reg, ok := r.byTerminal[terminalID]
+	if ok {
+		delete(r.byTerminal, terminalID)
+		delete(r.bySecret, reg.secret)
+	}
+	r.mu.Unlock()
+	if ok {
+		// Acquiring the registration's lock is the barrier: a delivery
+		// that resolved the secret before the removal still holds it, and
+		// no later one can start — the secret no longer resolves. Taken
+		// after r.mu is released; Deliver nests r.mu inside reg.mu, never
+		// the reverse.
+		reg.mu.Lock()
+		defer reg.mu.Unlock()
+	}
+	_ = os.Remove(r.HeaderPath(terminalID))
+}
+
 // Load rebuilds the registry from the hook directory at boot, so TUIs
-// launched by an earlier server process keep validating. Files keep asks
-// to discard are launch leftovers (deleted terminals, another agent's
+// launched by an earlier server process keep validating. Files keep
+// rejects are launch leftovers (deleted terminals, another agent's
 // abandoned candidates) and are removed, along with whatever extra
 // per-launch files remove cleans up. Unreadable files are kept and logged
 // — transient errors must not revoke a live launch. Agent session

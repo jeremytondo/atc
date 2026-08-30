@@ -177,6 +177,23 @@ func TestPrepareWritesPrivateFiles(t *testing.T) {
 	}
 }
 
+// Deleting the terminal deregisters its launch: the secret stops
+// validating and both per-launch files go.
+func TestDeregisterRemovesLaunchFiles(t *testing.T) {
+	f := newHookFixture(t)
+	secret := f.prepare(t, "term-aaaaa")
+
+	f.hooks.Deregister("term-aaaaa")
+	if code := f.post(t, secret, `{"session_id":"s1","hook_event_name":"SessionStart","source":"startup"}`); code != http.StatusNotFound {
+		t.Errorf("deregistered secret: got %d, want 404", code)
+	}
+	for _, path := range []string{f.hooks.settingsPath("term-aaaaa"), f.hooks.registry.HeaderPath("term-aaaaa")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("per-launch file %s survived deregistration", path)
+		}
+	}
+}
+
 func TestDeliverySecretEnforcement(t *testing.T) {
 	f := newHookFixture(t)
 	secret := f.prepare(t, "term-aaaaa")
@@ -241,8 +258,12 @@ func TestSessionLifecycleObservations(t *testing.T) {
 	}
 
 	// /clear: SessionEnd(reason=clear) does not deactivate — the new
-	// SessionStart moves the terminal itself.
+	// SessionStart moves the terminal itself. The end refreshes evidence
+	// without a status claim.
 	f.post(t, secret, `{"session_id":"s1","hook_event_name":"SessionEnd","reason":"clear"}`)
+	if got := f.observer.lastStatus(t); got.Status != "" {
+		t.Errorf("session end status claim = %q; want evidence-only", got.Status)
+	}
 	if len(f.observer.inactive) != 0 {
 		t.Errorf("clear deactivated the terminal: %v", f.observer.inactive)
 	}
@@ -331,9 +352,11 @@ func TestSessionObservationFailureRetries(t *testing.T) {
 	}
 }
 
-// After a server restart the registration has no session. Evidence for a
-// conversation the identity mapping ties to the same terminal re-seeds —
-// re-establishing the session first — and anything else is dropped.
+// After a server restart the registration has no session. Only a root
+// UserPromptSubmit for a conversation the identity mapping ties to the
+// same terminal re-seeds — re-establishing the session first. Any other
+// event is dropped: a displaced session's straggler must not seed the
+// wrong conversation as active.
 func TestPostRestartSeeding(t *testing.T) {
 	f := newHookFixture(t)
 	f.prepare(t, "term-aaaaa")
@@ -344,23 +367,35 @@ func TestPostRestartSeeding(t *testing.T) {
 	f.observer.identity["s1"] = "term-aaaaa"
 	f.observer.identity["s9"] = "term-other"
 
+	// Even a mapped session's straggler is refused: only a prompt proves
+	// the TUI displays the conversation. A subagent's prompt proves
+	// nothing about the root either.
+	if code := f.post(t, secret, `{"session_id":"s1","hook_event_name":"Stop"}`); code != http.StatusBadRequest {
+		t.Errorf("straggler seed: got %d, want 400", code)
+	}
+	if code := f.post(t, secret, `{"session_id":"s1","hook_event_name":"UserPromptSubmit","agent_id":"sub-1","prompt":"go"}`); code != http.StatusBadRequest {
+		t.Errorf("subagent seed: got %d, want 400", code)
+	}
 	// Unmapped and wrong-terminal sessions are dropped.
-	if code := f.post(t, secret, `{"session_id":"s404","hook_event_name":"Stop"}`); code != http.StatusBadRequest {
+	if code := f.post(t, secret, `{"session_id":"s404","hook_event_name":"UserPromptSubmit","prompt":"go"}`); code != http.StatusBadRequest {
 		t.Errorf("unmapped seed: got %d, want 400", code)
 	}
-	if code := f.post(t, secret, `{"session_id":"s9","hook_event_name":"Stop"}`); code != http.StatusBadRequest {
+	if code := f.post(t, secret, `{"session_id":"s9","hook_event_name":"UserPromptSubmit","prompt":"go"}`); code != http.StatusBadRequest {
 		t.Errorf("wrong-terminal seed: got %d, want 400", code)
 	}
+	if len(f.observer.sessions) != 0 {
+		t.Fatalf("refused seeds still observed: %+v", f.observer.sessions)
+	}
 
-	// A mapped session for this terminal seeds: session re-established,
+	// A root prompt for a mapped session seeds: session re-established,
 	// then the evidence lands.
-	if code := f.post(t, secret, `{"session_id":"s1","hook_event_name":"Stop"}`); code != http.StatusNoContent {
+	if code := f.post(t, secret, `{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"go"}`); code != http.StatusNoContent {
 		t.Errorf("mapped seed: got %d, want 204", code)
 	}
 	if len(f.observer.sessions) != 1 || f.observer.sessions[0].ProviderID != "s1" || f.observer.sessions[0].Status != "" {
 		t.Fatalf("seed session observation = %+v", f.observer.sessions)
 	}
-	if got := f.observer.lastStatus(t); got.Status != api.ThreadIdle {
+	if got := f.observer.lastStatus(t); got.Status != api.ThreadWorking {
 		t.Errorf("seeded evidence status = %s", got.Status)
 	}
 }
@@ -403,7 +438,7 @@ func TestLoadRegistrationsCleansStaleFiles(t *testing.T) {
 func TestCommandComposition(t *testing.T) {
 	f := newHookFixture(t)
 	entry := Entry(f.hooks)
-	command, err := entry.TUI.Command(context.Background(), agents.LaunchContext{TerminalID: "term-aaaaa", Directory: "/proj"})
+	command, err := entry.TUI.Command(context.Background(), agents.LaunchContext{TerminalID: "term-aaaaa"})
 	if err != nil {
 		t.Fatal(err)
 	}

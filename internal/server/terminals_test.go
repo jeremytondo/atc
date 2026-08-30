@@ -194,6 +194,7 @@ func newFixture(t *testing.T) *fixture {
 		Threads:           threadService,
 		Events:            hub,
 		InternalRoutes:    map[string]http.Handler{"POST " + claude.HooksPath: claudeHooks.Handler()},
+		TerminalCleanups:  []func(string){claudeHooks.Deregister, codexHooks.Deregister},
 		HeartbeatInterval: 50 * time.Millisecond,
 	})
 	f := &fixture{handler: handler, adapter: adapter, hub: hub, service: service, threads: threadService,

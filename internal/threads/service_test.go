@@ -448,6 +448,48 @@ func TestArchiveAndDeleteRefusedWhileActive(t *testing.T) {
 	}
 }
 
+// Resuming an archived conversation inside the TUI cannot be refused, so
+// the session observation restores the invariant instead: active means
+// unarchived.
+func TestReattachUnarchives(t *testing.T) {
+	f := newFixture(t)
+	f.plant(t, "proj-aaaaa", "term-aaaaa")
+	ctx := context.Background()
+
+	id, err := f.service.ObserveSession(ctx, observation("term-aaaaa", "sess-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.service.Deactivate(ctx, "term-aaaaa")
+	archived := true
+	if _, err := f.service.Update(ctx, id, api.ThreadUpdateParams{Archived: &archived}); err != nil {
+		t.Fatal(err)
+	}
+	f.drain()
+
+	// The same conversation observed open again: unarchived, back in the
+	// default list, and announced.
+	if _, err := f.service.ObserveSession(ctx, observation("term-aaaaa", "sess-1")); err != nil {
+		t.Fatal(err)
+	}
+	thread, err := f.service.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if thread.Archived || thread.ArchivedAt != nil {
+		t.Errorf("reattached thread = %+v; want unarchived with timestamp cleared", thread)
+	}
+	if got := f.service.List("", "", false); len(got) != 1 {
+		t.Errorf("default list after reattach = %d threads; want 1", len(got))
+	}
+	if diff := cmp.Diff([]string{
+		"thread.updated " + id,
+		"terminal.updated term-aaaaa",
+	}, f.drain()); diff != "" {
+		t.Errorf("reattach events (-want +got):\n%s", diff)
+	}
+}
+
 func TestUpdateUnknownAndNoopPatch(t *testing.T) {
 	f := newFixture(t)
 	f.plant(t, "proj-aaaaa", "term-aaaaa")

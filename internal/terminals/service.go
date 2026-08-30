@@ -333,12 +333,12 @@ func (s *Service) Create(ctx context.Context, params api.TerminalCreateParams) (
 // agent-agnostic: the id is an opaque label, compose an opaque command
 // factory, and everything past them is the normal create path.
 func (s *Service) CreateForAgent(ctx context.Context, params api.TerminalCreateParams, agent string,
-	compose func(terminalID, directory string) (string, error)) (api.Terminal, error) {
+	compose func(terminalID string) (string, error)) (api.Terminal, error) {
 	return s.create(ctx, params, agent, compose)
 }
 
 func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, agent string,
-	compose func(terminalID, directory string) (string, error)) (api.Terminal, error) {
+	compose func(terminalID string) (string, error)) (api.Terminal, error) {
 	project, ok, err := s.projects.Get(ctx, params.ProjectID)
 	if err != nil {
 		return api.Terminal{}, err
@@ -384,7 +384,7 @@ func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, a
 			continue
 		}
 		if compose != nil {
-			command, err := compose(record.ID, record.Directory)
+			command, err := compose(record.ID)
 			if err != nil {
 				s.ops.Unlock()
 				return api.Terminal{}, err

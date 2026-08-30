@@ -89,14 +89,6 @@ func insertThreadParams(record ThreadRecord) gen.InsertThreadParams {
 	}
 }
 
-// Insert persists a new record; false reports an ID collision (the caller
-// re-rolls), and a vanished project or terminal surfaces as
-// ErrForeignKeyViolation.
-func (t *Threads) Insert(ctx context.Context, record ThreadRecord) (bool, error) {
-	n, err := t.writes.InsertThread(ctx, insertThreadParams(record))
-	return n > 0, foreignKeyError(err)
-}
-
 // InsertObserved persists a new record together with its identity mapping
 // in one transaction — a thread must never exist without its mapping, or
 // the next observation of the conversation would mint a duplicate. False
@@ -176,17 +168,6 @@ func (t *Threads) List(ctx context.Context) ([]ThreadRecord, error) {
 func (t *Threads) Delete(ctx context.Context, id string) (bool, error) {
 	n, err := t.writes.DeleteThread(ctx, id)
 	return n > 0, err
-}
-
-// InsertIdentity persists one identity mapping; false reports the key
-// already mapped.
-func (t *Threads) InsertIdentity(ctx context.Context, identity ThreadIdentity) (bool, error) {
-	n, err := t.writes.InsertThreadIdentity(ctx, gen.InsertThreadIdentityParams{
-		Agent:                  identity.Agent,
-		ProviderConversationID: identity.ProviderConversationID,
-		ThreadID:               identity.ThreadID,
-	})
-	return n > 0, foreignKeyError(err)
 }
 
 // ListIdentities returns every identity mapping.

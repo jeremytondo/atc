@@ -139,6 +139,13 @@ func (h *Hooks) ingestURL() string {
 	return h.baseURL + HooksPath
 }
 
+// Deregister drops a deleted terminal's secret and header file — wired
+// by the composition root to the terminal delete, so the secret stops
+// validating immediately rather than at the next boot's cleanup.
+func (h *Hooks) Deregister(terminalID string) {
+	h.registry.Deregister(terminalID)
+}
+
 // LoadRegistrations rebuilds the secret registry from the hook directory
 // at boot, so TUIs launched by an earlier server process keep validating.
 // Session bindings are not persisted: the first payload after a restart
@@ -281,6 +288,14 @@ func (h *Hooks) sessionEnd(ctx context.Context, terminalID string, st *terminalS
 		st.sessions[p.SessionID] = sess
 	}
 	sess.ended = true
+	// The end is still evidence for the conversation — lastEvidenceAt and
+	// metadata refresh — but no status claim rides it.
+	if err := h.threads.ObserveStatus(ctx, threads.StatusObservation{
+		Agent: "codex", ProviderID: p.SessionID, At: h.now(),
+		Metadata: metadataFrom(p),
+	}); err != nil {
+		h.logger.Warn("recording session end", "terminal", terminalID, "error", err)
+	}
 	if st.active == p.SessionID {
 		st.active = ""
 		// End of observation: the threads domain keeps idle and coerces

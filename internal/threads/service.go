@@ -225,6 +225,16 @@ func (s *Service) ObserveSession(ctx context.Context, o SessionObservation) (str
 		record.TerminalID = &terminalID
 		changed = true
 	}
+	if record.Archived {
+		// Archiving an active thread is refused, so active ⇒ unarchived —
+		// and a conversation resumed inside the TUI (which ATC cannot
+		// refuse) is the user asking for the thread back. Observation
+		// restores the invariant instead of leaving a terminal projecting
+		// a thread that default lists hide.
+		record.Archived = false
+		record.ArchivedAt = nil
+		changed = true
+	}
 	if o.Status != "" && record.Status != string(o.Status) {
 		record.Status = string(o.Status)
 		changed = true

@@ -29,7 +29,8 @@ type terminalIDInput struct {
 	ID string `path:"id" doc:"Terminal identifier."`
 }
 
-func registerTerminals(humaAPI huma.API, service *terminals.Service, agentService *agents.Service, threadService *threads.Service) {
+func registerTerminals(humaAPI huma.API, service *terminals.Service, agentService *agents.Service,
+	threadService *threads.Service, cleanups []func(terminalID string)) {
 	// The terminals domain is agent-agnostic, so the activeThreadId
 	// projection is grafted onto its wire shape here, from the threads
 	// service that owns it (ATC-255).
@@ -128,6 +129,13 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, agentServic
 	}, func(ctx context.Context, input *terminalIDInput) (*struct{}, error) {
 		if err := service.Delete(ctx, input.ID); err != nil {
 			return nil, mapError(err)
+		}
+		// Revoke the deleted terminal's hook secrets before converging the
+		// threads view: each cleanup is a barrier (it returns only after
+		// any in-flight delivery drains), so no late delivery can land
+		// evidence over the convergence below.
+		for _, cleanup := range cleanups {
+			cleanup(input.ID)
 		}
 		if threadService != nil {
 			// The schema's ON DELETE SET NULL already cleared the rows;

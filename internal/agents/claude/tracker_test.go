@@ -124,10 +124,10 @@ func TestTrackerBackgroundShellAndCrons(t *testing.T) {
 	step(t, tr, `{`+sess+`"hook_event_name":"TaskCreated","task_id":"t1"}`, api.ThreadWorking, true)
 	step(t, tr, `{`+sess+`"hook_event_name":"Stop","background_tasks":[{"id":"t1","type":"shell","status":"running"}]}`, api.ThreadWorking, true)
 	step(t, tr, `{`+sess+`"hook_event_name":"TaskCompleted","task_id":"t1","background_tasks":[]}`, api.ThreadIdle, true)
-	// A scheduled cron holds the session at working until its snapshot
-	// empties.
-	step(t, tr, `{`+sess+`"hook_event_name":"Stop","session_crons":[{"id":"c1"}]}`, api.ThreadWorking, true)
-	step(t, tr, `{`+sess+`"hook_event_name":"Stop","session_crons":[]}`, api.ThreadIdle, true)
+	// A scheduled cron is not activity: the entries are schedule
+	// definitions, so a dormant wakeup must not pin the session at
+	// working (see the tracker doc).
+	step(t, tr, `{`+sess+`"hook_event_name":"Stop","session_crons":[{"id":"c1"}]}`, api.ThreadIdle, true)
 }
 
 // Unrecognized events without a level snapshot carry no signal — the
