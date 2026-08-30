@@ -183,18 +183,17 @@ func (h *Hooks) LoadRegistrations() error {
 // snapshot from an empty one — an empty background_tasks array is the
 // authoritative "no background work".
 type payload struct {
-	SessionID        string             `json:"session_id"`
-	HookEventName    string             `json:"hook_event_name"`
-	AgentID          string             `json:"agent_id"`
-	TaskID           string             `json:"task_id"`
-	BackgroundTasks  *[]task            `json:"background_tasks"`
-	SessionCrons     *[]json.RawMessage `json:"session_crons"`
-	NotificationType string             `json:"notification_type"`
-	ToolName         string             `json:"tool_name"`
-	Prompt           string             `json:"prompt"`
-	Reason           string             `json:"reason"`
-	Cwd              string             `json:"cwd"`
-	PermissionMode   string             `json:"permission_mode"`
+	SessionID        string  `json:"session_id"`
+	HookEventName    string  `json:"hook_event_name"`
+	AgentID          string  `json:"agent_id"`
+	TaskID           string  `json:"task_id"`
+	BackgroundTasks  *[]task `json:"background_tasks"`
+	NotificationType string  `json:"notification_type"`
+	ToolName         string  `json:"tool_name"`
+	Prompt           string  `json:"prompt"`
+	Reason           string  `json:"reason"`
+	Cwd              string  `json:"cwd"`
+	PermissionMode   string  `json:"permission_mode"`
 	Effort           struct {
 		Level string `json:"level"`
 	} `json:"effort"`

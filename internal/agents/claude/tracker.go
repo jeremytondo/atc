@@ -3,10 +3,17 @@ package claude
 import "github.com/jeremytondo/atc/internal/api"
 
 // tracker is one session's stateful reducer: root status, agent-owned
-// background work (subagents, backgrounded shells, crons), and the
-// aggregation between them. Individual hook events are not a state
-// machine — level snapshots are authoritative wherever they appear, and
-// edge events fill the gaps between them.
+// background work (subagents, backgrounded shells), and the aggregation
+// between them. Individual hook events are not a state machine — level
+// snapshots are authoritative wherever they appear, and edge events fill
+// the gaps between them.
+//
+// session_crons is deliberately not status evidence: the SDK types it as
+// schedule definitions ({id, schedule, recurring, prompt} — see
+// experiments/subagent-activity), so an entry proves a wakeup is
+// scheduled, not that anything runs right now, and no live payload has
+// ever been recorded. A firing cron's actual work surfaces through the
+// same prompt/tool/task events as any turn.
 //
 // Known limitation, accepted (ATC-255): Claude fires no hook on user
 // interrupt, so working can overstay by up to roughly a minute until the
@@ -14,7 +21,6 @@ import "github.com/jeremytondo/atc/internal/api"
 type tracker struct {
 	root       api.ThreadStatus
 	background map[string]api.ThreadStatus
-	crons      int
 }
 
 // newTracker starts at idle — SessionStart means a fresh conversation at
@@ -55,9 +61,6 @@ func (t *tracker) aggregate() api.ThreadStatus {
 			status = member
 		}
 	}
-	if t.crons > 0 && rank(api.ThreadWorking) > rank(status) {
-		status = api.ThreadWorking
-	}
 	return status
 }
 
@@ -89,11 +92,6 @@ func (t *tracker) apply(p payload) (status api.ThreadStatus, signal bool, lastEr
 		t.background = replaced
 		signal = true
 	}
-	if p.SessionCrons != nil {
-		t.crons = len(*p.SessionCrons)
-		signal = true
-	}
-
 	root := p.AgentID == ""
 	set := func(status api.ThreadStatus) {
 		if root {
