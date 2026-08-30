@@ -130,6 +130,13 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, agentServic
 		if err := service.Delete(ctx, input.ID); err != nil {
 			return nil, mapError(err)
 		}
+		// Revoke the deleted terminal's hook secrets before converging the
+		// threads view: each cleanup is a barrier (it returns only after
+		// any in-flight delivery drains), so no late delivery can land
+		// evidence over the convergence below.
+		for _, cleanup := range cleanups {
+			cleanup(input.ID)
+		}
 		if threadService != nil {
 			// The schema's ON DELETE SET NULL already cleared the rows;
 			// this converges the threads view and publishes the linkage
@@ -138,10 +145,6 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, agentServic
 			// client disconnect after the commit must not leave the view
 			// linked to a deleted terminal.
 			threadService.TerminalRemoved(context.WithoutCancel(ctx), input.ID)
-		}
-		// The deleted terminal's hook secrets stop validating with it.
-		for _, cleanup := range cleanups {
-			cleanup(input.ID)
 		}
 		return nil, nil
 	})

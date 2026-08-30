@@ -288,6 +288,14 @@ func (h *Hooks) sessionEnd(ctx context.Context, terminalID string, st *terminalS
 		st.sessions[p.SessionID] = sess
 	}
 	sess.ended = true
+	// The end is still evidence for the conversation — lastEvidenceAt and
+	// metadata refresh — but no status claim rides it.
+	if err := h.threads.ObserveStatus(ctx, threads.StatusObservation{
+		Agent: "codex", ProviderID: p.SessionID, At: h.now(),
+		Metadata: metadataFrom(p),
+	}); err != nil {
+		h.logger.Warn("recording session end", "terminal", terminalID, "error", err)
+	}
 	if st.active == p.SessionID {
 		st.active = ""
 		// End of observation: the threads domain keeps idle and coerces

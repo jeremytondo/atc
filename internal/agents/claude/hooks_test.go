@@ -258,8 +258,12 @@ func TestSessionLifecycleObservations(t *testing.T) {
 	}
 
 	// /clear: SessionEnd(reason=clear) does not deactivate — the new
-	// SessionStart moves the terminal itself.
+	// SessionStart moves the terminal itself. The end refreshes evidence
+	// without a status claim.
 	f.post(t, secret, `{"session_id":"s1","hook_event_name":"SessionEnd","reason":"clear"}`)
+	if got := f.observer.lastStatus(t); got.Status != "" {
+		t.Errorf("session end status claim = %q; want evidence-only", got.Status)
+	}
 	if len(f.observer.inactive) != 0 {
 		t.Errorf("clear deactivated the terminal: %v", f.observer.inactive)
 	}

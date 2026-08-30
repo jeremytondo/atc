@@ -59,8 +59,11 @@ type Options struct {
 	InternalRoutes map[string]http.Handler
 	// TerminalCleanups run after a terminal delete commits: each clears
 	// per-terminal state owned outside the terminals domain — the agent
-	// hook secret registrations and their files. Wired by the composition
-	// root so the domains stay decoupled.
+	// hook secret registrations and their files. Each must be a barrier
+	// (hookauth Deregister's contract): it returns only once no delivery
+	// can mutate state on the launch's behalf, so the delete route can
+	// converge the threads view afterwards without racing late evidence.
+	// Wired by the composition root so the domains stay decoupled.
 	TerminalCleanups []func(terminalID string)
 	// HeartbeatInterval paces SSE heartbeats; zero means the default.
 	HeartbeatInterval time.Duration

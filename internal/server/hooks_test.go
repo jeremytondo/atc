@@ -120,6 +120,36 @@ func TestClaudeHooksDriveThreads(t *testing.T) {
 	}
 }
 
+// Deleting the terminal revokes its hook launch over the wire: once the
+// DELETE returns, the launch's secret no longer validates and its
+// per-launch files are gone.
+func TestTerminalDeleteRevokesHookSecret(t *testing.T) {
+	f := newFixture(t)
+
+	rec := f.request(t, http.MethodPost, "/v1/agents/claude/launch", `{"projectId":"`+f.projectID+`"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("launch: got %d; body %s", rec.Code, rec.Body)
+	}
+	terminal := decodeTerminal(t, rec)
+	secret := hookSecret(t, terminal)
+	if rec := f.postHook(t, secret, `{"session_id":"s1","hook_event_name":"SessionStart","source":"startup"}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("hook before delete: got %d", rec.Code)
+	}
+
+	if rec := f.request(t, http.MethodDelete, "/v1/terminals/"+terminal.ID, ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete: got %d; body %s", rec.Code, rec.Body)
+	}
+	if rec := f.postHook(t, secret, `{"session_id":"s1","hook_event_name":"Stop"}`); rec.Code != http.StatusNotFound {
+		t.Errorf("hook after delete: got %d, want 404", rec.Code)
+	}
+	settings := regexp.MustCompile(`--settings '([^']+)'`).FindStringSubmatch(terminal.Command)[1]
+	for _, path := range []string{settings, strings.TrimSuffix(settings, ".json") + ".header"} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("per-launch file %s survived the delete", path)
+		}
+	}
+}
+
 // The internal mount must not weaken the public surface: everything else
 // still demands the bearer token.
 func TestInternalMountKeepsAuthIntact(t *testing.T) {
