@@ -14,6 +14,9 @@ const (
 	EventProjectCreated  = "project.created"
 	EventProjectUpdated  = "project.updated"
 	EventProjectDeleted  = "project.deleted"
+	EventThreadCreated   = "thread.created"
+	EventThreadUpdated   = "thread.updated"
+	EventThreadDeleted   = "thread.deleted"
 	EventResync          = "resync"
 )
 
@@ -43,6 +46,17 @@ type ProjectUpdatedEvent struct{ ChangeEvent }
 
 // ProjectDeletedEvent is the project.deleted payload.
 type ProjectDeletedEvent struct{ ChangeEvent }
+
+// ThreadCreatedEvent is the thread.created payload.
+type ThreadCreatedEvent struct{ ChangeEvent }
+
+// ThreadUpdatedEvent is the thread.updated payload. It fires only on
+// meaningful change (status, terminal linkage, title, archived,
+// metadata); a lastEvidenceAt refresh alone updates silently.
+type ThreadUpdatedEvent struct{ ChangeEvent }
+
+// ThreadDeletedEvent is the thread.deleted payload.
+type ThreadDeletedEvent struct{ ChangeEvent }
 
 // ResyncEvent tells a reconnecting client its cursor has fallen off the
 // backlog: refetch snapshots once, then resume from the live stream.

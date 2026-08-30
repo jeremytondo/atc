@@ -28,6 +28,7 @@ import (
 	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/terminals"
 	"github.com/jeremytondo/atc/internal/terminals/exitmarker"
+	"github.com/jeremytondo/atc/internal/threads"
 )
 
 // fakeAdapter is the hand-written session backend for API-contract tests:
@@ -90,6 +91,7 @@ type fixture struct {
 	adapter    *fakeAdapter
 	hub        *events.Hub
 	service    *terminals.Service
+	threads    *threads.Service
 	binaries   map[string]bool
 	markers    string
 	projectID  string
@@ -135,9 +137,42 @@ func newFixture(t *testing.T) *fixture {
 		Hub:        hub,
 		Now:        now,
 	})
+	threadService := threads.NewService(threads.Options{
+		Repository: db.Threads(),
+		Terminals:  service,
+		Hub:        hub,
+		Now:        now,
+	})
+	if err := threadService.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	claudeHooks, err := claude.NewHooks(claude.HooksOptions{
+		Dir:       t.TempDir(),
+		BaseURL:   "http://127.0.0.1:0",
+		Threads:   threadService,
+		Terminals: service,
+		Now:       now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Codex hooks over a private temp CODEX_HOME: constructed for
+	// registration only — codex stays unavailable in the fixture, so no
+	// launch ever touches the profile.
+	codexHooks, err := codex.NewHooks(codex.HooksOptions{
+		Dir:       t.TempDir(),
+		BaseURL:   "http://127.0.0.1:0",
+		CodexHome: t.TempDir(),
+		Threads:   threadService,
+		Terminals: service,
+		Now:       now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	binaries := map[string]bool{"claude": true}
 	agentService, err := agents.NewService(agents.Options{
-		Entries:   []agents.Entry{claude.Entry(), codex.Entry()},
+		Entries:   []agents.Entry{claude.Entry(claudeHooks), codex.Entry(codexHooks)},
 		Terminals: service,
 		LookPath: func(name string) (string, error) {
 			if binaries[name] {
@@ -156,10 +191,13 @@ func newFixture(t *testing.T) *fixture {
 		Terminals:         service,
 		Projects:          projectService,
 		Agents:            agentService,
+		Threads:           threadService,
 		Events:            hub,
+		InternalRoutes:    map[string]http.Handler{"POST " + claude.HooksPath: claudeHooks.Handler()},
 		HeartbeatInterval: 50 * time.Millisecond,
 	})
-	f := &fixture{handler: handler, adapter: adapter, hub: hub, service: service, binaries: binaries, markers: markers}
+	f := &fixture{handler: handler, adapter: adapter, hub: hub, service: service, threads: threadService,
+		binaries: binaries, markers: markers}
 	// Planted through the repository, not the API: the fixture project must
 	// not consume an event sequence number the SSE assertions rely on.
 	f.projectDir = t.TempDir()

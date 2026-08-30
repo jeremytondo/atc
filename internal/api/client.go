@@ -123,6 +123,49 @@ func (c *Client) LaunchAgent(ctx context.Context, id string, params AgentLaunchP
 	return terminal, err
 }
 
+// Threads lists threads, newest-created last. Non-empty projectID and
+// terminalID filter; archived threads are included only when asked.
+func (c *Client) Threads(ctx context.Context, projectID, terminalID string, includeArchived bool) ([]Thread, error) {
+	query := url.Values{}
+	if projectID != "" {
+		query.Set("project", projectID)
+	}
+	if terminalID != "" {
+		query.Set("terminal", terminalID)
+	}
+	if includeArchived {
+		query.Set("includeArchived", "true")
+	}
+	path := "/v1/threads"
+	if len(query) > 0 {
+		path += "?" + query.Encode()
+	}
+	var list ThreadList
+	err := c.do(ctx, http.MethodGet, path, nil, &list)
+	return list.Threads, err
+}
+
+// Thread fetches one thread by ID.
+func (c *Client) Thread(ctx context.Context, id string) (Thread, error) {
+	var thread Thread
+	err := c.do(ctx, http.MethodGet, "/v1/threads/"+id, nil, &thread)
+	return thread, err
+}
+
+// UpdateThread mutates a thread's title and/or archived flag — archive
+// and unarchive are this PATCH, there are no action routes.
+func (c *Client) UpdateThread(ctx context.Context, id string, params ThreadUpdateParams) (Thread, error) {
+	var thread Thread
+	err := c.do(ctx, http.MethodPatch, "/v1/threads/"+id, params, &thread)
+	return thread, err
+}
+
+// DeleteThread removes ATC's record of the conversation; the
+// provider-side conversation is untouched.
+func (c *Client) DeleteThread(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/threads/"+id, nil, nil)
+}
+
 // CreateProject registers a project rooted at a directory.
 func (c *Client) CreateProject(ctx context.Context, params ProjectCreateParams) (Project, error) {
 	var project Project

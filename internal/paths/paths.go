@@ -9,6 +9,8 @@
 //	state   $XDG_STATE_HOME/atc/atc.log       (~/.local/state/atc/atc.log)
 //	state   $XDG_STATE_HOME/atc/terminals     (~/.local/state/atc/terminals)
 //	state   $XDG_STATE_HOME/atc/exits         (~/.local/state/atc/exits)
+//	state   $XDG_STATE_HOME/atc/hooks         (~/.local/state/atc/hooks)
+//	state   $XDG_STATE_HOME/atc/hooks/codex   (~/.local/state/atc/hooks/codex)
 //
 // It also owns CanonicalDir, the one rule for canonicalizing user-supplied
 // directories (ATC-256) — project identity and CLI project resolution must
@@ -80,6 +82,21 @@ func TerminalSocketDir() (string, error) {
 // <terminal-id>.json per session (ATC-251).
 func ExitMarkerDir() (string, error) {
 	return resolve("XDG_STATE_HOME", []string{".local", "state"}, "exits")
+}
+
+// HookDir holds the per-launch agent hook files (ATC-255): for each
+// Claude launch, <terminal-id>.json hook settings and <terminal-id>.header
+// carrying the hook secret, both mode 0600.
+func HookDir() (string, error) {
+	return resolve("XDG_STATE_HOME", []string{".local", "state"}, "hooks")
+}
+
+// CodexHookDir holds Codex's per-launch hook files (ATC-280): one
+// <terminal-id>.header per launch carrying the hook secret, mode 0600.
+// Its own directory, so each agent's boot cleanup owns everything in its
+// dir without knowing about the other's files.
+func CodexHookDir() (string, error) {
+	return resolve("XDG_STATE_HOME", []string{".local", "state"}, filepath.Join("hooks", "codex"))
 }
 
 func resolve(envVar string, fallback []string, file string) (string, error) {

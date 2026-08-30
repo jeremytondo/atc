@@ -10,6 +10,7 @@ import (
 	"github.com/jeremytondo/atc/internal/agents"
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/terminals"
+	"github.com/jeremytondo/atc/internal/threads"
 )
 
 // The five standard verbs on /v1/terminals — exactly these, no custom
@@ -28,7 +29,16 @@ type terminalIDInput struct {
 	ID string `path:"id" doc:"Terminal identifier."`
 }
 
-func registerTerminals(humaAPI huma.API, service *terminals.Service, agentService *agents.Service) {
+func registerTerminals(humaAPI huma.API, service *terminals.Service, agentService *agents.Service, threadService *threads.Service) {
+	// The terminals domain is agent-agnostic, so the activeThreadId
+	// projection is grafted onto its wire shape here, from the threads
+	// service that owns it (ATC-255).
+	decorate := func(terminal api.Terminal) api.Terminal {
+		if threadService != nil {
+			terminal.ActiveThreadID = threadService.ActiveThreadID(terminal.ID)
+		}
+		return terminal
+	}
 	huma.Register(humaAPI, huma.Operation{
 		OperationID:   "create-terminal",
 		Method:        http.MethodPost,
@@ -53,13 +63,13 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, agentServic
 			if err != nil {
 				return nil, mapAgentError(err)
 			}
-			return &terminalOutput{Body: terminal}, nil
+			return &terminalOutput{Body: decorate(terminal)}, nil
 		}
 		terminal, err := service.Create(ctx, input.Body)
 		if err != nil {
 			return nil, mapError(err)
 		}
-		return &terminalOutput{Body: terminal}, nil
+		return &terminalOutput{Body: decorate(terminal)}, nil
 	})
 
 	huma.Register(humaAPI, huma.Operation{
@@ -71,7 +81,11 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, agentServic
 	}, func(ctx context.Context, input *struct {
 		Project string `query:"project" doc:"Only terminals belonging to this project."`
 	}) (*terminalListOutput, error) {
-		return &terminalListOutput{Body: api.TerminalList{Terminals: service.List(input.Project)}}, nil
+		terminals := service.List(input.Project)
+		for i, terminal := range terminals {
+			terminals[i] = decorate(terminal)
+		}
+		return &terminalListOutput{Body: api.TerminalList{Terminals: terminals}}, nil
 	})
 
 	huma.Register(humaAPI, huma.Operation{
@@ -84,7 +98,7 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, agentServic
 		if err != nil {
 			return nil, mapError(err)
 		}
-		return &terminalOutput{Body: terminal}, nil
+		return &terminalOutput{Body: decorate(terminal)}, nil
 	})
 
 	huma.Register(humaAPI, huma.Operation{
@@ -101,7 +115,7 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, agentServic
 		if err != nil {
 			return nil, mapError(err)
 		}
-		return &terminalOutput{Body: terminal}, nil
+		return &terminalOutput{Body: decorate(terminal)}, nil
 	})
 
 	huma.Register(humaAPI, huma.Operation{
@@ -114,6 +128,15 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, agentServic
 	}, func(ctx context.Context, input *terminalIDInput) (*struct{}, error) {
 		if err := service.Delete(ctx, input.ID); err != nil {
 			return nil, mapError(err)
+		}
+		if threadService != nil {
+			// The schema's ON DELETE SET NULL already cleared the rows;
+			// this converges the threads view and publishes the linkage
+			// change. Wired here because the terminals domain must not
+			// know threads exist. Detached like the delete itself: a
+			// client disconnect after the commit must not leave the view
+			// linked to a deleted terminal.
+			threadService.TerminalRemoved(context.WithoutCancel(ctx), input.ID)
 		}
 		return nil, nil
 	})

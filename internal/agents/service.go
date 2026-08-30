@@ -23,10 +23,14 @@ var ErrNotFound = errors.New("agent not found")
 var ErrUnavailable = errors.New("agent unavailable")
 
 // TerminalCreator is the seam into the terminals domain: CreateForAgent
-// with a resolved command and the agent label (terminals.Service in
-// production).
+// with the agent label and a command factory (terminals.Service in
+// production). The factory runs once the terminal identity is minted —
+// per-launch context like hook settings needs the id before the session
+// starts — and stays an opaque function there, so the terminals domain
+// never learns agent vocabulary.
 type TerminalCreator interface {
-	CreateForAgent(ctx context.Context, params api.TerminalCreateParams, agent string) (api.Terminal, error)
+	CreateForAgent(ctx context.Context, params api.TerminalCreateParams, agent string,
+		compose func(terminalID, directory string) (string, error)) (api.Terminal, error)
 }
 
 // Options wires a Service.
@@ -124,8 +128,9 @@ func (s *Service) Launch(ctx context.Context, id string, params api.AgentLaunchP
 	return s.terminals.CreateForAgent(ctx, api.TerminalCreateParams{
 		ProjectID: params.ProjectID,
 		Name:      name,
-		Command:   entry.TUI.Command(),
-	}, entry.ID)
+	}, entry.ID, func(terminalID, directory string) (string, error) {
+		return entry.TUI.Command(ctx, LaunchContext{TerminalID: terminalID, Directory: directory})
+	})
 }
 
 func (s *Service) entry(id string) (Entry, bool) {

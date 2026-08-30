@@ -22,6 +22,7 @@ import (
 	"github.com/jeremytondo/atc/internal/server"
 	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/terminals"
+	"github.com/jeremytondo/atc/internal/threads"
 )
 
 // cliAdapter is the fake session backend behind the CLI tests' server.
@@ -61,6 +62,15 @@ const cliTestToken = "atc_cli-test-token"
 // remote client uses.
 func startTestServer(t *testing.T) *cliAdapter {
 	t.Helper()
+	adapter, _ := startTestServerWithThreads(t)
+	return adapter
+}
+
+// startTestServerWithThreads additionally exposes the threads service so
+// thread tests can plant observed conversations — the seam providers use
+// in production; there is no create verb on the wire.
+func startTestServerWithThreads(t *testing.T) (*cliAdapter, *threads.Service) {
+	t.Helper()
 	db, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "atc.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -81,8 +91,35 @@ func startTestServer(t *testing.T) *cliAdapter {
 		Terminals:  db.Terminals(),
 		Hub:        hub,
 	})
+	threadService := threads.NewService(threads.Options{
+		Repository: db.Threads(),
+		Terminals:  service,
+		Hub:        hub,
+	})
+	if err := threadService.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	claudeHooks, err := claude.NewHooks(claude.HooksOptions{
+		Dir:       t.TempDir(),
+		BaseURL:   "http://127.0.0.1:0",
+		Threads:   threadService,
+		Terminals: service,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	codexHooks, err := codex.NewHooks(codex.HooksOptions{
+		Dir:       t.TempDir(),
+		BaseURL:   "http://127.0.0.1:0",
+		CodexHome: t.TempDir(),
+		Threads:   threadService,
+		Terminals: service,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	agentService, err := agents.NewService(agents.Options{
-		Entries:   []agents.Entry{claude.Entry(), codex.Entry()},
+		Entries:   []agents.Entry{claude.Entry(claudeHooks), codex.Entry(codexHooks)},
 		Terminals: service,
 		// The probe never consults this machine's PATH: claude "exists",
 		// codex does not.
@@ -102,13 +139,14 @@ func startTestServer(t *testing.T) *cliAdapter {
 		Terminals: service,
 		Projects:  projectService,
 		Agents:    agentService,
+		Threads:   threadService,
 		Events:    hub,
 	})
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	t.Setenv("ATC_SERVER", srv.URL)
 	t.Setenv("ATC_TOKEN", cliTestToken)
-	return adapter
+	return adapter, threadService
 }
 
 func runCLI(t *testing.T, args ...string) (string, string, error) {

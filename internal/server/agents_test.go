@@ -78,9 +78,13 @@ func TestAgentLaunchCreatesTheTerminal(t *testing.T) {
 		t.Fatalf("launch: got %d; body %s", rec.Code, rec.Body)
 	}
 	launched := decodeTerminal(t, rec)
-	if launched.Agent != "claude" || launched.Command != "claude" ||
-		launched.Name != "Claude Code" || launched.Status != api.TerminalRunning {
+	if launched.Agent != "claude" || launched.Name != "Claude Code" || launched.Status != api.TerminalRunning {
 		t.Errorf("launched = %+v", launched)
+	}
+	// The composed command injects this launch's hook settings (ATC-255),
+	// quoted, keyed by the minted terminal id.
+	if !strings.HasPrefix(launched.Command, "claude --settings '") || !strings.Contains(launched.Command, launched.ID+".json") {
+		t.Errorf("launch command = %q", launched.Command)
 	}
 	if !strings.Contains(rec.Body.String(), `"agent":"claude"`) {
 		t.Errorf("launch body has no agent field: %s", rec.Body)
@@ -105,11 +109,17 @@ func TestTerminalCreateWithAgentMatchesLaunch(t *testing.T) {
 		f.createTerminalBody(t, api.TerminalCreateParams{Agent: "claude"})))
 	viaAlias := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/agents/claude/launch",
 		`{"projectId":"`+f.projectID+`"}`))
-	// Identity and clock fields necessarily differ; everything the routes
-	// decide must not.
-	ignore := cmpopts.IgnoreFields(api.Terminal{}, "ID", "CreatedAt", "UpdatedAt")
+	// Identity and clock fields necessarily differ, and the command embeds
+	// the per-launch settings path (so it differs by id); everything else
+	// the routes decide must not.
+	ignore := cmpopts.IgnoreFields(api.Terminal{}, "ID", "CreatedAt", "UpdatedAt", "Command")
 	if diff := cmp.Diff(viaAlias, viaTerminals, ignore); diff != "" {
 		t.Errorf("routes disagree (-alias +terminals):\n%s", diff)
+	}
+	for _, terminal := range []api.Terminal{viaTerminals, viaAlias} {
+		if !strings.HasPrefix(terminal.Command, "claude --settings '") {
+			t.Errorf("command = %q; want the composed launch", terminal.Command)
+		}
 	}
 }
 

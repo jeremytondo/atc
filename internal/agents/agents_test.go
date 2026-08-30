@@ -14,20 +14,32 @@ import (
 
 type fakeTUI struct{ command, binary, hint string }
 
-func (a fakeTUI) Command() string     { return a.command }
+// Command echoes the launch context so tests can assert the composition
+// forwarded the minted identity and directory.
+func (a fakeTUI) Command(_ context.Context, launch LaunchContext) (string, error) {
+	return a.command + " --for " + launch.TerminalID + ":" + launch.Directory, nil
+}
 func (a fakeTUI) Binary() string      { return a.binary }
 func (a fakeTUI) InstallHint() string { return a.hint }
 
 // fakeCreator records the create the launch composition hands the
-// terminals domain.
+// terminals domain, running the compose factory the way the real service
+// does — after minting the terminal identity.
 type fakeCreator struct {
-	params api.TerminalCreateParams
-	agent  string
+	params  api.TerminalCreateParams
+	agent   string
+	command string
 }
 
-func (c *fakeCreator) CreateForAgent(_ context.Context, params api.TerminalCreateParams, agent string) (api.Terminal, error) {
+func (c *fakeCreator) CreateForAgent(_ context.Context, params api.TerminalCreateParams, agent string,
+	compose func(terminalID, directory string) (string, error)) (api.Terminal, error) {
 	c.params, c.agent = params, agent
-	return api.Terminal{ID: "term-aaaaa", Name: params.Name, Command: params.Command, Agent: agent}, nil
+	command, err := compose("term-aaaaa", "/proj")
+	if err != nil {
+		return api.Terminal{}, err
+	}
+	c.command = command
+	return api.Terminal{ID: "term-aaaaa", Name: params.Name, Command: command, Agent: agent}, nil
 }
 
 func testEntries() []Entry {
@@ -99,9 +111,14 @@ func TestLaunchComposesTheTerminalCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantParams := api.TerminalCreateParams{ProjectID: "proj-aaaaa", Name: "Alpha", Command: "alpha --tui"}
+	wantParams := api.TerminalCreateParams{ProjectID: "proj-aaaaa", Name: "Alpha"}
 	if diff := cmp.Diff(wantParams, creator.params); diff != "" {
 		t.Errorf("create params (-want +got):\n%s", diff)
+	}
+	// The composed command carries the per-launch context the terminals
+	// domain fed the factory.
+	if creator.command != "alpha --tui --for term-aaaaa:/proj" {
+		t.Errorf("composed command = %q", creator.command)
 	}
 	if creator.agent != "alpha" || terminal.Agent != "alpha" {
 		t.Errorf("agent label = %q on create, %q on terminal; want alpha", creator.agent, terminal.Agent)

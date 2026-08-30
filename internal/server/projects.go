@@ -9,6 +9,7 @@ import (
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/projects"
+	"github.com/jeremytondo/atc/internal/threads"
 )
 
 // The five standard verbs on /v1/projects — exactly these, mirroring the
@@ -27,7 +28,7 @@ type projectIDInput struct {
 	ID string `path:"id" doc:"Project identifier."`
 }
 
-func registerProjects(humaAPI huma.API, service *projects.Service) {
+func registerProjects(humaAPI huma.API, service *projects.Service, threadService *threads.Service) {
 	huma.Register(humaAPI, huma.Operation{
 		OperationID:   "create-project",
 		Method:        http.MethodPost,
@@ -93,11 +94,18 @@ func registerProjects(humaAPI huma.API, service *projects.Service) {
 		Method:        http.MethodDelete,
 		Path:          "/v1/projects/{id}",
 		Summary:       "Delete a project",
-		Description:   "Refused while any terminal still belongs to the project, reporting what remains. No cascade.",
+		Description:   "Refused while any terminal still belongs to the project, reporting what remains. The project's thread records are deleted with it.",
 		DefaultStatus: http.StatusNoContent,
 	}, func(ctx context.Context, input *projectIDInput) (*struct{}, error) {
 		if err := service.Delete(ctx, input.ID); err != nil {
 			return nil, mapProjectError(err)
+		}
+		if threadService != nil {
+			// The schema cascade already removed the project's thread rows
+			// and identity mappings; this converges the threads view and
+			// publishes their deletion. Wired here because the projects
+			// domain must not know threads exist.
+			threadService.ProjectRemoved(input.ID)
 		}
 		return nil, nil
 	})

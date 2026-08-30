@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -35,6 +36,7 @@ import (
 	"github.com/jeremytondo/atc/internal/tailscale"
 	"github.com/jeremytondo/atc/internal/terminals"
 	"github.com/jeremytondo/atc/internal/terminals/zmx"
+	"github.com/jeremytondo/atc/internal/threads"
 	"github.com/jeremytondo/atc/internal/upgrade"
 	"github.com/jeremytondo/atc/internal/version"
 )
@@ -88,7 +90,7 @@ expose on the tailnet without the flag.`,
 			return cmd.Help()
 		},
 	}
-	root.AddCommand(newAgentCmd(), newTerminalCmd(), newProjectCmd(), newAPICmd(), newVersionCmd(),
+	root.AddCommand(newAgentCmd(), newThreadCmd(), newTerminalCmd(), newProjectCmd(), newAPICmd(), newVersionCmd(),
 		newUpgradeCmd(), newServerCmd(), newChildCmd())
 	return root
 }
@@ -380,6 +382,21 @@ func printToken(stdout io.Writer, issue func(*authtoken.Store) (string, error)) 
 	return err
 }
 
+// hookHost is the address hook deliveries dial. Hooks always run on the
+// server's own machine, so an unspecified bind means plain loopback; a
+// specific bind (including ::1, which would make 127.0.0.1 unreachable)
+// is dialed as bound, bracketed for IPv6 literals.
+func hookHost(bind string) string {
+	ip := net.ParseIP(bind)
+	if ip == nil || ip.IsUnspecified() {
+		return "127.0.0.1"
+	}
+	if ip.To4() == nil {
+		return "[" + bind + "]"
+	}
+	return bind
+}
+
 // serverRun runs the server in the foreground until the command context is
 // cancelled. A SIGINT that lands during boot (migrations, the startup
 // reconcile) is the same clean shutdown as one that lands while serving.
@@ -516,10 +533,78 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	// observes pre-reconcile state (legacy's rule).
 	terminalService.Reconcile(ctx)
 
+	// Threads load after terminals so the boot-time status coercion and
+	// the sweep read a settled terminal view.
+	threadService := threads.NewService(threads.Options{
+		Repository: database.Threads(),
+		Terminals:  terminalService,
+		Hub:        hub,
+		Logger:     logger,
+	})
+	if err := threadService.Load(ctx); err != nil {
+		return err
+	}
+
+	// The listener binds before the handler exists: the hook plumbing
+	// bakes the actual bound port into every launch's settings file.
+	listener, err := net.Listen("tcp", net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port)))
+	if err != nil {
+		return err
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	// Claude hook plumbing (ATC-255): per-launch settings under the state
+	// dir, POSTing to the loopback ingest route. Registrations reload so
+	// TUIs launched by an earlier server process keep validating.
+	hookDir, err := paths.HookDir()
+	if err != nil {
+		return err
+	}
+	claudeHooks, err := claude.NewHooks(claude.HooksOptions{
+		Dir:       hookDir,
+		BaseURL:   fmt.Sprintf("http://%s:%d", hookHost(cfg.Bind), port),
+		Threads:   threadService,
+		Terminals: terminalService,
+		Logger:    logger,
+	})
+	if err != nil {
+		return err
+	}
+	if err := claudeHooks.LoadRegistrations(); err != nil {
+		return err
+	}
+
+	// Codex hook plumbing (ATC-280): the launch profile in the user's
+	// CODEX_HOME plus per-launch secrets under the state dir, POSTing to
+	// the loopback ingest route — the TUI itself runs vanilla, no shared
+	// app-server.
+	codexHome, err := codex.CodexHome()
+	if err != nil {
+		return err
+	}
+	codexHookDir, err := paths.CodexHookDir()
+	if err != nil {
+		return err
+	}
+	codexHooks, err := codex.NewHooks(codex.HooksOptions{
+		Dir:       codexHookDir,
+		BaseURL:   fmt.Sprintf("http://%s:%d", hookHost(cfg.Bind), port),
+		CodexHome: codexHome,
+		Threads:   threadService,
+		Terminals: terminalService,
+		Logger:    logger,
+	})
+	if err != nil {
+		return err
+	}
+	if err := codexHooks.LoadRegistrations(); err != nil {
+		return err
+	}
+
 	// One registration line per built-in agent; a duplicate id fails the
 	// boot.
 	agentService, err := agents.NewService(agents.Options{
-		Entries:   []agents.Entry{claude.Entry(), codex.Entry()},
+		Entries:   []agents.Entry{claude.Entry(claudeHooks), codex.Entry(codexHooks)},
 		Terminals: terminalService,
 	})
 	if err != nil {
@@ -533,13 +618,13 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		Terminals: terminalService,
 		Projects:  projectService,
 		Agents:    agentService,
+		Threads:   threadService,
 		Events:    hub,
+		InternalRoutes: map[string]http.Handler{
+			"POST " + claude.HooksPath: claudeHooks.Handler(),
+			"POST " + codex.HooksPath:  codexHooks.Handler(),
+		},
 	})
-
-	listener, err := net.Listen("tcp", net.JoinHostPort(cfg.Bind, strconv.Itoa(cfg.Port)))
-	if err != nil {
-		return err
-	}
 	// The reconcile loop is waited on before the deferred database close,
 	// so shutdown never races an in-flight pass against it. The wait is
 	// cheap: every step of the loop is context-aware, and the loop's
@@ -549,6 +634,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	defer stopLoop()
 	var background sync.WaitGroup
 	background.Go(func() { terminalService.Run(loopCtx) })
+	background.Go(func() { threadService.Run(loopCtx) })
 
 	// The exposure supervisor fronts the actual bound port (they are one
 	// port by contract) and is waited on so shutdown reaps the serve

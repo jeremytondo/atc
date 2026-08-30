@@ -92,6 +92,9 @@ func registerEvents(humaAPI huma.API, hub *events.Hub, heartbeat time.Duration) 
 		api.EventProjectCreated:  api.ProjectCreatedEvent{},
 		api.EventProjectUpdated:  api.ProjectUpdatedEvent{},
 		api.EventProjectDeleted:  api.ProjectDeletedEvent{},
+		api.EventThreadCreated:   api.ThreadCreatedEvent{},
+		api.EventThreadUpdated:   api.ThreadUpdatedEvent{},
+		api.EventThreadDeleted:   api.ThreadDeletedEvent{},
 		api.EventResync:          api.ResyncEvent{},
 	}, func(ctx context.Context, input *eventsInput, send sse.Sender) {
 		after, hasCursor := uint64(0), false
@@ -166,6 +169,12 @@ func sendChange(send sse.Sender, change events.Change) error {
 		data = api.ProjectUpdatedEvent{ChangeEvent: body}
 	case api.EventProjectDeleted:
 		data = api.ProjectDeletedEvent{ChangeEvent: body}
+	case api.EventThreadCreated:
+		data = api.ThreadCreatedEvent{ChangeEvent: body}
+	case api.EventThreadUpdated:
+		data = api.ThreadUpdatedEvent{ChangeEvent: body}
+	case api.EventThreadDeleted:
+		data = api.ThreadDeletedEvent{ChangeEvent: body}
 	default:
 		// An unmapped type would panic Huma's type lookup; drop it loudly
 		// in tests via the OpenAPI event map instead.
