@@ -135,8 +135,8 @@ func (r *Registry[S]) Deliver(secret string, deliver func(terminalID string, sta
 }
 
 // Load rebuilds the registry from the hook directory at boot, so TUIs
-// launched by an earlier server process keep validating. Files keep asks
-// to discard are launch leftovers (deleted terminals, another agent's
+// launched by an earlier server process keep validating. Files keep
+// rejects are launch leftovers (deleted terminals, another agent's
 // abandoned candidates) and are removed, along with whatever extra
 // per-launch files remove cleans up. Unreadable files are kept and logged
 // — transient errors must not revoke a live launch. Agent session

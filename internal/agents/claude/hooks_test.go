@@ -417,7 +417,7 @@ func TestLoadRegistrationsCleansStaleFiles(t *testing.T) {
 func TestCommandComposition(t *testing.T) {
 	f := newHookFixture(t)
 	entry := Entry(f.hooks)
-	command, err := entry.TUI.Command(context.Background(), agents.LaunchContext{TerminalID: "term-aaaaa", Directory: "/proj"})
+	command, err := entry.TUI.Command(context.Background(), agents.LaunchContext{TerminalID: "term-aaaaa"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -37,8 +37,10 @@ func TestThreadsRoundTrip(t *testing.T) {
 		},
 	}
 	for _, record := range records {
-		if ok, err := threads.Insert(ctx, record); err != nil || !ok {
-			t.Fatalf("Insert = %v, %v; want true", ok, err)
+		if ok, err := threads.InsertObserved(ctx, record, ThreadIdentity{
+			Agent: record.Agent, ProviderConversationID: "sess-" + record.ID, ThreadID: record.ID,
+		}); err != nil || !ok {
+			t.Fatalf("InsertObserved = %v, %v; want true", ok, err)
 		}
 	}
 
@@ -51,26 +53,26 @@ func TestThreadsRoundTrip(t *testing.T) {
 	}
 
 	// Insertion is the ID collision check.
-	if ok, err := threads.Insert(ctx, ThreadRecord{
+	if ok, err := threads.InsertObserved(ctx, ThreadRecord{
 		ID: "thrd-aaaaa", Agent: "claude", ProjectID: "proj-aaaaa", Status: "unknown",
 		CreatedAt: at(9), UpdatedAt: at(9),
-	}); err != nil || ok {
-		t.Fatalf("Insert(collision) = %v, %v; want false", ok, err)
+	}, ThreadIdentity{Agent: "claude", ProviderConversationID: "sess-x", ThreadID: "thrd-aaaaa"}); err != nil || ok {
+		t.Fatalf("InsertObserved(collision) = %v, %v; want false", ok, err)
 	}
 
 	// A thread referencing a missing project or terminal is refused by the
 	// schema, surfaced as the typed foreign-key error.
-	if _, err := threads.Insert(ctx, ThreadRecord{
+	if _, err := threads.InsertObserved(ctx, ThreadRecord{
 		ID: "thrd-ccccc", Agent: "claude", ProjectID: "proj-nope", Status: "unknown",
 		CreatedAt: at(4), UpdatedAt: at(4),
-	}); !errorsIsForeignKey(err) {
-		t.Errorf("Insert(missing project) error = %v; want ErrForeignKeyViolation", err)
+	}, ThreadIdentity{Agent: "claude", ProviderConversationID: "sess-c", ThreadID: "thrd-ccccc"}); !errorsIsForeignKey(err) {
+		t.Errorf("InsertObserved(missing project) error = %v; want ErrForeignKeyViolation", err)
 	}
-	if _, err := threads.Insert(ctx, ThreadRecord{
+	if _, err := threads.InsertObserved(ctx, ThreadRecord{
 		ID: "thrd-ddddd", Agent: "claude", ProjectID: "proj-aaaaa", TerminalID: new("term-nope"),
 		Status: "unknown", CreatedAt: at(4), UpdatedAt: at(4),
-	}); !errorsIsForeignKey(err) {
-		t.Errorf("Insert(missing terminal) error = %v; want ErrForeignKeyViolation", err)
+	}, ThreadIdentity{Agent: "claude", ProviderConversationID: "sess-d", ThreadID: "thrd-ddddd"}); !errorsIsForeignKey(err) {
+		t.Errorf("InsertObserved(missing terminal) error = %v; want ErrForeignKeyViolation", err)
 	}
 
 	// Update writes every mutable column.
@@ -156,38 +158,31 @@ func TestThreadIdentities(t *testing.T) {
 	ctx := context.Background()
 	threads := s.Threads()
 	insertProject(t, s, "proj-aaaaa", "/")
-	if ok, err := threads.Insert(ctx, ThreadRecord{
-		ID: "thrd-aaaaa", Agent: "claude", ProjectID: "proj-aaaaa", Status: "idle",
-		CreatedAt: at(0), UpdatedAt: at(0),
-	}); err != nil || !ok {
-		t.Fatalf("Insert = %v, %v", ok, err)
-	}
 
-	identity := ThreadIdentity{Agent: "claude", ProviderConversationID: "sess-1", ThreadID: "thrd-aaaaa"}
-	if ok, err := threads.InsertIdentity(ctx, identity); err != nil || !ok {
-		t.Fatalf("InsertIdentity = %v, %v; want true", ok, err)
+	// The identity key is (agent, provider conversation id): the same
+	// provider id under another agent is a distinct identity.
+	identities := []ThreadIdentity{
+		{Agent: "claude", ProviderConversationID: "sess-1", ThreadID: "thrd-aaaaa"},
+		{Agent: "codex", ProviderConversationID: "sess-1", ThreadID: "thrd-bbbbb"},
 	}
-	// The identity key is (agent, provider conversation id): a duplicate
-	// inserts nothing, and the same provider id under another agent is a
-	// distinct identity.
-	if ok, err := threads.InsertIdentity(ctx, identity); err != nil || ok {
-		t.Fatalf("InsertIdentity(duplicate) = %v, %v; want false", ok, err)
-	}
-	if _, err := threads.InsertIdentity(ctx, ThreadIdentity{
-		Agent: "codex", ProviderConversationID: "sess-1", ThreadID: "thrd-zzzzz",
-	}); !errorsIsForeignKey(err) {
-		t.Errorf("InsertIdentity(missing thread) error = %v; want ErrForeignKeyViolation", err)
+	for _, identity := range identities {
+		if ok, err := threads.InsertObserved(ctx, ThreadRecord{
+			ID: identity.ThreadID, Agent: identity.Agent, ProjectID: "proj-aaaaa", Status: "idle",
+			CreatedAt: at(0), UpdatedAt: at(0),
+		}, identity); err != nil || !ok {
+			t.Fatalf("InsertObserved = %v, %v", ok, err)
+		}
 	}
 
 	got, err := threads.ListIdentities(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff([]ThreadIdentity{identity}, got); diff != "" {
+	if diff := cmp.Diff(identities, got); diff != "" {
 		t.Errorf("ListIdentities (-want +got):\n%s", diff)
 	}
 
-	// Deleting the thread cascades its identity mapping.
+	// Deleting a thread cascades only its own mapping.
 	if ok, err := threads.Delete(ctx, "thrd-aaaaa"); err != nil || !ok {
 		t.Fatalf("Delete = %v, %v", ok, err)
 	}
@@ -195,8 +190,8 @@ func TestThreadIdentities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 0 {
-		t.Errorf("identities after thread delete = %v; want none", got)
+	if diff := cmp.Diff(identities[1:], got); diff != "" {
+		t.Errorf("identities after thread delete (-want +got):\n%s", diff)
 	}
 }
 
@@ -214,16 +209,13 @@ func TestThreadReferentialLifecycle(t *testing.T) {
 	}); err != nil || !ok {
 		t.Fatalf("planting terminal = %v, %v", ok, err)
 	}
-	if ok, err := threads.Insert(ctx, ThreadRecord{
+	if ok, err := threads.InsertObserved(ctx, ThreadRecord{
 		ID: "thrd-aaaaa", Agent: "claude", ProjectID: "proj-aaaaa", TerminalID: new("term-aaaaa"),
 		Status: "idle", CreatedAt: at(1), UpdatedAt: at(1),
-	}); err != nil || !ok {
-		t.Fatalf("Insert = %v, %v", ok, err)
-	}
-	if ok, err := threads.InsertIdentity(ctx, ThreadIdentity{
+	}, ThreadIdentity{
 		Agent: "claude", ProviderConversationID: "sess-1", ThreadID: "thrd-aaaaa",
 	}); err != nil || !ok {
-		t.Fatalf("InsertIdentity = %v, %v", ok, err)
+		t.Fatalf("InsertObserved = %v, %v", ok, err)
 	}
 
 	// ON DELETE SET NULL: the thread record survives its terminal.

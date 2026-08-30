@@ -473,7 +473,7 @@ func TestLoadRegistrationsCleansStaleFiles(t *testing.T) {
 func TestCommandComposition(t *testing.T) {
 	f := newHookFixture(t)
 	entry := Entry(f.hooks)
-	command, err := entry.TUI.Command(context.Background(), agents.LaunchContext{TerminalID: "term-aaaaa", Directory: "/proj"})
+	command, err := entry.TUI.Command(context.Background(), agents.LaunchContext{TerminalID: "term-aaaaa"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -491,7 +491,7 @@ func TestCommandComposition(t *testing.T) {
 	if err := os.WriteFile(profilePath(f.codexHome), []byte("# someone else's\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := entry.TUI.Command(context.Background(), agents.LaunchContext{TerminalID: "term-aaaaa", Directory: "/proj"}); err == nil {
+	if _, err := entry.TUI.Command(context.Background(), agents.LaunchContext{TerminalID: "term-aaaaa"}); err == nil {
 		t.Error("foreign profile did not refuse the launch")
 	}
 }

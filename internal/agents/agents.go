@@ -25,15 +25,13 @@ import (
 const CapabilityTUI = "tui"
 
 // LaunchContext is the per-launch context the composition injects into an
-// adapter's command (ATC-255): the minted terminal identity and its
-// working directory. Adapters use it to wire observation — Claude hook
-// settings, the Codex hook environment — without any of it appearing in
-// the API contract.
+// adapter's command (ATC-255): the minted terminal identity. Adapters use
+// it to wire observation — Claude hook settings, the Codex hook
+// environment — without any of it appearing in the API contract. Grow it
+// only when an adapter consumes the addition.
 type LaunchContext struct {
 	// TerminalID is the terminal being created for this launch.
 	TerminalID string
-	// Directory is the terminal's working directory (the project's).
-	Directory string
 }
 
 // TUIAdapter is the per-tool seam behind the tui capability, written once

@@ -15,9 +15,9 @@ import (
 type fakeTUI struct{ command, binary, hint string }
 
 // Command echoes the launch context so tests can assert the composition
-// forwarded the minted identity and directory.
+// forwarded the minted identity.
 func (a fakeTUI) Command(_ context.Context, launch LaunchContext) (string, error) {
-	return a.command + " --for " + launch.TerminalID + ":" + launch.Directory, nil
+	return a.command + " --for " + launch.TerminalID, nil
 }
 func (a fakeTUI) Binary() string      { return a.binary }
 func (a fakeTUI) InstallHint() string { return a.hint }
@@ -32,9 +32,9 @@ type fakeCreator struct {
 }
 
 func (c *fakeCreator) CreateForAgent(_ context.Context, params api.TerminalCreateParams, agent string,
-	compose func(terminalID, directory string) (string, error)) (api.Terminal, error) {
+	compose func(terminalID string) (string, error)) (api.Terminal, error) {
 	c.params, c.agent = params, agent
-	command, err := compose("term-aaaaa", "/proj")
+	command, err := compose("term-aaaaa")
 	if err != nil {
 		return api.Terminal{}, err
 	}
@@ -117,7 +117,7 @@ func TestLaunchComposesTheTerminalCreate(t *testing.T) {
 	}
 	// The composed command carries the per-launch context the terminals
 	// domain fed the factory.
-	if creator.command != "alpha --tui --for term-aaaaa:/proj" {
+	if creator.command != "alpha --tui --for term-aaaaa" {
 		t.Errorf("composed command = %q", creator.command)
 	}
 	if creator.agent != "alpha" || terminal.Agent != "alpha" {

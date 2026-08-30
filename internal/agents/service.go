@@ -30,7 +30,7 @@ var ErrUnavailable = errors.New("agent unavailable")
 // never learns agent vocabulary.
 type TerminalCreator interface {
 	CreateForAgent(ctx context.Context, params api.TerminalCreateParams, agent string,
-		compose func(terminalID, directory string) (string, error)) (api.Terminal, error)
+		compose func(terminalID string) (string, error)) (api.Terminal, error)
 }
 
 // Options wires a Service.
@@ -128,8 +128,8 @@ func (s *Service) Launch(ctx context.Context, id string, params api.AgentLaunchP
 	return s.terminals.CreateForAgent(ctx, api.TerminalCreateParams{
 		ProjectID: params.ProjectID,
 		Name:      name,
-	}, entry.ID, func(terminalID, directory string) (string, error) {
-		return entry.TUI.Command(ctx, LaunchContext{TerminalID: terminalID, Directory: directory})
+	}, entry.ID, func(terminalID string) (string, error) {
+		return entry.TUI.Command(ctx, LaunchContext{TerminalID: terminalID})
 	})
 }
 
