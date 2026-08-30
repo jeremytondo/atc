@@ -1,0 +1,15 @@
+model = "gpt-5.6-luna"
+model_reasoning_effort = "low"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[projects."/tmp/atc-281-workspace"]
+trust_level = "trusted"
+
+[features]
+hooks = true
+
+[hooks.state]
+
+[hooks.state."/tmp/atc-281-codex-home/hooks.json:session_start:0:0"]
+trusted_hash = "sha256:86605e91c12d54413dec71e32b6258306218bf702d7f250f19fc32bcaaed1d98"

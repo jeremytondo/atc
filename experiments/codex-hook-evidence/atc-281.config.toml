@@ -1,0 +1,47 @@
+[[hooks.SessionStart]]
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "python3 /home/jeremytondo/Projects/ATC/atc/experiments/codex-hook-evidence/capture_hook.py"
+timeout = 3
+
+[[hooks.UserPromptSubmit]]
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "python3 /home/jeremytondo/Projects/ATC/atc/experiments/codex-hook-evidence/capture_hook.py"
+timeout = 3
+
+[[hooks.PreToolUse]]
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "python3 /home/jeremytondo/Projects/ATC/atc/experiments/codex-hook-evidence/capture_hook.py"
+timeout = 3
+
+[[hooks.PermissionRequest]]
+[[hooks.PermissionRequest.hooks]]
+type = "command"
+command = "python3 /home/jeremytondo/Projects/ATC/atc/experiments/codex-hook-evidence/capture_hook.py"
+timeout = 3
+
+[[hooks.PostToolUse]]
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "python3 /home/jeremytondo/Projects/ATC/atc/experiments/codex-hook-evidence/capture_hook.py"
+timeout = 3
+
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "python3 /home/jeremytondo/Projects/ATC/atc/experiments/codex-hook-evidence/capture_hook.py"
+timeout = 3
+
+[[hooks.Interrupt]]
+[[hooks.Interrupt.hooks]]
+type = "command"
+command = "python3 /home/jeremytondo/Projects/ATC/atc/experiments/codex-hook-evidence/capture_hook.py"
+timeout = 3
+
+[[hooks.SessionEnd]]
+[[hooks.SessionEnd.hooks]]
+type = "command"
+command = "python3 /home/jeremytondo/Projects/ATC/atc/experiments/codex-hook-evidence/capture_hook.py"
+timeout = 3
