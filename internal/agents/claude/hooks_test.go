@@ -177,6 +177,23 @@ func TestPrepareWritesPrivateFiles(t *testing.T) {
 	}
 }
 
+// Deleting the terminal deregisters its launch: the secret stops
+// validating and both per-launch files go.
+func TestDeregisterRemovesLaunchFiles(t *testing.T) {
+	f := newHookFixture(t)
+	secret := f.prepare(t, "term-aaaaa")
+
+	f.hooks.Deregister("term-aaaaa")
+	if code := f.post(t, secret, `{"session_id":"s1","hook_event_name":"SessionStart","source":"startup"}`); code != http.StatusNotFound {
+		t.Errorf("deregistered secret: got %d, want 404", code)
+	}
+	for _, path := range []string{f.hooks.settingsPath("term-aaaaa"), f.hooks.registry.HeaderPath("term-aaaaa")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("per-launch file %s survived deregistration", path)
+		}
+	}
+}
+
 func TestDeliverySecretEnforcement(t *testing.T) {
 	f := newHookFixture(t)
 	secret := f.prepare(t, "term-aaaaa")

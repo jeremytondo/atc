@@ -84,6 +84,29 @@ func TestDeliverCarriesState(t *testing.T) {
 	}
 }
 
+// Deregistration is the delete-time cleanup: the secret stops validating
+// and the header file goes, without waiting for the next boot's Load.
+func TestDeregister(t *testing.T) {
+	registry, err := NewRegistry[struct{}](t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := registry.Prepare("term-aaaaa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := readSecret(t, path)
+
+	registry.Deregister("term-aaaaa")
+	if code := registry.Deliver(secret, func(string, *struct{}) int { return http.StatusNoContent }); code != http.StatusNotFound {
+		t.Errorf("deregistered secret: got %d, want 404", code)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("deregistered header file survived")
+	}
+	registry.Deregister("term-unknown") // a no-op, never a panic
+}
+
 func TestLoadCleansAndKeeps(t *testing.T) {
 	dir := t.TempDir()
 	registry, err := NewRegistry[struct{}](dir, nil)

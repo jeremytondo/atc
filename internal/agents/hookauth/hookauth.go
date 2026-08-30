@@ -134,6 +134,21 @@ func (r *Registry[S]) Deliver(secret string, deliver func(terminalID string, sta
 	return deliver(reg.terminalID, &reg.state)
 }
 
+// Deregister drops a terminal's registration and header file: the
+// terminal was deleted, so its secret must stop validating now rather
+// than at the next boot's cleanup. An in-flight delivery that already
+// resolved the registration fails Deliver's ownership re-check. Unknown
+// terminals are a no-op.
+func (r *Registry[S]) Deregister(terminalID string) {
+	r.mu.Lock()
+	if reg, ok := r.byTerminal[terminalID]; ok {
+		delete(r.byTerminal, terminalID)
+		delete(r.bySecret, reg.secret)
+	}
+	r.mu.Unlock()
+	_ = os.Remove(r.HeaderPath(terminalID))
+}
+
 // Load rebuilds the registry from the hook directory at boot, so TUIs
 // launched by an earlier server process keep validating. Files keep
 // rejects are launch leftovers (deleted terminals, another agent's

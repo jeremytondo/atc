@@ -29,7 +29,8 @@ type terminalIDInput struct {
 	ID string `path:"id" doc:"Terminal identifier."`
 }
 
-func registerTerminals(humaAPI huma.API, service *terminals.Service, agentService *agents.Service, threadService *threads.Service) {
+func registerTerminals(humaAPI huma.API, service *terminals.Service, agentService *agents.Service,
+	threadService *threads.Service, cleanups []func(terminalID string)) {
 	// The terminals domain is agent-agnostic, so the activeThreadId
 	// projection is grafted onto its wire shape here, from the threads
 	// service that owns it (ATC-255).
@@ -137,6 +138,10 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, agentServic
 			// client disconnect after the commit must not leave the view
 			// linked to a deleted terminal.
 			threadService.TerminalRemoved(context.WithoutCancel(ctx), input.ID)
+		}
+		// The deleted terminal's hook secrets stop validating with it.
+		for _, cleanup := range cleanups {
+			cleanup(input.ID)
 		}
 		return nil, nil
 	})

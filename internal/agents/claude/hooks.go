@@ -163,6 +163,14 @@ func hookSettings(command string) map[string]any {
 	return map[string]any{"hooks": events}
 }
 
+// Deregister drops a deleted terminal's secret and per-launch files —
+// wired by the composition root to the terminal delete, so the secret
+// stops validating immediately rather than at the next boot's cleanup.
+func (h *Hooks) Deregister(terminalID string) {
+	h.registry.Deregister(terminalID)
+	_ = os.Remove(h.settingsPath(terminalID))
+}
+
 // LoadRegistrations rebuilds the secret registry from the hook directory
 // at boot, so TUIs launched by an earlier server process keep validating.
 // Files whose terminal no longer exists are launch leftovers (deleted

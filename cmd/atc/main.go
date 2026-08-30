@@ -624,6 +624,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 			"POST " + claude.HooksPath: claudeHooks.Handler(),
 			"POST " + codex.HooksPath:  codexHooks.Handler(),
 		},
+		TerminalCleanups: []func(string){claudeHooks.Deregister, codexHooks.Deregister},
 	})
 	// The reconcile loop is waited on before the deferred database close,
 	// so shutdown never races an in-flight pass against it. The wait is

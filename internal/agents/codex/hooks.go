@@ -139,6 +139,13 @@ func (h *Hooks) ingestURL() string {
 	return h.baseURL + HooksPath
 }
 
+// Deregister drops a deleted terminal's secret and header file — wired
+// by the composition root to the terminal delete, so the secret stops
+// validating immediately rather than at the next boot's cleanup.
+func (h *Hooks) Deregister(terminalID string) {
+	h.registry.Deregister(terminalID)
+}
+
 // LoadRegistrations rebuilds the secret registry from the hook directory
 // at boot, so TUIs launched by an earlier server process keep validating.
 // Session bindings are not persisted: the first payload after a restart
