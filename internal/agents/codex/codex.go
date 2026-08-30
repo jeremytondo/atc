@@ -40,18 +40,13 @@ func (t tui) Command(_ context.Context, launch agents.LaunchContext) (string, er
 	if err != nil {
 		return "", err
 	}
-	command := "CODEX_HOME=" + agents.Quote(t.hooks.codexHome) +
+	env := "CODEX_HOME=" + agents.Quote(t.hooks.codexHome) +
 		" " + envURL + "=" + agents.Quote(t.hooks.ingestURL()) +
-		" " + envHeader + "=" + agents.Quote(headerPath) +
-		" codex"
+		" " + envHeader + "=" + agents.Quote(headerPath)
 	if launch.ResumeConversationID != "" {
-		command += " resume"
+		return env + " codex resume -p " + profileName + " " + agents.Quote(launch.ResumeConversationID), nil
 	}
-	command += " -p " + profileName
-	if launch.ResumeConversationID != "" {
-		command += " " + agents.Quote(launch.ResumeConversationID)
-	}
-	return command, nil
+	return env + " codex -p " + profileName, nil
 }
 
 func (tui) Binary() string      { return "codex" }

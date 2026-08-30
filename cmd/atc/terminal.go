@@ -63,7 +63,7 @@ loaded); without it you get a plain interactive shell.`,
 			if err != nil {
 				return err
 			}
-			return openAndAttach(cmd, baseURL, func(ctx context.Context) (api.Terminal, error) {
+			return runAndMaybeAttach(cmd, baseURL, func(ctx context.Context) (api.Terminal, error) {
 				projectID, name, err := resolveCreateFlags(cmd, client)
 				if err != nil {
 					return api.Terminal{}, err
@@ -101,16 +101,13 @@ func resolveCreateFlags(cmd *cobra.Command, client *api.Client) (projectID, name
 	return projectID, name, err
 }
 
-// openAndAttach is the workflow every launching command shares (ATC-282):
-// attach is the default, --detach opts out. Where attaching is impossible
-// — no TTY, or a server on another machine — the command still runs the
-// action, prints the terminal, and says on stderr why it did not attach;
-// automation composes with the same surface. A tooling preflight (no zmx)
-// fails before the action, so nothing is created. act performs the API
-// call that yields the terminal — a create, a launch, or a thread open —
-// and a failed attach afterwards reports the terminal and the retry
-// remedy, never the loss of what was created.
-func openAndAttach(cmd *cobra.Command, baseURL string, act func(ctx context.Context) (api.Terminal, error)) error {
+// runAndMaybeAttach runs act — the API call yielding a terminal — then
+// attaches unless --detach (ATC-282). Two kinds of inability differ on
+// purpose: local tooling missing (no zmx) fails before act so nothing is
+// created, while an environment that can never attach (no TTY, a server
+// on another machine) still runs act and prints the terminal, so
+// automation composes with the same surface.
+func runAndMaybeAttach(cmd *cobra.Command, baseURL string, act func(ctx context.Context) (api.Terminal, error)) error {
 	detach, err := cmd.Flags().GetBool("detach")
 	if err != nil {
 		return err

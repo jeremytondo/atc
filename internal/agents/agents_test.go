@@ -173,10 +173,7 @@ func TestLaunchRefusals(t *testing.T) {
 func TestResumeComposesTheExactResume(t *testing.T) {
 	service, creator := newTestService(t, "alpha")
 	cwd := t.TempDir()
-	request := threads.ResumeRequest{
-		ThreadID: "thrd-aaaaa", Agent: "alpha", ProviderID: "sess-1",
-		ProjectID: "proj-aaaaa", Directory: cwd,
-	}
+	request := threads.ResumeRequest{Agent: "alpha", ProviderID: "sess-1", ProjectID: "proj-aaaaa", Directory: cwd}
 	terminal, err := service.Resume(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)

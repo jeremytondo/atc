@@ -49,7 +49,7 @@ afterwards with ` + "`atc thread list --terminal <id>`" + `. A missing agent
 binary is refused with its install hint before anything is created.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, baseURL string) error {
-			return openAndAttach(cmd, baseURL, func(ctx context.Context) (api.Terminal, error) {
+			return runAndMaybeAttach(cmd, baseURL, func(ctx context.Context) (api.Terminal, error) {
 				projectID, name, err := resolveCreateFlags(cmd, client)
 				if err != nil {
 					return api.Terminal{}, err
@@ -76,7 +76,7 @@ instead of attaching; where attaching is impossible (no TTY, or the
 server is on another machine) the terminal is still printed.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, baseURL string) error {
-			return openAndAttach(cmd, baseURL, func(ctx context.Context) (api.Terminal, error) {
+			return runAndMaybeAttach(cmd, baseURL, func(ctx context.Context) (api.Terminal, error) {
 				opened, err := client.OpenThread(ctx, args[0])
 				return opened.Terminal, err
 			})

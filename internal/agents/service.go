@@ -124,8 +124,10 @@ func (s *Service) Launch(ctx context.Context, id string, params api.AgentLaunchP
 // this inside its open decision; everything else is the normal launch.
 func (s *Service) Resume(ctx context.Context, req threads.ResumeRequest) (api.Terminal, error) {
 	directory := req.Directory
-	if info, err := os.Stat(directory); directory != "" && (err != nil || !info.IsDir()) {
-		directory = ""
+	if directory != "" {
+		if info, err := os.Stat(directory); err != nil || !info.IsDir() {
+			directory = ""
+		}
 	}
 	return s.launch(ctx, req.Agent, api.AgentLaunchParams{ProjectID: req.ProjectID}, directory, req.ProviderID)
 }

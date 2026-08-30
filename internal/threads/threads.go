@@ -96,7 +96,6 @@ type StatusObservation struct {
 // the private identity out of this domain to the adapter that composes
 // the command — never onto the wire.
 type ResumeRequest struct {
-	ThreadID string
 	// Agent is the catalog id; ProviderID the provider's own conversation
 	// id, together the private identity key.
 	Agent      string
@@ -110,7 +109,6 @@ type ResumeRequest struct {
 }
 
 // Resumer launches the resume terminal for an open decision
-// (agents.Service.Resume in production). It is invoked under the thread
-// service's operation lock, so at most one resume of a thread is ever in
-// flight.
+// (agents.Service.Resume in production). Open invokes it for at most one
+// in-flight resume per thread.
 type Resumer func(ctx context.Context, req ResumeRequest) (api.Terminal, error)

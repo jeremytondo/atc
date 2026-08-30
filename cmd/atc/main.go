@@ -534,18 +534,12 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	terminalService.Reconcile(ctx)
 
 	// Threads load after terminals so the boot-time status coercion and
-	// the sweep read a settled terminal view. The resumer is the agent
-	// service, which the hook plumbing below exists before; the closure
-	// binds it once assembled.
-	var agentService *agents.Service
+	// the sweep read a settled terminal view.
 	threadService := threads.NewService(threads.Options{
 		Repository: database.Threads(),
 		Terminals:  terminalService,
-		Resume: func(ctx context.Context, req threads.ResumeRequest) (api.Terminal, error) {
-			return agentService.Resume(ctx, req)
-		},
-		Hub:    hub,
-		Logger: logger,
+		Hub:        hub,
+		Logger:     logger,
 	})
 	if err := threadService.Load(ctx); err != nil {
 		return err
@@ -609,7 +603,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 
 	// One registration line per built-in agent; a duplicate id fails the
 	// boot.
-	agentService, err = agents.NewService(agents.Options{
+	agentService, err := agents.NewService(agents.Options{
 		Entries:   []agents.Entry{claude.Entry(claudeHooks), codex.Entry(codexHooks)},
 		Terminals: terminalService,
 	})

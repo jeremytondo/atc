@@ -17,7 +17,6 @@ import (
 	"github.com/jeremytondo/atc/internal/agents"
 	"github.com/jeremytondo/atc/internal/agents/claude"
 	"github.com/jeremytondo/atc/internal/agents/codex"
-	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/server"
@@ -92,14 +91,10 @@ func startTestServerWithThreads(t *testing.T) (*cliAdapter, *threads.Service) {
 		Terminals:  db.Terminals(),
 		Hub:        hub,
 	})
-	var agentService *agents.Service
 	threadService := threads.NewService(threads.Options{
 		Repository: db.Threads(),
 		Terminals:  service,
-		Resume: func(ctx context.Context, req threads.ResumeRequest) (api.Terminal, error) {
-			return agentService.Resume(ctx, req)
-		},
-		Hub: hub,
+		Hub:        hub,
 	})
 	if err := threadService.Load(context.Background()); err != nil {
 		t.Fatal(err)
@@ -123,7 +118,7 @@ func startTestServerWithThreads(t *testing.T) (*cliAdapter, *threads.Service) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agentService, err = agents.NewService(agents.Options{
+	agentService, err := agents.NewService(agents.Options{
 		Entries:   []agents.Entry{claude.Entry(claudeHooks), codex.Entry(codexHooks)},
 		Terminals: service,
 		// The probe never consults this machine's PATH: claude "exists",

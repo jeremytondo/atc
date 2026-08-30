@@ -117,7 +117,7 @@ func NewHandler(opts Options) http.Handler {
 		registerAgents(humaAPI, opts.Agents)
 	}
 	if opts.Threads != nil {
-		registerThreads(humaAPI, opts.Threads)
+		registerThreads(humaAPI, opts.Threads, opts.Agents)
 	}
 	if opts.Events != nil {
 		registerEvents(humaAPI, opts.Events, opts.HeartbeatInterval)

@@ -137,15 +137,11 @@ func newFixture(t *testing.T) *fixture {
 		Hub:        hub,
 		Now:        now,
 	})
-	var agentService *agents.Service
 	threadService := threads.NewService(threads.Options{
 		Repository: db.Threads(),
 		Terminals:  service,
-		Resume: func(ctx context.Context, req threads.ResumeRequest) (api.Terminal, error) {
-			return agentService.Resume(ctx, req)
-		},
-		Hub: hub,
-		Now: now,
+		Hub:        hub,
+		Now:        now,
 	})
 	if err := threadService.Load(context.Background()); err != nil {
 		t.Fatal(err)
@@ -175,7 +171,7 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	binaries := map[string]bool{"claude": true}
-	agentService, err = agents.NewService(agents.Options{
+	agentService, err := agents.NewService(agents.Options{
 		Entries:   []agents.Entry{claude.Entry(claudeHooks), codex.Entry(codexHooks)},
 		Terminals: service,
 		LookPath: func(name string) (string, error) {

@@ -428,10 +428,7 @@ func TestPostRestartSeeding(t *testing.T) {
 	if code := f.post(t, secret, `{"session_id":"s1","hook_event_name":"UserPromptSubmit","agent_id":"sub-1","prompt":"go"}`); code != http.StatusBadRequest {
 		t.Errorf("subagent seed: got %d, want 400", code)
 	}
-	// Unmapped and wrong-terminal sessions are dropped.
-	if code := f.post(t, secret, `{"session_id":"s404","hook_event_name":"UserPromptSubmit","prompt":"go"}`); code != http.StatusBadRequest {
-		t.Errorf("unmapped seed: got %d, want 400", code)
-	}
+	// A conversation mapped to another terminal is dropped.
 	if code := f.post(t, secret, `{"session_id":"s9","hook_event_name":"UserPromptSubmit","prompt":"go"}`); code != http.StatusBadRequest {
 		t.Errorf("wrong-terminal seed: got %d, want 400", code)
 	}
@@ -449,6 +446,62 @@ func TestPostRestartSeeding(t *testing.T) {
 	}
 	if got := f.observer.lastStatus(t); got.Status != api.ThreadWorking {
 		t.Errorf("seeded evidence status = %s", got.Status)
+	}
+}
+
+// A TUI that sat at its prompt across a restart has no thread and no
+// mapping; its first root prompt is the mint, exactly as without the
+// restart.
+func TestPostRestartFirstPromptMints(t *testing.T) {
+	f := newHookFixture(t)
+	f.prepare(t, "term-aaaaa")
+	if err := f.hooks.LoadRegistrations(); err != nil {
+		t.Fatal(err)
+	}
+	secret := f.prepare(t, "term-aaaaa")
+
+	if code := f.post(t, secret, `{"session_id":"s1","hook_event_name":"Notification","notification_type":"idle_prompt"}`); code != http.StatusBadRequest {
+		t.Errorf("unmapped straggler seed: got %d, want 400", code)
+	}
+	if code := f.post(t, secret, `{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"first words"}`); code != http.StatusNoContent {
+		t.Errorf("unmapped first prompt: got %d, want 204", code)
+	}
+	if len(f.observer.sessions) != 1 || f.observer.sessions[0].ProviderID != "s1" || f.observer.sessions[0].Metadata.Title != "first words" {
+		t.Fatalf("mint after restart = %+v", f.observer.sessions)
+	}
+	if got := f.observer.lastStatus(t); got.Status != api.ThreadWorking {
+		t.Errorf("status after mint = %s", got.Status)
+	}
+}
+
+// A transient failure on the minting prompt itself must not lose the
+// thread for the whole turn: the prompt is remembered, the next event
+// mints — with the prompt's title — and the turn's evidence lands.
+func TestFirstPromptFailureRetriesOnNextEvent(t *testing.T) {
+	f := newHookFixture(t)
+	secret := f.prepare(t, "term-aaaaa")
+	f.post(t, secret, `{"session_id":"s1","hook_event_name":"SessionStart","source":"startup"}`)
+
+	f.terminals.mu.Lock()
+	saved := f.terminals.terminals["term-aaaaa"]
+	delete(f.terminals.terminals, "term-aaaaa")
+	f.terminals.mu.Unlock()
+	if code := f.post(t, secret, `{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"fix the build"}`); code != http.StatusNoContent {
+		t.Fatalf("prompt during outage: got %d", code)
+	}
+	if len(f.observer.sessions) != 0 {
+		t.Fatalf("sessions during outage = %+v", f.observer.sessions)
+	}
+
+	f.terminals.mu.Lock()
+	f.terminals.terminals["term-aaaaa"] = saved
+	f.terminals.mu.Unlock()
+	f.post(t, secret, `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Bash"}`)
+	if len(f.observer.sessions) != 1 || f.observer.sessions[0].Metadata.Title != "fix the build" {
+		t.Fatalf("retry mint = %+v; want one observation titled from the prompt", f.observer.sessions)
+	}
+	if got := f.observer.lastStatus(t); got.Status != api.ThreadWorking {
+		t.Errorf("evidence after retry = %s", got.Status)
 	}
 }
 

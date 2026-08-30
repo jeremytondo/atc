@@ -87,7 +87,11 @@ type session struct {
 	established bool
 	// ended records a SessionEnd: stragglers for the departed session are
 	// dropped rather than re-seeded, until the next SessionStart.
-	ended   bool
+	ended bool
+	// title is the condensed first root prompt, once one was seen: proof
+	// the conversation is owed a thread (ATC-282), and the title fallback
+	// to mint it with should the prompt's own observation have failed.
+	title   string
 	tracker *tracker
 }
 
@@ -241,20 +245,20 @@ func (h *Hooks) apply(ctx context.Context, terminalID string, st *session, p pay
 			return http.StatusBadRequest
 		}
 		if st.sessionID == "" {
-			// Post-restart seed: accept evidence only for a conversation the
-			// identity mapping already ties to this same terminal, and only
-			// from a root UserPromptSubmit — the one event a conversation
-			// the TUI does not display can never produce (the Codex gate's
-			// reasoning). A displaced session's straggler (a late
+			// Post-restart seed: accept only a root UserPromptSubmit — the
+			// one event a conversation the TUI does not display can never
+			// produce (the Codex gate's reasoning) — for a conversation the
+			// identity mapping ties to this same terminal or knows nothing
+			// of (a TUI that sat at its prompt across the restart mints its
+			// first thread here). A displaced session's straggler (a late
 			// TaskCompleted, a notification) must not seed the wrong
 			// conversation as active and wedge the displayed one behind the
 			// session-match check; anything the gate drops is re-covered at
 			// the next prompt or SessionStart.
-			if p.HookEventName != "UserPromptSubmit" || p.AgentID != "" {
+			if !rootPrompt(p) {
 				return http.StatusBadRequest
 			}
-			_, mapped, known := h.threads.LookupIdentity("claude", p.SessionID)
-			if !known || mapped != terminalID {
+			if _, mapped, known := h.threads.LookupIdentity("claude", p.SessionID); known && mapped != terminalID {
 				return http.StatusBadRequest
 			}
 			st.sessionID = p.SessionID
@@ -277,6 +281,7 @@ func (h *Hooks) apply(ctx context.Context, terminalID string, st *session, p pay
 			st.sessionID = p.SessionID
 			st.tracker = newTracker()
 			st.established = false
+			st.title = ""
 			status = api.ThreadIdle
 		}
 		// Minting waits for the first root prompt (ATC-282): a zero-turn
@@ -289,27 +294,30 @@ func (h *Hooks) apply(ctx context.Context, terminalID string, st *session, p pay
 		// claims no status: an active turn may well continue.
 		switch {
 		case h.mapped(p.SessionID):
-			st.established = h.observe(ctx, terminalID, p, status)
+			st.established = h.observe(ctx, terminalID, st, p, status)
 		case status != "":
 			h.threads.Deactivate(ctx, terminalID)
 		}
 	case "SessionEnd":
 		h.sessionEnd(ctx, terminalID, st, p)
 	default:
+		if rootPrompt(p) {
+			st.title = agents.CondenseTitle(p.Prompt)
+		}
 		if !st.established {
 			// (Re-)establish the session before its evidence: the threads
 			// domain accepts live statuses only for a conversation some
 			// terminal holds, and the secret+session agreement is exactly
-			// that proof. The first root prompt mints an unmapped
-			// conversation; before it, only a mapped one (a resume whose
-			// SessionStart observation failed transiently) re-establishes,
-			// and anything else is a threadless TUI's chatter. On failure
-			// the event is dropped and the next one retries — a transient
-			// error must not silence the session.
-			if !rootPrompt(p) && !h.mapped(p.SessionID) {
+			// that proof. A conversation is minted once a root prompt has
+			// been seen; before one, only a mapped conversation (a resume
+			// whose SessionStart observation failed transiently)
+			// re-establishes, and anything else is a threadless TUI's
+			// chatter. On failure the event is dropped and the next one
+			// retries — a transient error must not silence the session.
+			if st.title == "" && !h.mapped(p.SessionID) {
 				return http.StatusNoContent
 			}
-			if !h.observe(ctx, terminalID, p, "") {
+			if !h.observe(ctx, terminalID, st, p, "") {
 				return http.StatusNoContent
 			}
 			st.established = true
@@ -334,8 +342,11 @@ func (h *Hooks) mapped(sessionID string) bool {
 
 // observe records a session observation for the terminal, reporting
 // success. status "" keeps whatever the thread already shows (a seed or
-// compact must not claim idle for a possibly mid-turn conversation).
-func (h *Hooks) observe(ctx context.Context, terminalID string, p payload, status api.ThreadStatus) bool {
+// compact must not claim idle for a possibly mid-turn conversation). The
+// first prompt's title rides along: an observed title only ever fills an
+// untitled thread, so a mint that the prompt's own delivery failed to
+// land still gets it.
+func (h *Hooks) observe(ctx context.Context, terminalID string, st *session, p payload, status api.ThreadStatus) bool {
 	terminal, err := h.terminals.Get(terminalID)
 	if err != nil {
 		// The terminal vanished mid-flight; there is nothing honest to
@@ -343,6 +354,8 @@ func (h *Hooks) observe(ctx context.Context, terminalID string, p payload, statu
 		h.logger.Warn("hook event for a missing terminal dropped", "terminal", terminalID)
 		return false
 	}
+	metadata := metadataFrom(p)
+	metadata.Title = st.title
 	threadID, err := h.threads.ObserveSession(ctx, threads.SessionObservation{
 		Agent:      "claude",
 		ProviderID: p.SessionID,
@@ -350,7 +363,7 @@ func (h *Hooks) observe(ctx context.Context, terminalID string, p payload, statu
 		ProjectID:  terminal.ProjectID,
 		At:         h.now(),
 		Status:     status,
-		Metadata:   metadataFrom(p),
+		Metadata:   metadata,
 	})
 	if err != nil || threadID == "" {
 		h.logger.Warn("recording session observation", "terminal", terminalID, "error", err)
@@ -396,7 +409,7 @@ func (h *Hooks) reduce(ctx context.Context, st *session, p payload) {
 	if rootPrompt(p) {
 		// The first-prompt title fallback: an observed title only ever
 		// fills an untitled thread, so sending it on every prompt is safe.
-		metadata.Title = agents.CondenseTitle(p.Prompt)
+		metadata.Title = st.title
 	}
 	if err := h.threads.ObserveStatus(ctx, threads.StatusObservation{
 		Agent: "claude", ProviderID: p.SessionID, At: h.now(),

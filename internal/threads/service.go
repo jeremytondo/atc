@@ -23,8 +23,8 @@ var ErrNotFound = errors.New("thread not found")
 // maps it to 409.
 var ErrActive = errors.New("thread is active")
 
-// ErrResumeUnavailable refuses opening a dormant thread on a service wired
-// without a Resumer.
+// ErrResumeUnavailable refuses opening a dormant thread when the caller
+// supplies no Resumer (a server without an agent catalog).
 var ErrResumeUnavailable = errors.New("this server cannot resume conversations")
 
 // Event-payload resource kinds. The service publishes terminal.updated
@@ -46,12 +46,9 @@ type TerminalReader interface {
 type Options struct {
 	Repository *store.Threads
 	Terminals  TerminalReader
-	// Resume launches the terminal for a dormant thread's open; nil
-	// refuses such opens with ErrResumeUnavailable.
-	Resume Resumer
-	Hub    *events.Hub
-	Logger *slog.Logger
-	Now    func() time.Time
+	Hub        *events.Hub
+	Logger     *slog.Logger
+	Now        func() time.Time
 }
 
 // Service owns the in-memory view and the observation policy. Construct
@@ -64,17 +61,22 @@ type Options struct {
 // refused:
 //
 //	ops serializes each mutation's commit — database write, view change,
-//	    and event publish move as one unit.
+//	    and event publish move as one unit — and guards opening.
 //	mu  guards the view, identity, and active maps only.
 type Service struct {
 	repository *store.Threads
 	terminals  TerminalReader
-	resume     Resumer
 	hub        *events.Hub
 	logger     *slog.Logger
 	now        func() time.Time
 
 	ops sync.Mutex
+	// opening holds each thread with a resume launch in flight, closed
+	// when it lands. Open releases ops for the launch's duration — a
+	// multi-second external start must not stall evidence for every
+	// other terminal — and a concurrent open of the same thread waits
+	// here instead of racing it.
+	opening map[string]chan struct{}
 
 	mu   sync.Mutex
 	view map[string]*store.ThreadRecord
@@ -107,10 +109,10 @@ func NewService(opts Options) *Service {
 	return &Service{
 		repository: opts.Repository,
 		terminals:  opts.Terminals,
-		resume:     opts.Resume,
 		hub:        opts.Hub,
 		logger:     opts.Logger,
 		now:        opts.Now,
+		opening:    make(map[string]chan struct{}),
 		view:       make(map[string]*store.ThreadRecord),
 		identities: make(map[identityKey]string),
 		active:     make(map[string]string),
@@ -671,6 +673,11 @@ func (s *Service) Update(ctx context.Context, id string, params api.ThreadUpdate
 	if !ok {
 		return api.Thread{}, ErrNotFound
 	}
+	if _, opening := s.opening[id]; opening && params.Archived != nil && *params.Archived {
+		// A resume in flight is about to hold the thread; archiving it
+		// now would be undone the moment the launch lands.
+		return api.Thread{}, fmt.Errorf("%w: open in progress", ErrActive)
+	}
 
 	changed, persist := false, false
 	if params.Title != nil {
@@ -735,6 +742,11 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	if holder != "" {
 		return fmt.Errorf("%w in terminal %s", ErrActive, holder)
 	}
+	if _, opening := s.opening[id]; opening {
+		// A resume in flight would land against a deleted record and
+		// re-mint it on the first evidence.
+		return fmt.Errorf("%w: open in progress", ErrActive)
+	}
 	deleted, err := s.repository.Delete(ctx, id)
 	if err != nil {
 		return err
@@ -755,8 +767,10 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 }
 
 // Open resolves the thread to exactly one terminal (ATC-282), reporting
-// whether it was created. The decision is one unit under ops, so
-// concurrent opens of the same thread serialize and at most one creates:
+// whether it was created. resume launches the terminal for a dormant
+// thread; nil refuses such opens. Concurrent opens of the same thread
+// converge — one decides, the rest wait for its outcome and re-decide —
+// so at most one creates:
 //
 //  1. a running terminal actively shows the thread   → reuse it
 //  2. the thread's last terminal is still up and no
@@ -771,23 +785,79 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 // live provider session is not, so anything not definitively gone
 // (exited, missing, deleted) counts as still up. The linkage a resume
 // records is intent, not evidence — it is what makes the next open fall
-// into rule 2 before any hook fires. Opening unarchives.
-func (s *Service) Open(ctx context.Context, id string) (api.Terminal, bool, error) {
+// into rule 2 before any hook fires — and it persists on a detached
+// context: a client that gives up mid-launch must not leave a live
+// resume unlinked for the next open to duplicate. Opening unarchives.
+func (s *Service) Open(ctx context.Context, id string, resume Resumer) (api.Terminal, bool, error) {
+	for {
+		s.ops.Lock()
+		terminal, inflight, err := s.decideOpen(ctx, id)
+		if err != nil || terminal.ID != "" {
+			s.ops.Unlock()
+			return terminal, false, err
+		}
+		if inflight == nil {
+			break
+		}
+		// Another open is resuming this thread: wait for its outcome,
+		// then decide afresh — its linkage lands the reuse rule.
+		s.ops.Unlock()
+		select {
+		case <-inflight:
+		case <-ctx.Done():
+			return api.Terminal{}, false, ctx.Err()
+		}
+	}
+	// Dormant, and this open owns the resume. ops is released for the
+	// launch and retaken to link.
+	if resume == nil {
+		s.ops.Unlock()
+		return api.Terminal{}, false, ErrResumeUnavailable
+	}
+	s.mu.Lock()
+	record := *s.view[id]
+	var providerID string
+	for key, threadID := range s.identities {
+		if threadID == id {
+			providerID = key.providerID
+			break
+		}
+	}
+	s.mu.Unlock()
+	done := make(chan struct{})
+	s.opening[id] = done
+	s.ops.Unlock()
+
+	detached := context.WithoutCancel(ctx)
+	terminal, err := resume(detached, ResumeRequest{
+		Agent: record.Agent, ProviderID: providerID,
+		ProjectID: record.ProjectID, Directory: record.Cwd,
+	})
+
 	s.ops.Lock()
 	defer s.ops.Unlock()
+	delete(s.opening, id)
+	close(done)
+	if err != nil {
+		return api.Terminal{}, false, err
+	}
+	if err := s.link(detached, id, terminal.ID); err != nil {
+		s.logger.Error("linking resumed terminal", "thread", id, "terminal", terminal.ID, "error", err)
+		return api.Terminal{}, false, err
+	}
+	return terminal, true, nil
+}
 
+// decideOpen applies the reuse rules under ops. It returns the reused
+// terminal (linked and unarchived), or the in-flight resume to wait on,
+// or neither when the thread is dormant and free to resume. Caller holds
+// ops.
+func (s *Service) decideOpen(ctx context.Context, id string) (api.Terminal, chan struct{}, error) {
 	s.mu.Lock()
 	entry, ok := s.view[id]
 	var record store.ThreadRecord
-	var providerID string
 	if ok {
 		record = *entry
-		for key, threadID := range s.identities {
-			if threadID == id {
-				providerID = key.providerID
-				break
-			}
-		}
 	}
 	holder := s.activeHolder(id)
 	var lastHolds string
@@ -796,32 +866,36 @@ func (s *Service) Open(ctx context.Context, id string) (api.Terminal, bool, erro
 	}
 	s.mu.Unlock()
 	if !ok {
-		return api.Terminal{}, false, ErrNotFound
+		return api.Terminal{}, nil, ErrNotFound
 	}
-
 	var terminal api.Terminal
-	created := false
 	switch {
 	case holder != "" && s.terminalUp(holder, &terminal):
 	case record.TerminalID != nil && (lastHolds == "" || lastHolds == id) && s.terminalUp(*record.TerminalID, &terminal):
 	default:
-		if s.resume == nil {
-			return api.Terminal{}, false, ErrResumeUnavailable
-		}
-		var err error
-		terminal, err = s.resume(ctx, ResumeRequest{
-			ThreadID: id, Agent: record.Agent, ProviderID: providerID,
-			ProjectID: record.ProjectID, Directory: record.Cwd,
-		})
-		if err != nil {
-			return api.Terminal{}, false, err
-		}
-		created = true
+		return api.Terminal{}, s.opening[id], nil
 	}
+	if err := s.link(ctx, id, terminal.ID); err != nil {
+		return api.Terminal{}, nil, err
+	}
+	return terminal, nil, nil
+}
 
+// link records the terminal as the thread's and unarchives it, persisting
+// and publishing only when something changed. Caller holds ops.
+func (s *Service) link(ctx context.Context, id, terminalID string) error {
+	s.mu.Lock()
+	entry, ok := s.view[id]
+	var record store.ThreadRecord
+	if ok {
+		record = *entry
+	}
+	s.mu.Unlock()
+	if !ok {
+		return ErrNotFound
+	}
 	changed := false
-	if record.TerminalID == nil || *record.TerminalID != terminal.ID {
-		terminalID := terminal.ID
+	if record.TerminalID == nil || *record.TerminalID != terminalID {
 		record.TerminalID = &terminalID
 		changed = true
 	}
@@ -830,23 +904,24 @@ func (s *Service) Open(ctx context.Context, id string) (api.Terminal, bool, erro
 		record.ArchivedAt = nil
 		changed = true
 	}
-	if changed {
-		record.UpdatedAt = s.now()
-		updated, err := s.repository.Update(ctx, record)
-		if err != nil {
-			return api.Terminal{}, false, err
-		}
-		if !updated {
-			return api.Terminal{}, false, ErrNotFound
-		}
-		s.mu.Lock()
-		if entry, ok := s.view[id]; ok {
-			*entry = record
-		}
-		s.mu.Unlock()
-		s.hub.Publish(api.EventThreadUpdated, resource, id)
+	if !changed {
+		return nil
 	}
-	return terminal, created, nil
+	record.UpdatedAt = s.now()
+	updated, err := s.repository.Update(ctx, record)
+	if err != nil {
+		return err
+	}
+	if !updated {
+		return ErrNotFound
+	}
+	s.mu.Lock()
+	if entry, ok := s.view[id]; ok {
+		*entry = record
+	}
+	s.mu.Unlock()
+	s.hub.Publish(api.EventThreadUpdated, resource, id)
+	return nil
 }
 
 // terminalUp reports whether the terminal may still be running — anything

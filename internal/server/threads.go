@@ -7,6 +7,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"github.com/jeremytondo/atc/internal/agents"
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/threads"
 )
@@ -35,7 +36,13 @@ type threadIDInput struct {
 	ID string `path:"id" doc:"Thread identifier."`
 }
 
-func registerThreads(humaAPI huma.API, service *threads.Service) {
+func registerThreads(humaAPI huma.API, service *threads.Service, agentService *agents.Service) {
+	// The resume launch behind open is the agent catalog's; a server
+	// without one can still reuse running terminals.
+	var resume threads.Resumer
+	if agentService != nil {
+		resume = agentService.Resume
+	}
 	huma.Register(humaAPI, huma.Operation{
 		OperationID: "list-threads",
 		Method:      http.MethodGet,
@@ -89,7 +96,7 @@ func registerThreads(humaAPI huma.API, service *threads.Service) {
 		Summary:     "Open a thread in a terminal",
 		Description: "Resolves the thread to exactly one terminal under one server-side decision: a running terminal showing it is reused; else its last terminal, if still running with unknown contents, is reused rather than risk a second writer; else a new terminal runs the provider's exact resume and is recorded as the thread's terminal. Concurrent opens converge on one terminal. An archived thread is unarchived. The server never attaches.",
 	}, func(ctx context.Context, input *threadIDInput) (*threadOpenOutput, error) {
-		terminal, created, err := service.Open(ctx, input.ID)
+		terminal, created, err := service.Open(ctx, input.ID, resume)
 		if err != nil {
 			return nil, mapThreadError(err)
 		}
@@ -121,6 +128,8 @@ func mapThreadError(err error) error {
 		return huma.Error404NotFound("thread not found")
 	case errors.Is(err, threads.ErrActive):
 		return huma.Error409Conflict(err.Error())
+	case errors.Is(err, threads.ErrResumeUnavailable):
+		return huma.Error422UnprocessableEntity("this server has no agent catalog")
 	}
 	return mapAgentError(err)
 }
