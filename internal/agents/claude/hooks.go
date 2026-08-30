@@ -235,7 +235,17 @@ func (h *Hooks) apply(ctx context.Context, terminalID string, st *session, p pay
 		}
 		if st.sessionID == "" {
 			// Post-restart seed: accept evidence only for a conversation the
-			// identity mapping already ties to this same terminal.
+			// identity mapping already ties to this same terminal, and only
+			// from a root UserPromptSubmit — the one event a conversation
+			// the TUI does not display can never produce (the Codex gate's
+			// reasoning). A displaced session's straggler (a late
+			// TaskCompleted, a notification) must not seed the wrong
+			// conversation as active and wedge the displayed one behind the
+			// session-match check; anything the gate drops is re-covered at
+			// the next prompt or SessionStart.
+			if p.HookEventName != "UserPromptSubmit" || p.AgentID != "" {
+				return http.StatusBadRequest
+			}
 			_, mapped, known := h.threads.LookupIdentity("claude", p.SessionID)
 			if !known || mapped != terminalID {
 				return http.StatusBadRequest
