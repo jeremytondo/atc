@@ -95,8 +95,9 @@ func TestClaudeHooksDriveThreads(t *testing.T) {
 		t.Errorf("after prompt: %+v", got)
 	}
 
-	// /clear mid-flight: the old thread persists inactive (working
-	// coerces), the new one takes the projection.
+	// /clear mid-flight: the old thread persists inactive — its mid-turn
+	// working was never verified to finish, so it coerces to unknown, not
+	// idle — and the new one takes the projection.
 	f.postHook(t, secret, `{"session_id":"s1","hook_event_name":"SessionEnd","reason":"clear"}`)
 	f.postHook(t, secret, `{"session_id":"s2","hook_event_name":"SessionStart","source":"clear"}`)
 	rec = f.request(t, http.MethodGet, "/v1/threads", "")
@@ -104,8 +105,8 @@ func TestClaudeHooksDriveThreads(t *testing.T) {
 	if len(list.Threads) != 2 {
 		t.Fatalf("threads after clear = %+v", list.Threads)
 	}
-	if got := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+thread.ID, "")); got.Status != api.ThreadIdle {
-		t.Errorf("old thread after clear = %s, want idle (SessionEnd evidence)", got.Status)
+	if got := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+thread.ID, "")); got.Status != api.ThreadUnknown {
+		t.Errorf("old thread after clear = %s, want unknown (mid-turn liveness unverifiable)", got.Status)
 	}
 	active := decodeTerminal(t, f.request(t, http.MethodGet, "/v1/terminals/"+terminal.ID, "")).ActiveThreadID
 	if active == thread.ID || active == "" {

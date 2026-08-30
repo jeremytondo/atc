@@ -324,17 +324,14 @@ func (h *Hooks) observe(ctx context.Context, terminalID string, p payload, statu
 // sessionEnd closes the reducer's book on the session. A clear or resume
 // is a switch — the successor's SessionStart is already on its way and
 // moves the active thread itself; anything else means the TUI is leaving
-// the conversation without a successor, so the terminal deactivates.
-// The registry holds the launch's lock.
+// the conversation without a successor, so the terminal deactivates. No
+// idle claim rides the end: a SessionEnd can land mid-turn (the TUI
+// killed while working), so the last evidence stands and the threads
+// domain coerces unverifiable live states — never an idle claim the
+// evidence does not back. The registry holds the launch's lock.
 func (h *Hooks) sessionEnd(ctx context.Context, terminalID string, st *session, p payload) {
 	st.tracker = nil
 	st.ended = true
-	if err := h.threads.ObserveStatus(ctx, threads.StatusObservation{
-		Agent: "claude", ProviderID: p.SessionID, At: h.now(),
-		Status: api.ThreadIdle, Metadata: metadataFrom(p),
-	}); err != nil {
-		h.logger.Warn("recording session end", "terminal", terminalID, "error", err)
-	}
 	if p.Reason != "clear" && p.Reason != "resume" {
 		h.threads.Deactivate(ctx, terminalID)
 	}
