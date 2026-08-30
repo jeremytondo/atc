@@ -6,7 +6,8 @@
 // conversation id) → thread never leaves the server.
 //
 // The package owns policy: capture and reattach, the six-status model and
-// its inactive coercion, archive/delete with their active refusals, and
+// its inactive coercion, archive/delete with their active refusals (and
+// the unarchive a reattach implies — active means unarchived), and
 // the activeThreadId projection onto terminals. Provider observation —
 // the Claude and Codex hooks — lives with the agents side
 // and feeds this service only neutral observations; no provider
