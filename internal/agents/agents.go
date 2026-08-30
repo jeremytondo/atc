@@ -27,7 +27,7 @@ const CapabilityTUI = "tui"
 // LaunchContext is the per-launch context the composition injects into an
 // adapter's command (ATC-255): the minted terminal identity and its
 // working directory. Adapters use it to wire observation — Claude hook
-// settings, the Codex --remote socket — without any of it appearing in
+// settings, the Codex hook environment — without any of it appearing in
 // the API contract.
 type LaunchContext struct {
 	// TerminalID is the terminal being created for this launch.
@@ -44,8 +44,8 @@ type TUIAdapter interface {
 	// flags can change without a wire-visible change. Any injected path
 	// must be shell-quoted (Quote) — the command is a single string run
 	// through the user's login shell. An error refuses the launch before
-	// the terminal record exists; the context bounds launch-time work
-	// like starting the shared Codex app-server.
+	// the terminal record exists; the context bounds any launch-time
+	// work.
 	Command(ctx context.Context, launch LaunchContext) (string, error)
 	// Binary is the executable name the availability probe resolves on the
 	// server's PATH.

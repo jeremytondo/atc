@@ -328,7 +328,7 @@ func (s *Service) Create(ctx context.Context, params api.TerminalCreateParams) (
 // agent catalog (ATC-254): agent is the catalog id recorded on the
 // terminal — this is the only writer of the immutable agent field — and
 // compose supplies the adapter-composed command once the terminal id is
-// minted, so per-launch context (ATC-255 hook settings, --remote wiring)
+// minted, so per-launch context (ATC-255 hook settings and secrets)
 // can reference the identity before the session starts. The domain stays
 // agent-agnostic: the id is an opaque label, compose an opaque command
 // factory, and everything past them is the normal create path.

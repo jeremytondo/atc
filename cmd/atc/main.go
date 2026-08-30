@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"syscall"
@@ -575,42 +574,37 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	// Codex thread evidence (ATC-255): the shared app-server supervisor
-	// and the passive observer. Boot re-adopts a running server only when
-	// a persisted identity or running codex terminals suggest live work;
-	// otherwise the server starts lazily at the first codex launch.
+	// Codex hook plumbing (ATC-280): the launch profile in the user's
+	// CODEX_HOME plus per-launch secrets under the state dir, POSTing to
+	// the loopback ingest route — the TUI itself runs vanilla, no shared
+	// app-server.
 	codexHome, err := codex.CodexHome()
 	if err != nil {
 		return err
 	}
-	codexIdentity, err := paths.CodexServerFile()
+	codexHookDir, err := paths.CodexHookDir()
 	if err != nil {
 		return err
 	}
-	codexLog, err := paths.CodexServerLogFile()
-	if err != nil {
-		return err
-	}
-	codexObserver := codex.NewObserver(codex.ObserverOptions{
-		Supervisor: codex.NewSupervisor(codex.SupervisorOptions{
-			CodexHome:    codexHome,
-			IdentityFile: codexIdentity,
-			LogFile:      codexLog,
-			SpawnDir:     filepath.Dir(codexIdentity),
-			Logger:       logger,
-		}),
+	codexHooks, err := codex.NewHooks(codex.HooksOptions{
+		Dir:       codexHookDir,
+		BaseURL:   fmt.Sprintf("http://%s:%d", hookHost(cfg.Bind), port),
+		CodexHome: codexHome,
 		Threads:   threadService,
 		Terminals: terminalService,
 		Logger:    logger,
 	})
-	// Async: adoption can wait on a silent pid for ~20s worst case, and boot
-	// must not.
-	go codexObserver.AdoptAtBoot(ctx)
+	if err != nil {
+		return err
+	}
+	if err := codexHooks.LoadRegistrations(); err != nil {
+		return err
+	}
 
 	// One registration line per built-in agent; a duplicate id fails the
 	// boot.
 	agentService, err := agents.NewService(agents.Options{
-		Entries:   []agents.Entry{claude.Entry(claudeHooks), codex.Entry(codexObserver)},
+		Entries:   []agents.Entry{claude.Entry(claudeHooks), codex.Entry(codexHooks)},
 		Terminals: terminalService,
 	})
 	if err != nil {
@@ -628,6 +622,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		Events:    hub,
 		InternalRoutes: map[string]http.Handler{
 			"POST " + claude.HooksPath: claudeHooks.Handler(),
+			"POST " + codex.HooksPath:  codexHooks.Handler(),
 		},
 	})
 	// The reconcile loop is waited on before the deferred database close,
@@ -640,7 +635,6 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	var background sync.WaitGroup
 	background.Go(func() { terminalService.Run(loopCtx) })
 	background.Go(func() { threadService.Run(loopCtx) })
-	background.Go(func() { codexObserver.Run(loopCtx) })
 
 	// The exposure supervisor fronts the actual bound port (they are one
 	// port by contract) and is waited on so shutdown reaps the serve

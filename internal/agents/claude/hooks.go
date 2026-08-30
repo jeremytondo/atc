@@ -2,27 +2,19 @@ package claude
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jeremytondo/atc/internal/agents"
+	"github.com/jeremytondo/atc/internal/agents/hookauth"
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/threads"
 )
-
-// SecretHeader carries the per-launch hook secret. It rides an HTTP
-// header sourced from a 0600 file (curl -H @file), so the secret never
-// appears in argv or a URL.
-const SecretHeader = "x-atc-hook-secret"
 
 // HooksPath is the internal ingest route. It sits outside the public API
 // contract and outside bearer auth — the per-launch secret is its whole
@@ -37,9 +29,6 @@ var hookEvents = []string{
 	"PostToolUseFailure", "Stop", "StopFailure", "SubagentStart", "SubagentStop",
 	"TaskCreated", "TaskCompleted", "Notification", "PermissionRequest", "PermissionDenied",
 }
-
-// maxPayloadBytes bounds one hook payload read.
-const maxPayloadBytes = 1 << 20
 
 // ThreadObserver is the seam into the threads domain: neutral
 // observations in, no provider vocabulary out.
@@ -82,23 +71,16 @@ type Hooks struct {
 	logger    *slog.Logger
 	now       func() time.Time
 
-	mu         sync.Mutex
-	bySecret   map[string]*registration
-	byTerminal map[string]*registration
+	registry *hookauth.Registry[session]
 }
 
-// registration binds one launch's secret to its terminal. sessionID is
-// the provider session the terminal currently has open, learned only from
-// SessionStart (or the post-restart seed check); a payload whose session
-// disagrees with it is dropped. mu serializes delivery per launch end to
-// end — validation, reduction, and observation move as one unit, so a
-// concurrent SessionStart cannot reset the tracker under an in-flight
-// event or reorder observations.
-type registration struct {
-	mu         sync.Mutex
-	secret     string
-	terminalID string
-	sessionID  string
+// session is one launch's lifecycle state, mutated only under the
+// registry's per-launch lock. sessionID is the provider session the
+// terminal currently has open,
+// learned only from SessionStart (or the post-restart seed check); a
+// payload whose session disagrees with it is dropped.
+type session struct {
+	sessionID string
 	// established records that the threads domain has accepted the
 	// session observation. A transient failure leaves it false, and the
 	// next event retries instead of silently dropping the whole session.
@@ -122,24 +104,18 @@ func NewHooks(opts HooksOptions) (*Hooks, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	// Private: the files grant status-injection on the user's threads.
-	// MkdirAll's mode only applies on creation, so a pre-existing
-	// permissive directory is tightened.
-	if err := os.MkdirAll(opts.Dir, 0o700); err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(opts.Dir, 0o700); err != nil {
+	registry, err := hookauth.NewRegistry[session](opts.Dir, opts.Logger)
+	if err != nil {
 		return nil, err
 	}
 	return &Hooks{
-		dir:        opts.Dir,
-		baseURL:    strings.TrimSuffix(opts.BaseURL, "/"),
-		threads:    opts.Threads,
-		terminals:  opts.Terminals,
-		logger:     opts.Logger,
-		now:        opts.Now,
-		bySecret:   map[string]*registration{},
-		byTerminal: map[string]*registration{},
+		dir:       opts.Dir,
+		baseURL:   strings.TrimSuffix(opts.BaseURL, "/"),
+		threads:   opts.Threads,
+		terminals: opts.Terminals,
+		logger:    opts.Logger,
+		now:       opts.Now,
+		registry:  registry,
 	}, nil
 }
 
@@ -147,52 +123,31 @@ func (h *Hooks) settingsPath(terminalID string) string {
 	return filepath.Join(h.dir, terminalID+".json")
 }
 
-func (h *Hooks) headerPath(terminalID string) string {
-	return filepath.Join(h.dir, terminalID+".header")
-}
-
 // Prepare mints this launch's secret, writes the header and settings
 // files (0600), and registers the secret for the terminal. It returns the
 // settings path for the --settings flag. Files are keyed by terminal id,
 // so a re-run for the same id simply replaces them.
 func (h *Hooks) Prepare(terminalID string) (string, error) {
-	secret, err := newSecret()
+	headerPath, err := h.registry.Prepare(terminalID)
 	if err != nil {
 		return "", err
 	}
-	header := SecretHeader + ": " + secret
-	if err := writePrivateFile(h.headerPath(terminalID), []byte(header)); err != nil {
-		return "", err
-	}
-	settings, err := json.Marshal(hookSettings(h.command(terminalID)))
+	settings, err := json.Marshal(hookSettings(h.command(headerPath)))
 	if err != nil {
 		return "", err
 	}
-	if err := writePrivateFile(h.settingsPath(terminalID), settings); err != nil {
+	if err := hookauth.WritePrivateFile(h.settingsPath(terminalID), settings); err != nil {
 		return "", err
 	}
-	h.mu.Lock()
-	h.register(&registration{secret: secret, terminalID: terminalID})
-	h.mu.Unlock()
 	return h.settingsPath(terminalID), nil
-}
-
-// register indexes a registration, dropping any earlier one for the same
-// terminal (a new launch's secret invalidates the old). Callers hold mu.
-func (h *Hooks) register(reg *registration) {
-	if previous, ok := h.byTerminal[reg.terminalID]; ok {
-		delete(h.bySecret, previous.secret)
-	}
-	h.bySecret[reg.secret] = reg
-	h.byTerminal[reg.terminalID] = reg
 }
 
 // command is the hook command line: curl POSTing the payload from stdin,
 // with the secret ridden in from the header file — never argv, never the
 // URL. Paths are shell-quoted; Claude runs the command through a shell.
-func (h *Hooks) command(terminalID string) string {
+func (h *Hooks) command(headerPath string) string {
 	return "curl -fsS -m 5 -X POST -H 'Content-Type: application/json' -H @" +
-		agents.Quote(h.headerPath(terminalID)) + " --data-binary @- " + agents.Quote(h.baseURL+HooksPath)
+		agents.Quote(headerPath) + " --data-binary @- " + agents.Quote(h.baseURL+HooksPath)
 }
 
 // hookSettings is the --settings document: every lifecycle event wired to
@@ -215,40 +170,12 @@ func hookSettings(command string) map[string]any {
 // bindings are not persisted: the first payload after a restart re-seeds
 // through the identity mapping or the next SessionStart.
 func (h *Hooks) LoadRegistrations() error {
-	entries, err := os.ReadDir(h.dir)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if !strings.HasSuffix(name, ".header") {
-			continue
-		}
-		terminalID := strings.TrimSuffix(name, ".header")
-		remove := func() {
-			_ = os.Remove(h.headerPath(terminalID))
-			_ = os.Remove(h.settingsPath(terminalID))
-		}
+	return h.registry.Load(func(terminalID string) bool {
 		terminal, err := h.terminals.Get(terminalID)
-		if err != nil || terminal.Agent != "claude" {
-			remove()
-			continue
-		}
-		content, err := os.ReadFile(h.headerPath(terminalID))
-		if err != nil {
-			h.logger.Warn("unreadable hook secret", "terminal", terminalID, "error", err)
-			continue
-		}
-		secret, ok := strings.CutPrefix(string(content), SecretHeader+": ")
-		if !ok || secret == "" {
-			remove()
-			continue
-		}
-		h.mu.Lock()
-		h.register(&registration{secret: secret, terminalID: terminalID})
-		h.mu.Unlock()
-	}
-	return nil
+		return err == nil && terminal.Agent == "claude"
+	}, func(terminalID string) {
+		_ = os.Remove(h.settingsPath(terminalID))
+	})
 }
 
 // payload is the slice of a hook event the reducer reads; everything else
@@ -282,71 +209,41 @@ type task struct {
 // payload that cannot be honored, 204 for accepted (including events the
 // reducer has no opinion about).
 func (h *Hooks) Handler() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		// The route sits outside bearer auth, so an unknown peer must not
-		// get to hold a handler open by trickling a body: bounded bytes
-		// and a bounded read window.
-		_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(10 * time.Second))
-		secret := r.Header.Get(SecretHeader)
-		body, err := io.ReadAll(io.LimitReader(r.Body, maxPayloadBytes))
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		w.WriteHeader(h.deliver(r.Context(), secret, body))
-	})
+	return hookauth.Handler(h.deliver)
 }
 
 // deliver validates and applies one hook payload, returning the response
-// status.
+// status. The registry serializes one launch's deliveries end to end.
 func (h *Hooks) deliver(ctx context.Context, secret string, body []byte) int {
 	var p payload
 	if err := json.Unmarshal(body, &p); err != nil || p.SessionID == "" || p.HookEventName == "" {
 		return http.StatusBadRequest
 	}
+	return h.registry.Deliver(secret, func(terminalID string, st *session) int {
+		return h.apply(ctx, terminalID, st, p)
+	})
+}
 
-	h.mu.Lock()
-	reg, ok := h.bySecret[secret]
-	h.mu.Unlock()
-	if !ok {
-		return http.StatusNotFound
-	}
-
-	// One launch's events are serialized end to end from here.
-	reg.mu.Lock()
-	defer reg.mu.Unlock()
-
-	// Re-verified under the registration lock: a delivery that looked the
-	// registration up just before a replacement must not mutate lifecycle
-	// state the replacement now owns.
-	h.mu.Lock()
-	current := h.bySecret[secret] == reg
-	h.mu.Unlock()
-	if !current {
-		return http.StatusNotFound
-	}
-
+// apply runs one validated payload against the launch's lifecycle state.
+// The registry holds the launch's lock.
+func (h *Hooks) apply(ctx context.Context, terminalID string, st *session, p payload) int {
 	if p.HookEventName != "SessionStart" {
-		if reg.ended {
+		if st.ended {
 			// The session ended; stragglers are dropped rather than
 			// re-seeded. The next SessionStart opens the next chapter.
 			return http.StatusBadRequest
 		}
-		if reg.sessionID == "" {
+		if st.sessionID == "" {
 			// Post-restart seed: accept evidence only for a conversation the
 			// identity mapping already ties to this same terminal.
-			_, terminalID, known := h.threads.LookupIdentity("claude", p.SessionID)
-			if !known || terminalID != reg.terminalID {
+			_, mapped, known := h.threads.LookupIdentity("claude", p.SessionID)
+			if !known || mapped != terminalID {
 				return http.StatusBadRequest
 			}
-			reg.sessionID = p.SessionID
-			reg.tracker = seededTracker()
-			reg.established = false
-		} else if p.SessionID != reg.sessionID {
+			st.sessionID = p.SessionID
+			st.tracker = seededTracker()
+			st.established = false
+		} else if p.SessionID != st.sessionID {
 			// A payload whose session disagrees with the registration is
 			// dropped — delayed evidence from a conversation this terminal
 			// no longer displays, or a forgery.
@@ -356,33 +253,33 @@ func (h *Hooks) deliver(ctx context.Context, secret string, body []byte) int {
 
 	switch p.HookEventName {
 	case "SessionStart":
-		reg.ended = false
-		if p.SessionID != reg.sessionID {
+		st.ended = false
+		if p.SessionID != st.sessionID {
 			// A genuinely new conversation: fresh reducer, at its prompt.
-			reg.sessionID = p.SessionID
-			reg.tracker = newTracker()
-			reg.established = h.observe(ctx, reg.terminalID, p, api.ThreadIdle)
+			st.sessionID = p.SessionID
+			st.tracker = newTracker()
+			st.established = h.observe(ctx, terminalID, p, api.ThreadIdle)
 		} else {
 			// The same session re-announced (compact): identity and
 			// reducer state stand — an active turn may well continue, so
 			// no idle claim.
-			reg.established = h.observe(ctx, reg.terminalID, p, "")
+			st.established = h.observe(ctx, terminalID, p, "")
 		}
 	case "SessionEnd":
-		h.sessionEnd(ctx, reg, p)
+		h.sessionEnd(ctx, terminalID, st, p)
 	default:
-		if !reg.established {
+		if !st.established {
 			// (Re-)establish the session before its evidence: the threads
 			// domain accepts live statuses only for a conversation some
 			// terminal holds, and the secret+session agreement is exactly
 			// that proof. On failure the event is dropped and the next one
 			// retries — a transient error must not silence the session.
-			if !h.observe(ctx, reg.terminalID, p, "") {
+			if !h.observe(ctx, terminalID, p, "") {
 				return http.StatusNoContent
 			}
-			reg.established = true
+			st.established = true
 		}
-		h.reduce(ctx, reg, p)
+		h.reduce(ctx, st, p)
 	}
 	return http.StatusNoContent
 }
@@ -418,28 +315,28 @@ func (h *Hooks) observe(ctx context.Context, terminalID string, p payload, statu
 // is a switch — the successor's SessionStart is already on its way and
 // moves the active thread itself; anything else means the TUI is leaving
 // the conversation without a successor, so the terminal deactivates.
-// Caller holds reg.mu.
-func (h *Hooks) sessionEnd(ctx context.Context, reg *registration, p payload) {
-	reg.tracker = nil
-	reg.ended = true
+// The registry holds the launch's lock.
+func (h *Hooks) sessionEnd(ctx context.Context, terminalID string, st *session, p payload) {
+	st.tracker = nil
+	st.ended = true
 	if err := h.threads.ObserveStatus(ctx, threads.StatusObservation{
 		Agent: "claude", ProviderID: p.SessionID, At: h.now(),
 		Status: api.ThreadIdle, Metadata: metadataFrom(p),
 	}); err != nil {
-		h.logger.Warn("recording session end", "terminal", reg.terminalID, "error", err)
+		h.logger.Warn("recording session end", "terminal", terminalID, "error", err)
 	}
 	if p.Reason != "clear" && p.Reason != "resume" {
-		h.threads.Deactivate(ctx, reg.terminalID)
+		h.threads.Deactivate(ctx, terminalID)
 	}
 }
 
 // reduce runs one ordinary event through the session's reducer and
-// forwards the resulting evidence. Caller holds reg.mu.
-func (h *Hooks) reduce(ctx context.Context, reg *registration, p payload) {
-	if reg.tracker == nil {
-		reg.tracker = seededTracker()
+// forwards the resulting evidence. The registry holds the launch's lock.
+func (h *Hooks) reduce(ctx context.Context, st *session, p payload) {
+	if st.tracker == nil {
+		st.tracker = seededTracker()
 	}
-	status, signal, lastError := reg.tracker.apply(p)
+	status, signal, lastError := st.tracker.apply(p)
 	if !signal {
 		return
 	}
@@ -463,21 +360,4 @@ func metadataFrom(p payload) threads.Metadata {
 		PermissionMode: p.PermissionMode,
 		Effort:         p.Effort.Level,
 	}
-}
-
-func newSecret() (string, error) {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(buf), nil
-}
-
-// writePrivateFile writes content at mode 0600 and enforces the mode on a
-// pre-existing file too — os.WriteFile applies its mode only on creation.
-func writePrivateFile(path string, content []byte) error {
-	if err := os.WriteFile(path, content, 0o600); err != nil {
-		return err
-	}
-	return os.Chmod(path, 0o600)
 }

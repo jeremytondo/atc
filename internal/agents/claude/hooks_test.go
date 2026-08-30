@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/jeremytondo/atc/internal/agents"
+	"github.com/jeremytondo/atc/internal/agents/hookauth"
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/threads"
 )
@@ -112,11 +113,11 @@ func (f *hookFixture) prepare(t *testing.T, terminalID string) string {
 	if _, err := f.hooks.Prepare(terminalID); err != nil {
 		t.Fatal(err)
 	}
-	content, err := os.ReadFile(f.hooks.headerPath(terminalID))
+	content, err := os.ReadFile(f.hooks.registry.HeaderPath(terminalID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	secret, ok := strings.CutPrefix(string(content), SecretHeader+": ")
+	secret, ok := strings.CutPrefix(string(content), hookauth.SecretHeader+": ")
 	if !ok {
 		t.Fatalf("header file %q lacks the header prefix", content)
 	}
@@ -128,7 +129,7 @@ func (f *hookFixture) post(t *testing.T, secret, body string) int {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, HooksPath, strings.NewReader(body))
 	if secret != "" {
-		req.Header.Set(SecretHeader, secret)
+		req.Header.Set(hookauth.SecretHeader, secret)
 	}
 	rec := httptest.NewRecorder()
 	f.hooks.Handler().ServeHTTP(rec, req)
@@ -142,7 +143,7 @@ func TestPrepareWritesPrivateFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, path := range []string{settings, f.hooks.headerPath("term-aaaaa")} {
+	for _, path := range []string{settings, f.hooks.registry.HeaderPath("term-aaaaa")} {
 		info, err := os.Stat(path)
 		if err != nil {
 			t.Fatal(err)
@@ -156,11 +157,11 @@ func TestPrepareWritesPrivateFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	header, err := os.ReadFile(f.hooks.headerPath("term-aaaaa"))
+	header, err := os.ReadFile(f.hooks.registry.HeaderPath("term-aaaaa"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	secret := strings.TrimPrefix(string(header), SecretHeader+": ")
+	secret := strings.TrimPrefix(string(header), hookauth.SecretHeader+": ")
 	// The secret rides only the header file: never argv (the settings
 	// command), never a URL.
 	if strings.Contains(string(content), secret) {
@@ -382,16 +383,16 @@ func TestLoadRegistrationsCleansStaleFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := os.Stat(reloaded.headerPath("term-zzzzz")); !os.IsNotExist(err) {
+	if _, err := os.Stat(reloaded.registry.HeaderPath("term-zzzzz")); !os.IsNotExist(err) {
 		t.Error("stale hook files survived the reload")
 	}
-	if _, err := os.Stat(reloaded.headerPath("term-aaaaa")); err != nil {
+	if _, err := os.Stat(reloaded.registry.HeaderPath("term-aaaaa")); err != nil {
 		t.Error("live hook files were removed")
 	}
 	// The reloaded registry accepts the persisted secret.
 	req := httptest.NewRequest(http.MethodPost, HooksPath,
 		strings.NewReader(`{"session_id":"s1","hook_event_name":"SessionStart","source":"startup"}`))
-	req.Header.Set(SecretHeader, secret)
+	req.Header.Set(hookauth.SecretHeader, secret)
 	rec := httptest.NewRecorder()
 	reloaded.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {

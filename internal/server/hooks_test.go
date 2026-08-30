@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/jeremytondo/atc/internal/agents/claude"
+	"github.com/jeremytondo/atc/internal/agents/hookauth"
 	"github.com/jeremytondo/atc/internal/api"
 )
 
@@ -26,7 +27,7 @@ func hookSecret(t *testing.T, terminal api.Terminal) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	secret, ok := strings.CutPrefix(string(content), claude.SecretHeader+": ")
+	secret, ok := strings.CutPrefix(string(content), hookauth.SecretHeader+": ")
 	if !ok {
 		t.Fatalf("header file %q lacks the header prefix", content)
 	}
@@ -40,7 +41,7 @@ func (f *fixture) postHook(t *testing.T, secret, body string) *httptest.Response
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, claude.HooksPath, strings.NewReader(body))
 	if secret != "" {
-		req.Header.Set(claude.SecretHeader, secret)
+		req.Header.Set(hookauth.SecretHeader, secret)
 	}
 	rec := httptest.NewRecorder()
 	f.handler.ServeHTTP(rec, req)

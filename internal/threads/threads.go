@@ -8,7 +8,7 @@
 // The package owns policy: capture and reattach, the six-status model and
 // its inactive coercion, archive/delete with their active refusals, and
 // the activeThreadId projection onto terminals. Provider observation —
-// Claude hooks, the shared Codex app-server — lives with the agents side
+// the Claude and Codex hooks — lives with the agents side
 // and feeds this service only neutral observations; no provider
 // vocabulary enters here. Statuses come from evidence, never guesses:
 // unknown means no evidence, and a thread that stops being observed keeps
@@ -47,7 +47,7 @@ type Metadata struct {
 
 // SessionObservation reports that a terminal has a provider conversation
 // open: the identity transition providers derive from their authoritative
-// signals (Claude SessionStart, Codex thread adoption). Only session
+// signals (the agents' SessionStart hooks). Only session
 // observations move a terminal's active thread — delayed status evidence
 // never selects a stale conversation.
 type SessionObservation struct {
