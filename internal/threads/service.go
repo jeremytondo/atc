@@ -23,6 +23,10 @@ var ErrNotFound = errors.New("thread not found")
 // maps it to 409.
 var ErrActive = errors.New("thread is active")
 
+// ErrResumeUnavailable refuses opening a dormant thread on a service wired
+// without a Resumer.
+var ErrResumeUnavailable = errors.New("this server cannot resume conversations")
+
 // Event-payload resource kinds. The service publishes terminal.updated
 // when a terminal's activeThreadId projection changes — the terminals
 // domain knows nothing about threads, so the change is announced here.
@@ -42,9 +46,12 @@ type TerminalReader interface {
 type Options struct {
 	Repository *store.Threads
 	Terminals  TerminalReader
-	Hub        *events.Hub
-	Logger     *slog.Logger
-	Now        func() time.Time
+	// Resume launches the terminal for a dormant thread's open; nil
+	// refuses such opens with ErrResumeUnavailable.
+	Resume Resumer
+	Hub    *events.Hub
+	Logger *slog.Logger
+	Now    func() time.Time
 }
 
 // Service owns the in-memory view and the observation policy. Construct
@@ -62,6 +69,7 @@ type Options struct {
 type Service struct {
 	repository *store.Threads
 	terminals  TerminalReader
+	resume     Resumer
 	hub        *events.Hub
 	logger     *slog.Logger
 	now        func() time.Time
@@ -99,6 +107,7 @@ func NewService(opts Options) *Service {
 	return &Service{
 		repository: opts.Repository,
 		terminals:  opts.Terminals,
+		resume:     opts.Resume,
 		hub:        opts.Hub,
 		logger:     opts.Logger,
 		now:        opts.Now,
@@ -743,6 +752,114 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	s.mu.Unlock()
 	s.hub.Publish(api.EventThreadDeleted, resource, id)
 	return nil
+}
+
+// Open resolves the thread to exactly one terminal (ATC-282), reporting
+// whether it was created. The decision is one unit under ops, so
+// concurrent opens of the same thread serialize and at most one creates:
+//
+//  1. a running terminal actively shows the thread   → reuse it
+//  2. the thread's last terminal is still up and no
+//     other conversation is known to hold it          → reuse it
+//  3. otherwise the thread is dormant                → resume it in a new
+//     terminal, linked here
+//
+// Rule 2 is deliberate conservatism: after a restart the active
+// projection is empty while TUIs keep running, and a freshly resumed
+// terminal has no evidence yet. Landing the user in a terminal whose
+// contents are unknown is recoverable in the TUI; a second writer on a
+// live provider session is not, so anything not definitively gone
+// (exited, missing, deleted) counts as still up. The linkage a resume
+// records is intent, not evidence — it is what makes the next open fall
+// into rule 2 before any hook fires. Opening unarchives.
+func (s *Service) Open(ctx context.Context, id string) (api.Terminal, bool, error) {
+	s.ops.Lock()
+	defer s.ops.Unlock()
+
+	s.mu.Lock()
+	entry, ok := s.view[id]
+	var record store.ThreadRecord
+	var providerID string
+	if ok {
+		record = *entry
+		for key, threadID := range s.identities {
+			if threadID == id {
+				providerID = key.providerID
+				break
+			}
+		}
+	}
+	holder := s.activeHolder(id)
+	var lastHolds string
+	if record.TerminalID != nil {
+		lastHolds = s.active[*record.TerminalID]
+	}
+	s.mu.Unlock()
+	if !ok {
+		return api.Terminal{}, false, ErrNotFound
+	}
+
+	var terminal api.Terminal
+	created := false
+	switch {
+	case holder != "" && s.terminalUp(holder, &terminal):
+	case record.TerminalID != nil && (lastHolds == "" || lastHolds == id) && s.terminalUp(*record.TerminalID, &terminal):
+	default:
+		if s.resume == nil {
+			return api.Terminal{}, false, ErrResumeUnavailable
+		}
+		var err error
+		terminal, err = s.resume(ctx, ResumeRequest{
+			ThreadID: id, Agent: record.Agent, ProviderID: providerID,
+			ProjectID: record.ProjectID, Directory: record.Cwd,
+		})
+		if err != nil {
+			return api.Terminal{}, false, err
+		}
+		created = true
+	}
+
+	changed := false
+	if record.TerminalID == nil || *record.TerminalID != terminal.ID {
+		terminalID := terminal.ID
+		record.TerminalID = &terminalID
+		changed = true
+	}
+	if record.Archived {
+		record.Archived = false
+		record.ArchivedAt = nil
+		changed = true
+	}
+	if changed {
+		record.UpdatedAt = s.now()
+		updated, err := s.repository.Update(ctx, record)
+		if err != nil {
+			return api.Terminal{}, false, err
+		}
+		if !updated {
+			return api.Terminal{}, false, ErrNotFound
+		}
+		s.mu.Lock()
+		if entry, ok := s.view[id]; ok {
+			*entry = record
+		}
+		s.mu.Unlock()
+		s.hub.Publish(api.EventThreadUpdated, resource, id)
+	}
+	return terminal, created, nil
+}
+
+// terminalUp reports whether the terminal may still be running — anything
+// but definitive absence (exited, missing, or no record) — filling in its
+// record when so. Unreachable counts as up: liveness merely unverifiable
+// is no evidence the conversation left.
+func (s *Service) terminalUp(id string, terminal *api.Terminal) bool {
+	got, err := s.terminals.Get(id)
+	if err != nil || got.Status == api.TerminalExited || got.Status == api.TerminalMissing {
+		return false
+	}
+	*terminal = got
+	return true
 }
 
 // activeHolder returns the terminal currently holding the thread, or

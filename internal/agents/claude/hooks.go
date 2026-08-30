@@ -271,16 +271,27 @@ func (h *Hooks) apply(ctx context.Context, terminalID string, st *session, p pay
 	switch p.HookEventName {
 	case "SessionStart":
 		st.ended = false
+		status := api.ThreadStatus("")
 		if p.SessionID != st.sessionID {
 			// A genuinely new conversation: fresh reducer, at its prompt.
 			st.sessionID = p.SessionID
 			st.tracker = newTracker()
-			st.established = h.observe(ctx, terminalID, p, api.ThreadIdle)
-		} else {
-			// The same session re-announced (compact): identity and
-			// reducer state stand — an active turn may well continue, so
-			// no idle claim.
-			st.established = h.observe(ctx, terminalID, p, "")
+			st.established = false
+			status = api.ThreadIdle
+		}
+		// Minting waits for the first root prompt (ATC-282): a zero-turn
+		// TUI has no thread. Only a conversation the identity mapping
+		// already knows — a resume, in this terminal or another — is
+		// observed now; an unknown successor cannot take the terminal
+		// yet, so whatever the terminal showed before leaves it (a
+		// /clear's SessionEnd deliberately does not). The same session
+		// re-announced (compact) keeps identity and reducer state, and
+		// claims no status: an active turn may well continue.
+		switch {
+		case h.mapped(p.SessionID):
+			st.established = h.observe(ctx, terminalID, p, status)
+		case status != "":
+			h.threads.Deactivate(ctx, terminalID)
 		}
 	case "SessionEnd":
 		h.sessionEnd(ctx, terminalID, st, p)
@@ -289,8 +300,15 @@ func (h *Hooks) apply(ctx context.Context, terminalID string, st *session, p pay
 			// (Re-)establish the session before its evidence: the threads
 			// domain accepts live statuses only for a conversation some
 			// terminal holds, and the secret+session agreement is exactly
-			// that proof. On failure the event is dropped and the next one
-			// retries — a transient error must not silence the session.
+			// that proof. The first root prompt mints an unmapped
+			// conversation; before it, only a mapped one (a resume whose
+			// SessionStart observation failed transiently) re-establishes,
+			// and anything else is a threadless TUI's chatter. On failure
+			// the event is dropped and the next one retries — a transient
+			// error must not silence the session.
+			if !rootPrompt(p) && !h.mapped(p.SessionID) {
+				return http.StatusNoContent
+			}
 			if !h.observe(ctx, terminalID, p, "") {
 				return http.StatusNoContent
 			}
@@ -299,6 +317,19 @@ func (h *Hooks) apply(ctx context.Context, terminalID string, st *session, p pay
 		h.reduce(ctx, st, p)
 	}
 	return http.StatusNoContent
+}
+
+// rootPrompt reports the root conversation's UserPromptSubmit — the one
+// event that proves a user is in the conversation.
+func rootPrompt(p payload) bool {
+	return p.HookEventName == "UserPromptSubmit" && p.AgentID == ""
+}
+
+// mapped reports whether the identity mapping already knows the
+// conversation, in any terminal.
+func (h *Hooks) mapped(sessionID string) bool {
+	_, _, known := h.threads.LookupIdentity("claude", sessionID)
+	return known
 }
 
 // observe records a session observation for the terminal, reporting
@@ -362,7 +393,7 @@ func (h *Hooks) reduce(ctx context.Context, st *session, p payload) {
 		return
 	}
 	metadata := metadataFrom(p)
-	if p.HookEventName == "UserPromptSubmit" && p.AgentID == "" {
+	if rootPrompt(p) {
 		// The first-prompt title fallback: an observed title only ever
 		// fills an untitled thread, so sending it on every prompt is safe.
 		metadata.Title = agents.CondenseTitle(p.Prompt)

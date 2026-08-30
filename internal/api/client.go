@@ -160,6 +160,14 @@ func (c *Client) UpdateThread(ctx context.Context, id string, params ThreadUpdat
 	return thread, err
 }
 
+// OpenThread resolves the thread to one terminal — a running terminal
+// that holds it, or a new one resuming it — for the caller to attach to.
+func (c *Client) OpenThread(ctx context.Context, id string) (ThreadOpen, error) {
+	var open ThreadOpen
+	err := c.do(ctx, http.MethodPost, "/v1/threads/"+id+"/open", nil, &open)
+	return open, err
+}
+
 // DeleteThread removes ATC's record of the conversation; the
 // provider-side conversation is untouched.
 func (c *Client) DeleteThread(ctx context.Context, id string) error {

@@ -321,7 +321,7 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 // real evidence. Failures after the record exists surface through the
 // normal status machinery — there is no separate launch-error path.
 func (s *Service) Create(ctx context.Context, params api.TerminalCreateParams) (api.Terminal, error) {
-	return s.create(ctx, params, "", nil)
+	return s.create(ctx, params, "", "", nil)
 }
 
 // CreateForAgent is Create for a launch the API layer resolved through the
@@ -329,15 +329,19 @@ func (s *Service) Create(ctx context.Context, params api.TerminalCreateParams) (
 // terminal — this is the only writer of the immutable agent field — and
 // compose supplies the adapter-composed command once the terminal id is
 // minted, so per-launch context (ATC-255 hook settings and secrets)
-// can reference the identity before the session starts. The domain stays
-// agent-agnostic: the id is an opaque label, compose an opaque command
-// factory, and everything past them is the normal create path.
-func (s *Service) CreateForAgent(ctx context.Context, params api.TerminalCreateParams, agent string,
+// can reference the identity before the session starts. A non-empty
+// directory overrides the project's as the session's working directory
+// (a resumed conversation's recorded cwd, ATC-282); the caller vouches
+// that it exists, and the project's directory is still required to. The
+// domain stays agent-agnostic: the id is an opaque label, compose an
+// opaque command factory, and everything past them is the normal create
+// path.
+func (s *Service) CreateForAgent(ctx context.Context, params api.TerminalCreateParams, agent, directory string,
 	compose func(terminalID string) (string, error)) (api.Terminal, error) {
-	return s.create(ctx, params, agent, compose)
+	return s.create(ctx, params, agent, directory, compose)
 }
 
-func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, agent string,
+func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, agent, directory string,
 	compose func(terminalID string) (string, error)) (api.Terminal, error) {
 	project, ok, err := s.projects.Get(ctx, params.ProjectID)
 	if err != nil {
@@ -360,9 +364,12 @@ func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, a
 		name = "Shell"
 	}
 
+	if directory == "" {
+		directory = project.Directory
+	}
 	now := s.now()
 	record := store.TerminalRecord{
-		ProjectID: project.ID, Name: name, Directory: project.Directory, Command: params.Command,
+		ProjectID: project.ID, Name: name, Directory: directory, Command: params.Command,
 		Agent:     agent,
 		CreatedAt: now, UpdatedAt: now,
 	}

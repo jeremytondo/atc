@@ -3,6 +3,7 @@ package agents
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -10,14 +11,19 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/threads"
 )
 
 type fakeTUI struct{ command, binary, hint string }
 
 // Command echoes the launch context so tests can assert the composition
-// forwarded the minted identity.
+// forwarded the minted identity and, for a resume, the conversation.
 func (a fakeTUI) Command(_ context.Context, launch LaunchContext) (string, error) {
-	return a.command + " --for " + launch.TerminalID, nil
+	command := a.command + " --for " + launch.TerminalID
+	if launch.ResumeConversationID != "" {
+		command += " --resume " + launch.ResumeConversationID
+	}
+	return command, nil
 }
 func (a fakeTUI) Binary() string      { return a.binary }
 func (a fakeTUI) InstallHint() string { return a.hint }
@@ -26,14 +32,15 @@ func (a fakeTUI) InstallHint() string { return a.hint }
 // terminals domain, running the compose factory the way the real service
 // does — after minting the terminal identity.
 type fakeCreator struct {
-	params  api.TerminalCreateParams
-	agent   string
-	command string
+	params    api.TerminalCreateParams
+	agent     string
+	directory string
+	command   string
 }
 
-func (c *fakeCreator) CreateForAgent(_ context.Context, params api.TerminalCreateParams, agent string,
+func (c *fakeCreator) CreateForAgent(_ context.Context, params api.TerminalCreateParams, agent, directory string,
 	compose func(terminalID string) (string, error)) (api.Terminal, error) {
-	c.params, c.agent = params, agent
+	c.params, c.agent, c.directory = params, agent, directory
 	command, err := compose("term-aaaaa")
 	if err != nil {
 		return api.Terminal{}, err
@@ -156,5 +163,57 @@ func TestLaunchRefusals(t *testing.T) {
 
 	if creator.agent != "" || creator.params.ProjectID != "" {
 		t.Errorf("a refused launch reached the terminals domain: %+v", creator)
+	}
+}
+
+// Resume is the launch's second form: the adapter composes the provider's
+// exact resume from the thread's private identity, the terminal joins the
+// thread's project, and the working directory is the conversation's
+// recorded one — or the project's when that directory is gone.
+func TestResumeComposesTheExactResume(t *testing.T) {
+	service, creator := newTestService(t, "alpha")
+	cwd := t.TempDir()
+	request := threads.ResumeRequest{
+		ThreadID: "thrd-aaaaa", Agent: "alpha", ProviderID: "sess-1",
+		ProjectID: "proj-aaaaa", Directory: cwd,
+	}
+	terminal, err := service.Resume(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if creator.command != "alpha --tui --for term-aaaaa --resume sess-1" {
+		t.Errorf("composed command = %q", creator.command)
+	}
+	wantParams := api.TerminalCreateParams{ProjectID: "proj-aaaaa", Name: "Alpha"}
+	if diff := cmp.Diff(wantParams, creator.params); diff != "" {
+		t.Errorf("create params (-want +got):\n%s", diff)
+	}
+	if creator.directory != cwd || creator.agent != "alpha" || terminal.Agent != "alpha" {
+		t.Errorf("directory = %q, agent = %q; want %q, alpha", creator.directory, creator.agent, cwd)
+	}
+
+	// A recorded directory that no longer exists (or never was observed)
+	// falls back to the project directory: the terminals domain decides
+	// that when the override is empty.
+	for _, directory := range []string{filepath.Join(cwd, "gone"), ""} {
+		request.Directory = directory
+		if _, err := service.Resume(context.Background(), request); err != nil {
+			t.Fatal(err)
+		}
+		if creator.directory != "" {
+			t.Errorf("directory for %q = %q, want the project fallback", directory, creator.directory)
+		}
+	}
+
+	// The same refusals as launch, before anything is created.
+	creator.agent = ""
+	if _, err := service.Resume(context.Background(), threads.ResumeRequest{Agent: "beta", ProjectID: "proj-aaaaa"}); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("Resume(missing binary) = %v, want ErrUnavailable", err)
+	}
+	if _, err := service.Resume(context.Background(), threads.ResumeRequest{Agent: "nonexistent", ProjectID: "proj-aaaaa"}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Resume(unknown) = %v, want ErrNotFound", err)
+	}
+	if creator.agent != "" {
+		t.Errorf("a refused resume reached the terminals domain: %+v", creator)
 	}
 }

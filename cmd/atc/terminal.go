@@ -45,13 +45,16 @@ func newSessionAttacher() (cli.SessionAttacher, error) {
 func newTerminalCreateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create",
-		Short: "Create a terminal and start its session",
+		Short: "Create a terminal, start its session, and attach",
 		Long: `Create a terminal and start its session immediately. The terminal lands in
 the project owning the current directory (found by walking up, the way git
 finds a repository) and starts in that project's directory; pass --project
-to pick one explicitly. The session survives disconnects and ATC server
-restarts; attach with ` + "`atc terminal attach <id>`" + `,
-or pass ` + "`--attach`" + ` to attach immediately.
+to pick one explicitly. Your shell then takes over the session (detach
+with ctrl-\); pass --detach to print the terminal and leave it running in
+the background instead. Where attaching is impossible (no TTY, or the
+server is on another machine) the terminal is still created and printed.
+The session survives disconnects and ATC server restarts; return to it
+with ` + "`atc terminal attach <id>`" + `.
 With --command it runs through your login shell (profile and rc files
 loaded); without it you get a plain interactive shell.`,
 		Args: cobra.NoArgs,
@@ -60,63 +63,84 @@ loaded); without it you get a plain interactive shell.`,
 			if err != nil {
 				return err
 			}
-			return createAndMaybeAttach(cmd, client, baseURL, func(ctx context.Context, projectID, name string) (api.Terminal, error) {
+			return openAndAttach(cmd, baseURL, func(ctx context.Context) (api.Terminal, error) {
+				projectID, name, err := resolveCreateFlags(cmd, client)
+				if err != nil {
+					return api.Terminal{}, err
+				}
 				return client.CreateTerminal(ctx, api.TerminalCreateParams{ProjectID: projectID, Name: name, Command: command})
 			})
 		}),
 	}
-	cmd.Flags().String("name", "", "display name (defaults from --command, else \"Shell\")")
-	cmd.Flags().String("project", "", "project the terminal belongs to (defaults to the project owning the current directory)")
+	addCreateFlags(cmd, "display name (defaults from --command, else \"Shell\")")
 	cmd.Flags().String("command", "", "command to run through your shell; omit for a plain shell")
-	cmd.Flags().Bool("attach", false, "attach to the terminal after creation")
 	return cmd
 }
 
-// createAndMaybeAttach is the workflow shared by terminal create and
-// agent launch: attach preflights run before anything is created, the
-// project defaults from the current directory, and a failed attach after
-// a successful create reports the terminal and the retry remedy. create
-// performs the API call with the resolved project and name flags.
-func createAndMaybeAttach(cmd *cobra.Command, client *api.Client, baseURL string, create func(ctx context.Context, projectID, name string) (api.Terminal, error)) error {
+// addCreateFlags declares the flags every launching command shares:
+// naming and project placement, and --detach.
+func addCreateFlags(cmd *cobra.Command, nameUsage string) {
+	cmd.Flags().String("name", "", nameUsage)
+	cmd.Flags().String("project", "", "project the terminal belongs to (defaults to the project owning the current directory)")
+	cmd.Flags().Bool("detach", false, "print the terminal instead of attaching to it")
+}
+
+// resolveCreateFlags reads the name and project flags, defaulting the
+// project from the current directory (which may ask to create one).
+func resolveCreateFlags(cmd *cobra.Command, client *api.Client) (projectID, name string, err error) {
 	flags := cmd.Flags()
-	attach, err := flags.GetBool("attach")
+	if name, err = flags.GetString("name"); err != nil {
+		return "", "", err
+	}
+	if projectID, err = flags.GetString("project"); err != nil {
+		return "", "", err
+	}
+	if projectID == "" {
+		projectID, err = cli.ResolveProjectID(cmd.Context(), client, cmd.InOrStdin(), cmd.ErrOrStderr(), stdinIsTTY())
+	}
+	return projectID, name, err
+}
+
+// openAndAttach is the workflow every launching command shares (ATC-282):
+// attach is the default, --detach opts out. Where attaching is impossible
+// — no TTY, or a server on another machine — the command still runs the
+// action, prints the terminal, and says on stderr why it did not attach;
+// automation composes with the same surface. A tooling preflight (no zmx)
+// fails before the action, so nothing is created. act performs the API
+// call that yields the terminal — a create, a launch, or a thread open —
+// and a failed attach afterwards reports the terminal and the retry
+// remedy, never the loss of what was created.
+func openAndAttach(cmd *cobra.Command, baseURL string, act func(ctx context.Context) (api.Terminal, error)) error {
+	detach, err := cmd.Flags().GetBool("detach")
 	if err != nil {
 		return err
 	}
 	var attacher cli.SessionAttacher
-	if attach {
-		if err := cli.AttachPreflight(baseURL, stdioIsTerminal()); err != nil {
-			return err
-		}
-		if attacher, err = newSessionAttacher(); err != nil {
-			return err
-		}
-		if err := attacher.Preflight(); err != nil {
-			return err
-		}
-	}
-	name, err := flags.GetString("name")
-	if err != nil {
-		return err
-	}
-	projectID, err := flags.GetString("project")
-	if err != nil {
-		return err
-	}
-	if projectID == "" {
-		if projectID, err = cli.ResolveProjectID(cmd.Context(), client, cmd.InOrStdin(), cmd.ErrOrStderr(), stdinIsTTY()); err != nil {
-			return err
+	var skipped error
+	if !detach {
+		if skipped = cli.AttachPreflight(baseURL, stdioIsTerminal()); skipped == nil {
+			if attacher, err = newSessionAttacher(); err != nil {
+				return err
+			}
+			if err := attacher.Preflight(); err != nil {
+				return err
+			}
 		}
 	}
-	terminal, err := create(cmd.Context(), projectID, name)
+	terminal, err := act(cmd.Context())
 	if err != nil {
 		return err
 	}
 	printTerminal(cmd.OutOrStdout(), terminal)
-	if attach {
-		if err := cli.AttachSession(terminal, attacher); err != nil {
-			return fmt.Errorf("%w; the terminal was created; retry with: atc terminal attach %s", err, terminal.ID)
-		}
+	if detach {
+		return nil
+	}
+	if skipped != nil {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "atc: not attaching: %v\n", skipped)
+		return nil
+	}
+	if err := cli.AttachSession(terminal, attacher); err != nil {
+		return fmt.Errorf("%w; retry with: atc terminal attach %s", err, terminal.ID)
 	}
 	return nil
 }

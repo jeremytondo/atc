@@ -1,6 +1,9 @@
 // Package threads is the Threads domain (ATC-255): the resource behind
 // /v1/threads. A thread is one exact provider conversation, observed into
-// existence inside an ATC-launched agent TUI — there is no create verb.
+// existence inside an ATC-launched agent TUI at its first prompt — there
+// is no create verb. Open (ATC-282) is the one intent the domain acts on:
+// it resolves a thread to the terminal holding it, resuming the
+// conversation in a new terminal when nothing does.
 // Records persist in the ATC-262 store as the durable index of resumable
 // conversations; the private identity mapping (agent, provider
 // conversation id) → thread never leaves the server.
@@ -17,6 +20,7 @@
 package threads
 
 import (
+	"context"
 	"time"
 
 	"github.com/jeremytondo/atc/internal/api"
@@ -86,3 +90,27 @@ type StatusObservation struct {
 	LastError *string
 	Metadata  Metadata
 }
+
+// ResumeRequest asks the agents side to launch a terminal running the
+// provider's exact resume of a dormant conversation (ATC-282). It carries
+// the private identity out of this domain to the adapter that composes
+// the command — never onto the wire.
+type ResumeRequest struct {
+	ThreadID string
+	// Agent is the catalog id; ProviderID the provider's own conversation
+	// id, together the private identity key.
+	Agent      string
+	ProviderID string
+	// ProjectID is the thread's project, which the terminal joins.
+	ProjectID string
+	// Directory is the conversation's last recorded working directory,
+	// empty when never observed; the resumer falls back to the project's
+	// directory when it no longer exists.
+	Directory string
+}
+
+// Resumer launches the resume terminal for an open decision
+// (agents.Service.Resume in production). It is invoked under the thread
+// service's operation lock, so at most one resume of a thread is ever in
+// flight.
+type Resumer func(ctx context.Context, req ResumeRequest) (api.Terminal, error)
