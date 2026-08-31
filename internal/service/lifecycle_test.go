@@ -17,9 +17,8 @@ import (
 func TestFirstRunNotice(t *testing.T) {
 	linux := firstRunNotice("linux", "/home/ab/.config/systemd/user/atc.server.service")
 	wantLinux := "registered atc.server (/home/ab/.config/systemd/user/atc.server.service)\n" +
-		"the server now starts automatically at every login and restarts if it exits\n" +
-		"undo at any time with `atc server uninstall`\n" +
-		"headless machines: run `loginctl enable-linger` once so the server outlives logins\n"
+		"the server now starts automatically when this machine boots and restarts if it exits\n" +
+		"undo at any time with `atc server uninstall`\n"
 	if diff := cmp.Diff(wantLinux, linux); diff != "" {
 		t.Errorf("linux notice mismatch (-want +got):\n%s", diff)
 	}
@@ -50,6 +49,13 @@ func TestUninstallReport(t *testing.T) {
 	want = "atc.server was not installed; nothing removed\n"
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("empty uninstallReport mismatch (-want +got):\n%s", diff)
+	}
+
+	got = lingerUninstallNotice(1000)
+	want = "ATC did not disable systemd lingering because other user services may use it\n" +
+		"disable it, if no longer needed, with `sudo loginctl disable-linger 1000`\n"
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("lingerUninstallNotice mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -96,11 +102,16 @@ func TestResolveUnitTailscale(t *testing.T) {
 // Linux command lines only — the darwin branch stays untested by design
 // (the dev and CI hosts are Linux).
 type seamStub struct {
-	commands   [][]string // state-changing supervisor invocations, in order
-	active     bool       // systemctl --user is-active answer
-	healthy    bool       // probe answer
-	resolves   int        // tailscale executable resolution calls
-	resolveErr error
+	commands       [][]string // state-changing supervisor invocations, in order
+	active         bool       // systemctl --user is-active answer
+	healthy        bool       // probe answer
+	resolves       int        // tailscale executable resolution calls
+	resolveErr     error
+	commandErr     error
+	lingering      bool
+	lingerCheckErr error
+	tailnetURL     string
+	tailnetProblem string
 }
 
 func installSeams(t *testing.T, s *seamStub) {
@@ -108,13 +119,19 @@ func installSeams(t *testing.T, s *seamStub) {
 	if runtime.GOOS != "linux" {
 		t.Skip("lifecycle seam tests exercise the linux supervisor branch")
 	}
-	origRun, origExit, origProbe, origResolve, origRequire := runSupervisor, exitCode, probeOnce, resolveTailscaleExecutable, requireSystemctl
+	origRun, origExit, origProbe, origResolve, origRequire, origLinger, origTailnet := runSupervisor, exitCode, probeOnce, resolveTailscaleExecutable, requireSystemctl, userLingering, inspectTailnetEndpoint
 	t.Cleanup(func() {
-		runSupervisor, exitCode, probeOnce, resolveTailscaleExecutable, requireSystemctl = origRun, origExit, origProbe, origResolve, origRequire
+		runSupervisor, exitCode, probeOnce, resolveTailscaleExecutable, requireSystemctl, userLingering, inspectTailnetEndpoint = origRun, origExit, origProbe, origResolve, origRequire, origLinger, origTailnet
 	})
 	requireSystemctl = func() error { return nil }
+	userLingering = func(context.Context, int) (bool, error) {
+		return s.lingering, s.lingerCheckErr
+	}
 	runSupervisor = func(_ context.Context, name string, args ...string) error {
 		s.commands = append(s.commands, append([]string{name}, args...))
+		if name == "loginctl" && s.commandErr != nil {
+			return s.commandErr
+		}
 		return nil
 	}
 	exitCode = func(_ context.Context, name string, args ...string) int {
@@ -136,6 +153,9 @@ func installSeams(t *testing.T, s *seamStub) {
 			return "", s.resolveErr
 		}
 		return "/usr/bin/tailscale", nil
+	}
+	inspectTailnetEndpoint = func(context.Context, config.Config) (string, string) {
+		return s.tailnetURL, s.tailnetProblem
 	}
 }
 
@@ -191,7 +211,7 @@ func readUnitOverride(t *testing.T, unitFile string) bool {
 // A logged-out or unreachable tailnet cannot fail this path — the
 // lifecycle consults nothing beyond executable resolution.
 func TestStartInstallsTailscaleOverride(t *testing.T) {
-	s := &seamStub{healthy: true}
+	s := &seamStub{healthy: true, tailnetURL: "https://host.tailnet.ts.net:1"}
 	installSeams(t, s)
 	opts, unitFile := seamEnv(t)
 	enabled := true
@@ -207,6 +227,7 @@ func TestStartInstallsTailscaleOverride(t *testing.T) {
 		t.Errorf("resolve calls = %d, want 1 (preflight)", s.resolves)
 	}
 	want := [][]string{
+		{"loginctl", "enable-linger"},
 		{"systemctl", "--user", "daemon-reload"},
 		{"systemctl", "--user", "enable", UnitName},
 		{"systemctl", "--user", "start", UnitName},
@@ -214,10 +235,60 @@ func TestStartInstallsTailscaleOverride(t *testing.T) {
 	if diff := cmp.Diff(want, s.commands); diff != "" {
 		t.Errorf("supervisor commands mismatch (-want +got):\n%s", diff)
 	}
+	got := opts.Stdout.(*strings.Builder).String()
+	for _, wantLine := range []string{
+		"started atc.server\n",
+		"  api: http://127.0.0.1:1\n",
+		"  api (tailnet): https://host.tailnet.ts.net:1\n",
+	} {
+		if !strings.Contains(got, wantLine) {
+			t.Errorf("start output %q does not contain %q", got, wantLine)
+		}
+	}
+}
+
+func TestStartReportsPendingTailnetEndpoint(t *testing.T) {
+	s := &seamStub{
+		healthy:        true,
+		tailnetURL:     "https://host.tailnet.ts.net:1",
+		tailnetProblem: "tailscale serve has not exposed the route yet",
+	}
+	installSeams(t, s)
+	opts, _ := seamEnv(t)
+	enabled := true
+	opts.Tailscale = &enabled
+
+	if err := Start(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	got := opts.Stdout.(*strings.Builder).String()
+	want := "api (tailnet): pending at https://host.tailnet.ts.net:1 (tailscale serve has not exposed the route yet)"
+	if !strings.Contains(got, want) {
+		t.Errorf("start output = %q, want %q", got, want)
+	}
+}
+
+func TestStartFailsBeforeInstallWhenLingeringCannotBeEnabled(t *testing.T) {
+	lingerErr := errors.New("authorization required")
+	s := &seamStub{healthy: true, commandErr: lingerErr}
+	installSeams(t, s)
+	opts, unitFile := seamEnv(t)
+
+	err := Start(context.Background(), opts)
+	if !errors.Is(err, lingerErr) || !strings.Contains(err.Error(), "sudo loginctl enable-linger") {
+		t.Fatalf("Start = %v, want the linger error and corrective command", err)
+	}
+	if _, statErr := os.Stat(unitFile); !errors.Is(statErr, os.ErrNotExist) {
+		t.Error("failed linger setup installed the unit")
+	}
+	wantCommands := [][]string{{"loginctl", "enable-linger"}}
+	if diff := cmp.Diff(wantCommands, s.commands); diff != "" {
+		t.Errorf("commands after failed linger setup mismatch (-want +got):\n%s", diff)
+	}
 }
 
 func TestFlaglessStartPreservesHealthyOverride(t *testing.T) {
-	s := &seamStub{active: true, healthy: true}
+	s := &seamStub{active: true, healthy: true, lingering: true}
 	installSeams(t, s)
 	opts, unitFile := seamEnv(t)
 	installed := writeInstalledUnit(t, unitFile, true)
@@ -225,7 +296,9 @@ func TestFlaglessStartPreservesHealthyOverride(t *testing.T) {
 	if err := Start(context.Background(), opts); err != nil {
 		t.Fatalf("Start = %v, want nil", err)
 	}
-	want := [][]string{{"systemctl", "--user", "enable", UnitName}}
+	want := [][]string{
+		{"systemctl", "--user", "enable", UnitName},
+	}
 	if diff := cmp.Diff(want, s.commands); diff != "" {
 		t.Errorf("supervisor commands mismatch (-want +got):\n%s", diff)
 	}

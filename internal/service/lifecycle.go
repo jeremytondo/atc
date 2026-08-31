@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/jeremytondo/atc/internal/config"
 	"github.com/jeremytondo/atc/internal/paths"
 )
 
@@ -76,13 +77,16 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 	if supervised && !bounce && unchanged && probeOnce(ctx, opts, token).healthy {
 		// Idempotent: healthy and running the current unit — leave the
 		// process untouched. enable still runs so an active-but-disabled
-		// unit returns at next login.
+		// unit returns at boot.
 		if runtime.GOOS == "linux" {
+			if err := enableLingering(ctx); err != nil {
+				return err
+			}
 			if err := runSupervisor(ctx, "systemctl", "--user", "enable", UnitName); err != nil {
 				return err
 			}
 		}
-		say(opts.Stdout, "%s is already running and healthy: %s\n", UnitName, loopbackURL(opts.Config.Port))
+		say(opts.Stdout, "%s", lifecycleSuccess(UnitName+" is already running and healthy", opts.Config, effectiveTailscale(override, opts.Config), ctx))
 		return nil
 	}
 	// A supervised daemon whose unit changed must be bounced onto the new
@@ -99,6 +103,14 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 	// exposure supervisor self-heals those after the loopback server is up.
 	if override || opts.Config.Tailscale {
 		if _, err := resolveTailscaleExecutable(opts.Config.TailscaleExecutable); err != nil {
+			return err
+		}
+	}
+	if runtime.GOOS == "linux" {
+		// A user unit enabled without lingering only returns after the next
+		// login. ATC is a remote server, so start/restart establish the full
+		// boot-persistence contract before installing or replacing the unit.
+		if err := enableLingering(ctx); err != nil {
 			return err
 		}
 	}
@@ -152,7 +164,7 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 	if bounce {
 		verb = "restarted"
 	}
-	say(opts.Stdout, "%s %s: %s\n", verb, UnitName, loopbackURL(opts.Config.Port))
+	say(opts.Stdout, "%s", lifecycleSuccess(verb+" "+UnitName, opts.Config, effectiveTailscale(override, opts.Config), ctx))
 	return nil
 }
 
@@ -225,11 +237,33 @@ func Uninstall(ctx context.Context, opts Options) error {
 		exitCode(ctx, "systemctl", "--user", "daemon-reload")
 	}
 	say(opts.Stdout, "%s", uninstallReport(existed, remainingFiles()))
+	if existed && runtime.GOOS == "linux" {
+		say(opts.Stdout, "%s", lingerUninstallNotice(os.Getuid()))
+	}
 	return nil
 }
 
 func loopbackURL(port int) string {
 	return fmt.Sprintf("http://127.0.0.1:%d", port)
+}
+
+func effectiveTailscale(override bool, cfg config.Config) bool {
+	return override || cfg.Tailscale
+}
+
+// lifecycleSuccess reports every endpoint the just-checked service intends
+// to expose. Tailnet inspection distinguishes a live Serve route from an
+// expected URL that is still converging; tailnet trouble never turns a
+// healthy loopback server into a failed start.
+func lifecycleSuccess(headline string, cfg config.Config, tailnet bool, ctx context.Context) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n  api: %s\n", headline, loopbackURL(cfg.Port))
+	if !tailnet {
+		return b.String()
+	}
+	url, problem := inspectTailnetEndpoint(ctx, cfg)
+	fmt.Fprintf(&b, "  %s\n", renderTailnetURL(url, problem))
+	return b.String()
 }
 
 // resolveUnitTailscale settles the unit's --tailscale override for one
@@ -255,12 +289,13 @@ func resolveUnitTailscale(flag *bool, goos, existing string, installed bool) (bo
 // firstRunNotice replaces the ATC-246 consent prompt (2026-08-25 grill):
 // printed to stderr when no unit existed before this start.
 func firstRunNotice(goos, unitFile string) string {
-	notice := fmt.Sprintf("registered %s (%s)\n", UnitName, unitFile) +
-		"the server now starts automatically at every login and restarts if it exits\n" +
-		"undo at any time with `atc server uninstall`\n"
+	notice := fmt.Sprintf("registered %s (%s)\n", UnitName, unitFile)
 	if goos == "linux" {
-		notice += "headless machines: run `loginctl enable-linger` once so the server outlives logins\n"
+		notice += "the server now starts automatically when this machine boots and restarts if it exits\n"
+	} else {
+		notice += "the server now starts automatically at every login and restarts if it exits\n"
 	}
+	notice += "undo at any time with `atc server uninstall`\n"
 	return notice
 }
 
@@ -304,4 +339,9 @@ func uninstallReport(existed bool, remaining []remainingFile) string {
 		fmt.Fprintf(&b, "  %s: %s\n", f.label, f.path)
 	}
 	return b.String()
+}
+
+func lingerUninstallNotice(uid int) string {
+	return fmt.Sprintf("ATC did not disable systemd lingering because other user services may use it\n"+
+		"disable it, if no longer needed, with `sudo loginctl disable-linger %d`\n", uid)
 }

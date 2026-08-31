@@ -91,6 +91,44 @@ var requireSystemctl = func() error {
 	return nil
 }
 
+// userLingering reads the durable logind setting before attempting a write,
+// so an already-correct machine never trips an administrator policy merely
+// because start/restart was repeated.
+var userLingering = func(ctx context.Context, uid int) (bool, error) {
+	cmd := exec.CommandContext(ctx, "loginctl", "show-user", strconv.Itoa(uid), "--property=Linger")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("loginctl show-user failed: %s", strings.TrimSpace(string(out)))
+	}
+	switch strings.TrimSpace(string(out)) {
+	case "Linger=yes":
+		return true, nil
+	case "Linger=no":
+		return false, nil
+	default:
+		return false, fmt.Errorf("loginctl show-user returned unexpected output: %q", strings.TrimSpace(string(out)))
+	}
+}
+
+// enableLingering makes the systemd user manager a boot service instead of a
+// login-session service. loginctl applies an omitted user argument to the
+// caller; if local policy requires an administrator, the error gives a
+// copy-paste command whose numeric uid cannot resolve to the wrong account.
+func enableLingering(ctx context.Context) error {
+	uid := os.Getuid()
+	enabled, err := userLingering(ctx, uid)
+	if err != nil {
+		return fmt.Errorf("cannot determine boot persistence for user %d: %w", uid, err)
+	}
+	if enabled {
+		return nil
+	}
+	if err := runSupervisor(ctx, "loginctl", "enable-linger"); err != nil {
+		return fmt.Errorf("cannot enable boot persistence for user %d: %w; run `sudo loginctl enable-linger %d`, then retry", uid, err, uid)
+	}
+	return nil
+}
+
 // runSupervisor executes one supervisor command; a failure surfaces the
 // tool's own stderr as one diagnostic. Held in a variable (the
 // stdioIsTerminal pattern from package main) so lifecycle tests can record

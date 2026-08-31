@@ -89,6 +89,46 @@ func TestPreflightReportsStderrOnFailure(t *testing.T) {
 	}
 }
 
+func TestServeURLVerifiesExactRoute(t *testing.T) {
+	for name, output := range map[string]string{
+		"background route": `{"TCP":{"7331":{"HTTPS":true}},"Web":{"host.tailnet.ts.net:7331":{"Handlers":{"/":{"Proxy":"http://localhost:7331"}}}}}`,
+		"foreground route": `{"Foreground":{"owner-id":{"TCP":{"7331":{"HTTPS":true}},"Web":{"host.tailnet.ts.net:7331":{"Handlers":{"/":{"Proxy":"http://localhost:7331"}}}}}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := fake(t, `printf '%s' '`+output+`'`, io.Discard)
+			got, err := ServeURL(context.Background(), s.executable, "host.tailnet.ts.net", 7331)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != "https://host.tailnet.ts.net:7331" {
+				t.Errorf("ServeURL = %q, want the verified HTTPS endpoint", got)
+			}
+		})
+	}
+}
+
+func TestServeURLRejectsAbsentOrWrongRoute(t *testing.T) {
+	for name, output := range map[string]string{
+		"empty config":  `{}`,
+		"wrong backend": `{"TCP":{"7331":{"HTTPS":true}},"Web":{"host.tailnet.ts.net:7331":{"Handlers":{"/":{"Proxy":"http://localhost:9000"}}}}}`,
+		"plain http":    `{"TCP":{"7331":{"HTTP":true}},"Web":{"host.tailnet.ts.net:7331":{"Handlers":{"/":{"Proxy":"http://localhost:7331"}}}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := fake(t, `printf '%s' '`+output+`'`, io.Discard)
+			if _, err := ServeURL(context.Background(), s.executable, "host.tailnet.ts.net", 7331); err == nil || !strings.Contains(err.Error(), "has not exposed") {
+				t.Errorf("ServeURL error = %v, want a pending-route diagnostic", err)
+			}
+		})
+	}
+}
+
+func TestServeURLCarriesStatusFailure(t *testing.T) {
+	s := fake(t, `echo "serve status unavailable" >&2; exit 1`, io.Discard)
+	if _, err := ServeURL(context.Background(), s.executable, "host.tailnet.ts.net", 7331); err == nil || !strings.Contains(err.Error(), "serve status unavailable") {
+		t.Errorf("ServeURL error = %v, want stderr detail", err)
+	}
+}
+
 func TestServeReadyThenReapedOnCancel(t *testing.T) {
 	var logs lockedBuffer
 	s := fake(t, `echo "Available within your tailnet: https://host.tailnet.ts.net:7331/"; exec sleep 30`, &logs)

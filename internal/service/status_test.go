@@ -121,7 +121,7 @@ func TestRenderStatus(t *testing.T) {
 				s := healthyInfo()
 				s.bind = "0.0.0.0"
 				s.tailscale = true
-				s.tailnetDNS = "machine.tail1234.ts.net"
+				s.tailnetURL = "https://machine.tail1234.ts.net:7331"
 				return s
 			},
 			want: "atc.server: running and healthy\n" +
@@ -153,7 +153,7 @@ func TestRenderStatus(t *testing.T) {
 			info: func() statusInfo {
 				s := healthyInfo()
 				s.tailscaleOverride = true
-				s.tailnetDNS = "machine.tail1234.ts.net"
+				s.tailnetURL = "https://machine.tail1234.ts.net:7331"
 				return s
 			},
 			want: "atc.server: running and healthy\n" +
@@ -179,6 +179,24 @@ func TestRenderStatus(t *testing.T) {
 				"  server: v1.2.3\n" +
 				"  api: http://127.0.0.1:7331\n" +
 				"  api (tailnet): unavailable (tailscale is logged out (BackendState NeedsLogin))\n" +
+				"  tailscale: enabled by the service flag; `atc server restart --tailscale=false` returns control to config.toml\n" +
+				"  token: `atc server token` prints the bearer token remote clients use\n",
+			wantCode: 0,
+		},
+		"tailnet route still converging shows expected url without claiming availability": {
+			info: func() statusInfo {
+				s := healthyInfo()
+				s.tailscaleOverride = true
+				s.tailnetURL = "https://machine.tail1234.ts.net:7331"
+				s.tailnetProblem = "tailscale serve has not exposed the route yet"
+				return s
+			},
+			want: "atc.server: running and healthy\n" +
+				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
+				"  client: v1.2.3\n" +
+				"  server: v1.2.3\n" +
+				"  api: http://127.0.0.1:7331\n" +
+				"  api (tailnet): pending at https://machine.tail1234.ts.net:7331 (tailscale serve has not exposed the route yet)\n" +
 				"  tailscale: enabled by the service flag; `atc server restart --tailscale=false` returns control to config.toml\n" +
 				"  token: `atc server token` prints the bearer token remote clients use\n",
 			wantCode: 0,

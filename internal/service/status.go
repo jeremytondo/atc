@@ -68,7 +68,7 @@ func Status(ctx context.Context, opts Options) error {
 		info.hostname = hostname
 	}
 	if opts.Config.Tailscale || info.tailscaleOverride {
-		info.tailnetDNS, info.tailnetProblem = tailnetDNS(ctx, opts.Config)
+		info.tailnetURL, info.tailnetProblem = inspectTailnetEndpoint(ctx, opts.Config)
 	}
 
 	report, code := renderStatus(info)
@@ -100,16 +100,25 @@ func supervisorState(ctx context.Context) string {
 	return "unknown"
 }
 
-func tailnetDNS(ctx context.Context, cfg config.Config) (dns, problem string) {
+// inspectTailnetEndpoint is shared by status and lifecycle success output. It
+// is a seam so lifecycle tests never consult the developer's real tailnet.
+var inspectTailnetEndpoint = tailnetEndpoint
+
+func tailnetEndpoint(ctx context.Context, cfg config.Config) (endpoint, problem string) {
 	executable, err := tailscale.ResolveExecutable(cfg.TailscaleExecutable)
 	if err != nil {
 		return "", err.Error()
 	}
-	dns, err = tailscale.DNSName(ctx, executable)
+	dns, err := tailscale.DNSName(ctx, executable)
 	if err != nil {
 		return "", err.Error()
 	}
-	return dns, ""
+	expected := "https://" + net.JoinHostPort(dns, strconv.Itoa(cfg.Port))
+	endpoint, err = tailscale.ServeURL(ctx, executable, dns, cfg.Port)
+	if err != nil {
+		return expected, err.Error()
+	}
+	return endpoint, ""
 }
 
 type statusInfo struct {
@@ -132,7 +141,7 @@ type statusInfo struct {
 	// overrideProblem is why the installed unit's override state is
 	// unknown (unreadable or unrecognized content); "" when readable.
 	overrideProblem string
-	tailnetDNS      string
+	tailnetURL      string
 	tailnetProblem  string
 }
 
@@ -202,11 +211,18 @@ func apiURLs(s statusInfo) []string {
 		}
 	}
 	if s.tailscale || s.tailscaleOverride {
-		if s.tailnetDNS != "" {
-			urls = append(urls, fmt.Sprintf("api (tailnet): https://%s:%d", s.tailnetDNS, s.port))
-		} else {
-			urls = append(urls, fmt.Sprintf("api (tailnet): unavailable (%s)", s.tailnetProblem))
-		}
+		urls = append(urls, renderTailnetURL(s.tailnetURL, s.tailnetProblem))
 	}
 	return urls
+}
+
+func renderTailnetURL(endpoint, problem string) string {
+	switch {
+	case endpoint != "" && problem == "":
+		return "api (tailnet): " + endpoint
+	case endpoint != "":
+		return fmt.Sprintf("api (tailnet): pending at %s (%s)", endpoint, problem)
+	default:
+		return fmt.Sprintf("api (tailnet): unavailable (%s)", problem)
+	}
 }
