@@ -82,8 +82,9 @@ func supported() error {
 }
 
 // requireSystemctl is the Linux pre-flight: without a systemd user manager
-// there is no supervisor family at all, only the foreground primitive.
-func requireSystemctl() error {
+// there is no supervisor family at all, only the foreground primitive. A
+// seam variable so lifecycle tests carry no hidden systemctl requirement.
+var requireSystemctl = func() error {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return fmt.Errorf("systemctl not found: this machine cannot supervise the server; run `atc server run` in the foreground instead")
 	}

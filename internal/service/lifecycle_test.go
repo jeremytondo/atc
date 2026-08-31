@@ -108,10 +108,11 @@ func installSeams(t *testing.T, s *seamStub) {
 	if runtime.GOOS != "linux" {
 		t.Skip("lifecycle seam tests exercise the linux supervisor branch")
 	}
-	origRun, origExit, origProbe, origResolve := runSupervisor, exitCode, probeOnce, resolveTailscaleExecutable
+	origRun, origExit, origProbe, origResolve, origRequire := runSupervisor, exitCode, probeOnce, resolveTailscaleExecutable, requireSystemctl
 	t.Cleanup(func() {
-		runSupervisor, exitCode, probeOnce, resolveTailscaleExecutable = origRun, origExit, origProbe, origResolve
+		runSupervisor, exitCode, probeOnce, resolveTailscaleExecutable, requireSystemctl = origRun, origExit, origProbe, origResolve, origRequire
 	})
+	requireSystemctl = func() error { return nil }
 	runSupervisor = func(_ context.Context, name string, args ...string) error {
 		s.commands = append(s.commands, append([]string{name}, args...))
 		return nil
