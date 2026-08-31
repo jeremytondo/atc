@@ -192,7 +192,11 @@ func (o *Observer) awaitTUIMarker(c candidate) {
 	marker := filepath.Join(o.tuiCapabilitiesDir, c.threadID)
 	deadline := time.NewTimer(o.grace)
 	defer deadline.Stop()
-	ticker := time.NewTicker(min(10*time.Millisecond, o.grace))
+	interval := min(10*time.Millisecond, o.grace)
+	if interval <= 0 {
+		interval = time.Nanosecond
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		if info, err := os.Stat(marker); err == nil && info.Mode().IsRegular() {

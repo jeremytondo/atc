@@ -252,6 +252,7 @@ func (o *Observer) stop() {
 	o.connectMu.Unlock()
 	if conn != nil {
 		conn.close()
+		<-conn.finished
 	}
 	o.reads.Wait()
 }

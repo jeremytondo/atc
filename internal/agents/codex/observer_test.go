@@ -686,6 +686,20 @@ func TestVscodeCandidateWaitsForTUIMarker(t *testing.T) {
 	waitFor(t, func() bool { return f.paired("tui") == "term-aaaaa" })
 }
 
+func TestVscodeCandidateWithNoGraceFailsClosed(t *testing.T) {
+	f := newFixture(t, false)
+	f.observer.grace = 0
+	f.launch(t, "term-aaaaa", f.dir)
+	announcement := started("programmatic", f.dir)
+	announcement["thread"].(map[string]any)["source"] = "vscode"
+	f.server.broadcast("thread/started", announcement)
+	f.server.broadcast("thread/started", started("tui", f.dir))
+	waitFor(t, func() bool { return f.paired("tui") == "term-aaaaa" })
+	if f.paired("programmatic") != "" {
+		t.Error("unconfirmed vscode candidate bound the terminal")
+	}
+}
+
 // An announcement from another directory (here, via a symlink to a
 // different one) never matches; one whose path is a symlink to the
 // launch directory does — both sides canonicalize.
