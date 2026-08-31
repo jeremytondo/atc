@@ -690,6 +690,12 @@ func TestVscodeCandidateWaitsForTUIMarker(t *testing.T) {
 	f.observer.mu.Unlock()
 	go f.observer.awaitTUIMarker(c)
 	time.Sleep(20 * time.Millisecond)
+	f.observer.mu.Lock()
+	acceptedBeforeMarker := len(launch.candidates)
+	f.observer.mu.Unlock()
+	if acceptedBeforeMarker != 0 || f.paired("tui") != "" {
+		t.Fatal("vscode candidate was accepted before its TUI marker")
+	}
 	f.markTUI(t, "tui")
 	waitFor(t, func() bool { return f.paired("tui") == "term-aaaaa" })
 }
