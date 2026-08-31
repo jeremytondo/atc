@@ -9,6 +9,7 @@ import (
 	"slices"
 
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/terminals"
 	"github.com/jeremytondo/atc/internal/threads"
 )
 
@@ -25,14 +26,14 @@ var ErrNotFound = errors.New("agent not found")
 var ErrUnavailable = errors.New("agent unavailable")
 
 // TerminalCreator is the seam into the terminals domain: CreateForAgent
-// with the agent label, an optional working-directory override, and a
-// command factory (terminals.Service in production). The factory runs once
+// with the agent label, an optional working-directory override, and the
+// adapter's hooks (terminals.Service in production). Prepare runs once
+// the directory is resolved and before the commit lock; Compose runs once
 // the terminal identity is minted — per-launch context like hook settings
-// needs the id before the session starts — and stays an opaque function
+// needs the id before the session starts. Both stay opaque functions
 // there, so the terminals domain never learns agent vocabulary.
 type TerminalCreator interface {
-	CreateForAgent(ctx context.Context, params api.TerminalCreateParams, agent, directory string,
-		compose func(terminalID string) (string, error)) (api.Terminal, error)
+	CreateForAgent(ctx context.Context, params api.TerminalCreateParams, launch terminals.AgentLaunch) (api.Terminal, error)
 }
 
 // Options wires a Service.
@@ -151,12 +152,30 @@ func (s *Service) launch(ctx context.Context, id string, params api.AgentLaunchP
 	if name == "" {
 		name = entry.Name
 	}
+	launch := terminals.AgentLaunch{
+		Agent:     entry.ID,
+		Directory: directory,
+		Compose: func(terminalID, directory string) (string, error) {
+			return entry.TUI.Command(ctx, LaunchContext{
+				TerminalID: terminalID, Directory: directory, ResumeConversationID: resumeID,
+			})
+		},
+	}
+	if preparer, ok := entry.TUI.(LaunchPreparer); ok {
+		launch.Prepare = func(ctx context.Context, directory string) (func(), error) {
+			abort, err := preparer.PrepareLaunch(ctx, LaunchContext{Directory: directory, ResumeConversationID: resumeID})
+			if err != nil {
+				// A provider that cannot be observed is unavailable for
+				// launch — the same refusal as a missing binary.
+				return nil, fmt.Errorf("%w: %w", ErrUnavailable, err)
+			}
+			return abort, nil
+		}
+	}
 	return s.terminals.CreateForAgent(ctx, api.TerminalCreateParams{
 		ProjectID: params.ProjectID,
 		Name:      name,
-	}, entry.ID, directory, func(terminalID string) (string, error) {
-		return entry.TUI.Command(ctx, LaunchContext{TerminalID: terminalID, ResumeConversationID: resumeID})
-	})
+	}, launch)
 }
 
 func (s *Service) entry(id string) (Entry, bool) {

@@ -11,6 +11,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/terminals"
 	"github.com/jeremytondo/atc/internal/threads"
 )
 
@@ -36,17 +37,56 @@ type fakeCreator struct {
 	agent     string
 	directory string
 	command   string
+	// prepared records that the launch's Prepare hook ran; failCreate
+	// makes the create fail right after it, exercising abort.
+	prepared   bool
+	failCreate bool
 }
 
-func (c *fakeCreator) CreateForAgent(_ context.Context, params api.TerminalCreateParams, agent, directory string,
-	compose func(terminalID string) (string, error)) (api.Terminal, error) {
-	c.params, c.agent, c.directory = params, agent, directory
-	command, err := compose("term-aaaaa")
+func (c *fakeCreator) CreateForAgent(ctx context.Context, params api.TerminalCreateParams, launch terminals.AgentLaunch) (api.Terminal, error) {
+	c.params, c.agent, c.directory = params, launch.Agent, launch.Directory
+	directory := launch.Directory
+	if directory == "" {
+		directory = "/projects/alpha"
+	}
+	abort := func() {}
+	if launch.Prepare != nil {
+		prepared, err := launch.Prepare(ctx, directory)
+		if err != nil {
+			return api.Terminal{}, err
+		}
+		c.prepared = true
+		abort = prepared
+	}
+	if c.failCreate {
+		abort()
+		return api.Terminal{}, errors.New("create failed")
+	}
+	command, err := launch.Compose("term-aaaaa", directory)
 	if err != nil {
+		abort()
 		return api.Terminal{}, err
 	}
 	c.command = command
-	return api.Terminal{ID: "term-aaaaa", Name: params.Name, Command: command, Agent: agent}, nil
+	return api.Terminal{ID: "term-aaaaa", Name: params.Name, Command: command, Agent: launch.Agent}, nil
+}
+
+// fakePreparingTUI is an adapter with the optional prepare seam: it
+// records the directory it was prepared for and whether the launch was
+// aborted, and can refuse.
+type fakePreparingTUI struct {
+	fakeTUI
+	prepareErr error
+	prepared   string
+	aborted    bool
+}
+
+func (a *fakePreparingTUI) PrepareLaunch(_ context.Context, launch LaunchContext) (func(), error) {
+	if a.prepareErr != nil {
+		return nil, a.prepareErr
+	}
+	a.prepared = launch.Directory
+	return func() { a.aborted = true }, nil
 }
 
 func testEntries() []Entry {
@@ -212,5 +252,46 @@ func TestResumeComposesTheExactResume(t *testing.T) {
 	}
 	if creator.agent != "" {
 		t.Errorf("a refused resume reached the terminals domain: %+v", creator)
+	}
+}
+
+// The prepare seam runs before the create with the resolved directory; a
+// refusal there is an unavailable agent — no command is ever composed —
+// and a create that fails after it aborts the preparation.
+func TestLaunchPreparesBeforeTheCreate(t *testing.T) {
+	adapter := &fakePreparingTUI{fakeTUI: fakeTUI{command: "delta", binary: "delta", hint: "install delta"}}
+	creator := &fakeCreator{}
+	service, err := NewService(Options{
+		Entries:   []Entry{{ID: "delta", Name: "Delta", TUI: adapter}},
+		Terminals: creator,
+		LookPath:  func(string) (string, error) { return "/bin/delta", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := service.Launch(ctx, "delta", api.AgentLaunchParams{ProjectID: "proj-aaaaa"}); err != nil {
+		t.Fatal(err)
+	}
+	if adapter.prepared != "/projects/alpha" || !creator.prepared || adapter.aborted {
+		t.Errorf("prepared = %q (creator saw %v), aborted = %v", adapter.prepared, creator.prepared, adapter.aborted)
+	}
+
+	creator.failCreate = true
+	if _, err := service.Launch(ctx, "delta", api.AgentLaunchParams{ProjectID: "proj-aaaaa"}); err == nil {
+		t.Fatal("launch succeeded though the create failed")
+	}
+	if !adapter.aborted {
+		t.Error("a failed create did not abort the preparation")
+	}
+
+	adapter.prepareErr = errors.New("no server answering")
+	creator.command = ""
+	_, err = service.Launch(ctx, "delta", api.AgentLaunchParams{ProjectID: "proj-aaaaa"})
+	if !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "no server answering") {
+		t.Fatalf("launch with a failed preparation = %v, want ErrUnavailable carrying the cause", err)
+	}
+	if creator.command != "" {
+		t.Error("a command was composed for a launch whose preparation failed")
 	}
 }

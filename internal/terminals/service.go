@@ -321,28 +321,44 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 // real evidence. Failures after the record exists surface through the
 // normal status machinery — there is no separate launch-error path.
 func (s *Service) Create(ctx context.Context, params api.TerminalCreateParams) (api.Terminal, error) {
-	return s.create(ctx, params, "", "", nil)
+	return s.create(ctx, params, AgentLaunch{})
+}
+
+// AgentLaunch is a create the agent catalog resolved (ATC-254): the
+// catalog id recorded on the terminal, and the adapter's two hooks into
+// the create — both opaque here, so the domain never learns agent
+// vocabulary.
+type AgentLaunch struct {
+	// Agent is the catalog id recorded on the terminal — this is the only
+	// writer of the immutable agent field.
+	Agent string
+	// Directory overrides the project's as the session's working directory
+	// (a resumed conversation's recorded cwd, ATC-282); the caller vouches
+	// that it exists, and the project's directory is still required to.
+	// Empty means the project's.
+	Directory string
+	// Prepare, when set, runs once the working directory is resolved and
+	// before the commit lock: launch-time work that may block — waiting
+	// on another launch in the same directory, starting a provider's
+	// shared server — must not stall every terminal mutation server-wide.
+	// abort is called if the create fails afterwards, so the preparation
+	// can be undone; a successful create never calls it.
+	Prepare func(ctx context.Context, directory string) (abort func(), err error)
+	// Compose supplies the adapter-composed command once the terminal id
+	// is minted, so per-launch context (ATC-255 hook settings, a pending
+	// launch keyed by directory) can reference the identity before the
+	// session starts. It runs under the commit lock and must be quick.
+	Compose func(terminalID, directory string) (string, error)
 }
 
 // CreateForAgent is Create for a launch the API layer resolved through the
-// agent catalog (ATC-254): agent is the catalog id recorded on the
-// terminal — this is the only writer of the immutable agent field — and
-// compose supplies the adapter-composed command once the terminal id is
-// minted, so per-launch context (ATC-255 hook settings and secrets)
-// can reference the identity before the session starts. A non-empty
-// directory overrides the project's as the session's working directory
-// (a resumed conversation's recorded cwd, ATC-282); the caller vouches
-// that it exists, and the project's directory is still required to. The
-// domain stays agent-agnostic: the id is an opaque label, compose an
-// opaque command factory, and everything past them is the normal create
-// path.
-func (s *Service) CreateForAgent(ctx context.Context, params api.TerminalCreateParams, agent, directory string,
-	compose func(terminalID string) (string, error)) (api.Terminal, error) {
-	return s.create(ctx, params, agent, directory, compose)
+// agent catalog: Prepare runs outside the commit lock, and everything past
+// Compose is the normal create path.
+func (s *Service) CreateForAgent(ctx context.Context, params api.TerminalCreateParams, launch AgentLaunch) (api.Terminal, error) {
+	return s.create(ctx, params, launch)
 }
 
-func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, agent, directory string,
-	compose func(terminalID string) (string, error)) (api.Terminal, error) {
+func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, launch AgentLaunch) (api.Terminal, error) {
 	project, ok, err := s.projects.Get(ctx, params.ProjectID)
 	if err != nil {
 		return api.Terminal{}, err
@@ -364,18 +380,40 @@ func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, a
 		name = "Shell"
 	}
 
+	directory := launch.Directory
 	if directory == "" {
 		directory = project.Directory
 	}
+	abort := func() {}
+	if launch.Prepare != nil {
+		prepared, err := launch.Prepare(ctx, directory)
+		if err != nil {
+			return api.Terminal{}, err
+		}
+		if prepared != nil {
+			abort = prepared
+		}
+	}
+	terminal, err := s.commitCreate(ctx, params, project.ID, name, directory, launch)
+	if err != nil {
+		abort()
+	}
+	return terminal, err
+}
+
+// commitCreate is the create from the record on: mint the id under the
+// commit lock, compose, persist, start the session, and settle.
+func (s *Service) commitCreate(ctx context.Context, params api.TerminalCreateParams, projectID, name, directory string,
+	launch AgentLaunch) (api.Terminal, error) {
 	now := s.now()
 	record := store.TerminalRecord{
-		ProjectID: project.ID, Name: name, Directory: directory, Command: params.Command,
-		Agent:     agent,
+		ProjectID: projectID, Name: name, Directory: directory, Command: params.Command,
+		Agent:     launch.Agent,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	s.ops.Lock()
 	// Insertion is the collision check: a taken ID inserts nothing and
-	// re-rolls, with no check-then-insert window. compose runs inside the
+	// re-rolls, with no check-then-insert window. Compose runs inside the
 	// loop so the composed command always references the id that actually
 	// inserts — but only after the candidate clears the in-memory view
 	// (authoritative under ops), so its side effects (hook files, secret
@@ -390,8 +428,8 @@ func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, a
 		if taken {
 			continue
 		}
-		if compose != nil {
-			command, err := compose(record.ID)
+		if launch.Compose != nil {
+			command, err := launch.Compose(record.ID, record.Directory)
 			if err != nil {
 				s.ops.Unlock()
 				return api.Terminal{}, err

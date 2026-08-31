@@ -1,5 +1,5 @@
-// Package hookauth is the shared authentication plumbing for agent hook
-// ingest (ATC-278, ATC-280): a per-launch secret minted at launch, carried
+// Package hookauth is the authentication plumbing for agent hook ingest
+// (ATC-278): a per-launch secret minted at launch, carried
 // to hook subprocesses through a 0600 header file (curl -H @file, so the
 // secret never appears in argv or a URL), and validated on an internal
 // ingest route that sits outside bearer auth. Each agent package owns its

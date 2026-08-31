@@ -662,3 +662,59 @@ func TestListFiltersByProject(t *testing.T) {
 		t.Errorf("directories not copied from projects: %q %q", mine.Directory, other.Directory)
 	}
 }
+
+// An agent launch's Prepare runs with the resolved directory before any
+// record exists and outside the commit lock; a refusal there creates
+// nothing, and a create that fails after it aborts the preparation.
+// Compose then sees the minted id and the same directory.
+func TestCreateForAgentPreparesBeforeTheRecord(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	var prepared, composedDir, composedID string
+	aborted, prepares := false, 0
+	launch := AgentLaunch{
+		Agent: "alpha",
+		Prepare: func(_ context.Context, directory string) (func(), error) {
+			prepared = directory
+			prepares++
+			if records, err := f.service.repository.List(ctx); err != nil || len(records) != prepares-1 {
+				t.Errorf("records at prepare time = %v, %v; want the earlier creates' only", records, err)
+			}
+			// The commit lock is free: a concurrent mutation must not wait
+			// on preparation.
+			f.service.ops.Lock()
+			f.service.ops.Unlock() //nolint:staticcheck // the empty critical section is the assertion
+			return func() { aborted = true }, nil
+		},
+		Compose: func(terminalID, directory string) (string, error) {
+			composedID, composedDir = terminalID, directory
+			return "alpha --for " + terminalID, nil
+		},
+	}
+	terminal, err := f.service.CreateForAgent(ctx, api.TerminalCreateParams{ProjectID: f.projectID}, launch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared != f.projectDir || composedDir != f.projectDir || composedID != terminal.ID ||
+		terminal.Command != "alpha --for "+terminal.ID || terminal.Agent != "alpha" || aborted {
+		t.Errorf("prepared %q, composed (%q, %q), terminal %+v, aborted %v", prepared, composedID, composedDir, terminal, aborted)
+	}
+
+	refused := launch
+	refused.Prepare = func(context.Context, string) (func(), error) { return nil, errors.New("not now") }
+	if _, err := f.service.CreateForAgent(ctx, api.TerminalCreateParams{ProjectID: f.projectID}, refused); err == nil || err.Error() != "not now" {
+		t.Fatalf("refused prepare: err = %v", err)
+	}
+	if records, _ := f.service.repository.List(ctx); len(records) != 1 {
+		t.Errorf("a refused preparation left records: %v", records)
+	}
+
+	failing := launch
+	failing.Compose = func(string, string) (string, error) { return "", errors.New("cannot compose") }
+	if _, err := f.service.CreateForAgent(ctx, api.TerminalCreateParams{ProjectID: f.projectID}, failing); err == nil {
+		t.Fatal("create succeeded though compose failed")
+	}
+	if !aborted {
+		t.Error("a failed create did not abort the preparation")
+	}
+}
