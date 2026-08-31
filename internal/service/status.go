@@ -67,8 +67,8 @@ func Status(ctx context.Context, opts Options) error {
 	if hostname, hostErr := os.Hostname(); hostErr == nil {
 		info.hostname = hostname
 	}
-	if opts.Config.Tailscale || info.tailscaleOverride {
-		info.tailnetURL, info.tailnetProblem = inspectTailnetEndpoint(ctx, opts.Config)
+	if tailscaleEnabled(info.tailscaleOverride, info.tailscale) {
+		info.tailnetURL, info.tailnetProblem = inspectTailnetEndpoint(ctx, opts.Config, "")
 	}
 
 	report, code := renderStatus(info)
@@ -104,16 +104,18 @@ func supervisorState(ctx context.Context) string {
 // is a seam so lifecycle tests never consult the developer's real tailnet.
 var inspectTailnetEndpoint = tailnetEndpoint
 
-func tailnetEndpoint(ctx context.Context, cfg config.Config) (endpoint, problem string) {
-	executable, err := tailscale.ResolveExecutable(cfg.TailscaleExecutable)
-	if err != nil {
-		return "", err.Error()
+func tailnetEndpoint(ctx context.Context, cfg config.Config, executable string) (endpoint, problem string) {
+	if executable == "" {
+		var err error
+		if executable, err = resolveTailscaleExecutable(cfg.TailscaleExecutable); err != nil {
+			return "", err.Error()
+		}
 	}
 	dns, err := tailscale.DNSName(ctx, executable)
 	if err != nil {
 		return "", err.Error()
 	}
-	expected := "https://" + net.JoinHostPort(dns, strconv.Itoa(cfg.Port))
+	expected := tailscale.HTTPSURL(dns, cfg.Port)
 	endpoint, err = tailscale.ServeURL(ctx, executable, dns, cfg.Port)
 	if err != nil {
 		return expected, err.Error()
@@ -210,7 +212,7 @@ func apiURLs(s statusInfo) []string {
 			urls = append(urls, "api (lan): http://"+net.JoinHostPort(host, strconv.Itoa(s.port)))
 		}
 	}
-	if s.tailscale || s.tailscaleOverride {
+	if tailscaleEnabled(s.tailscaleOverride, s.tailscale) {
 		urls = append(urls, renderTailnetURL(s.tailnetURL, s.tailnetProblem))
 	}
 	return urls

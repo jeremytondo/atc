@@ -176,6 +176,8 @@ func TestUnitTailscaleRejectsUnrecognizedContent(t *testing.T) {
 		"darwin wrong subcommand":    {"darwin", launchAgentPlist([]string{"/opt/atc", "serve"}, "/l", env)},
 		"darwin non-string argument": {"darwin", `<plist><dict><key>ProgramArguments</key><array><integer>1</integer></array></dict></plist>`},
 		"darwin no ProgramArguments": {"darwin", `<plist><dict><key>Label</key><string>atc.server</string></dict></plist>`},
+		"darwin stale ProgramArguments key": {"darwin", `<plist><dict><key>ProgramArguments</key><string>bogus</string><array>` +
+			`<string>/opt/atc</string><string>server</string><string>run</string><string>--tailscale</string></array></dict></plist>`},
 		"darwin arguments in nested dict": {"darwin", `<plist><dict><key>Nested</key><dict><key>ProgramArguments</key><array>` +
 			`<string>/opt/atc</string><string>server</string><string>run</string><string>--tailscale</string></array></dict></dict></plist>`},
 		"linux garbage":           {"linux", "garbage"},

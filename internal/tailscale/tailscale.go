@@ -200,6 +200,12 @@ type serveStatus struct {
 	Foreground map[string]serveConfig
 }
 
+// HTTPSURL formats the one public endpoint shape shared by Serve supervision
+// and lifecycle/status reporting.
+func HTTPSURL(dnsName string, port int) string {
+	return "https://" + net.JoinHostPort(dnsName, strconv.Itoa(port))
+}
+
 // ServeURL reports the HTTPS URL only when tailscaled's live Serve
 // configuration contains the exact route ATC requested. DNSName alone proves
 // node connectivity, not that `tailscale serve` obtained approval and exposed
@@ -225,7 +231,8 @@ func ServeURL(ctx context.Context, executable, dnsName string, port int) (string
 		return "", fmt.Errorf("tailscale serve status returned unexpected output: %s", detail(out, "(empty)"))
 	}
 	portText := strconv.Itoa(port)
-	authority := net.JoinHostPort(dnsName, portText)
+	endpoint := HTTPSURL(dnsName, port)
+	authority := strings.TrimPrefix(endpoint, "https://")
 	configs := []serveConfig{status.serveConfig}
 	for _, foreground := range status.Foreground {
 		configs = append(configs, foreground)
@@ -241,7 +248,7 @@ func ServeURL(ctx context.Context, executable, dnsName string, port int) (string
 		proxyHost := net.ParseIP(proxy.Hostname())
 		proxyLoopback := proxy.Hostname() == "localhost" || (proxyHost != nil && proxyHost.IsLoopback())
 		if tcpOK && tcp.HTTPS && webOK && handlerOK && proxy.Scheme == "http" && proxyLoopback && proxy.Port() == portText {
-			return "https://" + authority, nil
+			return endpoint, nil
 		}
 	}
 	return "", fmt.Errorf("tailscale serve has not exposed https://%s yet", authority)
@@ -336,7 +343,7 @@ func (s *Supervisor) serve(ctx context.Context, dnsName string) error {
 		return fmt.Errorf("tailscale serve did not become ready within %s", readyTimeout)
 	}
 
-	s.logger.Info("tailscale serving", "url", fmt.Sprintf("https://%s:%d", dnsName, s.port))
+	s.logger.Info("tailscale serving", "url", HTTPSURL(dnsName, s.port))
 	err = <-exited
 	if ctx.Err() != nil {
 		return ctx.Err()

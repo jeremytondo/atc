@@ -96,9 +96,9 @@ var requireSystemctl = func() error {
 // because start/restart was repeated.
 var userLingering = func(ctx context.Context, uid int) (bool, error) {
 	cmd := exec.CommandContext(ctx, "loginctl", "show-user", strconv.Itoa(uid), "--property=Linger")
-	out, err := cmd.CombinedOutput()
+	out, err := cmd.Output()
 	if err != nil {
-		return false, fmt.Errorf("loginctl show-user failed: %s", strings.TrimSpace(string(out)))
+		return false, fmt.Errorf("loginctl show-user failed: %w", err)
 	}
 	switch strings.TrimSpace(string(out)) {
 	case "Linger=yes":
@@ -114,17 +114,25 @@ var userLingering = func(ctx context.Context, uid int) (bool, error) {
 // login-session service. loginctl applies an omitted user argument to the
 // caller; if local policy requires an administrator, the error gives a
 // copy-paste command whose numeric uid cannot resolve to the wrong account.
-func enableLingering(ctx context.Context) error {
+func enableLingering(ctx context.Context) (changed bool, err error) {
 	uid := os.Getuid()
 	enabled, err := userLingering(ctx, uid)
 	if err != nil {
-		return fmt.Errorf("cannot determine boot persistence for user %d: %w", uid, err)
+		return false, fmt.Errorf("cannot determine boot persistence for user %d: %w", uid, err)
 	}
 	if enabled {
-		return nil
+		return false, nil
 	}
 	if err := runSupervisor(ctx, "loginctl", "enable-linger"); err != nil {
-		return fmt.Errorf("cannot enable boot persistence for user %d: %w; run `sudo loginctl enable-linger %d`, then retry", uid, err, uid)
+		return false, fmt.Errorf("cannot enable boot persistence for user %d: %w; run `sudo loginctl enable-linger %d`, then retry", uid, err, uid)
+	}
+	return true, nil
+}
+
+func disableLingering(ctx context.Context) error {
+	uid := os.Getuid()
+	if err := runSupervisor(ctx, "loginctl", "disable-linger", strconv.Itoa(uid)); err != nil {
+		return fmt.Errorf("cannot roll back boot persistence for user %d: %w", uid, err)
 	}
 	return nil
 }

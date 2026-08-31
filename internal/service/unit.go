@@ -92,6 +92,13 @@ func plistProgramArguments(content string) ([]string, error) {
 			if inArguments && element.Name.Local != "string" {
 				return nil, fmt.Errorf("installed unit has a non-string program argument <%s>", element.Name.Local)
 			}
+			key := lastKey
+			if depth == 1 && element.Name.Local != "key" {
+				// A plist key applies only to the immediately following value.
+				// Never let malformed intervening content attribute a later
+				// keyless array to ProgramArguments.
+				lastKey = ""
+			}
 			switch element.Name.Local {
 			case "key":
 				var key string
@@ -102,7 +109,7 @@ func plistProgramArguments(content string) ([]string, error) {
 					lastKey = key
 				}
 			case "array", "dict":
-				if element.Name.Local == "array" && depth == 1 && lastKey == "ProgramArguments" {
+				if element.Name.Local == "array" && depth == 1 && key == "ProgramArguments" {
 					if found {
 						return nil, errors.New("installed unit has multiple ProgramArguments arrays")
 					}

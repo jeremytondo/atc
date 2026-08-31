@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -112,6 +113,7 @@ type seamStub struct {
 	lingerCheckErr error
 	tailnetURL     string
 	tailnetProblem string
+	tailnetExec    string
 }
 
 func installSeams(t *testing.T, s *seamStub) {
@@ -154,9 +156,33 @@ func installSeams(t *testing.T, s *seamStub) {
 		}
 		return "/usr/bin/tailscale", nil
 	}
-	inspectTailnetEndpoint = func(context.Context, config.Config) (string, string) {
+	inspectTailnetEndpoint = func(_ context.Context, _ config.Config, executable string) (string, string) {
+		s.tailnetExec = executable
 		return s.tailnetURL, s.tailnetProblem
 	}
+}
+
+func TestUserLingeringReadsStdoutOnlyAndWrapsExecFailure(t *testing.T) {
+	t.Run("stderr noise does not poison state", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "loginctl")
+		if err := os.WriteFile(path, []byte("#!/bin/sh\necho warning >&2\necho Linger=yes\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", dir)
+		enabled, err := userLingering(context.Background(), 1000)
+		if err != nil || !enabled {
+			t.Fatalf("userLingering = %v, %v; want true, nil", enabled, err)
+		}
+	})
+
+	t.Run("missing executable keeps cause", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		_, err := userLingering(context.Background(), 1000)
+		if err == nil || !strings.Contains(err.Error(), "executable file not found") {
+			t.Fatalf("userLingering error = %v, want the exec cause", err)
+		}
+	})
 }
 
 // seamEnv isolates every path the lifecycle touches (unit file, token,
@@ -226,6 +252,9 @@ func TestStartInstallsTailscaleOverride(t *testing.T) {
 	if s.resolves != 1 {
 		t.Errorf("resolve calls = %d, want 1 (preflight)", s.resolves)
 	}
+	if s.tailnetExec != "/usr/bin/tailscale" {
+		t.Errorf("tailnet inspection executable = %q, want the preflight result", s.tailnetExec)
+	}
 	want := [][]string{
 		{"loginctl", "enable-linger"},
 		{"systemctl", "--user", "daemon-reload"},
@@ -284,6 +313,42 @@ func TestStartFailsBeforeInstallWhenLingeringCannotBeEnabled(t *testing.T) {
 	wantCommands := [][]string{{"loginctl", "enable-linger"}}
 	if diff := cmp.Diff(wantCommands, s.commands); diff != "" {
 		t.Errorf("commands after failed linger setup mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestStartRollsBackNewLingeringWhenUnitWriteFails(t *testing.T) {
+	s := &seamStub{healthy: true}
+	installSeams(t, s)
+	opts, _ := seamEnv(t)
+	blocked := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocked, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", blocked)
+	disabled := false
+	opts.Tailscale = &disabled
+
+	err := Start(context.Background(), opts)
+	if err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("Start = %v, want the unit write failure", err)
+	}
+	want := [][]string{
+		{"loginctl", "enable-linger"},
+		{"loginctl", "disable-linger", strconv.Itoa(os.Getuid())},
+	}
+	if diff := cmp.Diff(want, s.commands); diff != "" {
+		t.Errorf("linger rollback commands mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestLifecycleSuccessPropagatesCancellation(t *testing.T) {
+	s := &seamStub{tailnetProblem: "context canceled"}
+	installSeams(t, s)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := lifecycleSuccess(ctx, "started atc.server", config.Config{Port: 7331}, true, "")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("lifecycleSuccess = %v, want context.Canceled", err)
 	}
 }
 
@@ -396,8 +461,8 @@ func TestFlaglessStartFailsOnUnrecognizedUnit(t *testing.T) {
 	}
 
 	err := Start(context.Background(), opts)
-	if err == nil || !strings.Contains(err.Error(), "--tailscale") {
-		t.Fatalf("Start = %v, want an error naming the explicit flags as the remedy", err)
+	if err == nil || !strings.Contains(err.Error(), "atc server restart --tailscale=false") {
+		t.Fatalf("Start = %v, want an error naming the command that also works after upgrade", err)
 	}
 	if content, _ := os.ReadFile(unitFile); string(content) != "garbage" {
 		t.Error("failed start modified the unit")
@@ -472,6 +537,9 @@ func TestStopPreservesAndUninstallRemovesOverride(t *testing.T) {
 
 	if err := Stop(context.Background(), opts); err != nil {
 		t.Fatalf("Stop = %v, want nil", err)
+	}
+	if got := opts.Stdout.(*strings.Builder).String(); !strings.Contains(got, "returns at next boot") {
+		t.Errorf("Stop output = %q, want Linux boot semantics", got)
 	}
 	if !readUnitOverride(t, unitFile) {
 		t.Error("stop dropped the unit or its override")

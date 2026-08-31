@@ -13,6 +13,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/jeremytondo/atc/internal/config"
 	"github.com/jeremytondo/atc/internal/paths"
@@ -52,7 +53,7 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 	existing, readErr := os.ReadFile(unitFile)
 	firstRun := errors.Is(readErr, fs.ErrNotExist)
 	if readErr != nil && !firstRun && opts.Tailscale == nil {
-		return fmt.Errorf("cannot read the installed unit %s: %w; rerun with --tailscale or --tailscale=false to replace it", unitFile, readErr)
+		return fmt.Errorf("cannot read the installed unit %s: %w; replace it with `atc server restart --tailscale` or `atc server restart --tailscale=false`", unitFile, readErr)
 	}
 	// The unit is the tailscale override's only durable store (ATC-283):
 	// an explicit flag wins, an omitted flag preserves what the installed
@@ -62,6 +63,7 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 	if err != nil {
 		return err
 	}
+	tailnet := tailscaleEnabled(override, opts.Config.Tailscale)
 	content, err := renderUnit(override)
 	if err != nil {
 		return err
@@ -79,14 +81,19 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 		// process untouched. enable still runs so an active-but-disabled
 		// unit returns at boot.
 		if runtime.GOOS == "linux" {
-			if err := enableLingering(ctx); err != nil {
+			lingerChanged, err := enableLingering(ctx)
+			if err != nil {
 				return err
 			}
 			if err := runSupervisor(ctx, "systemctl", "--user", "enable", UnitName); err != nil {
-				return err
+				return rollbackLingering(ctx, lingerChanged, err)
 			}
 		}
-		say(opts.Stdout, "%s", lifecycleSuccess(UnitName+" is already running and healthy", opts.Config, effectiveTailscale(override, opts.Config), ctx))
+		report, err := lifecycleSuccess(ctx, UnitName+" is already running and healthy", opts.Config, tailnet, "")
+		if err != nil {
+			return err
+		}
+		say(opts.Stdout, "%s", report)
 		return nil
 	}
 	// A supervised daemon whose unit changed must be bounced onto the new
@@ -101,36 +108,38 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 	// unit changes or a healthy process is interrupted. Runtime tailnet
 	// state (logged out, tailscaled down) is deliberately not checked: the
 	// exposure supervisor self-heals those after the loopback server is up.
-	if override || opts.Config.Tailscale {
-		if _, err := resolveTailscaleExecutable(opts.Config.TailscaleExecutable); err != nil {
+	var tailscaleExecutable string
+	if tailnet {
+		if tailscaleExecutable, err = resolveTailscaleExecutable(opts.Config.TailscaleExecutable); err != nil {
 			return err
 		}
 	}
+	lingerChanged := false
 	if runtime.GOOS == "linux" {
 		// A user unit enabled without lingering only returns after the next
 		// login. ATC is a remote server, so start/restart establish the full
 		// boot-persistence contract before installing or replacing the unit.
-		if err := enableLingering(ctx); err != nil {
+		if lingerChanged, err = enableLingering(ctx); err != nil {
 			return err
 		}
 	}
 
 	if err := writeUnit(unitFile, content); err != nil {
-		return err
+		return rollbackLingering(ctx, lingerChanged, err)
 	}
 	if runtime.GOOS == "linux" {
 		if err := runSupervisor(ctx, "systemctl", "--user", "daemon-reload"); err != nil {
-			return err
+			return rollbackLingering(ctx, lingerChanged, err)
 		}
 		if err := runSupervisor(ctx, "systemctl", "--user", "enable", UnitName); err != nil {
-			return err
+			return rollbackLingering(ctx, lingerChanged, err)
 		}
 		verb := "start"
 		if bounce {
 			verb = "restart"
 		}
 		if err := runSupervisor(ctx, "systemctl", "--user", verb, UnitName); err != nil {
-			return err
+			return rollbackLingering(ctx, lingerChanged, err)
 		}
 	} else {
 		// Bootstrap is the only launchd operation that (re)reads the plist,
@@ -164,13 +173,17 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 	if bounce {
 		verb = "restarted"
 	}
-	say(opts.Stdout, "%s", lifecycleSuccess(verb+" "+UnitName, opts.Config, effectiveTailscale(override, opts.Config), ctx))
+	report, err := lifecycleSuccess(ctx, verb+" "+UnitName, opts.Config, tailnet, tailscaleExecutable)
+	if err != nil {
+		return err
+	}
+	say(opts.Stdout, "%s", report)
 	return nil
 }
 
-// Stop stops the supervised process; "stop" means "until next login" on
-// both platforms — the unit stays installed and enabled. Uninstall is the
-// way out.
+// Stop stops the supervised process without uninstalling it. The enabled unit
+// returns at next boot on Linux and next login on macOS; uninstall is the way
+// out permanently.
 func Stop(ctx context.Context, opts Options) error {
 	if err := supported(); err != nil {
 		return err
@@ -200,7 +213,11 @@ func Stop(ctx context.Context, opts Options) error {
 			return err
 		}
 	}
-	say(opts.Stdout, "stopped %s (still installed; returns at next login)\n", UnitName)
+	returns := "next login"
+	if runtime.GOOS == "linux" {
+		returns = "next boot"
+	}
+	say(opts.Stdout, "stopped %s (still installed; returns at %s)\n", UnitName, returns)
 	return nil
 }
 
@@ -217,6 +234,10 @@ func Uninstall(ctx context.Context, opts Options) error {
 	}
 	_, statErr := os.Stat(unitFile)
 	existed := statErr == nil
+	lingerEnabled := false
+	if existed && runtime.GOOS == "linux" {
+		lingerEnabled, _ = userLingering(ctx, os.Getuid())
+	}
 	if runtime.GOOS == "darwin" {
 		if err := launchdUnload(ctx); err != nil {
 			return err
@@ -237,7 +258,7 @@ func Uninstall(ctx context.Context, opts Options) error {
 		exitCode(ctx, "systemctl", "--user", "daemon-reload")
 	}
 	say(opts.Stdout, "%s", uninstallReport(existed, remainingFiles()))
-	if existed && runtime.GOOS == "linux" {
+	if lingerEnabled {
 		say(opts.Stdout, "%s", lingerUninstallNotice(os.Getuid()))
 	}
 	return nil
@@ -247,23 +268,43 @@ func loopbackURL(port int) string {
 	return fmt.Sprintf("http://127.0.0.1:%d", port)
 }
 
-func effectiveTailscale(override bool, cfg config.Config) bool {
-	return override || cfg.Tailscale
+func tailscaleEnabled(override, configured bool) bool {
+	return override || configured
 }
+
+const lifecycleTailnetTimeout = 2 * time.Second
 
 // lifecycleSuccess reports every endpoint the just-checked service intends
 // to expose. Tailnet inspection distinguishes a live Serve route from an
 // expected URL that is still converging; tailnet trouble never turns a
 // healthy loopback server into a failed start.
-func lifecycleSuccess(headline string, cfg config.Config, tailnet bool, ctx context.Context) string {
+func lifecycleSuccess(ctx context.Context, headline string, cfg config.Config, tailnet bool, executable string) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n  api: %s\n", headline, loopbackURL(cfg.Port))
 	if !tailnet {
-		return b.String()
+		return b.String(), nil
 	}
-	url, problem := inspectTailnetEndpoint(ctx, cfg)
+	inspectCtx, cancel := context.WithTimeout(ctx, lifecycleTailnetTimeout)
+	url, problem := inspectTailnetEndpoint(inspectCtx, cfg, executable)
+	cancel()
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if errors.Is(inspectCtx.Err(), context.DeadlineExceeded) {
+		problem = "tailnet endpoint inspection timed out"
+	}
 	fmt.Fprintf(&b, "  %s\n", renderTailnetURL(url, problem))
-	return b.String()
+	return b.String(), nil
+}
+
+func rollbackLingering(ctx context.Context, changed bool, cause error) error {
+	if !changed {
+		return cause
+	}
+	if err := disableLingering(context.WithoutCancel(ctx)); err != nil {
+		return errors.Join(cause, err)
+	}
+	return cause
 }
 
 // resolveUnitTailscale settles the unit's --tailscale override for one
@@ -281,7 +322,7 @@ func resolveUnitTailscale(flag *bool, goos, existing string, installed bool) (bo
 	}
 	override, err := unitTailscale(goos, existing)
 	if err != nil {
-		return false, fmt.Errorf("%w; rerun with --tailscale or --tailscale=false to replace the unit", err)
+		return false, fmt.Errorf("%w; replace the unit with `atc server restart --tailscale` or `atc server restart --tailscale=false`", err)
 	}
 	return override, nil
 }

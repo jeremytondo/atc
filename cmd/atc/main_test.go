@@ -241,6 +241,19 @@ func TestServerStartRestartTailscaleHelp(t *testing.T) {
 	}
 }
 
+func TestServerStopHelpUsesPlatformSpecificReturnPoints(t *testing.T) {
+	var stdout, stderr strings.Builder
+	if err := run(context.Background(), []string{"server", "stop", "--help"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	help := stdout.String()
+	for _, want := range []string{"next boot on Linux", "next login on macOS"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("server stop help missing %q:\n%s", want, help)
+		}
+	}
+}
+
 func TestTailscaleLifecycleOptionsTriState(t *testing.T) {
 	isolateXDG(t)
 	options := func(t *testing.T, set string) *bool {

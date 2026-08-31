@@ -303,9 +303,9 @@ bounces it. The first start prints what was registered and how to undo it
 
 func newServerStopCmd() *cobra.Command {
 	return lifecycleCmd("stop",
-		"Stop the supervised server until next login",
+		"Stop the supervised server without uninstalling it",
 		`Stop the supervised server process. The unit stays installed, so the server
-returns at next login; use `+"`atc server uninstall`"+` to remove it entirely.`,
+returns at next boot on Linux or next login on macOS; use `+"`atc server uninstall`"+` to remove it entirely.`,
 		recoveryOptions, service.Stop)
 }
 
