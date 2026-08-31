@@ -4,8 +4,8 @@
 // an internal ATC route, and the stateful reducer that turns those events
 // into thread observations. Claude announces a session before any prompt,
 // so the reducer defers minting a thread to the first root prompt
-// (ATC-282), matching Codex, whose session start already arrives with it.
-// The id is persisted by terminals and threads — never rename it.
+// (ATC-282), as Codex's observer does at its first live status. The id
+// is persisted by terminals and threads — never rename it.
 package claude
 
 import (

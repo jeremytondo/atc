@@ -156,23 +156,18 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Codex hooks over a private temp CODEX_HOME: constructed for
-	// registration only — codex stays unavailable in the fixture, so no
-	// launch ever touches the profile.
-	codexHooks, err := codex.NewHooks(codex.HooksOptions{
-		Dir:       t.TempDir(),
-		BaseURL:   "http://127.0.0.1:0",
+	// The Codex observer over a private temp CODEX_HOME: constructed for
+	// registration only — codex stays unavailable in the fixture and the
+	// observer never runs, so no launch reaches for a server.
+	codexObserver := codex.NewObserver(codex.ObserverOptions{
 		CodexHome: t.TempDir(),
 		Threads:   threadService,
 		Terminals: service,
 		Now:       now,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	binaries := map[string]bool{"claude": true}
 	agentService, err := agents.NewService(agents.Options{
-		Entries:   []agents.Entry{claude.Entry(claudeHooks), codex.Entry(codexHooks)},
+		Entries:   []agents.Entry{claude.Entry(claudeHooks), codex.Entry(codexObserver)},
 		Terminals: service,
 		LookPath: func(name string) (string, error) {
 			if binaries[name] {
@@ -194,7 +189,7 @@ func newFixture(t *testing.T) *fixture {
 		Threads:           threadService,
 		Events:            hub,
 		InternalRoutes:    map[string]http.Handler{"POST " + claude.HooksPath: claudeHooks.Handler()},
-		TerminalCleanups:  []func(string){claudeHooks.Deregister, codexHooks.Deregister},
+		TerminalCleanups:  []func(string){claudeHooks.Deregister, codexObserver.Forget},
 		HeartbeatInterval: 50 * time.Millisecond,
 	})
 	f := &fixture{handler: handler, adapter: adapter, hub: hub, service: service, threads: threadService,

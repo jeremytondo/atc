@@ -25,18 +25,32 @@ import (
 const CapabilityTUI = "tui"
 
 // LaunchContext is the per-launch context the composition injects into an
-// adapter's command (ATC-255): the minted terminal identity, and for a
-// resume (ATC-282) the provider conversation to reopen. Adapters use it to
-// wire observation — Claude hook settings, the Codex hook environment —
-// without any of it appearing in the API contract. Grow it only when an
-// adapter consumes the addition.
+// adapter (ATC-255): the terminal's working directory, its minted
+// identity, and for a resume (ATC-282) the provider conversation to
+// reopen. Adapters use it to wire observation — Claude hook settings, the
+// Codex pending launch — without any of it appearing in the API
+// contract. Grow it only when an adapter consumes the addition.
 type LaunchContext struct {
-	// TerminalID is the terminal being created for this launch.
+	// TerminalID is the terminal being created for this launch. Empty in
+	// PrepareLaunch, which runs before the identity is minted.
 	TerminalID string
+	// Directory is the session's working directory: the project's, or a
+	// resumed conversation's recorded one.
+	Directory string
 	// ResumeConversationID is the provider's own conversation id to resume
 	// exactly; empty launches a fresh conversation. It is the private
 	// identity the threads domain holds and never appears on the wire.
 	ResumeConversationID string
+}
+
+// LaunchPreparer is the optional second adapter seam: launch-time work
+// that may block — waiting on another launch in the same directory,
+// starting a provider's shared server — runs here, before the terminals
+// domain takes its commit lock (Command runs under it). An error refuses
+// the launch before any record exists; abort is called if the create
+// fails afterwards, so the preparation can be undone.
+type LaunchPreparer interface {
+	PrepareLaunch(ctx context.Context, launch LaunchContext) (abort func(), err error)
 }
 
 // TUIAdapter is the per-tool seam behind the tui capability, written once
