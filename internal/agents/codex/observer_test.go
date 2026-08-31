@@ -678,9 +678,17 @@ func TestMislabelledProgrammaticThreadIgnored(t *testing.T) {
 func TestVscodeCandidateWaitsForTUIMarker(t *testing.T) {
 	f := newFixture(t, false)
 	f.launch(t, "term-aaaaa", f.dir)
-	announcement := started("tui", f.dir)
-	announcement["thread"].(map[string]any)["source"] = "vscode"
-	f.server.broadcast("thread/started", announcement)
+	f.observer.mu.Lock()
+	launch := f.observer.slots[canonical(f.dir)].launch
+	c := candidate{
+		threadID: "tui",
+		cwd:      f.dir,
+		source:   "vscode",
+		at:       launch.armedAt.Add(time.Millisecond),
+		seq:      launch.armedSeq + 1,
+	}
+	f.observer.mu.Unlock()
+	go f.observer.awaitTUIMarker(c)
 	time.Sleep(20 * time.Millisecond)
 	f.markTUI(t, "tui")
 	waitFor(t, func() bool { return f.paired("tui") == "term-aaaaa" })
