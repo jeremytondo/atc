@@ -135,43 +135,29 @@ func TestUnitArgs(t *testing.T) {
 // override states, and args needing escaping.
 func TestUnitTailscaleRoundTrip(t *testing.T) {
 	env := [][2]string{{"PATH", `/usr/bin:/50% "quoted"\path`}}
-	for name, tc := range map[string]struct {
-		goos     string
-		render   func(args []string) string
-		exe      string
-		override bool
+	for goos, tc := range map[string]struct {
+		render func(args []string) string
+		exe    string
 	}{
-		"darwin without override": {
-			goos:   "darwin",
+		"darwin": {
 			render: func(args []string) string { return launchAgentPlist(args, "/Users/ab/atc.log", env) },
 			exe:    `/Users/a b/bin/atc<&>"`,
 		},
-		"darwin with override": {
-			goos:     "darwin",
-			render:   func(args []string) string { return launchAgentPlist(args, "/Users/ab/atc.log", env) },
-			exe:      `/Users/a b/bin/atc<&>"`,
-			override: true,
-		},
-		"linux without override": {
-			goos:   "linux",
+		"linux": {
 			render: func(args []string) string { return systemdUnit(args, env) },
 			exe:    `/home/a b/bin/100% "atc"\x`,
 		},
-		"linux with override": {
-			goos:     "linux",
-			render:   func(args []string) string { return systemdUnit(args, env) },
-			exe:      `/home/a b/bin/100% "atc"\x`,
-			override: true,
-		},
 	} {
-		content := tc.render(unitArgs(tc.exe, tc.override))
-		got, err := unitTailscale(tc.goos, content)
-		if err != nil {
-			t.Errorf("%s: unitTailscale = %v, want nil", name, err)
-			continue
-		}
-		if got != tc.override {
-			t.Errorf("%s: unitTailscale = %v, want %v", name, got, tc.override)
+		for _, override := range []bool{false, true} {
+			content := tc.render(unitArgs(tc.exe, override))
+			got, err := unitTailscale(goos, content)
+			if err != nil {
+				t.Errorf("%s override=%v: unitTailscale = %v, want nil", goos, override, err)
+				continue
+			}
+			if got != override {
+				t.Errorf("%s: unitTailscale = %v, want %v", goos, got, override)
+			}
 		}
 	}
 }
@@ -190,15 +176,19 @@ func TestUnitTailscaleRejectsUnrecognizedContent(t *testing.T) {
 		"darwin wrong subcommand":    {"darwin", launchAgentPlist([]string{"/opt/atc", "serve"}, "/l", env)},
 		"darwin non-string argument": {"darwin", `<plist><dict><key>ProgramArguments</key><array><integer>1</integer></array></dict></plist>`},
 		"darwin no ProgramArguments": {"darwin", `<plist><dict><key>Label</key><string>atc.server</string></dict></plist>`},
-		"linux garbage":              {"linux", "garbage"},
-		"linux plist content":        {"linux", launchAgentPlist(unitArgs("/opt/atc", false), "/l", env)},
-		"linux missing ExecStart":    {"linux", "[Service]\nType=simple\n"},
-		"linux unquoted ExecStart":   {"linux", "[Service]\nExecStart=/opt/atc server run\n"},
-		"linux extra argument":       {"linux", systemdUnit([]string{"/opt/atc", "server", "run", "--port", "1"}, env)},
-		"linux flag before run":      {"linux", systemdUnit([]string{"/opt/atc", "--tailscale", "server", "run"}, env)},
-		"linux bad escape":           {"linux", "[Service]\nExecStart=\"/opt/atc\\q\" \"server\" \"run\"\n"},
-		"linux unterminated quote":   {"linux", "[Service]\nExecStart=\"/opt/atc\" \"server\" \"run\n"},
-		"linux duplicate ExecStart":  {"linux", "[Service]\nExecStart=\"/opt/atc\" \"server\" \"run\"\nExecStart=\"/opt/atc\" \"server\" \"run\"\n"},
+		"darwin arguments in nested dict": {"darwin", `<plist><dict><key>Nested</key><dict><key>ProgramArguments</key><array>` +
+			`<string>/opt/atc</string><string>server</string><string>run</string><string>--tailscale</string></array></dict></dict></plist>`},
+		"linux garbage":           {"linux", "garbage"},
+		"linux plist content":     {"linux", launchAgentPlist(unitArgs("/opt/atc", false), "/l", env)},
+		"linux missing ExecStart": {"linux", "[Service]\nType=simple\n"},
+		"linux ExecStart outside Service": {"linux",
+			"[Unit]\nExecStart=\"/opt/atc\" \"server\" \"run\" \"--tailscale\"\n[Service]\nType=simple\n"},
+		"linux unquoted ExecStart":  {"linux", "[Service]\nExecStart=/opt/atc server run\n"},
+		"linux extra argument":      {"linux", systemdUnit([]string{"/opt/atc", "server", "run", "--port", "1"}, env)},
+		"linux flag before run":     {"linux", systemdUnit([]string{"/opt/atc", "--tailscale", "server", "run"}, env)},
+		"linux bad escape":          {"linux", "[Service]\nExecStart=\"/opt/atc\\q\" \"server\" \"run\"\n"},
+		"linux unterminated quote":  {"linux", "[Service]\nExecStart=\"/opt/atc\" \"server\" \"run\n"},
+		"linux duplicate ExecStart": {"linux", "[Service]\nExecStart=\"/opt/atc\" \"server\" \"run\"\nExecStart=\"/opt/atc\" \"server\" \"run\"\n"},
 	} {
 		if _, err := unitTailscale(tc.goos, tc.content); err == nil {
 			t.Errorf("%s: unitTailscale = nil error, want unrecognized-content error", name)

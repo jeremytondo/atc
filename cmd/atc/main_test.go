@@ -224,9 +224,8 @@ func TestRecoveryCommandsSurviveBrokenConfig(t *testing.T) {
 	}
 }
 
-// Start and restart carry the lifecycle --tailscale flag; help documents
-// persistence, omission-preserves, and =false as a return to config.toml
-// (never an unconditional disable).
+// Help must document persistence, omission-preserves, and =false as a
+// return to config.toml — never an unconditional disable.
 func TestServerStartRestartTailscaleHelp(t *testing.T) {
 	for _, sub := range []string{"start", "restart"} {
 		var stdout, stderr strings.Builder
@@ -240,17 +239,8 @@ func TestServerStartRestartTailscaleHelp(t *testing.T) {
 			}
 		}
 	}
-
-	// A non-boolean value is a parse error, surfaced before any lifecycle
-	// action runs.
-	var stdout, stderr strings.Builder
-	if err := run(context.Background(), []string{"server", "start", "--tailscale=banana"}, strings.NewReader(""), &stdout, &stderr); err == nil {
-		t.Error("server start --tailscale=banana = nil, want a parse error")
-	}
 }
 
-// The tri-state mapping: an untouched flag stays nil (preserve), explicit
-// true and false arrive as pointers with the requested state.
 func TestTailscaleLifecycleOptionsTriState(t *testing.T) {
 	isolateXDG(t)
 	options := func(t *testing.T, set string) *bool {

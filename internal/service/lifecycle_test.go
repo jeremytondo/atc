@@ -91,13 +91,14 @@ func TestResolveUnitTailscale(t *testing.T) {
 
 // seamStub swaps every host-touching seam so the lifecycle decision path
 // runs hermetically: supervisor commands are recorded instead of executed,
-// probes and the health gate answer from the healthy field, and tailscale
-// executable resolution is scripted. Linux command lines only — the darwin
-// branch stays untested by design (the dev and CI hosts are Linux).
+// the probe answers from the healthy field (the real awaitHealthy gate
+// runs against it), and tailscale executable resolution is scripted.
+// Linux command lines only — the darwin branch stays untested by design
+// (the dev and CI hosts are Linux).
 type seamStub struct {
 	commands   [][]string // state-changing supervisor invocations, in order
 	active     bool       // systemctl --user is-active answer
-	healthy    bool       // probe and health-gate answer
+	healthy    bool       // probe answer
 	resolves   int        // tailscale executable resolution calls
 	resolveErr error
 }
@@ -107,11 +108,9 @@ func installSeams(t *testing.T, s *seamStub) {
 	if runtime.GOOS != "linux" {
 		t.Skip("lifecycle seam tests exercise the linux supervisor branch")
 	}
-	origRun, origExit := runSupervisor, exitCode
-	origProbe, origGate, origResolve := probeHealthy, healthGate, resolveTailscaleExecutable
+	origRun, origExit, origProbe, origResolve := runSupervisor, exitCode, probeOnce, resolveTailscaleExecutable
 	t.Cleanup(func() {
-		runSupervisor, exitCode = origRun, origExit
-		probeHealthy, healthGate, resolveTailscaleExecutable = origProbe, origGate, origResolve
+		runSupervisor, exitCode, probeOnce, resolveTailscaleExecutable = origRun, origExit, origProbe, origResolve
 	})
 	runSupervisor = func(_ context.Context, name string, args ...string) error {
 		s.commands = append(s.commands, append([]string{name}, args...))
@@ -127,12 +126,8 @@ func installSeams(t *testing.T, s *seamStub) {
 		s.commands = append(s.commands, append([]string{name}, args...))
 		return 0
 	}
-	probeHealthy = func(context.Context, Options, string) bool { return s.healthy }
-	healthGate = func(context.Context, Options, string) error {
-		if !s.healthy {
-			return errors.New("unhealthy")
-		}
-		return nil
+	probeOnce = func(context.Context, Options, string) probeOutcome {
+		return probeOutcome{responding: s.healthy, healthy: s.healthy}
 	}
 	resolveTailscaleExecutable = func(string) (string, error) {
 		s.resolves++
@@ -192,10 +187,8 @@ func readUnitOverride(t *testing.T, unitFile string) bool {
 	return override
 }
 
-// First installation with the flag: the unit carries the override, the
-// executable is preflighted, and the supervisor is started. A logged-out
-// or unreachable tailnet cannot fail this path — the lifecycle consults
-// nothing beyond executable resolution.
+// A logged-out or unreachable tailnet cannot fail this path — the
+// lifecycle consults nothing beyond executable resolution.
 func TestStartInstallsTailscaleOverride(t *testing.T) {
 	s := &seamStub{healthy: true}
 	installSeams(t, s)
@@ -222,8 +215,6 @@ func TestStartInstallsTailscaleOverride(t *testing.T) {
 	}
 }
 
-// A flagless start against a healthy service running the override keeps
-// the idempotent short-circuit: the unit and process are left untouched.
 func TestFlaglessStartPreservesHealthyOverride(t *testing.T) {
 	s := &seamStub{active: true, healthy: true}
 	installSeams(t, s)
@@ -245,9 +236,8 @@ func TestFlaglessStartPreservesHealthyOverride(t *testing.T) {
 	}
 }
 
-// A flagless restart — the plain and upgrade restart path — re-renders the
-// unit with the override preserved and preflights the executable, since
-// the restarted daemon will boot with tailscale enabled.
+// The flagless restart is also the plain and upgrade restart path; the
+// preflight runs because the restarted daemon will boot with tailscale on.
 func TestFlaglessRestartPreservesOverride(t *testing.T) {
 	s := &seamStub{active: true, healthy: true}
 	installSeams(t, s)
@@ -269,8 +259,6 @@ func TestFlaglessRestartPreservesOverride(t *testing.T) {
 	}
 }
 
-// Adding the override to a healthy service changes the unit, so the
-// process is bounced onto it (restart, not start).
 func TestStartAddsOverrideToHealthyService(t *testing.T) {
 	s := &seamStub{active: true, healthy: true}
 	installSeams(t, s)
@@ -291,10 +279,10 @@ func TestStartAddsOverrideToHealthyService(t *testing.T) {
 	}
 }
 
-// --tailscale=false removes the override; with config.toml quiet, no
-// tailscale preflight is involved — clearing works without a tailscale
-// install. It is a return to config.toml, not a force-off, so with
-// tailscale = true configured the restarted daemon still preflights.
+// Clearing is a return to config.toml, not a force-off: with config
+// quiet no tailscale preflight is involved (clearing works without a
+// tailscale install), while a configured tailscale = true still
+// preflights the daemon it will boot.
 func TestRestartClearsOverride(t *testing.T) {
 	for name, tc := range map[string]struct {
 		configTailscale bool
@@ -325,8 +313,6 @@ func TestRestartClearsOverride(t *testing.T) {
 	}
 }
 
-// A flagless start on an unrecognized unit fails without guessing: the
-// unit stays as it was and no supervisor state changes.
 func TestFlaglessStartFailsOnUnrecognizedUnit(t *testing.T) {
 	s := &seamStub{healthy: true}
 	installSeams(t, s)
@@ -347,8 +333,6 @@ func TestFlaglessStartFailsOnUnrecognizedUnit(t *testing.T) {
 	}
 }
 
-// An explicit flag supplies the desired state, so it may replace an
-// otherwise unreadable unit.
 func TestExplicitFlagReplacesUnrecognizedUnit(t *testing.T) {
 	s := &seamStub{healthy: true}
 	installSeams(t, s)
@@ -367,8 +351,6 @@ func TestExplicitFlagReplacesUnrecognizedUnit(t *testing.T) {
 	}
 }
 
-// Executable resolution failure happens before any mutation: the unit is
-// untouched and the healthy process is never interrupted.
 func TestTailscalePreflightFailureLeavesEverythingAlone(t *testing.T) {
 	s := &seamStub{active: true, healthy: true, resolveErr: errors.New("tailscale executable \"tailscale\" not found")}
 	installSeams(t, s)
@@ -389,9 +371,8 @@ func TestTailscalePreflightFailureLeavesEverythingAlone(t *testing.T) {
 	}
 }
 
-// The preflight also covers declarative tailscale: a flagless first start
-// with tailscale = true in config.toml fails before a unit is written,
-// instead of installing a daemon that would crash-loop.
+// The preflight covers declarative tailscale too, instead of installing
+// a daemon that would crash-loop on boot.
 func TestDeclarativePreflightBlocksFirstStart(t *testing.T) {
 	s := &seamStub{healthy: true, resolveErr: errors.New("tailscale executable \"tailscale\" not found")}
 	installSeams(t, s)
@@ -407,8 +388,7 @@ func TestDeclarativePreflightBlocksFirstStart(t *testing.T) {
 	}
 }
 
-// Stop preserves the installed unit and its override; uninstall removes
-// both — the unit is the override's only store, so removing it is the
+// The unit is the override's only store, so uninstall removing it is the
 // whole cleanup.
 func TestStopPreservesAndUninstallRemovesOverride(t *testing.T) {
 	s := &seamStub{}

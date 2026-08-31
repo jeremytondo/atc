@@ -73,7 +73,7 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 		// foreground `atc server run`.
 		return fmt.Errorf("something is already serving on port %d (a foreground `atc server run`?); stop it first", opts.Config.Port)
 	}
-	if supervised && !bounce && unchanged && probeHealthy(ctx, opts, token) {
+	if supervised && !bounce && unchanged && probeOnce(ctx, opts, token).healthy {
 		// Idempotent: healthy and running the current unit — leave the
 		// process untouched. enable still runs so an active-but-disabled
 		// unit returns at next login.
@@ -144,7 +144,7 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 		say(opts.Stderr, "%s", firstRunNotice(runtime.GOOS, unitFile))
 	}
 
-	if err := healthGate(ctx, opts, token); err != nil {
+	if err := awaitHealthy(ctx, opts, token); err != nil {
 		printLastLogs(ctx, opts.Stderr)
 		return err
 	}

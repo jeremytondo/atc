@@ -69,13 +69,16 @@ func overrideFromArgs(args []string) (bool, error) {
 }
 
 // plistProgramArguments extracts the ProgramArguments strings from a
-// launchd plist, strictly: one array, string children only.
+// launchd plist, strictly: the key must sit in the top-level job
+// dictionary (the only place launchd reads it), one array, string
+// children only.
 func plistProgramArguments(content string) ([]string, error) {
 	decoder := xml.NewDecoder(strings.NewReader(content))
 	var args []string
 	found := false
 	lastKey := ""
 	inArguments := false
+	depth := 0 // dict/array nesting; the job dictionary is depth 1
 	for {
 		token, err := decoder.Token()
 		if errors.Is(err, io.EOF) {
@@ -91,16 +94,21 @@ func plistProgramArguments(content string) ([]string, error) {
 			}
 			switch element.Name.Local {
 			case "key":
-				if err := decoder.DecodeElement(&lastKey, &element); err != nil {
+				var key string
+				if err := decoder.DecodeElement(&key, &element); err != nil {
 					return nil, fmt.Errorf("installed unit is not a readable plist: %w", err)
 				}
-			case "array":
-				if lastKey == "ProgramArguments" {
+				if depth == 1 {
+					lastKey = key
+				}
+			case "array", "dict":
+				if element.Name.Local == "array" && depth == 1 && lastKey == "ProgramArguments" {
 					if found {
 						return nil, errors.New("installed unit has multiple ProgramArguments arrays")
 					}
 					inArguments, found = true, true
 				}
+				depth++
 			case "string":
 				if inArguments {
 					var value string
@@ -111,8 +119,9 @@ func plistProgramArguments(content string) ([]string, error) {
 				}
 			}
 		case xml.EndElement:
-			if element.Name.Local == "array" {
+			if element.Name.Local == "array" || element.Name.Local == "dict" {
 				inArguments = false
+				depth--
 			}
 		}
 	}
@@ -123,12 +132,22 @@ func plistProgramArguments(content string) ([]string, error) {
 }
 
 // systemdExecStart extracts and unquotes the ExecStart command line,
-// accepting only the fully-double-quoted form systemdUnit renders.
+// accepting only the fully-double-quoted form systemdUnit renders, and
+// only inside [Service] — the one section systemd executes it from.
 func systemdExecStart(content string) ([]string, error) {
 	value := ""
 	found := false
+	section := ""
 	for line := range strings.Lines(content) {
-		if after, ok := strings.CutPrefix(strings.TrimRight(line, "\n"), "ExecStart="); ok {
+		line = strings.TrimRight(line, "\n")
+		if strings.HasPrefix(line, "[") {
+			section = line
+			continue
+		}
+		if after, ok := strings.CutPrefix(line, "ExecStart="); ok {
+			if section != "[Service]" {
+				return nil, errors.New("installed unit has ExecStart outside [Service]")
+			}
 			if found {
 				return nil, errors.New("installed unit has multiple ExecStart lines")
 			}
