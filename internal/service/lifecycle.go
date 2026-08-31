@@ -13,7 +13,6 @@ import (
 	"os"
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/jeremytondo/atc/internal/config"
 	"github.com/jeremytondo/atc/internal/paths"
@@ -272,8 +271,6 @@ func tailscaleEnabled(override, configured bool) bool {
 	return override || configured
 }
 
-const lifecycleTailnetTimeout = 2 * time.Second
-
 // lifecycleSuccess reports every endpoint the just-checked service intends
 // to expose. Tailnet inspection distinguishes a live Serve route from an
 // expected URL that is still converging; tailnet trouble never turns a
@@ -284,14 +281,9 @@ func lifecycleSuccess(ctx context.Context, headline string, cfg config.Config, t
 	if !tailnet {
 		return b.String(), nil
 	}
-	inspectCtx, cancel := context.WithTimeout(ctx, lifecycleTailnetTimeout)
-	url, problem := inspectTailnetEndpoint(inspectCtx, cfg, executable)
-	cancel()
-	if err := ctx.Err(); err != nil {
+	url, problem, err := inspectTailnetWithTimeout(ctx, cfg, executable)
+	if err != nil {
 		return "", err
-	}
-	if errors.Is(inspectCtx.Err(), context.DeadlineExceeded) {
-		problem = "tailnet endpoint inspection timed out"
 	}
 	fmt.Fprintf(&b, "  %s\n", renderTailnetURL(url, problem))
 	return b.String(), nil

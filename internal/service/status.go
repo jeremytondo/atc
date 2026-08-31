@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jeremytondo/atc/internal/config"
 	"github.com/jeremytondo/atc/internal/tailscale"
@@ -68,7 +69,10 @@ func Status(ctx context.Context, opts Options) error {
 		info.hostname = hostname
 	}
 	if tailscaleEnabled(info.tailscaleOverride, info.tailscale) {
-		info.tailnetURL, info.tailnetProblem = inspectTailnetEndpoint(ctx, opts.Config, "")
+		info.tailnetURL, info.tailnetProblem, err = inspectTailnetWithTimeout(ctx, opts.Config, "")
+		if err != nil {
+			return err
+		}
 	}
 
 	report, code := renderStatus(info)
@@ -103,6 +107,23 @@ func supervisorState(ctx context.Context) string {
 // inspectTailnetEndpoint is shared by status and lifecycle success output. It
 // is a seam so lifecycle tests never consult the developer's real tailnet.
 var inspectTailnetEndpoint = tailnetEndpoint
+
+var tailnetInspectionTimeout = 2 * time.Second
+
+// inspectTailnetWithTimeout gives the two CLI queries one shared short budget.
+// Expiry is endpoint diagnostics; cancellation of the caller aborts the command.
+func inspectTailnetWithTimeout(ctx context.Context, cfg config.Config, executable string) (endpoint, problem string, err error) {
+	inspectCtx, cancel := context.WithTimeout(ctx, tailnetInspectionTimeout)
+	defer cancel()
+	endpoint, problem = inspectTailnetEndpoint(inspectCtx, cfg, executable)
+	if err := ctx.Err(); err != nil {
+		return "", "", err
+	}
+	if errors.Is(inspectCtx.Err(), context.DeadlineExceeded) {
+		problem = "tailnet endpoint inspection timed out"
+	}
+	return endpoint, problem, nil
+}
 
 func tailnetEndpoint(ctx context.Context, cfg config.Config, executable string) (endpoint, problem string) {
 	if executable == "" {

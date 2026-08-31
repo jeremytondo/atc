@@ -1,9 +1,12 @@
 package service
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/jeremytondo/atc/internal/config"
 )
 
 // healthyInfo is the baseline every case mutates: installed, supervised,
@@ -240,5 +243,28 @@ func TestRenderStatus(t *testing.T) {
 		if code != tc.wantCode {
 			t.Errorf("%s: exit code = %d, want %d", name, code, tc.wantCode)
 		}
+	}
+}
+
+func TestInspectTailnetWithTimeoutRendersExpiryAsDiagnostic(t *testing.T) {
+	origInspect, origTimeout := inspectTailnetEndpoint, tailnetInspectionTimeout
+	t.Cleanup(func() {
+		inspectTailnetEndpoint, tailnetInspectionTimeout = origInspect, origTimeout
+	})
+	tailnetInspectionTimeout = time.Millisecond
+	inspectTailnetEndpoint = func(ctx context.Context, _ config.Config, _ string) (string, string) {
+		<-ctx.Done()
+		return "https://machine.tail1234.ts.net:7331", ctx.Err().Error()
+	}
+
+	endpoint, problem, err := inspectTailnetWithTimeout(context.Background(), config.Config{}, "")
+	if err != nil {
+		t.Fatalf("inspect tailnet: %v", err)
+	}
+	if diff := cmp.Diff("https://machine.tail1234.ts.net:7331", endpoint); diff != "" {
+		t.Errorf("endpoint mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff("tailnet endpoint inspection timed out", problem); diff != "" {
+		t.Errorf("problem mismatch (-want +got):\n%s", diff)
 	}
 }
