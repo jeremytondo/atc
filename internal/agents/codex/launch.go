@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -11,7 +12,7 @@ import (
 
 // A fresh launch is bound to its thread by timing and place: the only
 // thread/started that can belong to it is one announced from the launch
-// directory, by a terminal-started TUI, inside a short window after the
+// directory, by a TUI-confirmed announcement, inside a short window after the
 // launch. Two such announcements are indistinguishable, so the binding
 // fails closed — the terminal stays an ordinary terminal and the reason
 // is logged — and same-directory launches take turns so they never
@@ -21,8 +22,8 @@ import (
 const (
 	// launchWindow bounds how long a launch waits for its announcement.
 	launchWindow = 5 * time.Second
-	// launchGrace is how long after the first candidate the window stays
-	// open for a second one.
+	// launchGrace bounds how long a shared-server announcement waits for
+	// the TUI's thread-specific capability marker.
 	launchGrace = 500 * time.Millisecond
 )
 
@@ -149,11 +150,64 @@ func (o *Observer) arm(terminalID, directory string) error {
 
 // announced folds one thread/started into the pending launch for its
 // directory, if any. It runs on the read loop, at receipt, so the
-// dispatcher's pace never delays a candidate past the timer. A candidate
-// must come from a terminal-started TUI and have been received after the
-// arming and inside the window. The first candidate shortens the window
-// to the grace; a second closes it at once — the outcome is decided.
+// dispatcher's pace never delays a candidate past the timer. A "cli"
+// announcement is already TUI-specific. The shared `codex app-server`
+// currently stamps every root session "vscode" (openai/codex#23442), so
+// that compatibility value becomes a candidate only after the external
+// TUI writes its thread-specific capability marker. Structured and
+// programmatic sources remain ineligible. The full window stays open so
+// every TUI candidate launched inside it participates in ambiguity.
 func (o *Observer) announced(c candidate) {
+	switch c.source {
+	case "cli":
+		o.acceptCandidate(c)
+	case "vscode":
+		if o.matchesPendingLaunch(c) {
+			go o.awaitTUIMarker(c)
+		}
+	}
+}
+
+// matchesPendingLaunch reports whether c still falls inside the currently
+// armed launch for its directory. It is rechecked after marker discovery so
+// a delayed check can never land against the next same-directory launch.
+func (o *Observer) matchesPendingLaunch(c candidate) bool {
+	dir := canonical(c.cwd)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	slot := o.slots[dir]
+	if slot == nil || slot.launch == nil {
+		return false
+	}
+	launch := slot.launch
+	return c.seq > launch.armedSeq && !c.at.After(launch.armedAt.Add(o.window))
+}
+
+// awaitTUIMarker confirms that a server-mislabeled announcement belongs to
+// some external Codex TUI, rather than a programmatic app-server client. The
+// marker is written just after thread/start returns, so poll briefly without
+// holding observer locks or delaying the read loop. Missing markers fail
+// closed.
+func (o *Observer) awaitTUIMarker(c candidate) {
+	marker := filepath.Join(o.tuiCapabilitiesDir, c.threadID)
+	deadline := time.NewTimer(o.grace)
+	defer deadline.Stop()
+	ticker := time.NewTicker(min(10*time.Millisecond, o.grace))
+	defer ticker.Stop()
+	for {
+		if info, err := os.Stat(marker); err == nil && info.Mode().IsRegular() {
+			o.acceptCandidate(c)
+			return
+		}
+		select {
+		case <-deadline.C:
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (o *Observer) acceptCandidate(c candidate) {
 	dir := canonical(c.cwd)
 	o.mu.Lock()
 	slot := o.slots[dir]
@@ -162,16 +216,12 @@ func (o *Observer) announced(c candidate) {
 		return
 	}
 	launch := slot.launch
-	if c.source != "cli" || c.seq <= launch.armedSeq || c.at.After(launch.armedAt.Add(o.window)) {
+	if c.seq <= launch.armedSeq || c.at.After(launch.armedAt.Add(o.window)) {
 		o.mu.Unlock()
 		return
 	}
 	launch.candidates = append(launch.candidates, c)
 	count := len(launch.candidates)
-	if count == 1 {
-		remaining := o.window - c.at.Sub(launch.armedAt)
-		launch.timer.Reset(min(remaining, o.grace))
-	}
 	o.mu.Unlock()
 	if count > 1 {
 		o.closeLaunch(launch, "")

@@ -451,6 +451,17 @@ func (f *fixture) pendingIn(dir string) bool {
 	return ok && slot.launch != nil
 }
 
+func (f *fixture) markTUI(t *testing.T, threadID string) {
+	t.Helper()
+	dir := tuiCapabilitiesDir(f.home)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, threadID), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func waitFor(t *testing.T, check func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -587,7 +598,11 @@ func TestTwoCandidatesFailClosed(t *testing.T) {
 	f := newFixture(t, false)
 	f.launch(t, "term-aaaaa", f.dir)
 	f.server.broadcast("thread/started", started("t1", f.dir))
-	f.server.broadcast("thread/started", started("t2", f.dir))
+	time.Sleep(f.observer.grace + 20*time.Millisecond)
+	second := started("t2", f.dir)
+	second["thread"].(map[string]any)["source"] = "vscode"
+	f.markTUI(t, "t2")
+	f.server.broadcast("thread/started", second)
 	waitFor(t, func() bool { return !f.pendingIn(f.dir) })
 	if f.paired("t1") != "" || f.paired("t2") != "" {
 		t.Error("an ambiguous launch bound a thread")
@@ -601,19 +616,74 @@ func TestTwoCandidatesFailClosed(t *testing.T) {
 	}
 }
 
-// Only a terminal-started TUI's announcement is a candidate; a subagent
-// or another client's thread in the same directory is not.
-func TestNonCLISourceIgnored(t *testing.T) {
+func TestLaunchSourceEligibility(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		source any
+		bind   bool
+	}{
+		{name: "cli", source: "cli", bind: true},
+		{name: "vscode compatibility value", source: "vscode", bind: true},
+		{name: "exec", source: "exec"},
+		{name: "app server", source: "appServer"},
+		{name: "unknown", source: "unknown"},
+		{name: "custom", source: map[string]any{"custom": "other"}},
+		{name: "subagent", source: map[string]any{"subAgent": "review"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, false)
+			f.launch(t, "term-aaaaa", f.dir)
+			announcement := started("observed", f.dir)
+			announcement["thread"].(map[string]any)["source"] = tc.source
+			if tc.source == "vscode" {
+				f.markTUI(t, "observed")
+			}
+			f.server.broadcast("thread/started", announcement)
+			if tc.bind {
+				waitFor(t, func() bool { return f.paired("observed") == "term-aaaaa" })
+				return
+			}
+
+			// An ineligible source must not consume the launch; a later CLI
+			// announcement inside the same window still binds it.
+			f.server.broadcast("thread/started", started("cli", f.dir))
+			waitFor(t, func() bool { return f.paired("cli") == "term-aaaaa" })
+			if f.paired("observed") != "" {
+				t.Error("ineligible source bound the terminal")
+			}
+		})
+	}
+}
+
+// The shared server labels programmatic roots "vscode" too. Without the
+// external TUI's capability marker that value is not identity and must not
+// consume the pending launch.
+func TestMislabelledProgrammaticThreadIgnored(t *testing.T) {
 	f := newFixture(t, false)
 	f.launch(t, "term-aaaaa", f.dir)
-	sub := started("sub", f.dir)
-	sub["thread"].(map[string]any)["source"] = map[string]any{"subAgent": "review"}
-	f.server.broadcast("thread/started", sub)
-	desktop := started("desk", f.dir)
-	desktop["thread"].(map[string]any)["source"] = "vscode"
-	f.server.broadcast("thread/started", desktop)
-	f.server.broadcast("thread/started", started("t1", f.dir))
-	waitFor(t, func() bool { return f.paired("t1") == "term-aaaaa" })
+	programmatic := started("programmatic", f.dir)
+	programmatic["thread"].(map[string]any)["source"] = "vscode"
+	f.server.broadcast("thread/started", programmatic)
+
+	f.markTUI(t, "tui")
+	tui := started("tui", f.dir)
+	tui["thread"].(map[string]any)["source"] = "vscode"
+	f.server.broadcast("thread/started", tui)
+	waitFor(t, func() bool { return f.paired("tui") == "term-aaaaa" })
+	if f.paired("programmatic") != "" {
+		t.Error("programmatic thread bound the terminal")
+	}
+}
+
+func TestVscodeCandidateWaitsForTUIMarker(t *testing.T) {
+	f := newFixture(t, false)
+	f.launch(t, "term-aaaaa", f.dir)
+	announcement := started("tui", f.dir)
+	announcement["thread"].(map[string]any)["source"] = "vscode"
+	f.server.broadcast("thread/started", announcement)
+	time.Sleep(20 * time.Millisecond)
+	f.markTUI(t, "tui")
+	waitFor(t, func() bool { return f.paired("tui") == "term-aaaaa" })
 }
 
 // An announcement from another directory (here, via a symlink to a

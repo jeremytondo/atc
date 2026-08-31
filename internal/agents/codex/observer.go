@@ -88,13 +88,14 @@ type ObserverOptions struct {
 //	mu        guards the connection pointer, pending launches, directory
 //	          reservations, and pairings.
 type Observer struct {
-	socket        string
-	clientVersion string
-	threads       ThreadObserver
-	terminals     TerminalReader
-	logger        *slog.Logger
-	now           func() time.Time
-	start         func(ctx context.Context) error
+	socket             string
+	tuiCapabilitiesDir string
+	clientVersion      string
+	threads            ThreadObserver
+	terminals          TerminalReader
+	logger             *slog.Logger
+	now                func() time.Time
+	start              func(ctx context.Context) error
 
 	// Production cadences; tests shrink them.
 	window, grace          time.Duration
@@ -167,22 +168,23 @@ func NewObserver(opts ObserverOptions) *Observer {
 		opts.ClientVersion = "dev"
 	}
 	o := &Observer{
-		socket:        ControlSocketPath(opts.CodexHome),
-		clientVersion: opts.ClientVersion,
-		threads:       opts.Threads,
-		terminals:     opts.Terminals,
-		logger:        opts.Logger,
-		now:           opts.Now,
-		start:         opts.Start,
-		window:        launchWindow,
-		grace:         launchGrace,
-		startWait:     startWait,
-		startPoll:     startPoll,
-		backoffMin:    backoffMin,
-		backoffMax:    backoffMax,
-		callTimeout:   callTimeout,
-		slots:         map[string]*launchSlot{},
-		held:          map[string]*pairing{},
+		socket:             ControlSocketPath(opts.CodexHome),
+		tuiCapabilitiesDir: tuiCapabilitiesDir(opts.CodexHome),
+		clientVersion:      opts.ClientVersion,
+		threads:            opts.Threads,
+		terminals:          opts.Terminals,
+		logger:             opts.Logger,
+		now:                opts.Now,
+		start:              opts.Start,
+		window:             launchWindow,
+		grace:              launchGrace,
+		startWait:          startWait,
+		startPoll:          startPoll,
+		backoffMin:         backoffMin,
+		backoffMax:         backoffMax,
+		callTimeout:        callTimeout,
+		slots:              map[string]*launchSlot{},
+		held:               map[string]*pairing{},
 	}
 	if o.start == nil {
 		o.start = func(context.Context) error { return startServer(opts.CodexHome) }

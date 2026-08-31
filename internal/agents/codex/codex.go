@@ -90,3 +90,10 @@ func ControlSocketPath(codexHome string) string {
 func serverLogPath(codexHome string) string {
 	return filepath.Join(controlDir(codexHome), "app-server.log")
 }
+
+// tuiCapabilitiesDir is where a TUI using an external app-server records
+// the thread ids it has opened. Codex owns the marker files; ATC only uses
+// their presence to distinguish a TUI from another app-server client.
+func tuiCapabilitiesDir(codexHome string) string {
+	return filepath.Join(codexHome, "tui-thread-reference-capabilities")
+}
