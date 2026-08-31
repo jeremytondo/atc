@@ -33,16 +33,20 @@ type tui struct{ hooks *Hooks }
 // pinned to the home the profile was written into: the user's login
 // shell could export a different one, and the TUI must load the profile
 // ATC just prepared. No --remote, no server: the TUI must behave exactly
-// like plain codex.
+// like plain codex. A resume runs the resume subcommand with the exact
+// session id under the same profile and environment.
 func (t tui) Command(_ context.Context, launch agents.LaunchContext) (string, error) {
 	headerPath, err := t.hooks.Prepare(launch.TerminalID)
 	if err != nil {
 		return "", err
 	}
-	return "CODEX_HOME=" + agents.Quote(t.hooks.codexHome) +
+	env := "CODEX_HOME=" + agents.Quote(t.hooks.codexHome) +
 		" " + envURL + "=" + agents.Quote(t.hooks.ingestURL()) +
-		" " + envHeader + "=" + agents.Quote(headerPath) +
-		" codex -p " + profileName, nil
+		" " + envHeader + "=" + agents.Quote(headerPath)
+	if launch.ResumeConversationID != "" {
+		return env + " codex resume -p " + profileName + " " + agents.Quote(launch.ResumeConversationID), nil
+	}
+	return env + " codex -p " + profileName, nil
 }
 
 func (tui) Binary() string      { return "codex" }

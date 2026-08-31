@@ -25,7 +25,7 @@ type Terminal struct {
 	ID        string `json:"id" doc:"Server-minted identifier; also the zmx session name."`
 	Name      string `json:"name" doc:"Display name; the only mutable field."`
 	ProjectID string `json:"projectId" doc:"Project the terminal belongs to. Immutable; terminals never move between projects."`
-	Directory string `json:"directory" doc:"Working directory the session started in, copied from the project at create time. Immutable."`
+	Directory string `json:"directory" doc:"Working directory the session started in: the project's directory, or for a terminal resuming a conversation that conversation's recorded one. Immutable."`
 	Command   string `json:"command,omitempty" doc:"Command launched in the session; empty means a plain shell. Immutable."`
 	Agent     string `json:"agent,omitempty" doc:"Agent catalog id the terminal was launched for; omitted for plain terminals. Server-set launch intent only, immutable, no liveness meaning."`
 	// ActiveThreadID is a projection from the threads domain (ATC-255),

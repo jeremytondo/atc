@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"sort"
@@ -12,23 +13,76 @@ import (
 	"github.com/jeremytondo/atc/internal/api"
 )
 
-// The atc thread family (ATC-255): reads and the two mutations over
-// observed agent conversations. There is deliberately no create or open —
-// threads are observed into existence inside agent TUIs, and resume
-// happens inside the TUI via /resume. archive/unarchive are thin sugar
-// over PATCH.
+// The atc thread family: the front door to agent conversations (ATC-282)
+// — new starts an agent TUI, open puts you in front of any conversation,
+// live or dormant — plus the reads and the two mutations over observed
+// conversations (ATC-255). There is no create: a thread record exists
+// from the conversation's first prompt, observed inside the TUI.
+// archive/unarchive are thin sugar over PATCH.
 
 func newThreadCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "thread",
-		Short: "See and manage observed agent conversations",
+		Short: "Start, open, and manage agent conversations",
 		Args:  cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
-			return fmt.Errorf("usage: atc thread <list|get|update|archive|unarchive|delete>")
+			return fmt.Errorf("usage: atc thread <new|open|list|get|update|archive|unarchive|delete>")
 		},
 	}
-	cmd.AddCommand(newThreadListCmd(), newThreadGetCmd(), newThreadUpdateCmd(),
-		newThreadArchiveCmd(), newThreadUnarchiveCmd(), newThreadDeleteCmd())
+	cmd.AddCommand(newThreadNewCmd(), newThreadOpenCmd(), newThreadListCmd(), newThreadGetCmd(),
+		newThreadUpdateCmd(), newThreadArchiveCmd(), newThreadUnarchiveCmd(), newThreadDeleteCmd())
+	return cmd
+}
+
+func newThreadNewCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "new <agent>",
+		Short: "Start a conversation: launch an agent TUI and attach",
+		Long: `Launch the agent's TUI in a new managed terminal and hand your shell over
+to it (detach with ctrl-\). The terminal lands in the project owning the
+current directory (pass --project to pick one) and starts in that
+project's directory. Pass --detach to print the terminal and leave the TUI
+running in the background; where attaching is impossible (no TTY, or the
+server is on another machine) the terminal is still created and printed.
+No thread exists until the conversation's first prompt — find it
+afterwards with ` + "`atc thread list --terminal <id>`" + `. A missing agent
+binary is refused with its install hint before anything is created.`,
+		Args: cobra.ExactArgs(1),
+		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, baseURL string) error {
+			return runAndMaybeAttach(cmd, baseURL, func(ctx context.Context) (api.Terminal, error) {
+				projectID, name, err := resolveCreateFlags(cmd, client)
+				if err != nil {
+					return api.Terminal{}, err
+				}
+				return client.LaunchAgent(ctx, args[0], api.AgentLaunchParams{ProjectID: projectID, Name: name})
+			})
+		}),
+	}
+	addCreateFlags(cmd, "display name (defaults to the agent's display name)")
+	return cmd
+}
+
+func newThreadOpenCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "open <id>",
+		Short: "Open a conversation, live or dormant, and attach",
+		Long: `Put your shell in front of the conversation. The server picks exactly one
+terminal: the running terminal showing the thread, else its last terminal
+if that is still running, else a new terminal resuming the exact
+conversation in the agent's own TUI. Concurrent opens of one thread land
+in the same terminal, so a conversation never has two writers. An
+archived thread is unarchived. Pass --detach to print the terminal
+instead of attaching; where attaching is impossible (no TTY, or the
+server is on another machine) the terminal is still printed.`,
+		Args: cobra.ExactArgs(1),
+		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, baseURL string) error {
+			return runAndMaybeAttach(cmd, baseURL, func(ctx context.Context) (api.Terminal, error) {
+				opened, err := client.OpenThread(ctx, args[0])
+				return opened.Terminal, err
+			})
+		}),
+	}
+	cmd.Flags().Bool("detach", false, "print the terminal instead of attaching to it")
 	return cmd
 }
 
@@ -37,7 +91,8 @@ func newThreadListCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List threads, most recent activity first",
 		Long: `List every observed agent conversation (pass --project to scope to one
-project). Archived threads are hidden unless --archived.`,
+project, --terminal to the thread a terminal last held). Archived threads
+are hidden unless --archived.`,
 		Args: cobra.NoArgs,
 		RunE: runWithClient(func(cmd *cobra.Command, _ []string, client *api.Client, _ string) error {
 			flags := cmd.Flags()
@@ -49,7 +104,11 @@ project). Archived threads are hidden unless --archived.`,
 			if err != nil {
 				return err
 			}
-			threads, err := client.Threads(cmd.Context(), project, "", archived)
+			terminal, err := flags.GetString("terminal")
+			if err != nil {
+				return err
+			}
+			threads, err := client.Threads(cmd.Context(), project, terminal, archived)
 			if err != nil {
 				return err
 			}
@@ -73,6 +132,7 @@ project). Archived threads are hidden unless --archived.`,
 		}),
 	}
 	cmd.Flags().String("project", "", "only threads belonging to this project")
+	cmd.Flags().String("terminal", "", "only the thread this terminal last held")
 	cmd.Flags().Bool("archived", false, "include archived threads")
 	return cmd
 }

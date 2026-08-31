@@ -487,6 +487,19 @@ func TestCommandComposition(t *testing.T) {
 	if _, err := os.Stat(profilePath(f.codexHome)); err != nil {
 		t.Errorf("Command did not ensure the profile: %v", err)
 	}
+	// The resume form runs the resume subcommand under the same profile
+	// and environment, with the exact session id quoted.
+	command, err = entry.TUI.Command(context.Background(), agents.LaunchContext{TerminalID: "term-bbbbb", ResumeConversationID: "sess-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = "CODEX_HOME=" + agents.Quote(f.codexHome) +
+		" " + envURL + "='http://127.0.0.1:4779" + HooksPath + "'" +
+		" " + envHeader + "=" + agents.Quote(f.hooks.registry.HeaderPath("term-bbbbb")) +
+		" codex resume -p " + profileName + " 'sess-1'"
+	if command != want {
+		t.Errorf("resume command = %q, want %q", command, want)
+	}
 	// A foreign file at the profile path refuses the launch.
 	if err := os.WriteFile(profilePath(f.codexHome), []byte("# someone else's\n"), 0o600); err != nil {
 		t.Fatal(err)

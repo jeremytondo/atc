@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"slices"
 
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/threads"
 )
 
 // ErrNotFound reports an id with no catalog entry; the API layer maps it
@@ -23,13 +25,13 @@ var ErrNotFound = errors.New("agent not found")
 var ErrUnavailable = errors.New("agent unavailable")
 
 // TerminalCreator is the seam into the terminals domain: CreateForAgent
-// with the agent label and a command factory (terminals.Service in
-// production). The factory runs once the terminal identity is minted —
-// per-launch context like hook settings needs the id before the session
-// starts — and stays an opaque function there, so the terminals domain
-// never learns agent vocabulary.
+// with the agent label, an optional working-directory override, and a
+// command factory (terminals.Service in production). The factory runs once
+// the terminal identity is minted — per-launch context like hook settings
+// needs the id before the session starts — and stays an opaque function
+// there, so the terminals domain never learns agent vocabulary.
 type TerminalCreator interface {
-	CreateForAgent(ctx context.Context, params api.TerminalCreateParams, agent string,
+	CreateForAgent(ctx context.Context, params api.TerminalCreateParams, agent, directory string,
 		compose func(terminalID string) (string, error)) (api.Terminal, error)
 }
 
@@ -110,6 +112,30 @@ func (s *Service) Get(id string) (api.Agent, error) {
 // the normal terminal create path — persistence, wrapper, verification
 // window, status, and events all belong to the terminals domain.
 func (s *Service) Launch(ctx context.Context, id string, params api.AgentLaunchParams) (api.Terminal, error) {
+	return s.launch(ctx, id, params, "", "")
+}
+
+// Resume is the launch's second form (ATC-282): the terminal runs the
+// provider's exact resume of a dormant conversation, composed through the
+// same adapter with the thread's private identity. The session starts in
+// the conversation's recorded working directory when it still exists,
+// otherwise the project directory — a resumed conversation can have run
+// from a subdirectory the user since removed. The threads domain calls
+// this inside its open decision; everything else is the normal launch.
+func (s *Service) Resume(ctx context.Context, req threads.ResumeRequest) (api.Terminal, error) {
+	directory := req.Directory
+	if directory != "" {
+		if info, err := os.Stat(directory); err != nil || !info.IsDir() {
+			directory = ""
+		}
+	}
+	return s.launch(ctx, req.Agent, api.AgentLaunchParams{ProjectID: req.ProjectID}, directory, req.ProviderID)
+}
+
+// launch is the shared composition: resolve the entry, probe its binary,
+// and hand the terminals domain a create whose command the adapter
+// composes once the id is minted.
+func (s *Service) launch(ctx context.Context, id string, params api.AgentLaunchParams, directory, resumeID string) (api.Terminal, error) {
 	entry, ok := s.entry(id)
 	if !ok {
 		return api.Terminal{}, ErrNotFound
@@ -128,8 +154,8 @@ func (s *Service) Launch(ctx context.Context, id string, params api.AgentLaunchP
 	return s.terminals.CreateForAgent(ctx, api.TerminalCreateParams{
 		ProjectID: params.ProjectID,
 		Name:      name,
-	}, entry.ID, func(terminalID string) (string, error) {
-		return entry.TUI.Command(ctx, LaunchContext{TerminalID: terminalID})
+	}, entry.ID, directory, func(terminalID string) (string, error) {
+		return entry.TUI.Command(ctx, LaunchContext{TerminalID: terminalID, ResumeConversationID: resumeID})
 	})
 }
 

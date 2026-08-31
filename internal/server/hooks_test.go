@@ -48,10 +48,10 @@ func (f *fixture) postHook(t *testing.T, secret, body string) *httptest.Response
 	return rec
 }
 
-// The full evidence path over the wire: launch composes hook wiring, a
-// SessionStart births the thread, status evidence moves it, and the
-// terminal exposes the projection — while the route stays outside bearer
-// auth and the public contract.
+// The full evidence path over the wire: launch composes hook wiring, the
+// first prompt births the thread (a SessionStart alone does not), status
+// evidence moves it, and the terminal exposes the projection — while the
+// route stays outside bearer auth and the public contract.
 func TestClaudeHooksDriveThreads(t *testing.T) {
 	f := newFixture(t)
 
@@ -72,41 +72,48 @@ func TestClaudeHooksDriveThreads(t *testing.T) {
 		t.Fatalf("hook delivery: got %d", rec.Code)
 	}
 
-	// The thread exists, linked and idle, and the terminal projects it.
+	// No thread yet: the TUI is at its prompt with nothing said (ATC-282).
 	var list api.ThreadList
+	rec = f.request(t, http.MethodGet, "/v1/threads", "")
+	decodeInto(t, rec, &list)
+	if len(list.Threads) != 0 {
+		t.Fatalf("threads after SessionStart = %+v; want none until the first prompt", list.Threads)
+	}
+
+	// The first prompt mints the thread — linked, working, titled — and
+	// the terminal projects it.
+	f.postHook(t, secret, `{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"fix the build","cwd":"/somewhere"}`)
 	rec = f.request(t, http.MethodGet, "/v1/threads", "")
 	decodeInto(t, rec, &list)
 	if len(list.Threads) != 1 {
 		t.Fatalf("threads = %+v", list.Threads)
 	}
 	thread := list.Threads[0]
-	if thread.Agent != "claude" || thread.TerminalID != terminal.ID || thread.Status != api.ThreadIdle || thread.Cwd != "/somewhere" {
+	if thread.Agent != "claude" || thread.TerminalID != terminal.ID || thread.Status != api.ThreadWorking ||
+		thread.Title != "fix the build" || thread.Cwd != "/somewhere" {
 		t.Errorf("thread = %+v", thread)
 	}
 	if got := decodeTerminal(t, f.request(t, http.MethodGet, "/v1/terminals/"+terminal.ID, "")); got.ActiveThreadID != thread.ID {
 		t.Errorf("activeThreadId = %q, want %q", got.ActiveThreadID, thread.ID)
 	}
 
-	// A turn: prompt evidence marks it working and titles it.
-	f.postHook(t, secret, `{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"fix the build"}`)
-	rec = f.request(t, http.MethodGet, "/v1/threads/"+thread.ID, "")
-	got := decodeThread(t, rec)
-	if got.Status != api.ThreadWorking || got.Title != "fix the build" {
-		t.Errorf("after prompt: %+v", got)
-	}
-
 	// /clear mid-flight: the old thread persists inactive — its mid-turn
 	// working was never verified to finish, so it coerces to unknown, not
-	// idle — and the new one takes the projection.
+	// idle — and the terminal shows a conversation with no thread yet
+	// until its first prompt mints one and takes the projection.
 	f.postHook(t, secret, `{"session_id":"s1","hook_event_name":"SessionEnd","reason":"clear"}`)
 	f.postHook(t, secret, `{"session_id":"s2","hook_event_name":"SessionStart","source":"clear"}`)
+	if got := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+thread.ID, "")); got.Status != api.ThreadUnknown {
+		t.Errorf("old thread after clear = %s, want unknown (mid-turn liveness unverifiable)", got.Status)
+	}
+	if active := decodeTerminal(t, f.request(t, http.MethodGet, "/v1/terminals/"+terminal.ID, "")).ActiveThreadID; active != "" {
+		t.Errorf("activeThreadId after clear = %q, want none", active)
+	}
+	f.postHook(t, secret, `{"session_id":"s2","hook_event_name":"UserPromptSubmit","prompt":"next"}`)
 	rec = f.request(t, http.MethodGet, "/v1/threads", "")
 	decodeInto(t, rec, &list)
 	if len(list.Threads) != 2 {
 		t.Fatalf("threads after clear = %+v", list.Threads)
-	}
-	if got := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+thread.ID, "")); got.Status != api.ThreadUnknown {
-		t.Errorf("old thread after clear = %s, want unknown (mid-turn liveness unverifiable)", got.Status)
 	}
 	active := decodeTerminal(t, f.request(t, http.MethodGet, "/v1/terminals/"+terminal.ID, "")).ActiveThreadID
 	if active == thread.ID || active == "" {

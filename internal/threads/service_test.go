@@ -3,6 +3,7 @@ package threads
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -878,5 +879,303 @@ func TestReattachUpdatesMetadataAndTerminalOnly(t *testing.T) {
 	}
 	if thread.TerminalID != "term-bbbbb" || thread.Cwd != "/proj-bbbbb" {
 		t.Errorf("thread = %+v; want moved terminal and cwd", thread)
+	}
+}
+
+// fakeResumer is the hand-written launch seam behind open: it plants a
+// running terminal record the way the agents side would create one and
+// records every request. gate, when set, holds the resume until released
+// so a concurrent open can be caught behind the decision; onResume runs
+// inside the launch (a client cancelling mid-launch).
+type fakeResumer struct {
+	mu       sync.Mutex
+	f        *fixture
+	requests []ResumeRequest
+	gate     chan struct{}
+	fail     error
+	onResume func()
+}
+
+func (r *fakeResumer) Resume(_ context.Context, req ResumeRequest) (api.Terminal, error) {
+	r.mu.Lock()
+	r.requests = append(r.requests, req)
+	n := len(r.requests)
+	gate, fail, onResume := r.gate, r.fail, r.onResume
+	r.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
+	if onResume != nil {
+		onResume()
+	}
+	if fail != nil {
+		return api.Terminal{}, fail
+	}
+	id := fmt.Sprintf("term-resm%d", n)
+	now := r.f.clock.Now()
+	if ok, err := r.f.store.Terminals().Insert(context.Background(), store.TerminalRecord{
+		ID: id, ProjectID: req.ProjectID, Name: "resume", Directory: "/" + req.ProjectID,
+		Agent: req.Agent, CreatedAt: now, UpdatedAt: now,
+	}); err != nil || !ok {
+		return api.Terminal{}, fmt.Errorf("planting resume terminal = %v: %w", ok, err)
+	}
+	r.f.terminals.set(id, api.TerminalRunning)
+	return api.Terminal{ID: id, ProjectID: req.ProjectID, Agent: req.Agent, Status: api.TerminalRunning}, nil
+}
+
+// observed plants a project with a running terminal showing conversation
+// s1 (cwd recorded) and returns the thread id — the starting point every
+// open case varies from.
+func (f *fixture) observed(t *testing.T) string {
+	t.Helper()
+	f.plant(t, "proj-aaaaa", "term-aaaaa")
+	o := observation("term-aaaaa", "s1")
+	o.Metadata.Cwd = "/proj-aaaaa/sub"
+	id, err := f.service.ObserveSession(context.Background(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// dormant makes the observed thread's terminal exit and sweeps it.
+func (f *fixture) dormant(t *testing.T) {
+	t.Helper()
+	f.terminals.set("term-aaaaa", api.TerminalExited)
+	f.service.Sweep(context.Background())
+}
+
+// Open resolves a thread to exactly one terminal: reuse wherever a
+// terminal may still hold the conversation, resume only when it is
+// definitively dormant — and the decision itself records the linkage.
+func TestOpenDecision(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		// arrange varies the observed thread's terminal state.
+		arrange     func(t *testing.T, f *fixture, id string)
+		wantCreated bool
+	}{
+		{name: "actively shown terminal is reused", arrange: func(*testing.T, *fixture, string) {}},
+		{
+			// A restart: the projection is empty, the terminal runs on.
+			name:    "last terminal running with unknown contents is reused",
+			arrange: func(_ *testing.T, f *fixture, _ string) { f.service.Deactivate(ctx, "term-aaaaa") },
+		},
+		{
+			name: "last terminal unreachable still counts as up",
+			arrange: func(_ *testing.T, f *fixture, _ string) {
+				f.service.Deactivate(ctx, "term-aaaaa")
+				f.terminals.set("term-aaaaa", api.TerminalUnreachable)
+			},
+		},
+		{
+			// The TUI switched to another conversation (/new): the terminal
+			// is known to show something else.
+			name: "last terminal showing another conversation means dormant",
+			arrange: func(t *testing.T, f *fixture, _ string) {
+				if _, err := f.service.ObserveSession(ctx, observation("term-aaaaa", "s2")); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantCreated: true,
+		},
+		{
+			name:        "exited terminal means dormant: resume and link",
+			arrange:     func(t *testing.T, f *fixture, _ string) { f.dormant(t) },
+			wantCreated: true,
+		},
+		{
+			name: "deleted terminal means dormant",
+			arrange: func(t *testing.T, f *fixture, _ string) {
+				f.terminals.remove("term-aaaaa")
+				if _, err := f.store.Terminals().Delete(ctx, "term-aaaaa"); err != nil {
+					t.Fatal(err)
+				}
+				f.service.TerminalRemoved(ctx, "term-aaaaa")
+			},
+			wantCreated: true,
+		},
+		{
+			name: "archived thread is unarchived",
+			arrange: func(t *testing.T, f *fixture, id string) {
+				f.dormant(t)
+				archived := true
+				if _, err := f.service.Update(ctx, id, api.ThreadUpdateParams{Archived: &archived}); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantCreated: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			resumer := &fakeResumer{f: f}
+			id := f.observed(t)
+			tc.arrange(t, f, id)
+			f.drain()
+
+			terminal, created, err := f.service.Open(ctx, id, resumer.Resume)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantTerminal := "term-aaaaa"
+			if tc.wantCreated {
+				wantTerminal = "term-resm1"
+			}
+			if terminal.ID != wantTerminal || created != tc.wantCreated {
+				t.Errorf("Open = %s, created %v; want %s, %v", terminal.ID, created, wantTerminal, tc.wantCreated)
+			}
+			thread, err := f.service.Get(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if thread.TerminalID != terminal.ID || thread.Archived {
+				t.Errorf("after open: terminal %q archived %v; want linked to %s, unarchived", thread.TerminalID, thread.Archived, terminal.ID)
+			}
+			if !tc.wantCreated {
+				if len(resumer.requests) != 0 {
+					t.Errorf("reuse reached the resumer: %+v", resumer.requests)
+				}
+				return
+			}
+			// The resume carries the identity, project, and recorded cwd,
+			// and the linkage publishes.
+			want := ResumeRequest{Agent: "claude", ProviderID: "s1", ProjectID: "proj-aaaaa", Directory: "/proj-aaaaa/sub"}
+			if diff := cmp.Diff([]ResumeRequest{want}, resumer.requests); diff != "" {
+				t.Errorf("resume requests (-want +got):\n%s", diff)
+			}
+			if got := f.drain(); len(got) != 1 || got[0] != "thread.updated "+id {
+				t.Errorf("events after resume = %v", got)
+			}
+		})
+	}
+}
+
+// Refusals: an unknown id, a failed resume (the record stays as it was),
+// and a dormant open with no resumer to launch.
+func TestOpenRefusals(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	resumer := &fakeResumer{f: f}
+	if _, _, err := f.service.Open(ctx, "thrd-zzzzz", resumer.Resume); !errors.Is(err, ErrNotFound) || len(resumer.requests) != 0 {
+		t.Errorf("Open(unknown) = %v, requests %+v; want ErrNotFound and no resume", err, resumer.requests)
+	}
+
+	id := f.observed(t)
+	f.dormant(t)
+	f.drain()
+	resumer.fail = errors.New("agent unavailable")
+	if _, _, err := f.service.Open(ctx, id, resumer.Resume); err == nil || err.Error() != "agent unavailable" {
+		t.Errorf("Open(failed resume) = %v", err)
+	}
+	if thread, _ := f.service.Get(id); thread.TerminalID != "term-aaaaa" {
+		t.Errorf("failed resume changed linkage to %q", thread.TerminalID)
+	}
+	if got := f.drain(); len(got) != 0 {
+		t.Errorf("failed resume published %v", got)
+	}
+
+	if _, _, err := f.service.Open(ctx, id, nil); !errors.Is(err, ErrResumeUnavailable) {
+		t.Errorf("Open(dormant, no resumer) = %v, want ErrResumeUnavailable", err)
+	}
+}
+
+// Two concurrent opens of a dormant thread converge on one terminal: the
+// second waits for the first's resume rather than racing it, then finds
+// the linkage that decision recorded — before any hook evidence — and
+// reuses. Meanwhile the launch does not hold up evidence for other
+// terminals, and the thread cannot be archived or deleted from under it.
+func TestConcurrentOpensConverge(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	resumer := &fakeResumer{f: f, gate: make(chan struct{})}
+	id := f.observed(t)
+	f.dormant(t)
+
+	type result struct {
+		terminal api.Terminal
+		created  bool
+		err      error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			terminal, created, err := f.service.Open(ctx, id, resumer.Resume)
+			results <- result{terminal, created, err}
+		}()
+	}
+	deadline := time.After(5 * time.Second)
+	for {
+		resumer.mu.Lock()
+		started := len(resumer.requests)
+		resumer.mu.Unlock()
+		if started == 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("the first open never reached the resumer")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	// With the launch in flight, other evidence still commits...
+	f.plant(t, "proj-bbbbb", "term-bbbbb")
+	if _, err := f.service.ObserveSession(ctx, SessionObservation{
+		Agent: "claude", ProviderID: "s9", TerminalID: "term-bbbbb", ProjectID: "proj-bbbbb",
+	}); err != nil {
+		t.Errorf("evidence during a resume launch: %v", err)
+	}
+	// ...but the thread being opened is spoken for.
+	archived := true
+	if _, err := f.service.Update(ctx, id, api.ThreadUpdateParams{Archived: &archived}); !errors.Is(err, ErrActive) {
+		t.Errorf("archive during open = %v, want ErrActive", err)
+	}
+	if err := f.service.Delete(ctx, id); !errors.Is(err, ErrActive) {
+		t.Errorf("delete during open = %v, want ErrActive", err)
+	}
+	close(resumer.gate)
+
+	var got []result
+	for range 2 {
+		got = append(got, <-results)
+	}
+	for _, r := range got {
+		if r.err != nil {
+			t.Fatal(r.err)
+		}
+	}
+	if got[0].terminal.ID != got[1].terminal.ID || got[0].terminal.ID != "term-resm1" {
+		t.Errorf("opens diverged: %s and %s", got[0].terminal.ID, got[1].terminal.ID)
+	}
+	if got[0].created == got[1].created {
+		t.Errorf("created flags = %v, %v; want exactly one create", got[0].created, got[1].created)
+	}
+	if len(resumer.requests) != 1 {
+		t.Errorf("resumes = %d, want 1", len(resumer.requests))
+	}
+}
+
+// A client that gives up mid-launch (the CLI interrupted while the TUI
+// settles) still gets the resume linked: the terminal is running, and an
+// unlinked one would let the next open start a second writer.
+func TestOpenLinksDespiteCancel(t *testing.T) {
+	f := newFixture(t)
+	id := f.observed(t)
+	f.dormant(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	resumer := &fakeResumer{f: f, onResume: cancel}
+
+	terminal, created, err := f.service.Open(ctx, id, resumer.Resume)
+	if err != nil || !created || terminal.ID != "term-resm1" {
+		t.Fatalf("Open under cancel = %+v, %v, %v", terminal, created, err)
+	}
+	if thread, _ := f.service.Get(id); thread.TerminalID != "term-resm1" {
+		t.Errorf("linkage after cancel = %q, want term-resm1", thread.TerminalID)
+	}
+	// Persisted, not just in the view: a reload still sees it.
+	records, err := f.store.Threads().List(context.Background())
+	if err != nil || len(records) != 1 || records[0].TerminalID == nil || *records[0].TerminalID != "term-resm1" {
+		t.Errorf("persisted records = %+v, %v", records, err)
 	}
 }

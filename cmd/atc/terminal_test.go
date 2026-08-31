@@ -261,41 +261,47 @@ func TestTerminalGetUnknownIsError(t *testing.T) {
 	}
 }
 
-func TestTerminalCreateAttachWithoutTTYCreatesNothing(t *testing.T) {
+// Attach is the default, but never a precondition where it is impossible:
+// without a TTY the terminal is still created and printed, and stderr
+// says why nothing was attached.
+func TestTerminalCreateWithoutTTYStillCreates(t *testing.T) {
 	startTestServer(t)
-	_, _, err := runCLI(t, "terminal", "create", "--attach")
-	if err == nil || !strings.Contains(err.Error(), "stdin and stdout must be TTYs") {
-		t.Errorf("create attach without TTY = %v, want a TTY refusal", err)
+	projectID := createProjectCLI(t, t.TempDir())
+	stdout, stderr, err := runCLI(t, "terminal", "create", "--project", projectID)
+	if err != nil {
+		t.Fatalf("create without TTY = %v", err)
 	}
-	stdout, _, listErr := runCLI(t, "terminal", "list")
-	if listErr != nil || !strings.Contains(stdout, "no terminals") {
-		t.Errorf("list after TTY refusal = %q, %v", stdout, listErr)
+	id := regexp.MustCompile(`term-[a-z2-9]{5}`).FindString(stdout)
+	if id == "" || !strings.Contains(stdout, "running") {
+		t.Fatalf("create output has no running terminal:\n%s", stdout)
 	}
-}
-
-func TestTerminalCreateAttachRemoteCreatesNothing(t *testing.T) {
-	forceTTY(t)
-	t.Setenv("ATC_SERVER", "http://100.64.0.5:7331")
-	t.Setenv("ATC_TOKEN", cliTestToken)
-
-	_, _, err := runCLI(t, "terminal", "create", "--attach")
-	if err == nil || !strings.Contains(err.Error(), "local-only") {
-		t.Errorf("remote create attach = %v, want the local-only refusal", err)
+	if !strings.Contains(stderr, "not attaching") || !strings.Contains(stderr, "stdin and stdout must be TTYs") {
+		t.Errorf("stderr = %q; want the skipped-attach note", stderr)
+	}
+	// --detach is silent about attaching: nothing was asked for.
+	if _, stderr, err := runCLI(t, "terminal", "create", "--project", projectID, "--detach"); err != nil || strings.Contains(stderr, "attach") {
+		t.Errorf("create --detach = %q, %v", stderr, err)
 	}
 }
 
-func TestTerminalCreateAttachMissingZmxCreatesNothing(t *testing.T) {
+// A tooling preflight — no zmx on this machine — fails before anything is
+// created; --detach sidesteps it.
+func TestTerminalCreateMissingZmxCreatesNothing(t *testing.T) {
 	forceTTY(t)
 	startTestServer(t)
 	t.Setenv("PATH", "")
 
-	_, _, err := runCLI(t, "terminal", "create", "--attach")
+	projectID := createProjectCLI(t, t.TempDir())
+	_, _, err := runCLI(t, "terminal", "create", "--project", projectID)
 	if err == nil || err.Error() != "zmx executable not found on PATH; install zmx to attach" {
-		t.Errorf("create attach without zmx = %v", err)
+		t.Errorf("create without zmx = %v", err)
 	}
 	stdout, _, listErr := runCLI(t, "terminal", "list")
 	if listErr != nil || !strings.Contains(stdout, "no terminals") {
 		t.Errorf("list after zmx refusal = %q, %v", stdout, listErr)
+	}
+	if _, _, err := runCLI(t, "terminal", "create", "--project", projectID, "--detach"); err != nil {
+		t.Errorf("create --detach without zmx = %v", err)
 	}
 }
 
@@ -306,7 +312,7 @@ func TestTerminalCreateAttachMissingSocketKeepsTerminal(t *testing.T) {
 	startTestServer(t)
 
 	projectID := createProjectCLI(t, t.TempDir())
-	stdout, _, err := runCLI(t, "terminal", "create", "--attach", "--project", projectID)
+	stdout, _, err := runCLI(t, "terminal", "create", "--project", projectID)
 	id := regexp.MustCompile(`term-[a-z2-9]{5}`).FindString(stdout)
 	if id == "" || !strings.Contains(stdout, "running") {
 		t.Fatalf("create attach output does not show the created terminal:\n%s", stdout)
@@ -314,7 +320,7 @@ func TestTerminalCreateAttachMissingSocketKeepsTerminal(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "has no session socket") {
 		t.Fatalf("create attach without socket = %v, want the missing-socket refusal", err)
 	}
-	if !strings.Contains(err.Error(), "the terminal was created; retry with: atc terminal attach "+id) {
+	if !strings.Contains(err.Error(), "retry with: atc terminal attach "+id) {
 		t.Errorf("create attach error has no retry instruction: %v", err)
 	}
 	stdout, _, getErr := runCLI(t, "terminal", "get", id)
@@ -355,7 +361,7 @@ func TestAttachRefusesNonRunning(t *testing.T) {
 
 	adapter := startTestServer(t)
 	projectID := createProjectCLI(t, t.TempDir())
-	stdout, _, err := runCLI(t, "terminal", "create", "--project", projectID)
+	stdout, _, err := runCLI(t, "terminal", "create", "--project", projectID, "--detach")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +371,7 @@ func TestAttachRefusesNonRunning(t *testing.T) {
 	adapter.mu.Lock()
 	delete(adapter.sessions, id)
 	adapter.mu.Unlock()
-	if _, _, err := runCLI(t, "terminal", "create", "--name", "other", "--project", projectID); err != nil {
+	if _, _, err := runCLI(t, "terminal", "create", "--name", "other", "--project", projectID, "--detach"); err != nil {
 		t.Fatal(err)
 	}
 

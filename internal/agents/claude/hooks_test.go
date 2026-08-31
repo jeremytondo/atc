@@ -27,10 +27,13 @@ type fakeObserver struct {
 	identity map[string]string
 }
 
+// ObserveSession records the observation and, like the real service,
+// maps the identity from then on.
 func (f *fakeObserver) ObserveSession(_ context.Context, o threads.SessionObservation) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sessions = append(f.sessions, o)
+	f.identity[o.ProviderID] = o.TerminalID
 	return "thrd-aaaaa", nil
 }
 
@@ -234,21 +237,35 @@ func TestSessionLifecycleObservations(t *testing.T) {
 	f := newHookFixture(t)
 	secret := f.prepare(t, "term-aaaaa")
 
-	f.post(t, secret, `{"session_id":"s1","hook_event_name":"SessionStart","source":"startup","cwd":"/proj","permission_mode":"default","effort":{"level":"high"}}`)
+	// SessionStart alone mints nothing (ATC-282): a zero-turn TUI has no
+	// thread. Whatever the terminal showed before leaves it — for a fresh
+	// launch, nothing. Chatter before the first prompt is accepted and
+	// dropped.
+	f.post(t, secret, `{"session_id":"s1","hook_event_name":"SessionStart","source":"startup"}`)
+	if code := f.post(t, secret, `{"session_id":"s1","hook_event_name":"Notification","notification_type":"idle_prompt"}`); code != http.StatusNoContent {
+		t.Errorf("pre-prompt event: got %d, want 204", code)
+	}
+	if len(f.observer.sessions) != 0 || len(f.observer.statuses) != 0 {
+		t.Fatalf("observed before the first prompt: %+v %+v", f.observer.sessions, f.observer.statuses)
+	}
+	if len(f.observer.inactive) != 1 {
+		t.Fatalf("fresh start deactivations = %v, want one (a no-op downstream)", f.observer.inactive)
+	}
+
+	// The first prompt mints the thread — identity, project, and payload
+	// metadata — then supplies the title fallback and starts the turn.
+	f.post(t, secret, `{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"fix the flaky build on CI so releases stop breaking every night","cwd":"/proj","permission_mode":"default","effort":{"level":"high"}}`)
 	if len(f.observer.sessions) != 1 {
 		t.Fatalf("sessions = %+v", f.observer.sessions)
 	}
 	session := f.observer.sessions[0]
 	if session.Agent != "claude" || session.ProviderID != "s1" || session.TerminalID != "term-aaaaa" ||
-		session.ProjectID != "proj-aaaaa" || session.Status != api.ThreadIdle {
+		session.ProjectID != "proj-aaaaa" || session.Status != "" {
 		t.Errorf("session observation = %+v", session)
 	}
 	if session.Metadata.Cwd != "/proj" || session.Metadata.PermissionMode != "default" || session.Metadata.Effort != "high" {
 		t.Errorf("session metadata = %+v", session.Metadata)
 	}
-
-	// The first prompt supplies the title fallback and starts the turn.
-	f.post(t, secret, `{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"fix the flaky build on CI so releases stop breaking every night"}`)
 	status := f.observer.lastStatus(t)
 	if status.Status != api.ThreadWorking {
 		t.Errorf("prompt status = %s", status.Status)
@@ -257,17 +274,25 @@ func TestSessionLifecycleObservations(t *testing.T) {
 		t.Errorf("title fallback = %q", status.Metadata.Title)
 	}
 
-	// /clear: SessionEnd(reason=clear) does not deactivate — the new
-	// SessionStart moves the terminal itself. The end refreshes evidence
-	// without a status claim.
+	// /clear: SessionEnd(reason=clear) does not deactivate — the end
+	// refreshes evidence without a status claim — but the successor's
+	// SessionStart, having no thread to move the terminal to, does: the
+	// old conversation has left the screen.
 	f.post(t, secret, `{"session_id":"s1","hook_event_name":"SessionEnd","reason":"clear"}`)
 	if got := f.observer.lastStatus(t); got.Status != "" {
 		t.Errorf("session end status claim = %q; want evidence-only", got.Status)
 	}
-	if len(f.observer.inactive) != 0 {
+	if len(f.observer.inactive) != 1 {
 		t.Errorf("clear deactivated the terminal: %v", f.observer.inactive)
 	}
 	f.post(t, secret, `{"session_id":"s2","hook_event_name":"SessionStart","source":"clear"}`)
+	if len(f.observer.sessions) != 1 {
+		t.Fatalf("SessionStart after clear minted: %+v", f.observer.sessions)
+	}
+	if len(f.observer.inactive) != 2 || f.observer.inactive[1] != "term-aaaaa" {
+		t.Errorf("successor start did not deactivate: %v", f.observer.inactive)
+	}
+	f.post(t, secret, `{"session_id":"s2","hook_event_name":"UserPromptSubmit","prompt":"next"}`)
 	if len(f.observer.sessions) != 2 || f.observer.sessions[1].ProviderID != "s2" {
 		t.Fatalf("sessions after clear = %+v", f.observer.sessions)
 	}
@@ -279,7 +304,7 @@ func TestSessionLifecycleObservations(t *testing.T) {
 
 	// TUI exit: SessionEnd with any other reason deactivates.
 	f.post(t, secret, `{"session_id":"s2","hook_event_name":"SessionEnd","reason":"other"}`)
-	if len(f.observer.inactive) != 1 || f.observer.inactive[0] != "term-aaaaa" {
+	if len(f.observer.inactive) != 3 || f.observer.inactive[2] != "term-aaaaa" {
 		t.Errorf("exit did not deactivate: %v", f.observer.inactive)
 	}
 
@@ -319,29 +344,56 @@ func TestSessionStartCompactIsIdempotent(t *testing.T) {
 	}
 }
 
-// A transient failure recording the session must not silence it: the next
-// event retries the session observation before its evidence.
+// A resumed conversation — one the identity mapping already knows — is
+// observed at SessionStart, in whichever terminal announces it: the
+// thread updates immediately, at its prompt, with no minting deferral.
+func TestResumeObservedAtSessionStart(t *testing.T) {
+	f := newHookFixture(t)
+	secret := f.prepare(t, "term-aaaaa")
+	f.observer.identity["s7"] = "term-other"
+
+	if code := f.post(t, secret, `{"session_id":"s7","hook_event_name":"SessionStart","source":"resume","cwd":"/proj"}`); code != http.StatusNoContent {
+		t.Fatalf("resume SessionStart: got %d", code)
+	}
+	if len(f.observer.sessions) != 1 {
+		t.Fatalf("sessions = %+v", f.observer.sessions)
+	}
+	session := f.observer.sessions[0]
+	if session.ProviderID != "s7" || session.TerminalID != "term-aaaaa" || session.Status != api.ThreadIdle || session.Metadata.Cwd != "/proj" {
+		t.Errorf("resume observation = %+v", session)
+	}
+	// Established: ordinary evidence reduces without re-observing.
+	f.post(t, secret, `{"session_id":"s7","hook_event_name":"PreToolUse","tool_name":"Bash"}`)
+	if len(f.observer.sessions) != 1 || f.observer.lastStatus(t).Status != api.ThreadWorking {
+		t.Errorf("after resume: sessions %+v, statuses %+v", f.observer.sessions, f.observer.statuses)
+	}
+}
+
+// A transient failure recording a resumed session must not silence it:
+// the next event retries the session observation before its evidence.
 func TestSessionObservationFailureRetries(t *testing.T) {
 	f := newHookFixture(t)
 	secret := f.prepare(t, "term-aaaaa")
+	f.observer.identity["s1"] = "term-other"
 
 	// The terminal record is briefly unavailable at SessionStart.
 	f.terminals.mu.Lock()
 	saved := f.terminals.terminals["term-aaaaa"]
 	delete(f.terminals.terminals, "term-aaaaa")
 	f.terminals.mu.Unlock()
-	if code := f.post(t, secret, `{"session_id":"s1","hook_event_name":"SessionStart","source":"startup"}`); code != http.StatusNoContent {
+	if code := f.post(t, secret, `{"session_id":"s1","hook_event_name":"SessionStart","source":"resume"}`); code != http.StatusNoContent {
 		t.Fatalf("SessionStart during outage: got %d", code)
 	}
 	if len(f.observer.sessions) != 0 {
 		t.Fatalf("sessions during outage = %+v", f.observer.sessions)
 	}
 
-	// The outage heals; the next ordinary event re-establishes and lands.
+	// The outage heals; the next ordinary event — not only a prompt, since
+	// the conversation is mapped — re-establishes and lands.
 	f.terminals.mu.Lock()
 	f.terminals.terminals["term-aaaaa"] = saved
 	f.terminals.mu.Unlock()
-	if code := f.post(t, secret, `{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"go"}`); code != http.StatusNoContent {
+	if code := f.post(t, secret, `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Bash"}`); code != http.StatusNoContent {
 		t.Fatalf("event after outage: got %d", code)
 	}
 	if len(f.observer.sessions) != 1 || f.observer.sessions[0].ProviderID != "s1" {
@@ -376,10 +428,7 @@ func TestPostRestartSeeding(t *testing.T) {
 	if code := f.post(t, secret, `{"session_id":"s1","hook_event_name":"UserPromptSubmit","agent_id":"sub-1","prompt":"go"}`); code != http.StatusBadRequest {
 		t.Errorf("subagent seed: got %d, want 400", code)
 	}
-	// Unmapped and wrong-terminal sessions are dropped.
-	if code := f.post(t, secret, `{"session_id":"s404","hook_event_name":"UserPromptSubmit","prompt":"go"}`); code != http.StatusBadRequest {
-		t.Errorf("unmapped seed: got %d, want 400", code)
-	}
+	// A conversation mapped to another terminal is dropped.
 	if code := f.post(t, secret, `{"session_id":"s9","hook_event_name":"UserPromptSubmit","prompt":"go"}`); code != http.StatusBadRequest {
 		t.Errorf("wrong-terminal seed: got %d, want 400", code)
 	}
@@ -397,6 +446,88 @@ func TestPostRestartSeeding(t *testing.T) {
 	}
 	if got := f.observer.lastStatus(t); got.Status != api.ThreadWorking {
 		t.Errorf("seeded evidence status = %s", got.Status)
+	}
+}
+
+// A TUI that sat at its prompt across a restart has no thread and no
+// mapping; its first root prompt is the mint, exactly as without the
+// restart.
+func TestPostRestartFirstPromptMints(t *testing.T) {
+	f := newHookFixture(t)
+	f.prepare(t, "term-aaaaa")
+	if err := f.hooks.LoadRegistrations(); err != nil {
+		t.Fatal(err)
+	}
+	secret := f.prepare(t, "term-aaaaa")
+
+	if code := f.post(t, secret, `{"session_id":"s1","hook_event_name":"Notification","notification_type":"idle_prompt"}`); code != http.StatusBadRequest {
+		t.Errorf("unmapped straggler seed: got %d, want 400", code)
+	}
+	if code := f.post(t, secret, `{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"first words"}`); code != http.StatusNoContent {
+		t.Errorf("unmapped first prompt: got %d, want 204", code)
+	}
+	if len(f.observer.sessions) != 1 || f.observer.sessions[0].ProviderID != "s1" || f.observer.sessions[0].Metadata.Title != "first words" {
+		t.Fatalf("mint after restart = %+v", f.observer.sessions)
+	}
+	if got := f.observer.lastStatus(t); got.Status != api.ThreadWorking {
+		t.Errorf("status after mint = %s", got.Status)
+	}
+}
+
+// A transient failure on the minting prompt itself must not lose the
+// thread for the whole turn: the prompt is remembered, the next event
+// mints — with the prompt's title — and the turn's evidence lands.
+func TestFirstPromptFailureRetriesOnNextEvent(t *testing.T) {
+	f := newHookFixture(t)
+	secret := f.prepare(t, "term-aaaaa")
+	f.post(t, secret, `{"session_id":"s1","hook_event_name":"SessionStart","source":"startup"}`)
+
+	f.terminals.mu.Lock()
+	saved := f.terminals.terminals["term-aaaaa"]
+	delete(f.terminals.terminals, "term-aaaaa")
+	f.terminals.mu.Unlock()
+	if code := f.post(t, secret, `{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"fix the build"}`); code != http.StatusNoContent {
+		t.Fatalf("prompt during outage: got %d", code)
+	}
+	if len(f.observer.sessions) != 0 {
+		t.Fatalf("sessions during outage = %+v", f.observer.sessions)
+	}
+
+	f.terminals.mu.Lock()
+	f.terminals.terminals["term-aaaaa"] = saved
+	f.terminals.mu.Unlock()
+	f.post(t, secret, `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Bash"}`)
+	if len(f.observer.sessions) != 1 || f.observer.sessions[0].Metadata.Title != "fix the build" {
+		t.Fatalf("retry mint = %+v; want one observation titled from the prompt", f.observer.sessions)
+	}
+	if got := f.observer.lastStatus(t); got.Status != api.ThreadWorking {
+		t.Errorf("evidence after retry = %s", got.Status)
+	}
+}
+
+// The TUI leaving right after a failed minting prompt still gets its
+// thread: SessionEnd is the last retry, so the conversation stays in the
+// index as resumable.
+func TestFirstPromptFailureRetriesAtSessionEnd(t *testing.T) {
+	f := newHookFixture(t)
+	secret := f.prepare(t, "term-aaaaa")
+	f.post(t, secret, `{"session_id":"s1","hook_event_name":"SessionStart","source":"startup"}`)
+
+	f.terminals.mu.Lock()
+	saved := f.terminals.terminals["term-aaaaa"]
+	delete(f.terminals.terminals, "term-aaaaa")
+	f.terminals.mu.Unlock()
+	f.post(t, secret, `{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"fix the build"}`)
+	f.terminals.mu.Lock()
+	f.terminals.terminals["term-aaaaa"] = saved
+	f.terminals.mu.Unlock()
+
+	f.post(t, secret, `{"session_id":"s1","hook_event_name":"SessionEnd","reason":"other"}`)
+	if len(f.observer.sessions) != 1 || f.observer.sessions[0].Metadata.Title != "fix the build" || f.observer.sessions[0].Status != "" {
+		t.Fatalf("mint at SessionEnd = %+v; want one titled observation with no status claim", f.observer.sessions)
+	}
+	if len(f.observer.inactive) != 2 || f.observer.inactive[1] != "term-aaaaa" {
+		t.Errorf("exit did not deactivate: %v", f.observer.inactive)
 	}
 }
 
@@ -447,5 +578,15 @@ func TestCommandComposition(t *testing.T) {
 	}
 	if _, err := os.Stat(f.hooks.settingsPath("term-aaaaa")); err != nil {
 		t.Errorf("Command did not prepare the settings file: %v", err)
+	}
+
+	// The resume form reopens the exact session, quoted, with the same
+	// hook wiring.
+	command, err = entry.TUI.Command(context.Background(), agents.LaunchContext{TerminalID: "term-bbbbb", ResumeConversationID: "sess-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command != "claude --settings "+agents.Quote(f.hooks.settingsPath("term-bbbbb"))+" --resume 'sess-1'" {
+		t.Errorf("resume command = %q", command)
 	}
 }

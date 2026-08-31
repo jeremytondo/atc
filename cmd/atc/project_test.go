@@ -189,7 +189,7 @@ func TestTerminalCreateOffersProjectAtGitToplevel(t *testing.T) {
 	sub := mkdirAll(t, filepath.Join(repo, "pkg"))
 
 	t.Chdir(sub)
-	stdout, stderr, err := runCLIInput(t, "y\n", "terminal", "create")
+	stdout, stderr, err := runCLIInput(t, "y\n", "terminal", "create", "--detach")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestTerminalCreateOfferDeclinedCreatesNothing(t *testing.T) {
 	startTestServer(t)
 	t.Chdir(t.TempDir())
 
-	_, _, err := runCLIInput(t, "n\n", "terminal", "create")
+	_, _, err := runCLIInput(t, "n\n", "terminal", "create", "--detach")
 	if err == nil || !strings.Contains(err.Error(), "no project selected") {
 		t.Fatalf("declined offer = %v, want a refusal", err)
 	}
