@@ -642,9 +642,16 @@ func TestSameDirectoryLaunchesSerialize(t *testing.T) {
 	f.launch(t, "term-aaaaa", f.dir)
 
 	second := make(chan struct{})
+	var secondErr error
 	go func() {
+		// Fatalf may only run on the test goroutine; the error is asserted
+		// after the receive.
 		defer close(second)
-		f.launch(t, "term-bbbbb", f.dir)
+		if _, err := f.adapter.PrepareLaunch(f.ctx, agents.LaunchContext{Directory: f.dir}); err != nil {
+			secondErr = err
+			return
+		}
+		_, secondErr = f.adapter.Command(f.ctx, agents.LaunchContext{TerminalID: "term-bbbbb", Directory: f.dir})
 	}()
 	other := shortTempDir(t)
 	f.terminals.set("term-ccccc", api.TerminalRunning)
@@ -661,6 +668,9 @@ func TestSameDirectoryLaunchesSerialize(t *testing.T) {
 	case <-second:
 	case <-time.After(3 * time.Second):
 		t.Fatal("second launch never proceeded after the first bound")
+	}
+	if secondErr != nil {
+		t.Fatalf("second launch: %v", secondErr)
 	}
 	f.server.broadcast("thread/started", started("t2", f.dir))
 	waitFor(t, func() bool { return f.paired("t2") == "term-bbbbb" })

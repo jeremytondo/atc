@@ -36,7 +36,13 @@ func TestStartServerSpawnsDetachedAppServer(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	want := "app-server\n--listen\nunix://\n" + codexHome + "\n" + home + "\n"
+	// pwd reports the physical directory; on macOS the temp root is a
+	// symlink into /private.
+	physicalHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "app-server\n--listen\nunix://\n" + codexHome + "\n" + physicalHome + "\n"
 	if string(content) != want {
 		t.Errorf("spawned codex saw:\n%s\nwant:\n%s", content, want)
 	}

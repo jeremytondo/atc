@@ -212,14 +212,28 @@ func (o *Observer) Run(ctx context.Context) {
 			backoff = min(backoff*2, o.backoffMax)
 			continue
 		}
-		backoff = o.backoffMin
+		connectedAt := o.now()
 		select {
 		case <-ctx.Done():
 			return
 		case <-conn.done:
-			// Retry at once — a restarted server is usually already back —
-			// then back off.
 		}
+		if o.now().Sub(connectedAt) >= o.backoffMin {
+			// The connection did real work; retry at once — a restarted
+			// server is usually already back — and start the backoff
+			// fresh.
+			backoff = o.backoffMin
+			continue
+		}
+		// A connection that died at once is a server flapping: pace the
+		// successor instead of spinning through dial, handshake, and
+		// reconcile.
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff = min(backoff*2, o.backoffMax)
 	}
 }
 

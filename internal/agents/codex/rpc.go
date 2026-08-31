@@ -23,6 +23,9 @@ const maxMessageBytes = 64 << 20
 // the handler goroutine.
 const notificationBuffer = 256
 
+// refusalTimeout bounds the write of a method-not-found reply.
+const refusalTimeout = 5 * time.Second
+
 // rpcConn is JSON-RPC over one WebSocket to the shared app-server:
 // numbered requests matched to replies, notifications handed to one
 // dispatcher goroutine in arrival order, server requests refused, and a
@@ -175,7 +178,11 @@ func (c *rpcConn) readLoop() {
 			// A server-to-client request. ATC is a passive observer and
 			// serves none of them: method not found, per the contract.
 			c.logger.Debug("codex app-server request refused", "method", message.Method)
-			_ = c.write(ctx, rpcMessage{ID: message.ID, Error: &rpcError{Code: -32601, Message: "method not found"}})
+			// Bounded: a peer that stops reading must not pin the read loop
+			// on this write and keep the connection from failing.
+			writeCtx, cancel := context.WithTimeout(ctx, refusalTimeout)
+			_ = c.write(writeCtx, rpcMessage{ID: message.ID, Error: &rpcError{Code: -32601, Message: "method not found"}})
+			cancel()
 		case len(message.ID) > 0:
 			var id int64
 			if err := json.Unmarshal(message.ID, &id); err != nil {
