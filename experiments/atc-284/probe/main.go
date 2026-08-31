@@ -1,4 +1,4 @@
-// Command probe provides the two narrow app-server probes needed by ATC-284.
+// Command probe provides the narrow app-server probes needed by ATC-284.
 // It connects to the user's existing Codex control socket and never starts,
 // stops, or configures the shared server.
 package main
@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -28,7 +29,9 @@ import (
 const usage = `Usage:
   ./scripts/atc-284 doctor
   ./scripts/atc-284 listen
+  ./scripts/atc-284 bind [directory]
   ./scripts/atc-284 create [directory]
+  ./scripts/atc-284 rollout THREAD_ID
 
 Options:
   --socket PATH  Override the Codex control socket (for isolated testing).
@@ -36,7 +39,11 @@ Options:
 Commands:
   doctor  Confirm that the shared socket accepts a local client.
   listen  Print thread/started and thread/status/changed until Ctrl-C.
-  create  Create an empty thread and print only its thread ID.`
+  bind    Launch plain codex and test cwd-and-timing terminal binding.
+  create  Create an empty thread and print only its thread ID.
+  rollout Find local rollout files for a thread ID.`
+
+const bindingWindow = 5 * time.Second
 
 type message struct {
 	ID     json.RawMessage `json:"id"`
@@ -62,6 +69,24 @@ type webSocket struct {
 	reader *bufio.Reader
 }
 
+type startedThread struct {
+	ID         string
+	CWD        string
+	ObservedAt time.Time
+}
+
+type bindingCandidate struct {
+	ThreadID string
+	CWD      string
+	Elapsed  time.Duration
+}
+
+type bindingResult struct {
+	Bound        bool
+	Candidates   []bindingCandidate
+	ObserveError string
+}
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "atc-284:", err)
@@ -80,6 +105,12 @@ func run(args []string) error {
 	if len(remaining) == 0 || remaining[0] == "help" || remaining[0] == "--help" || remaining[0] == "-h" {
 		fmt.Println(usage)
 		return nil
+	}
+	if remaining[0] == "rollout" {
+		if len(remaining) != 2 {
+			return errors.New("rollout requires one thread ID")
+		}
+		return findRollouts(remaining[1])
 	}
 
 	socketPath, err := resolveSocket(*socketOverride)
@@ -107,6 +138,15 @@ func run(args []string) error {
 			return errors.New("listen takes no arguments")
 		}
 		return c.listen()
+	case "bind":
+		if len(remaining) > 2 {
+			return errors.New("bind accepts at most one directory")
+		}
+		directory := "."
+		if len(remaining) == 2 {
+			directory = remaining[1]
+		}
+		return c.bindLaunch(directory)
 	case "create":
 		if len(remaining) > 2 {
 			return errors.New("create accepts at most one directory")
@@ -125,6 +165,14 @@ func resolveSocket(override string) (string, error) {
 	if override != "" {
 		return strings.TrimPrefix(override, "unix://"), nil
 	}
+	codexHome, err := resolveCodexHome()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(codexHome, "app-server-control", "app-server-control.sock"), nil
+}
+
+func resolveCodexHome() (string, error) {
 	codexHome := os.Getenv("CODEX_HOME")
 	if codexHome == "" {
 		userHome, err := os.UserHomeDir()
@@ -137,7 +185,7 @@ func resolveSocket(override string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve CODEX_HOME: %w", err)
 	}
-	return filepath.Join(absoluteHome, "app-server-control", "app-server-control.sock"), nil
+	return absoluteHome, nil
 }
 
 func connect(socketPath string) (*client, error) {
@@ -252,6 +300,186 @@ func (c *client) listen() error {
 			printStatusChanged(incoming.Params)
 		}
 	}
+}
+
+func (c *client) bindLaunch(directory string) error {
+	absoluteDirectory, err := resolveDirectory(directory)
+	if err != nil {
+		return err
+	}
+	reportPath := filepath.Join(os.TempDir(), fmt.Sprintf("atc-284-bind-%d.log", os.Getpid()))
+	fmt.Fprintf(os.Stderr, "ATC-284 binding probe: launching plain codex in %s\n", absoluteDirectory)
+	fmt.Fprintf(os.Stderr, "Wait %s before the first prompt. Evidence: %s\n", bindingWindow+time.Second, reportPath)
+
+	events := make(chan startedThread)
+	readErrors := make(chan error, 1)
+	go c.readStartedThreads(events, readErrors)
+
+	command := exec.Command("codex")
+	command.Dir = absoluteDirectory
+	command.Stdin = os.Stdin
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	command.Env = os.Environ()
+
+	startedAt := time.Now()
+	if err := command.Start(); err != nil {
+		return fmt.Errorf("launch plain codex: %w", err)
+	}
+	childDone := make(chan error, 1)
+	go func() { childDone <- command.Wait() }()
+
+	interrupts := make(chan os.Signal, 2)
+	signal.Notify(interrupts, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(interrupts)
+	drainDone := make(chan struct{})
+	defer close(drainDone)
+	go func() {
+		for {
+			select {
+			case <-interrupts:
+				// The foreground Codex child receives terminal signals directly.
+			case <-drainDone:
+				return
+			}
+		}
+	}()
+
+	result := observeBinding(absoluteDirectory, startedAt, bindingWindow, events, readErrors)
+	_ = c.websocket.conn.Close()
+	report := formatBindingResult(absoluteDirectory, bindingWindow, result)
+	if err := os.WriteFile(reportPath, []byte(report), 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "Could not save binding evidence: %v\n", err)
+	}
+
+	childErr := <-childDone
+	fmt.Printf("\n%s", report)
+	fmt.Printf("Evidence saved to %s\n", reportPath)
+	if childErr != nil {
+		fmt.Printf("Codex exited with: %v\n", childErr)
+	}
+	if !result.Bound {
+		return errors.New("terminal left unbound; see binding result above")
+	}
+	return nil
+}
+
+func (c *client) readStartedThreads(events chan<- startedThread, readErrors chan<- error) {
+	defer close(events)
+	for {
+		payload, err := c.websocket.readText()
+		if err != nil {
+			if !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.EOF) {
+				readErrors <- err
+			}
+			return
+		}
+		var incoming message
+		if err := json.Unmarshal(payload, &incoming); err != nil {
+			continue
+		}
+		if len(incoming.ID) > 0 && incoming.Method != "" {
+			_ = c.send(map[string]any{
+				"id": incoming.ID,
+				"error": map[string]any{
+					"code":    -32601,
+					"message": "ATC-284 probe does not handle server requests",
+				},
+			})
+			continue
+		}
+		if incoming.Method != "thread/started" {
+			continue
+		}
+		started, ok := decodeStartedThread(incoming.Params)
+		if !ok {
+			continue
+		}
+		started.ObservedAt = time.Now()
+		events <- started
+	}
+}
+
+func observeBinding(directory string, startedAt time.Time, window time.Duration, events <-chan startedThread, readErrors <-chan error) bindingResult {
+	timer := time.NewTimer(window)
+	defer timer.Stop()
+	result := bindingResult{}
+	for {
+		select {
+		case started, ok := <-events:
+			if !ok {
+				events = nil
+				continue
+			}
+			if started.ObservedAt.Before(startedAt) || !sameDirectory(directory, started.CWD) {
+				continue
+			}
+			result.Candidates = append(result.Candidates, bindingCandidate{
+				ThreadID: started.ID,
+				CWD:      started.CWD,
+				Elapsed:  started.ObservedAt.Sub(startedAt),
+			})
+		case err := <-readErrors:
+			if err != nil {
+				result.ObserveError = err.Error()
+			}
+			result.Bound = false
+			return result
+		case <-timer.C:
+			result.Bound = len(result.Candidates) == 1 && result.ObserveError == ""
+			return result
+		}
+	}
+}
+
+func formatBindingResult(directory string, window time.Duration, result bindingResult) string {
+	var output strings.Builder
+	fmt.Fprintln(&output, "ATC-284 launch-then-observe result")
+	fmt.Fprintf(&output, "cwd: %s\n", directory)
+	fmt.Fprintf(&output, "window: %s\n", window)
+	for i, candidate := range result.Candidates {
+		fmt.Fprintf(&output, "candidate %d: thread=%s elapsed=%s cwd=%s\n",
+			i+1, candidate.ThreadID, candidate.Elapsed.Round(time.Millisecond), candidate.CWD)
+	}
+	switch {
+	case result.ObserveError != "":
+		fmt.Fprintf(&output, "FAIL CLOSED: observer error: %s\n", result.ObserveError)
+	case len(result.Candidates) == 0:
+		fmt.Fprintln(&output, "FAIL CLOSED: no matching thread/started")
+	case len(result.Candidates) > 1:
+		fmt.Fprintf(&output, "FAIL CLOSED: %d matching thread/started events\n", len(result.Candidates))
+	default:
+		fmt.Fprintf(&output, "PASS: bound thread=%s\n", result.Candidates[0].ThreadID)
+	}
+	return output.String()
+}
+
+func decodeStartedThread(raw json.RawMessage) (startedThread, bool) {
+	var params struct {
+		Thread struct {
+			ID  string `json:"id"`
+			CWD string `json:"cwd"`
+		} `json:"thread"`
+	}
+	if json.Unmarshal(raw, &params) != nil || params.Thread.ID == "" || params.Thread.CWD == "" {
+		return startedThread{}, false
+	}
+	return startedThread{ID: params.Thread.ID, CWD: params.Thread.CWD}, true
+}
+
+func sameDirectory(want, got string) bool {
+	canonical := func(path string) string {
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			return filepath.Clean(path)
+		}
+		resolved, err := filepath.EvalSymlinks(absolute)
+		if err == nil {
+			return filepath.Clean(resolved)
+		}
+		return filepath.Clean(absolute)
+	}
+	return canonical(want) == canonical(got)
 }
 
 func upgrade(conn net.Conn) (*webSocket, error) {
@@ -453,16 +681,9 @@ func timestamp() string {
 }
 
 func (c *client) createThread(directory string) error {
-	absoluteDirectory, err := filepath.Abs(directory)
+	absoluteDirectory, err := resolveDirectory(directory)
 	if err != nil {
-		return fmt.Errorf("resolve directory: %w", err)
-	}
-	info, err := os.Stat(absoluteDirectory)
-	if err != nil {
-		return fmt.Errorf("inspect directory: %w", err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("%s is not a directory", absoluteDirectory)
+		return err
 	}
 	result, err := c.request("thread/start", map[string]any{"cwd": absoluteDirectory})
 	if err != nil {
@@ -480,5 +701,57 @@ func (c *client) createThread(directory string) error {
 		return errors.New("thread/start returned no thread ID")
 	}
 	fmt.Println(started.Thread.ID)
+	return nil
+}
+
+func resolveDirectory(directory string) (string, error) {
+	absoluteDirectory, err := filepath.Abs(directory)
+	if err != nil {
+		return "", fmt.Errorf("resolve directory: %w", err)
+	}
+	info, err := os.Stat(absoluteDirectory)
+	if err != nil {
+		return "", fmt.Errorf("inspect directory: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%s is not a directory", absoluteDirectory)
+	}
+	return absoluteDirectory, nil
+}
+
+func findRollouts(threadID string) error {
+	if strings.TrimSpace(threadID) == "" || strings.ContainsAny(threadID, `/\\`) {
+		return errors.New("thread ID must be a non-empty filename-safe value")
+	}
+	codexHome, err := resolveCodexHome()
+	if err != nil {
+		return err
+	}
+	sessionsDirectory := filepath.Join(codexHome, "sessions")
+	var matches []string
+	err = filepath.WalkDir(sessionsDirectory, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() && strings.Contains(entry.Name(), threadID) && strings.HasSuffix(entry.Name(), ".jsonl") {
+			matches = append(matches, path)
+		}
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		fmt.Printf("MISSING: no sessions directory at %s\n", sessionsDirectory)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("search rollout files: %w", err)
+	}
+	sort.Strings(matches)
+	if len(matches) == 0 {
+		fmt.Printf("MISSING: no rollout file found for thread %s\n", threadID)
+		return nil
+	}
+	for _, match := range matches {
+		fmt.Println(match)
+	}
 	return nil
 }
