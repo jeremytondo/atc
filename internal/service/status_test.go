@@ -149,6 +149,55 @@ func TestRenderStatus(t *testing.T) {
 				"  token: `atc server token` prints the bearer token remote clients use\n",
 			wantCode: 0,
 		},
+		"service override attributes tailscale and shows the clearing command": {
+			info: func() statusInfo {
+				s := healthyInfo()
+				s.tailscaleOverride = true
+				s.tailnetDNS = "machine.tail1234.ts.net"
+				return s
+			},
+			want: "atc.server: running and healthy\n" +
+				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
+				"  client: v1.2.3\n" +
+				"  server: v1.2.3\n" +
+				"  api: http://127.0.0.1:7331\n" +
+				"  api (tailnet): https://machine.tail1234.ts.net:7331\n" +
+				"  tailscale: enabled by the service flag; `atc server restart --tailscale=false` returns control to config.toml\n" +
+				"  token: `atc server token` prints the bearer token remote clients use\n",
+			wantCode: 0,
+		},
+		"service override with tailnet unavailable keeps the diagnostics": {
+			info: func() statusInfo {
+				s := healthyInfo()
+				s.tailscaleOverride = true
+				s.tailnetProblem = "tailscale is logged out (BackendState NeedsLogin)"
+				return s
+			},
+			want: "atc.server: running and healthy\n" +
+				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
+				"  client: v1.2.3\n" +
+				"  server: v1.2.3\n" +
+				"  api: http://127.0.0.1:7331\n" +
+				"  api (tailnet): unavailable (tailscale is logged out (BackendState NeedsLogin))\n" +
+				"  tailscale: enabled by the service flag; `atc server restart --tailscale=false` returns control to config.toml\n" +
+				"  token: `atc server token` prints the bearer token remote clients use\n",
+			wantCode: 0,
+		},
+		"unreadable unit reports an unknown override instead of guessing": {
+			info: func() statusInfo {
+				s := healthyInfo()
+				s.overrideProblem = "installed unit has no ExecStart line"
+				return s
+			},
+			want: "atc.server: running and healthy\n" +
+				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
+				"  client: v1.2.3\n" +
+				"  server: v1.2.3\n" +
+				"  api: http://127.0.0.1:7331\n" +
+				"  tailscale: unknown service override (installed unit has no ExecStart line); rerun `atc server start` with an explicit --tailscale or --tailscale=false\n" +
+				"  token: `atc server token` prints the bearer token remote clients use\n",
+			wantCode: 0,
+		},
 		"tailnet exposure unavailable states why": {
 			info: func() statusInfo {
 				s := healthyInfo()

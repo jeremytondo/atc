@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
@@ -43,14 +45,29 @@ func Status(ctx context.Context, opts Options) error {
 		bind:          opts.Config.Bind,
 		tailscale:     opts.Config.Tailscale,
 	}
-	if _, statErr := os.Stat(unitFile); statErr == nil {
+	// The installed unit is the tailscale override's only durable store
+	// (ATC-283), so status reads it with the same inspection lifecycle
+	// uses — displayed intent cannot diverge from what the supervisor will
+	// execute. An unreadable or unrecognized unit is reported as unknown,
+	// never guessed.
+	switch unit, unitErr := os.ReadFile(unitFile); {
+	case unitErr == nil:
 		info.installed = true
 		info.supervisor = supervisorState(ctx)
+		if override, parseErr := unitTailscale(runtime.GOOS, string(unit)); parseErr != nil {
+			info.overrideProblem = parseErr.Error()
+		} else {
+			info.tailscaleOverride = override
+		}
+	case !errors.Is(unitErr, fs.ErrNotExist):
+		info.installed = true
+		info.supervisor = supervisorState(ctx)
+		info.overrideProblem = unitErr.Error()
 	}
 	if hostname, hostErr := os.Hostname(); hostErr == nil {
 		info.hostname = hostname
 	}
-	if opts.Config.Tailscale {
+	if opts.Config.Tailscale || info.tailscaleOverride {
 		info.tailnetDNS, info.tailnetProblem = tailnetDNS(ctx, opts.Config)
 	}
 
@@ -96,20 +113,27 @@ func tailnetDNS(ctx context.Context, cfg config.Config) (dns, problem string) {
 }
 
 type statusInfo struct {
-	installed      bool
-	unitFile       string
-	supervisor     string // supplementary unit state; "" when not installed
-	responding     bool
-	healthy        bool
-	unauthorized   bool
-	clientVersion  string
-	serverVersion  string // "" when no response carried one
-	port           int
-	bind           string
-	hostname       string
-	tailscale      bool
-	tailnetDNS     string
-	tailnetProblem string
+	installed     bool
+	unitFile      string
+	supervisor    string // supplementary unit state; "" when not installed
+	responding    bool
+	healthy       bool
+	unauthorized  bool
+	clientVersion string
+	serverVersion string // "" when no response carried one
+	port          int
+	bind          string
+	hostname      string
+	// tailscale is the declarative config.toml intent; tailscaleOverride is
+	// the installed unit's service flag. Either one makes exposure
+	// effective.
+	tailscale         bool
+	tailscaleOverride bool
+	// overrideProblem is why the installed unit's override state is
+	// unknown (unreadable or unrecognized content); "" when readable.
+	overrideProblem string
+	tailnetDNS      string
+	tailnetProblem  string
 }
 
 // renderStatus formats the report and picks the exit code. Pure and fully
@@ -152,6 +176,12 @@ func renderStatus(s statusInfo) (string, int) {
 	for _, url := range apiURLs(s) {
 		fmt.Fprintf(&b, "  %s\n", url)
 	}
+	if s.tailscaleOverride {
+		b.WriteString("  tailscale: enabled by the service flag; `atc server restart --tailscale=false` returns control to config.toml\n")
+	}
+	if s.overrideProblem != "" {
+		fmt.Fprintf(&b, "  tailscale: unknown service override (%s); rerun `atc server start` with an explicit --tailscale or --tailscale=false\n", s.overrideProblem)
+	}
 	b.WriteString("  token: `atc server token` prints the bearer token remote clients use\n")
 	return b.String(), code
 }
@@ -171,7 +201,7 @@ func apiURLs(s statusInfo) []string {
 			urls = append(urls, "api (lan): http://"+net.JoinHostPort(host, strconv.Itoa(s.port)))
 		}
 	}
-	if s.tailscale {
+	if s.tailscale || s.tailscaleOverride {
 		if s.tailnetDNS != "" {
 			urls = append(urls, fmt.Sprintf("api (tailnet): https://%s:%d", s.tailnetDNS, s.port))
 		} else {

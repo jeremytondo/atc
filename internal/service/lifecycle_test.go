@@ -1,6 +1,12 @@
 package service
 
 import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -44,6 +50,384 @@ func TestUninstallReport(t *testing.T) {
 	want = "atc.server was not installed; nothing removed\n"
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("empty uninstallReport mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestResolveUnitTailscale(t *testing.T) {
+	withOverride := systemdUnit(unitArgs("/opt/atc", true), [][2]string{{"PATH", "/usr/bin"}})
+	preFeature := systemdUnit(unitArgs("/opt/atc", false), [][2]string{{"PATH", "/usr/bin"}})
+	boolPtr := func(v bool) *bool { return &v }
+	for name, tc := range map[string]struct {
+		flag      *bool
+		existing  string
+		installed bool
+		want      bool
+		wantErr   bool
+	}{
+		"explicit true ignores garbage unit":  {flag: boolPtr(true), existing: "garbage", installed: true, want: true},
+		"explicit false ignores garbage unit": {flag: boolPtr(false), existing: "garbage", installed: true, want: false},
+		"explicit true without unit":          {flag: boolPtr(true), want: true},
+		"omitted without unit":                {},
+		"omitted preserves override":          {existing: withOverride, installed: true, want: true},
+		"omitted on pre-feature unit":         {existing: preFeature, installed: true},
+		"omitted on garbage unit fails":       {existing: "garbage", installed: true, wantErr: true},
+	} {
+		got, err := resolveUnitTailscale(tc.flag, "linux", tc.existing, tc.installed)
+		if tc.wantErr {
+			if err == nil || !strings.Contains(err.Error(), "--tailscale") {
+				t.Errorf("%s: err = %v, want an error naming the explicit flags as the remedy", name, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: err = %v, want nil", name, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("%s: override = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+// seamStub swaps every host-touching seam so the lifecycle decision path
+// runs hermetically: supervisor commands are recorded instead of executed,
+// probes and the health gate answer from the healthy field, and tailscale
+// executable resolution is scripted. Linux command lines only — the darwin
+// branch stays untested by design (the dev and CI hosts are Linux).
+type seamStub struct {
+	commands   [][]string // state-changing supervisor invocations, in order
+	active     bool       // systemctl --user is-active answer
+	healthy    bool       // probe and health-gate answer
+	resolves   int        // tailscale executable resolution calls
+	resolveErr error
+}
+
+func installSeams(t *testing.T, s *seamStub) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("lifecycle seam tests exercise the linux supervisor branch")
+	}
+	origRun, origExit := runSupervisor, exitCode
+	origProbe, origGate, origResolve := probeHealthy, healthGate, resolveTailscaleExecutable
+	t.Cleanup(func() {
+		runSupervisor, exitCode = origRun, origExit
+		probeHealthy, healthGate, resolveTailscaleExecutable = origProbe, origGate, origResolve
+	})
+	runSupervisor = func(_ context.Context, name string, args ...string) error {
+		s.commands = append(s.commands, append([]string{name}, args...))
+		return nil
+	}
+	exitCode = func(_ context.Context, name string, args ...string) int {
+		if strings.Contains(strings.Join(args, " "), "is-active") {
+			if s.active {
+				return 0
+			}
+			return 3
+		}
+		s.commands = append(s.commands, append([]string{name}, args...))
+		return 0
+	}
+	probeHealthy = func(context.Context, Options, string) bool { return s.healthy }
+	healthGate = func(context.Context, Options, string) error {
+		if !s.healthy {
+			return errors.New("unhealthy")
+		}
+		return nil
+	}
+	resolveTailscaleExecutable = func(string) (string, error) {
+		s.resolves++
+		if s.resolveErr != nil {
+			return "", s.resolveErr
+		}
+		return "/usr/bin/tailscale", nil
+	}
+}
+
+// seamEnv isolates every path the lifecycle touches (unit file, token,
+// state) under a temp home; port 1 is reserved and closed, so the real
+// pre-flight TCP dial fails fast.
+func seamEnv(t *testing.T) (Options, string) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(dir, "data"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(dir, "state"))
+	unitFile, err := UnitPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	opts := Options{
+		Config:  config.Config{Port: 1, Bind: "127.0.0.1", TailscaleExecutable: "tailscale"},
+		Version: "test",
+		Stdout:  &out,
+		Stderr:  &out,
+	}
+	return opts, unitFile
+}
+
+func writeInstalledUnit(t *testing.T, unitFile string, override bool) string {
+	t.Helper()
+	content, err := renderUnit(override)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeUnit(unitFile, content); err != nil {
+		t.Fatal(err)
+	}
+	return content
+}
+
+func readUnitOverride(t *testing.T, unitFile string) bool {
+	t.Helper()
+	content, err := os.ReadFile(unitFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	override, err := unitTailscale(runtime.GOOS, string(content))
+	if err != nil {
+		t.Fatalf("installed unit unreadable: %v", err)
+	}
+	return override
+}
+
+// First installation with the flag: the unit carries the override, the
+// executable is preflighted, and the supervisor is started. A logged-out
+// or unreachable tailnet cannot fail this path — the lifecycle consults
+// nothing beyond executable resolution.
+func TestStartInstallsTailscaleOverride(t *testing.T) {
+	s := &seamStub{healthy: true}
+	installSeams(t, s)
+	opts, unitFile := seamEnv(t)
+	enabled := true
+	opts.Tailscale = &enabled
+
+	if err := Start(context.Background(), opts); err != nil {
+		t.Fatalf("Start = %v, want nil", err)
+	}
+	if !readUnitOverride(t, unitFile) {
+		t.Error("installed unit does not carry the --tailscale override")
+	}
+	if s.resolves != 1 {
+		t.Errorf("resolve calls = %d, want 1 (preflight)", s.resolves)
+	}
+	want := [][]string{
+		{"systemctl", "--user", "daemon-reload"},
+		{"systemctl", "--user", "enable", UnitName},
+		{"systemctl", "--user", "start", UnitName},
+	}
+	if diff := cmp.Diff(want, s.commands); diff != "" {
+		t.Errorf("supervisor commands mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// A flagless start against a healthy service running the override keeps
+// the idempotent short-circuit: the unit and process are left untouched.
+func TestFlaglessStartPreservesHealthyOverride(t *testing.T) {
+	s := &seamStub{active: true, healthy: true}
+	installSeams(t, s)
+	opts, unitFile := seamEnv(t)
+	installed := writeInstalledUnit(t, unitFile, true)
+
+	if err := Start(context.Background(), opts); err != nil {
+		t.Fatalf("Start = %v, want nil", err)
+	}
+	want := [][]string{{"systemctl", "--user", "enable", UnitName}}
+	if diff := cmp.Diff(want, s.commands); diff != "" {
+		t.Errorf("supervisor commands mismatch (-want +got):\n%s", diff)
+	}
+	if content, _ := os.ReadFile(unitFile); string(content) != installed {
+		t.Error("idempotent start rewrote the unit")
+	}
+	if s.resolves != 0 {
+		t.Errorf("resolve calls = %d, want 0 (no mutation, no preflight)", s.resolves)
+	}
+}
+
+// A flagless restart — the plain and upgrade restart path — re-renders the
+// unit with the override preserved and preflights the executable, since
+// the restarted daemon will boot with tailscale enabled.
+func TestFlaglessRestartPreservesOverride(t *testing.T) {
+	s := &seamStub{active: true, healthy: true}
+	installSeams(t, s)
+	opts, unitFile := seamEnv(t)
+	writeInstalledUnit(t, unitFile, true)
+
+	if err := Restart(context.Background(), opts); err != nil {
+		t.Fatalf("Restart = %v, want nil", err)
+	}
+	if !readUnitOverride(t, unitFile) {
+		t.Error("restart dropped the --tailscale override")
+	}
+	if s.resolves != 1 {
+		t.Errorf("resolve calls = %d, want 1 (effective tailscale preflight)", s.resolves)
+	}
+	last := s.commands[len(s.commands)-1]
+	if diff := cmp.Diff([]string{"systemctl", "--user", "restart", UnitName}, last); diff != "" {
+		t.Errorf("final supervisor command mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// Adding the override to a healthy service changes the unit, so the
+// process is bounced onto it (restart, not start).
+func TestStartAddsOverrideToHealthyService(t *testing.T) {
+	s := &seamStub{active: true, healthy: true}
+	installSeams(t, s)
+	opts, unitFile := seamEnv(t)
+	writeInstalledUnit(t, unitFile, false)
+	enabled := true
+	opts.Tailscale = &enabled
+
+	if err := Start(context.Background(), opts); err != nil {
+		t.Fatalf("Start = %v, want nil", err)
+	}
+	if !readUnitOverride(t, unitFile) {
+		t.Error("unit does not carry the --tailscale override")
+	}
+	last := s.commands[len(s.commands)-1]
+	if diff := cmp.Diff([]string{"systemctl", "--user", "restart", UnitName}, last); diff != "" {
+		t.Errorf("final supervisor command mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// --tailscale=false removes the override; with config.toml quiet, no
+// tailscale preflight is involved — clearing works without a tailscale
+// install. It is a return to config.toml, not a force-off, so with
+// tailscale = true configured the restarted daemon still preflights.
+func TestRestartClearsOverride(t *testing.T) {
+	for name, tc := range map[string]struct {
+		configTailscale bool
+		wantResolves    int
+	}{
+		"config quiet":   {configTailscale: false, wantResolves: 0},
+		"config enabled": {configTailscale: true, wantResolves: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := &seamStub{active: true, healthy: true}
+			installSeams(t, s)
+			opts, unitFile := seamEnv(t)
+			opts.Config.Tailscale = tc.configTailscale
+			writeInstalledUnit(t, unitFile, true)
+			disabled := false
+			opts.Tailscale = &disabled
+
+			if err := Restart(context.Background(), opts); err != nil {
+				t.Fatalf("Restart = %v, want nil", err)
+			}
+			if readUnitOverride(t, unitFile) {
+				t.Error("unit still carries the --tailscale override")
+			}
+			if s.resolves != tc.wantResolves {
+				t.Errorf("resolve calls = %d, want %d", s.resolves, tc.wantResolves)
+			}
+		})
+	}
+}
+
+// A flagless start on an unrecognized unit fails without guessing: the
+// unit stays as it was and no supervisor state changes.
+func TestFlaglessStartFailsOnUnrecognizedUnit(t *testing.T) {
+	s := &seamStub{healthy: true}
+	installSeams(t, s)
+	opts, unitFile := seamEnv(t)
+	if err := writeUnit(unitFile, "garbage"); err != nil {
+		t.Fatal(err)
+	}
+
+	err := Start(context.Background(), opts)
+	if err == nil || !strings.Contains(err.Error(), "--tailscale") {
+		t.Fatalf("Start = %v, want an error naming the explicit flags as the remedy", err)
+	}
+	if content, _ := os.ReadFile(unitFile); string(content) != "garbage" {
+		t.Error("failed start modified the unit")
+	}
+	if len(s.commands) != 0 {
+		t.Errorf("supervisor commands = %v, want none", s.commands)
+	}
+}
+
+// An explicit flag supplies the desired state, so it may replace an
+// otherwise unreadable unit.
+func TestExplicitFlagReplacesUnrecognizedUnit(t *testing.T) {
+	s := &seamStub{healthy: true}
+	installSeams(t, s)
+	opts, unitFile := seamEnv(t)
+	if err := writeUnit(unitFile, "garbage"); err != nil {
+		t.Fatal(err)
+	}
+	enabled := true
+	opts.Tailscale = &enabled
+
+	if err := Start(context.Background(), opts); err != nil {
+		t.Fatalf("Start = %v, want nil", err)
+	}
+	if !readUnitOverride(t, unitFile) {
+		t.Error("replacement unit does not carry the --tailscale override")
+	}
+}
+
+// Executable resolution failure happens before any mutation: the unit is
+// untouched and the healthy process is never interrupted.
+func TestTailscalePreflightFailureLeavesEverythingAlone(t *testing.T) {
+	s := &seamStub{active: true, healthy: true, resolveErr: errors.New("tailscale executable \"tailscale\" not found")}
+	installSeams(t, s)
+	opts, unitFile := seamEnv(t)
+	installed := writeInstalledUnit(t, unitFile, false)
+	enabled := true
+	opts.Tailscale = &enabled
+
+	err := Start(context.Background(), opts)
+	if !errors.Is(err, s.resolveErr) {
+		t.Fatalf("Start = %v, want the resolution error", err)
+	}
+	if content, _ := os.ReadFile(unitFile); string(content) != installed {
+		t.Error("failed preflight modified the unit")
+	}
+	if len(s.commands) != 0 {
+		t.Errorf("supervisor commands = %v, want none", s.commands)
+	}
+}
+
+// The preflight also covers declarative tailscale: a flagless first start
+// with tailscale = true in config.toml fails before a unit is written,
+// instead of installing a daemon that would crash-loop.
+func TestDeclarativePreflightBlocksFirstStart(t *testing.T) {
+	s := &seamStub{healthy: true, resolveErr: errors.New("tailscale executable \"tailscale\" not found")}
+	installSeams(t, s)
+	opts, unitFile := seamEnv(t)
+	opts.Config.Tailscale = true
+
+	err := Start(context.Background(), opts)
+	if !errors.Is(err, s.resolveErr) {
+		t.Fatalf("Start = %v, want the resolution error", err)
+	}
+	if _, statErr := os.Stat(unitFile); !errors.Is(statErr, os.ErrNotExist) {
+		t.Error("failed preflight installed a unit")
+	}
+}
+
+// Stop preserves the installed unit and its override; uninstall removes
+// both — the unit is the override's only store, so removing it is the
+// whole cleanup.
+func TestStopPreservesAndUninstallRemovesOverride(t *testing.T) {
+	s := &seamStub{}
+	installSeams(t, s)
+	opts, unitFile := seamEnv(t)
+	writeInstalledUnit(t, unitFile, true)
+
+	if err := Stop(context.Background(), opts); err != nil {
+		t.Fatalf("Stop = %v, want nil", err)
+	}
+	if !readUnitOverride(t, unitFile) {
+		t.Error("stop dropped the unit or its override")
+	}
+
+	if err := Uninstall(context.Background(), opts); err != nil {
+		t.Fatalf("Uninstall = %v, want nil", err)
+	}
+	if _, err := os.Stat(unitFile); !errors.Is(err, os.ErrNotExist) {
+		t.Error("uninstall left the unit installed")
 	}
 }
 

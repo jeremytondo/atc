@@ -48,12 +48,23 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 	if err != nil {
 		return err
 	}
-	content, err := renderUnit()
+	existing, readErr := os.ReadFile(unitFile)
+	firstRun := errors.Is(readErr, fs.ErrNotExist)
+	if readErr != nil && !firstRun && opts.Tailscale == nil {
+		return fmt.Errorf("cannot read the installed unit %s: %w; rerun with --tailscale or --tailscale=false to replace it", unitFile, readErr)
+	}
+	// The unit is the tailscale override's only durable store (ATC-283):
+	// an explicit flag wins, an omitted flag preserves what the installed
+	// unit carries, and a unit that cannot be confidently read fails loudly
+	// rather than being guessed at.
+	override, err := resolveUnitTailscale(opts.Tailscale, runtime.GOOS, string(existing), readErr == nil)
 	if err != nil {
 		return err
 	}
-	existing, readErr := os.ReadFile(unitFile)
-	firstRun := errors.Is(readErr, fs.ErrNotExist)
+	content, err := renderUnit(override)
+	if err != nil {
+		return err
+	}
 	unchanged := readErr == nil && string(existing) == content
 
 	supervised := supervisorRunning(ctx)
@@ -62,7 +73,7 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 		// foreground `atc server run`.
 		return fmt.Errorf("something is already serving on port %d (a foreground `atc server run`?); stop it first", opts.Config.Port)
 	}
-	if supervised && !bounce && unchanged && probeOnce(ctx, opts, token).healthy {
+	if supervised && !bounce && unchanged && probeHealthy(ctx, opts, token) {
 		// Idempotent: healthy and running the current unit — leave the
 		// process untouched. enable still runs so an active-but-disabled
 		// unit returns at next login.
@@ -79,6 +90,17 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 	// loaded job) on the stale configuration.
 	if supervised && !unchanged {
 		bounce = true
+	}
+	// Preflight before any mutation: a unit that will boot with Tailscale
+	// enabled — by the override or by config.toml — needs the executable
+	// resolvable, or the daemon would crash-loop; fail here, before the
+	// unit changes or a healthy process is interrupted. Runtime tailnet
+	// state (logged out, tailscaled down) is deliberately not checked: the
+	// exposure supervisor self-heals those after the loopback server is up.
+	if override || opts.Config.Tailscale {
+		if _, err := resolveTailscaleExecutable(opts.Config.TailscaleExecutable); err != nil {
+			return err
+		}
 	}
 
 	if err := writeUnit(unitFile, content); err != nil {
@@ -122,7 +144,7 @@ func startOrRestart(ctx context.Context, opts Options, bounce bool) error {
 		say(opts.Stderr, "%s", firstRunNotice(runtime.GOOS, unitFile))
 	}
 
-	if err := awaitHealthy(ctx, opts, token); err != nil {
+	if err := healthGate(ctx, opts, token); err != nil {
 		printLastLogs(ctx, opts.Stderr)
 		return err
 	}
@@ -208,6 +230,26 @@ func Uninstall(ctx context.Context, opts Options) error {
 
 func loopbackURL(port int) string {
 	return fmt.Sprintf("http://127.0.0.1:%d", port)
+}
+
+// resolveUnitTailscale settles the unit's --tailscale override for one
+// start/restart. Tri-state: an explicit flag is the requested state
+// outright (it never consults the installed unit), an omitted flag
+// preserves what a readable installed unit already carries, and no unit
+// means no override — config.toml governs. An installed unit whose exec
+// arguments cannot be confidently read is an error, never a guess.
+func resolveUnitTailscale(flag *bool, goos, existing string, installed bool) (bool, error) {
+	if flag != nil {
+		return *flag, nil
+	}
+	if !installed {
+		return false, nil
+	}
+	override, err := unitTailscale(goos, existing)
+	if err != nil {
+		return false, fmt.Errorf("%w; rerun with --tailscale or --tailscale=false to replace the unit", err)
+	}
+	return override, nil
 }
 
 // firstRunNotice replaces the ATC-246 consent prompt (2026-08-25 grill):

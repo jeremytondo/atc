@@ -23,6 +23,18 @@ import (
 	"github.com/jeremytondo/atc/internal/authtoken"
 	"github.com/jeremytondo/atc/internal/config"
 	"github.com/jeremytondo/atc/internal/paths"
+	"github.com/jeremytondo/atc/internal/tailscale"
+)
+
+// Seam variables (the stdioIsTerminal pattern from package main): the
+// operations that need a live server or tailscale install, swappable so
+// lifecycle tests can drive start/restart decisions hermetically.
+var (
+	probeHealthy = func(ctx context.Context, opts Options, token string) bool {
+		return probeOnce(ctx, opts, token).healthy
+	}
+	healthGate                 = awaitHealthy
+	resolveTailscaleExecutable = tailscale.ResolveExecutable
 )
 
 // Health-gate contract (ATC-260, carried from legacy): 15s total, 150ms

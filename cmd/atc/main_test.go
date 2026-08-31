@@ -224,6 +224,60 @@ func TestRecoveryCommandsSurviveBrokenConfig(t *testing.T) {
 	}
 }
 
+// Start and restart carry the lifecycle --tailscale flag; help documents
+// persistence, omission-preserves, and =false as a return to config.toml
+// (never an unconditional disable).
+func TestServerStartRestartTailscaleHelp(t *testing.T) {
+	for _, sub := range []string{"start", "restart"} {
+		var stdout, stderr strings.Builder
+		if err := run(context.Background(), []string{"server", sub, "--help"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+			t.Fatalf("server %s --help = %v", sub, err)
+		}
+		help := stdout.String()
+		for _, want := range []string{"--tailscale", "survives restarts, reboots, and upgrades", "preserves", "config.toml decides"} {
+			if !strings.Contains(help, want) {
+				t.Errorf("server %s help missing %q:\n%s", sub, want, help)
+			}
+		}
+	}
+
+	// A non-boolean value is a parse error, surfaced before any lifecycle
+	// action runs.
+	var stdout, stderr strings.Builder
+	if err := run(context.Background(), []string{"server", "start", "--tailscale=banana"}, strings.NewReader(""), &stdout, &stderr); err == nil {
+		t.Error("server start --tailscale=banana = nil, want a parse error")
+	}
+}
+
+// The tri-state mapping: an untouched flag stays nil (preserve), explicit
+// true and false arrive as pointers with the requested state.
+func TestTailscaleLifecycleOptionsTriState(t *testing.T) {
+	isolateXDG(t)
+	options := func(t *testing.T, set string) *bool {
+		t.Helper()
+		cmd := newServerStartCmd()
+		if set != "" {
+			if err := cmd.Flags().Set("tailscale", set); err != nil {
+				t.Fatal(err)
+			}
+		}
+		opts, err := tailscaleLifecycleOptions(cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return opts.Tailscale
+	}
+	if got := options(t, ""); got != nil {
+		t.Errorf("omitted flag: Tailscale = %v, want nil", *got)
+	}
+	if got := options(t, "true"); got == nil || !*got {
+		t.Errorf("explicit true: Tailscale = %v, want true", got)
+	}
+	if got := options(t, "false"); got == nil || *got {
+		t.Errorf("explicit false: Tailscale = %v, want false", got)
+	}
+}
+
 func TestServerTokenPrintsAndRotates(t *testing.T) {
 	isolateXDG(t)
 	tokenOut := func(args ...string) string {
