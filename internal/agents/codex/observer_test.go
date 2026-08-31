@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -323,6 +325,24 @@ type fixture struct {
 	dir       string
 	starts    int
 	ctx       context.Context
+	logs      *lockedLog
+}
+
+type lockedLog struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 // shortTempDir keeps unix socket paths well under the platform limit.
@@ -347,6 +367,7 @@ func newFixture(t *testing.T, withoutServer bool) *fixture {
 		terminals: &fakeTerminals{terminals: map[string]api.Terminal{}},
 		home:      home,
 		dir:       shortTempDir(t),
+		logs:      &lockedLog{},
 	}
 	f.terminals.set("term-aaaaa", api.TerminalRunning)
 	f.terminals.set("term-bbbbb", api.TerminalRunning)
@@ -359,6 +380,7 @@ func newFixture(t *testing.T, withoutServer bool) *fixture {
 		CodexHome: home,
 		Threads:   f.threads,
 		Terminals: f.terminals,
+		Logger:    slog.New(slog.NewTextHandler(f.logs, nil)),
 		Start: func(context.Context) error {
 			f.starts++
 			f.server.start()
@@ -712,6 +734,76 @@ func TestVscodeCandidateWithNoGraceFailsClosed(t *testing.T) {
 	if f.paired("programmatic") != "" {
 		t.Error("unconfirmed vscode candidate bound the terminal")
 	}
+}
+
+func TestMissingTUIMarkerIsDiagnosed(t *testing.T) {
+	f := newFixture(t, false)
+	f.launch(t, "term-aaaaa", f.dir)
+	announcement := started("programmatic", f.dir)
+	announcement["thread"].(map[string]any)["source"] = "vscode"
+	f.server.broadcast("thread/started", announcement)
+
+	marker := filepath.Join(tuiCapabilitiesDir(f.home), "programmatic")
+	waitFor(t, func() bool {
+		logs := f.logs.String()
+		return strings.Contains(logs, "thread=programmatic") && strings.Contains(logs, "marker="+marker)
+	})
+}
+
+func TestStopJoinsTUIMarkerWait(t *testing.T) {
+	home := shortTempDir(t)
+	dir := shortTempDir(t)
+	terminals := &fakeTerminals{terminals: map[string]api.Terminal{}}
+	terminals.set("term-aaaaa", api.TerminalRunning)
+	observer := NewObserver(ObserverOptions{
+		CodexHome: home,
+		Threads:   &fakeThreads{},
+		Terminals: terminals,
+	})
+	observer.window = 400 * time.Millisecond
+	observer.grace = 80 * time.Millisecond
+	canonicalDir := canonical(dir)
+	if _, err := observer.reserve(context.Background(), canonicalDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := observer.arm("term-aaaaa", dir); err != nil {
+		t.Fatal(err)
+	}
+	observer.mu.Lock()
+	launch := observer.slots[canonicalDir].launch
+	c := candidate{
+		threadID: "tui",
+		cwd:      dir,
+		source:   "vscode",
+		at:       launch.armedAt.Add(time.Millisecond),
+		seq:      launch.armedSeq + 1,
+	}
+	observer.mu.Unlock()
+	observer.announced(c)
+
+	stopped := make(chan struct{})
+	go func() {
+		observer.stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+		t.Fatal("observer stopped while its TUI marker poller was still running")
+	case <-time.After(20 * time.Millisecond):
+	}
+	dir = tuiCapabilitiesDir(home)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tui"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("observer did not stop after its TUI marker poller finished")
+	}
+	observer.closeLaunch(launch, "test cleanup")
 }
 
 // An announcement from another directory (here, via a symlink to a

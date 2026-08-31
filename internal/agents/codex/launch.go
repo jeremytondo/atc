@@ -23,8 +23,10 @@ const (
 	// launchWindow bounds how long a launch waits for its announcement.
 	launchWindow = 5 * time.Second
 	// launchGrace bounds how long a shared-server announcement waits for
-	// the TUI's thread-specific capability marker.
-	launchGrace = 500 * time.Millisecond
+	// the TUI's thread-specific capability marker. Marker creation races
+	// the server announcement and has no documented latency bound; this
+	// wait does not extend binding, which already stays open for launchWindow.
+	launchGrace = 2 * time.Second
 )
 
 // errUnprepared reports a Command without the PrepareLaunch that must
@@ -162,19 +164,20 @@ func (o *Observer) announced(c candidate) {
 	case "cli":
 		o.acceptCandidate(c)
 	case "vscode":
-		if o.matchesPendingLaunch(c) {
-			go o.awaitTUIMarker(c)
+		dir := canonical(c.cwd)
+		o.mu.Lock()
+		if o.matchesPendingLaunch(dir, c) {
+			o.spawnRead(func() { o.awaitTUIMarker(c) })
 		}
+		o.mu.Unlock()
 	}
 }
 
 // matchesPendingLaunch reports whether c still falls inside the currently
 // armed launch for its directory. It is rechecked after marker discovery so
 // a delayed check can never land against the next same-directory launch.
-func (o *Observer) matchesPendingLaunch(c candidate) bool {
-	dir := canonical(c.cwd)
-	o.mu.Lock()
-	defer o.mu.Unlock()
+// Caller holds mu.
+func (o *Observer) matchesPendingLaunch(dir string, c candidate) bool {
 	slot := o.slots[dir]
 	if slot == nil || slot.launch == nil {
 		return false
@@ -205,6 +208,8 @@ func (o *Observer) awaitTUIMarker(c candidate) {
 		}
 		select {
 		case <-deadline.C:
+			o.logger.Warn("codex thread announcement ignored: TUI capability marker did not appear within the grace period",
+				"thread", c.threadID, "marker", marker, "grace", o.grace)
 			return
 		case <-ticker.C:
 		}
@@ -285,7 +290,7 @@ func (o *Observer) closeLaunch(launch *pendingLaunch, reason string) {
 	case reason != "":
 		o.logger.Info("codex terminal left untracked", "terminal", launch.terminalID, "reason", reason)
 	case len(launch.candidates) == 0:
-		o.logger.Warn("codex terminal left untracked: no thread announced in its directory within the launch window",
+		o.logger.Warn("codex terminal left untracked: no eligible thread announcement was confirmed within the launch window",
 			"terminal", launch.terminalID, "directory", launch.directory)
 	default:
 		o.logger.Warn("codex terminal left untracked: more than one thread announced in its directory within the launch window",
