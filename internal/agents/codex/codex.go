@@ -6,8 +6,8 @@
 // that server to observe thread announcements and status changes. A new
 // terminal is tied to its thread by the announcement that appears in the
 // launch directory right after launch; the thread record is minted at
-// the first prompt, through the same neutral observations Claude feeds
-// the threads domain. The id is persisted by terminals and threads —
+// the first prompt (the thread's first live status), through the same
+// neutral observations Claude feeds the threads domain. The id is persisted by terminals and threads —
 // never rename it.
 package codex
 
@@ -50,7 +50,9 @@ func (t tui) Command(_ context.Context, launch agents.LaunchContext) (string, er
 		t.observer.holdResume(launch.TerminalID, launch.ResumeConversationID)
 		return "codex resume " + agents.Quote(launch.ResumeConversationID), nil
 	}
-	t.observer.arm(launch.TerminalID, launch.Directory)
+	if err := t.observer.arm(launch.TerminalID, launch.Directory); err != nil {
+		return "", err
+	}
 	return "codex", nil
 }
 

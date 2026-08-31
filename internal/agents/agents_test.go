@@ -49,19 +49,22 @@ func (c *fakeCreator) CreateForAgent(ctx context.Context, params api.TerminalCre
 	if directory == "" {
 		directory = "/projects/alpha"
 	}
+	abort := func() {}
 	if launch.Prepare != nil {
-		abort, err := launch.Prepare(ctx, directory)
+		prepared, err := launch.Prepare(ctx, directory)
 		if err != nil {
 			return api.Terminal{}, err
 		}
 		c.prepared = true
-		if c.failCreate {
-			abort()
-			return api.Terminal{}, errors.New("create failed")
-		}
+		abort = prepared
+	}
+	if c.failCreate {
+		abort()
+		return api.Terminal{}, errors.New("create failed")
 	}
 	command, err := launch.Compose("term-aaaaa", directory)
 	if err != nil {
+		abort()
 		return api.Terminal{}, err
 	}
 	c.command = command

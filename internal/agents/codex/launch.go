@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"time"
 
@@ -25,11 +26,29 @@ const (
 	launchGrace = 500 * time.Millisecond
 )
 
+// errUnprepared reports a Command without the PrepareLaunch that must
+// precede it — an invariant of the launch composition, not a runtime
+// condition.
+var errUnprepared = errors.New("codex launch was not prepared")
+
+// launchSlot is one directory's turn: held from a launch's preparation
+// until its window closes (or its create aborts), released to whichever
+// same-directory launch waits next. launch is set once Command arms the
+// window.
+type launchSlot struct {
+	released chan struct{}
+	launch   *pendingLaunch
+}
+
 // pendingLaunch is one armed launch waiting for its announcement.
 type pendingLaunch struct {
 	terminalID string
 	directory  string
+	slot       *launchSlot
 	armedAt    time.Time
+	// armedSeq is the wire sequence at arming: only frames received after
+	// it can be candidates, however late they are processed.
+	armedSeq   uint64
 	candidates []candidate
 	timer      *time.Timer
 }
@@ -41,6 +60,10 @@ type candidate struct {
 	title    string
 	source   string
 	at       time.Time
+	seq      uint64
+	// promptSeen records a live status heard for the thread while the
+	// window was still open — a prompt inside the grace.
+	promptSeen bool
 }
 
 // canonical is the directory identity both sides of a match are reduced
@@ -57,44 +80,44 @@ func canonical(path string) string {
 	return filepath.Clean(abs)
 }
 
-// reserve takes the directory for one launch, waiting while another
-// launch in the same directory is between its preparation and its
-// window's close. Launches in different directories never wait.
-func (o *Observer) reserve(ctx context.Context, dir string) error {
+// reserve takes the directory's slot for one launch, waiting while
+// another launch in the same directory holds it. Launches in different
+// directories never wait.
+func (o *Observer) reserve(ctx context.Context, dir string) (*launchSlot, error) {
 	for {
 		o.mu.Lock()
-		busy, ok := o.reserved[dir]
+		busy, ok := o.slots[dir]
 		if !ok {
-			o.reserved[dir] = make(chan struct{})
+			slot := &launchSlot{released: make(chan struct{})}
+			o.slots[dir] = slot
 			o.mu.Unlock()
-			return nil
+			return slot, nil
 		}
 		o.mu.Unlock()
 		select {
-		case <-busy:
+		case <-busy.released:
 		case <-ctx.Done():
-			return ctx.Err()
+			return nil, ctx.Err()
 		}
 	}
 }
 
-// release frees a reserved directory, waking any launch waiting on it.
-// Caller holds mu.
-func (o *Observer) release(dir string) {
-	if busy, ok := o.reserved[dir]; ok {
-		delete(o.reserved, dir)
-		close(busy)
+// release frees the directory if it still holds this slot, waking any
+// launch waiting on it. Caller holds mu.
+func (o *Observer) release(dir string, slot *launchSlot) {
+	if o.slots[dir] == slot {
+		delete(o.slots, dir)
+		close(slot.released)
 	}
 }
 
-// abandon undoes a prepared launch whose create failed: the pending
-// launch, if Command armed one, closes without binding, and the
-// directory frees.
-func (o *Observer) abandon(dir string) {
+// abandon undoes a prepared launch whose create failed: an armed window
+// closes without binding, and the directory frees.
+func (o *Observer) abandon(dir string, slot *launchSlot) {
 	o.mu.Lock()
-	launch := o.pending[dir]
+	launch := slot.launch
 	if launch == nil {
-		o.release(dir)
+		o.release(dir, slot)
 	}
 	o.mu.Unlock()
 	if launch != nil {
@@ -103,32 +126,43 @@ func (o *Observer) abandon(dir string) {
 }
 
 // arm starts a fresh launch's window (Command time, under the terminals
-// commit lock — no IO): announcements from this moment on are
-// candidates. The directory is reserved by prepareLaunch; arming without
-// one (no LaunchPreparer in the path) reserves it here so the close can
-// release it uniformly.
-func (o *Observer) arm(terminalID, directory string) {
+// commit lock — no IO): frames received from this moment on are
+// candidates. The slot must have been reserved by prepareLaunch.
+func (o *Observer) arm(terminalID, directory string) error {
 	dir := canonical(directory)
-	launch := &pendingLaunch{terminalID: terminalID, directory: dir, armedAt: o.now()}
 	o.mu.Lock()
-	if _, ok := o.reserved[dir]; !ok {
-		o.reserved[dir] = make(chan struct{})
+	defer o.mu.Unlock()
+	slot, ok := o.slots[dir]
+	if !ok || slot.launch != nil {
+		return errUnprepared
 	}
-	o.pending[dir] = launch
-	o.mu.Unlock()
+	launch := &pendingLaunch{
+		terminalID: terminalID, directory: dir, slot: slot,
+		armedAt: o.now(), armedSeq: o.seq.Load(),
+	}
+	// Installed under mu — an announcement must never find the launch
+	// without its timer.
 	launch.timer = time.AfterFunc(o.window, func() { o.closeLaunch(launch, "") })
+	slot.launch = launch
+	return nil
 }
 
 // announced folds one thread/started into the pending launch for its
-// directory, if any. A candidate must come from a terminal-started TUI
-// and land inside the window (a pending launch exists only while its
-// window is open). The first candidate shortens the window to the
-// grace; a second closes it at once — the outcome is decided.
-func (o *Observer) announced(ctx context.Context, c candidate) {
+// directory, if any. It runs on the read loop, at receipt, so the
+// dispatcher's pace never delays a candidate past the timer. A candidate
+// must come from a terminal-started TUI and have been received after the
+// arming and inside the window. The first candidate shortens the window
+// to the grace; a second closes it at once — the outcome is decided.
+func (o *Observer) announced(c candidate) {
 	dir := canonical(c.cwd)
 	o.mu.Lock()
-	launch := o.pending[dir]
-	if launch == nil || c.source != "cli" || c.at.Before(launch.armedAt) {
+	slot := o.slots[dir]
+	if slot == nil || slot.launch == nil {
+		o.mu.Unlock()
+		return
+	}
+	launch := slot.launch
+	if c.source != "cli" || c.seq <= launch.armedSeq || c.at.After(launch.armedAt.Add(o.window)) {
 		o.mu.Unlock()
 		return
 	}
@@ -144,6 +178,22 @@ func (o *Observer) announced(ctx context.Context, c candidate) {
 	}
 }
 
+// candidateHeardLive records a live status for a thread that is some
+// pending launch's candidate: a prompt typed inside the grace, before
+// the pairing exists to hear it. Caller holds mu.
+func (o *Observer) candidateHeardLive(threadID string) {
+	for _, slot := range o.slots {
+		if slot.launch == nil {
+			continue
+		}
+		for i := range slot.launch.candidates {
+			if slot.launch.candidates[i].threadID == threadID {
+				slot.launch.candidates[i].promptSeen = true
+			}
+		}
+	}
+}
+
 // closeLaunch ends a pending launch's window: exactly one candidate
 // binds the terminal to its thread privately (no record yet — the first
 // prompt mints it), anything else leaves the terminal untracked for
@@ -152,17 +202,18 @@ func (o *Observer) announced(ctx context.Context, c candidate) {
 // launch.
 func (o *Observer) closeLaunch(launch *pendingLaunch, reason string) {
 	o.mu.Lock()
-	if o.pending[launch.directory] != launch {
+	if launch.slot.launch != launch {
 		o.mu.Unlock()
 		return
 	}
-	delete(o.pending, launch.directory)
+	launch.slot.launch = nil
 	launch.timer.Stop()
-	o.release(launch.directory)
+	o.release(launch.directory, launch.slot)
 	var bound *pairing
 	if reason == "" && len(launch.candidates) == 1 {
 		c := launch.candidates[0]
-		bound = &pairing{terminalID: launch.terminalID, threadID: c.threadID, cwd: c.cwd, title: c.title}
+		bound = &pairing{terminalID: launch.terminalID, threadID: c.threadID, cwd: c.cwd, title: c.title,
+			promptSeen: c.promptSeen}
 		o.held[c.threadID] = bound
 		if conn := o.conn; conn != nil {
 			// A prompt inside the grace already flipped the thread active

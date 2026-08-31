@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/coder/websocket"
 )
@@ -36,7 +37,12 @@ type rpcConn struct {
 	ws     *websocket.Conn
 	logger *slog.Logger
 	seq    *atomic.Uint64
+	now    func() time.Time
 
+	// onAnnouncement runs on the read loop itself, at receipt: a launch
+	// window is decided by when its announcement arrived, and the
+	// dispatcher may be busy for seconds. It must not block.
+	onAnnouncement func(n notification)
 	onNotification func(n notification)
 	onClose        func(reason error)
 
@@ -50,6 +56,9 @@ type rpcConn struct {
 	// dispatcherDone closes when the dispatch loop has exited; fail joins
 	// it before onClose, so no handler applies evidence after teardown.
 	dispatcherDone chan struct{}
+	// finished closes once onClose has run: the connection is fully
+	// retired and a successor may be dialed.
+	finished chan struct{}
 
 	writeMu sync.Mutex
 
@@ -62,7 +71,9 @@ type rpcConn struct {
 type notification struct {
 	method string
 	params json.RawMessage
-	seq    uint64
+	// seq and at are the frame's wire sequence and receipt time.
+	seq uint64
+	at  time.Time
 }
 
 type rpcReply struct {
@@ -107,14 +118,23 @@ func dialSocket(ctx context.Context, socketPath string) (*websocket.Conn, error)
 	return ws, nil
 }
 
-func newRPCConn(ws *websocket.Conn, seq *atomic.Uint64, logger *slog.Logger) *rpcConn {
+func newRPCConn(ws *websocket.Conn, seq *atomic.Uint64, now func() time.Time, logger *slog.Logger) *rpcConn {
 	return &rpcConn{
-		ws: ws, logger: logger, seq: seq, nextID: 1,
+		ws: ws, logger: logger, seq: seq, now: now, nextID: 1,
 		pending:        map[int64]chan rpcReply{},
 		notifications:  make(chan notification, notificationBuffer),
 		done:           make(chan struct{}),
 		dispatcherDone: make(chan struct{}),
+		finished:       make(chan struct{}),
 	}
+}
+
+// isClosed reports whether the connection has failed (its retirement
+// may still be in progress; finished says when it is complete).
+func (c *rpcConn) isClosed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
 }
 
 func (c *rpcConn) start() {
@@ -173,8 +193,13 @@ func (c *rpcConn) readLoop() {
 				waiter <- reply
 			}
 		case message.Method != "":
+			n := notification{method: message.Method, params: message.Params, seq: seq, at: c.now()}
+			if message.Method == "thread/started" && c.onAnnouncement != nil {
+				c.onAnnouncement(n)
+				continue
+			}
 			select {
-			case c.notifications <- notification{method: message.Method, params: message.Params, seq: seq}:
+			case c.notifications <- n:
 			case <-c.done:
 				return
 			default:
@@ -209,6 +234,7 @@ func (c *rpcConn) fail(reason error) {
 	if c.onClose != nil {
 		c.onClose(reason)
 	}
+	close(c.finished)
 }
 
 func (c *rpcConn) close() {

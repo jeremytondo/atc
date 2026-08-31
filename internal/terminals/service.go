@@ -384,18 +384,21 @@ func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, l
 	if directory == "" {
 		directory = project.Directory
 	}
+	abort := func() {}
 	if launch.Prepare != nil {
-		abort, err := launch.Prepare(ctx, directory)
+		prepared, err := launch.Prepare(ctx, directory)
 		if err != nil {
 			return api.Terminal{}, err
 		}
-		terminal, err := s.commitCreate(ctx, params, project.ID, name, directory, launch)
-		if err != nil {
-			abort()
+		if prepared != nil {
+			abort = prepared
 		}
-		return terminal, err
 	}
-	return s.commitCreate(ctx, params, project.ID, name, directory, launch)
+	terminal, err := s.commitCreate(ctx, params, project.ID, name, directory, launch)
+	if err != nil {
+		abort()
+	}
+	return terminal, err
 }
 
 // commitCreate is the create from the record on: mint the id under the

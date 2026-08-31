@@ -27,11 +27,12 @@ type fakeAppServer struct {
 	t      *testing.T
 	socket string
 
-	mu       sync.Mutex
-	server   *http.Server
-	conns    []*websocket.Conn
-	requests []rpcMessage
-	threads  map[string]fakeThread
+	mu         sync.Mutex
+	server     *http.Server
+	conns      []*websocket.Conn
+	requests   []rpcMessage
+	threads    map[string]fakeThread
+	refuseInit bool
 }
 
 // fakeThread is what thread/read answers for one id; a nil Status makes
@@ -121,7 +122,16 @@ func (f *fakeAppServer) handle(w http.ResponseWriter, r *http.Request) {
 			continue // initialized
 		}
 		reply := map[string]any{"id": json.RawMessage(message.ID)}
+		f.mu.Lock()
+		refuseInit := f.refuseInit
+		f.mu.Unlock()
 		switch message.Method {
+		case "initialize":
+			if refuseInit {
+				reply["error"] = map[string]any{"code": -32600, "message": "incompatible client"}
+			} else {
+				reply["result"] = map[string]any{}
+			}
 		case "thread/read":
 			var params struct {
 				ThreadID string `json:"threadId"`
@@ -418,6 +428,13 @@ func (f *fixture) mint(t *testing.T, terminalID, threadID string) {
 	waitFor(t, func() bool { return f.threads.sessionCount() == 1 })
 }
 
+// rejectInitialize makes the fake answer initialize with an error.
+func (f *fakeAppServer) rejectInitialize() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.refuseInit = true
+}
+
 func (f *fixture) paired(threadID string) string {
 	f.observer.mu.Lock()
 	defer f.observer.mu.Unlock()
@@ -430,8 +447,8 @@ func (f *fixture) paired(threadID string) string {
 func (f *fixture) pendingIn(dir string) bool {
 	f.observer.mu.Lock()
 	defer f.observer.mu.Unlock()
-	_, ok := f.observer.pending[canonical(dir)]
-	return ok
+	slot, ok := f.observer.slots[canonical(dir)]
+	return ok && slot.launch != nil
 }
 
 func waitFor(t *testing.T, check func() bool) {
@@ -894,4 +911,61 @@ func TestServerRequestsRefused(t *testing.T) {
 	if f.server.connections() != 1 {
 		t.Errorf("connections = %d", f.server.connections())
 	}
+}
+
+// A prompt whose whole turn finishes inside the grace — the pairing
+// existed for none of it — still mints: the live status heard for the
+// candidate is remembered, and the read at binding lands the record.
+func TestPromptAndTurnInsideGraceStillMint(t *testing.T) {
+	f := newFixture(t, false)
+	f.launch(t, "term-aaaaa", f.dir)
+	f.server.setThread("t1", fakeThread{Preview: "quick one", Status: status("idle")})
+	f.server.broadcast("thread/started", started("t1", f.dir))
+	f.server.broadcast("thread/status/changed", changed("t1", status("active")))
+	f.server.broadcast("thread/status/changed", changed("t1", status("idle")))
+	waitFor(t, func() bool { return f.threads.sessionCount() == 1 })
+	if got := f.threads.lastSession(t); got.Status != api.ThreadIdle || got.Metadata.Title != "quick one" {
+		t.Errorf("session = %+v", got)
+	}
+}
+
+// A server that answers but refuses the handshake is not a missing
+// server: the launch fails and nothing is started.
+func TestHandshakeRefusalDoesNotColdStart(t *testing.T) {
+	f := newFixture(t, false)
+	f.server.rejectInitialize()
+	f.server.closeConns()
+	waitFor(t, func() bool { return f.server.count("initialize") >= 2 })
+	_, err := f.adapter.PrepareLaunch(f.ctx, agents.LaunchContext{Directory: f.dir})
+	if err == nil || f.starts != 0 {
+		t.Fatalf("err = %v, starts = %d; want a refusal and no start", err, f.starts)
+	}
+}
+
+// Command without its PrepareLaunch is an invariant violation, refused.
+func TestCommandRequiresPreparation(t *testing.T) {
+	f := newFixture(t, false)
+	if _, err := f.adapter.Command(f.ctx, agents.LaunchContext{TerminalID: "term-aaaaa", Directory: f.dir}); !errors.Is(err, errUnprepared) {
+		t.Fatalf("err = %v, want errUnprepared", err)
+	}
+}
+
+// A resumed pairing whose terminal record is not there yet (Command runs
+// before the insert) drops the evidence but keeps the pairing.
+func TestResumeSurvivesEvidenceBeforeTheRecord(t *testing.T) {
+	f := newFixture(t, false)
+	if _, err := f.adapter.PrepareLaunch(f.ctx, agents.LaunchContext{Directory: f.dir, ResumeConversationID: "t9"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.adapter.Command(f.ctx, agents.LaunchContext{TerminalID: "term-new", Directory: f.dir, ResumeConversationID: "t9"}); err != nil {
+		t.Fatal(err)
+	}
+	f.server.broadcast("thread/status/changed", changed("t9", status("active")))
+	settle()
+	if f.threads.sessionCount() != 0 || f.paired("t9") != "term-new" {
+		t.Fatalf("sessions = %d, paired = %q", f.threads.sessionCount(), f.paired("t9"))
+	}
+	f.terminals.set("term-new", api.TerminalRunning)
+	f.server.broadcast("thread/status/changed", changed("t9", status("idle")))
+	waitFor(t, func() bool { return f.threads.sessionCount() == 1 })
 }

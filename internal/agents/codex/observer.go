@@ -28,11 +28,16 @@ const (
 	// backoffMin and backoffMax bound the reconnect loop's pacing.
 	backoffMin = time.Second
 	backoffMax = 30 * time.Second
-	// titleAttempts bounds the thread/read calls spent resolving a minted
-	// thread's title: the preview lands with the first prompt, so one or
-	// two suffice; a thread that never yields one stops costing reads.
-	titleAttempts = 5
+	// titleReads bounds the thread/read calls spent on a minted thread's
+	// title: the preview lands with the first prompt, so the read at
+	// minting usually has it and one later retry covers a late one.
+	titleReads = 2
 )
+
+// errNoServer marks a connect that found nothing answering on the
+// control socket — the one failure a launch may answer by starting a
+// server. A server that answers but refuses the handshake is not it.
+var errNoServer = errors.New("no codex app-server answering")
 
 // ThreadObserver is the seam into the threads domain: neutral
 // observations in, no provider vocabulary out.
@@ -84,7 +89,6 @@ type ObserverOptions struct {
 //	          reservations, and pairings.
 type Observer struct {
 	socket        string
-	codexHome     string
 	clientVersion string
 	threads       ThreadObserver
 	terminals     TerminalReader
@@ -111,13 +115,10 @@ type Observer struct {
 	mu      sync.Mutex
 	conn    *rpcConn
 	stopped bool
-	// reserved holds each directory with a launch between its
-	// preparation and its window's close; the channel closes when the
-	// directory frees. Same-directory launches wait on it.
-	reserved map[string]chan struct{}
-	// pending holds each armed launch by canonical directory — at most
-	// one per directory, by construction of reserved.
-	pending map[string]*pendingLaunch
+	// slots holds each canonical directory with a launch in progress —
+	// reserved at preparation, armed at Command, released when the
+	// window closes. Same-directory launches queue on the slot.
+	slots map[string]*launchSlot
 	// held maps Codex thread id → the terminal paired with it.
 	held map[string]*pairing
 }
@@ -137,10 +138,13 @@ type pairing struct {
 	// session observation for this terminal — for a fresh launch, that
 	// the thread is minted.
 	established bool
-	// titleReads counts thread/read attempts at a title; titled stops
-	// them.
-	titleReads int
-	titled     bool
+	// promptSeen records a live status heard while the launch window was
+	// still open: the thread had its prompt, so the next status mints it
+	// even when the turn already finished.
+	promptSeen bool
+	// reads counts thread/read attempts at a title; titled stops them.
+	reads  int
+	titled bool
 	// last is the last status forwarded; teardown coerces only live
 	// ones.
 	last api.ThreadStatus
@@ -164,7 +168,6 @@ func NewObserver(opts ObserverOptions) *Observer {
 	}
 	o := &Observer{
 		socket:        ControlSocketPath(opts.CodexHome),
-		codexHome:     opts.CodexHome,
 		clientVersion: opts.ClientVersion,
 		threads:       opts.Threads,
 		terminals:     opts.Terminals,
@@ -178,8 +181,7 @@ func NewObserver(opts ObserverOptions) *Observer {
 		backoffMin:    backoffMin,
 		backoffMax:    backoffMax,
 		callTimeout:   callTimeout,
-		reserved:      map[string]chan struct{}{},
-		pending:       map[string]*pendingLaunch{},
+		slots:         map[string]*launchSlot{},
 		held:          map[string]*pairing{},
 	}
 	if o.start == nil {
@@ -222,12 +224,16 @@ func (o *Observer) Run(ctx context.Context) {
 }
 
 // stop ends observation: no further connection or read starts, the live
-// connection closes, and every read goroutine is joined.
+// connection closes, and every read goroutine is joined. connectMu
+// serializes it with a connect in flight — a launch dialing during
+// shutdown must not install a connection nobody will close.
 func (o *Observer) stop() {
+	o.connectMu.Lock()
 	o.mu.Lock()
 	o.stopped = true
 	conn := o.conn
 	o.mu.Unlock()
+	o.connectMu.Unlock()
 	if conn != nil {
 		conn.close()
 	}
@@ -248,7 +254,10 @@ func (o *Observer) spawnRead(read func()) {
 }
 
 // ensureConnected returns the live connection, dialing one when none is
-// up. The connected-check and the dial+install run under connectMu.
+// up. The connected-check and the dial+install run under connectMu. A
+// connection that has failed but not finished retiring (its teardown is
+// coercing statuses) is waited out first, so no caller ever proceeds on
+// a dead connection and no successor is installed under it.
 func (o *Observer) ensureConnected(ctx context.Context) (*rpcConn, error) {
 	o.connectMu.Lock()
 	defer o.connectMu.Unlock()
@@ -258,8 +267,15 @@ func (o *Observer) ensureConnected(ctx context.Context) (*rpcConn, error) {
 	if stopped {
 		return nil, errors.New("codex observation stopped")
 	}
-	if conn != nil {
+	if conn != nil && !conn.isClosed() {
 		return conn, nil
+	}
+	if conn != nil {
+		select {
+		case <-conn.finished:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 	return o.connect(ctx)
 }
@@ -271,12 +287,13 @@ func (o *Observer) connect(ctx context.Context) (*rpcConn, error) {
 	defer cancel()
 	ws, err := dialSocket(dialCtx, o.socket)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w on %s: %w", errNoServer, o.socket, err)
 	}
-	conn := newRPCConn(ws, &o.seq, o.logger)
+	conn := newRPCConn(ws, &o.seq, o.now, o.logger)
 	// Callbacks run detached from whichever request's context connected:
 	// they must outlive it.
 	background := context.WithoutCancel(ctx)
+	conn.onAnnouncement = o.handleAnnouncement
 	conn.onNotification = func(n notification) { o.handleNotification(background, n) }
 	conn.onClose = func(reason error) { o.teardown(background, conn, reason) }
 	// Installed before the loops start: a connection that dies during the
@@ -332,6 +349,9 @@ func (o *Observer) teardown(ctx context.Context, conn *rpcConn, reason error) {
 		o.logger.Warn("codex app-server connection lost", "error", reason)
 	}
 	for _, p := range live {
+		if _, ok := o.terminalLive(ctx, p); !ok {
+			continue
+		}
 		if err := o.threads.ObserveStatus(ctx, threads.StatusObservation{
 			Agent: "codex", ProviderID: p.threadID, At: o.now(), Status: api.ThreadUnknown,
 		}); err != nil {
@@ -342,6 +362,30 @@ func (o *Observer) teardown(ctx context.Context, conn *rpcConn, reason error) {
 		p.last = api.ThreadUnknown
 		o.mu.Unlock()
 	}
+}
+
+// terminalLive is the liveness gate every application of evidence runs:
+// the pairing's terminal must exist and not have definitively left. A
+// terminal that is gone ends the pairing — deactivated if it was
+// established — so no later evidence (an iOS-driven turn) lands against
+// a closed terminal. A record not there yet (a resume paired at Command,
+// before its insert) only drops this evidence. Caller holds handleMu.
+func (o *Observer) terminalLive(ctx context.Context, p *pairing) (api.Terminal, bool) {
+	terminal, err := o.terminals.Get(p.terminalID)
+	if err != nil {
+		if p.established {
+			o.forget(p.threadID, p)
+		}
+		return api.Terminal{}, false
+	}
+	if terminal.Status == api.TerminalExited || terminal.Status == api.TerminalMissing {
+		if p.established {
+			o.threads.Deactivate(ctx, p.terminalID)
+		}
+		o.forget(p.threadID, p)
+		return api.Terminal{}, false
+	}
+	return terminal, true
 }
 
 // reconcile reads every paired thread on a fresh connection and applies
@@ -374,39 +418,54 @@ func (o *Observer) readAndApply(ctx context.Context, conn *rpcConn, threadID str
 	}
 	var p struct {
 		Thread struct {
-			Status json.RawMessage `json:"status"`
+			Status  json.RawMessage `json:"status"`
+			Name    string          `json:"name"`
+			Preview string          `json:"preview"`
 		} `json:"thread"`
 	}
 	if err := json.Unmarshal(result, &p); err != nil {
 		return
 	}
-	o.applyEvidence(ctx, threadID, evidenceFrom(p.Thread.Status, seq))
+	e := evidenceFrom(p.Thread.Status, seq)
+	e.conn = conn
+	e.title = titleFrom(p.Thread.Name, p.Thread.Preview)
+	o.applyEvidence(ctx, threadID, e)
 }
 
-// handleNotification dispatches one server broadcast.
+// titleFrom is the observed default title: the thread's name, else its
+// condensed preview (the first prompt).
+func titleFrom(name, preview string) string {
+	if name != "" {
+		return name
+	}
+	return agents.CondenseTitle(preview)
+}
+
+// handleAnnouncement runs on the read loop: thread/started is stamped and
+// matched at receipt.
+func (o *Observer) handleAnnouncement(n notification) {
+	var p struct {
+		Thread struct {
+			ID      string          `json:"id"`
+			Cwd     string          `json:"cwd"`
+			Source  json.RawMessage `json:"source"`
+			Name    string          `json:"name"`
+			Preview string          `json:"preview"`
+		} `json:"thread"`
+	}
+	if err := json.Unmarshal(n.params, &p); err != nil || p.Thread.ID == "" {
+		return
+	}
+	o.announced(candidate{
+		threadID: p.Thread.ID, cwd: p.Thread.Cwd, title: titleFrom(p.Thread.Name, p.Thread.Preview),
+		source: sourceKind(p.Thread.Source), at: n.at, seq: n.seq,
+	})
+}
+
+// handleNotification dispatches one server broadcast (thread/started
+// never reaches here — the read loop handles it at receipt).
 func (o *Observer) handleNotification(ctx context.Context, n notification) {
 	switch n.method {
-	case "thread/started":
-		var p struct {
-			Thread struct {
-				ID      string          `json:"id"`
-				Cwd     string          `json:"cwd"`
-				Source  json.RawMessage `json:"source"`
-				Name    string          `json:"name"`
-				Preview string          `json:"preview"`
-			} `json:"thread"`
-		}
-		if err := json.Unmarshal(n.params, &p); err != nil || p.Thread.ID == "" {
-			return
-		}
-		title := p.Thread.Name
-		if title == "" {
-			title = agents.CondenseTitle(p.Thread.Preview)
-		}
-		o.announced(ctx, candidate{
-			threadID: p.Thread.ID, cwd: p.Thread.Cwd, title: title,
-			source: sourceKind(p.Thread.Source), at: o.now(),
-		})
 	case "thread/status/changed":
 		var p struct {
 			ThreadID string          `json:"threadId"`
@@ -443,6 +502,12 @@ type evidence struct {
 	kind   evidenceKind
 	status api.ThreadStatus
 	seq    uint64
+	// conn is the connection a read came over; a read that outlived its
+	// connection's teardown is stale. Notifications carry none: their
+	// dispatcher is joined before teardown runs.
+	conn *rpcConn
+	// title rides along on reads (name, else condensed preview).
+	title string
 }
 
 type evidenceKind int
@@ -478,6 +543,9 @@ func evidenceFrom(raw json.RawMessage, seq uint64) evidence {
 	case "idle":
 		return evidence{kind: evidenceStatus, status: api.ThreadIdle, seq: seq}
 	case "active":
+		// The flags are a set; should both ever appear, a question to the
+		// user outranks a permission prompt (the threads domain's own
+		// ranking for Claude).
 		mapped := api.ThreadWorking
 		for _, flag := range status.ActiveFlags {
 			switch flag {
@@ -511,7 +579,10 @@ func (o *Observer) applyEvidence(ctx context.Context, threadID string, e evidenc
 
 	o.mu.Lock()
 	p, ok := o.held[threadID]
-	stale := ok && e.seq != 0 && e.seq < p.seq
+	if !ok && e.kind == evidenceStatus && isLive(e.status) {
+		o.candidateHeardLive(threadID)
+	}
+	stale := ok && ((e.seq != 0 && e.seq < p.seq) || (e.conn != nil && e.conn != o.conn))
 	if ok && !stale {
 		p.seq = max(p.seq, e.seq)
 	}
@@ -522,20 +593,13 @@ func (o *Observer) applyEvidence(ctx context.Context, threadID string, e evidenc
 	}
 	if stale {
 		// Older on the wire than evidence already applied (a notification
-		// that crossed a reconcile read).
-		o.logger.Debug("codex evidence older than applied dropped", "thread", threadID, "seq", e.seq, "applied", p.seq)
+		// that crossed a reconcile read), or a read whose connection has
+		// since been torn down and its statuses coerced.
+		o.logger.Debug("stale codex evidence dropped", "thread", threadID)
 		return
 	}
-
-	terminal, err := o.terminals.Get(p.terminalID)
-	if err != nil || terminal.Status == api.TerminalExited || terminal.Status == api.TerminalMissing {
-		// The terminal is definitively gone. The sweep (or the delete
-		// route) deactivates the thread; the pairing ends here so no later
-		// evidence — an iOS-driven turn — lands against a closed terminal.
-		if err == nil && p.established {
-			o.threads.Deactivate(ctx, p.terminalID)
-		}
-		o.forget(threadID, p)
+	terminal, ok := o.terminalLive(ctx, p)
+	if !ok {
 		return
 	}
 
@@ -557,7 +621,7 @@ func (o *Observer) applyEvidence(ctx context.Context, threadID string, e evidenc
 		return
 	}
 
-	if !p.established && !p.resumed && !isLive(e.status) {
+	if !p.established && !p.resumed && !isLive(e.status) && !p.promptSeen {
 		// Held, not yet minted: only the first prompt mints.
 		return
 	}
@@ -566,7 +630,7 @@ func (o *Observer) applyEvidence(ctx context.Context, threadID string, e evidenc
 		metadata.Cwd = p.cwd
 	}
 	if !p.resumed && !p.titled {
-		metadata.Title = o.resolveTitle(ctx, p)
+		metadata.Title = o.resolveTitle(ctx, p, e.title)
 	}
 	if !p.established {
 		if _, err := o.threads.ObserveSession(ctx, threads.SessionObservation{
@@ -578,41 +642,38 @@ func (o *Observer) applyEvidence(ctx context.Context, threadID string, e evidenc
 			o.logger.Warn("recording codex session observation", "terminal", p.terminalID, "error", err)
 			return
 		}
-		o.mu.Lock()
-		p.established = true
-		p.last = e.status
-		p.titled = p.titled || metadata.Title != ""
-		o.mu.Unlock()
-		return
-	}
-	if err := o.threads.ObserveStatus(ctx, threads.StatusObservation{
+	} else if err := o.threads.ObserveStatus(ctx, threads.StatusObservation{
 		Agent: "codex", ProviderID: threadID, At: o.now(), Status: e.status, Metadata: metadata,
 	}); err != nil {
 		o.logger.Warn("recording codex status observation", "error", err)
 		return
 	}
 	o.mu.Lock()
+	p.established = true
 	p.last = e.status
 	p.titled = p.titled || metadata.Title != ""
 	o.mu.Unlock()
 }
 
 // resolveTitle returns the title a fresh pairing's thread should carry:
-// the announcement's, else the server's current name or preview — the
+// the announcement's, else what the evidence's own read returned, else
+// one bounded read of the server's current name or preview — the
 // preview lands with the first prompt, so it is usually there by the
-// first live status. Best-effort and bounded; an observed title only
-// ever fills an untitled thread, so retrying on later evidence is safe.
-// Caller holds handleMu.
-func (o *Observer) resolveTitle(ctx context.Context, p *pairing) string {
+// first live status. An observed title only ever fills an untitled
+// thread, so a retry on later evidence is safe. Caller holds handleMu.
+func (o *Observer) resolveTitle(ctx context.Context, p *pairing, fromRead string) string {
 	if p.title != "" {
 		return p.title
 	}
+	if fromRead != "" {
+		return fromRead
+	}
 	o.mu.Lock()
 	conn := o.conn
-	attempts := p.titleReads
-	p.titleReads++
+	attempts := p.reads
+	p.reads++
 	o.mu.Unlock()
-	if conn == nil || attempts >= titleAttempts {
+	if conn == nil || attempts >= titleReads {
 		return ""
 	}
 	callCtx, cancel := context.WithTimeout(ctx, o.callTimeout)
@@ -630,10 +691,7 @@ func (o *Observer) resolveTitle(ctx context.Context, p *pairing) string {
 	if err := json.Unmarshal(result, &read); err != nil {
 		return ""
 	}
-	if read.Thread.Name != "" {
-		return read.Thread.Name
-	}
-	return agents.CondenseTitle(read.Thread.Preview)
+	return titleFrom(read.Thread.Name, read.Thread.Preview)
 }
 
 // forget drops a pairing. Caller holds handleMu.
@@ -660,9 +718,9 @@ func (o *Observer) Forget(terminalID string) {
 		}
 	}
 	var abandoned *pendingLaunch
-	for _, launch := range o.pending {
-		if launch.terminalID == terminalID {
-			abandoned = launch
+	for _, slot := range o.slots {
+		if slot.launch != nil && slot.launch.terminalID == terminalID {
+			abandoned = slot.launch
 		}
 	}
 	o.mu.Unlock()
@@ -696,6 +754,12 @@ func (o *Observer) forgetThread(threadID string) {
 // preparation if the create fails.
 func (o *Observer) prepareLaunch(ctx context.Context, directory, resumeID string) (func(), error) {
 	if _, err := o.ensureConnected(ctx); err != nil {
+		if ctx.Err() != nil || !errors.Is(err, errNoServer) {
+			// The caller gave up, or something answers but refuses us:
+			// neither is a missing server, and starting one would only
+			// compete with it.
+			return nil, err
+		}
 		o.logger.Info("codex app-server not answering; starting one", "error", err)
 		if err := o.coldStart(ctx); err != nil {
 			return nil, err
@@ -705,10 +769,11 @@ func (o *Observer) prepareLaunch(ctx context.Context, directory, resumeID string
 		return func() { o.forgetThread(resumeID) }, nil
 	}
 	dir := canonical(directory)
-	if err := o.reserve(ctx, dir); err != nil {
+	slot, err := o.reserve(ctx, dir)
+	if err != nil {
 		return nil, err
 	}
-	return func() { o.abandon(dir) }, nil
+	return func() { o.abandon(dir, slot) }, nil
 }
 
 // coldStart starts the shared server and waits a bounded time for it to
