@@ -505,6 +505,32 @@ func TestFirstPromptFailureRetriesOnNextEvent(t *testing.T) {
 	}
 }
 
+// The TUI leaving right after a failed minting prompt still gets its
+// thread: SessionEnd is the last retry, so the conversation stays in the
+// index as resumable.
+func TestFirstPromptFailureRetriesAtSessionEnd(t *testing.T) {
+	f := newHookFixture(t)
+	secret := f.prepare(t, "term-aaaaa")
+	f.post(t, secret, `{"session_id":"s1","hook_event_name":"SessionStart","source":"startup"}`)
+
+	f.terminals.mu.Lock()
+	saved := f.terminals.terminals["term-aaaaa"]
+	delete(f.terminals.terminals, "term-aaaaa")
+	f.terminals.mu.Unlock()
+	f.post(t, secret, `{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"fix the build"}`)
+	f.terminals.mu.Lock()
+	f.terminals.terminals["term-aaaaa"] = saved
+	f.terminals.mu.Unlock()
+
+	f.post(t, secret, `{"session_id":"s1","hook_event_name":"SessionEnd","reason":"other"}`)
+	if len(f.observer.sessions) != 1 || f.observer.sessions[0].Metadata.Title != "fix the build" || f.observer.sessions[0].Status != "" {
+		t.Fatalf("mint at SessionEnd = %+v; want one titled observation with no status claim", f.observer.sessions)
+	}
+	if len(f.observer.inactive) != 2 || f.observer.inactive[1] != "term-aaaaa" {
+		t.Errorf("exit did not deactivate: %v", f.observer.inactive)
+	}
+}
+
 func TestLoadRegistrationsCleansStaleFiles(t *testing.T) {
 	f := newHookFixture(t)
 	secret := f.prepare(t, "term-aaaaa")

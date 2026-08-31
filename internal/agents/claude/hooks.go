@@ -299,6 +299,12 @@ func (h *Hooks) apply(ctx context.Context, terminalID string, st *session, p pay
 			h.threads.Deactivate(ctx, terminalID)
 		}
 	case "SessionEnd":
+		if st.title != "" && !st.established {
+			// A conversation owed a thread whose minting prompt failed to
+			// land gets its last chance here: the end is evidence for a
+			// thread only once one exists.
+			st.established = h.observe(ctx, terminalID, st, p, "")
+		}
 		h.sessionEnd(ctx, terminalID, st, p)
 	default:
 		if rootPrompt(p) {
