@@ -254,32 +254,67 @@ func lifecycleCmd(use, short, long string, options func(*cobra.Command) (service
 	}
 }
 
+// tailscaleFlagHelp documents the tri-state lifecycle flag on start and
+// restart: persistence in the unit, omission-preserves, and =false as a
+// return to config.toml rather than a force-off.
+const tailscaleFlagHelp = `
+
+--tailscale renders tailnet exposure into the registered unit, so the setting
+survives restarts, reboots, and upgrades. Omitting the flag preserves the
+unit's current setting; --tailscale=false removes it so config.toml decides
+again (with tailscale = true configured there, exposure stays on).`
+
+// addTailscaleFlag registers the lifecycle --tailscale flag; the tri-state
+// semantics live in tailscaleLifecycleOptions.
+func addTailscaleFlag(cmd *cobra.Command) *cobra.Command {
+	cmd.Flags().Bool("tailscale", false, "persist tailnet exposure in the service unit (omitted: keep the installed setting; false: follow config.toml)")
+	return cmd
+}
+
+// tailscaleLifecycleOptions is lifecycleOptions plus the tri-state
+// --tailscale flag start and restart carry (ATC-283): a flag the user
+// never set stays nil so the installed unit's override is preserved.
+func tailscaleLifecycleOptions(cmd *cobra.Command) (service.Options, error) {
+	opts, err := lifecycleOptions(cmd)
+	if err != nil {
+		return service.Options{}, err
+	}
+	if flags := cmd.Flags(); flags.Changed("tailscale") {
+		enabled, err := flags.GetBool("tailscale")
+		if err != nil {
+			return service.Options{}, err
+		}
+		opts.Tailscale = &enabled
+	}
+	return opts, nil
+}
+
 func newServerStartCmd() *cobra.Command {
-	return lifecycleCmd("start",
+	return addTailscaleFlag(lifecycleCmd("start",
 		"Register and start the supervised server",
 		`Register the server with the user supervisor (launchd on macOS, systemd user
 units on Linux) and start it. Registration happens on every start: the unit is
 re-rendered from the current binary, so upgrades only need `+"`atc server restart`"+`.
 A healthy server running the current unit is left untouched; a changed unit
 bounces it. The first start prints what was registered and how to undo it
-(atc server uninstall).`,
-		lifecycleOptions, service.Start)
+(atc server uninstall).`+tailscaleFlagHelp,
+		tailscaleLifecycleOptions, service.Start))
 }
 
 func newServerStopCmd() *cobra.Command {
 	return lifecycleCmd("stop",
-		"Stop the supervised server until next login",
+		"Stop the supervised server without uninstalling it",
 		`Stop the supervised server process. The unit stays installed, so the server
-returns at next login; use `+"`atc server uninstall`"+` to remove it entirely.`,
+returns at next boot on Linux or next login on macOS; use `+"`atc server uninstall`"+` to remove it entirely.`,
 		recoveryOptions, service.Stop)
 }
 
 func newServerRestartCmd() *cobra.Command {
-	return lifecycleCmd("restart",
+	return addTailscaleFlag(lifecycleCmd("restart",
 		"Restart the supervised server",
 		`Re-render the unit and restart the server process. This is the remedy for
-upgrades, config edits, and client/server version skew.`,
-		lifecycleOptions, service.Restart)
+upgrades, config edits, and client/server version skew.`+tailscaleFlagHelp,
+		tailscaleLifecycleOptions, service.Restart))
 }
 
 func newServerStatusCmd() *cobra.Command {

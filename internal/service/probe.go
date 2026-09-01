@@ -23,7 +23,13 @@ import (
 	"github.com/jeremytondo/atc/internal/authtoken"
 	"github.com/jeremytondo/atc/internal/config"
 	"github.com/jeremytondo/atc/internal/paths"
+	"github.com/jeremytondo/atc/internal/tailscale"
 )
+
+// resolveTailscaleExecutable is the lifecycle preflight, a seam variable
+// (the stdioIsTerminal pattern from package main) so lifecycle tests can
+// script resolution without a tailscale install.
+var resolveTailscaleExecutable = tailscale.ResolveExecutable
 
 // Health-gate contract (ATC-260, carried from legacy): 15s total, 150ms
 // interval, 1s per probe.
@@ -40,7 +46,9 @@ type probeOutcome struct {
 	serverVersion string
 }
 
-func probeOnce(ctx context.Context, opts Options, token string) probeOutcome {
+// probeOnce is a seam variable for the same reason: faking the one probe
+// lets lifecycle tests exercise the real health gate hermetically.
+var probeOnce = func(ctx context.Context, opts Options, token string) probeOutcome {
 	var serverVersion string
 	client := api.NewClient("http://"+probeAddr(opts.Config), token, opts.Version,
 		&http.Client{Timeout: probeTimeout},

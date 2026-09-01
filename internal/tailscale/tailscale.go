@@ -22,9 +22,12 @@ import (
 	"io"
 	"log/slog"
 	"math/rand/v2"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -179,6 +182,78 @@ func DNSName(ctx context.Context, executable string) (string, error) {
 	return dnsName, nil
 }
 
+type serveConfig struct {
+	TCP map[string]struct {
+		HTTPS bool
+	}
+	Web map[string]struct {
+		Handlers map[string]struct {
+			Proxy string
+		}
+	}
+}
+
+type serveStatus struct {
+	serveConfig
+	// Foreground routes are keyed by the owning CLI process. Background
+	// routes occupy the promoted top-level TCP/Web fields.
+	Foreground map[string]serveConfig
+}
+
+// HTTPSURL formats the one public endpoint shape shared by Serve supervision
+// and lifecycle/status reporting.
+func HTTPSURL(dnsName string, port int) string {
+	return "https://" + net.JoinHostPort(dnsName, strconv.Itoa(port))
+}
+
+// ServeURL reports the HTTPS URL only when tailscaled's live Serve
+// configuration contains the exact route ATC requested. DNSName alone proves
+// node connectivity, not that `tailscale serve` obtained approval and exposed
+// this backend.
+func ServeURL(ctx context.Context, executable, dnsName string, port int) (string, error) {
+	statusCtx, cancel := context.WithTimeout(ctx, statusTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(statusCtx, executable, "serve", "status", "--json")
+	cmd.Env = cliEnv()
+	out, err := cmd.Output()
+	if statusCtx.Err() != nil && ctx.Err() == nil {
+		return "", errors.New("tailscale serve status timed out")
+	}
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return "", fmt.Errorf("tailscale serve status failed: %s", detail(exit.Stderr, err.Error()))
+		}
+		return "", fmt.Errorf("cannot run tailscale serve status: %w", err)
+	}
+	var status serveStatus
+	if err := json.Unmarshal(out, &status); err != nil {
+		return "", fmt.Errorf("tailscale serve status returned unexpected output: %s", detail(out, "(empty)"))
+	}
+	portText := strconv.Itoa(port)
+	endpoint := HTTPSURL(dnsName, port)
+	authority := strings.TrimPrefix(endpoint, "https://")
+	configs := []serveConfig{status.serveConfig}
+	for _, foreground := range status.Foreground {
+		configs = append(configs, foreground)
+	}
+	for _, cfg := range configs {
+		tcp, tcpOK := cfg.TCP[portText]
+		web, webOK := cfg.Web[authority]
+		handler, handlerOK := web.Handlers["/"]
+		proxy, proxyErr := url.Parse(handler.Proxy)
+		if proxyErr != nil {
+			continue
+		}
+		proxyHost := net.ParseIP(proxy.Hostname())
+		proxyLoopback := proxy.Hostname() == "localhost" || (proxyHost != nil && proxyHost.IsLoopback())
+		if tcpOK && tcp.HTTPS && webOK && handlerOK && proxy.Scheme == "http" && proxyLoopback && proxy.Port() == portText {
+			return endpoint, nil
+		}
+	}
+	return "", fmt.Errorf("tailscale serve has not exposed https://%s yet", authority)
+}
+
 // serve runs the foreground `tailscale serve` child until it exits or ctx
 // is cancelled. Exposure is logged as serving only once the child's
 // https banner is observed on either output stream.
@@ -268,7 +343,7 @@ func (s *Supervisor) serve(ctx context.Context, dnsName string) error {
 		return fmt.Errorf("tailscale serve did not become ready within %s", readyTimeout)
 	}
 
-	s.logger.Info("tailscale serving", "url", fmt.Sprintf("https://%s:%d", dnsName, s.port))
+	s.logger.Info("tailscale serving", "url", HTTPSURL(dnsName, s.port))
 	err = <-exited
 	if ctx.Err() != nil {
 		return ctx.Err()

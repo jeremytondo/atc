@@ -224,6 +224,63 @@ func TestRecoveryCommandsSurviveBrokenConfig(t *testing.T) {
 	}
 }
 
+// Help must document persistence, omission-preserves, and =false as a
+// return to config.toml — never an unconditional disable.
+func TestServerStartRestartTailscaleHelp(t *testing.T) {
+	for _, sub := range []string{"start", "restart"} {
+		var stdout, stderr strings.Builder
+		if err := run(context.Background(), []string{"server", sub, "--help"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+			t.Fatalf("server %s --help = %v", sub, err)
+		}
+		help := stdout.String()
+		for _, want := range []string{"--tailscale", "survives restarts, reboots, and upgrades", "preserves", "config.toml decides"} {
+			if !strings.Contains(help, want) {
+				t.Errorf("server %s help missing %q:\n%s", sub, want, help)
+			}
+		}
+	}
+}
+
+func TestServerStopHelpUsesPlatformSpecificReturnPoints(t *testing.T) {
+	var stdout, stderr strings.Builder
+	if err := run(context.Background(), []string{"server", "stop", "--help"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	help := stdout.String()
+	for _, want := range []string{"next boot on Linux", "next login on macOS"} {
+		if !strings.Contains(help, want) {
+			t.Errorf("server stop help missing %q:\n%s", want, help)
+		}
+	}
+}
+
+func TestTailscaleLifecycleOptionsTriState(t *testing.T) {
+	isolateXDG(t)
+	options := func(t *testing.T, set string) *bool {
+		t.Helper()
+		cmd := newServerStartCmd()
+		if set != "" {
+			if err := cmd.Flags().Set("tailscale", set); err != nil {
+				t.Fatal(err)
+			}
+		}
+		opts, err := tailscaleLifecycleOptions(cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return opts.Tailscale
+	}
+	if got := options(t, ""); got != nil {
+		t.Errorf("omitted flag: Tailscale = %v, want nil", *got)
+	}
+	if got := options(t, "true"); got == nil || !*got {
+		t.Errorf("explicit true: Tailscale = %v, want true", got)
+	}
+	if got := options(t, "false"); got == nil || *got {
+		t.Errorf("explicit false: Tailscale = %v, want false", got)
+	}
+}
+
 func TestServerTokenPrintsAndRotates(t *testing.T) {
 	isolateXDG(t)
 	tokenOut := func(args ...string) string {

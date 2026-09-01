@@ -1,9 +1,12 @@
 package service
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/jeremytondo/atc/internal/config"
 )
 
 // healthyInfo is the baseline every case mutates: installed, supervised,
@@ -121,7 +124,7 @@ func TestRenderStatus(t *testing.T) {
 				s := healthyInfo()
 				s.bind = "0.0.0.0"
 				s.tailscale = true
-				s.tailnetDNS = "machine.tail1234.ts.net"
+				s.tailnetURL = "https://machine.tail1234.ts.net:7331"
 				return s
 			},
 			want: "atc.server: running and healthy\n" +
@@ -149,6 +152,73 @@ func TestRenderStatus(t *testing.T) {
 				"  token: `atc server token` prints the bearer token remote clients use\n",
 			wantCode: 0,
 		},
+		"service override attributes tailscale and shows the clearing command": {
+			info: func() statusInfo {
+				s := healthyInfo()
+				s.tailscaleOverride = true
+				s.tailnetURL = "https://machine.tail1234.ts.net:7331"
+				return s
+			},
+			want: "atc.server: running and healthy\n" +
+				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
+				"  client: v1.2.3\n" +
+				"  server: v1.2.3\n" +
+				"  api: http://127.0.0.1:7331\n" +
+				"  api (tailnet): https://machine.tail1234.ts.net:7331\n" +
+				"  tailscale: enabled by the service flag; `atc server restart --tailscale=false` returns control to config.toml\n" +
+				"  token: `atc server token` prints the bearer token remote clients use\n",
+			wantCode: 0,
+		},
+		"service override with tailnet unavailable keeps the diagnostics": {
+			info: func() statusInfo {
+				s := healthyInfo()
+				s.tailscaleOverride = true
+				s.tailnetProblem = "tailscale is logged out (BackendState NeedsLogin)"
+				return s
+			},
+			want: "atc.server: running and healthy\n" +
+				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
+				"  client: v1.2.3\n" +
+				"  server: v1.2.3\n" +
+				"  api: http://127.0.0.1:7331\n" +
+				"  api (tailnet): unavailable (tailscale is logged out (BackendState NeedsLogin))\n" +
+				"  tailscale: enabled by the service flag; `atc server restart --tailscale=false` returns control to config.toml\n" +
+				"  token: `atc server token` prints the bearer token remote clients use\n",
+			wantCode: 0,
+		},
+		"tailnet route still converging shows expected url without claiming availability": {
+			info: func() statusInfo {
+				s := healthyInfo()
+				s.tailscaleOverride = true
+				s.tailnetURL = "https://machine.tail1234.ts.net:7331"
+				s.tailnetProblem = "tailscale serve has not exposed the route yet"
+				return s
+			},
+			want: "atc.server: running and healthy\n" +
+				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
+				"  client: v1.2.3\n" +
+				"  server: v1.2.3\n" +
+				"  api: http://127.0.0.1:7331\n" +
+				"  api (tailnet): pending at https://machine.tail1234.ts.net:7331 (tailscale serve has not exposed the route yet)\n" +
+				"  tailscale: enabled by the service flag; `atc server restart --tailscale=false` returns control to config.toml\n" +
+				"  token: `atc server token` prints the bearer token remote clients use\n",
+			wantCode: 0,
+		},
+		"unreadable unit reports an unknown override instead of guessing": {
+			info: func() statusInfo {
+				s := healthyInfo()
+				s.overrideProblem = "installed unit has no ExecStart line"
+				return s
+			},
+			want: "atc.server: running and healthy\n" +
+				"  unit: /home/ab/.config/systemd/user/atc.server.service (active)\n" +
+				"  client: v1.2.3\n" +
+				"  server: v1.2.3\n" +
+				"  api: http://127.0.0.1:7331\n" +
+				"  tailscale: unknown service override (installed unit has no ExecStart line); rerun `atc server start` with an explicit --tailscale or --tailscale=false\n" +
+				"  token: `atc server token` prints the bearer token remote clients use\n",
+			wantCode: 0,
+		},
 		"tailnet exposure unavailable states why": {
 			info: func() statusInfo {
 				s := healthyInfo()
@@ -173,5 +243,28 @@ func TestRenderStatus(t *testing.T) {
 		if code != tc.wantCode {
 			t.Errorf("%s: exit code = %d, want %d", name, code, tc.wantCode)
 		}
+	}
+}
+
+func TestInspectTailnetWithTimeoutRendersExpiryAsDiagnostic(t *testing.T) {
+	origInspect, origTimeout := inspectTailnetEndpoint, tailnetInspectionTimeout
+	t.Cleanup(func() {
+		inspectTailnetEndpoint, tailnetInspectionTimeout = origInspect, origTimeout
+	})
+	tailnetInspectionTimeout = time.Millisecond
+	inspectTailnetEndpoint = func(ctx context.Context, _ config.Config, _ string) (string, string) {
+		<-ctx.Done()
+		return "https://machine.tail1234.ts.net:7331", ctx.Err().Error()
+	}
+
+	endpoint, problem, err := inspectTailnetWithTimeout(context.Background(), config.Config{}, "")
+	if err != nil {
+		t.Fatalf("inspect tailnet: %v", err)
+	}
+	if diff := cmp.Diff("https://machine.tail1234.ts.net:7331", endpoint); diff != "" {
+		t.Errorf("endpoint mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff("tailnet endpoint inspection timed out", problem); diff != "" {
+		t.Errorf("problem mismatch (-want +got):\n%s", diff)
 	}
 }
