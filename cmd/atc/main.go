@@ -184,6 +184,9 @@ func newRemoteCmd() *cobra.Command {
 
 func bootstrapHost(bind string) string {
 	if ip := net.ParseIP(bind); ip != nil && ip.IsUnspecified() {
+		if ip.To4() == nil {
+			return "::1"
+		}
 		return "127.0.0.1"
 	}
 	return bind

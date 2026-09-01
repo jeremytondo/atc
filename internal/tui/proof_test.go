@@ -153,6 +153,17 @@ func TestReconnectCancellationAndStableFailureKeepSnapshot(t *testing.T) {
 	}
 }
 
+func TestRepeatedReconnectCancelsSupersededAttempt(t *testing.T) {
+	m := proofModel{ctx: context.Background()}
+	m.attempt = newConnectAttempt(m.ctx)
+	superseded := m.attempt.ctx
+
+	cmd := m.beginConnect()
+	if cmd == nil || !errors.Is(superseded.Err(), context.Canceled) || m.attempt == nil || m.attempt.ctx == superseded {
+		t.Fatalf("beginConnect did not replace and cancel the superseded attempt")
+	}
+}
+
 func TestLateRefreshCannotReplaceNewerConnectionSnapshot(t *testing.T) {
 	current := api.Terminal{ID: "term-current", Name: "Current"}
 	late := api.Terminal{ID: "term-late", Name: "Late"}

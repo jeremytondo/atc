@@ -183,6 +183,9 @@ func (m proofModel) refreshCmd(seq uint64) tea.Cmd {
 }
 
 func (m *proofModel) beginConnect() tea.Cmd {
+	if m.attempt != nil {
+		m.attempt.cancel()
+	}
 	m.attempt = newConnectAttempt(m.ctx)
 	return m.connectCmd(m.attempt)
 }
@@ -301,15 +304,15 @@ func (m proofModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m.scheduleReconnect(msg.err, nil)
 		}
 		m.attempt = nil
+		var commands []tea.Cmd
 		if m.session != nil && m.session != msg.session {
-			_ = m.session.Close()
+			commands = append(commands, closeControl(m.session))
 		}
 		m.session, m.client = msg.session, msg.client
 		m.refreshSeq++
 		m.setSnapshot(msg.terminals)
 		m.state, m.stale, m.err = "connected", false, nil
 		m.retryCanceled = false
-		var commands []tea.Cmd
 		if msg.session != nil {
 			commands = append(commands, watchControl(msg.session, m.now(), m.now))
 		}

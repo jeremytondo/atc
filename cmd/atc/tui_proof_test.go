@@ -17,7 +17,7 @@ func TestBootstrapHostMatchesReachableListener(t *testing.T) {
 		"ipv4 loopback": {"127.0.0.1", "127.0.0.1"},
 		"ipv6 loopback": {"::1", "::1"},
 		"wildcard v4":   {"0.0.0.0", "127.0.0.1"},
-		"wildcard v6":   {"::", "127.0.0.1"},
+		"wildcard v6":   {"::", "::1"},
 		"hostname":      {"localhost", "localhost"},
 	} {
 		t.Run(name, func(t *testing.T) {
