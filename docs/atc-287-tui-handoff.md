@@ -9,15 +9,51 @@ small proof screen; it is not the product launcher.
 
 ## Result
 
-Adopt Bubble Tea v2's interactive-process handoff and the proposed two-process
-SSH topology:
+Do not adopt the proof's SSH topology as implemented. Bubble Tea v2's
+interactive-process handoff remains promising, but a real connection from the
+developer's laptop exposed an ownership flaw in the remote control design
+before the physical sleep/wake test could begin.
+
+The proof assumed that its `ssh -N` child would remain alive for the lifetime
+of the API forward. The developer's ordinary `workstation` target uses
+`ControlMaster auto`, a shared `ControlPath`, and `ControlPersist 10m`. OpenSSH
+installed the forward on that existing master and let the proof's child exit
+successfully. ATC loaded the first authenticated terminal snapshot, then
+treated the child exit as control loss and entered a reconnect loop. Requiring
+users to disable a useful SSH configuration would not be a seamless remote
+experience.
+
+When TUI work resumes, replace the process-topology requirement with these
+outcome requirements:
+
+- ATC owns and can supervise every remote resource it creates.
+- ATC neither depends on nor mutates the user's shared SSH control master.
+- ATC uses one private, launcher-owned OpenSSH master per remote launcher and
+  multiplexes bootstrap, authenticated API forwarding, and interactive
+  attachment as channels over it.
+- Ordinary OpenSSH target configuration continues to supply host, user,
+  identity, proxy, host-verification, and keepalive behavior. ATC overrides
+  only settings that would transfer connection ownership or force a TTY on
+  control commands.
+- Connection loss has deterministic cleanup and recovery: restore the TUI,
+  start a new owned master, load a complete snapshot, retain stable-ID
+  selection, and retry only the interrupted terminal.
+
+The intended resumed topology is:
+
+1. Create a private mode-0700 directory and SSH control socket.
+2. Start a foreground, ATC-owned OpenSSH master for the ordinary config target.
+3. Run `atc __remote prepare` and install the private API forward through that
+   master.
+4. Run `ssh -S <private-socket> -tt ...` attachments through the same master.
+5. On transport loss, treat both channels as one failed owned connection and
+   rebuild it. On exit, close only that master and its private state.
+
+This retains the useful mechanics the proof established:
 
 - Bubble Tea runs local zmx or remote interactive SSH through `ExecProcess`,
   releasing the renderer and terminal modes before the child starts and
   restoring both afterward.
-- Remote control uses a separately supervised `ssh -N` process and a private
-  Unix socket under a mode-0700 `/tmp/atc-ssh-*` directory. The API still
-  requires its bearer token.
 - A short `atc __remote prepare` command starts or finds the already-installed
   remote server and returns its port, token, and exact version through the
   encrypted SSH channel. The token stays in memory and is not added to local
@@ -27,8 +63,11 @@ SSH topology:
   1-to-30-second backoff, reloads a complete snapshot, and retries the same
   terminal only when interactive SSH reports transport exit 255.
 
-The implementation and synthetic recovery evidence pass. A physical laptop
-sleep/wake run remains the final acceptance gate before ATC-286 is unblocked.
+The local handoff and synthetic recovery evidence pass, but the common SSH
+configuration test fails. The physical sleep/wake test was not reached.
+ATC-286 remains blocked, and the work is tabled for later redesign. The full
+proof source and evidence are preserved by the Git tag
+`atc-287-tui-handoff-proof-2026-09-01`; PR #269 is intentionally not merged.
 
 ## Observed evidence
 
@@ -43,13 +82,35 @@ sleep/wake run remains the final acceptance gate before ATC-286 is unblocked.
 | Same-terminal attachment retry | Pass (deterministic) | Exit 255 records the interrupted terminal ID; a successful reconnect snapshot reissues attachment only when that same terminal is still running. Escape invalidates the retry generation. |
 | Stable remote failures | Pass (deterministic) | Missing remote ATC (exit 127), version mismatch, malformed/oversized bootstrap output, and invalid targets stop blind retry. |
 | Cleanup | Pass | Tests removed private forward directories and stopped only captured server, SSH, API, TUI, and terminal resources. Race-enabled tests cover concurrent process completion and cleanup. |
-| Physical laptop sleep/wake | Pending manual run | The current environment cannot suspend and resume the user's laptop. Use the procedure below on the actual client and remote host. |
+| Ordinary shared ControlMaster config | Fail | The remote server started and an authenticated snapshot loaded, but `ssh -N` delegated its forward to the user's persistent master and exited successfully. ATC then reported `SSH control forward exited` and reconnected indefinitely. |
+| Physical laptop sleep/wake | Not reached | The common-config failure happened before sleep/wake. This remains a future acceptance gate for the redesigned owned-master topology. |
 
 The real-path runs used private ATC/zmx/SSH state. They did not read or mutate
 the developer's normal zmx namespace, SSH configuration, or supervised ATC
 server. One zmx-specific observation is worth retaining: with zmx 0.6.0,
 `zmx detach` from a different client returned success but did not release the
 active attach client; interactive `Ctrl+\` remained the reliable detach path.
+
+## Final laptop observation
+
+The failing target used this relevant configuration:
+
+```sshconfig
+Host workstation
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%C
+    ControlPersist 10m
+    ServerAliveInterval 5
+    ServerAliveCountMax 2
+    RequestTTY yes
+```
+
+The proof displayed the remote terminal list, proving that remote server
+startup, version agreement, bearer authentication, forwarding, and the first
+snapshot had succeeded. It then immediately displayed a stale snapshot in
+`state=reconnecting` with `SSH control connection lost: SSH control forward
+exited`. This is a design failure, not an operator setup failure. A final
+implementation must work with this configuration unchanged.
 
 ## Automated checks
 
