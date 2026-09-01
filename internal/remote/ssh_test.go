@@ -49,7 +49,7 @@ func TestConnectCarriesAuthenticatedAPIOverPrivateForward(t *testing.T) {
 	runner := fakeRunner{
 		run: func(_ context.Context, cmd command) error {
 			runCommand = cmd
-			return json.NewEncoder(cmd.stdout).Encode(Bootstrap{Port: 7331, Token: "secret", Version: "v-test"})
+			return json.NewEncoder(cmd.stdout).Encode(Bootstrap{Host: "127.0.0.1", Port: 7331, Token: "secret", Version: "v-test"})
 		},
 		start: func(ctx context.Context, cmd command) (child, error) {
 			startCommand = cmd
@@ -95,11 +95,13 @@ func TestConnectCarriesAuthenticatedAPIOverPrivateForward(t *testing.T) {
 	}
 	if !containsSequence(runCommand.args, "-o", "ConnectTimeout=10") ||
 		!containsSequence(runCommand.args, "-o", "ServerAliveInterval=5") ||
+		!containsSequence(runCommand.args, "-o", "BatchMode=yes") ||
 		!containsSequence(runCommand.args, "--", "workstation", "atc", "__remote", "prepare") {
 		t.Errorf("bootstrap argv = %q", runCommand.args)
 	}
 	if !containsSequence(startCommand.args, "-o", "ExitOnForwardFailure=yes") ||
 		!containsSequence(startCommand.args, "-o", "StreamLocalBindUnlink=yes") ||
+		!containsSequence(startCommand.args, "-o", "BatchMode=yes") ||
 		!containsSequence(startCommand.args, "--", "workstation") {
 		t.Errorf("forward argv = %q", startCommand.args)
 	}
@@ -107,11 +109,14 @@ func TestConnectCarriesAuthenticatedAPIOverPrivateForward(t *testing.T) {
 	if info, err := os.Stat(dir); err != nil || info.Mode().Perm() != 0o700 {
 		t.Fatalf("private forward dir = %v, %v", info, err)
 	}
-	if err := session.Close(); err != nil {
+	if err := ssh.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("forward state survived Close: %v", err)
+	}
+	if _, err := ssh.Connect(context.Background(), "workstation"); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Errorf("Connect after Close = %v", err)
 	}
 }
 
@@ -126,7 +131,7 @@ func TestConnectStableFailuresDoNotStartForward(t *testing.T) {
 		},
 		"version mismatch": {
 			run: func(cmd command) error {
-				return json.NewEncoder(cmd.stdout).Encode(Bootstrap{Port: 7331, Token: "x", Version: "old"})
+				return json.NewEncoder(cmd.stdout).Encode(Bootstrap{Host: "::1", Port: 7331, Token: "x", Version: "old"})
 			},
 			want: "version mismatch",
 		},
@@ -163,14 +168,20 @@ func TestConnectStableFailuresDoNotStartForward(t *testing.T) {
 
 func TestAttachmentCommandAndTransportClassification(t *testing.T) {
 	ssh := &SSH{executable: "/usr/bin/ssh"}
-	cmd, err := ssh.AttachmentCommand("dev-box", "term-abcde")
+	cmd, err := ssh.AttachmentCommand("dev-box", "term-bcdfg")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !containsSequence(cmd.Args, "-tt", "-o", "ConnectTimeout=10") ||
 		!containsSequence(cmd.Args, "-o", "ServerAliveCountMax=3") ||
-		!containsSequence(cmd.Args, "--", "dev-box", "atc", "terminal", "attach", "term-abcde") {
+		!containsSequence(cmd.Args, "--", "dev-box", "atc", "terminal", "attach", "term-bcdfg") {
 		t.Errorf("attach argv = %q", cmd.Args)
+	}
+	if containsSequence(cmd.Args, "-o", "BatchMode=yes") {
+		t.Errorf("interactive attachment unexpectedly disabled authentication prompts: %q", cmd.Args)
+	}
+	if _, err := ssh.AttachmentCommand("dev-box", "term-ok;touch /tmp/pwn"); err == nil {
+		t.Error("shell-active terminal ID was accepted")
 	}
 	if !IsTransportFailure(fakeExit(255)) || IsTransportFailure(fakeExit(1)) || IsTransportFailure(nil) {
 		t.Error("OpenSSH exit 255 was not the only classified transport failure")

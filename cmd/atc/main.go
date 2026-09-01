@@ -174,11 +174,19 @@ func newRemoteCmd() *cobra.Command {
 				return err
 			}
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(remote.Bootstrap{
+				Host: bootstrapHost(opts.Config.Bind),
 				Port: opts.Config.Port, Token: token, Version: version.String(),
 			})
 		},
 	})
 	return cmd
+}
+
+func bootstrapHost(bind string) string {
+	if ip := net.ParseIP(bind); ip != nil && ip.IsUnspecified() {
+		return "127.0.0.1"
+	}
+	return bind
 }
 
 // stdioIsTerminal and stdinIsTTY are this binary's TTY detection, held in

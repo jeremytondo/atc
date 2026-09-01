@@ -39,7 +39,7 @@ sleep/wake run remains the final acceptance gate before ATC-286 is unblocked.
 | Selection and refresh | Pass | The same terminal ID remained selected after detach and a complete snapshot refresh; a forced 112x38 repaint verified the retained row. |
 | Real OpenSSH control path | Pass | A private localhost `sshd` accepted an ordinary config target; ATC carried a bearer-authenticated `/v1/terminals` request over its private Unix forward. |
 | Real remote attachment | Pass | A separate `ssh -tt` process attached the caller's PTY to a private remote zmx shell, printed `ATC287_REMOTE_OK`, propagated resize, detached normally, and restored the TUI. |
-| Control failure and reconnect | Pass | Killing the exact launcher-owned `ssh -N` PID left the screen alive and stale, then created a new forward after bounded backoff, loaded a fresh snapshot, and retained `term-remote`. |
+| Control failure and reconnect | Pass | Killing the exact launcher-owned `ssh -N` PID left the screen alive and stale, then created a new forward after bounded backoff, loaded a fresh snapshot, and retained the selected terminal. |
 | Same-terminal attachment retry | Pass (deterministic) | Exit 255 records the interrupted terminal ID; a successful reconnect snapshot reissues attachment only when that same terminal is still running. Escape invalidates the retry generation. |
 | Stable remote failures | Pass (deterministic) | Missing remote ATC (exit 127), version mismatch, malformed/oversized bootstrap output, and invalid targets stop blind retry. |
 | Cleanup | Pass | Tests removed private forward directories and stopped only captured server, SSH, API, TUI, and terminal resources. Race-enabled tests cover concurrent process completion and cleanup. |

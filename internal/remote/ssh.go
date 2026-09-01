@@ -39,9 +39,14 @@ var resilienceOptions = []string{
 	"-o", "ServerAliveCountMax=3",
 }
 
+var controlOptions = append(append([]string(nil), resilienceOptions...), "-o", "BatchMode=yes")
+
+const terminalIDSuffixAlphabet = "23456789bcdfghjkmnpqrstvwxyz"
+
 // Bootstrap is the deliberately small stdout protocol emitted by
 // `atc __remote prepare` over an authenticated SSH connection.
 type Bootstrap struct {
+	Host    string `json:"host"`
 	Port    int    `json:"port"`
 	Token   string `json:"token"`
 	Version string `json:"version"`
@@ -108,6 +113,13 @@ type SSH struct {
 	version    string
 	runner     runner
 	mkdirTemp  func(string, string) (string, error)
+
+	mu          sync.Mutex
+	closed      bool
+	operations  sync.WaitGroup
+	sessions    map[*Session]struct{}
+	shutdown    sync.Once
+	shutdownErr error
 }
 
 // NewSSH resolves OpenSSH and returns the production remote transport.
@@ -128,6 +140,10 @@ func NewSSH(localVersion string) (*SSH, error) {
 // establishes a private Unix-socket HTTP forward. The bearer token remains in
 // this process and is never written to local configuration.
 func (s *SSH) Connect(ctx context.Context, target string) (*Session, error) {
+	if err := s.beginConnect(); err != nil {
+		return nil, err
+	}
+	defer s.operations.Done()
 	if err := validateTarget(target); err != nil {
 		return nil, &StableError{Err: err}
 	}
@@ -154,11 +170,11 @@ func (s *SSH) Connect(ctx context.Context, target string) (*Session, error) {
 	socket := filepath.Join(dir, "control.sock")
 	forwardCtx, cancel := context.WithCancel(ctx)
 	stderr := cappedBuffer{limit: maxSSHErrorOutput}
-	forwardArgs := append([]string{"-N"}, resilienceOptions...)
+	forwardArgs := append([]string{"-N"}, controlOptions...)
 	forwardArgs = append(forwardArgs,
 		"-o", "ExitOnForwardFailure=yes",
 		"-o", "StreamLocalBindUnlink=yes",
-		"-L", socket+":127.0.0.1:"+strconv.Itoa(bootstrap.Port),
+		"-L", socket+":"+net.JoinHostPort(bootstrap.Host, strconv.Itoa(bootstrap.Port)),
 		"--", target,
 	)
 	process, err := s.runner.Start(forwardCtx, command{
@@ -172,7 +188,7 @@ func (s *SSH) Connect(ctx context.Context, target string) (*Session, error) {
 		return nil, fmt.Errorf("starting SSH control forward: %w", err)
 	}
 
-	session := newSession(cancel, process, dir, socket, bootstrap.Token, s.version, &stderr)
+	session := newSession(cancel, process, dir, socket, bootstrap.Token, s.version, &stderr, s.unregister)
 	if err := waitForSocket(ctx, socket, session.done); err != nil {
 		_ = session.Close()
 		if detail := strings.TrimSpace(stderr.String()); detail != "" {
@@ -180,13 +196,63 @@ func (s *SSH) Connect(ctx context.Context, target string) (*Session, error) {
 		}
 		return nil, fmt.Errorf("SSH control forward: %w", err)
 	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = session.Close()
+		return nil, context.Canceled
+	}
+	if s.sessions == nil {
+		s.sessions = make(map[*Session]struct{})
+	}
+	s.sessions[session] = struct{}{}
+	s.mu.Unlock()
 	return session, nil
+}
+
+func (s *SSH) beginConnect() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errors.New("SSH transport is closed")
+	}
+	s.operations.Add(1)
+	return nil
+}
+
+func (s *SSH) unregister(session *Session) {
+	s.mu.Lock()
+	delete(s.sessions, session)
+	s.mu.Unlock()
+}
+
+// Close prevents new connection attempts, closes every session the transport
+// created, and waits for in-flight Connect calls to finish their cleanup.
+func (s *SSH) Close() error {
+	s.shutdown.Do(func() {
+		s.mu.Lock()
+		s.closed = true
+		sessions := make([]*Session, 0, len(s.sessions))
+		for session := range s.sessions {
+			sessions = append(sessions, session)
+		}
+		s.mu.Unlock()
+		var errs []error
+		for _, session := range sessions {
+			if err := session.Close(); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		s.operations.Wait()
+		s.shutdownErr = errors.Join(errs...)
+	})
+	return s.shutdownErr
 }
 
 func (s *SSH) bootstrap(ctx context.Context, target string) (Bootstrap, error) {
 	stdout := cappedBuffer{limit: maxBootstrapOutput + 1}
 	stderr := cappedBuffer{limit: maxSSHErrorOutput}
-	bootstrapArgs := append([]string(nil), resilienceOptions...)
+	bootstrapArgs := append([]string(nil), controlOptions...)
 	bootstrapArgs = append(bootstrapArgs, "--", target, "atc", "__remote", "prepare")
 	err := s.runner.Run(ctx, command{
 		path:   s.executable,
@@ -217,7 +283,7 @@ func (s *SSH) bootstrap(ctx context.Context, target string) (Bootstrap, error) {
 	if err := requireJSONEOF(decoder); err != nil {
 		return Bootstrap{}, &StableError{Err: err}
 	}
-	if response.Port < 1 || response.Port > 65535 || response.Token == "" || response.Version == "" {
+	if response.Host == "" || response.Port < 1 || response.Port > 65535 || response.Token == "" || response.Version == "" {
 		return Bootstrap{}, &StableError{Err: errors.New("remote ATC returned incomplete connection details")}
 	}
 	return response, nil
@@ -240,12 +306,25 @@ func (s *SSH) AttachmentCommand(target, terminalID string) (*exec.Cmd, error) {
 	if err := validateTarget(target); err != nil {
 		return nil, err
 	}
-	if terminalID == "" || strings.ContainsAny(terminalID, " \t\r\n") {
-		return nil, errors.New("terminal ID is empty or contains whitespace")
+	if !validTerminalID(terminalID) {
+		return nil, fmt.Errorf("invalid terminal ID %q", terminalID)
 	}
 	args := append([]string{"-tt"}, resilienceOptions...)
 	args = append(args, "--", target, "atc", "terminal", "attach", terminalID)
 	return exec.Command(s.executable, args...), nil
+}
+
+func validTerminalID(id string) bool {
+	const prefix = "term-"
+	if len(id) != len(prefix)+5 || !strings.HasPrefix(id, prefix) {
+		return false
+	}
+	for _, char := range id[len(prefix):] {
+		if !strings.ContainsRune(terminalIDSuffixAlphabet, char) {
+			return false
+		}
+	}
+	return true
 }
 
 // IsTransportFailure distinguishes OpenSSH's reserved transport/configuration
@@ -319,9 +398,10 @@ type Session struct {
 	close    sync.Once
 	closeErr error
 	stderr   *cappedBuffer
+	onClose  func(*Session)
 }
 
-func newSession(cancel context.CancelFunc, process child, dir, socket, token, version string, stderr *cappedBuffer) *Session {
+func newSession(cancel context.CancelFunc, process child, dir, socket, token, version string, stderr *cappedBuffer, onClose func(*Session)) *Session {
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
@@ -330,7 +410,7 @@ func newSession(cancel context.CancelFunc, process child, dir, socket, token, ve
 	httpClient := &http.Client{Transport: transport}
 	session := &Session{
 		cancel: cancel, dir: dir, socket: socket,
-		httpClient: httpClient, done: make(chan struct{}), stderr: stderr,
+		httpClient: httpClient, done: make(chan struct{}), stderr: stderr, onClose: onClose,
 	}
 	session.client = api.NewClient("http://atc", token, version, httpClient, nil)
 	go func() {
@@ -374,6 +454,9 @@ func (s *Session) Close() error {
 		s.httpClient.CloseIdleConnections()
 		if err := os.RemoveAll(s.dir); err != nil {
 			s.closeErr = err
+		}
+		if s.onClose != nil {
+			s.onClose(s)
 		}
 	})
 	return s.closeErr

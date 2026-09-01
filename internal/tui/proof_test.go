@@ -47,7 +47,7 @@ func TestSelectionSurvivesRefreshAttachmentAndRemeasure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, _ := m.Update(refreshMsg{terminals: []api.Terminal{second, first}})
+	updated, _ := m.Update(refreshMsg{seq: m.refreshSeq, terminals: []api.Terminal{second, first}})
 	m = updated.(proofModel)
 	if got := terminalIDs(m.terminals); !cmp.Equal(got, []string{"term-first", "term-second"}) {
 		t.Fatalf("newest-first snapshot = %v", got)
@@ -74,12 +74,12 @@ func TestSelectionSurvivesRefreshAttachmentAndRemeasure(t *testing.T) {
 	}
 
 	second.Name = "Renamed after refresh"
-	updated, _ = m.Update(refreshMsg{terminals: []api.Terminal{first, second}})
+	updated, _ = m.Update(refreshMsg{seq: m.refreshSeq, terminals: []api.Terminal{first, second}})
 	m = updated.(proofModel)
 	if m.selected != "term-second" {
 		t.Fatalf("refresh lost stable-ID selection: %q", m.selected)
 	}
-	updated, _ = m.Update(refreshMsg{terminals: []api.Terminal{first}})
+	updated, _ = m.Update(refreshMsg{seq: m.refreshSeq, terminals: []api.Terminal{first}})
 	m = updated.(proofModel)
 	if m.selected != "term-first" {
 		t.Fatalf("removed selection fallback = %q", m.selected)
@@ -87,7 +87,7 @@ func TestSelectionSurvivesRefreshAttachmentAndRemeasure(t *testing.T) {
 }
 
 func TestTransportFailureReconnectsAndRetriesSameTerminal(t *testing.T) {
-	terminal := api.Terminal{ID: "term-retry", Name: "Retry", Status: api.TerminalRunning}
+	terminal := api.Terminal{ID: "term-bcdfg", Name: "Retry", Status: api.TerminalRunning}
 	ssh, err := remote.NewSSH("test")
 	if err != nil {
 		t.Skip(err)
@@ -104,10 +104,12 @@ func TestTransportFailureReconnectsAndRetriesSameTerminal(t *testing.T) {
 		t.Fatalf("transport failure = pending %q state %q stale %v cmd %v", m.pendingAttach, m.state, m.stale, cmd)
 	}
 	generation := m.generation
+	attempt := newConnectAttempt(m.ctx)
+	m.attempt = attempt
 
 	updated, retryCmd := m.Update(connectMsg{
-		generation: generation,
-		client:     fakeTerminalClient{terminals: []api.Terminal{terminal}}, terminals: []api.Terminal{terminal},
+		attempt: attempt,
+		client:  fakeTerminalClient{terminals: []api.Terminal{terminal}}, terminals: []api.Terminal{terminal},
 	})
 	m = updated.(proofModel)
 	if m.pendingAttach != "" || m.selected != terminal.ID || m.state != "attaching "+terminal.ID || retryCmd == nil {
@@ -125,11 +127,16 @@ func TestReconnectCancellationAndStableFailureKeepSnapshot(t *testing.T) {
 		state: "reconnecting", stale: true, generation: 3, retryDelay: reconnectMin,
 		retryCommand: func(time.Duration, uint64) tea.Cmd { return nil },
 	}
+	m.attempt = newConnectAttempt(m.ctx)
+	attemptContext := m.attempt.ctx
 	escape := tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape})
 	updated, _ := m.Update(escape)
 	m = updated.(proofModel)
 	if !m.retryCanceled || m.state != "disconnected" || m.selected != terminal.ID || len(m.terminals) != 1 {
 		t.Fatalf("cancel = canceled %v state %q selected %q terminals %d", m.retryCanceled, m.state, m.selected, len(m.terminals))
+	}
+	if !errors.Is(attemptContext.Err(), context.Canceled) || m.attempt != nil {
+		t.Fatalf("cancel left connection attempt alive: err %v attempt %v", attemptContext.Err(), m.attempt)
 	}
 	updated, cmd := m.Update(retryMsg{generation: 3})
 	if cmd != nil || updated.(proofModel).state != "disconnected" {
@@ -138,10 +145,37 @@ func TestReconnectCancellationAndStableFailureKeepSnapshot(t *testing.T) {
 
 	stable := &remote.StableError{Err: errors.New("version mismatch")}
 	m.retryCanceled = false
-	updated, cmd = m.Update(connectMsg{generation: m.generation, err: stable})
+	m.attempt = newConnectAttempt(m.ctx)
+	updated, cmd = m.Update(connectMsg{attempt: m.attempt, err: stable})
 	m = updated.(proofModel)
 	if cmd != nil || m.state != "configuration error" || !strings.Contains(m.err.Error(), "version mismatch") || m.selected != terminal.ID {
 		t.Fatalf("stable failure = state %q err %v selected %q cmd %v", m.state, m.err, m.selected, cmd)
+	}
+}
+
+func TestLateRefreshCannotReplaceNewerConnectionSnapshot(t *testing.T) {
+	current := api.Terminal{ID: "term-current", Name: "Current"}
+	late := api.Terminal{ID: "term-late", Name: "Late"}
+	m := proofModel{
+		ctx: context.Background(), refreshSeq: 4,
+		terminals: []api.Terminal{current}, selected: current.ID, state: "connected",
+	}
+	updated, cmd := m.Update(refreshMsg{seq: 3, terminals: []api.Terminal{late}, err: errors.New("stale failure")})
+	m = updated.(proofModel)
+	if cmd != nil || m.selected != current.ID || m.err != nil || m.state != "connected" || !cmp.Equal(m.terminals, []api.Terminal{current}) {
+		t.Fatalf("late refresh changed current state: %+v", m)
+	}
+}
+
+func TestViewSanitizesUntrustedTerminalText(t *testing.T) {
+	m := proofModel{
+		target: "host\x1b[2J", state: "connected\nspoofed",
+		terminals: []api.Terminal{{ID: "term-id\r", Name: "name\x1b[31m", Status: api.TerminalStatus("running\nerror")}},
+		err:       errors.New("failure\x1b[H\nspoofed"),
+	}
+	view := m.View().Content
+	if strings.ContainsAny(view, "\x1b\r") || strings.Contains(view, "connected\nspoofed") || strings.Contains(view, "failure\x1b[H\nspoofed") {
+		t.Fatalf("view contains unsanitized controls: %q", view)
 	}
 }
 

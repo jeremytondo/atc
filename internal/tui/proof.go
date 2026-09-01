@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -45,11 +46,13 @@ type ProofOptions struct {
 // RunProof runs the reusable handoff/recovery mechanics behind the hidden
 // ATC-287 command. It leaves ordinary CLI commands independent of Bubble Tea.
 func RunProof(ctx context.Context, opts ProofOptions) error {
-	model, err := newProofModel(ctx, opts)
+	runCtx, cancel := context.WithCancel(ctx)
+	model, err := newProofModel(runCtx, opts)
 	if err != nil {
+		cancel()
 		return err
 	}
-	programOptions := []tea.ProgramOption{tea.WithContext(ctx)}
+	programOptions := []tea.ProgramOption{tea.WithContext(runCtx)}
 	if opts.Input != nil {
 		programOptions = append(programOptions, tea.WithInput(opts.Input))
 	}
@@ -57,6 +60,15 @@ func RunProof(ctx context.Context, opts ProofOptions) error {
 		programOptions = append(programOptions, tea.WithOutput(opts.Output))
 	}
 	final, err := tea.NewProgram(model, programOptions...).Run()
+	// Bubble Tea deliberately does not wait for long-running Cmd goroutines.
+	// Cancel their SSH/API work before inspecting the final model so a quit
+	// during connection setup cannot create an unowned forward afterward.
+	cancel()
+	if opts.SSH != nil {
+		if closeErr := opts.SSH.Close(); err == nil {
+			err = closeErr
+		}
+	}
 	if finished, ok := final.(proofModel); ok && finished.session != nil {
 		if closeErr := finished.session.Close(); err == nil {
 			err = closeErr
@@ -84,8 +96,10 @@ type proofModel struct {
 	pendingAttach string
 	retryDelay    time.Duration
 	generation    uint64
+	refreshSeq    uint64
 	retryCanceled bool
 	remeasured    bool
+	attempt       *connectAttempt
 
 	retryCommand func(time.Duration, uint64) tea.Cmd
 	now          func() time.Time
@@ -94,7 +108,7 @@ type proofModel struct {
 func newProofModel(ctx context.Context, opts ProofOptions) (proofModel, error) {
 	m := proofModel{
 		ctx: ctx, client: opts.LocalClient, attacher: opts.Attacher,
-		ssh: opts.SSH, target: opts.Target, retryDelay: reconnectMin,
+		ssh: opts.SSH, target: opts.Target, retryDelay: reconnectMin, refreshSeq: 1,
 		state: "loading", remeasured: true,
 	}
 	m.retryCommand = func(delay time.Duration, generation uint64) tea.Cmd {
@@ -112,27 +126,29 @@ func newProofModel(ctx context.Context, opts ProofOptions) (proofModel, error) {
 	}
 	m.client = nil
 	m.state = "connecting"
+	m.attempt = newConnectAttempt(ctx)
 	return m, nil
 }
 
 func (m proofModel) Init() tea.Cmd {
 	if m.target != "" {
-		return m.connectCmd()
+		return m.connectCmd(m.attempt)
 	}
-	return m.refreshCmd()
+	return m.refreshCmd(m.refreshSeq)
 }
 
 type refreshMsg struct {
+	seq       uint64
 	terminals []api.Terminal
 	err       error
 }
 
 type connectMsg struct {
-	generation uint64
-	session    *remote.Session
-	client     terminalClient
-	terminals  []api.Terminal
-	err        error
+	attempt   *connectAttempt
+	session   *remote.Session
+	client    terminalClient
+	terminals []api.Terminal
+	err       error
 }
 
 type controlEndedMsg struct {
@@ -148,27 +164,41 @@ type attachmentEndedMsg struct {
 
 type retryMsg struct{ generation uint64 }
 
-func (m proofModel) refreshCmd() tea.Cmd {
+type connectAttempt struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+func newConnectAttempt(parent context.Context) *connectAttempt {
+	ctx, cancel := context.WithCancel(parent)
+	return &connectAttempt{ctx: ctx, cancel: cancel}
+}
+
+func (m proofModel) refreshCmd(seq uint64) tea.Cmd {
 	client := m.client
 	return func() tea.Msg {
 		terminals, err := loadSnapshot(m.ctx, client)
-		return refreshMsg{terminals: terminals, err: err}
+		return refreshMsg{seq: seq, terminals: terminals, err: err}
 	}
 }
 
-func (m proofModel) connectCmd() tea.Cmd {
-	generation := m.generation
+func (m *proofModel) beginConnect() tea.Cmd {
+	m.attempt = newConnectAttempt(m.ctx)
+	return m.connectCmd(m.attempt)
+}
+
+func (m proofModel) connectCmd(attempt *connectAttempt) tea.Cmd {
 	return func() tea.Msg {
-		session, err := m.ssh.Connect(m.ctx, m.target)
+		session, err := m.ssh.Connect(attempt.ctx, m.target)
 		if err != nil {
-			return connectMsg{generation: generation, err: err}
+			return connectMsg{attempt: attempt, err: err}
 		}
-		terminals, err := loadSnapshot(m.ctx, session.Client())
+		terminals, err := loadSnapshot(attempt.ctx, session.Client())
 		if err != nil {
 			_ = session.Close()
-			return connectMsg{generation: generation, err: fmt.Errorf("loading remote terminal snapshot: %w", err)}
+			return connectMsg{attempt: attempt, err: fmt.Errorf("loading remote terminal snapshot: %w", err)}
 		}
-		return connectMsg{generation: generation, session: session, client: session.Client(), terminals: terminals}
+		return connectMsg{attempt: attempt, session: session, client: session.Client(), terminals: terminals}
 	}
 }
 
@@ -207,6 +237,10 @@ func (m proofModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "esc":
 			if m.state == "connecting" || m.state == "reconnecting" {
+				if m.attempt != nil {
+					m.attempt.cancel()
+					m.attempt = nil
+				}
 				m.generation++
 				m.retryCanceled = true
 				m.pendingAttach = ""
@@ -226,14 +260,18 @@ func (m proofModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.target != "" && m.session == nil {
 				m.generation++
 				m.state = "connecting"
-				return m, m.connectCmd()
+				return m, m.beginConnect()
 			}
+			m.refreshSeq++
 			m.state = "refreshing"
-			return m, m.refreshCmd()
+			return m, m.refreshCmd(m.refreshSeq)
 		case "enter":
 			return m.startSelectedAttachment()
 		}
 	case refreshMsg:
+		if msg.seq != m.refreshSeq {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.err = msg.err
 			m.stale = len(m.terminals) > 0
@@ -247,23 +285,27 @@ func (m proofModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.state, m.stale, m.err = "connected", false, nil
 		return m, nil
 	case connectMsg:
-		if msg.generation != m.generation || m.retryCanceled {
+		if msg.attempt != m.attempt || m.retryCanceled {
 			if msg.session != nil {
 				return m, closeControl(msg.session)
 			}
 			return m, nil
 		}
 		if msg.err != nil {
+			msg.attempt.cancel()
+			m.attempt = nil
 			if remote.IsStable(msg.err) {
 				m.state, m.err = "configuration error", msg.err
 				return m, nil
 			}
 			return m.scheduleReconnect(msg.err, nil)
 		}
+		m.attempt = nil
 		if m.session != nil && m.session != msg.session {
 			_ = m.session.Close()
 		}
 		m.session, m.client = msg.session, msg.client
+		m.refreshSeq++
 		m.setSnapshot(msg.terminals)
 		m.state, m.stale, m.err = "connected", false, nil
 		m.retryCanceled = false
@@ -298,7 +340,7 @@ func (m proofModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.state = "connecting"
-		return m, m.connectCmd()
+		return m, m.beginConnect()
 	case attachmentEndedMsg:
 		m.remeasured = false
 		if msg.err == nil {
@@ -359,7 +401,12 @@ func (m proofModel) loseControl(err error) (tea.Model, tea.Cmd) {
 }
 
 func (m proofModel) scheduleReconnect(err error, old *remote.Session) (tea.Model, tea.Cmd) {
+	if m.attempt != nil {
+		m.attempt.cancel()
+		m.attempt = nil
+	}
 	m.session, m.client = nil, nil
+	m.refreshSeq++
 	m.stale, m.err, m.state = len(m.terminals) > 0, err, "reconnecting"
 	m.retryCanceled = false
 	m.generation++
@@ -415,10 +462,10 @@ func (m *proofModel) moveSelection(delta int) {
 func (m proofModel) View() tea.View {
 	target := "local"
 	if m.target != "" {
-		target = "ssh:" + m.target
+		target = "ssh:" + safeText(m.target)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "ATC-287 TUI handoff proof  target=%s  state=%s  size=%dx%d", target, m.state, m.width, m.height)
+	fmt.Fprintf(&b, "ATC-287 TUI handoff proof  target=%s  state=%s  size=%dx%d", target, safeText(m.state), m.width, m.height)
 	if m.stale {
 		b.WriteString("  STALE")
 	}
@@ -434,13 +481,23 @@ func (m proofModel) View() tea.View {
 		if terminal.ID == m.selected {
 			marker = "> "
 		}
-		fmt.Fprintf(&b, "%s%-12s %-14s %s\n", marker, terminal.ID, terminal.Status, terminal.Name)
+		fmt.Fprintf(&b, "%s%-12s %-14s %s\n", marker,
+			safeText(terminal.ID), safeText(string(terminal.Status)), safeText(terminal.Name))
 	}
 	if m.err != nil {
-		fmt.Fprintf(&b, "\n%s\n", m.err)
+		fmt.Fprintf(&b, "\n%s\n", safeText(m.err.Error()))
 	}
 	b.WriteString("\n j/k select  enter attach  r refresh/reconnect  esc cancel retry  q quit\n")
 	view := tea.NewView(b.String())
 	view.AltScreen = true
 	return view
+}
+
+func safeText(value string) string {
+	return strings.Map(func(char rune) rune {
+		if unicode.IsControl(char) {
+			return '�'
+		}
+		return char
+	}, value)
 }
