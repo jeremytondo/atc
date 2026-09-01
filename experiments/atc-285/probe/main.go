@@ -25,11 +25,13 @@ import (
 const usage = `Usage:
   ./scripts/atc-285 snapshot [--project-root PATH]
   ./scripts/atc-285 watch [--project-root PATH] [--interval DURATION]
+  ./scripts/atc-285 watch-ws [--project-root PATH]
 
 Options:
   --url URL            T3 Code environment origin (or ATC_T3_ORIGIN).
   --project-root PATH  Only show threads in this exact T3 workspace root.
   --interval DURATION  Watch polling interval (default 1s).
+  --duration DURATION  Stop a watch after this duration (default: until interrupted).
 
 The wrapper obtains a temporary orchestration:read bearer token when
 ATC_T3_BEARER_TOKEN is unset and revokes it when the probe exits.`
@@ -57,6 +59,7 @@ type threadShell struct {
 	ID                  string        `json:"id"`
 	ProjectID           string        `json:"projectId"`
 	Title               string        `json:"title"`
+	WorktreePath        nullablePath  `json:"worktreePath"`
 	Session             *sessionShell `json:"session"`
 	HasPendingApprovals *bool         `json:"hasPendingApprovals"`
 	HasPendingUserInput *bool         `json:"hasPendingUserInput"`
@@ -74,6 +77,7 @@ type projectedThread struct {
 	ProjectID     string           `json:"projectId"`
 	Project       string           `json:"project"`
 	WorkspaceRoot string           `json:"workspaceRoot"`
+	CWD           string           `json:"cwd"`
 	Title         string           `json:"title"`
 	Status        api.ThreadStatus `json:"status"`
 	NativeStatus  string           `json:"nativeStatus,omitempty"`
@@ -84,6 +88,28 @@ type projectedThread struct {
 type change struct {
 	Kind   string          `json:"kind"`
 	Thread projectedThread `json:"thread"`
+}
+
+// nullablePath distinguishes a required JSON null from an omitted field. T3
+// uses null to mean that a thread runs from its project's workspace root.
+type nullablePath struct {
+	Value string
+	Set   bool
+}
+
+func (p *nullablePath) UnmarshalJSON(data []byte) error {
+	p.Set = true
+	if string(data) == "null" {
+		p.Value = ""
+		return nil
+	}
+	if err := json.Unmarshal(data, &p.Value); err != nil {
+		return fmt.Errorf("decode worktreePath: %w", err)
+	}
+	if p.Value == "" {
+		return errors.New("worktreePath must be null or a non-empty string")
+	}
+	return nil
 }
 
 func main() {
@@ -99,7 +125,7 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 		return err
 	}
 	command := args[0]
-	if command != "snapshot" && command != "watch" {
+	if command != "snapshot" && command != "watch" && command != "watch-ws" {
 		return fmt.Errorf("unknown command %q\n\n%s", command, usage)
 	}
 
@@ -108,11 +134,15 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	origin := flags.String("url", os.Getenv("ATC_T3_ORIGIN"), "T3 Code origin")
 	projectRoot := flags.String("project-root", "", "exact T3 workspace root")
 	interval := flags.Duration("interval", time.Second, "watch polling interval")
+	duration := flags.Duration("duration", 0, "maximum watch duration")
 	if err := flags.Parse(args[1:]); err != nil {
 		return fmt.Errorf("parse arguments: %w", err)
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if *duration < 0 {
+		return errors.New("duration must not be negative")
 	}
 	if *origin == "" {
 		return errors.New("T3 Code origin is required (--url or ATC_T3_ORIGIN)")
@@ -137,11 +167,27 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 		if *interval <= 0 {
 			return errors.New("interval must be positive")
 		}
-		watchCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+		watchCtx, stop := watchContext(ctx, *duration)
 		defer stop()
 		return watch(watchCtx, c, *projectRoot, *interval, output)
+	case "watch-ws":
+		watchCtx, stop := watchContext(ctx, *duration)
+		defer stop()
+		return watchWebSocket(watchCtx, c, *projectRoot, output)
 	}
 	return nil
+}
+
+func watchContext(parent context.Context, duration time.Duration) (context.Context, context.CancelFunc) {
+	signalContext, stopSignals := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+	if duration == 0 {
+		return signalContext, stopSignals
+	}
+	timedContext, stopTimer := context.WithTimeout(signalContext, duration)
+	return timedContext, func() {
+		stopTimer()
+		stopSignals()
+	}
 }
 
 func newClient(origin, token string, httpClient *http.Client) (*client, error) {
@@ -196,33 +242,52 @@ func validateSnapshot(snapshot shellSnapshot) error {
 		return errors.New("snapshotSequence, projects, threads, or updatedAt is missing")
 	}
 	projects := make(map[string]struct{}, len(*snapshot.Projects))
+	projectSet := make(map[string]projectShell, len(*snapshot.Projects))
 	for _, project := range *snapshot.Projects {
-		if project.ID == "" || project.Title == "" || project.WorkspaceRoot == "" {
-			return errors.New("project id, title, or workspaceRoot is missing")
+		if err := validateProject(project); err != nil {
+			return err
 		}
 		if _, exists := projects[project.ID]; exists {
 			return fmt.Errorf("duplicate project %s", project.ID)
 		}
 		projects[project.ID] = struct{}{}
+		projectSet[project.ID] = project
 	}
 	threads := make(map[string]struct{}, len(*snapshot.Threads))
 	for _, thread := range *snapshot.Threads {
-		if thread.ID == "" || thread.ProjectID == "" || thread.Title == "" || thread.UpdatedAt.IsZero() {
-			return errors.New("thread id, projectId, title, or updatedAt is missing")
-		}
-		if _, ok := projects[thread.ProjectID]; !ok {
-			return fmt.Errorf("thread %s names unknown project %s", thread.ID, thread.ProjectID)
-		}
-		if thread.HasPendingApprovals == nil || thread.HasPendingUserInput == nil {
-			return fmt.Errorf("thread %s is missing pending-action flags", thread.ID)
-		}
-		if thread.Session != nil && thread.Session.Status == "" {
-			return fmt.Errorf("thread %s session status is missing", thread.ID)
+		if err := validateThread(thread, projectSet); err != nil {
+			return err
 		}
 		if _, exists := threads[thread.ID]; exists {
 			return fmt.Errorf("duplicate thread %s", thread.ID)
 		}
 		threads[thread.ID] = struct{}{}
+	}
+	return nil
+}
+
+func validateProject(project projectShell) error {
+	if project.ID == "" || project.Title == "" || project.WorkspaceRoot == "" {
+		return errors.New("project id, title, or workspaceRoot is missing")
+	}
+	return nil
+}
+
+func validateThread(thread threadShell, projects map[string]projectShell) error {
+	if thread.ID == "" || thread.ProjectID == "" || thread.Title == "" || thread.UpdatedAt.IsZero() {
+		return errors.New("thread id, projectId, title, or updatedAt is missing")
+	}
+	if _, ok := projects[thread.ProjectID]; !ok {
+		return fmt.Errorf("thread %s names unknown project %s", thread.ID, thread.ProjectID)
+	}
+	if thread.HasPendingApprovals == nil || thread.HasPendingUserInput == nil {
+		return fmt.Errorf("thread %s is missing pending-action flags", thread.ID)
+	}
+	if !thread.WorktreePath.Set {
+		return fmt.Errorf("thread %s is missing worktreePath", thread.ID)
+	}
+	if thread.Session != nil && thread.Session.Status == "" {
+		return fmt.Errorf("thread %s session status is missing", thread.ID)
 	}
 	return nil
 }
@@ -239,11 +304,16 @@ func project(snapshot shellSnapshot, projectRoot string) []projectedThread {
 			continue
 		}
 		status, native, lastError := projectStatus(thread)
+		cwd := thread.WorktreePath.Value
+		if cwd == "" {
+			cwd = owner.WorkspaceRoot
+		}
 		result = append(result, projectedThread{
 			ID:            thread.ID,
 			ProjectID:     thread.ProjectID,
 			Project:       owner.Title,
 			WorkspaceRoot: owner.WorkspaceRoot,
+			CWD:           cwd,
 			Title:         thread.Title,
 			Status:        status,
 			NativeStatus:  native,

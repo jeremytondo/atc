@@ -25,6 +25,7 @@
         "id": "t3-thread-1",
         "projectId": "project-1",
         "title": "New T3 thread",
+        "worktreePath": null,
         "session": {
           "status": "running",
           "lastError": null
@@ -51,6 +52,7 @@
         "id": "t3-thread-1",
         "projectId": "project-1",
         "title": "New T3 thread",
+        "worktreePath": null,
         "session": {
           "status": "running",
           "lastError": null
@@ -77,6 +79,7 @@
         "id": "t3-thread-1",
         "projectId": "project-1",
         "title": "New T3 thread",
+        "worktreePath": null,
         "session": {
           "status": "running",
           "lastError": null
@@ -103,6 +106,7 @@
         "id": "t3-thread-1",
         "projectId": "project-1",
         "title": "New T3 thread",
+        "worktreePath": null,
         "session": {
           "status": "error",
           "lastError": "provider failed"
@@ -129,6 +133,7 @@
         "id": "t3-thread-1",
         "projectId": "project-1",
         "title": "New T3 thread",
+        "worktreePath": null,
         "session": {
           "status": "ready",
           "lastError": null

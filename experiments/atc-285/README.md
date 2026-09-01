@@ -6,8 +6,10 @@ status vocabulary without persistence, background services, or T3 lifecycle
 mutation.
 
 The wrapper mints a five-minute T3 pairing grant, exchanges it for exactly the
-`orchestration:read` scope, and revokes the resulting session when the command
-exits. It never starts, stops, or configures the T3 server.
+`orchestration:read` scope, and revokes the resulting access session on normal
+exit. It never starts, stops, or configures the T3 server. Like any process
+cleanup, revocation cannot run after an uncatchable hard kill; `--duration` is
+the safest way to run a bounded probe.
 
 ## Run once
 
@@ -16,7 +18,9 @@ exits. It never starts, stops, or configures the T3 server.
 ```
 
 The probe emits one JSON object per thread. `nativeStatus` preserves the T3
-session evidence while `status` is the ATC projection.
+session evidence while `status` is the ATC projection. `workspaceRoot` is the
+T3 project's default directory; `cwd` is the thread's `worktreePath` when set,
+otherwise that workspace root.
 
 ## Watch thread creation and status changes
 
@@ -28,6 +32,18 @@ Leave the probe running, create a thread in T3 Code for that project, and start
 a turn. The probe first emits `present` records, then `created`,
 `status_changed`, and `removed` records as successive shell snapshots differ.
 Press Ctrl-C to stop and revoke the temporary credential.
+
+For the live Effect RPC subscription instead of polling:
+
+```sh
+./scripts/atc-285 watch-ws --project-root "$PWD"
+```
+
+This consumes T3's initial snapshot and ordered shell events. On disconnect it
+requests a fresh one-use WebSocket ticket and resumes after the last applied
+sequence; T3 can replay the gap or replace it with a fresh snapshot.
+Add `--duration 10s` for a bounded smoke test that exits and revokes its
+temporary credential without requiring an interrupt.
 
 ## Status precedence
 

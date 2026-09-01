@@ -1,6 +1,7 @@
 # ATC-285 findings
 
-Status: the contained thread-discovery and status-projection slice passed.
+Status: the contained thread-discovery, status-projection, and live-subscription
+slices passed.
 
 Observed on 2026-09-01 against the developer's already-running T3 Code
 `0.0.38-nightly.20260831.1236` environment. The experiment did not start,
@@ -18,6 +19,11 @@ endpoint. A five-minute pairing credential could be exchanged down to exactly
 `orchestration:read`, used for the snapshot, and revoked afterward. A follow-up
 inspection found no probe pairing grants or sessions left behind.
 
+The live `orchestration.subscribeShell` subscription also returned this thread
+in its initial snapshot. The thread had no separate worktree, so T3's
+`worktreePath ?? project.workspaceRoot` rule produced the ATC repository root
+as its effective `cwd`.
+
 ## Deterministic result
 
 The fixture sequence starts without threads, introduces one running T3 thread,
@@ -32,14 +38,30 @@ than a guessed resting state. Missing fields needed by the projection are
 reported as schema errors. Unavailable-server and expired-credential failures
 are reported separately.
 
+A WebSocket fixture forced the connection closed after sequence 2. The probe
+requested a new one-use ticket, resubscribed with `afterSequence: 2`, and
+applied the replayed permission-waiting update at sequence 3 without emitting a
+duplicate creation. It speaks only the Effect RPC pieces this stream requires:
+`Request`, streamed `Chunk`, `Ack`, `Exit`, and reconnect.
+
+The bearer session issued by T3 outlives the five-minute pairing grant, so
+cleanup matters. A bounded live smoke test exited normally and left zero probe
+sessions, pairing grants, processes, or temporary binaries. An uncatchable hard
+kill can still prevent best-effort revocation; production credential issuance,
+refresh, and recovery remain unresolved rather than being hidden in this
+adapter.
+
 ## Conclusion
 
-The simplest ATC-285 premise is viable: T3's lightweight shell snapshot is
-enough to discover durable thread identities and derive the six ATC statuses
-without transcript reads, persistence, or mutation. Polling successive
-snapshots is sufficient for the proof because T3 threads are durable; a
-production endpoint can remain on-demand as the issue proposes.
+The ATC-285 premise is viable: T3's lightweight shell snapshot is enough to
+discover durable thread identities and derive the six ATC statuses without
+transcript reads, persistence, or mutation. Its shell subscription adds
+near-real-time changes and gap recovery. Effect RPC is narrow, testable
+coupling—not a blocker—but it does require a long-lived observer and in-memory
+view that the on-demand HTTP endpoint does not.
 
 This does not yet prove ATC server composition, credential storage or refresh,
-project deduplication, streaming, or promotion into `/v1/threads`. Those remain
+or promotion into `/v1/threads`. Project association now has a concrete rule:
+join `thread.projectId` to T3's project, canonicalize its `workspaceRoot`, and
+match that to ATC's canonical project directory. Those production steps remain
 outside this experiment.

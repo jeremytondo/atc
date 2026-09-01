@@ -164,7 +164,7 @@ func TestFetchRejectsIncompleteSchema(t *testing.T) {
 		_, _ = w.Write([]byte(`{
 			"snapshotSequence": 1,
 			"projects": [{"id":"project-1","title":"atc","workspaceRoot":"/work/atc"}],
-			"threads": [{"id":"thread-1","projectId":"project-1","title":"thread","updatedAt":"2026-09-01T20:00:00Z"}],
+			"threads": [{"id":"thread-1","projectId":"project-1","title":"thread","worktreePath":null,"updatedAt":"2026-09-01T20:00:00Z"}],
 			"updatedAt": "2026-09-01T20:00:00Z"
 		}`))
 	}))
