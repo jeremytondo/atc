@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_dir="$(cd "$script_dir/.." && pwd)"
+t3_home="${T3CODE_HOME:-$HOME/.t3}"
+runtime_file="$t3_home/userdata/server-runtime.json"
+state_file="$t3_home/runtime/service-state.json"
+
+if [[ $# -eq 0 ]]; then
+  exec mise exec -C "$repo_dir" -- go run ./experiments/atc-285/probe
+fi
+if [[ "$1" == "help" || "$1" == "--help" || "$1" == "-h" ]]; then
+  exec mise exec -C "$repo_dir" -- go run ./experiments/atc-285/probe "$@"
+fi
+
+if [[ -n "${ATC_T3_BEARER_TOKEN:-}" ]]; then
+  exec mise exec -C "$repo_dir" -- go run ./experiments/atc-285/probe "$@"
+fi
+
+for dependency in node jq curl mise; do
+  command -v "$dependency" >/dev/null || {
+    echo "atc-285: required command not found: $dependency" >&2
+    exit 1
+  }
+done
+[[ -f "$runtime_file" && -f "$state_file" ]] || {
+  echo "atc-285: no running T3 Code environment found under $t3_home" >&2
+  exit 1
+}
+
+active_version="$(jq -er .activeVersion "$state_file")"
+t3_bin="$t3_home/runtime/versions/$active_version/node_modules/t3/dist/bin.mjs"
+[[ -f "$t3_bin" ]] || {
+  echo "atc-285: active T3 Code CLI not found at $t3_bin" >&2
+  exit 1
+}
+
+label="atc-285-probe-$$-$(date +%s)"
+pair_id=""
+session_id=""
+cleanup() {
+  if [[ -n "$session_id" ]]; then
+    NODE_NO_WARNINGS=1 node "$t3_bin" auth session revoke \
+      --base-dir "$t3_home" "$session_id" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$pair_id" ]]; then
+    NODE_NO_WARNINGS=1 node "$t3_bin" auth pairing revoke \
+      --base-dir "$t3_home" "$pair_id" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+pairing_json="$(NODE_NO_WARNINGS=1 node "$t3_bin" auth pairing create \
+  --base-dir "$t3_home" --ttl 5m --label "$label" --json)"
+pair_id="$(jq -er .id <<<"$pairing_json")"
+bootstrap_token="$(jq -er .credential <<<"$pairing_json")"
+origin="$(jq -er .origin "$runtime_file")"
+
+token_json="$(curl --silent --show-error --fail-with-body --max-time 5 \
+  --request POST "$origin/oauth/token" \
+  --header 'Content-Type: application/x-www-form-urlencoded' \
+  --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' \
+  --data-urlencode "subject_token=$bootstrap_token" \
+  --data-urlencode 'subject_token_type=urn:t3:params:oauth:token-type:environment-bootstrap' \
+  --data-urlencode 'requested_token_type=urn:ietf:params:oauth:token-type:access_token' \
+  --data-urlencode 'scope=orchestration:read' \
+  --data-urlencode "client_label=$label")"
+access_token="$(jq -er .access_token <<<"$token_json")"
+granted_scope="$(jq -er .scope <<<"$token_json")"
+[[ "$granted_scope" == "orchestration:read" ]] || {
+  echo "atc-285: T3 Code granted unexpected scope: $granted_scope" >&2
+  exit 1
+}
+
+session_id="$(NODE_NO_WARNINGS=1 node "$t3_bin" auth session list \
+  --base-dir "$t3_home" --json |
+  jq -er --arg label "$label" '.[] | select(.client.label == $label) | .sessionId')"
+
+ATC_T3_ORIGIN="${ATC_T3_ORIGIN:-$origin}" \
+ATC_T3_BEARER_TOKEN="$access_token" \
+  mise exec -C "$repo_dir" -- go run ./experiments/atc-285/probe "$@"
