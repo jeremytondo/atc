@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -30,6 +31,7 @@ import (
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/projects"
+	"github.com/jeremytondo/atc/internal/remote"
 	"github.com/jeremytondo/atc/internal/server"
 	"github.com/jeremytondo/atc/internal/service"
 	"github.com/jeremytondo/atc/internal/store"
@@ -37,6 +39,7 @@ import (
 	"github.com/jeremytondo/atc/internal/terminals"
 	"github.com/jeremytondo/atc/internal/terminals/zmx"
 	"github.com/jeremytondo/atc/internal/threads"
+	"github.com/jeremytondo/atc/internal/tui"
 	"github.com/jeremytondo/atc/internal/upgrade"
 	"github.com/jeremytondo/atc/internal/version"
 )
@@ -91,8 +94,91 @@ expose on the tailnet without the flag.`,
 		},
 	}
 	root.AddCommand(newAgentCmd(), newThreadCmd(), newTerminalCmd(), newProjectCmd(), newAPICmd(), newVersionCmd(),
-		newUpgradeCmd(), newServerCmd(), newChildCmd())
+		newUpgradeCmd(), newServerCmd(), newRemoteCmd(), newTUIProofCmd(), newChildCmd())
 	return root
+}
+
+func newTUIProofCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:    "__tui-proof",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if !stdioIsTerminal() {
+				return errors.New("the TUI handoff proof requires an interactive terminal")
+			}
+			target, err := cmd.Flags().GetString("remote")
+			if err != nil {
+				return err
+			}
+			opts := tui.ProofOptions{
+				Target: target, Input: cmd.InOrStdin(), Output: cmd.OutOrStdout(),
+			}
+			if target != "" {
+				opts.SSH, err = remote.NewSSH(version.String())
+				if err != nil {
+					return err
+				}
+			} else {
+				var baseURL string
+				opts.LocalClient, baseURL, err = cli.NewClient(cmd.ErrOrStderr())
+				if err != nil {
+					return err
+				}
+				if err := cli.AttachPreflight(baseURL, true); err != nil {
+					return err
+				}
+				opts.Attacher, err = newSessionAttacher()
+				if err != nil {
+					return err
+				}
+				if err := opts.Attacher.Preflight(); err != nil {
+					return err
+				}
+			}
+			return tui.RunProof(cmd.Context(), opts)
+		},
+	}
+	cmd.Flags().String("remote", "", "ordinary OpenSSH config target")
+	return cmd
+}
+
+// newRemoteCmd is the machine-only half of SSH-managed TUI startup. It is
+// hidden because users invoke the local launcher; the launcher reaches this
+// command over SSH to start the already-installed server and receive ephemeral
+// connection material on the encrypted channel.
+func newRemoteCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "__remote", Hidden: true}
+	cmd.AddCommand(&cobra.Command{
+		Use:    "prepare",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			opts, err := lifecycleOptions(cmd)
+			if err != nil {
+				return err
+			}
+			// Stdout is the strict bootstrap protocol. Lifecycle chatter must
+			// never corrupt it; errors still return through Cobra on stderr.
+			opts.Stdout = io.Discard
+			opts.Stderr = io.Discard
+			if err := service.Start(cmd.Context(), opts); err != nil {
+				return err
+			}
+			tokenPath, err := paths.AuthTokenFile()
+			if err != nil {
+				return err
+			}
+			token, err := (&authtoken.Store{Path: tokenPath}).Ensure()
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(remote.Bootstrap{
+				Port: opts.Config.Port, Token: token, Version: version.String(),
+			})
+		},
+	})
+	return cmd
 }
 
 // stdioIsTerminal and stdinIsTTY are this binary's TTY detection, held in
