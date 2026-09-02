@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/jeremytondo/atc/internal/agents"
-	"github.com/jeremytondo/atc/internal/agents/hookauth"
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/integrations/hookauth"
 	"github.com/jeremytondo/atc/internal/threads"
 )
 

@@ -1,6 +1,6 @@
 // Package zmx is the complete zmx-specific boundary (ATC-251): only this
 // package knows zmx commands, inventory parsing, environment traps, PTY
-// creation, and attach mechanics. It implements terminals.Adapter; future
+// creation, and attach mechanics. It implements terminals.Driver; future
 // terminal backends implement the same interface.
 //
 // Environment contract (every invocation, learned the hard way in
@@ -52,7 +52,7 @@ func maxSocketPathBytes() int {
 	return 103
 }
 
-// Options wires an Adapter. Cadence values come from the terminals
+// Options wires a Driver. Cadence values come from the terminals
 // package, the one place cadence lives.
 type Options struct {
 	// SocketDir is ATC's private zmx socket directory (paths.TerminalSocketDir).
@@ -64,8 +64,8 @@ type Options struct {
 	Logger            *slog.Logger
 }
 
-// Adapter implements terminals.Adapter over the zmx CLI.
-type Adapter struct {
+// Driver implements terminals.Driver over the zmx CLI.
+type Driver struct {
 	socketDir string
 	markerDir string
 	wrapper   string
@@ -79,7 +79,7 @@ type Adapter struct {
 // deep for the OS socket-path limit is a boot error with the remedy in the
 // message (legacy's proven guard); a missing zmx binary deliberately is
 // not — delete must keep working when zmx is unhealthy.
-func New(opts Options) (*Adapter, error) {
+func New(opts Options) (*Driver, error) {
 	socketDir, err := filepath.Abs(opts.SocketDir)
 	if err != nil {
 		return nil, err
@@ -102,7 +102,7 @@ func New(opts Options) (*Adapter, error) {
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)
 	}
-	return &Adapter{
+	return &Driver{
 		socketDir: socketDir,
 		markerDir: opts.MarkerDir,
 		wrapper:   opts.WrapperExecutable,
@@ -112,17 +112,17 @@ func New(opts Options) (*Adapter, error) {
 
 // zmx resolves the executable on PATH, memoizing success so a transiently
 // missing binary heals on a later call.
-func (a *Adapter) zmx() (string, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.resolved != "" {
-		return a.resolved, nil
+func (d *Driver) zmx() (string, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.resolved != "" {
+		return d.resolved, nil
 	}
 	path, err := exec.LookPath("zmx")
 	if err != nil {
 		return "", errors.New("zmx executable not found on PATH")
 	}
-	a.resolved = path
+	d.resolved = path
 	return path, nil
 }
 
@@ -165,15 +165,15 @@ func Env(socketDir string, forceTerm bool) []string {
 // Inventory runs one complete `zmx list`. Only exit 0 is trustworthy ("no
 // sessions" is exit 0 with empty stdout); any failure means the inventory
 // is unavailable, never empty.
-func (a *Adapter) Inventory(ctx context.Context) ([]terminals.Session, error) {
-	executable, err := a.zmx()
+func (d *Driver) Inventory(ctx context.Context) ([]terminals.Session, error) {
+	executable, err := d.zmx()
 	if err != nil {
 		return nil, err
 	}
 	runCtx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, executable, "list")
-	cmd.Env = Env(a.socketDir, true)
+	cmd.Env = Env(d.socketDir, true)
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
@@ -221,8 +221,8 @@ func parseList(output string) []terminals.Session {
 // wrapper as root task, a fresh PTY for the short-lived attach client, and
 // complete inventories as the only settle authority — the client's exit
 // code is not one.
-func (a *Adapter) Create(ctx context.Context, id string, spec terminals.CreateSpec) error {
-	executable, err := a.zmx()
+func (d *Driver) Create(ctx context.Context, id string, spec terminals.CreateSpec) error {
+	executable, err := d.zmx()
 	if err != nil {
 		return err
 	}
@@ -230,7 +230,7 @@ func (a *Adapter) Create(ctx context.Context, id string, spec terminals.CreateSp
 	// command entirely; creating must never be silently attaching. An
 	// unreachable leftover blocks creation the same way — it holds the
 	// socket path.
-	inventory, err := a.Inventory(ctx)
+	inventory, err := d.Inventory(ctx)
 	if err != nil {
 		return fmt.Errorf("create %s: %w", id, err)
 	}
@@ -238,13 +238,13 @@ func (a *Adapter) Create(ctx context.Context, id string, spec terminals.CreateSp
 		return fmt.Errorf("create %s: session already exists", id)
 	}
 
-	argv := []string{"attach", id, a.wrapper, "__child",
-		"--marker", exitmarker.Path(a.markerDir, id), "--id", id, "--dir", spec.Directory}
+	argv := []string{"attach", id, d.wrapper, "__child",
+		"--marker", exitmarker.Path(d.markerDir, id), "--id", id, "--dir", spec.Directory}
 	if spec.Command != "" {
 		argv = append(argv, "--command", spec.Command)
 	}
 	cmd := exec.Command(executable, argv...)
-	cmd.Env = Env(a.socketDir, true)
+	cmd.Env = Env(d.socketDir, true)
 	// A real PTY, sized sanely: the forked daemon reads its initial
 	// winsize from the creator (falling back to 24x160 for a bare pipe),
 	// and the attach client's raw-mode setup wants a terminal.
@@ -260,14 +260,14 @@ func (a *Adapter) Create(ctx context.Context, id string, spec terminals.CreateSp
 		close(clientExited)
 	}()
 
-	settled, err := a.pollInventory(ctx, clientExited, func(sessions []terminals.Session) bool {
+	settled, err := d.pollInventory(ctx, clientExited, func(sessions []terminals.Session) bool {
 		_, reachable := lookupSession(sessions, id)
 		return reachable
 	})
 	// Detach: closing the PTY is stdin EOF to the attach client, which
 	// detaches cleanly; the session daemon persists.
 	_ = ptmx.Close()
-	a.reap(cmd, clientExited)
+	d.reap(cmd, clientExited)
 	if settled {
 		return nil
 	}
@@ -280,12 +280,12 @@ func (a *Adapter) Create(ctx context.Context, id string, spec terminals.CreateSp
 // Kill terminates the session and verifies absence. An absent session is
 // success; `zmx kill`'s own exit code and output are deliberately ignored
 // (it returns before death and exits 0 on unmatched names).
-func (a *Adapter) Kill(ctx context.Context, id string) error {
-	executable, err := a.zmx()
+func (d *Driver) Kill(ctx context.Context, id string) error {
+	executable, err := d.zmx()
 	if err != nil {
 		return err
 	}
-	inventory, err := a.Inventory(ctx)
+	inventory, err := d.Inventory(ctx)
 	if err != nil {
 		return fmt.Errorf("kill %s: %w", id, err)
 	}
@@ -296,10 +296,10 @@ func (a *Adapter) Kill(ctx context.Context, id string) error {
 	runCtx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, executable, "kill", id)
-	cmd.Env = Env(a.socketDir, true)
+	cmd.Env = Env(d.socketDir, true)
 	_ = cmd.Run()
 
-	gone, err := a.pollInventory(ctx, nil, func(sessions []terminals.Session) bool {
+	gone, err := d.pollInventory(ctx, nil, func(sessions []terminals.Session) bool {
 		present, _ := lookupSession(sessions, id)
 		return !present
 	})
@@ -317,11 +317,11 @@ func (a *Adapter) Kill(ctx context.Context, id string) error {
 // time; consecutive failures are capped so an inventory outage does not
 // stall mutations. A closed earlyStop channel triggers one final
 // authoritative pass — the creation client may exit as the daemon settles.
-func (a *Adapter) pollInventory(ctx context.Context, earlyStop <-chan struct{}, done func([]terminals.Session) bool) (bool, error) {
+func (d *Driver) pollInventory(ctx context.Context, earlyStop <-chan struct{}, done func([]terminals.Session) bool) (bool, error) {
 	passes, failures := 0, 0
 	var lastErr error
 	for passes < terminals.VerifyPasses && failures < terminals.VerifyFailureCap {
-		sessions, err := a.Inventory(ctx)
+		sessions, err := d.Inventory(ctx)
 		if err != nil {
 			failures++
 			lastErr = err
@@ -336,7 +336,7 @@ func (a *Adapter) pollInventory(ctx context.Context, earlyStop <-chan struct{}, 
 		case <-ctx.Done():
 			return false, ctx.Err()
 		case <-earlyStop:
-			sessions, err := a.Inventory(ctx)
+			sessions, err := d.Inventory(ctx)
 			if err != nil {
 				return false, err
 			}
@@ -349,11 +349,11 @@ func (a *Adapter) pollInventory(ctx context.Context, earlyStop <-chan struct{}, 
 
 // reap waits briefly for the detached client to exit, then kills it — a
 // stuck attach client must not leak.
-func (a *Adapter) reap(cmd *exec.Cmd, exited <-chan struct{}) {
+func (d *Driver) reap(cmd *exec.Cmd, exited <-chan struct{}) {
 	select {
 	case <-exited:
 	case <-time.After(2 * time.Second):
-		a.logger.Warn("attach client did not exit after detach; killing", "pid", cmd.Process.Pid)
+		d.logger.Warn("attach client did not exit after detach; killing", "pid", cmd.Process.Pid)
 		_ = cmd.Process.Kill()
 		<-exited
 	}
@@ -362,13 +362,13 @@ func (a *Adapter) reap(cmd *exec.Cmd, exited <-chan struct{}) {
 // Attacher is the client-side half of the zmx boundary: how a local
 // process hands its real TTY to a session. It implements
 // cli.SessionAttacher — an interface the cli package owns — so only this
-// package and the composition root know the adapter is zmx.
+// package and the composition root know the driver is zmx.
 type Attacher struct {
 	socketDir string
 }
 
 // NewAttacher returns an Attacher over ATC's private socket directory
-// (paths.TerminalSocketDir), the same namespace the server's Adapter uses.
+// (paths.TerminalSocketDir), the same namespace the server's Driver uses.
 func NewAttacher(socketDir string) Attacher {
 	return Attacher{socketDir: socketDir}
 }

@@ -220,7 +220,7 @@ func TestThreadNewWithoutTTYAndUnavailable(t *testing.T) {
 // Open lands on the terminal showing the thread, and resumes a dormant
 // one in a new terminal linked to it.
 func TestThreadOpenCLI(t *testing.T) {
-	adapter, threadService := startTestServerWithThreads(t)
+	driver, threadService := startTestServerWithThreads(t)
 	projectID := createProjectCLI(t, t.TempDir())
 	stdout, _, err := runCLI(t, "thread", "new", "claude", "--project", projectID, "--detach")
 	if err != nil {
@@ -239,9 +239,9 @@ func TestThreadOpenCLI(t *testing.T) {
 
 	// The TUI exits; the thread is dormant. Open resumes it in a fresh
 	// terminal running the exact resume, and the thread now points there.
-	adapter.mu.Lock()
-	delete(adapter.sessions, terminalID)
-	adapter.mu.Unlock()
+	driver.mu.Lock()
+	delete(driver.sessions, terminalID)
+	driver.mu.Unlock()
 	if _, _, err := runCLI(t, "terminal", "delete", terminalID); err != nil {
 		t.Fatal(err)
 	}

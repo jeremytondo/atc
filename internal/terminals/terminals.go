@@ -2,7 +2,7 @@
 // behind /v1/terminals, its honest four-state status model, and the
 // background reconciliation that keeps an in-memory view fresh against
 // zmx. The package owns policy; the session backend stays behind the
-// small Adapter interface (internal/zmx in production), and durable facts
+// small Driver interface (internal/integrations/zmx in production), and durable facts
 // live in the ATC-262 store.
 //
 // Reads are served from the in-memory view and never touch zmx or the
@@ -53,11 +53,11 @@ type CreateSpec struct {
 	Command string
 }
 
-// Adapter is the session backend seam. Implementations own every backend
+// Driver is the session backend seam. Implementations own every backend
 // detail — commands, inventory parsing, environment traps, attach
 // mechanics — and start each session with the ATC wrapper as its root
 // task.
-type Adapter interface {
+type Driver interface {
 	// Inventory returns the complete session inventory. An error means the
 	// inventory is unavailable — never "empty".
 	Inventory(ctx context.Context) ([]Session, error)

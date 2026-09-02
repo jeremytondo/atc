@@ -20,10 +20,10 @@ import (
 	"github.com/jeremytondo/atc/internal/terminals/exitmarker"
 )
 
-// fakeAdapter is a hand-written in-memory session backend. Create births a
+// fakeDriver is a hand-written in-memory session backend. Create births a
 // reachable session unless told otherwise; Kill removes it unless killErr
 // is set (the "zmx unhealthy" condition).
-type fakeAdapter struct {
+type fakeDriver struct {
 	mu        sync.Mutex
 	sessions  map[string]bool // name → reachable
 	invErr    error
@@ -35,11 +35,11 @@ type fakeAdapter struct {
 	onCreate func(id string, spec CreateSpec)
 }
 
-func newFakeAdapter() *fakeAdapter {
-	return &fakeAdapter{sessions: map[string]bool{}}
+func newFakeDriver() *fakeDriver {
+	return &fakeDriver{sessions: map[string]bool{}}
 }
 
-func (a *fakeAdapter) Inventory(context.Context) ([]Session, error) {
+func (a *fakeDriver) Inventory(context.Context) ([]Session, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.invErr != nil {
@@ -52,7 +52,7 @@ func (a *fakeAdapter) Inventory(context.Context) ([]Session, error) {
 	return inventory, nil
 }
 
-func (a *fakeAdapter) Create(_ context.Context, id string, spec CreateSpec) error {
+func (a *fakeDriver) Create(_ context.Context, id string, spec CreateSpec) error {
 	a.mu.Lock()
 	createErr, onCreate := a.createErr, a.onCreate
 	a.mu.Unlock()
@@ -68,7 +68,7 @@ func (a *fakeAdapter) Create(_ context.Context, id string, spec CreateSpec) erro
 	return nil
 }
 
-func (a *fakeAdapter) Kill(_ context.Context, id string) error {
+func (a *fakeDriver) Kill(_ context.Context, id string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.killed = append(a.killed, id)
@@ -79,36 +79,36 @@ func (a *fakeAdapter) Kill(_ context.Context, id string) error {
 	return nil
 }
 
-func (a *fakeAdapter) killedNames() []string {
+func (a *fakeDriver) killedNames() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]string(nil), a.killed...)
 }
 
-func (a *fakeAdapter) set(name string, reachable bool) {
+func (a *fakeDriver) set(name string, reachable bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.sessions[name] = reachable
 }
 
-func (a *fakeAdapter) remove(name string) {
+func (a *fakeDriver) remove(name string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	delete(a.sessions, name)
 }
 
-func (a *fakeAdapter) setInvErr(err error) {
+func (a *fakeDriver) setInvErr(err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.invErr = err
 }
 
-// fixture wires a Service over a real temp-file store, the fake adapter, a
+// fixture wires a Service over a real temp-file store, the fake driver, a
 // real marker directory, and a fake clock, with one project (rooted at a
 // real temp directory) for terminals to belong to.
 type fixture struct {
 	service    *Service
-	adapter    *fakeAdapter
+	driver     *fakeDriver
 	hub        *events.Hub
 	markers    string
 	clock      *fakeClock
@@ -135,7 +135,7 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	adapter := newFakeAdapter()
+	driver := newFakeDriver()
 	markers := t.TempDir()
 	clock := &fakeClock{now: time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)}
 	projectDir := t.TempDir()
@@ -147,7 +147,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	service := NewService(Options{
 		Repository: s.Terminals(),
-		Adapter:    adapter,
+		Driver:     driver,
 		Projects:   s.Projects(),
 		MarkerDir:  markers,
 		Hub:        events.NewHub(64),
@@ -155,7 +155,7 @@ func newFixture(t *testing.T) *fixture {
 		Now:        clock.Now,
 	})
 	service.verifyInterval = time.Millisecond
-	return &fixture{service: service, adapter: adapter, hub: service.hub, markers: markers,
+	return &fixture{service: service, driver: driver, hub: service.hub, markers: markers,
 		clock: clock, projectID: projectID, projectDir: projectDir}
 }
 
@@ -189,7 +189,7 @@ func TestCreateHappyPath(t *testing.T) {
 	// Record-first invariant: when the backend is asked to start the
 	// session, the record must already be durable.
 	var recordExisted bool
-	f.adapter.onCreate = func(id string, _ CreateSpec) {
+	f.driver.onCreate = func(id string, _ CreateSpec) {
 		records, err := f.service.repository.List(ctx)
 		if err != nil {
 			t.Error(err)
@@ -233,8 +233,8 @@ func TestCreateDefaults(t *testing.T) {
 // the evidence and create reports exited with it — no separate error path.
 func TestCreateFastFailingCommand(t *testing.T) {
 	f := newFixture(t)
-	f.adapter.createErr = errors.New("client exited before the session settled")
-	f.adapter.onCreate = func(id string, _ CreateSpec) {
+	f.driver.createErr = errors.New("client exited before the session settled")
+	f.driver.onCreate = func(id string, _ CreateSpec) {
 		plantExitMarker(t, f.markers, id, 127, true)
 	}
 	terminal, err := f.create(context.Background(), api.TerminalCreateParams{Command: "no-such-tool"})
@@ -253,7 +253,7 @@ func TestCreateFastFailingCommand(t *testing.T) {
 // the terminal reports missing rather than inventing an error.
 func TestCreateNeverSettles(t *testing.T) {
 	f := newFixture(t)
-	f.adapter.createErr = errors.New("session never settled")
+	f.driver.createErr = errors.New("session never settled")
 	terminal, err := f.create(context.Background(), api.TerminalCreateParams{})
 	if err != nil {
 		t.Fatal(err)
@@ -308,11 +308,11 @@ func TestReconcileDecisionTable(t *testing.T) {
 				plantExitMarker(t, f.markers, id, code3, tc.markerExited)
 			}
 			if tc.present {
-				f.adapter.set(id, tc.reachable)
+				f.driver.set(id, tc.reachable)
 			} else {
-				f.adapter.remove(id)
+				f.driver.remove(id)
 			}
-			f.adapter.setInvErr(tc.invErr)
+			f.driver.setInvErr(tc.invErr)
 
 			f.service.Reconcile(ctx)
 			got, err := f.service.Get(id)
@@ -339,16 +339,16 @@ func TestExitedIsStickyAndStaysListed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.adapter.remove(terminal.ID)
+	f.driver.remove(terminal.ID)
 	plantExitMarker(t, f.markers, terminal.ID, 3, true)
 	f.service.Reconcile(ctx)
 
 	if err := exitmarker.Remove(f.markers, terminal.ID); err != nil {
 		t.Fatal(err)
 	}
-	f.adapter.setInvErr(errors.New("zmx down"))
+	f.driver.setInvErr(errors.New("zmx down"))
 	f.service.Reconcile(ctx)
-	f.adapter.setInvErr(nil)
+	f.driver.setInvErr(nil)
 	f.service.Reconcile(ctx)
 
 	list := f.service.List("")
@@ -388,9 +388,9 @@ func TestDeleteBestEffortAndOrphanReaping(t *testing.T) {
 	}
 	id := terminal.ID
 
-	f.adapter.mu.Lock()
-	f.adapter.killErr = errors.New("session still present after inventory passes")
-	f.adapter.mu.Unlock()
+	f.driver.mu.Lock()
+	f.driver.killErr = errors.New("session still present after inventory passes")
+	f.driver.mu.Unlock()
 	if err := f.service.Delete(ctx, id); err != nil {
 		t.Fatalf("Delete under failing kill = %v, want nil", err)
 	}
@@ -399,37 +399,37 @@ func TestDeleteBestEffortAndOrphanReaping(t *testing.T) {
 	}
 
 	// Inventory down: cleanup must refuse to act.
-	f.adapter.mu.Lock()
-	f.adapter.killErr = nil
-	f.adapter.killed = nil
-	f.adapter.invErr = errors.New("zmx down")
-	f.adapter.mu.Unlock()
+	f.driver.mu.Lock()
+	f.driver.killErr = nil
+	f.driver.killed = nil
+	f.driver.invErr = errors.New("zmx down")
+	f.driver.mu.Unlock()
 	f.service.reconcile(ctx, true)
-	if killed := f.adapter.killedNames(); len(killed) != 0 {
+	if killed := f.driver.killedNames(); len(killed) != 0 {
 		t.Fatalf("cleanup acted without a complete inventory: %v", killed)
 	}
 
 	// The request-path Reconcile never reaps: kill verification is bounded
 	// but slow, and must not block HTTP handlers.
-	f.adapter.setInvErr(nil)
+	f.driver.setInvErr(nil)
 	f.service.Reconcile(ctx)
-	if killed := f.adapter.killedNames(); len(killed) != 0 {
+	if killed := f.driver.killedNames(); len(killed) != 0 {
 		t.Fatalf("request-path reconcile reaped: %v", killed)
 	}
 
 	// The background pass with the session reachable: provably ours, reaped.
 	f.service.reconcile(ctx, true)
-	if killed := f.adapter.killedNames(); len(killed) != 1 || killed[0] != id {
+	if killed := f.driver.killedNames(); len(killed) != 1 || killed[0] != id {
 		t.Fatalf("orphan not reaped: killed = %v", killed)
 	}
 
 	// An unreachable recordless session is preserved.
-	f.adapter.set("term-ghost", false)
-	f.adapter.mu.Lock()
-	f.adapter.killed = nil
-	f.adapter.mu.Unlock()
+	f.driver.set("term-ghost", false)
+	f.driver.mu.Lock()
+	f.driver.killed = nil
+	f.driver.mu.Unlock()
 	f.service.reconcile(ctx, true)
-	if killed := f.adapter.killedNames(); len(killed) != 0 {
+	if killed := f.driver.killedNames(); len(killed) != 0 {
 		t.Fatalf("cleanup killed an unreachable session: %v", killed)
 	}
 }
@@ -502,7 +502,7 @@ func TestStaleMarkerFromEarlierIncarnationIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.adapter.remove(terminal.ID)
+	f.driver.remove(terminal.ID)
 	// The marker's exit predates the record's creation (fixture clock
 	// starts 2026-08-27T12:00) — a leftover from a dead incarnation.
 	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -534,12 +534,12 @@ func TestLoadRebuildsView(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.adapter.remove(gone.ID)
+	f.driver.remove(gone.ID)
 
 	// A "restarted" service over the same database and backend.
 	restarted := NewService(Options{
 		Repository: f.service.repository,
-		Adapter:    f.adapter,
+		Driver:     f.driver,
 		Projects:   f.service.projects,
 		MarkerDir:  f.markers,
 		Hub:        events.NewHub(64),
@@ -576,7 +576,7 @@ func TestEventsEmitted(t *testing.T) {
 	if _, err := f.service.UpdateName(ctx, terminal.ID, "renamed"); err != nil {
 		t.Fatal(err)
 	}
-	f.adapter.remove(terminal.ID)
+	f.driver.remove(terminal.ID)
 	f.service.Reconcile(ctx) // running → missing
 	if err := f.service.Delete(ctx, terminal.ID); err != nil {
 		t.Fatal(err)

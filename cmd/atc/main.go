@@ -21,14 +21,15 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jeremytondo/atc/internal/agents"
-	"github.com/jeremytondo/atc/internal/agents/claude"
-	"github.com/jeremytondo/atc/internal/agents/codex"
-	"github.com/jeremytondo/atc/internal/agents/t3code"
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/authtoken"
 	"github.com/jeremytondo/atc/internal/cli"
 	"github.com/jeremytondo/atc/internal/config"
 	"github.com/jeremytondo/atc/internal/events"
+	"github.com/jeremytondo/atc/internal/integrations/claude"
+	"github.com/jeremytondo/atc/internal/integrations/codex"
+	"github.com/jeremytondo/atc/internal/integrations/t3code"
+	"github.com/jeremytondo/atc/internal/integrations/zmx"
 	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/server"
@@ -36,7 +37,6 @@ import (
 	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/tailscale"
 	"github.com/jeremytondo/atc/internal/terminals"
-	"github.com/jeremytondo/atc/internal/terminals/zmx"
 	"github.com/jeremytondo/atc/internal/threads"
 	"github.com/jeremytondo/atc/internal/upgrade"
 	"github.com/jeremytondo/atc/internal/version"
@@ -539,7 +539,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	// unix sockets is a boot error with the remedy in the message. A
 	// missing zmx binary deliberately is not: statuses degrade to
 	// unreachable and delete keeps working.
-	adapter, err := zmx.New(zmx.Options{
+	driver, err := zmx.New(zmx.Options{
 		SocketDir:         socketDir,
 		MarkerDir:         markerDir,
 		WrapperExecutable: selfExecutable,
@@ -556,7 +556,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	})
 	terminalService := terminals.NewService(terminals.Options{
 		Repository: database.Terminals(),
-		Adapter:    adapter,
+		Driver:     driver,
 		Projects:   database.Projects(),
 		MarkerDir:  markerDir,
 		Hub:        hub,

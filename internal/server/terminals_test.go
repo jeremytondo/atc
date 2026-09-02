@@ -20,11 +20,11 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/jeremytondo/atc/internal/agents"
-	"github.com/jeremytondo/atc/internal/agents/claude"
-	"github.com/jeremytondo/atc/internal/agents/codex"
-	"github.com/jeremytondo/atc/internal/agents/t3code"
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/events"
+	"github.com/jeremytondo/atc/internal/integrations/claude"
+	"github.com/jeremytondo/atc/internal/integrations/codex"
+	"github.com/jeremytondo/atc/internal/integrations/t3code"
 	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/terminals"
@@ -32,10 +32,10 @@ import (
 	"github.com/jeremytondo/atc/internal/threads"
 )
 
-// fakeAdapter is the hand-written session backend for API-contract tests:
+// fakeDriver is the hand-written session backend for API-contract tests:
 // Create births a reachable session unless a hook says otherwise, Kill
 // removes it unless failing is set.
-type fakeAdapter struct {
+type fakeDriver struct {
 	mu       sync.Mutex
 	sessions map[string]bool
 	invErr   error
@@ -43,7 +43,7 @@ type fakeAdapter struct {
 	onCreate func(id string, spec terminals.CreateSpec) error
 }
 
-func (a *fakeAdapter) Inventory(context.Context) ([]terminals.Session, error) {
+func (a *fakeDriver) Inventory(context.Context) ([]terminals.Session, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.invErr != nil {
@@ -56,7 +56,7 @@ func (a *fakeAdapter) Inventory(context.Context) ([]terminals.Session, error) {
 	return sessions, nil
 }
 
-func (a *fakeAdapter) Create(_ context.Context, id string, spec terminals.CreateSpec) error {
+func (a *fakeDriver) Create(_ context.Context, id string, spec terminals.CreateSpec) error {
 	a.mu.Lock()
 	hook := a.onCreate
 	a.mu.Unlock()
@@ -71,7 +71,7 @@ func (a *fakeAdapter) Create(_ context.Context, id string, spec terminals.Create
 	return nil
 }
 
-func (a *fakeAdapter) Kill(_ context.Context, id string) error {
+func (a *fakeDriver) Kill(_ context.Context, id string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.killErr != nil {
@@ -82,14 +82,14 @@ func (a *fakeAdapter) Kill(_ context.Context, id string) error {
 }
 
 // fixture is a full chassis over fakes: real store in a temp dir, real
-// hub, fake adapter, fake clock — the server's existing test seam. One
+// hub, fake driver, fake clock — the server's existing test seam. One
 // project rooted at a real temp directory exists for terminals to belong
 // to; the agent catalog is the shipped one (claude, codex), probing
 // binaries against the fixture map (claude available by default), never
 // the developer machine's PATH.
 type fixture struct {
 	handler    http.Handler
-	adapter    *fakeAdapter
+	driver     *fakeDriver
 	hub        *events.Hub
 	service    *terminals.Service
 	threads    *threads.Service
@@ -107,7 +107,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	adapter := &fakeAdapter{sessions: map[string]bool{}}
+	driver := &fakeDriver{sessions: map[string]bool{}}
 	// A small ring so overflow is testable, pinned to sequence 1 so the
 	// SSE assertions are deterministic (production bases are random).
 	hub := events.NewHubAt(8, 1)
@@ -125,7 +125,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	service := terminals.NewService(terminals.Options{
 		Repository: db.Terminals(),
-		Adapter:    adapter,
+		Driver:     driver,
 		Projects:   db.Projects(),
 		MarkerDir:  markers,
 		Hub:        hub,
@@ -204,7 +204,7 @@ func newFixture(t *testing.T) *fixture {
 		TerminalCleanups:  []func(string){claudeHooks.Deregister, codexObserver.Forget},
 		HeartbeatInterval: 50 * time.Millisecond,
 	})
-	f := &fixture{handler: handler, adapter: adapter, hub: hub, service: service, threads: threadService,
+	f := &fixture{handler: handler, driver: driver, hub: hub, service: service, threads: threadService,
 		binaries: binaries, markers: markers}
 	// Planted through the repository, not the API: the fixture project must
 	// not consume an event sequence number the SSE assertions rely on.
@@ -344,7 +344,7 @@ func TestUpdateRejectsUnknownAndImmutableFields(t *testing.T) {
 
 func TestCreateWithFailingCommand(t *testing.T) {
 	f := newFixture(t)
-	f.adapter.onCreate = func(id string, _ terminals.CreateSpec) error {
+	f.driver.onCreate = func(id string, _ terminals.CreateSpec) error {
 		writeExitMarker(t, f.markers, id, 127)
 		return errors.New("client exited before the session settled")
 	}
@@ -361,10 +361,10 @@ func TestCreateWithFailingCommand(t *testing.T) {
 func TestDeleteUnderUnreachableBackend(t *testing.T) {
 	f := newFixture(t)
 	created := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{})))
-	f.adapter.mu.Lock()
-	f.adapter.killErr = errors.New("session still present after inventory passes")
-	f.adapter.invErr = errors.New("zmx down")
-	f.adapter.mu.Unlock()
+	f.driver.mu.Lock()
+	f.driver.killErr = errors.New("session still present after inventory passes")
+	f.driver.invErr = errors.New("zmx down")
+	f.driver.mu.Unlock()
 
 	if rec := f.request(t, http.MethodDelete, "/v1/terminals/"+created.ID, ""); rec.Code != http.StatusNoContent {
 		t.Fatalf("delete under unreachable backend: got %d", rec.Code)

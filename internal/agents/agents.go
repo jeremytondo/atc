@@ -11,7 +11,7 @@
 // when some adapter can start its TUI.
 //
 // The catalog has no storage; entries are assembled at startup from
-// built-in registrations — one package per adapter under internal/agents/,
+// built-in registrations — one package per adapter under internal/integrations/,
 // one registration line in the composition root — and availability is
 // probed against the machine on every read. Adapters that observe an
 // external program emit agent_adapter.updated on connection changes;

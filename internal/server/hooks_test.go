@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jeremytondo/atc/internal/agents/claude"
-	"github.com/jeremytondo/atc/internal/agents/hookauth"
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/integrations/claude"
+	"github.com/jeremytondo/atc/internal/integrations/hookauth"
 )
 
 // hookSecret digs this launch's secret out of its header file — the same

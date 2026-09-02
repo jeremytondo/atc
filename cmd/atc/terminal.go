@@ -11,10 +11,10 @@ import (
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/cli"
+	"github.com/jeremytondo/atc/internal/integrations/zmx"
 	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/service"
 	"github.com/jeremytondo/atc/internal/terminals/wrapper"
-	"github.com/jeremytondo/atc/internal/terminals/zmx"
 )
 
 func newTerminalCmd() *cobra.Command {
@@ -31,9 +31,9 @@ func newTerminalCmd() *cobra.Command {
 	return cmd
 }
 
-// newSessionAttacher wires the concrete adapter's attach mechanics for
+// newSessionAttacher wires the concrete driver's attach mechanics for
 // this local client — the client-side counterpart of main.go wiring
-// terminals.Adapter for the server.
+// terminals.Driver for the server.
 func newSessionAttacher() (cli.SessionAttacher, error) {
 	socketDir, err := paths.TerminalSocketDir()
 	if err != nil {

@@ -35,7 +35,7 @@ const resource = "terminal"
 // Options wires a Service. Now defaults to time.Now; Logger to discard.
 type Options struct {
 	Repository *store.Terminals
-	Adapter    Adapter
+	Driver     Driver
 	// Projects is read on create: the required project reference is
 	// validated and its directory copied (ATC-256).
 	Projects *store.Projects
@@ -63,7 +63,7 @@ type Options struct {
 //	mu          guards the view and settling set only.
 type Service struct {
 	repository *store.Terminals
-	adapter    Adapter
+	driver     Driver
 	projects   *store.Projects
 	markerDir  string
 	hub        *events.Hub
@@ -103,7 +103,7 @@ func NewService(opts Options) *Service {
 	}
 	return &Service{
 		repository:     opts.Repository,
-		adapter:        opts.Adapter,
+		driver:         opts.Driver,
 		projects:       opts.Projects,
 		markerDir:      opts.MarkerDir,
 		hub:            opts.Hub,
@@ -175,7 +175,7 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 	s.reconcileMu.Lock()
 	defer s.reconcileMu.Unlock()
 
-	inventory, inventoryErr := s.adapter.Inventory(ctx)
+	inventory, inventoryErr := s.driver.Inventory(ctx)
 	if inventoryErr != nil {
 		s.logger.Warn("terminal inventory unavailable", "error", inventoryErr)
 	}
@@ -308,7 +308,7 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 		// directory is provably ours and abandoned (a delete whose kill
 		// could not be verified at the time).
 		s.logger.Info("reaping orphan session", "session", name)
-		if err := s.adapter.Kill(ctx, name); err != nil {
+		if err := s.driver.Kill(ctx, name); err != nil {
 			s.logger.Warn("orphan session not cleaned", "session", name, "error", err)
 		}
 	}
@@ -464,7 +464,7 @@ func (s *Service) commitCreate(ctx context.Context, params api.TerminalCreatePar
 	s.hub.Publish(api.EventTerminalCreated, resource, record.ID)
 	s.ops.Unlock()
 
-	if err := s.adapter.Create(ctx, record.ID, CreateSpec{Directory: record.Directory, Command: record.Command}); err != nil {
+	if err := s.driver.Create(ctx, record.ID, CreateSpec{Directory: record.Directory, Command: record.Command}); err != nil {
 		// The record stays: the session may have been born after the
 		// client gave up, and the status machinery reports the truth.
 		s.logger.Warn("session create failed", "terminal", record.ID, "error", err)
@@ -489,7 +489,7 @@ func (s *Service) awaitSettled(ctx context.Context, id string) {
 		if marker, err := exitmarker.Read(s.markerDir, id); err == nil && marker.Exited() {
 			return
 		}
-		inventory, err := s.adapter.Inventory(ctx)
+		inventory, err := s.driver.Inventory(ctx)
 		if err != nil {
 			failures++
 		} else {
@@ -597,7 +597,7 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	}
 	s.mu.Unlock()
 
-	if err := s.adapter.Kill(detached, id); err != nil {
+	if err := s.driver.Kill(detached, id); err != nil {
 		s.logger.Warn("session kill unverified", "terminal", id, "error", err)
 	}
 

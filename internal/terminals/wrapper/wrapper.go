@@ -29,7 +29,7 @@ import (
 // separate launch-error path.
 const LaunchFailureCode = 127
 
-// Options names the wrapper's inputs, passed as flags by the zmx adapter
+// Options names the wrapper's inputs, passed as flags by the zmx driver
 // so the wrapper never depends on inheriting ATC's environment.
 type Options struct {
 	MarkerPath string

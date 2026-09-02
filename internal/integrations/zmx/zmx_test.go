@@ -131,12 +131,12 @@ func TestNewTightensPermissiveSocketDir(t *testing.T) {
 // Integration against a real zmx in a private, throwaway socket directory
 // (never the developer's real sessions — repo doctrine). /tmp keeps the
 // socket-path budget; TempDir on macOS does not.
-func newRealAdapter(t *testing.T) *Adapter {
+func newRealDriver(t *testing.T) *Driver {
 	t.Helper()
 	if _, err := New(Options{SocketDir: t.TempDir(), MarkerDir: t.TempDir(), WrapperExecutable: "/bin/true"}); err != nil {
-		t.Skipf("adapter unavailable: %v", err)
+		t.Skipf("driver unavailable: %v", err)
 	}
-	adapter, err := New(Options{
+	driver, err := New(Options{
 		SocketDir:         mkShortTempDir(t),
 		MarkerDir:         t.TempDir(),
 		WrapperExecutable: testBinary(t),
@@ -145,10 +145,10 @@ func newRealAdapter(t *testing.T) *Adapter {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adapter.zmx(); err != nil {
+	if _, err := driver.zmx(); err != nil {
 		t.Skip("zmx not installed; skipping real-zmx integration test")
 	}
-	return adapter
+	return driver
 }
 
 func mkShortTempDir(t *testing.T) string {
@@ -171,20 +171,20 @@ func testBinary(t *testing.T) string {
 }
 
 func TestRealZmxLifecycle(t *testing.T) {
-	adapter := newRealAdapter(t)
+	driver := newRealDriver(t)
 	ctx := context.Background()
 	const id = "term-testa"
-	t.Cleanup(func() { _ = adapter.Kill(context.Background(), id) })
+	t.Cleanup(func() { _ = driver.Kill(context.Background(), id) })
 
-	if sessions, err := adapter.Inventory(ctx); err != nil || len(sessions) != 0 {
+	if sessions, err := driver.Inventory(ctx); err != nil || len(sessions) != 0 {
 		t.Fatalf("fresh inventory = %v, %v; want empty", sessions, err)
 	}
 
 	t.Setenv("SHELL", "/bin/sh")
-	if err := adapter.Create(ctx, id, terminals.CreateSpec{Directory: "/", Command: "sleep 60"}); err != nil {
+	if err := driver.Create(ctx, id, terminals.CreateSpec{Directory: "/", Command: "sleep 60"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	sessions, err := adapter.Inventory(ctx)
+	sessions, err := driver.Inventory(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestRealZmxLifecycle(t *testing.T) {
 	// yet exit evidence.
 	startDeadline := time.Now().Add(3 * time.Second)
 	for {
-		marker, err := exitmarker.Read(adapter.markerDir, id)
+		marker, err := exitmarker.Read(driver.markerDir, id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -214,25 +214,25 @@ func TestRealZmxLifecycle(t *testing.T) {
 	}
 
 	// Creating the same name again must refuse, never silently attach.
-	if err := adapter.Create(ctx, id, terminals.CreateSpec{Directory: "/"}); err == nil {
+	if err := driver.Create(ctx, id, terminals.CreateSpec{Directory: "/"}); err == nil {
 		t.Fatal("second Create with the same name succeeded")
 	}
 
-	if err := adapter.Kill(ctx, id); err != nil {
+	if err := driver.Kill(ctx, id); err != nil {
 		t.Fatalf("Kill: %v", err)
 	}
-	if sessions, err := adapter.Inventory(ctx); err != nil || len(sessions) != 0 {
+	if sessions, err := driver.Inventory(ctx); err != nil || len(sessions) != 0 {
 		t.Fatalf("inventory after kill = %v, %v; want empty", sessions, err)
 	}
 	// Killing an absent session is success: the goal state holds.
-	if err := adapter.Kill(ctx, id); err != nil {
+	if err := driver.Kill(ctx, id); err != nil {
 		t.Errorf("Kill(absent) = %v, want nil", err)
 	}
 	// zmx kill delivers HUP; the wrapper forwards it and records the death
 	// before the follow-up SIGKILL lands.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		marker, err := exitmarker.Read(adapter.markerDir, id)
+		marker, err := exitmarker.Read(driver.markerDir, id)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -17,7 +17,7 @@
 // connection (the external program still reports it); both holds accept
 // live statuses and both release into the same coercion. Provider
 // observation — the Claude hooks, the Codex app-server observer, the T3
-// Code adapter — lives with the agents side and feeds this service only
+// Code adapter — lives under internal/integrations and feeds this service only
 // neutral observations; no provider vocabulary enters here. Statuses come
 // from evidence, never guesses: unknown means no evidence, and a thread
 // that stops being observed keeps idle but coerces the unverifiable live

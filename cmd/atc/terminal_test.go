@@ -15,10 +15,10 @@ import (
 	"testing"
 
 	"github.com/jeremytondo/atc/internal/agents"
-	"github.com/jeremytondo/atc/internal/agents/claude"
-	"github.com/jeremytondo/atc/internal/agents/codex"
-	"github.com/jeremytondo/atc/internal/agents/t3code"
 	"github.com/jeremytondo/atc/internal/events"
+	"github.com/jeremytondo/atc/internal/integrations/claude"
+	"github.com/jeremytondo/atc/internal/integrations/codex"
+	"github.com/jeremytondo/atc/internal/integrations/t3code"
 	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/server"
 	"github.com/jeremytondo/atc/internal/store"
@@ -26,13 +26,13 @@ import (
 	"github.com/jeremytondo/atc/internal/threads"
 )
 
-// cliAdapter is the fake session backend behind the CLI tests' server.
-type cliAdapter struct {
+// cliDriver is the fake session backend behind the CLI tests' server.
+type cliDriver struct {
 	mu       sync.Mutex
 	sessions map[string]bool
 }
 
-func (a *cliAdapter) Inventory(context.Context) ([]terminals.Session, error) {
+func (a *cliDriver) Inventory(context.Context) ([]terminals.Session, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	sessions := make([]terminals.Session, 0, len(a.sessions))
@@ -42,14 +42,14 @@ func (a *cliAdapter) Inventory(context.Context) ([]terminals.Session, error) {
 	return sessions, nil
 }
 
-func (a *cliAdapter) Create(_ context.Context, id string, _ terminals.CreateSpec) error {
+func (a *cliDriver) Create(_ context.Context, id string, _ terminals.CreateSpec) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.sessions[id] = true
 	return nil
 }
 
-func (a *cliAdapter) Kill(_ context.Context, id string) error {
+func (a *cliDriver) Kill(_ context.Context, id string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	delete(a.sessions, id)
@@ -61,27 +61,27 @@ const cliTestToken = "atc_cli-test-token"
 // startTestServer runs the real chassis over a fake backend and points the
 // CLI at it through ATC_SERVER and ATC_TOKEN — the same paste-once setup a
 // remote client uses.
-func startTestServer(t *testing.T) *cliAdapter {
+func startTestServer(t *testing.T) *cliDriver {
 	t.Helper()
-	adapter, _ := startTestServerWithThreads(t)
-	return adapter
+	driver, _ := startTestServerWithThreads(t)
+	return driver
 }
 
 // startTestServerWithThreads additionally exposes the threads service so
 // thread tests can plant observed conversations — the seam providers use
 // in production; there is no create verb on the wire.
-func startTestServerWithThreads(t *testing.T) (*cliAdapter, *threads.Service) {
+func startTestServerWithThreads(t *testing.T) (*cliDriver, *threads.Service) {
 	t.Helper()
 	db, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "atc.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	adapter := &cliAdapter{sessions: map[string]bool{}}
+	driver := &cliDriver{sessions: map[string]bool{}}
 	hub := events.NewHub(events.DefaultBacklog)
 	service := terminals.NewService(terminals.Options{
 		Repository: db.Terminals(),
-		Adapter:    adapter,
+		Driver:     driver,
 		Projects:   db.Projects(),
 		MarkerDir:  t.TempDir(),
 		Hub:        hub,
@@ -150,7 +150,7 @@ func startTestServerWithThreads(t *testing.T) (*cliAdapter, *threads.Service) {
 	t.Cleanup(srv.Close)
 	t.Setenv("ATC_SERVER", srv.URL)
 	t.Setenv("ATC_TOKEN", cliTestToken)
-	return adapter, threadService
+	return driver, threadService
 }
 
 func runCLI(t *testing.T, args ...string) (string, string, error) {
@@ -200,7 +200,7 @@ func installFakeZmx(t *testing.T) {
 }
 
 func TestTerminalCLILifecycle(t *testing.T) {
-	adapter := startTestServer(t)
+	driver := startTestServer(t)
 	// --project skips cwd resolution entirely; the cwd (this repo) owns no
 	// project on the test server.
 	projectID := createProjectCLI(t, t.TempDir())
@@ -247,9 +247,9 @@ func TestTerminalCLILifecycle(t *testing.T) {
 	if !strings.Contains(stdout, "deleted "+id) {
 		t.Errorf("delete output:\n%s", stdout)
 	}
-	adapter.mu.Lock()
-	remaining := len(adapter.sessions)
-	adapter.mu.Unlock()
+	driver.mu.Lock()
+	remaining := len(driver.sessions)
+	driver.mu.Unlock()
 	if remaining != 0 {
 		t.Errorf("session survived delete")
 	}
@@ -363,7 +363,7 @@ func TestAttachRefusesNonRunning(t *testing.T) {
 	t.Setenv("PATH", "")
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
-	adapter := startTestServer(t)
+	driver := startTestServer(t)
 	projectID := createProjectCLI(t, t.TempDir())
 	stdout, _, err := runCLI(t, "terminal", "create", "--project", projectID, "--detach")
 	if err != nil {
@@ -372,9 +372,9 @@ func TestAttachRefusesNonRunning(t *testing.T) {
 	id := regexp.MustCompile(`term-[a-z2-9]{5}`).FindString(stdout)
 	// The session vanishes without evidence; the next mutation's reconcile
 	// (create of an unrelated terminal) settles it to missing.
-	adapter.mu.Lock()
-	delete(adapter.sessions, id)
-	adapter.mu.Unlock()
+	driver.mu.Lock()
+	delete(driver.sessions, id)
+	driver.mu.Unlock()
 	if _, _, err := runCLI(t, "terminal", "create", "--name", "other", "--project", projectID, "--detach"); err != nil {
 		t.Fatal(err)
 	}
