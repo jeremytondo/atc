@@ -353,6 +353,11 @@ func liveness(value any) threadOpt {
 	return func(m map[string]any) { m["backgroundLiveness"] = value }
 }
 
+// settledOverride sets T3's settlement field: "settled", "active", or nil.
+func settledOverride(value any) threadOpt {
+	return func(m map[string]any) { m["settledOverride"] = value }
+}
+
 func worktree(path string) threadOpt {
 	return func(m map[string]any) { m["worktreePath"] = path }
 }

@@ -41,6 +41,15 @@ type threadShell struct {
 	HasPendingApprovals *bool           `json:"hasPendingApprovals"`
 	HasPendingUserInput *bool           `json:"hasPendingUserInput"`
 	BackgroundLiveness  *string         `json:"backgroundLiveness"`
+	// SettledOverride is T3's own settlement: "settled" threads leave its
+	// active list while staying in the shell projection.
+	SettledOverride *string `json:"settledOverride"`
+}
+
+// settled reports whether T3 has settled the thread — manually or by its
+// own policy. ATC never infers settlement from idle status or age.
+func (t threadShell) settled() bool {
+	return t.SettledOverride != nil && *t.SettledOverride == "settled"
 }
 
 type modelSelection struct {

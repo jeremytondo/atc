@@ -102,8 +102,10 @@ type Observer struct {
 	last    runtime
 	shell   shellState
 	// skipped holds the T3 threads whose workspace has no local directory,
-	// by id, with the reason — counted in the connection detail.
+	// by id, with the reason; settled holds the ones T3 has settled. Both
+	// are counted in the connection detail, neither is mirrored.
 	skipped map[string]string
+	settled map[string]bool
 
 	mu                    sync.Mutex
 	connection            api.AgentAdapterConnection
@@ -155,6 +157,7 @@ func New(opts Options) *Observer {
 		backoffMax:   backoffMax,
 		authRetry:    authRetry,
 		skipped:      map[string]string{},
+		settled:      map[string]bool{},
 	}
 	// The report is honest before Run starts: one discovery decides
 	// between "not running" and "about to connect".
@@ -433,6 +436,7 @@ func (o *Observer) applySnapshot(ctx context.Context, snapshot shellSnapshot) er
 	}
 	o.shell = shellState{initialized: true, sequence: *snapshot.Sequence, projects: projects, threads: threadsByID}
 	o.skipped = map[string]string{}
+	o.settled = map[string]bool{}
 	o.reconcile(ctx)
 	for _, id := range o.threads.UnarchivedProviderIDs(ID) {
 		if _, present := threadsByID[id]; !present {
@@ -479,6 +483,7 @@ func (o *Observer) applyEvent(ctx context.Context, event shellEvent) error {
 		o.observe(ctx, *event.Thread, project)
 	case "thread-removed":
 		delete(o.shell.threads, event.ThreadID)
+		delete(o.settled, event.ThreadID)
 		o.forget(ctx, event.ThreadID)
 	}
 	o.shell.sequence = *event.Sequence
@@ -486,11 +491,19 @@ func (o *Observer) applyEvent(ctx context.Context, event shellEvent) error {
 }
 
 // observe feeds one T3 thread to the threads domain as an adapter
-// observation. A known conversation needs no project; an unknown one
-// (the domain asks for a project) is associated and observed again, or
-// skipped — counted, not recorded — when its workspace has no local
-// directory.
+// observation. A thread T3 has settled (ATC-292) is treated as archived:
+// a known record archives, an unknown one is never minted, and the same
+// record returns when T3 unsettles it. Otherwise a known conversation
+// needs no project; an unknown one (the domain asks for a project) is
+// associated and observed again, or skipped — counted, not recorded —
+// when its workspace has no local directory.
 func (o *Observer) observe(ctx context.Context, thread threadShell, project projectShell) {
+	if thread.settled() {
+		o.settled[thread.ID] = true
+		o.forget(ctx, thread.ID)
+		return
+	}
+	delete(o.settled, thread.ID)
 	cwd := thread.WorktreePath.Value
 	if cwd == "" {
 		cwd = project.WorkspaceRoot
@@ -526,7 +539,8 @@ func (o *Observer) observe(ctx context.Context, thread threadShell, project proj
 	delete(o.skipped, thread.ID)
 }
 
-// forget mirrors a thread T3 no longer reports: archived, never deleted.
+// forget mirrors a thread T3 no longer reports as active — removed or
+// settled: archived, never deleted.
 func (o *Observer) forget(ctx context.Context, threadID string) {
 	delete(o.skipped, threadID)
 	if err := o.threads.ArchiveAdapterThread(ctx, ID, threadID); err != nil {
@@ -589,7 +603,10 @@ func owns(dir, path string) bool {
 
 // detail is the connected state's human-readable summary.
 func (o *Observer) detail(origin string) string {
-	detail := fmt.Sprintf("subscribed to %s; %d threads mirrored", origin, len(o.shell.threads)-len(o.skipped))
+	detail := fmt.Sprintf("subscribed to %s; %d threads mirrored", origin, len(o.shell.threads)-len(o.skipped)-len(o.settled))
+	if len(o.settled) > 0 {
+		detail += fmt.Sprintf(", %d settled", len(o.settled))
+	}
 	if len(o.skipped) == 0 {
 		return detail
 	}

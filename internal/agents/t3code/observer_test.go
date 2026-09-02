@@ -370,6 +370,75 @@ func TestRemovedArchivesAndVerbs(t *testing.T) {
 	}
 }
 
+// T3 settlement is ATC archival (ATC-292): a settled thread ATC knows
+// archives, one it never saw is not minted, and unsettling brings the
+// same record back — in the initial snapshot, live upserts, and a
+// reconnect snapshot alike.
+func TestSettledThreadsAreArchived(t *testing.T) {
+	f := newFixture(t)
+	workspace := t.TempDir()
+	f.project(workspace, "mine")
+	f.writeRuntime(f.server.origin())
+	f.server.setInitial(func(after *uint64) []any {
+		if after == nil {
+			return []any{snapshotItem(1, []any{projectItem("p1", "T3", workspace)}, []any{
+				threadItem("t-live", "p1", "Live", withSession("running", "codex")),
+				threadItem("t-history", "p1", "Old", settledOverride("settled")),
+			}), synchronizedItem()}
+		}
+		return []any{snapshotItem(9, []any{projectItem("p1", "T3", workspace)}, []any{
+			threadItem("t-live", "p1", "Live", withSession("idle", "codex"), settledOverride("settled")),
+			threadItem("t-history", "p1", "Old", settledOverride("settled")),
+		}), synchronizedItem()}
+	})
+	f.start()
+	live := f.waitStatus("t-live", api.ThreadWorking)
+	connection := f.waitState(api.AdapterConnected)
+	if !strings.Contains(connection.Detail, "1 threads mirrored, 1 settled") {
+		t.Errorf("detail = %q", connection.Detail)
+	}
+	if _, _, ok := f.threads.LookupIdentity(ID, "t-history"); ok {
+		t.Error("a settled thread ATC never observed was recorded")
+	}
+
+	// Settled live: archived, coerced, hold released.
+	f.server.push(upserted(2, threadItem("t-live", "p1", "Live", withSession("idle", "codex"), settledOverride("settled"))))
+	waitFor(t, "archive on settle", func() bool { return f.thread("t-live").Archived })
+	if got := f.thread("t-live"); got.ID != live.ID || got.Status != api.ThreadUnknown {
+		t.Errorf("settled = %+v", got)
+	}
+	unarchived := false
+	if _, err := f.threads.Update(context.Background(), live.ID, api.ThreadUpdateParams{Archived: &unarchived}); err != nil {
+		t.Errorf("unarchive while settled = %v; want allowed (T3 no longer reports it active)", err)
+	}
+
+	// Reactivated (explicitly, then by clearing the override): the same
+	// record returns and holds again.
+	f.server.push(upserted(3, threadItem("t-live", "p1", "Live", withSession("running", "codex"), settledOverride("active"))))
+	restored := f.waitStatus("t-live", api.ThreadWorking)
+	if restored.ID != live.ID || restored.Archived {
+		t.Errorf("reactivated = %+v; want %s unarchived", restored, live.ID)
+	}
+	archived := true
+	if _, err := f.threads.Update(context.Background(), live.ID, api.ThreadUpdateParams{Archived: &archived}); !errors.Is(err, threads.ErrActive) {
+		t.Errorf("archive while active again = %v; want ErrActive", err)
+	}
+	f.server.push(upserted(4, threadItem("t-live", "p1", "Live", withSession("idle", "codex"), settledOverride("settled"))))
+	waitFor(t, "second settle", func() bool { return f.thread("t-live").Archived })
+	f.server.push(upserted(5, threadItem("t-live", "p1", "Live", withSession("idle", "codex"), settledOverride(nil))))
+	waitFor(t, "unsettle by null", func() bool { return !f.thread("t-live").Archived })
+	if got := f.thread("t-live"); got.ID != restored.ID || got.Status != api.ThreadIdle {
+		t.Errorf("unsettled = %+v; want %s idle", got, restored.ID)
+	}
+
+	// A reconnect snapshot that reports it settled archives it again.
+	f.server.dropConns()
+	waitFor(t, "archive on reconnect snapshot", func() bool { return f.thread("t-live").Archived })
+	if connection := f.waitState(api.AdapterConnected); !strings.Contains(connection.Detail, "0 threads mirrored, 2 settled") {
+		t.Errorf("detail after reconnect = %q", connection.Detail)
+	}
+}
+
 // A dropped socket: live statuses coerce to unknown and the adapter
 // reports connecting once; the reconnect buys a new ticket, resumes after
 // the last applied sequence, ignores the replayed one, applies the new
