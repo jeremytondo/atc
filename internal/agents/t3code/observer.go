@@ -40,7 +40,6 @@ const (
 // ThreadObserver is the seam into the threads domain: neutral
 // observations in, no T3 vocabulary out.
 type ThreadObserver interface {
-	LookupIdentity(adapter, providerID string) (threadID, terminalID string, ok bool)
 	ObserveAdapter(ctx context.Context, o threads.AdapterObservation) (string, error)
 	ArchiveAdapterThread(ctx context.Context, adapter, providerID string) error
 	ReleaseAdapter(ctx context.Context, adapter string)
@@ -97,8 +96,10 @@ type Observer struct {
 
 	// Run-goroutine state.
 	session *session
-	// retryAt gates pairing after an auth failure; a T3 restart clears it.
+	// retryAt gates pairing after an auth failure; a T3 restart (a
+	// different runtime than last seen) clears it.
 	retryAt time.Time
+	last    runtime
 	shell   shellState
 	// skipped holds the T3 threads whose workspace has no local directory,
 	// by id, with the reason — counted in the connection detail.
@@ -216,13 +217,14 @@ func (o *Observer) Run(ctx context.Context) {
 		if err != nil {
 			o.setState(api.AdapterUnavailable, err.Error())
 			o.release(ctx)
-			// A T3 that comes back is a new run: pairing may be tried at
-			// once.
-			o.retryAt = time.Time{}
 			if !wait(ctx, o.pollInterval) {
 				return
 			}
 			continue
+		}
+		if state != o.last {
+			o.last = state
+			o.retryAt = time.Time{}
 		}
 		if o.now().Before(o.retryAt) {
 			if !wait(ctx, o.pollInterval) {
@@ -282,7 +284,10 @@ func (o *Observer) serve(ctx context.Context, state runtime) error {
 	}
 	if o.session == nil {
 		if o.session, err = loadSession(o.sessionPath); err != nil {
-			return &authError{err: err}
+			// A file that is not a session (a restored fragment, a hand
+			// edit) is not a credential: pair afresh over it. Nothing can
+			// be revoked for it.
+			o.logger.Warn("t3code: ignoring an unreadable session file", "path", o.sessionPath, "error", err)
 		}
 	}
 	repaired := false
@@ -294,7 +299,11 @@ func (o *Observer) serve(ctx context.Context, state runtime) error {
 				return err
 			}
 			if err := saveSession(o.sessionPath, s); err != nil {
-				o.logger.Warn("t3code: persisting the session", "path", o.sessionPath, "error", err)
+				// A session that only lives in memory would be paired over
+				// at every restart, leaking sessions in T3: retire it and
+				// report the persistence failure as the thing to fix.
+				o.revoke(ctx, s)
+				return authErrorf("persisting the T3 Code session: %w", err)
 			}
 			o.session = s
 			repaired = true
@@ -318,11 +327,7 @@ func (o *Observer) serve(ctx context.Context, state runtime) error {
 			o.session = nil
 			o.revoke(ctx, old)
 		case http.StatusForbidden:
-			// The session lacks the scope: retire it, so the slow retry
-			// pairs afresh instead of presenting the same credential.
-			o.revoke(ctx, o.session)
-			o.session = nil
-			return authErrorf("T3 Code refused the %s scope: %w", scope, err)
+			return o.scopeRefused(ctx, err)
 		default:
 			return fmt.Errorf("websocket ticket: %w", err)
 		}
@@ -342,9 +347,12 @@ func (o *Observer) serve(ctx context.Context, state runtime) error {
 		after = &sequence
 	}
 	// After a replay (no snapshot in this subscription) every hold has to
-	// be re-established from the local copy once the marker arrives.
+	// be re-established from the local copy once the marker arrives; the
+	// adapter is connected — statuses current, holds in place — only from
+	// then, or from a snapshot.
 	replaying := after != nil
-	return subscribeShell(ctx, o.httpClient, socketURL, after, func(item json.RawMessage) error {
+	established := false
+	err = subscribeShell(ctx, o.httpClient, socketURL, after, func(item json.RawMessage) error {
 		event, err := decodeEvent(item)
 		if err != nil {
 			return err
@@ -354,7 +362,7 @@ func (o *Observer) serve(ctx context.Context, state runtime) error {
 			if err := o.applySnapshot(ctx, *event.Snapshot); err != nil {
 				return err
 			}
-			replaying = false
+			replaying, established = false, true
 		case "synchronized":
 			if !o.shell.initialized {
 				return &protocolError{err: errors.New("synchronized before any snapshot")}
@@ -363,18 +371,33 @@ func (o *Observer) serve(ctx context.Context, state runtime) error {
 				o.reconcile(ctx)
 				replaying = false
 			}
+			established = true
 		default:
 			if err := o.applyEvent(ctx, event); err != nil {
 				return err
 			}
 		}
-		o.setState(api.AdapterConnected, o.detail(origin))
+		if established {
+			o.setState(api.AdapterConnected, o.detail(origin))
+		}
 		return nil
 	})
+	var status *httpError
+	if errors.As(err, &status) && status.status == http.StatusForbidden {
+		return o.scopeRefused(ctx, err)
+	}
+	return err
 }
 
-// describe reads the unauthenticated environment descriptor for the
-// environment id the links need.
+// scopeRefused handles T3 refusing the session's scope, at the ticket or
+// inside the subscription: the session is retired, so the slow retry
+// pairs afresh instead of presenting the same credential.
+func (o *Observer) scopeRefused(ctx context.Context, err error) error {
+	o.revoke(ctx, o.session)
+	o.session = nil
+	return authErrorf("T3 Code refused the %s scope: %w", scope, err)
+}
+
 func (o *Observer) describe(ctx context.Context, origin string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, origin+"/.well-known/t3/environment", nil)
 	if err != nil {
@@ -419,7 +442,6 @@ func (o *Observer) applySnapshot(ctx context.Context, snapshot shellSnapshot) er
 	return nil
 }
 
-// reconcile observes every thread in the local copy, in id order.
 func (o *Observer) reconcile(ctx context.Context) {
 	ids := make([]string, 0, len(o.shell.threads))
 	for id := range o.shell.threads {
@@ -464,9 +486,10 @@ func (o *Observer) applyEvent(ctx context.Context, event shellEvent) error {
 }
 
 // observe feeds one T3 thread to the threads domain as an adapter
-// observation. A known conversation needs no project; an unknown one is
-// associated first, and skipped (counted, not recorded) when its
-// workspace has no local directory.
+// observation. A known conversation needs no project; an unknown one
+// (the domain asks for a project) is associated and observed again, or
+// skipped — counted, not recorded — when its workspace has no local
+// directory.
 func (o *Observer) observe(ctx context.Context, thread threadShell, project projectShell) {
 	cwd := thread.WorktreePath.Value
 	if cwd == "" {
@@ -488,15 +511,15 @@ func (o *Observer) observe(ctx context.Context, thread threadShell, project proj
 			observation.LastError = *thread.Session.LastError
 		}
 	}
-	if _, _, known := o.threads.LookupIdentity(ID, thread.ID); !known {
-		projectID, err := o.resolveProject(ctx, project)
-		if err != nil {
+	_, err := o.threads.ObserveAdapter(ctx, observation)
+	if errors.Is(err, threads.ErrProjectRequired) {
+		if observation.ProjectID, err = o.resolveProject(ctx, project); err != nil {
 			o.skipped[thread.ID] = err.Error()
 			return
 		}
-		observation.ProjectID = projectID
+		_, err = o.threads.ObserveAdapter(ctx, observation)
 	}
-	if _, err := o.threads.ObserveAdapter(ctx, observation); err != nil {
+	if err != nil {
 		o.logger.Warn("t3code: recording thread observation", "thread", thread.ID, "error", err)
 		return
 	}
@@ -586,7 +609,6 @@ func (o *Observer) detail(origin string) string {
 	return fmt.Sprintf("%s; %d skipped (%s)", detail, len(o.skipped), strings.Join(reasons, "; "))
 }
 
-// wait sleeps d unless ctx ends first, reporting whether to continue.
 func wait(ctx context.Context, d time.Duration) bool {
 	timer := time.NewTimer(d)
 	defer timer.Stop()

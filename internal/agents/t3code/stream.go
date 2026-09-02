@@ -35,7 +35,9 @@ func (e *protocolError) Error() string { return "T3 Code protocol: " + e.err.Err
 func (e *protocolError) Unwrap() error { return e.err }
 
 // httpError is a non-2xx answer from T3, with the status the caller
-// classifies (401 re-pairs, 403 is an auth failure, the rest retry).
+// classifies (401 re-pairs, 403 is an auth failure, the rest retry). The
+// subscription's own scope refusal, which arrives inside the stream, is
+// reported as a 403 too.
 type httpError struct {
 	status int
 	body   string
@@ -173,6 +175,12 @@ func subscribeShell(ctx context.Context, client *http.Client, socketURL string, 
 			}
 			if envelope.Tag == "Exit" {
 				if envelope.Exit != nil && envelope.Exit.Tag == "Failure" {
+					// The scope check for the subscription itself happens
+					// here, not at the ticket: a session without it is
+					// refused inside the stream.
+					if bytes.Contains(envelope.Exit.Cause, []byte(`"EnvironmentAuthorizationError"`)) {
+						return &httpError{status: http.StatusForbidden, body: "subscription refused: " + string(envelope.Exit.Cause)}
+					}
 					return &protocolError{err: fmt.Errorf("subscription failed: %s", envelope.Exit.Cause)}
 				}
 				return errors.New("subscription ended")

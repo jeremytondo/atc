@@ -61,7 +61,7 @@ func loadSession(path string) (*session, error) {
 	}
 	var s session
 	if err := json.Unmarshal(data, &s); err != nil || s.Origin == "" || s.Token == "" {
-		return nil, fmt.Errorf("session file %s is not readable; delete it to pair again", path)
+		return nil, fmt.Errorf("session file %s does not hold a session", path)
 	}
 	return &s, nil
 }
@@ -167,9 +167,10 @@ func (o *Observer) pair(ctx context.Context, origin string) (*session, error) {
 	}
 	if err := doJSON(o.httpClient, req, &token); err != nil {
 		var status *httpError
-		if errors.As(err, &status) {
+		if errors.As(err, &status) && status.status < 500 {
 			return nil, authErrorf("T3 Code refused the pairing exchange: %w", err)
 		}
+		// A T3 that cannot answer right now is not a pairing failure.
 		return nil, fmt.Errorf("pairing exchange: %w", err)
 	}
 	if token.AccessToken == "" {

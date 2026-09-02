@@ -34,12 +34,18 @@ type fakeT3 struct {
 	// grantScope is what the exchange answers; a test widens it to prove
 	// the adapter checks.
 	grantScope string
-	// scopeDenied makes the ticket route answer 403.
-	scopeDenied bool
-	tickets     map[string]bool
-	ticketCalls int
-	exchanges   int
-	conns       []*websocket.Conn
+	// scopeDenied makes the ticket route answer 403; streamDenied makes
+	// the subscription itself exit with T3's authorization error, as the
+	// real server does for a session lacking the scope.
+	scopeDenied  bool
+	streamDenied bool
+	// exchangeStatus, when set, is what /oauth/token answers instead of a
+	// token.
+	exchangeStatus int
+	tickets        map[string]bool
+	ticketCalls    int
+	exchanges      int
+	conns          []*websocket.Conn
 	// subscribes records each subscription's afterSequence (nil for a
 	// fresh one).
 	subscribes []*uint64
@@ -88,6 +94,10 @@ func (f *fakeT3) exchange(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.exchanges++
+	if f.exchangeStatus != 0 {
+		http.Error(w, `{"code":"internal_error"}`, f.exchangeStatus)
+		return
+	}
 	form := r.PostForm
 	if form.Get("grant_type") != "urn:ietf:params:oauth:grant-type:token-exchange" ||
 		form.Get("subject_token_type") != "urn:t3:params:oauth:token-type:environment-bootstrap" ||
@@ -165,8 +175,13 @@ func (f *fakeT3) subscribe(w http.ResponseWriter, r *http.Request) {
 		}
 		f.mu.Lock()
 		f.subscribes = append(f.subscribes, frame.Payload.AfterSequence)
-		initial := f.initial
+		initial, denied := f.initial, f.streamDenied
 		f.mu.Unlock()
+		if denied {
+			exit := `{"_tag":"Exit","requestId":"1","exit":{"_tag":"Failure","cause":{"_tag":"Fail","error":{"_tag":"EnvironmentAuthorizationError","message":"missing scope","requiredScope":"orchestration:read"}}}}`
+			_ = conn.Write(ctx, websocket.MessageText, []byte(exit))
+			continue
+		}
 		f.send(conn, initial(frame.Payload.AfterSequence)...)
 	}
 }

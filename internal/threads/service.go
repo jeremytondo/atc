@@ -97,10 +97,11 @@ type Service struct {
 	// terminal has open. Derived from evidence, never stored: it starts
 	// empty at boot and is re-established by observation.
 	active map[string]string
-	// held maps thread id → the adapter whose connection holds it: the
-	// external program still reports the conversation. Like active, it
-	// is evidence, re-established by observation after a boot.
-	held map[string]string
+	// held is the set of threads whose producing adapter's connection
+	// holds them: the external program still reports the conversation.
+	// Like active, it is evidence, re-established by observation after a
+	// boot.
+	held map[string]struct{}
 }
 
 type identityKey struct {
@@ -133,7 +134,7 @@ func NewService(opts Options) *Service {
 		identities: make(map[identityKey]string),
 		keys:       make(map[string]identityKey),
 		active:     make(map[string]string),
-		held:       make(map[string]string),
+		held:       make(map[string]struct{}),
 	}
 }
 
@@ -648,7 +649,7 @@ func (s *Service) ObserveAdapter(ctx context.Context, o AdapterObservation) (str
 			return "", err
 		}
 		s.mu.Lock()
-		s.held[record.ID] = o.Adapter
+		s.held[record.ID] = struct{}{}
 		s.mu.Unlock()
 		s.hub.Publish(api.EventThreadCreated, resource, record.ID)
 		return record.ID, nil
@@ -691,7 +692,7 @@ func (s *Service) ObserveAdapter(ctx context.Context, o AdapterObservation) (str
 	if entry, ok := s.view[threadID]; ok {
 		*entry = record
 	}
-	s.held[threadID] = o.Adapter
+	s.held[threadID] = struct{}{}
 	s.mu.Unlock()
 	if changed {
 		s.hub.Publish(api.EventThreadUpdated, resource, threadID)
@@ -730,8 +731,8 @@ func (s *Service) ReleaseAdapter(ctx context.Context, adapter string) {
 	defer s.ops.Unlock()
 	s.mu.Lock()
 	var ids []string
-	for id, holder := range s.held {
-		if holder == adapter {
+	for id := range s.held {
+		if entry, ok := s.view[id]; ok && entry.Adapter == adapter {
 			ids = append(ids, id)
 		}
 	}
@@ -1208,8 +1209,8 @@ func (s *Service) holder(threadID string) string {
 	if terminalID := s.activeHolder(threadID); terminalID != "" {
 		return "open in terminal " + terminalID
 	}
-	if adapter, ok := s.held[threadID]; ok {
-		return "still reported by adapter " + adapter
+	if _, ok := s.held[threadID]; ok {
+		return "still reported by adapter " + s.view[threadID].Adapter
 	}
 	return ""
 }

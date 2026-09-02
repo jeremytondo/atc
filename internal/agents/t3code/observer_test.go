@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,6 +43,7 @@ type fixture struct {
 	sub         *events.Subscription
 	observer    *Observer
 	alive       bool
+	authRetry   time.Duration
 	cancel      context.CancelFunc
 	done        chan struct{}
 }
@@ -64,6 +66,7 @@ func newFixture(t *testing.T) *fixture {
 		t: t, server: server, cli: &fakeCLI{server: server},
 		home: t.TempDir(), sessionPath: filepath.Join(t.TempDir(), "t3code-session.json"),
 		threads: threadService, projects: projectService, hub: hub, alive: true,
+		authRetry: 300 * time.Millisecond,
 	}
 	f.sub = hub.Subscribe(0, false)
 	t.Cleanup(f.sub.Close)
@@ -95,7 +98,7 @@ func (f *fixture) start() {
 	f.observer.pollInterval = 20 * time.Millisecond
 	f.observer.backoffMin = 20 * time.Millisecond
 	f.observer.backoffMax = 100 * time.Millisecond
-	f.observer.authRetry = 300 * time.Millisecond
+	f.observer.authRetry = f.authRetry
 	f.threads.SetLinker(ID, f.observer.Links)
 	ctx, cancel := context.WithCancel(context.Background())
 	f.cancel = cancel
@@ -422,6 +425,39 @@ func TestReconnectResumes(t *testing.T) {
 	}
 }
 
+// During a replay the adapter is still connecting: holds are only back
+// once the marker arrives, so connected is reported then.
+func TestReplayConnectsAtTheMarker(t *testing.T) {
+	f := newFixture(t)
+	workspace := t.TempDir()
+	f.project(workspace, "mine")
+	f.writeRuntime(f.server.origin())
+	f.server.setInitial(func(after *uint64) []any {
+		if after == nil {
+			return []any{snapshotItem(1, []any{projectItem("p1", "T3", workspace)}, []any{
+				threadItem("t1", "p1", "One", withSession("running", "codex")),
+			}), synchronizedItem()}
+		}
+		// The replay's events without its marker: the marker is pushed by
+		// the test.
+		return []any{upserted(2, threadItem("t1", "p1", "One", withSession("idle", "codex")))}
+	})
+	f.start()
+	f.waitStatus("t1", api.ThreadWorking)
+	f.server.dropConns()
+	f.waitState(api.AdapterConnecting)
+	f.waitStatus("t1", api.ThreadIdle)
+	if state := f.observer.Connection().State; state != api.AdapterConnecting {
+		t.Errorf("state after a replayed event = %s; want connecting until synchronized", state)
+	}
+	f.server.push(synchronizedItem())
+	f.waitState(api.AdapterConnected)
+	archived := true
+	if _, err := f.threads.Update(context.Background(), f.thread("t1").ID, api.ThreadUpdateParams{Archived: &archived}); !errors.Is(err, threads.ErrActive) {
+		t.Errorf("archive after the marker = %v; want ErrActive (hold restored)", err)
+	}
+}
+
 // When T3 answers a resume with a fresh snapshot instead of a replay, it
 // is diff-applied: threads it lacks archive, new ones appear, the rest
 // update in place.
@@ -590,6 +626,57 @@ func TestAuthFailures(t *testing.T) {
 		// After the wait, pairing is tried again.
 		waitFor(t, "second pairing", func() bool { _, exchanges := f.server.counts(); return exchanges == 2 })
 	})
+	t.Run("subscription refused", func(t *testing.T) {
+		// T3 checks the subscription's scope inside the stream, not at the
+		// ticket: the refusal there retires the session the same way.
+		f := newFixture(t)
+		f.writeRuntime(f.server.origin())
+		f.server.mu.Lock()
+		f.server.streamDenied = true
+		f.server.mu.Unlock()
+		f.start()
+		connection := f.waitState(api.AdapterAuthFailed)
+		if !strings.Contains(connection.Detail, "refused the orchestration:read scope") || !strings.Contains(connection.Detail, "subscription refused") {
+			t.Errorf("detail = %q", connection.Detail)
+		}
+		if f.cli.count("auth session revoke sess-1") != 1 {
+			t.Errorf("CLI calls = %v; want the refused session revoked", f.cli.calls)
+		}
+		waitFor(t, "second pairing", func() bool { _, exchanges := f.server.counts(); return exchanges == 2 })
+	})
+	t.Run("exchange unavailable", func(t *testing.T) {
+		// A T3 that cannot answer the exchange is a reconnect, not a
+		// pairing failure.
+		f := newFixture(t)
+		f.writeRuntime(f.server.origin())
+		f.server.mu.Lock()
+		f.server.exchangeStatus = http.StatusInternalServerError
+		f.server.mu.Unlock()
+		f.start()
+		waitFor(t, "a reported exchange failure", func() bool {
+			connection := f.observer.Connection()
+			return connection.State == api.AdapterConnecting && strings.Contains(connection.Detail, "pairing exchange")
+		})
+		waitFor(t, "retries", func() bool { _, exchanges := f.server.counts(); return exchanges >= 3 })
+		f.server.mu.Lock()
+		f.server.exchangeStatus = 0
+		f.server.mu.Unlock()
+		f.waitState(api.AdapterConnected)
+	})
+	t.Run("session not persisted", func(t *testing.T) {
+		// A session that cannot be stored would be paired over at every
+		// restart: it is retired and the failure reported.
+		f := newFixture(t)
+		f.writeRuntime(f.server.origin())
+		f.sessionPath = filepath.Join(f.home, "userdata", "server-runtime.json", "session.json")
+		f.start()
+		if connection := f.waitState(api.AdapterAuthFailed); !strings.Contains(connection.Detail, "persisting the T3 Code session") {
+			t.Errorf("detail = %q", connection.Detail)
+		}
+		if f.cli.count("auth session revoke sess-1") != 1 {
+			t.Errorf("CLI calls = %v; want the unpersisted session revoked", f.cli.calls)
+		}
+	})
 	t.Run("wider scope granted", func(t *testing.T) {
 		f := newFixture(t)
 		f.writeRuntime(f.server.origin())
@@ -641,6 +728,29 @@ func TestAuthFailures(t *testing.T) {
 			t.Errorf("detail = %q", connection.Detail)
 		}
 	})
+}
+
+// An auth failure waits before pairing again — unless T3 restarts, which
+// is a new run worth trying at once, even when the file changes between
+// polls.
+func TestAuthRetryGateClearsOnRestart(t *testing.T) {
+	f := newFixture(t)
+	f.writeRuntime(f.server.origin())
+	f.server.mu.Lock()
+	f.server.scopeDenied = true
+	f.server.mu.Unlock()
+	f.authRetry = time.Hour
+	f.start()
+	f.waitState(api.AdapterAuthFailed)
+	f.server.mu.Lock()
+	f.server.scopeDenied = false
+	f.server.mu.Unlock()
+	// Same origin, new pid: a restarted T3.
+	data, _ := json.Marshal(map[string]any{"pid": os.Getpid() + 1, "origin": f.server.origin()})
+	if err := os.WriteFile(runtimeFile(f.home), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.waitState(api.AdapterConnected)
 }
 
 // No runtime file is the quiet unavailable state, polled slowly; the
@@ -842,5 +952,19 @@ func TestAdapterRegistration(t *testing.T) {
 	}
 	if connection := adapter.Connection(); connection.State != api.AdapterUnavailable {
 		t.Errorf("connection before running = %+v; want unavailable (no T3 home)", connection)
+	}
+}
+
+// A session file that is not a session is paired over, not reported.
+func TestUnreadableSessionFileIsRepaired(t *testing.T) {
+	f := newFixture(t)
+	f.writeRuntime(f.server.origin())
+	if err := os.WriteFile(f.sessionPath, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.start()
+	f.waitState(api.AdapterConnected)
+	if stored := f.readSession(); stored.Token != "token-1" {
+		t.Errorf("session after pairing over garbage = %+v", stored)
 	}
 }

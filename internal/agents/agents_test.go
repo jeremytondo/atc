@@ -144,6 +144,14 @@ func TestNewServiceRejectsDuplicates(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `declares agent "x" twice`) {
 		t.Errorf("NewService(duplicate agent) = %v, want the duplicate-agent error", err)
 	}
+	_, err = NewService(Options{
+		Adapters: []Adapter{{ID: "hybrid", Agents: []AgentSpec{{ID: "x", TUI: fakeTUI{}}},
+			Connection: func() api.AgentAdapterConnection { return api.AgentAdapterConnection{} }}},
+		Terminals: &fakeCreator{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "both launches") {
+		t.Errorf("NewService(hybrid) = %v, want the hybrid error", err)
+	}
 }
 
 // The agent catalog is derived: first declaration names the agent, every

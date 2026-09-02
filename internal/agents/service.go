@@ -61,9 +61,10 @@ type Service struct {
 	lookPath  func(name string) (string, error)
 }
 
-// NewService assembles the catalog. A duplicate adapter id, or an agent
-// declared twice by one adapter, is an error — the composition root
-// fails the boot.
+// NewService assembles the catalog. A duplicate adapter id, an agent
+// declared twice by one adapter, or an adapter that both launches and
+// observes (its availability would mean two things) is an error — the
+// composition root fails the boot.
 func NewService(opts Options) (*Service, error) {
 	if opts.Terminals == nil {
 		// A nil terminals service would panic on the first launch request;
@@ -93,6 +94,9 @@ func NewService(opts Options) (*Service, error) {
 				return nil, fmt.Errorf("adapter %q declares agent %q twice", adapter.ID, agent.ID)
 			}
 			seen[agent.ID] = true
+			if agent.TUI != nil && adapter.Connection != nil {
+				return nil, fmt.Errorf("adapter %q both launches %q and observes a program", adapter.ID, agent.ID)
+			}
 		}
 	}
 	return service, nil
