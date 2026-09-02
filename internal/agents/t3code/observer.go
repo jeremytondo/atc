@@ -482,7 +482,7 @@ func (o *Observer) observe(ctx context.Context, thread threadShell, project proj
 	}
 	if thread.Session != nil {
 		if thread.Session.ProviderName != nil {
-			observation.Agent = *thread.Session.ProviderName
+			observation.Agent = agentLabel(*thread.Session.ProviderName)
 		}
 		if thread.Session.LastError != nil {
 			observation.LastError = *thread.Session.LastError

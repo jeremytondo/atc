@@ -300,11 +300,11 @@ func TestUpsertsDriveStatus(t *testing.T) {
 	// A stale sequence is ignored: the status stays where sequence 10
 	// left it.
 	f.server.push(upserted(4, threadItem("t1", "p1", "One", withSession("error", "codex"))))
-	f.server.push(upserted(11, threadItem("t1", "p1", "Renamed", withSession("idle", "claude"))))
+	f.server.push(upserted(11, threadItem("t1", "p1", "Renamed", withSession("idle", "claudeAgent"))))
 	thread := f.thread("t1")
 	waitFor(t, "sequence 11", func() bool { thread = f.thread("t1"); return thread.Title == "Renamed" })
 	if thread.Status != api.ThreadIdle || thread.Agent != "claude" {
-		t.Errorf("after replay = %+v; want idle from sequence 10, agent claude from 11", thread)
+		t.Errorf("after replay = %+v; want idle from sequence 10, agent claude (T3's claudeAgent) from 11", thread)
 	}
 }
 

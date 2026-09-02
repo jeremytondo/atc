@@ -34,7 +34,7 @@ const ID = "t3code"
 // Adapter is T3 Code's catalog registration: an observer producing
 // threads for every provider T3 drives, launching none of them — a T3
 // conversation opens in T3, through the thread's links. The agent ids
-// are T3's provider driver kinds, which double as ATC's agent labels.
+// are ATC's labels for T3's provider driver kinds (agentLabel).
 func Adapter(observer *Observer) agents.Adapter {
 	if observer == nil {
 		panic("t3code.Adapter: observer must not be nil")
@@ -51,6 +51,17 @@ func Adapter(observer *Observer) agents.Adapter {
 		},
 		Connection: observer.Connection,
 	}
+}
+
+// agentLabel maps a T3 provider driver kind to ATC's agent label. T3's
+// kinds are ATC's ids except for Claude Code, which T3 calls claudeAgent:
+// a Claude conversation carries the same label whichever adapter produced
+// it. Unknown kinds pass through — the label is plain, not a catalog id.
+func agentLabel(providerName string) string {
+	if providerName == "claudeAgent" {
+		return "claude"
+	}
+	return providerName
 }
 
 // Home resolves the T3 home every T3 process on this machine uses: T3's
