@@ -47,9 +47,9 @@ type ThreadObserver interface {
 	Deactivate(ctx context.Context, terminalID string)
 }
 
-// TerminalReader resolves a terminal's record: the observing terminal's
-// project is copied onto a thread at minting, and evidence applies only
-// while the terminal is live.
+// TerminalReader resolves a terminal's record: evidence applies only
+// while the terminal is live, and its directory is the origin of a
+// conversation whose announcement carried no cwd.
 type TerminalReader interface {
 	Get(id string) (api.Terminal, error)
 }
@@ -650,8 +650,15 @@ func (o *Observer) applyEvidence(ctx context.Context, threadID string, e evidenc
 		metadata.Title = o.resolveTitle(ctx, p, e.title)
 	}
 	if !p.established {
+		// The announcement's cwd is the conversation's origin; a resume
+		// pairing carries none and the threads domain ignores origin for
+		// a known conversation anyway.
+		origin := p.cwd
+		if origin == "" {
+			origin = terminal.Directory
+		}
 		if _, err := o.threads.ObserveSession(ctx, threads.SessionObservation{
-			IntegrationID: ID, AppID: AppID, AgentID: AgentID, ProviderID: threadID, TerminalID: p.terminalID, ProjectID: terminal.ProjectID,
+			IntegrationID: ID, AppID: AppID, AgentID: AgentID, ProviderID: threadID, TerminalID: p.terminalID, InitialDirectory: origin,
 			At: o.now(), Status: e.status, Metadata: metadata,
 		}); err != nil {
 			// A transient failure leaves the pairing unestablished; the

@@ -71,7 +71,7 @@ func TestClaudeHooksDriveThreads(t *testing.T) {
 	if rec := f.postHook(t, "", `{"session_id":"s1","hook_event_name":"SessionStart"}`); rec.Code != http.StatusNotFound {
 		t.Fatalf("hook without secret: got %d, want 404", rec.Code)
 	}
-	if rec := f.postHook(t, secret, `{"session_id":"s1","hook_event_name":"SessionStart","source":"startup","cwd":"/somewhere"}`); rec.Code != http.StatusNoContent {
+	if rec := f.postHook(t, secret, jsonBody(t, map[string]any{"session_id": "s1", "hook_event_name": "SessionStart", "source": "startup", "cwd": f.projectDir})); rec.Code != http.StatusNoContent {
 		t.Fatalf("hook delivery: got %d", rec.Code)
 	}
 
@@ -85,7 +85,7 @@ func TestClaudeHooksDriveThreads(t *testing.T) {
 
 	// The first prompt mints the thread — linked, working, titled — and
 	// the terminal projects it.
-	f.postHook(t, secret, `{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"fix the build","cwd":"/somewhere"}`)
+	f.postHook(t, secret, jsonBody(t, map[string]any{"session_id": "s1", "hook_event_name": "UserPromptSubmit", "prompt": "fix the build", "cwd": f.projectDir}))
 	rec = f.request(t, http.MethodGet, "/v1/threads", "")
 	decodeInto(t, rec, &list)
 	if len(list.Threads) != 1 {
@@ -93,7 +93,7 @@ func TestClaudeHooksDriveThreads(t *testing.T) {
 	}
 	thread := list.Threads[0]
 	if thread.IntegrationID != "claude" || thread.AppID != "claude/tui" || thread.AgentID != "claude" || thread.TerminalID != terminal.ID || thread.Status != api.ThreadWorking ||
-		thread.Title != "fix the build" || thread.Cwd != "/somewhere" {
+		thread.Title != "fix the build" || thread.Cwd != f.projectDir || thread.InitialDirectory != f.projectDir || thread.ProjectID != f.projectID {
 		t.Errorf("thread = %+v", thread)
 	}
 	if got := decodeTerminal(t, f.request(t, http.MethodGet, "/v1/terminals/"+terminal.ID, "")); got.ActiveThreadID != thread.ID {
@@ -188,4 +188,15 @@ func decodeInto(t *testing.T, rec *httptest.ResponseRecorder, out any) {
 	if err := json.Unmarshal(rec.Body.Bytes(), out); err != nil {
 		t.Fatalf("decoding %q: %v", rec.Body, err)
 	}
+}
+
+// jsonBody marshals a body, so filesystem paths and other values are
+// escaped as JSON rather than spliced into a literal.
+func jsonBody(t *testing.T, value any) string {
+	t.Helper()
+	body, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
 }

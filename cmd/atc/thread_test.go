@@ -7,23 +7,24 @@ import (
 	"testing"
 
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/threads"
 )
 
 // observeThreadCLI plants an observed conversation behind the test server
 // and returns its thread id — the seam providers use in production; the
 // wire has no create verb.
-func observeThreadCLI(t *testing.T, service *threads.Service, terminalID, projectID, providerID string) string {
+func observeThreadCLI(t *testing.T, service *threads.Service, terminalID, directory, providerID string) string {
 	t.Helper()
 	id, err := service.ObserveSession(context.Background(), threads.SessionObservation{
-		IntegrationID: "claude",
-		AppID:         "claude/tui",
-		AgentID:       "claude",
-		ProviderID:    providerID,
-		TerminalID:    terminalID,
-		ProjectID:     projectID,
-		Status:        api.ThreadIdle,
-		Metadata:      threads.Metadata{Title: "fix the build"},
+		IntegrationID:    "claude",
+		AppID:            "claude/tui",
+		AgentID:          "claude",
+		ProviderID:       providerID,
+		TerminalID:       terminalID,
+		InitialDirectory: directory,
+		Status:           api.ThreadIdle,
+		Metadata:         threads.Metadata{Title: "fix the build"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -47,9 +48,10 @@ func createTerminalCLI(t *testing.T, projectID string) string {
 
 func TestThreadCLILifecycle(t *testing.T) {
 	_, threadService := startTestServerWithThreads(t)
-	projectID := createProjectCLI(t, t.TempDir())
+	projectDir := t.TempDir()
+	projectID := createProjectCLI(t, projectDir)
 	terminalID := createTerminalCLI(t, projectID)
-	id := observeThreadCLI(t, threadService, terminalID, projectID, "sess-1")
+	id := observeThreadCLI(t, threadService, terminalID, projectDir, "sess-1")
 
 	stdout, _, err := runCLI(t, "thread", "list", "--project", projectID)
 	if err != nil {
@@ -86,7 +88,7 @@ func TestThreadCLILifecycle(t *testing.T) {
 
 	// Switch the terminal to another conversation; the first thread is now
 	// inactive and archivable.
-	observeThreadCLI(t, threadService, terminalID, projectID, "sess-2")
+	observeThreadCLI(t, threadService, terminalID, projectDir, "sess-2")
 	if stdout, _, err = runCLI(t, "thread", "archive", id); err != nil {
 		t.Fatal(err)
 	}
@@ -130,9 +132,10 @@ func TestThreadCLILifecycle(t *testing.T) {
 
 func TestThreadListUnfiltered(t *testing.T) {
 	_, threadService := startTestServerWithThreads(t)
-	projectID := createProjectCLI(t, t.TempDir())
+	projectDir := t.TempDir()
+	projectID := createProjectCLI(t, projectDir)
 	terminalID := createTerminalCLI(t, projectID)
-	id := observeThreadCLI(t, threadService, terminalID, projectID, "sess-1")
+	id := observeThreadCLI(t, threadService, terminalID, projectDir, "sess-1")
 
 	// Like terminal list: unfiltered means everything, no project
 	// resolution.
@@ -157,7 +160,8 @@ func TestThreadGetUnknownIsError(t *testing.T) {
 // exists before the first prompt. `thread new` is gone.
 func TestTerminalCreateAppCLI(t *testing.T) {
 	_, threadService := startTestServerWithThreads(t)
-	projectID := createProjectCLI(t, t.TempDir())
+	projectDir := t.TempDir()
+	projectID := createProjectCLI(t, projectDir)
 
 	stdout, _, err := runCLI(t, "terminal", "create", "--app", "claude/tui", "--project", projectID, "--detach")
 	if err != nil {
@@ -189,7 +193,7 @@ func TestTerminalCreateAppCLI(t *testing.T) {
 	if stdout, _, err = runCLI(t, "thread", "list", "--terminal", id); err != nil || !strings.Contains(stdout, "no threads") {
 		t.Errorf("thread list --terminal before the first prompt = %q, %v", stdout, err)
 	}
-	threadID := observeThreadCLI(t, threadService, id, projectID, "sess-1")
+	threadID := observeThreadCLI(t, threadService, id, projectDir, "sess-1")
 	if stdout, _, err = runCLI(t, "thread", "list", "--terminal", id); err != nil || !strings.Contains(stdout, threadID) {
 		t.Errorf("thread list --terminal = %q, %v", stdout, err)
 	}
@@ -203,7 +207,8 @@ func TestTerminalCreateAppCLI(t *testing.T) {
 // handoff App, and an unknown App are refused before anything exists.
 func TestTerminalCreateAppWithoutTTYAndRefusals(t *testing.T) {
 	startTestServer(t)
-	projectID := createProjectCLI(t, t.TempDir())
+	projectDir := t.TempDir()
+	projectID := createProjectCLI(t, projectDir)
 
 	stdout, stderr, err := runCLI(t, "terminal", "create", "--app", "claude/tui", "--project", projectID)
 	if err != nil {
@@ -237,13 +242,14 @@ func TestTerminalCreateAppWithoutTTYAndRefusals(t *testing.T) {
 // one in a new terminal linked to it.
 func TestThreadOpenCLI(t *testing.T) {
 	driver, threadService := startTestServerWithThreads(t)
-	projectID := createProjectCLI(t, t.TempDir())
+	projectDir := t.TempDir()
+	projectID := createProjectCLI(t, projectDir)
 	stdout, _, err := runCLI(t, "terminal", "create", "--app", "claude/tui", "--project", projectID, "--detach")
 	if err != nil {
 		t.Fatal(err)
 	}
 	terminalID := regexp.MustCompile(`term-[a-z2-9]{5}`).FindString(stdout)
-	id := observeThreadCLI(t, threadService, terminalID, projectID, "sess-1")
+	id := observeThreadCLI(t, threadService, terminalID, projectDir, "sess-1")
 
 	stdout, stderr, err := runCLI(t, "thread", "open", id, "--detach")
 	if err != nil {
@@ -286,5 +292,43 @@ func TestThreadOpenCLI(t *testing.T) {
 
 	if _, _, err := runCLI(t, "thread", "open", "thrd-zzzzz"); err == nil || !strings.Contains(err.Error(), "404") {
 		t.Errorf("open unknown = %v, want a 404 problem", err)
+	}
+}
+
+// --project assigns any project, --remove-project clears; both at once,
+// or an empty --project, is refused before any request.
+func TestThreadUpdateProjectCLI(t *testing.T) {
+	_, threadService := startTestServerWithThreads(t)
+	projectDir, err := paths.CanonicalDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectID := createProjectCLI(t, projectDir)
+	otherID := createProjectCLI(t, t.TempDir())
+	terminalID := createTerminalCLI(t, projectID)
+	id := observeThreadCLI(t, threadService, terminalID, projectDir, "sess-1")
+
+	stdout, _, err := runCLI(t, "thread", "get", id)
+	if err != nil || !regexp.MustCompile(`(?m)^project\s+`+projectID+`$`).MatchString(stdout) ||
+		!regexp.MustCompile(`(?m)^initial directory\s+`+regexp.QuoteMeta(projectDir)+`$`).MatchString(stdout) {
+		t.Fatalf("get = %q, %v; want classified into %s with its origin", stdout, err, projectID)
+	}
+	if stdout, _, err = runCLI(t, "thread", "update", id, "--project", otherID); err != nil || !regexp.MustCompile(`(?m)^project\s+`+otherID+`$`).MatchString(stdout) {
+		t.Errorf("assign = %q, %v", stdout, err)
+	}
+	if stdout, _, err = runCLI(t, "thread", "update", id, "--remove-project"); err != nil || strings.Contains(stdout, "\nproject") {
+		t.Errorf("remove = %q, %v; want no project line", stdout, err)
+	}
+	if stdout, _, err = runCLI(t, "thread", "list", "--project", projectID); err != nil || strings.Contains(stdout, id) {
+		t.Errorf("list after remove = %q, %v; want the thread gone from the project", stdout, err)
+	}
+	if _, _, err := runCLI(t, "thread", "update", id, "--project", otherID, "--remove-project"); err == nil {
+		t.Error("--project with --remove-project was accepted")
+	}
+	if _, _, err := runCLI(t, "thread", "update", id, "--project", ""); err == nil || !strings.Contains(err.Error(), "--remove-project") {
+		t.Errorf("empty --project = %v; want a refusal pointing at --remove-project", err)
+	}
+	if _, _, err := runCLI(t, "thread", "update", id); err == nil {
+		t.Error("update with no flags was accepted")
 	}
 }

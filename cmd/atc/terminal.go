@@ -207,7 +207,7 @@ func newTerminalUpdateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			terminal, err := client.UpdateTerminal(cmd.Context(), args[0], api.TerminalUpdateParams{Name: name})
+			terminal, err := client.UpdateTerminal(cmd.Context(), args[0], api.TerminalUpdateParams{Name: api.Some(name)})
 			if err != nil {
 				return err
 			}

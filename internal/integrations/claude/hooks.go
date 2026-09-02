@@ -39,8 +39,9 @@ type ThreadObserver interface {
 	LookupIdentity(integrationID, providerID string) (threadID, terminalID string, ok bool)
 }
 
-// TerminalReader resolves a terminal's record — the observing terminal's
-// project is copied onto a thread at first observation.
+// TerminalReader resolves a terminal's record — the observing terminal
+// must still exist, and its directory is the origin of a conversation
+// whose first payload reports no cwd.
 type TerminalReader interface {
 	Get(id string) (api.Terminal, error)
 }
@@ -351,7 +352,9 @@ func (h *Hooks) mapped(sessionID string) bool {
 // compact must not claim idle for a possibly mid-turn conversation). The
 // first prompt's title rides along: an observed title only ever fills an
 // untitled thread, so a mint that the prompt's own delivery failed to
-// land still gets it.
+// land still gets it. The payload's cwd is the conversation's origin
+// (the threads domain only takes it at first observation); the launch
+// directory stands in when a payload carries none.
 func (h *Hooks) observe(ctx context.Context, terminalID string, st *session, p payload, status api.ThreadStatus) bool {
 	terminal, err := h.terminals.Get(terminalID)
 	if err != nil {
@@ -362,16 +365,20 @@ func (h *Hooks) observe(ctx context.Context, terminalID string, st *session, p p
 	}
 	metadata := metadataFrom(p)
 	metadata.Title = st.title
+	origin := p.Cwd
+	if origin == "" {
+		origin = terminal.Directory
+	}
 	threadID, err := h.threads.ObserveSession(ctx, threads.SessionObservation{
-		IntegrationID: ID,
-		AppID:         AppID,
-		AgentID:       AgentID,
-		ProviderID:    p.SessionID,
-		TerminalID:    terminalID,
-		ProjectID:     terminal.ProjectID,
-		At:            h.now(),
-		Status:        status,
-		Metadata:      metadata,
+		IntegrationID:    ID,
+		AppID:            AppID,
+		AgentID:          AgentID,
+		ProviderID:       p.SessionID,
+		TerminalID:       terminalID,
+		InitialDirectory: origin,
+		At:               h.now(),
+		Status:           status,
+		Metadata:         metadata,
 	})
 	if err != nil || threadID == "" {
 		h.logger.Warn("recording session observation", "terminal", terminalID, "error", err)

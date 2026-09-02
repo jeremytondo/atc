@@ -574,6 +574,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	threadService := threads.NewService(threads.Options{
 		Repository: database.Threads(),
 		Terminals:  terminalService,
+		Projects:   database.Projects(),
 		Hub:        hub,
 		Logger:     logger,
 	})
@@ -628,7 +629,8 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 
 	// T3 Code (ATC-285): a read-only mirror of the local T3 environment's
 	// threads, self-discovering and self-pairing; its session lives beside
-	// the auth token. Links on its threads derive from its live state.
+	// the auth token. Links on its threads derive from its live state;
+	// the threads domain classifies them into projects by origin.
 	t3Home, err := t3code.Home()
 	if err != nil {
 		return err
@@ -641,7 +643,6 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		Home:        t3Home,
 		SessionPath: t3SessionPath,
 		Threads:     threadService,
-		Projects:    projectService,
 		Hub:         hub,
 		Logger:      logger,
 	})

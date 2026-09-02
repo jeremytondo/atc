@@ -131,16 +131,42 @@ func newThreadGetCmd() *cobra.Command {
 func newThreadUpdateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "update <id>",
-		Short: "Update a thread (title is the editable field)",
-		Long: `Set a thread's title. A title set here is yours: observation never
-overwrites it afterwards.`,
+		Short: "Update a thread's title or project",
+		Long: `Set a thread's title, or move it between projects. A title set here is
+yours: observation never overwrites it afterwards. --project assigns any
+project, whatever directory the thread originated in; --remove-project
+leaves it unassigned until a project is created or moved to contain its
+initial directory.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, _ string) error {
-			title, err := cmd.Flags().GetString("title")
-			if err != nil {
-				return err
+			flags := cmd.Flags()
+			var params api.ThreadUpdateParams
+			if flags.Changed("title") {
+				title, err := flags.GetString("title")
+				if err != nil {
+					return err
+				}
+				params.Title = api.Some(title)
 			}
-			thread, err := client.UpdateThread(cmd.Context(), args[0], api.ThreadUpdateParams{Title: &title})
+			if flags.Changed("project") {
+				project, err := flags.GetString("project")
+				if err != nil {
+					return err
+				}
+				if project == "" {
+					return fmt.Errorf("--project needs a project id; use --remove-project to unassign")
+				}
+				params.ProjectID = api.Some(project)
+			}
+			if flags.Changed("remove-project") {
+				if remove, err := flags.GetBool("remove-project"); err != nil {
+					return err
+				} else if !remove {
+					return fmt.Errorf("--remove-project=false changes nothing; omit the flag")
+				}
+				params.ProjectID = api.Clear[string]()
+			}
+			thread, err := client.UpdateThread(cmd.Context(), args[0], params)
 			if err != nil {
 				return err
 			}
@@ -149,7 +175,10 @@ overwrites it afterwards.`,
 		}),
 	}
 	cmd.Flags().String("title", "", "new display title")
-	_ = cmd.MarkFlagRequired("title")
+	cmd.Flags().String("project", "", "project to assign the thread to")
+	cmd.Flags().Bool("remove-project", false, "leave the thread unassigned")
+	cmd.MarkFlagsMutuallyExclusive("project", "remove-project")
+	cmd.MarkFlagsOneRequired("title", "project", "remove-project")
 	return cmd
 }
 
@@ -176,7 +205,7 @@ func newThreadUnarchiveCmd() *cobra.Command {
 
 func setThreadArchived(archived bool) func(*cobra.Command, []string) error {
 	return runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, _ string) error {
-		thread, err := client.UpdateThread(cmd.Context(), args[0], api.ThreadUpdateParams{Archived: &archived})
+		thread, err := client.UpdateThread(cmd.Context(), args[0], api.ThreadUpdateParams{Archived: api.Some(archived)})
 		if err != nil {
 			return err
 		}
@@ -232,7 +261,12 @@ func printThread(out io.Writer, thread api.Thread) {
 	if thread.Title != "" {
 		_, _ = fmt.Fprintf(w, "title\t%s\n", thread.Title)
 	}
-	_, _ = fmt.Fprintf(w, "project\t%s\n", thread.ProjectID)
+	if thread.ProjectID != "" {
+		_, _ = fmt.Fprintf(w, "project\t%s\n", thread.ProjectID)
+	}
+	if thread.InitialDirectory != "" {
+		_, _ = fmt.Fprintf(w, "initial directory\t%s\n", thread.InitialDirectory)
+	}
 	if thread.TerminalID != "" {
 		_, _ = fmt.Fprintf(w, "terminal\t%s\n", thread.TerminalID)
 	}

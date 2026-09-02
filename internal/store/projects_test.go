@@ -60,13 +60,13 @@ func TestProjectsRoundTrip(t *testing.T) {
 		t.Errorf("Get(absent) = %v, %v; want false", found, err)
 	}
 
-	// The rename returns the committed row in the same operation.
-	renamed, ok, err := projects.UpdateName(ctx, "proj-aaaaa", "renamed", at(2))
-	if err != nil || !ok || renamed.Name != "renamed" || !renamed.UpdatedAt.Equal(at(2)) {
-		t.Fatalf("UpdateName = %+v, %v, %v", renamed, ok, err)
+	// The update returns the committed row in the same operation.
+	updated, ok, err := projects.Update(ctx, "proj-aaaaa", "renamed", "/moved", at(2))
+	if err != nil || !ok || updated.Name != "renamed" || updated.Directory != "/moved" || !updated.UpdatedAt.Equal(at(2)) {
+		t.Fatalf("Update = %+v, %v, %v", updated, ok, err)
 	}
-	if _, ok, err := projects.UpdateName(ctx, "proj-zzzzz", "x", at(2)); err != nil || ok {
-		t.Fatalf("UpdateName(absent) = %v, %v; want false", ok, err)
+	if _, ok, err := projects.Update(ctx, "proj-zzzzz", "x", "/x", at(2)); err != nil || ok {
+		t.Fatalf("Update(absent) = %v, %v; want false", ok, err)
 	}
 
 	if ok, err := projects.Delete(ctx, "proj-bbbbb"); err != nil || !ok {

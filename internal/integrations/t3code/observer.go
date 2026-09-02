@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -15,7 +14,6 @@ import (
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/events"
-	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/threads"
 )
 
@@ -46,21 +44,12 @@ type ThreadObserver interface {
 	UnarchivedProviderIDs(integrationID string) []string
 }
 
-// ProjectResolver is the seam into the projects domain (projects.Service
-// in production): the list to associate against, and the create for a
-// workspace no project owns yet.
-type ProjectResolver interface {
-	List(ctx context.Context) ([]api.Project, error)
-	Create(ctx context.Context, params api.ProjectCreateParams) (api.Project, error)
-}
-
 // Options wires an Observer.
 type Options struct {
 	// Home is the T3 home (Home()); SessionPath the 0600 session file.
 	Home        string
 	SessionPath string
 	Threads     ThreadObserver
-	Projects    ProjectResolver
 	Hub         *events.Hub
 	Logger      *slog.Logger
 	Now         func() time.Time
@@ -83,7 +72,6 @@ type Observer struct {
 	home        string
 	sessionPath string
 	threads     ThreadObserver
-	projects    ProjectResolver
 	hub         *events.Hub
 	logger      *slog.Logger
 	now         func() time.Time
@@ -123,8 +111,8 @@ type shellState struct {
 }
 
 func New(opts Options) *Observer {
-	if opts.Threads == nil || opts.Projects == nil || opts.Hub == nil {
-		panic("t3code.New: Threads, Projects, and Hub must not be nil")
+	if opts.Threads == nil || opts.Hub == nil {
+		panic("t3code.New: Threads and Hub must not be nil")
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)
@@ -145,7 +133,6 @@ func New(opts Options) *Observer {
 		home:         opts.Home,
 		sessionPath:  opts.SessionPath,
 		threads:      opts.Threads,
-		projects:     opts.Projects,
 		hub:          opts.Hub,
 		logger:       opts.Logger,
 		now:          opts.Now,
@@ -493,10 +480,11 @@ func (o *Observer) applyEvent(ctx context.Context, event shellEvent) error {
 // observe feeds one T3 thread to the threads domain as an external
 // observation. A thread T3 has settled (ATC-292) is treated as archived:
 // a known record archives, an unknown one is never minted, and the same
-// record returns when T3 unsettles it. Otherwise a known conversation
-// needs no project; an unknown one (the domain asks for a project) is
-// associated and observed again, or skipped — counted, not recorded —
-// when its workspace has no local directory.
+// record returns when T3 unsettles it. The workspace root is the
+// conversation's origin evidence; the domain classifies it into a
+// project (T3 never resolves or creates one) and refuses to mint a
+// thread whose workspace has no local directory — skipped and counted
+// here, not recorded.
 func (o *Observer) observe(ctx context.Context, thread threadShell, project projectShell) {
 	if thread.settled() {
 		o.settled[thread.ID] = true
@@ -509,12 +497,13 @@ func (o *Observer) observe(ctx context.Context, thread threadShell, project proj
 		cwd = project.WorkspaceRoot
 	}
 	observation := threads.ExternalObservation{
-		IntegrationID: ID,
-		ProviderID:    thread.ID,
-		At:            o.now(),
-		Status:        projectStatus(thread),
-		Title:         thread.Title,
-		Metadata:      threads.Metadata{Model: thread.ModelSelection.Model, Cwd: cwd},
+		IntegrationID:    ID,
+		ProviderID:       thread.ID,
+		InitialDirectory: project.WorkspaceRoot,
+		At:               o.now(),
+		Status:           projectStatus(thread),
+		Title:            thread.Title,
+		Metadata:         threads.Metadata{Model: thread.ModelSelection.Model, Cwd: cwd},
 	}
 	if thread.Session != nil {
 		if thread.Session.ProviderName != nil {
@@ -527,12 +516,9 @@ func (o *Observer) observe(ctx context.Context, thread threadShell, project proj
 		}
 	}
 	_, err := o.threads.ObserveExternal(ctx, observation)
-	if errors.Is(err, threads.ErrProjectRequired) {
-		if observation.ProjectID, err = o.resolveProject(ctx, project); err != nil {
-			o.skipped[thread.ID] = err.Error()
-			return
-		}
-		_, err = o.threads.ObserveExternal(ctx, observation)
+	if errors.Is(err, threads.ErrNoLocalDirectory) {
+		o.skipped[thread.ID] = fmt.Sprintf("workspace %s: %v", project.WorkspaceRoot, err)
+		return
 	}
 	if err != nil {
 		o.logger.Warn("t3code: recording thread observation", "thread", thread.ID, "error", err)
@@ -548,59 +534,6 @@ func (o *Observer) forget(ctx context.Context, threadID string) {
 	if err := o.threads.ArchiveExternalThread(ctx, ID, threadID); err != nil {
 		o.logger.Warn("t3code: archiving a removed thread", "thread", threadID, "error", err)
 	}
-}
-
-// resolveProject associates a T3 project with the nearest ATC project
-// whose canonical directory is the workspace root or an ancestor of it,
-// creating one for the root — named from T3's title — when none owns it.
-// The created project is the user's from then on; ATC never deletes or
-// renames it on T3's behalf.
-func (o *Observer) resolveProject(ctx context.Context, project projectShell) (string, error) {
-	canonical, err := paths.CanonicalDir(project.WorkspaceRoot)
-	if err != nil {
-		return "", fmt.Errorf("workspace %s: %w", project.WorkspaceRoot, err)
-	}
-	if id, err := o.nearestProject(ctx, canonical); err != nil || id != "" {
-		return id, err
-	}
-	created, err := o.projects.Create(ctx, api.ProjectCreateParams{Directory: canonical, Name: project.Title})
-	if err != nil {
-		// A create refused because the directory was claimed in between
-		// (or because the same folder is known under another spelling)
-		// resolves on a second look.
-		if id, lookupErr := o.nearestProject(ctx, canonical); lookupErr == nil && id != "" {
-			return id, nil
-		}
-		return "", fmt.Errorf("creating a project for %s: %w", canonical, err)
-	}
-	o.logger.Info("t3code: created a project for a T3 workspace", "project", created.ID, "directory", canonical)
-	return created.ID, nil
-}
-
-// nearestProject finds the project owning canonical: the one whose
-// directory is it or its longest ancestor; empty when none.
-func (o *Observer) nearestProject(ctx context.Context, canonical string) (string, error) {
-	projects, err := o.projects.List(ctx)
-	if err != nil {
-		return "", err
-	}
-	var best api.Project
-	for _, project := range projects {
-		if !owns(project.Directory, canonical) || len(project.Directory) <= len(best.Directory) {
-			continue
-		}
-		best = project
-	}
-	return best.ID, nil
-}
-
-// owns reports whether dir is path or one of its ancestors.
-func owns(dir, path string) bool {
-	if dir == path {
-		return true
-	}
-	prefix := strings.TrimSuffix(dir, string(filepath.Separator)) + string(filepath.Separator)
-	return strings.HasPrefix(path, prefix)
 }
 
 // detail is the connected state's human-readable summary.

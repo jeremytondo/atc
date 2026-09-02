@@ -25,9 +25,11 @@ func schemaErrorf(format string, args ...any) error {
 	return &schemaError{err: fmt.Errorf(format, args...)}
 }
 
+// projectShell is what ATC reads of a T3 project: its workspace root is
+// the origin of the threads under it. T3's title is not read — ATC
+// creates no project from it.
 type projectShell struct {
 	ID            string `json:"id"`
-	Title         string `json:"title"`
 	WorkspaceRoot string `json:"workspaceRoot"`
 }
 
@@ -165,8 +167,8 @@ func validateSnapshot(snapshot shellSnapshot) error {
 }
 
 func validateProject(project projectShell) error {
-	if project.ID == "" || project.Title == "" || project.WorkspaceRoot == "" {
-		return schemaErrorf("project %q omitted id, title, or workspaceRoot", project.ID)
+	if project.ID == "" || project.WorkspaceRoot == "" {
+		return schemaErrorf("project %q omitted id or workspaceRoot", project.ID)
 	}
 	return nil
 }

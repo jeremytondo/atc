@@ -32,10 +32,11 @@ func newProjectCreateCmd() *cobra.Command {
 		Short: "Create a project rooted at a directory",
 		Long: `Create a project rooted at path. Without a path, the project is rooted at
 the git toplevel when inside a repository, at the current directory
-otherwise. The server canonicalizes the directory (symlinks resolved) and
-it is the project's identity: one project per real folder, immutable after
-create. A relative path is resolved against this shell's directory; the
-directory itself must exist on the server's machine.`,
+otherwise. The server canonicalizes the directory (symlinks resolved): one
+project per real folder, movable later with update --directory. Threads
+that originated under the directory and belong to no project join it. A
+relative path is resolved against this shell's directory; the directory
+itself must exist on the server's machine.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, _ string) error {
 			name, err := cmd.Flags().GetString("name")
@@ -112,14 +113,33 @@ func newProjectListCmd() *cobra.Command {
 func newProjectUpdateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "update <id>",
-		Short: "Update a project (name is the only mutable field)",
-		Args:  cobra.ExactArgs(1),
+		Short: "Update a project's name or directory",
+		Long: `Rename a project or move its root directory. A moved project claims the
+unassigned threads that originated under the new directory; threads already
+assigned keep their project. A relative --directory is resolved against this
+shell's directory; the directory itself must exist on the server's machine.`,
+		Args: cobra.ExactArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, _ string) error {
-			name, err := cmd.Flags().GetString("name")
-			if err != nil {
-				return err
+			flags := cmd.Flags()
+			var params api.ProjectUpdateParams
+			if flags.Changed("name") {
+				name, err := flags.GetString("name")
+				if err != nil {
+					return err
+				}
+				params.Name = api.Some(name)
 			}
-			project, err := client.UpdateProject(cmd.Context(), args[0], api.ProjectUpdateParams{Name: name})
+			if flags.Changed("directory") {
+				directory, err := flags.GetString("directory")
+				if err != nil {
+					return err
+				}
+				if directory, err = filepath.Abs(directory); err != nil {
+					return err
+				}
+				params.Directory = api.Some(directory)
+			}
+			project, err := client.UpdateProject(cmd.Context(), args[0], params)
 			if err != nil {
 				return err
 			}
@@ -128,16 +148,17 @@ func newProjectUpdateCmd() *cobra.Command {
 		}),
 	}
 	cmd.Flags().String("name", "", "new display name")
-	_ = cmd.MarkFlagRequired("name")
+	cmd.Flags().String("directory", "", "new root directory")
+	cmd.MarkFlagsOneRequired("name", "directory")
 	return cmd
 }
 
 func newProjectDeleteCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "delete <id>",
-		Short: "Delete an empty project",
+		Short: "Delete a project",
 		Long: `Delete a project. Refused while any terminal still belongs to it — delete
-those first; there is no cascade.`,
+those first. Its threads survive, unassigned.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, _ string) error {
 			if err := client.DeleteProject(cmd.Context(), args[0]); err != nil {

@@ -544,8 +544,22 @@ func (s *Service) List(projectID string) []api.Terminal {
 	return terminals
 }
 
-// UpdateName renames the terminal — the only mutable field.
-func (s *Service) UpdateName(ctx context.Context, id, name string) (api.Terminal, error) {
+// ErrInvalidUpdate refuses a PATCH that nulls the name.
+var ErrInvalidUpdate = errors.New("invalid update")
+
+// Update applies a merge patch: name is the only mutable field, and it
+// cannot be null. An empty patch returns the terminal unchanged.
+func (s *Service) Update(ctx context.Context, id string, params api.TerminalUpdateParams) (api.Terminal, error) {
+	if params.Name.Null() {
+		return api.Terminal{}, fmt.Errorf("%w: name cannot be null", ErrInvalidUpdate)
+	}
+	if !params.Name.Set {
+		return s.Get(id)
+	}
+	return s.updateName(ctx, id, *params.Name.Value)
+}
+
+func (s *Service) updateName(ctx context.Context, id, name string) (api.Terminal, error) {
 	s.ops.Lock()
 	defer s.ops.Unlock()
 	now := s.now()

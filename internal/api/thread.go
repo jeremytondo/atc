@@ -42,14 +42,17 @@ type Thread struct {
 	IntegrationID string `json:"integrationId" doc:"Integration that produced the thread; the namespace of its private provider identity. Immutable."`
 	AppID         string `json:"appId,omitempty" doc:"Integration-qualified App (integration/app) the conversation was started in, when reliably known at creation; omitted permanently otherwise. Immutable."`
 	AgentID       string `json:"agentId,omitempty" doc:"Integration-scoped agent id the conversation runs under, as the Integration reports it; may be empty and may change."`
-	// ProjectID comes from the terminal or Integration that first observed
-	// the conversation and never changes afterwards.
-	ProjectID  string `json:"projectId" doc:"Project the thread belongs to, set at first observation. Immutable."`
-	TerminalID string `json:"terminalId,omitempty" doc:"Last terminal observed holding the conversation; omitted once that terminal is deleted, and always for threads an external program owns. Whether the conversation is open right now is the terminal's activeThreadId, not this field."`
-	Title      string `json:"title,omitempty" doc:"Display title: user-editable, with an observed default. Once set through ATC, observation never overwrites it."`
-	Model      string `json:"model,omitempty" doc:"Observed model, best-effort."`
-	Effort     string `json:"effort,omitempty" doc:"Observed reasoning effort, best-effort."`
-	Cwd        string `json:"cwd,omitempty" doc:"Provider-reported working directory, best-effort; a resumed conversation can run from a different directory than the terminal's."`
+	// ProjectID is classified from InitialDirectory when the thread is
+	// first observed (the most specific project containing it), backfilled
+	// when a project appears or moves, and editable; never overwritten by
+	// classification once set.
+	ProjectID        string `json:"projectId,omitempty" doc:"Project the thread belongs to: the most specific project containing its initial directory at first observation, backfilled when projects are created or moved, or set explicitly. Omitted when none. Cleared when the project is deleted."`
+	InitialDirectory string `json:"initialDirectory,omitempty" doc:"Canonical directory the conversation reliably originated in, as the Integration reported it at first observation; omitted when no usable local directory was reported. Immutable — later resumes never change it."`
+	TerminalID       string `json:"terminalId,omitempty" doc:"Terminal currently or most recently observed hosting the conversation; omitted once that terminal is deleted, and always for threads an external program owns. Runtime evidence, not ownership: whether the conversation is open right now is the terminal's activeThreadId."`
+	Title            string `json:"title,omitempty" doc:"Display title: user-editable, with an observed default. Once set through ATC, observation never overwrites it."`
+	Model            string `json:"model,omitempty" doc:"Observed model, best-effort."`
+	Effort           string `json:"effort,omitempty" doc:"Observed reasoning effort, best-effort."`
+	Cwd              string `json:"cwd,omitempty" doc:"Provider-reported current working directory, best-effort and mutable; a resumed conversation can run from a different directory than it originated in."`
 	// PermissionMode is provider-native and read-only; ATC imposes no
 	// normalized vocabulary on it.
 	PermissionMode string       `json:"permissionMode,omitempty" doc:"Provider-native permission mode string, read-only."`
@@ -71,12 +74,14 @@ type ThreadLinks struct {
 	App string `json:"app" doc:"URL that opens the conversation in the program's desktop app."`
 }
 
-// ThreadUpdateParams is the PATCH /v1/threads/{id} request body. Title
-// and archived are the only mutable fields; archive/unarchive is a PATCH
-// of archived, with no custom action routes.
+// ThreadUpdateParams is the PATCH /v1/threads/{id} request body, a JSON
+// Merge Patch: omitted fields are unchanged. Title, archived, and
+// projectId are the mutable fields; archive/unarchive is a PATCH of
+// archived, with no custom action routes.
 type ThreadUpdateParams struct {
-	Title    *string `json:"title,omitempty" minLength:"1" doc:"New display title. Observation never overwrites a title set here."`
-	Archived *bool   `json:"archived,omitempty" doc:"true archives the thread, false unarchives it. Archiving an active thread — one a terminal has open, or one its external program still reports — is refused."`
+	Title     Optional[string] `json:"title,omitzero" minLength:"1" nullable:"false" doc:"New display title. Observation never overwrites a title set here."`
+	Archived  Optional[bool]   `json:"archived,omitzero" nullable:"false" doc:"true archives the thread, false unarchives it. Archiving an active thread — one a terminal has open, or one its external program still reports — is refused."`
+	ProjectID Optional[string] `json:"projectId,omitzero" minLength:"1" doc:"Project to assign, any project regardless of directory; null clears the association, leaving the thread unassigned until a project is created or moved to contain its initial directory."`
 }
 
 // ThreadList is the GET /v1/threads response body.

@@ -12,6 +12,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/paths"
 )
 
 func decodeProject(t *testing.T, rec *httptest.ResponseRecorder) api.Project {
@@ -62,16 +63,37 @@ func TestProjectCRUDOverTheWire(t *testing.T) {
 		t.Errorf("updated name = %q", got.Name)
 	}
 
-	// Immutable and unknown fields are rejected by schema.
-	for name, body := range map[string]string{
-		"immutable directory": `{"name":"x","directory":"/elsewhere"}`,
-		"unknown field":       `{"name":"x","frobnicate":true}`,
-		"missing name":        `{}`,
+	// Unknown fields are rejected by schema; null and empty are refused
+	// for both fields as malformed patches; a missing directory is the
+	// directory's own refusal.
+	for name, tc := range map[string]struct{ body, code string }{
+		"unknown field":     {`{"name":"x","frobnicate":true}`, api.CodeValidationFailed},
+		"null name":         {`{"name":null}`, api.CodeValidationFailed},
+		"empty name":        {`{"name":"  "}`, api.CodeValidationFailed},
+		"null directory":    {`{"directory":null}`, api.CodeValidationFailed},
+		"missing directory": {`{"directory":"` + filepath.Join(dir, "nope") + `"}`, api.CodeProjectDirectoryInvalid},
 	} {
-		rec := f.request(t, http.MethodPatch, "/v1/projects/"+created.ID, body)
-		if rec.Code != http.StatusUnprocessableEntity {
-			t.Errorf("%s: got %d, want 422; body %s", name, rec.Code, rec.Body)
+		rec := f.request(t, http.MethodPatch, "/v1/projects/"+created.ID, tc.body)
+		if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), `"code":"`+tc.code+`"`) {
+			t.Errorf("%s: got %d, want 422 %s; body %s", name, rec.Code, tc.code, rec.Body)
 		}
+	}
+	// A merge patch: an empty body changes nothing.
+	if rec := f.request(t, http.MethodPatch, "/v1/projects/"+created.ID, `{}`); rec.Code != http.StatusOK || decodeProject(t, rec).Name != "renamed" {
+		t.Errorf("empty patch: got %d; body %s", rec.Code, rec.Body)
+	}
+	// The directory moves; the canonical form is stored, and another
+	// project's directory is refused.
+	moved := t.TempDir()
+	rec = f.request(t, http.MethodPatch, "/v1/projects/"+created.ID, `{"directory":"`+moved+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("move: got %d; body %s", rec.Code, rec.Body)
+	}
+	if got := decodeProject(t, rec); got.Directory != canonicalDir(t, moved) || got.Name != "renamed" {
+		t.Errorf("moved = %+v", got)
+	}
+	if rec := f.request(t, http.MethodPatch, "/v1/projects/"+created.ID, `{"directory":"`+f.projectDir+`"}`); rec.Code != http.StatusConflict {
+		t.Errorf("move onto another project: got %d, want 409; body %s", rec.Code, rec.Body)
 	}
 
 	rec = f.request(t, http.MethodDelete, "/v1/projects/"+created.ID, "")
@@ -202,4 +224,13 @@ func TestTerminalListProjectFilter(t *testing.T) {
 	if len(list.Terminals) != 2 {
 		t.Errorf("unfiltered list = %+v, want both %s and %s", list, mine.ID, theirs.ID)
 	}
+}
+
+func canonicalDir(t *testing.T, dir string) string {
+	t.Helper()
+	canonical, err := paths.CanonicalDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return canonical
 }

@@ -16,17 +16,18 @@ import (
 
 // observeThread plants an observed conversation in the fixture's threads
 // service — the seam the provider observers use in production (there is
-// deliberately no POST /v1/threads to do it over the wire).
+// deliberately no POST /v1/threads to do it over the wire). It originates
+// in the fixture project's directory, so it classifies into it.
 func (f *fixture) observeThread(t *testing.T, terminalID, providerID string, status api.ThreadStatus) string {
 	t.Helper()
 	id, err := f.threads.ObserveSession(context.Background(), threads.SessionObservation{
-		IntegrationID: "claude",
-		AppID:         "claude/tui",
-		AgentID:       "claude",
-		ProviderID:    providerID,
-		TerminalID:    terminalID,
-		ProjectID:     f.projectID,
-		Status:        status,
+		IntegrationID:    "claude",
+		AppID:            "claude/tui",
+		AgentID:          "claude",
+		ProviderID:       providerID,
+		TerminalID:       terminalID,
+		InitialDirectory: f.projectDir,
+		Status:           status,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -200,8 +201,8 @@ func TestThreadDeleteOverTheWire(t *testing.T) {
 	}
 }
 
-// Deleting a terminal clears thread linkage; deleting the project then
-// removes the records — the wire-level referential lifecycle.
+// Deleting a terminal clears thread linkage; deleting the project leaves
+// the thread alive and unassigned — the wire-level referential lifecycle.
 func TestThreadReferentialLifecycleOverTheWire(t *testing.T) {
 	f := newFixture(t)
 	terminal := f.createRunningTerminal(t)
@@ -220,12 +221,19 @@ func TestThreadReferentialLifecycleOverTheWire(t *testing.T) {
 	}
 
 	// The other fixture terminals are gone too, so the project can go; its
-	// threads go with it (unlike terminals, which block).
+	// thread survives, unassigned, with its origin intact.
+	if thread.ProjectID != f.projectID || thread.InitialDirectory != f.projectDir {
+		t.Fatalf("before project delete = %+v; want classified into the fixture project", thread)
+	}
 	if rec := f.request(t, http.MethodDelete, "/v1/projects/"+f.projectID, ""); rec.Code != http.StatusNoContent {
 		t.Fatalf("delete project: got %d; body %s", rec.Code, rec.Body)
 	}
-	if rec := f.request(t, http.MethodGet, "/v1/threads/"+id, ""); rec.Code != http.StatusNotFound {
-		t.Errorf("thread survived project delete: got %d, want 404", rec.Code)
+	rec = f.request(t, http.MethodGet, "/v1/threads/"+id, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("thread after project delete: got %d, want 200", rec.Code)
+	}
+	if body := rec.Body.String(); strings.Contains(body, `"projectId"`) || !strings.Contains(body, `"initialDirectory":"`+f.projectDir+`"`) {
+		t.Errorf("thread after project delete = %s; want no projectId and the origin kept", body)
 	}
 }
 
@@ -402,7 +410,7 @@ func TestExternalThreadVerbsOverTheWire(t *testing.T) {
 		return &api.ThreadLinks{Web: "http://127.0.0.1:3773/env/" + providerID, App: "t3code://threads/env/" + providerID}
 	})
 	id, err := f.threads.ObserveExternal(context.Background(), threads.ExternalObservation{
-		IntegrationID: "t3code", ProviderID: "t1", ProjectID: f.projectID, Status: api.ThreadWorking, AgentID: "codex", Title: "T3 thread",
+		IntegrationID: "t3code", ProviderID: "t1", InitialDirectory: f.projectDir, Status: api.ThreadWorking, AgentID: "codex", Title: "T3 thread",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -474,4 +482,84 @@ func TestIntegrationEventOnTheFeed(t *testing.T) {
 	if event.Event != api.EventIntegrationUpdated || resourceID(t, event.Data) != "t3code" {
 		t.Errorf("feed event = %+v", event)
 	}
+}
+
+// Project association over the wire (ATC-295): a thread observed before
+// any project contains it is unassigned and omits projectId; creating a
+// containing project backfills it (archived threads too); the merge
+// patch assigns any project, null clears, omitted leaves it alone; the
+// ?project filter follows.
+func TestThreadProjectAssociationOverTheWire(t *testing.T) {
+	f := newFixture(t)
+	terminal := f.createRunningTerminal(t)
+	origin := canonicalDir(t, t.TempDir())
+	id, err := f.threads.ObserveSession(context.Background(), threads.SessionObservation{
+		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "sess-9", TerminalID: terminal.ID,
+		InitialDirectory: origin, Status: api.ThreadIdle,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.threads.Deactivate(context.Background(), terminal.ID)
+	if rec := f.request(t, http.MethodPatch, "/v1/threads/"+id, `{"archived":true}`); rec.Code != http.StatusOK {
+		t.Fatalf("archive: got %d; body %s", rec.Code, rec.Body)
+	}
+	if body := f.request(t, http.MethodGet, "/v1/threads/"+id, "").Body.String(); strings.Contains(body, `"projectId"`) || !strings.Contains(body, `"initialDirectory":"`+origin+`"`) {
+		t.Errorf("unassigned thread = %s", body)
+	}
+
+	// Creating the containing project backfills the archived thread.
+	project := f.createProject(t, origin)
+	if got := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+id, "")); got.ProjectID != project.ID {
+		t.Errorf("after project create = %+v; want backfilled into %s", got, project.ID)
+	}
+	if list := decodeThreadList(t, f.request(t, http.MethodGet, "/v1/threads?project="+project.ID+"&includeArchived=true", "")); len(list) != 1 || list[0].ID != id {
+		t.Errorf("?project filter = %+v", list)
+	}
+
+	// Merge patch: assign elsewhere, leave alone, clear, refuse unknown.
+	rec := f.request(t, http.MethodPatch, "/v1/threads/"+id, jsonBody(t, map[string]any{"projectId": f.projectID}))
+	if rec.Code != http.StatusOK || decodeThread(t, rec).ProjectID != f.projectID {
+		t.Errorf("assign: got %d; body %s", rec.Code, rec.Body)
+	}
+	rec = f.request(t, http.MethodPatch, "/v1/threads/"+id, `{"title":"kept"}`)
+	if rec.Code != http.StatusOK || decodeThread(t, rec).ProjectID != f.projectID {
+		t.Errorf("omitted projectId changed it: got %d; body %s", rec.Code, rec.Body)
+	}
+	rec = f.request(t, http.MethodPatch, "/v1/threads/"+id, `{"projectId":null}`)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `"projectId"`) {
+		t.Errorf("clear: got %d; body %s", rec.Code, rec.Body)
+	}
+	rec = f.request(t, http.MethodPatch, "/v1/threads/"+id, `{"projectId":"proj-nope"}`)
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), `"code":"project_not_found"`) {
+		t.Errorf("assign unknown: got %d; body %s", rec.Code, rec.Body)
+	}
+	for name, body := range map[string]string{"null title": `{"title":null}`, "null archived": `{"archived":null}`, "empty project": `{"projectId":""}`} {
+		if rec := f.request(t, http.MethodPatch, "/v1/threads/"+id, body); rec.Code != http.StatusUnprocessableEntity {
+			t.Errorf("%s: got %d, want 422; body %s", name, rec.Code, rec.Body)
+		}
+	}
+
+	// Moving a project onto the origin backfills the cleared thread.
+	rec = f.request(t, http.MethodPatch, "/v1/projects/"+project.ID, jsonBody(t, map[string]any{"directory": t.TempDir()}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("move away: got %d; body %s", rec.Code, rec.Body)
+	}
+	if got := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+id, "")); got.ProjectID != "" {
+		t.Fatalf("a move away assigned: %+v", got)
+	}
+	rec = f.request(t, http.MethodPatch, "/v1/projects/"+project.ID, jsonBody(t, map[string]any{"directory": origin}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("move back: got %d; body %s", rec.Code, rec.Body)
+	}
+	if got := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+id, "")); got.ProjectID != project.ID {
+		t.Errorf("after move back = %+v; want backfilled into %s", got, project.ID)
+	}
+}
+
+func decodeThreadList(t *testing.T, rec *httptest.ResponseRecorder) []api.Thread {
+	t.Helper()
+	var list api.ThreadList
+	decodeInto(t, rec, &list)
+	return list.Threads
 }

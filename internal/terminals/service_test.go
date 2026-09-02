@@ -376,15 +376,22 @@ func TestUpdateName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	renamed, err := f.service.UpdateName(ctx, terminal.ID, "build watcher")
+	renamed, err := f.service.Update(ctx, terminal.ID, api.TerminalUpdateParams{Name: api.Some("build watcher")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if renamed.Name != "build watcher" {
 		t.Errorf("name = %q", renamed.Name)
 	}
-	if _, err := f.service.UpdateName(ctx, "term-zzzzz", "x"); !errors.Is(err, ErrNotFound) {
-		t.Errorf("UpdateName(absent) = %v, want ErrNotFound", err)
+	// A merge patch: an empty patch changes nothing, null is refused.
+	if same, err := f.service.Update(ctx, terminal.ID, api.TerminalUpdateParams{}); err != nil || same.Name != "build watcher" {
+		t.Errorf("empty patch = %+v, %v", same, err)
+	}
+	if _, err := f.service.Update(ctx, terminal.ID, api.TerminalUpdateParams{Name: api.Clear[string]()}); !errors.Is(err, ErrInvalidUpdate) {
+		t.Errorf("null name = %v, want ErrInvalidUpdate", err)
+	}
+	if _, err := f.service.Update(ctx, "term-zzzzz", api.TerminalUpdateParams{Name: api.Some("x")}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Update(absent) = %v, want ErrNotFound", err)
 	}
 }
 
@@ -585,7 +592,7 @@ func TestEventsEmitted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.service.UpdateName(ctx, terminal.ID, "renamed"); err != nil {
+	if _, err := f.service.Update(ctx, terminal.ID, api.TerminalUpdateParams{Name: api.Some("renamed")}); err != nil {
 		t.Fatal(err)
 	}
 	f.driver.remove(terminal.ID)

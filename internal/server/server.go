@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
@@ -90,6 +91,10 @@ func NewHandler(opts Options) http.Handler {
 	config.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
 		"bearerAuth": {Type: "http", Scheme: "bearer"},
 	}
+	// A merge-patch Optional[T] is exactly a nullable T on the wire; the
+	// document says so instead of describing the Go wrapper.
+	config.Components.Schemas.RegisterTypeAlias(reflect.TypeFor[api.Optional[string]](), reflect.TypeFor[*string]())
+	config.Components.Schemas.RegisterTypeAlias(reflect.TypeFor[api.Optional[bool]](), reflect.TypeFor[*bool]())
 	// Declared globally so the generated document tells client authors
 	// every operation needs the token; enforcement is the middleware's.
 	config.Security = []map[string][]string{{"bearerAuth": {}}}
@@ -109,7 +114,7 @@ func NewHandler(opts Options) http.Handler {
 		registerTerminals(humaAPI, opts.Terminals, opts.Integrations, opts.Threads, opts.TerminalCleanups)
 	}
 	if opts.Projects != nil {
-		registerProjects(humaAPI, opts.Projects, opts.Threads)
+		registerProjects(humaAPI, opts.Projects, opts.Threads, opts.Logger)
 	}
 	if opts.Integrations != nil {
 		registerIntegrations(humaAPI, opts.Integrations)

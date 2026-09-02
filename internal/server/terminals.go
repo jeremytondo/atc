@@ -104,12 +104,12 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, catalog *in
 		Method:      http.MethodPatch,
 		Path:        "/v1/terminals/{id}",
 		Summary:     "Update a terminal",
-		Description: "Name is the only mutable field; unknown or immutable fields are rejected.",
+		Description: "A merge patch: an omitted field is unchanged. Name is the only mutable field and cannot be null.",
 	}, func(ctx context.Context, input *struct {
 		ID   string `path:"id" doc:"Terminal identifier."`
 		Body api.TerminalUpdateParams
 	}) (*terminalOutput, error) {
-		terminal, err := service.UpdateName(ctx, input.ID, input.Body.Name)
+		terminal, err := service.Update(ctx, input.ID, input.Body)
 		if err != nil {
 			return nil, mapError(err)
 		}
@@ -155,6 +155,8 @@ func mapError(err error) error {
 		return problem(http.StatusUnprocessableEntity, api.CodeProjectNotFound, err.Error())
 	case errors.Is(err, terminals.ErrProjectDirectoryMissing):
 		return problem(http.StatusConflict, api.CodeProjectDirectoryMissing, err.Error())
+	case errors.Is(err, terminals.ErrInvalidUpdate):
+		return problem(http.StatusUnprocessableEntity, api.CodeValidationFailed, err.Error())
 	}
 	return err
 }

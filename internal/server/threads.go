@@ -77,7 +77,7 @@ func registerThreads(humaAPI huma.API, service *threads.Service, catalog *integr
 		Method:      http.MethodPatch,
 		Path:        "/v1/threads/{id}",
 		Summary:     "Update a thread",
-		Description: "Title and archived are the only mutable fields. A title set here is never overwritten by observation. Archiving an active thread — one a terminal has open, or one its external program still reports — is refused, naming the holder.",
+		Description: "A merge patch of title, archived, and projectId: omitted fields are unchanged, null clears projectId (title and archived cannot be null). A title set here is never overwritten by observation. Archiving an active thread — one a terminal has open, or one its external program still reports — is refused, naming the holder. A project assignment may name any project; a cleared thread stays unassigned until a project is created or moved to contain its initial directory.",
 	}, func(ctx context.Context, input *struct {
 		ID   string `path:"id" doc:"Thread identifier."`
 		Body api.ThreadUpdateParams
@@ -128,6 +128,10 @@ func mapThreadError(err error) error {
 		return problem(http.StatusNotFound, api.CodeThreadNotFound, "thread not found")
 	case errors.Is(err, threads.ErrActive):
 		return problem(http.StatusConflict, api.CodeThreadActive, err.Error())
+	case errors.Is(err, threads.ErrProjectUnknown):
+		return problem(http.StatusUnprocessableEntity, api.CodeProjectNotFound, err.Error())
+	case errors.Is(err, threads.ErrInvalidUpdate):
+		return problem(http.StatusUnprocessableEntity, api.CodeValidationFailed, err.Error())
 	case errors.Is(err, threads.ErrResumeUnavailable):
 		return problem(http.StatusUnprocessableEntity, api.CodeResumeUnavailable, "this server has no integration catalog")
 	}

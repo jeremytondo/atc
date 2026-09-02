@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/events"
+	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/store"
 )
 
@@ -48,6 +50,7 @@ func (f *fakeTerminals) remove(id string) {
 }
 
 type fixture struct {
+	root      string
 	service   *Service
 	store     *store.Store
 	terminals *fakeTerminals
@@ -81,32 +84,54 @@ func newFixture(t *testing.T) *fixture {
 	service := NewService(Options{
 		Repository: s.Threads(),
 		Terminals:  terminals,
+		Projects:   s.Projects(),
 		Hub:        hub,
 		Now:        clock.Now,
 	})
 	if err := service.Load(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	f := &fixture{service: service, store: s, terminals: terminals, hub: hub, clock: clock}
+	f := &fixture{service: service, store: s, terminals: terminals, hub: hub, clock: clock, root: canonicalTempDir(t)}
 	f.sub = hub.Subscribe(0, false)
 	t.Cleanup(f.sub.Close)
 	return f
 }
 
-// plant registers a project (and optionally a running terminal) so thread
-// rows satisfy their foreign keys.
+// canonicalTempDir is a temp directory in canonical form — on macOS the
+// temp root is a symlink, and origin evidence is stored resolved.
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := paths.CanonicalDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// dir is the real directory a planted project is rooted at: one temp
+// subdirectory per project id, so origin evidence canonicalizes.
+func (f *fixture) dir(projectID string) string {
+	return filepath.Join(f.root, projectID)
+}
+
+// plant registers a project rooted at a real directory (and optionally a
+// running terminal in it) so thread rows satisfy their foreign keys and
+// observations classify into it.
 func (f *fixture) plant(t *testing.T, projectID string, terminalIDs ...string) {
 	t.Helper()
 	ctx := context.Background()
 	now := f.clock.Now()
+	if err := os.MkdirAll(f.dir(projectID), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if ok, err := f.store.Projects().Insert(ctx, store.ProjectRecord{
-		ID: projectID, Name: "p", Directory: "/" + projectID, CreatedAt: now, UpdatedAt: now,
+		ID: projectID, Name: "p", Directory: f.dir(projectID), CreatedAt: now, UpdatedAt: now,
 	}); err != nil || !ok {
 		t.Fatalf("planting project = %v, %v", ok, err)
 	}
 	for _, id := range terminalIDs {
 		if ok, err := f.store.Terminals().Insert(ctx, store.TerminalRecord{
-			ID: id, ProjectID: projectID, Name: "tui", Directory: "/" + projectID,
+			ID: id, ProjectID: projectID, Name: "tui", Directory: f.dir(projectID),
 			AppID: "claude/tui", CreatedAt: now, UpdatedAt: now,
 		}); err != nil || !ok {
 			t.Fatalf("planting terminal = %v, %v", ok, err)
@@ -128,15 +153,17 @@ func (f *fixture) drain() []string {
 	}
 }
 
-func observation(terminal, providerID string) SessionObservation {
+// observation is a session observation of providerID in terminal,
+// originating in proj-aaaaa's directory.
+func (f *fixture) observation(terminal, providerID string) SessionObservation {
 	return SessionObservation{
-		IntegrationID: "claude",
-		AppID:         "claude/tui",
-		AgentID:       "claude",
-		ProviderID:    providerID,
-		TerminalID:    terminal,
-		ProjectID:     "proj-aaaaa",
-		Status:        api.ThreadIdle,
+		IntegrationID:    "claude",
+		AppID:            "claude/tui",
+		AgentID:          "claude",
+		ProviderID:       providerID,
+		TerminalID:       terminal,
+		InitialDirectory: f.dir("proj-aaaaa"),
+		Status:           api.ThreadIdle,
 	}
 }
 
@@ -148,7 +175,7 @@ func TestObserveSessionProvenance(t *testing.T) {
 	f := newFixture(t)
 	f.plant(t, "proj-aaaaa", "term-aaaaa")
 	ctx := context.Background()
-	foreign := observation("term-aaaaa", "sess-1")
+	foreign := f.observation("term-aaaaa", "sess-1")
 	foreign.AppID = "codex/tui"
 	if _, err := f.service.ObserveSession(ctx, foreign); !errors.Is(err, ErrAppForeign) {
 		t.Fatalf("ObserveSession(foreign app) = %v, want ErrAppForeign", err)
@@ -157,12 +184,12 @@ func TestObserveSessionProvenance(t *testing.T) {
 		t.Fatalf("a refused observation minted %+v", threads)
 	}
 
-	id, err := f.service.ObserveSession(ctx, observation("term-aaaaa", "sess-1"))
+	id, err := f.service.ObserveSession(ctx, f.observation("term-aaaaa", "sess-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.drain()
-	renamed := observation("term-aaaaa", "sess-1")
+	renamed := f.observation("term-aaaaa", "sess-1")
 	renamed.AgentID = "claude-next"
 	if _, err := f.service.ObserveSession(ctx, renamed); err != nil {
 		t.Fatal(err)
@@ -173,7 +200,7 @@ func TestObserveSessionProvenance(t *testing.T) {
 	if got := f.drain(); len(got) != 1 || got[0] != "thread.updated "+id {
 		t.Errorf("events after agent change = %v", got)
 	}
-	silent := observation("term-aaaaa", "sess-1")
+	silent := f.observation("term-aaaaa", "sess-1")
 	silent.AgentID = ""
 	if _, err := f.service.ObserveSession(ctx, silent); err != nil {
 		t.Fatal(err)
@@ -189,7 +216,7 @@ func TestObserveSessionCreatesOnce(t *testing.T) {
 	ctx := context.Background()
 
 	id, err := f.service.ObserveSession(ctx, SessionObservation{
-		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
+		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", InitialDirectory: f.dir("proj-aaaaa"),
 		Status:   api.ThreadWorking,
 		Metadata: Metadata{Title: "fix the build", Model: "claude-opus-5", Cwd: "/proj-aaaaa", PermissionMode: "default"},
 	})
@@ -222,7 +249,7 @@ func TestObserveSessionCreatesOnce(t *testing.T) {
 	}
 
 	// The same provider conversation reattaches; it never mints a duplicate.
-	again, err := f.service.ObserveSession(ctx, observation("term-aaaaa", "sess-1"))
+	again, err := f.service.ObserveSession(ctx, f.observation("term-aaaaa", "sess-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +267,7 @@ func TestSwitchingConversationsMovesActive(t *testing.T) {
 	ctx := context.Background()
 
 	first, err := f.service.ObserveSession(ctx, SessionObservation{
-		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
+		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", InitialDirectory: f.dir("proj-aaaaa"),
 		Status: api.ThreadWorking,
 	})
 	if err != nil {
@@ -250,7 +277,7 @@ func TestSwitchingConversationsMovesActive(t *testing.T) {
 
 	// /clear: a new conversation appears in the same terminal. The old
 	// thread persists inactive; its unverifiable live status coerces.
-	second, err := f.service.ObserveSession(ctx, observation("term-aaaaa", "sess-2"))
+	second, err := f.service.ObserveSession(ctx, f.observation("term-aaaaa", "sess-2"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +304,7 @@ func TestSwitchingConversationsMovesActive(t *testing.T) {
 	}
 
 	// /resume of the first conversation reactivates the existing thread.
-	resumed, err := f.service.ObserveSession(ctx, observation("term-aaaaa", "sess-1"))
+	resumed, err := f.service.ObserveSession(ctx, f.observation("term-aaaaa", "sess-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,12 +321,12 @@ func TestLastObserverWins(t *testing.T) {
 	f.plant(t, "proj-aaaaa", "term-aaaaa", "term-bbbbb")
 	ctx := context.Background()
 
-	id, err := f.service.ObserveSession(ctx, observation("term-aaaaa", "sess-1"))
+	id, err := f.service.ObserveSession(ctx, f.observation("term-aaaaa", "sess-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.drain()
-	again, err := f.service.ObserveSession(ctx, observation("term-bbbbb", "sess-1"))
+	again, err := f.service.ObserveSession(ctx, f.observation("term-bbbbb", "sess-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +353,7 @@ func TestObserveStatusTransitionsAndSilence(t *testing.T) {
 	f.plant(t, "proj-aaaaa", "term-aaaaa")
 	ctx := context.Background()
 
-	id, err := f.service.ObserveSession(ctx, observation("term-aaaaa", "sess-1"))
+	id, err := f.service.ObserveSession(ctx, f.observation("term-aaaaa", "sess-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,7 +429,7 @@ func TestUserTitleWinsOverObservation(t *testing.T) {
 	ctx := context.Background()
 
 	id, err := f.service.ObserveSession(ctx, SessionObservation{
-		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
+		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", InitialDirectory: f.dir("proj-aaaaa"),
 		Metadata: Metadata{Title: "observed default"},
 	})
 	if err != nil {
@@ -410,7 +437,7 @@ func TestUserTitleWinsOverObservation(t *testing.T) {
 	}
 
 	title := "my title"
-	if _, err := f.service.Update(ctx, id, api.ThreadUpdateParams{Title: &title}); err != nil {
+	if _, err := f.service.Update(ctx, id, api.ThreadUpdateParams{Title: api.Some(title)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.service.ObserveStatus(ctx, StatusObservation{
@@ -432,13 +459,13 @@ func TestArchiveAndDeleteRefusedWhileActive(t *testing.T) {
 	f.plant(t, "proj-aaaaa", "term-aaaaa")
 	ctx := context.Background()
 
-	id, err := f.service.ObserveSession(ctx, observation("term-aaaaa", "sess-1"))
+	id, err := f.service.ObserveSession(ctx, f.observation("term-aaaaa", "sess-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	archived := true
-	if _, err := f.service.Update(ctx, id, api.ThreadUpdateParams{Archived: &archived}); !errors.Is(err, ErrActive) {
+	if _, err := f.service.Update(ctx, id, api.ThreadUpdateParams{Archived: api.Some(archived)}); !errors.Is(err, ErrActive) {
 		t.Fatalf("archive active = %v; want ErrActive", err)
 	} else if !strings.Contains(err.Error(), "term-aaaaa") {
 		t.Errorf("refusal %q does not name the holding terminal", err)
@@ -450,7 +477,7 @@ func TestArchiveAndDeleteRefusedWhileActive(t *testing.T) {
 	// Once inactive, both verbs work.
 	f.service.Deactivate(ctx, "term-aaaaa")
 	f.drain()
-	thread, err := f.service.Update(ctx, id, api.ThreadUpdateParams{Archived: &archived})
+	thread, err := f.service.Update(ctx, id, api.ThreadUpdateParams{Archived: api.Some(archived)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +496,7 @@ func TestArchiveAndDeleteRefusedWhileActive(t *testing.T) {
 		t.Errorf("opt-in list = %d threads; want 1", len(got))
 	}
 	unarchived := false
-	thread, err = f.service.Update(ctx, id, api.ThreadUpdateParams{Archived: &unarchived})
+	thread, err = f.service.Update(ctx, id, api.ThreadUpdateParams{Archived: api.Some(unarchived)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -486,7 +513,7 @@ func TestArchiveAndDeleteRefusedWhileActive(t *testing.T) {
 
 	// The identity mapping died with the record: the same provider
 	// conversation observed again deliberately mints a fresh thread.
-	fresh, err := f.service.ObserveSession(ctx, observation("term-aaaaa", "sess-1"))
+	fresh, err := f.service.ObserveSession(ctx, f.observation("term-aaaaa", "sess-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -503,20 +530,20 @@ func TestReattachUnarchives(t *testing.T) {
 	f.plant(t, "proj-aaaaa", "term-aaaaa")
 	ctx := context.Background()
 
-	id, err := f.service.ObserveSession(ctx, observation("term-aaaaa", "sess-1"))
+	id, err := f.service.ObserveSession(ctx, f.observation("term-aaaaa", "sess-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.service.Deactivate(ctx, "term-aaaaa")
 	archived := true
-	if _, err := f.service.Update(ctx, id, api.ThreadUpdateParams{Archived: &archived}); err != nil {
+	if _, err := f.service.Update(ctx, id, api.ThreadUpdateParams{Archived: api.Some(archived)}); err != nil {
 		t.Fatal(err)
 	}
 	f.drain()
 
 	// The same conversation observed open again: unarchived, back in the
 	// default list, and announced.
-	if _, err := f.service.ObserveSession(ctx, observation("term-aaaaa", "sess-1")); err != nil {
+	if _, err := f.service.ObserveSession(ctx, f.observation("term-aaaaa", "sess-1")); err != nil {
 		t.Fatal(err)
 	}
 	thread, err := f.service.Get(id)
@@ -549,7 +576,7 @@ func TestUpdateUnknownAndNoopPatch(t *testing.T) {
 		t.Errorf("Delete(unknown) = %v; want ErrNotFound", err)
 	}
 
-	id, err := f.service.ObserveSession(ctx, observation("term-aaaaa", "sess-1"))
+	id, err := f.service.ObserveSession(ctx, f.observation("term-aaaaa", "sess-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -573,7 +600,7 @@ func TestSweepDeactivatesWhenTerminalLeaves(t *testing.T) {
 	ctx := context.Background()
 
 	id, err := f.service.ObserveSession(ctx, SessionObservation{
-		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
+		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", InitialDirectory: f.dir("proj-aaaaa"),
 		Status: api.ThreadWaitingForInput,
 	})
 	if err != nil {
@@ -618,7 +645,7 @@ func TestSweepLeavesUnreachableAlone(t *testing.T) {
 	ctx := context.Background()
 
 	id, err := f.service.ObserveSession(ctx, SessionObservation{
-		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
+		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", InitialDirectory: f.dir("proj-aaaaa"),
 		Status: api.ThreadWorking,
 	})
 	if err != nil {
@@ -645,7 +672,7 @@ func TestLiveStatusIgnoredWhileInactive(t *testing.T) {
 	f.plant(t, "proj-aaaaa", "term-aaaaa")
 	ctx := context.Background()
 
-	id, err := f.service.ObserveSession(ctx, observation("term-aaaaa", "sess-1"))
+	id, err := f.service.ObserveSession(ctx, f.observation("term-aaaaa", "sess-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -671,7 +698,7 @@ func TestEvidenceSurvivesReload(t *testing.T) {
 	f.plant(t, "proj-aaaaa", "term-aaaaa")
 	ctx := context.Background()
 
-	id, err := f.service.ObserveSession(ctx, observation("term-aaaaa", "sess-1"))
+	id, err := f.service.ObserveSession(ctx, f.observation("term-aaaaa", "sess-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -688,6 +715,7 @@ func TestEvidenceSurvivesReload(t *testing.T) {
 	reloaded := NewService(Options{
 		Repository: f.store.Threads(),
 		Terminals:  f.terminals,
+		Projects:   f.store.Projects(),
 		Hub:        events.NewHubAt(8, 1),
 		Now:        f.clock.Now,
 	})
@@ -708,7 +736,7 @@ func TestIdlePersistsWhenInactive(t *testing.T) {
 	f.plant(t, "proj-aaaaa", "term-aaaaa")
 	ctx := context.Background()
 
-	id, err := f.service.ObserveSession(ctx, observation("term-aaaaa", "sess-1"))
+	id, err := f.service.ObserveSession(ctx, f.observation("term-aaaaa", "sess-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -734,7 +762,7 @@ func TestTerminalRemovedClearsLinkage(t *testing.T) {
 	ctx := context.Background()
 
 	id, err := f.service.ObserveSession(ctx, SessionObservation{
-		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
+		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", InitialDirectory: f.dir("proj-aaaaa"),
 		Status: api.ThreadWorking,
 	})
 	if err != nil {
@@ -768,35 +796,62 @@ func TestTerminalRemovedClearsLinkage(t *testing.T) {
 	}
 }
 
-func TestProjectRemovedDropsThreads(t *testing.T) {
+// Deleting a project leaves its threads alive and unassigned — never
+// reassigned to a less specific project.
+func TestProjectRemovedUnassignsThreads(t *testing.T) {
 	f := newFixture(t)
 	f.plant(t, "proj-aaaaa", "term-aaaaa")
 	ctx := context.Background()
 
-	id, err := f.service.ObserveSession(ctx, observation("term-aaaaa", "sess-1"))
+	id, err := f.service.ObserveSession(ctx, f.observation("term-aaaaa", "sess-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.service.Deactivate(ctx, "term-aaaaa")
 	f.drain()
 
-	// The API layer deletes the project (terminal already gone), then
-	// notifies; the schema cascade removed the rows.
+	// A less specific project exists too; deletion must not fall back to it.
+	now := f.clock.Now()
+	if ok, err := f.store.Projects().Insert(ctx, store.ProjectRecord{ID: "proj-rootx", Name: "root", Directory: f.root, CreatedAt: now, UpdatedAt: now}); err != nil || !ok {
+		t.Fatalf("planting root project = %v, %v", ok, err)
+	}
+
+	// The API layer deletes the project (terminal already gone) through
+	// the domain's seam: the schema clears the association and the view
+	// converges under the same lock.
 	if ok, err := f.store.Terminals().Delete(ctx, "term-aaaaa"); err != nil || !ok {
 		t.Fatalf("terminal delete = %v, %v", ok, err)
 	}
 	f.service.TerminalRemoved(ctx, "term-aaaaa")
-	if ok, err := f.store.Projects().Delete(ctx, "proj-aaaaa"); err != nil || !ok {
-		t.Fatalf("project delete = %v, %v", ok, err)
-	}
 	f.drain()
-	f.service.ProjectRemoved("proj-aaaaa")
-
-	if _, err := f.service.Get(id); !errors.Is(err, ErrNotFound) {
-		t.Errorf("Get after project removal = %v; want ErrNotFound", err)
+	if err := f.service.DeleteProject(ctx, "proj-aaaaa", func() error {
+		ok, err := f.store.Projects().Delete(ctx, "proj-aaaaa")
+		if err == nil && !ok {
+			return errors.New("no such project")
+		}
+		return err
+	}); err != nil {
+		t.Fatalf("project delete = %v", err)
 	}
-	if diff := cmp.Diff([]string{"thread.deleted " + id}, f.drain()); diff != "" {
+	// A failing remove converges nothing.
+	if err := f.service.DeleteProject(ctx, "proj-rootx", func() error { return errors.New("refused") }); err == nil {
+		t.Error("a refused remove was reported as success")
+	}
+
+	thread, err := f.service.Get(id)
+	if err != nil || thread.ProjectID != "" || thread.InitialDirectory != f.dir("proj-aaaaa") {
+		t.Errorf("Get after project removal = %+v, %v; want unassigned with its origin kept", thread, err)
+	}
+	if diff := cmp.Diff([]string{"thread.updated " + id}, f.drain()); diff != "" {
 		t.Errorf("events (-want +got):\n%s", diff)
+	}
+	// A restart reads the same truth back.
+	reloaded := NewService(Options{Repository: f.store.Threads(), Terminals: f.terminals, Projects: f.store.Projects(), Hub: f.hub, Now: f.clock.Now})
+	if err := reloaded.Load(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if thread, _ := reloaded.Get(id); thread.ProjectID != "" {
+		t.Errorf("after reload = %+v; want unassigned", thread)
 	}
 }
 
@@ -806,12 +861,12 @@ func TestListFilters(t *testing.T) {
 	f.plant(t, "proj-bbbbb", "term-bbbbb")
 	ctx := context.Background()
 
-	first, err := f.service.ObserveSession(ctx, observation("term-aaaaa", "sess-1"))
+	first, err := f.service.ObserveSession(ctx, f.observation("term-aaaaa", "sess-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	second, err := f.service.ObserveSession(ctx, SessionObservation{
-		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "sess-2", TerminalID: "term-bbbbb", ProjectID: "proj-bbbbb",
+		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "sess-2", TerminalID: "term-bbbbb", InitialDirectory: f.dir("proj-bbbbb"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -843,12 +898,12 @@ func TestLoadCoercesLiveStatuses(t *testing.T) {
 	f.plant(t, "proj-aaaaa", "term-aaaaa")
 	ctx := context.Background()
 
-	idle, err := f.service.ObserveSession(ctx, observation("term-aaaaa", "sess-1"))
+	idle, err := f.service.ObserveSession(ctx, f.observation("term-aaaaa", "sess-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	working, err := f.service.ObserveSession(ctx, SessionObservation{
-		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "sess-2", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
+		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "sess-2", TerminalID: "term-aaaaa", InitialDirectory: f.dir("proj-aaaaa"),
 		Status: api.ThreadWaitingForPermission,
 	})
 	if err != nil {
@@ -858,6 +913,7 @@ func TestLoadCoercesLiveStatuses(t *testing.T) {
 	reloaded := NewService(Options{
 		Repository: f.store.Threads(),
 		Terminals:  f.terminals,
+		Projects:   f.store.Projects(),
 		Hub:        events.NewHubAt(8, 1),
 		Now:        f.clock.Now,
 	})
@@ -901,7 +957,7 @@ func TestReattachUpdatesMetadataAndTerminalOnly(t *testing.T) {
 	ctx := context.Background()
 
 	id, err := f.service.ObserveSession(ctx, SessionObservation{
-		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
+		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", InitialDirectory: f.dir("proj-aaaaa"),
 		Metadata: Metadata{Cwd: "/proj-aaaaa"},
 	})
 	if err != nil {
@@ -911,7 +967,7 @@ func TestReattachUpdatesMetadataAndTerminalOnly(t *testing.T) {
 	// Resumed from a terminal in another project: the terminal linkage and
 	// provider-reported cwd move, the project deliberately does not.
 	if _, err := f.service.ObserveSession(ctx, SessionObservation{
-		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "sess-1", TerminalID: "term-bbbbb", ProjectID: "proj-bbbbb",
+		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "sess-1", TerminalID: "term-bbbbb", InitialDirectory: f.dir("proj-bbbbb"),
 		Metadata: Metadata{Cwd: "/proj-bbbbb"},
 	}); err != nil {
 		t.Fatal(err)
@@ -975,7 +1031,7 @@ func (r *fakeResumer) Resume(_ context.Context, req ResumeRequest) (api.Terminal
 func (f *fixture) observed(t *testing.T) string {
 	t.Helper()
 	f.plant(t, "proj-aaaaa", "term-aaaaa")
-	o := observation("term-aaaaa", "s1")
+	o := f.observation("term-aaaaa", "s1")
 	o.Metadata.Cwd = "/proj-aaaaa/sub"
 	id, err := f.service.ObserveSession(context.Background(), o)
 	if err != nil {
@@ -1020,7 +1076,7 @@ func TestOpenDecision(t *testing.T) {
 			// is known to show something else.
 			name: "last terminal showing another conversation means dormant",
 			arrange: func(t *testing.T, f *fixture, _ string) {
-				if _, err := f.service.ObserveSession(ctx, observation("term-aaaaa", "s2")); err != nil {
+				if _, err := f.service.ObserveSession(ctx, f.observation("term-aaaaa", "s2")); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -1047,7 +1103,7 @@ func TestOpenDecision(t *testing.T) {
 			arrange: func(t *testing.T, f *fixture, id string) {
 				f.dormant(t)
 				archived := true
-				if _, err := f.service.Update(ctx, id, api.ThreadUpdateParams{Archived: &archived}); err != nil {
+				if _, err := f.service.Update(ctx, id, api.ThreadUpdateParams{Archived: api.Some(archived)}); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -1168,13 +1224,13 @@ func TestConcurrentOpensConverge(t *testing.T) {
 	// With the launch in flight, other evidence still commits...
 	f.plant(t, "proj-bbbbb", "term-bbbbb")
 	if _, err := f.service.ObserveSession(ctx, SessionObservation{
-		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "s9", TerminalID: "term-bbbbb", ProjectID: "proj-bbbbb",
+		IntegrationID: "claude", AppID: "claude/tui", AgentID: "claude", ProviderID: "s9", TerminalID: "term-bbbbb", InitialDirectory: f.dir("proj-bbbbb"),
 	}); err != nil {
 		t.Errorf("evidence during a resume launch: %v", err)
 	}
 	// ...but the thread being opened is spoken for.
 	archived := true
-	if _, err := f.service.Update(ctx, id, api.ThreadUpdateParams{Archived: &archived}); !errors.Is(err, ErrActive) {
+	if _, err := f.service.Update(ctx, id, api.ThreadUpdateParams{Archived: api.Some(archived)}); !errors.Is(err, ErrActive) {
 		t.Errorf("archive during open = %v, want ErrActive", err)
 	}
 	if err := f.service.Delete(ctx, id); !errors.Is(err, ErrActive) {
@@ -1235,11 +1291,15 @@ func TestObserveExternalMintsAndUpdates(t *testing.T) {
 	f.plant(t, "proj-aaaaa")
 	ctx := context.Background()
 
-	if _, err := f.service.ObserveExternal(ctx, ExternalObservation{IntegrationID: "t3code", ProviderID: "t1"}); !errors.Is(err, ErrProjectRequired) {
-		t.Fatalf("first observation without a project = %v, want ErrProjectRequired", err)
+	// No usable local directory: not recorded (ATC represents work on its
+	// own machine); an unknown-thread refusal, counted by the Integration.
+	for _, dir := range []string{"", filepath.Join(f.root, "missing")} {
+		if _, err := f.service.ObserveExternal(ctx, ExternalObservation{IntegrationID: "t3code", ProviderID: "t1", InitialDirectory: dir}); !errors.Is(err, ErrNoLocalDirectory) {
+			t.Fatalf("first observation with directory %q = %v, want ErrNoLocalDirectory", dir, err)
+		}
 	}
 	id, err := f.service.ObserveExternal(ctx, ExternalObservation{
-		IntegrationID: "t3code", ProviderID: "t1", ProjectID: "proj-aaaaa",
+		IntegrationID: "t3code", ProviderID: "t1", InitialDirectory: f.dir("proj-aaaaa"),
 		Status: api.ThreadWorking, AgentID: "codex", Title: "Fix it", LastError: "",
 		Metadata: Metadata{Model: "gpt-5", Cwd: "/proj-aaaaa"},
 	})
@@ -1251,7 +1311,7 @@ func TestObserveExternalMintsAndUpdates(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := api.Thread{
-		ID: id, IntegrationID: "t3code", AgentID: "codex", ProjectID: "proj-aaaaa", Title: "Fix it",
+		ID: id, IntegrationID: "t3code", AgentID: "codex", InitialDirectory: f.dir("proj-aaaaa"), ProjectID: "proj-aaaaa", Title: "Fix it",
 		Model: "gpt-5", Cwd: "/proj-aaaaa", Status: api.ThreadWorking,
 		LastEvidenceAt: thread.LastEvidenceAt, CreatedAt: thread.CreatedAt, UpdatedAt: thread.UpdatedAt,
 	}
@@ -1264,14 +1324,14 @@ func TestObserveExternalMintsAndUpdates(t *testing.T) {
 
 	// Refusals name the Integration; the title is the user's to set.
 	archived := true
-	if _, err := f.service.Update(ctx, id, api.ThreadUpdateParams{Archived: &archived}); !errors.Is(err, ErrActive) || !strings.Contains(err.Error(), "reported by t3code") {
+	if _, err := f.service.Update(ctx, id, api.ThreadUpdateParams{Archived: api.Some(archived)}); !errors.Is(err, ErrActive) || !strings.Contains(err.Error(), "reported by t3code") {
 		t.Errorf("archive held = %v", err)
 	}
 	if err := f.service.Delete(ctx, id); !errors.Is(err, ErrActive) {
 		t.Errorf("delete held = %v", err)
 	}
 	title := "mine"
-	if _, err := f.service.Update(ctx, id, api.ThreadUpdateParams{Title: &title}); err != nil {
+	if _, err := f.service.Update(ctx, id, api.ThreadUpdateParams{Title: api.Some(title)}); err != nil {
 		t.Fatal(err)
 	}
 	f.drain()
@@ -1314,7 +1374,7 @@ func TestIntegrationReleaseAndArchive(t *testing.T) {
 	ctx := context.Background()
 	observe := func(providerID string, status api.ThreadStatus) string {
 		t.Helper()
-		id, err := f.service.ObserveExternal(ctx, ExternalObservation{IntegrationID: "t3code", ProviderID: providerID, ProjectID: "proj-aaaaa", Status: status})
+		id, err := f.service.ObserveExternal(ctx, ExternalObservation{IntegrationID: "t3code", ProviderID: providerID, InitialDirectory: f.dir("proj-aaaaa"), Status: status})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1335,7 +1395,7 @@ func TestIntegrationReleaseAndArchive(t *testing.T) {
 		t.Errorf("release events = %v", got)
 	}
 	archived := true
-	if _, err := f.service.Update(ctx, idle, api.ThreadUpdateParams{Archived: &archived}); err != nil {
+	if _, err := f.service.Update(ctx, idle, api.ThreadUpdateParams{Archived: api.Some(archived)}); err != nil {
 		t.Errorf("archive after release = %v", err)
 	}
 	// Live evidence for a released thread is ignored, as for a terminal
@@ -1389,11 +1449,11 @@ func TestIntegrationLinksAndBootCoercion(t *testing.T) {
 	f.service.SetLinker("t3code", func(providerID string) *api.ThreadLinks {
 		return &api.ThreadLinks{Web: "http://t3/" + providerID, App: "t3code://" + providerID}
 	})
-	held, err := f.service.ObserveExternal(ctx, ExternalObservation{IntegrationID: "t3code", ProviderID: "t1", ProjectID: "proj-aaaaa", Status: api.ThreadWorking})
+	held, err := f.service.ObserveExternal(ctx, ExternalObservation{IntegrationID: "t3code", ProviderID: "t1", InitialDirectory: f.dir("proj-aaaaa"), Status: api.ThreadWorking})
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := f.service.ObserveSession(ctx, observation("term-aaaaa", "sess-1"))
+	other, err := f.service.ObserveSession(ctx, f.observation("term-aaaaa", "sess-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1407,7 +1467,7 @@ func TestIntegrationLinksAndBootCoercion(t *testing.T) {
 		}
 	}
 
-	reloaded := NewService(Options{Repository: f.store.Threads(), Terminals: f.terminals, Hub: f.hub, Now: f.clock.Now})
+	reloaded := NewService(Options{Repository: f.store.Threads(), Terminals: f.terminals, Projects: f.store.Projects(), Hub: f.hub, Now: f.clock.Now})
 	if err := reloaded.Load(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -1416,5 +1476,171 @@ func TestIntegrationLinksAndBootCoercion(t *testing.T) {
 	}
 	if ids := reloaded.UnarchivedProviderIDs("t3code"); !slices.Equal(ids, []string{"t1"}) {
 		t.Errorf("identities after reload = %v", ids)
+	}
+}
+
+// Classification (ATC-295): a first observation joins the most specific
+// project containing its canonical origin — on path boundaries, symlinks
+// resolved — or none; an origin that is no usable local directory mints
+// nothing, terminal-hosted or not; and later observations from elsewhere
+// change neither origin nor project.
+func TestClassificationByOrigin(t *testing.T) {
+	f := newFixture(t)
+	f.plant(t, "proj-aaaaa", "term-aaaaa", "term-bbbbb", "term-ccccc", "term-ddddd", "term-eeeee")
+	ctx := context.Background()
+	nested := filepath.Join(f.dir("proj-aaaaa"), "nested")
+	sibling := f.dir("proj-aaaaa") + "-sibling" // shares the prefix, not the path
+	link := filepath.Join(f.root, "link")
+	for _, dir := range []string{filepath.Join(nested, "deep"), sibling} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(nested, link); err != nil {
+		t.Fatal(err)
+	}
+	now := f.clock.Now()
+	if ok, err := f.store.Projects().Insert(ctx, store.ProjectRecord{ID: "proj-nestd", Name: "nested", Directory: nested, CreatedAt: now, UpdatedAt: now}); err != nil || !ok {
+		t.Fatalf("planting nested project = %v, %v", ok, err)
+	}
+
+	cases := []struct {
+		terminal, provider, origin string
+		wantProject, wantOrigin    string
+	}{
+		{"term-aaaaa", "s-root", f.dir("proj-aaaaa"), "proj-aaaaa", f.dir("proj-aaaaa")},
+		{"term-bbbbb", "s-deep", filepath.Join(nested, "deep"), "proj-nestd", filepath.Join(nested, "deep")},
+		{"term-ccccc", "s-link", filepath.Join(link, "deep"), "proj-nestd", filepath.Join(nested, "deep")},
+		{"term-ddddd", "s-sibl", sibling, "", sibling},
+	}
+	for _, tc := range cases {
+		o := f.observation(tc.terminal, tc.provider)
+		o.InitialDirectory = tc.origin
+		id, err := f.service.ObserveSession(ctx, o)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.provider, err)
+		}
+		if thread, _ := f.service.Get(id); thread.ProjectID != tc.wantProject || thread.InitialDirectory != tc.wantOrigin {
+			t.Errorf("%s: project %q origin %q; want %q %q", tc.provider, thread.ProjectID, thread.InitialDirectory, tc.wantProject, tc.wantOrigin)
+		}
+	}
+
+	gone := f.observation("term-eeeee", "s-gone")
+	gone.InitialDirectory = filepath.Join(f.root, "gone")
+	if _, err := f.service.ObserveSession(ctx, gone); !errors.Is(err, ErrNoLocalDirectory) {
+		t.Errorf("ObserveSession(no local directory) = %v, want ErrNoLocalDirectory", err)
+	}
+
+	// Resumed from another terminal in another directory: cwd and
+	// terminal move, origin and project do not.
+	id, _, _ := f.service.LookupIdentity("claude", "s-deep")
+	resumed := f.observation("term-aaaaa", "s-deep")
+	resumed.InitialDirectory = sibling
+	resumed.Metadata.Cwd = sibling
+	if _, err := f.service.ObserveSession(ctx, resumed); err != nil {
+		t.Fatal(err)
+	}
+	if thread, _ := f.service.Get(id); thread.ProjectID != "proj-nestd" || thread.InitialDirectory != filepath.Join(nested, "deep") ||
+		thread.Cwd != sibling || thread.TerminalID != "term-aaaaa" {
+		t.Errorf("after resume elsewhere = %+v", thread)
+	}
+}
+
+// Backfill: creating a project (or moving one) assigns the unassigned
+// threads it is now the most specific match for — archived included —
+// and never rewrites an existing association; explicit assignment picks
+// any project, clearing leaves the thread alone until a backfill.
+func TestBackfillAndExplicitAssignment(t *testing.T) {
+	f := newFixture(t)
+	f.plant(t, "proj-aaaaa", "term-aaaaa", "term-bbbbb", "term-ccccc")
+	ctx := context.Background()
+	other := filepath.Join(f.root, "other")
+	deep := filepath.Join(other, "deep")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	observe := func(terminal, provider, origin string) string {
+		t.Helper()
+		o := f.observation(terminal, provider)
+		o.InitialDirectory = origin
+		id, err := f.service.ObserveSession(ctx, o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	// Three threads under other/: one archived, one that will be assigned
+	// elsewhere by hand, one plain. None matches a project yet.
+	archived := observe("term-aaaaa", "s-arch", other)
+	f.service.Deactivate(ctx, "term-aaaaa")
+	if _, err := f.service.Update(ctx, archived, api.ThreadUpdateParams{Archived: api.Some(true)}); err != nil {
+		t.Fatal(err)
+	}
+	manual := observe("term-bbbbb", "s-man", deep)
+	plain := observe("term-ccccc", "s-plain", deep)
+	if _, err := f.service.Update(ctx, manual, api.ThreadUpdateParams{ProjectID: api.Some("proj-aaaaa")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.Update(ctx, plain, api.ThreadUpdateParams{ProjectID: api.Some("proj-nope")}); !errors.Is(err, ErrProjectUnknown) {
+		t.Errorf("assign unknown project = %v, want ErrProjectUnknown", err)
+	}
+	f.drain()
+
+	// A project at other/ backfills the archived and plain threads; the
+	// manual assignment stands.
+	now := f.clock.Now()
+	if ok, err := f.store.Projects().Insert(ctx, store.ProjectRecord{ID: "proj-other", Name: "other", Directory: other, CreatedAt: now, UpdatedAt: now}); err != nil || !ok {
+		t.Fatalf("planting project = %v, %v", ok, err)
+	}
+	if err := f.service.Backfill(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]string{archived: "proj-other", manual: "proj-aaaaa", plain: "proj-other"} {
+		if thread, _ := f.service.Get(id); thread.ProjectID != want {
+			t.Errorf("after backfill %s = %q, want %q", id, thread.ProjectID, want)
+		}
+	}
+	if got := f.drain(); len(got) != 2 {
+		t.Errorf("backfill events = %v, want two thread.updated", got)
+	}
+
+	// A more specific project at other/deep/ takes nothing: the plain
+	// thread already has a project, and classification never overwrites.
+	now = f.clock.Now()
+	if ok, err := f.store.Projects().Insert(ctx, store.ProjectRecord{ID: "proj-deepx", Name: "deep", Directory: deep, CreatedAt: now, UpdatedAt: now}); err != nil || !ok {
+		t.Fatalf("planting deep project = %v, %v", ok, err)
+	}
+	if err := f.service.Backfill(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if thread, _ := f.service.Get(plain); thread.ProjectID != "proj-other" {
+		t.Errorf("existing association overwritten: %+v", thread)
+	}
+
+	// Clearing leaves the thread unassigned; an ordinary observation does
+	// not re-infer, a backfill does — with the most specific match.
+	if thread, err := f.service.Update(ctx, plain, api.ThreadUpdateParams{ProjectID: api.Clear[string]()}); err != nil || thread.ProjectID != "" {
+		t.Fatalf("clear = %+v, %v", thread, err)
+	}
+	if _, err := f.service.ObserveSession(ctx, f.observation("term-ccccc", "s-plain")); err != nil {
+		t.Fatal(err)
+	}
+	if thread, _ := f.service.Get(plain); thread.ProjectID != "" {
+		t.Errorf("observation re-inferred a cleared project: %+v", thread)
+	}
+	f.drain()
+	if err := f.service.Backfill(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if thread, _ := f.service.Get(plain); thread.ProjectID != "proj-deepx" {
+		t.Errorf("backfill after clear = %+v, want proj-deepx", thread)
+	}
+	if got := f.drain(); len(got) != 1 || got[0] != "thread.updated "+plain {
+		t.Errorf("backfill events = %v, want one thread.updated", got)
+	}
+
+	// Nulling title or archived is refused.
+	if _, err := f.service.Update(ctx, plain, api.ThreadUpdateParams{Title: api.Clear[string]()}); !errors.Is(err, ErrInvalidUpdate) {
+		t.Errorf("null title = %v, want ErrInvalidUpdate", err)
 	}
 }

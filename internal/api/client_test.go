@@ -252,7 +252,7 @@ func TestTerminalMethods(t *testing.T) {
 		t.Errorf("get path = %q", got.Path)
 	}
 
-	if _, err := client.UpdateTerminal(ctx, "term-x7k2f", TerminalUpdateParams{Name: "build"}); err != nil {
+	if _, err := client.UpdateTerminal(ctx, "term-x7k2f", TerminalUpdateParams{Name: Some("build")}); err != nil {
 		t.Fatal(err)
 	}
 	want = call{http.MethodPatch, "/v1/terminals/term-x7k2f", "", `{"name":"build"}`}
@@ -314,7 +314,7 @@ func TestProjectMethods(t *testing.T) {
 		t.Errorf("get path = %q", got.Path)
 	}
 
-	if _, err := client.UpdateProject(ctx, "proj-x7k2f", ProjectUpdateParams{Name: "renamed"}); err != nil {
+	if _, err := client.UpdateProject(ctx, "proj-x7k2f", ProjectUpdateParams{Name: Some("renamed")}); err != nil {
 		t.Fatal(err)
 	}
 	want = call{http.MethodPatch, "/v1/projects/proj-x7k2f", `{"name":"renamed"}`}

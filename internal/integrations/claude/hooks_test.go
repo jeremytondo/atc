@@ -95,7 +95,7 @@ func newHookFixture(t *testing.T) *hookFixture {
 	t.Helper()
 	observer := &fakeObserver{identity: map[string]string{}}
 	terminals := &fakeTerminals{terminals: map[string]api.Terminal{
-		"term-aaaaa": {ID: "term-aaaaa", ProjectID: "proj-aaaaa", AppID: AppID, Status: api.TerminalRunning},
+		"term-aaaaa": {ID: "term-aaaaa", ProjectID: "proj-aaaaa", Directory: "/launch", AppID: AppID, Status: api.TerminalRunning},
 	}}
 	dir := t.TempDir()
 	hooks, err := NewHooks(HooksOptions{
@@ -260,12 +260,13 @@ func TestSessionLifecycleObservations(t *testing.T) {
 	}
 	session := f.observer.sessions[0]
 	if session.IntegrationID != "claude" || session.AppID != "claude/tui" || session.AgentID != "claude" || session.ProviderID != "s1" || session.TerminalID != "term-aaaaa" ||
-		session.ProjectID != "proj-aaaaa" || session.Status != "" {
+		session.InitialDirectory != "/proj" || session.Status != "" {
 		t.Errorf("session observation = %+v", session)
 	}
 	if session.Metadata.Cwd != "/proj" || session.Metadata.PermissionMode != "default" || session.Metadata.Effort != "high" {
 		t.Errorf("session metadata = %+v", session.Metadata)
 	}
+
 	status := f.observer.lastStatus(t)
 	if status.Status != api.ThreadWorking {
 		t.Errorf("prompt status = %s", status.Status)
@@ -593,5 +594,17 @@ func TestCommandComposition(t *testing.T) {
 	}
 	if command != "claude --settings "+integrations.Quote(f.hooks.settingsPath("term-bbbbb"))+" --resume 'sess-1'" {
 		t.Errorf("resume command = %q", command)
+	}
+}
+
+// A first prompt that carries no cwd originates in the terminal's launch
+// directory.
+func TestOriginFallsBackToLaunchDirectory(t *testing.T) {
+	f := newHookFixture(t)
+	secret := f.prepare(t, "term-aaaaa")
+	f.post(t, secret, `{"session_id":"s1","hook_event_name":"SessionStart","source":"startup"}`)
+	f.post(t, secret, `{"session_id":"s1","hook_event_name":"UserPromptSubmit","prompt":"hello"}`)
+	if len(f.observer.sessions) != 1 || f.observer.sessions[0].InitialDirectory != "/launch" {
+		t.Errorf("sessions = %+v; want one originating in the launch directory", f.observer.sessions)
 	}
 }

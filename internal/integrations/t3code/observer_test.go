@@ -58,7 +58,7 @@ func newFixture(t *testing.T) *fixture {
 	t.Cleanup(func() { _ = db.Close() })
 	hub := events.NewHubAt(256, 1)
 	projectService := projects.NewService(projects.Options{Repository: db.Projects(), Terminals: db.Terminals(), Hub: hub})
-	threadService := threads.NewService(threads.Options{Repository: db.Threads(), Terminals: noTerminals{}, Hub: hub})
+	threadService := threads.NewService(threads.Options{Repository: db.Threads(), Terminals: noTerminals{}, Projects: db.Projects(), Hub: hub})
 	if err := threadService.Load(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func (f *fixture) start() {
 	f.t.Helper()
 	f.observer = New(Options{
 		Home: f.home, SessionPath: f.sessionPath,
-		Threads: f.threads, Projects: f.projects, Hub: f.hub,
+		Threads: f.threads, Hub: f.hub,
 		RunCLI:       f.cli.run,
 		ProcessAlive: func(int) bool { return f.alive.Load() },
 	})
@@ -224,7 +224,7 @@ func TestSnapshotMirrorsThreads(t *testing.T) {
 	}
 	thread := f.waitStatus("t1", api.ThreadWorking)
 	want := api.Thread{
-		ID: thread.ID, IntegrationID: "t3code", AgentID: "codex", ProjectID: project.ID,
+		ID: thread.ID, IntegrationID: "t3code", AgentID: "codex", ProjectID: project.ID, InitialDirectory: workspace,
 		Title: "Fix the build", Model: "gpt-5", Cwd: workspace, Status: api.ThreadWorking,
 		LastEvidenceAt: thread.LastEvidenceAt, CreatedAt: thread.CreatedAt, UpdatedAt: thread.UpdatedAt,
 		Links: &api.ThreadLinks{Web: f.server.origin() + "/env-1/t1", App: "t3code://threads/env-1/t1"},
@@ -331,14 +331,14 @@ func TestRemovedArchivesAndVerbs(t *testing.T) {
 	ctx := context.Background()
 
 	archived := true
-	if _, err := f.threads.Update(ctx, thread.ID, api.ThreadUpdateParams{Archived: &archived}); !errors.Is(err, threads.ErrActive) || !strings.Contains(err.Error(), "t3code") {
+	if _, err := f.threads.Update(ctx, thread.ID, api.ThreadUpdateParams{Archived: api.Some(archived)}); !errors.Is(err, threads.ErrActive) || !strings.Contains(err.Error(), "t3code") {
 		t.Errorf("archive while reported = %v; want ErrActive naming the integration", err)
 	}
 	if err := f.threads.Delete(ctx, thread.ID); !errors.Is(err, threads.ErrActive) {
 		t.Errorf("delete while reported = %v; want ErrActive", err)
 	}
 	title := "my title"
-	if _, err := f.threads.Update(ctx, thread.ID, api.ThreadUpdateParams{Title: &title}); err != nil {
+	if _, err := f.threads.Update(ctx, thread.ID, api.ThreadUpdateParams{Title: api.Some(title)}); err != nil {
 		t.Errorf("title patch while reported = %v", err)
 	}
 
@@ -362,7 +362,7 @@ func TestRemovedArchivesAndVerbs(t *testing.T) {
 	f.server.push(removed(4, "t1"))
 	waitFor(t, "second archive", func() bool { return f.thread("t1").Archived })
 	unarchived := false
-	if _, err := f.threads.Update(ctx, thread.ID, api.ThreadUpdateParams{Archived: &unarchived}); err != nil {
+	if _, err := f.threads.Update(ctx, thread.ID, api.ThreadUpdateParams{Archived: api.Some(unarchived)}); err != nil {
 		t.Errorf("unarchive after removal = %v", err)
 	}
 	if err := f.threads.Delete(ctx, thread.ID); err != nil {
@@ -408,7 +408,7 @@ func TestSettledThreadsAreArchived(t *testing.T) {
 		t.Errorf("settled = %+v", got)
 	}
 	unarchived := false
-	if _, err := f.threads.Update(context.Background(), live.ID, api.ThreadUpdateParams{Archived: &unarchived}); err != nil {
+	if _, err := f.threads.Update(context.Background(), live.ID, api.ThreadUpdateParams{Archived: api.Some(unarchived)}); err != nil {
 		t.Errorf("unarchive while settled = %v; want allowed (T3 no longer reports it active)", err)
 	}
 
@@ -420,7 +420,7 @@ func TestSettledThreadsAreArchived(t *testing.T) {
 		t.Errorf("reactivated = %+v; want %s unarchived", restored, live.ID)
 	}
 	archived := true
-	if _, err := f.threads.Update(context.Background(), live.ID, api.ThreadUpdateParams{Archived: &archived}); !errors.Is(err, threads.ErrActive) {
+	if _, err := f.threads.Update(context.Background(), live.ID, api.ThreadUpdateParams{Archived: api.Some(archived)}); !errors.Is(err, threads.ErrActive) {
 		t.Errorf("archive while active again = %v; want ErrActive", err)
 	}
 	f.server.push(upserted(4, threadItem("t-live", "p1", "Live", withSession("idle", "codex"), settledOverride("settled"))))
@@ -524,7 +524,7 @@ func TestReplayConnectsAtTheMarker(t *testing.T) {
 	f.server.push(synchronizedItem())
 	f.waitState(api.IntegrationConnected)
 	archived := true
-	if _, err := f.threads.Update(context.Background(), f.thread("t1").ID, api.ThreadUpdateParams{Archived: &archived}); !errors.Is(err, threads.ErrActive) {
+	if _, err := f.threads.Update(context.Background(), f.thread("t1").ID, api.ThreadUpdateParams{Archived: api.Some(archived)}); !errors.Is(err, threads.ErrActive) {
 		t.Errorf("archive after the marker = %v; want ErrActive (hold restored)", err)
 	}
 }
@@ -568,9 +568,11 @@ func TestSnapshotFallbackDiffApplies(t *testing.T) {
 	}
 }
 
-// Project association: exact match, nearest ancestor, auto-create named
-// from T3's title, and a skip counted in the detail when the workspace
-// has no local directory — re-evaluated once it does.
+// Directory evidence (ATC-295): the workspace root is the thread's
+// origin, which the threads domain classifies — exact match, nearest
+// ancestor, none — while T3 never creates a project; a thread whose
+// workspace has no local directory is skipped and counted in the detail,
+// re-evaluated once the directory exists.
 func TestProjectAssociation(t *testing.T) {
 	f := newFixture(t)
 	root := t.TempDir()
@@ -605,28 +607,21 @@ func TestProjectAssociation(t *testing.T) {
 	f.start()
 	connection := f.waitState(api.IntegrationConnected)
 
-	if got := f.thread("t-exact"); got.ProjectID != exactProject.ID || got.Cwd != exact {
+	if got := f.thread("t-exact"); got.ProjectID != exactProject.ID || got.InitialDirectory != exact || got.Cwd != exact {
 		t.Errorf("exact = %+v; want project %s", got, exactProject.ID)
 	}
-	if got := f.thread("t-nested"); got.ProjectID != parentProject.ID || got.Cwd != filepath.Join(nested, "wt") {
-		t.Errorf("nested = %+v; want the nearest ancestor %s (not %s) and the worktree cwd", got, parentProject.ID, rootProject.ID)
+	if got := f.thread("t-nested"); got.ProjectID != parentProject.ID || got.InitialDirectory != nested || got.Cwd != filepath.Join(nested, "wt") {
+		t.Errorf("nested = %+v; want the nearest ancestor %s (not %s), the workspace origin, and the worktree cwd", got, parentProject.ID, rootProject.ID)
 	}
-	created := f.thread("t-fresh")
+	if got := f.thread("t-fresh"); got.ProjectID != "" || got.InitialDirectory != fresh {
+		t.Errorf("fresh = %+v; want recorded unassigned with its origin", got)
+	}
 	list, err := f.projects.List(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	var freshProject api.Project
-	for _, project := range list {
-		if project.ID == created.ProjectID {
-			freshProject = project
-		}
-	}
-	if freshProject.Directory != fresh || freshProject.Name != "Fresh Workspace" {
-		t.Errorf("auto-created project = %+v; want %s named from T3", freshProject, fresh)
-	}
-	if len(list) != 4 {
-		t.Errorf("projects = %d; want the three planted plus one created", len(list))
+	if len(list) != 3 {
+		t.Errorf("projects = %d; want only the three planted — T3 creates none", len(list))
 	}
 	if _, _, ok := f.threads.LookupIdentity(ID, "t-missing"); ok {
 		t.Error("a thread with no local directory was recorded")
@@ -916,8 +911,8 @@ func TestProjectRemovedLeavesATCProjects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 1 || list[0].ID != thread.ProjectID || list[0].Name != "Workspace" {
-		t.Errorf("projects after T3 removed its project = %+v", list)
+	if len(list) != 0 || thread.ProjectID != "" || thread.InitialDirectory != workspace {
+		t.Errorf("after T3 removed its project: projects %+v, thread %+v; want none and an unassigned thread", list, thread)
 	}
 	// And a project T3 announces later can carry threads.
 	other := t.TempDir()
@@ -1006,7 +1001,7 @@ func TestDiscover(t *testing.T) {
 
 func TestIntegrationRegistration(t *testing.T) {
 	f := newFixture(t)
-	f.observer = New(Options{Home: f.home, SessionPath: f.sessionPath, Threads: f.threads, Projects: f.projects, Hub: f.hub, RunCLI: f.cli.run})
+	f.observer = New(Options{Home: f.home, SessionPath: f.sessionPath, Threads: f.threads, Hub: f.hub, RunCLI: f.cli.run})
 	integration := Integration(f.observer)
 	if integration.ID != ID || integration.Name != "T3 Code" || integration.Connection == nil || integration.Executable != nil {
 		t.Errorf("registration = %+v", integration)

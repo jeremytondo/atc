@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -258,5 +259,36 @@ func TestProjectCreateDefaultPath(t *testing.T) {
 	}
 	if !strings.Contains(stdout, plain) {
 		t.Errorf("create outside a repo does not root at the cwd:\n%s", stdout)
+	}
+}
+
+// --directory moves a project; the server canonicalizes and refuses
+// another project's directory.
+func TestProjectUpdateDirectoryCLI(t *testing.T) {
+	startTestServer(t)
+	id := createProjectCLI(t, t.TempDir())
+	other := createProjectCLI(t, t.TempDir())
+	moved, err := paths.CanonicalDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, err := runCLI(t, "project", "update", id, "--directory", moved, "--name", "moved")
+	if err != nil || !regexp.MustCompile(`(?m)^directory\s+`+regexp.QuoteMeta(moved)+`$`).MatchString(stdout) || !strings.Contains(stdout, "moved") {
+		t.Errorf("move = %q, %v", stdout, err)
+	}
+	otherOut, _, err := runCLI(t, "project", "get", other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	match := regexp.MustCompile(`(?m)^directory\s+(.+)$`).FindStringSubmatch(otherOut)
+	if match == nil {
+		t.Fatalf("get output has no directory:\n%s", otherOut)
+	}
+	otherDir := strings.TrimSpace(match[1])
+	if _, _, err := runCLI(t, "project", "update", id, "--directory", otherDir); err == nil || !strings.Contains(err.Error(), "409") {
+		t.Errorf("move onto another project = %v, want a 409 problem", err)
+	}
+	if _, _, err := runCLI(t, "project", "update", id); err == nil {
+		t.Error("update with no flags was accepted")
 	}
 }

@@ -77,10 +77,15 @@ type SessionObservation struct {
 	// ProviderID is the provider's own conversation id. It never appears
 	// in the public API.
 	ProviderID string
-	// TerminalID is the observing terminal; ProjectID is copied onto the
-	// record at first observation only (immutable afterwards).
+	// TerminalID is the observing terminal.
 	TerminalID string
-	ProjectID  string
+	// InitialDirectory is the directory the conversation reliably
+	// originated in, as the Integration reports it: origin evidence for a
+	// first observation, ignored for a known conversation (a resume from
+	// elsewhere is never origin). The domain canonicalizes it; a first
+	// observation whose directory is not usable locally is refused
+	// (ErrNoLocalDirectory), never recorded without one.
+	InitialDirectory string
 	// At is when the evidence arrived; zero means now.
 	At time.Time
 	// Status is the initial status evidence riding on the transition;
@@ -117,9 +122,12 @@ type ExternalObservation struct {
 	// IntegrationID and ProviderID form the private identity key.
 	IntegrationID string
 	ProviderID    string
-	// ProjectID is the project a first observation records the thread
-	// under; ignored for a known conversation. Empty refuses to mint.
-	ProjectID string
+	// InitialDirectory is the directory the conversation originated in,
+	// as the program reports it; origin evidence for a first observation,
+	// ignored afterwards. ATC represents work on its own machine: a first
+	// observation whose directory is not usable locally is refused
+	// (ErrNoLocalDirectory) rather than recorded.
+	InitialDirectory string
 	// At is when the evidence arrived; zero means now.
 	At time.Time
 	// Status is the projected status; empty means unknown.

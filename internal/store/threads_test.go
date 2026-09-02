@@ -196,8 +196,8 @@ func TestThreadIdentities(t *testing.T) {
 }
 
 // The referential lifecycle lives in the schema: terminal deletion clears
-// thread linkage, project deletion cascades thread records and their
-// identity mappings.
+// thread linkage, project deletion clears the association — the thread
+// and its identity mapping survive unassigned.
 func TestThreadReferentialLifecycle(t *testing.T) {
 	s, _ := openStore(t)
 	ctx := context.Background()
@@ -230,7 +230,7 @@ func TestThreadReferentialLifecycle(t *testing.T) {
 		t.Fatalf("after terminal delete: %+v; want one record with nil TerminalID", records)
 	}
 
-	// ON DELETE CASCADE: the project takes its threads and mappings with it.
+	// ON DELETE SET NULL: the project leaves its threads unassigned.
 	if ok, err := s.Projects().Delete(ctx, "proj-aaaaa"); err != nil || !ok {
 		t.Fatalf("project Delete = %v, %v", ok, err)
 	}
@@ -242,7 +242,7 @@ func TestThreadReferentialLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 0 || len(identities) != 0 {
-		t.Errorf("after project delete: %d records, %d identities; want none", len(records), len(identities))
+	if len(records) != 1 || records[0].ProjectID != "" || len(identities) != 1 {
+		t.Errorf("after project delete: %+v, %d identities; want one unassigned record and its mapping", records, len(identities))
 	}
 }

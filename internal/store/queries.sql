@@ -43,20 +43,20 @@ SELECT * FROM projects WHERE id = ?;
 -- name: ListProjects :many
 SELECT * FROM projects ORDER BY created_at, id;
 
--- RETURNING makes the mutation and the read one operation: a rename either
--- fails with nothing committed or returns the committed row, so the caller
--- can never observe a committed write as an error.
--- name: UpdateProjectName :one
-UPDATE projects SET name = ?, updated_at = ? WHERE id = ? RETURNING *;
+-- RETURNING makes the mutation and the read one operation: an update
+-- either fails with nothing committed or returns the committed row, so
+-- the caller can never observe a committed write as an error.
+-- name: UpdateProject :one
+UPDATE projects SET name = ?, directory = ?, updated_at = ? WHERE id = ? RETURNING *;
 
 -- name: DeleteProject :execrows
 DELETE FROM projects WHERE id = ?;
 
 -- name: InsertThread :execrows
-INSERT INTO threads (id, integration_id, app_id, agent_id, project_id, terminal_id, title, title_user_set,
-    model, effort, cwd, permission_mode, status, last_error, last_evidence_at, archived, archived_at,
-    created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO threads (id, integration_id, app_id, agent_id, initial_directory, project_id, terminal_id, title,
+    title_user_set, model, effort, cwd, permission_mode, status, last_error, last_evidence_at, archived,
+    archived_at, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING;
 
 -- name: ListThreads :many
@@ -66,10 +66,15 @@ SELECT * FROM threads ORDER BY created_at, id;
 -- mutations, so every mutable column is written from the record as one
 -- statement instead of a query per verb.
 -- name: UpdateThread :execrows
-UPDATE threads SET agent_id = ?, terminal_id = ?, title = ?, title_user_set = ?, model = ?, effort = ?,
+UPDATE threads SET agent_id = ?, project_id = ?, terminal_id = ?, title = ?, title_user_set = ?, model = ?, effort = ?,
     cwd = ?, permission_mode = ?, status = ?, last_error = ?, last_evidence_at = ?,
     archived = ?, archived_at = ?, updated_at = ?
 WHERE id = ?;
+
+-- Backfill assigns only threads still unassigned, so a project change
+-- never overwrites an association made in between.
+-- name: AssignThreadProject :execrows
+UPDATE threads SET project_id = ?, updated_at = ? WHERE id = ? AND project_id IS NULL;
 
 -- name: DeleteThread :execrows
 DELETE FROM threads WHERE id = ?;

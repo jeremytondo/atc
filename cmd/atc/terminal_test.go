@@ -103,6 +103,7 @@ func startTestServerWithThreads(t *testing.T) (*cliDriver, *threads.Service) {
 	threadService := threads.NewService(threads.Options{
 		Repository: db.Threads(),
 		Terminals:  service,
+		Projects:   db.Projects(),
 		Hub:        hub,
 	})
 	if err := threadService.Load(context.Background()); err != nil {
@@ -126,7 +127,6 @@ func startTestServerWithThreads(t *testing.T) (*cliDriver, *threads.Service) {
 		Home:        t.TempDir(),
 		SessionPath: filepath.Join(t.TempDir(), "t3code-session.json"),
 		Threads:     threadService,
-		Projects:    projectService,
 		Hub:         hub,
 	})
 	threadService.SetLinker(t3code.ID, t3Observer.Links)

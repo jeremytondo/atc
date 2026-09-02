@@ -145,8 +145,9 @@ func (c *Client) Thread(ctx context.Context, id string) (Thread, error) {
 	return thread, err
 }
 
-// UpdateThread mutates a thread's title and/or archived flag — archive
-// and unarchive are this PATCH, there are no action routes.
+// UpdateThread merge-patches a thread's title, archived flag, and project
+// (an explicit null clears the project) — archive and unarchive are this
+// PATCH, there are no action routes.
 func (c *Client) UpdateThread(ctx context.Context, id string, params ThreadUpdateParams) (Thread, error) {
 	var thread Thread
 	err := c.do(ctx, http.MethodPatch, "/v1/threads/"+id, params, &thread)

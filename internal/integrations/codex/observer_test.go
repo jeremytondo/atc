@@ -531,7 +531,7 @@ func TestLaunchBindsAndMintsAtFirstPrompt(t *testing.T) {
 	waitFor(t, func() bool { return f.threads.sessionCount() == 1 })
 	session := f.threads.lastSession(t)
 	if session.IntegrationID != "codex" || session.AppID != "codex/tui" || session.AgentID != "codex" || session.ProviderID != "t1" || session.TerminalID != "term-aaaaa" ||
-		session.ProjectID != "proj-aaaaa" || session.Status != api.ThreadWorking ||
+		session.InitialDirectory != f.dir || session.Status != api.ThreadWorking ||
 		session.Metadata.Cwd != f.dir || session.Metadata.Title != "fix the build please" ||
 		session.Metadata.Model != "" {
 		t.Errorf("session observation = %+v", session)

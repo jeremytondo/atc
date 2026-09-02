@@ -10,6 +10,26 @@ import (
 	"database/sql"
 )
 
+const assignThreadProject = `-- name: AssignThreadProject :execrows
+UPDATE threads SET project_id = ?, updated_at = ? WHERE id = ? AND project_id IS NULL
+`
+
+type AssignThreadProjectParams struct {
+	ProjectID sql.NullString
+	UpdatedAt string
+	ID        string
+}
+
+// Backfill assigns only threads still unassigned, so a project change
+// never overwrites an association made in between.
+func (q *Queries) AssignThreadProject(ctx context.Context, arg AssignThreadProjectParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, assignThreadProject, arg.ProjectID, arg.UpdatedAt, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deleteProject = `-- name: DeleteProject :execrows
 DELETE FROM projects WHERE id = ?
 `
@@ -133,33 +153,34 @@ func (q *Queries) InsertTerminal(ctx context.Context, arg InsertTerminalParams) 
 }
 
 const insertThread = `-- name: InsertThread :execrows
-INSERT INTO threads (id, integration_id, app_id, agent_id, project_id, terminal_id, title, title_user_set,
-    model, effort, cwd, permission_mode, status, last_error, last_evidence_at, archived, archived_at,
-    created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO threads (id, integration_id, app_id, agent_id, initial_directory, project_id, terminal_id, title,
+    title_user_set, model, effort, cwd, permission_mode, status, last_error, last_evidence_at, archived,
+    archived_at, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING
 `
 
 type InsertThreadParams struct {
-	ID             string
-	IntegrationID  string
-	AppID          sql.NullString
-	AgentID        sql.NullString
-	ProjectID      string
-	TerminalID     sql.NullString
-	Title          sql.NullString
-	TitleUserSet   int64
-	Model          sql.NullString
-	Effort         sql.NullString
-	Cwd            sql.NullString
-	PermissionMode sql.NullString
-	Status         string
-	LastError      sql.NullString
-	LastEvidenceAt sql.NullString
-	Archived       int64
-	ArchivedAt     sql.NullString
-	CreatedAt      string
-	UpdatedAt      string
+	ID               string
+	IntegrationID    string
+	AppID            sql.NullString
+	AgentID          sql.NullString
+	InitialDirectory sql.NullString
+	ProjectID        sql.NullString
+	TerminalID       sql.NullString
+	Title            sql.NullString
+	TitleUserSet     int64
+	Model            sql.NullString
+	Effort           sql.NullString
+	Cwd              sql.NullString
+	PermissionMode   sql.NullString
+	Status           string
+	LastError        sql.NullString
+	LastEvidenceAt   sql.NullString
+	Archived         int64
+	ArchivedAt       sql.NullString
+	CreatedAt        string
+	UpdatedAt        string
 }
 
 func (q *Queries) InsertThread(ctx context.Context, arg InsertThreadParams) (int64, error) {
@@ -168,6 +189,7 @@ func (q *Queries) InsertThread(ctx context.Context, arg InsertThreadParams) (int
 		arg.IntegrationID,
 		arg.AppID,
 		arg.AgentID,
+		arg.InitialDirectory,
 		arg.ProjectID,
 		arg.TerminalID,
 		arg.Title,
@@ -338,7 +360,7 @@ func (q *Queries) ListThreadIdentities(ctx context.Context) ([]ThreadIdentity, e
 }
 
 const listThreads = `-- name: ListThreads :many
-SELECT id, integration_id, app_id, agent_id, project_id, terminal_id, title, title_user_set, model, effort, cwd, permission_mode, status, last_error, last_evidence_at, archived, archived_at, created_at, updated_at FROM threads ORDER BY created_at, id
+SELECT id, integration_id, app_id, agent_id, initial_directory, project_id, terminal_id, title, title_user_set, model, effort, cwd, permission_mode, status, last_error, last_evidence_at, archived, archived_at, created_at, updated_at FROM threads ORDER BY created_at, id
 `
 
 func (q *Queries) ListThreads(ctx context.Context) ([]Thread, error) {
@@ -355,6 +377,7 @@ func (q *Queries) ListThreads(ctx context.Context) ([]Thread, error) {
 			&i.IntegrationID,
 			&i.AppID,
 			&i.AgentID,
+			&i.InitialDirectory,
 			&i.ProjectID,
 			&i.TerminalID,
 			&i.Title,
@@ -429,21 +452,27 @@ func (q *Queries) RecordTerminalStopIntent(ctx context.Context, arg RecordTermin
 	return result.RowsAffected()
 }
 
-const updateProjectName = `-- name: UpdateProjectName :one
-UPDATE projects SET name = ?, updated_at = ? WHERE id = ? RETURNING id, name, directory, created_at, updated_at
+const updateProject = `-- name: UpdateProject :one
+UPDATE projects SET name = ?, directory = ?, updated_at = ? WHERE id = ? RETURNING id, name, directory, created_at, updated_at
 `
 
-type UpdateProjectNameParams struct {
+type UpdateProjectParams struct {
 	Name      string
+	Directory string
 	UpdatedAt string
 	ID        string
 }
 
-// RETURNING makes the mutation and the read one operation: a rename either
-// fails with nothing committed or returns the committed row, so the caller
-// can never observe a committed write as an error.
-func (q *Queries) UpdateProjectName(ctx context.Context, arg UpdateProjectNameParams) (Project, error) {
-	row := q.db.QueryRowContext(ctx, updateProjectName, arg.Name, arg.UpdatedAt, arg.ID)
+// RETURNING makes the mutation and the read one operation: an update
+// either fails with nothing committed or returns the committed row, so
+// the caller can never observe a committed write as an error.
+func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (Project, error) {
+	row := q.db.QueryRowContext(ctx, updateProject,
+		arg.Name,
+		arg.Directory,
+		arg.UpdatedAt,
+		arg.ID,
+	)
 	var i Project
 	err := row.Scan(
 		&i.ID,
@@ -474,7 +503,7 @@ func (q *Queries) UpdateTerminalName(ctx context.Context, arg UpdateTerminalName
 }
 
 const updateThread = `-- name: UpdateThread :execrows
-UPDATE threads SET agent_id = ?, terminal_id = ?, title = ?, title_user_set = ?, model = ?, effort = ?,
+UPDATE threads SET agent_id = ?, project_id = ?, terminal_id = ?, title = ?, title_user_set = ?, model = ?, effort = ?,
     cwd = ?, permission_mode = ?, status = ?, last_error = ?, last_evidence_at = ?,
     archived = ?, archived_at = ?, updated_at = ?
 WHERE id = ?
@@ -482,6 +511,7 @@ WHERE id = ?
 
 type UpdateThreadParams struct {
 	AgentID        sql.NullString
+	ProjectID      sql.NullString
 	TerminalID     sql.NullString
 	Title          sql.NullString
 	TitleUserSet   int64
@@ -504,6 +534,7 @@ type UpdateThreadParams struct {
 func (q *Queries) UpdateThread(ctx context.Context, arg UpdateThreadParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, updateThread,
 		arg.AgentID,
+		arg.ProjectID,
 		arg.TerminalID,
 		arg.Title,
 		arg.TitleUserSet,

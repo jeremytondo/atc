@@ -47,10 +47,11 @@ type TerminalCreateParams struct {
 	AppID     string `json:"appId,omitempty" doc:"Integration-qualified App id (integration/app) to launch; the Integration privately composes the command and the id is recorded on the terminal. Mutually exclusive with command."`
 }
 
-// TerminalUpdateParams is the PATCH /v1/terminals/{id} request body. Name
-// is the only mutable field; unknown or immutable fields are rejected.
+// TerminalUpdateParams is the PATCH /v1/terminals/{id} request body, a
+// JSON Merge Patch: an omitted field is unchanged. Name is the only
+// mutable field; it does not accept null.
 type TerminalUpdateParams struct {
-	Name string `json:"name" minLength:"1" doc:"New display name."`
+	Name Optional[string] `json:"name,omitzero" minLength:"1" nullable:"false" doc:"New display name."`
 }
 
 // TerminalList is the GET /v1/terminals response body.

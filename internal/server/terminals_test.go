@@ -149,6 +149,7 @@ func newFixture(t *testing.T) *fixture {
 	threadService := threads.NewService(threads.Options{
 		Repository: db.Threads(),
 		Terminals:  service,
+		Projects:   db.Projects(),
 		Hub:        hub,
 		Now:        now,
 	})
@@ -180,7 +181,6 @@ func newFixture(t *testing.T) *fixture {
 		Home:        t.TempDir(),
 		SessionPath: filepath.Join(t.TempDir(), "t3code-session.json"),
 		Threads:     threadService,
-		Projects:    projectService,
 		Hub:         hub,
 		Now:         now,
 	})
@@ -218,7 +218,7 @@ func newFixture(t *testing.T) *fixture {
 		binaries: binaries, markers: markers}
 	// Planted through the repository, not the API: the fixture project must
 	// not consume an event sequence number the SSE assertions rely on.
-	f.projectDir = t.TempDir()
+	f.projectDir = canonicalDir(t, t.TempDir())
 	f.projectID = "proj-fixtr"
 	if ok, err := db.Projects().Insert(context.Background(), store.ProjectRecord{
 		ID: f.projectID, Name: "fixture", Directory: f.projectDir,
@@ -348,14 +348,18 @@ func TestUpdateRejectsUnknownAndImmutableFields(t *testing.T) {
 	for name, body := range map[string]string{
 		"immutable directory": `{"name":"x","directory":"/elsewhere"}`,
 		"immutable command":   `{"command":"vim"}`,
-		"immutable agent":     `{"name":"x","agent":"claude"}`,
+		"immutable app":       `{"name":"x","appId":"claude/tui"}`,
 		"unknown field":       `{"name":"x","frobnicate":true}`,
-		"missing name":        `{}`,
+		"null name":           `{"name":null}`,
 	} {
 		rec := f.request(t, http.MethodPatch, "/v1/terminals/"+created.ID, body)
 		if rec.Code != http.StatusUnprocessableEntity {
 			t.Errorf("%s: got %d, want 422; body %s", name, rec.Code, rec.Body)
 		}
+	}
+	// A merge patch: an empty body changes nothing.
+	if rec := f.request(t, http.MethodPatch, "/v1/terminals/"+created.ID, `{}`); rec.Code != http.StatusOK || decodeTerminal(t, rec).Name != created.Name {
+		t.Errorf("empty patch: got %d; body %s", rec.Code, rec.Body)
 	}
 }
 
