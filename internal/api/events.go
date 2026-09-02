@@ -17,7 +17,11 @@ const (
 	EventThreadCreated   = "thread.created"
 	EventThreadUpdated   = "thread.updated"
 	EventThreadDeleted   = "thread.deleted"
-	EventResync          = "resync"
+	// EventAgentAdapterUpdated fires when an observing adapter's connection
+	// state changes (ATC-285) — on transitions only, never per reconnect
+	// attempt.
+	EventAgentAdapterUpdated = "agent_adapter.updated"
+	EventResync              = "resync"
 )
 
 // ChangeEvent is the payload of every change event: what changed, by kind
@@ -57,6 +61,10 @@ type ThreadUpdatedEvent struct{ ChangeEvent }
 
 // ThreadDeletedEvent is the thread.deleted payload.
 type ThreadDeletedEvent struct{ ChangeEvent }
+
+// AgentAdapterUpdatedEvent is the agent_adapter.updated payload; the id is
+// the adapter's.
+type AgentAdapterUpdatedEvent struct{ ChangeEvent }
 
 // ResyncEvent tells a reconnecting client its cursor has fallen off the
 // backlog: refetch snapshots once, then resume from the live stream.

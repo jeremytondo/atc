@@ -25,20 +25,20 @@ func TestThreadsRoundTrip(t *testing.T) {
 	evidence := at(3)
 	records := []ThreadRecord{
 		{
-			ID: "thrd-aaaaa", Agent: "claude", ProjectID: "proj-aaaaa", TerminalID: new("term-aaaaa"),
+			ID: "thrd-aaaaa", Adapter: "claude", Agent: "claude", ProjectID: "proj-aaaaa", TerminalID: new("term-aaaaa"),
 			Title: "fix the build", Model: "claude-opus-5", Effort: "high",
 			Cwd: "/home/x", PermissionMode: "default",
 			Status: "idle", LastEvidenceAt: &evidence,
 			CreatedAt: at(1), UpdatedAt: at(3),
 		},
 		{
-			ID: "thrd-bbbbb", Agent: "codex", ProjectID: "proj-aaaaa",
+			ID: "thrd-bbbbb", Adapter: "codex", Agent: "codex", ProjectID: "proj-aaaaa",
 			Status: "unknown", CreatedAt: at(2), UpdatedAt: at(2),
 		},
 	}
 	for _, record := range records {
 		if ok, err := threads.InsertObserved(ctx, record, ThreadIdentity{
-			Agent: record.Agent, ProviderConversationID: "sess-" + record.ID, ThreadID: record.ID,
+			Adapter: record.Adapter, ProviderConversationID: "sess-" + record.ID, ThreadID: record.ID,
 		}); err != nil || !ok {
 			t.Fatalf("InsertObserved = %v, %v; want true", ok, err)
 		}
@@ -54,24 +54,24 @@ func TestThreadsRoundTrip(t *testing.T) {
 
 	// Insertion is the ID collision check.
 	if ok, err := threads.InsertObserved(ctx, ThreadRecord{
-		ID: "thrd-aaaaa", Agent: "claude", ProjectID: "proj-aaaaa", Status: "unknown",
+		ID: "thrd-aaaaa", Adapter: "claude", Agent: "claude", ProjectID: "proj-aaaaa", Status: "unknown",
 		CreatedAt: at(9), UpdatedAt: at(9),
-	}, ThreadIdentity{Agent: "claude", ProviderConversationID: "sess-x", ThreadID: "thrd-aaaaa"}); err != nil || ok {
+	}, ThreadIdentity{Adapter: "claude", ProviderConversationID: "sess-x", ThreadID: "thrd-aaaaa"}); err != nil || ok {
 		t.Fatalf("InsertObserved(collision) = %v, %v; want false", ok, err)
 	}
 
 	// A thread referencing a missing project or terminal is refused by the
 	// schema, surfaced as the typed foreign-key error.
 	if _, err := threads.InsertObserved(ctx, ThreadRecord{
-		ID: "thrd-ccccc", Agent: "claude", ProjectID: "proj-nope", Status: "unknown",
+		ID: "thrd-ccccc", Adapter: "claude", Agent: "claude", ProjectID: "proj-nope", Status: "unknown",
 		CreatedAt: at(4), UpdatedAt: at(4),
-	}, ThreadIdentity{Agent: "claude", ProviderConversationID: "sess-c", ThreadID: "thrd-ccccc"}); !errorsIsForeignKey(err) {
+	}, ThreadIdentity{Adapter: "claude", ProviderConversationID: "sess-c", ThreadID: "thrd-ccccc"}); !errorsIsForeignKey(err) {
 		t.Errorf("InsertObserved(missing project) error = %v; want ErrForeignKeyViolation", err)
 	}
 	if _, err := threads.InsertObserved(ctx, ThreadRecord{
-		ID: "thrd-ddddd", Agent: "claude", ProjectID: "proj-aaaaa", TerminalID: new("term-nope"),
+		ID: "thrd-ddddd", Adapter: "claude", Agent: "claude", ProjectID: "proj-aaaaa", TerminalID: new("term-nope"),
 		Status: "unknown", CreatedAt: at(4), UpdatedAt: at(4),
-	}, ThreadIdentity{Agent: "claude", ProviderConversationID: "sess-d", ThreadID: "thrd-ddddd"}); !errorsIsForeignKey(err) {
+	}, ThreadIdentity{Adapter: "claude", ProviderConversationID: "sess-d", ThreadID: "thrd-ddddd"}); !errorsIsForeignKey(err) {
 		t.Errorf("InsertObserved(missing terminal) error = %v; want ErrForeignKeyViolation", err)
 	}
 
@@ -117,19 +117,19 @@ func TestInsertObservedIsAtomic(t *testing.T) {
 	insertProject(t, s, "proj-aaaaa", "/")
 
 	record := ThreadRecord{
-		ID: "thrd-aaaaa", Agent: "claude", ProjectID: "proj-aaaaa", Status: "idle",
+		ID: "thrd-aaaaa", Adapter: "claude", Agent: "claude", ProjectID: "proj-aaaaa", Status: "idle",
 		CreatedAt: at(0), UpdatedAt: at(0),
 	}
-	identity := ThreadIdentity{Agent: "claude", ProviderConversationID: "sess-1", ThreadID: "thrd-aaaaa"}
+	identity := ThreadIdentity{Adapter: "claude", ProviderConversationID: "sess-1", ThreadID: "thrd-aaaaa"}
 	if ok, err := threads.InsertObserved(ctx, record, identity); err != nil || !ok {
 		t.Fatalf("InsertObserved = %v, %v; want true", ok, err)
 	}
 
 	// An ID collision inserts neither half.
 	collision := record
-	collision.Agent = "codex"
+	collision.Adapter = "codex"
 	if ok, err := threads.InsertObserved(ctx, collision, ThreadIdentity{
-		Agent: "codex", ProviderConversationID: "sess-2", ThreadID: "thrd-aaaaa",
+		Adapter: "codex", ProviderConversationID: "sess-2", ThreadID: "thrd-aaaaa",
 	}); err != nil || ok {
 		t.Fatalf("InsertObserved(collision) = %v, %v; want false", ok, err)
 	}
@@ -159,15 +159,15 @@ func TestThreadIdentities(t *testing.T) {
 	threads := s.Threads()
 	insertProject(t, s, "proj-aaaaa", "/")
 
-	// The identity key is (agent, provider conversation id): the same
-	// provider id under another agent is a distinct identity.
+	// The identity key is (adapter, provider conversation id): the same
+	// provider id under another adapter is a distinct identity.
 	identities := []ThreadIdentity{
-		{Agent: "claude", ProviderConversationID: "sess-1", ThreadID: "thrd-aaaaa"},
-		{Agent: "codex", ProviderConversationID: "sess-1", ThreadID: "thrd-bbbbb"},
+		{Adapter: "claude", ProviderConversationID: "sess-1", ThreadID: "thrd-aaaaa"},
+		{Adapter: "codex", ProviderConversationID: "sess-1", ThreadID: "thrd-bbbbb"},
 	}
 	for _, identity := range identities {
 		if ok, err := threads.InsertObserved(ctx, ThreadRecord{
-			ID: identity.ThreadID, Agent: identity.Agent, ProjectID: "proj-aaaaa", Status: "idle",
+			ID: identity.ThreadID, Adapter: identity.Adapter, Agent: identity.Adapter, ProjectID: "proj-aaaaa", Status: "idle",
 			CreatedAt: at(0), UpdatedAt: at(0),
 		}, identity); err != nil || !ok {
 			t.Fatalf("InsertObserved = %v, %v", ok, err)
@@ -210,10 +210,10 @@ func TestThreadReferentialLifecycle(t *testing.T) {
 		t.Fatalf("planting terminal = %v, %v", ok, err)
 	}
 	if ok, err := threads.InsertObserved(ctx, ThreadRecord{
-		ID: "thrd-aaaaa", Agent: "claude", ProjectID: "proj-aaaaa", TerminalID: new("term-aaaaa"),
+		ID: "thrd-aaaaa", Adapter: "claude", Agent: "claude", ProjectID: "proj-aaaaa", TerminalID: new("term-aaaaa"),
 		Status: "idle", CreatedAt: at(1), UpdatedAt: at(1),
 	}, ThreadIdentity{
-		Agent: "claude", ProviderConversationID: "sess-1", ThreadID: "thrd-aaaaa",
+		Adapter: "claude", ProviderConversationID: "sess-1", ThreadID: "thrd-aaaaa",
 	}); err != nil || !ok {
 		t.Fatalf("InsertObserved = %v, %v", ok, err)
 	}

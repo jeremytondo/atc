@@ -16,6 +16,7 @@ import (
 func observeThreadCLI(t *testing.T, service *threads.Service, terminalID, projectID, providerID string) string {
 	t.Helper()
 	id, err := service.ObserveSession(context.Background(), threads.SessionObservation{
+		Adapter:    "claude",
 		Agent:      "claude",
 		ProviderID: providerID,
 		TerminalID: terminalID,

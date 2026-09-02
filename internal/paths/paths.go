@@ -6,6 +6,7 @@
 //	config  $XDG_CONFIG_HOME/atc/config.toml  (~/.config/atc/config.toml)
 //	data    $XDG_DATA_HOME/atc/auth-token     (~/.local/share/atc/auth-token)
 //	data    $XDG_DATA_HOME/atc/atc.db         (~/.local/share/atc/atc.db)
+//	data    $XDG_DATA_HOME/atc/t3code-session.json
 //	state   $XDG_STATE_HOME/atc/atc.log       (~/.local/state/atc/atc.log)
 //	state   $XDG_STATE_HOME/atc/terminals     (~/.local/state/atc/terminals)
 //	state   $XDG_STATE_HOME/atc/exits         (~/.local/state/atc/exits)
@@ -68,6 +69,13 @@ func LogFile() (string, error) {
 // location.
 func DatabaseFile() (string, error) {
 	return resolve("XDG_DATA_HOME", []string{".local", "share"}, "atc.db")
+}
+
+// T3CodeSessionFile is the T3 Code adapter's paired session (ATC-285), a
+// 0600 credential beside auth-token: the one place it is stored — never
+// config.toml, never the environment.
+func T3CodeSessionFile() (string, error) {
+	return resolve("XDG_DATA_HOME", []string{".local", "share"}, "t3code-session.json")
 }
 
 // TerminalSocketDir is ATC's private zmx socket directory (ATC-251).

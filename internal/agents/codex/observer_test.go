@@ -530,7 +530,7 @@ func TestLaunchBindsAndMintsAtFirstPrompt(t *testing.T) {
 	f.server.broadcast("thread/status/changed", changed("t1", status("active")))
 	waitFor(t, func() bool { return f.threads.sessionCount() == 1 })
 	session := f.threads.lastSession(t)
-	if session.Agent != "codex" || session.ProviderID != "t1" || session.TerminalID != "term-aaaaa" ||
+	if session.Adapter != "codex" || session.Agent != "codex" || session.ProviderID != "t1" || session.TerminalID != "term-aaaaa" ||
 		session.ProjectID != "proj-aaaaa" || session.Status != api.ThreadWorking ||
 		session.Metadata.Cwd != f.dir || session.Metadata.Title != "fix the build please" ||
 		session.Metadata.Model != "" {

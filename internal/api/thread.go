@@ -31,19 +31,20 @@ const (
 	ThreadError ThreadStatus = "error"
 )
 
-// Thread is the /v1/threads resource: one exact provider conversation
-// observed inside an ATC-launched agent TUI. Threads are observed into
-// existence — there is no create verb — and persist as the durable index
-// of resumable conversations until deleted. The provider's own
-// conversation id never appears here; the ATC thread id is the public
-// identity.
+// Thread is the /v1/threads resource: one exact provider conversation,
+// observed inside an ATC-launched agent TUI or mirrored from an external
+// program through an observing adapter (ATC-285). Threads are observed
+// into existence — there is no create verb — and persist as the durable
+// index of conversations until deleted. The provider's own conversation
+// id never appears here; the ATC thread id is the public identity.
 type Thread struct {
-	ID    string `json:"id" doc:"Server-minted identifier; the public identity of the conversation."`
-	Agent string `json:"agent" doc:"Agent catalog id that owns the conversation. Immutable."`
-	// ProjectID comes from the terminal that first observed the
+	ID      string `json:"id" doc:"Server-minted identifier; the public identity of the conversation."`
+	Adapter string `json:"adapter" enum:"claude,codex,t3code" doc:"Adapter that produced the thread. Immutable."`
+	Agent   string `json:"agent,omitempty" doc:"Agent label the conversation runs under (claude, codex, ...), as the adapter reports it; may be empty and may change."`
+	// ProjectID comes from the terminal or adapter that first observed the
 	// conversation and never changes afterwards.
-	ProjectID  string `json:"projectId" doc:"Project the thread belongs to, set from the observing terminal at first observation. Immutable."`
-	TerminalID string `json:"terminalId,omitempty" doc:"Last terminal observed holding the conversation; omitted once that terminal is deleted. Whether the conversation is open right now is the terminal's activeThreadId, not this field."`
+	ProjectID  string `json:"projectId" doc:"Project the thread belongs to, set at first observation. Immutable."`
+	TerminalID string `json:"terminalId,omitempty" doc:"Last terminal observed holding the conversation; omitted once that terminal is deleted, and always for threads an external program owns. Whether the conversation is open right now is the terminal's activeThreadId, not this field."`
 	Title      string `json:"title,omitempty" doc:"Display title: user-editable, with an observed default. Once set through ATC, observation never overwrites it."`
 	Model      string `json:"model,omitempty" doc:"Observed model, best-effort."`
 	Effort     string `json:"effort,omitempty" doc:"Observed reasoning effort, best-effort."`
@@ -54,10 +55,18 @@ type Thread struct {
 	Status         ThreadStatus `json:"status" enum:"unknown,idle,working,waiting_for_input,waiting_for_permission,error" doc:"What the agent is doing right now, derived from provider evidence; unknown means no evidence."`
 	LastError      string       `json:"lastError,omitempty" doc:"Detail of the most recent failed turn; the thread itself stays idle."`
 	LastEvidenceAt *time.Time   `json:"lastEvidenceAt,omitempty" doc:"When the most recent provider evidence for this thread arrived."`
-	Archived       bool         `json:"archived" doc:"Reversible soft-hide; archived threads are excluded from lists unless requested. Observing the conversation open again (resumed inside the TUI) unarchives it."`
+	Links          *ThreadLinks `json:"links,omitempty" doc:"Where the conversation opens in the program that owns it; present only for threads an external program owns."`
+	Archived       bool         `json:"archived" doc:"Reversible soft-hide; archived threads are excluded from lists unless requested. Observing the conversation open again (resumed inside the TUI, or reported again by its program) unarchives it."`
 	ArchivedAt     *time.Time   `json:"archivedAt,omitempty" doc:"When the thread was archived; server-managed."`
 	CreatedAt      time.Time    `json:"createdAt"`
 	UpdatedAt      time.Time    `json:"updatedAt"`
+}
+
+// ThreadLinks are the deep links into the external program that owns a
+// thread, derived from the adapter's live connection at read time.
+type ThreadLinks struct {
+	Web string `json:"web" doc:"URL that opens the conversation in the program's web UI."`
+	App string `json:"app" doc:"URL that opens the conversation in the program's desktop app."`
 }
 
 // ThreadUpdateParams is the PATCH /v1/threads/{id} request body. Title
@@ -65,7 +74,7 @@ type Thread struct {
 // of archived, with no custom action routes.
 type ThreadUpdateParams struct {
 	Title    *string `json:"title,omitempty" minLength:"1" doc:"New display title. Observation never overwrites a title set here."`
-	Archived *bool   `json:"archived,omitempty" doc:"true archives the thread, false unarchives it. Archiving an active thread is refused."`
+	Archived *bool   `json:"archived,omitempty" doc:"true archives the thread, false unarchives it. Archiving an active thread — one a terminal has open, or one its external program still reports — is refused."`
 }
 
 // ThreadList is the GET /v1/threads response body.

@@ -23,6 +23,7 @@ import (
 	"github.com/jeremytondo/atc/internal/agents"
 	"github.com/jeremytondo/atc/internal/agents/claude"
 	"github.com/jeremytondo/atc/internal/agents/codex"
+	"github.com/jeremytondo/atc/internal/agents/t3code"
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/authtoken"
 	"github.com/jeremytondo/atc/internal/cli"
@@ -625,10 +626,31 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		Logger:        logger,
 	})
 
-	// One registration line per built-in agent; a duplicate id fails the
-	// boot.
+	// T3 Code (ATC-285): a read-only mirror of the local T3 environment's
+	// threads, self-discovering and self-pairing; its session lives beside
+	// the auth token. Links on its threads derive from its live state.
+	t3Home, err := t3code.Home()
+	if err != nil {
+		return err
+	}
+	t3SessionPath, err := paths.T3CodeSessionFile()
+	if err != nil {
+		return err
+	}
+	t3Observer := t3code.New(t3code.Options{
+		Home:        t3Home,
+		SessionPath: t3SessionPath,
+		Threads:     threadService,
+		Projects:    projectService,
+		Hub:         hub,
+		Logger:      logger,
+	})
+	threadService.SetLinker(t3code.ID, t3Observer.Links)
+
+	// One registration line per built-in adapter; a duplicate id fails
+	// the boot.
 	agentService, err := agents.NewService(agents.Options{
-		Entries:   []agents.Entry{claude.Entry(claudeHooks), codex.Entry(codexObserver)},
+		Adapters:  []agents.Adapter{claude.Adapter(claudeHooks), codex.Adapter(codexObserver), t3code.Adapter(t3Observer)},
 		Terminals: terminalService,
 	})
 	if err != nil {
@@ -660,6 +682,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	background.Go(func() { terminalService.Run(loopCtx) })
 	background.Go(func() { threadService.Run(loopCtx) })
 	background.Go(func() { codexObserver.Run(loopCtx) })
+	background.Go(func() { t3Observer.Run(loopCtx) })
 
 	// The exposure supervisor fronts the actual bound port (they are one
 	// port by contract) and is waited on so shutdown reaps the serve

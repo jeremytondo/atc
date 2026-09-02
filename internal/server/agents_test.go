@@ -8,14 +8,14 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
 
 	"github.com/jeremytondo/atc/internal/api"
 )
 
 // The fixture catalog is the shipped one: claude's binary available,
-// codex's not. Every read re-probes, so flipping availability between
-// requests is visible immediately.
+// codex's not, and the T3 Code observer unavailable (no T3 home). Every
+// read re-probes, so flipping availability between requests is visible
+// immediately.
 
 func decodeAgent(t *testing.T, rec *httptest.ResponseRecorder) api.Agent {
 	t.Helper()
@@ -37,13 +37,15 @@ func TestAgentCatalogListAndGet(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
 		t.Fatal(err)
 	}
+	// Derived from the adapters: claude and codex are launchable through
+	// their own adapters and also produced by T3 Code; the agents only T3
+	// produces are listed but not launchable.
 	want := api.AgentList{Agents: []api.Agent{
-		{ID: "claude", Name: "Claude Code", Capabilities: []api.AgentCapability{
-			{Capability: "tui", Available: true, InstallHint: "npm install -g @anthropic-ai/claude-code"},
-		}},
-		{ID: "codex", Name: "Codex", Capabilities: []api.AgentCapability{
-			{Capability: "tui", Available: false, InstallHint: "npm install -g @openai/codex"},
-		}},
+		{ID: "claude", Name: "Claude Code", Available: true, Adapters: []string{"claude", "t3code"}},
+		{ID: "codex", Name: "Codex", Available: false, Adapters: []string{"codex", "t3code"}},
+		{ID: "cursor", Name: "Cursor", Adapters: []string{"t3code"}},
+		{ID: "grok", Name: "Grok", Adapters: []string{"t3code"}},
+		{ID: "opencode", Name: "OpenCode", Adapters: []string{"t3code"}},
 	}}
 	if diff := cmp.Diff(want, list); diff != "" {
 		t.Errorf("list (-want +got):\n%s", diff)
@@ -59,7 +61,7 @@ func TestAgentCatalogListAndGet(t *testing.T) {
 
 	// No cache: installing the binary flips the next read's availability.
 	f.binaries["codex"] = true
-	if got := decodeAgent(t, f.request(t, http.MethodGet, "/v1/agents/codex", "")); !got.Capabilities[0].Available {
+	if got := decodeAgent(t, f.request(t, http.MethodGet, "/v1/agents/codex", "")); !got.Available {
 		t.Errorf("availability not re-probed: %+v", got)
 	}
 
@@ -68,14 +70,66 @@ func TestAgentCatalogListAndGet(t *testing.T) {
 	}
 }
 
-// Launch through both routes: the terminal carries the adapter's command
-// and the agent label, and a plain terminal omits agent entirely.
-func TestAgentLaunchCreatesTheTerminal(t *testing.T) {
+// The adapter list is the catalog's source: launchers with their binary
+// probe and install hint, the T3 observer with its connection.
+func TestAgentAdaptersOverTheWire(t *testing.T) {
 	f := newFixture(t)
 
-	rec := f.request(t, http.MethodPost, "/v1/agents/claude/launch", `{"projectId":"`+f.projectID+`"}`)
+	rec := f.request(t, http.MethodGet, "/v1/agents/adapters", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: got %d; body %s", rec.Code, rec.Body)
+	}
+	var list api.AgentAdapterList
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Adapters) != 3 {
+		t.Fatalf("adapters = %+v; want claude, codex, t3code", list.Adapters)
+	}
+	wantLaunchers := []api.AgentAdapter{
+		{ID: "claude", Name: "Claude Code", Agents: []string{"claude"}, Available: true, InstallHint: "npm install -g @anthropic-ai/claude-code"},
+		{ID: "codex", Name: "Codex", Agents: []string{"codex"}, Available: false, InstallHint: "npm install -g @openai/codex"},
+	}
+	if diff := cmp.Diff(wantLaunchers, list.Adapters[:2]); diff != "" {
+		t.Errorf("launchers (-want +got):\n%s", diff)
+	}
+	t3 := list.Adapters[2]
+	if t3.ID != "t3code" || t3.Name != "T3 Code" || t3.Available || t3.InstallHint != "" || t3.Connection == nil {
+		t.Fatalf("t3code = %+v", t3)
+	}
+	if t3.Connection.State != api.AdapterUnavailable || t3.Connection.Since.IsZero() || t3.Connection.Detail == "" {
+		t.Errorf("t3code connection = %+v; want unavailable with a reason", t3.Connection)
+	}
+	if diff := cmp.Diff([]string{"claude", "codex", "cursor", "grok", "opencode"}, t3.Agents); diff != "" {
+		t.Errorf("t3code agents (-want +got):\n%s", diff)
+	}
+
+	rec = f.request(t, http.MethodGet, "/v1/agents/adapters/t3code", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get: got %d; body %s", rec.Code, rec.Body)
+	}
+	var got api.AgentAdapter
+	decodeInto(t, rec, &got)
+	if diff := cmp.Diff(t3, got); diff != "" {
+		t.Errorf("get t3code (-want +got):\n%s", diff)
+	}
+	if rec := f.request(t, http.MethodGet, "/v1/agents/adapters/nonexistent", ""); rec.Code != http.StatusNotFound {
+		t.Errorf("get unknown adapter: got %d, want 404", rec.Code)
+	}
+}
+
+// The launch alias is gone (ATC-285): terminal create with an agent
+// reference is the one launch path, and the terminal carries the
+// adapter's command and the agent label; a plain terminal omits agent.
+func TestAgentLaunchRouteIsGone(t *testing.T) {
+	f := newFixture(t)
+	if rec := f.request(t, http.MethodPost, "/v1/agents/claude/launch", `{"projectId":"`+f.projectID+`"}`); rec.Code != http.StatusNotFound {
+		t.Errorf("launch alias: got %d, want 404", rec.Code)
+	}
+
+	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Agent: "claude"}))
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("launch: got %d; body %s", rec.Code, rec.Body)
+		t.Fatalf("create with agent: got %d; body %s", rec.Code, rec.Body)
 	}
 	launched := decodeTerminal(t, rec)
 	if launched.Agent != "claude" || launched.Name != "Claude Code" || launched.Status != api.TerminalRunning {
@@ -85,9 +139,6 @@ func TestAgentLaunchCreatesTheTerminal(t *testing.T) {
 	// quoted, keyed by the minted terminal id.
 	if !strings.HasPrefix(launched.Command, "claude --settings '") || !strings.Contains(launched.Command, launched.ID+".json") {
 		t.Errorf("launch command = %q", launched.Command)
-	}
-	if !strings.Contains(rec.Body.String(), `"agent":"claude"`) {
-		t.Errorf("launch body has no agent field: %s", rec.Body)
 	}
 
 	plain := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{}))
@@ -102,61 +153,31 @@ func TestAgentLaunchCreatesTheTerminal(t *testing.T) {
 	}
 }
 
-func TestTerminalCreateWithAgentMatchesLaunch(t *testing.T) {
+// A missing binary refuses with the command and hint, creating nothing;
+// an agent only an observer produces is known but not launchable.
+func TestLaunchRefusalsCreateNothing(t *testing.T) {
 	f := newFixture(t)
 
-	viaTerminals := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals",
-		f.createTerminalBody(t, api.TerminalCreateParams{Agent: "claude"})))
-	viaAlias := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/agents/claude/launch",
-		`{"projectId":"`+f.projectID+`"}`))
-	// Identity and clock fields necessarily differ, and the command embeds
-	// the per-launch settings path (so it differs by id); everything else
-	// the routes decide must not.
-	ignore := cmpopts.IgnoreFields(api.Terminal{}, "ID", "CreatedAt", "UpdatedAt", "Command")
-	if diff := cmp.Diff(viaAlias, viaTerminals, ignore); diff != "" {
-		t.Errorf("routes disagree (-alias +terminals):\n%s", diff)
+	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Agent: "codex"}))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("missing binary: got %d, want 409; body %s", rec.Code, rec.Body)
 	}
-	for _, terminal := range []api.Terminal{viaTerminals, viaAlias} {
-		if !strings.HasPrefix(terminal.Command, "claude --settings '") {
-			t.Errorf("command = %q; want the composed launch", terminal.Command)
-		}
+	if body := rec.Body.String(); !strings.Contains(body, `\"codex\"`) || !strings.Contains(body, "npm install -g @openai/codex") {
+		t.Errorf("refusal names neither command nor hint: %s", body)
 	}
-}
 
-// A missing binary refuses with the command and hint, creating nothing —
-// through either route.
-func TestLaunchMissingBinaryCreatesNothing(t *testing.T) {
-	f := newFixture(t)
-
-	for name, launch := range map[string]func() *httptest.ResponseRecorder{
-		"alias": func() *httptest.ResponseRecorder {
-			return f.request(t, http.MethodPost, "/v1/agents/codex/launch", `{"projectId":"`+f.projectID+`"}`)
-		},
-		"terminal create": func() *httptest.ResponseRecorder {
-			return f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Agent: "codex"}))
-		},
-	} {
-		rec := launch()
-		if rec.Code != http.StatusConflict {
-			t.Fatalf("%s: got %d, want 409; body %s", name, rec.Code, rec.Body)
-		}
-		if body := rec.Body.String(); !strings.Contains(body, `\"codex\"`) || !strings.Contains(body, "npm install -g @openai/codex") {
-			t.Errorf("%s refusal names neither command nor hint: %s", name, body)
-		}
+	rec = f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Agent: "cursor"}))
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "no adapter can launch cursor") {
+		t.Errorf("observer-only agent: got %d; body %s", rec.Code, rec.Body)
 	}
+
+	rec = f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Agent: "nonexistent"}))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("unknown agent: got %d, want 404", rec.Code)
+	}
+
 	if rec := f.request(t, http.MethodGet, "/v1/terminals", ""); !strings.Contains(rec.Body.String(), `"terminals":[]`) {
 		t.Errorf("a refused launch left a record: %s", rec.Body)
-	}
-}
-
-func TestLaunchUnknownAgent(t *testing.T) {
-	f := newFixture(t)
-	if rec := f.request(t, http.MethodPost, "/v1/agents/nonexistent/launch", `{"projectId":"`+f.projectID+`"}`); rec.Code != http.StatusNotFound {
-		t.Errorf("alias: got %d, want 404", rec.Code)
-	}
-	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Agent: "nonexistent"}))
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("terminal create: got %d, want 404", rec.Code)
 	}
 }
 

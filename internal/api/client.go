@@ -98,29 +98,36 @@ func (c *Client) DeleteTerminal(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/terminals/"+id, nil, nil)
 }
 
-// Agents lists the agent catalog with per-capability availability, probed
-// against the server's machine at request time.
+// Agents lists the launchable agents, availability probed against the
+// server's machine at request time.
 func (c *Client) Agents(ctx context.Context) ([]Agent, error) {
 	var list AgentList
 	err := c.do(ctx, http.MethodGet, "/v1/agents", nil, &list)
 	return list.Agents, err
 }
 
-// Agent fetches one agent catalog entry by id. The id is user-typed on
-// the CLI, so it is escaped: reserved characters make an unknown id, not
-// a different route.
+// Agent fetches one agent by id. The id is user-typed on the CLI, so it
+// is escaped: reserved characters make an unknown id, not a different
+// route.
 func (c *Client) Agent(ctx context.Context, id string) (Agent, error) {
 	var agent Agent
 	err := c.do(ctx, http.MethodGet, "/v1/agents/"+url.PathEscape(id), nil, &agent)
 	return agent, err
 }
 
-// LaunchAgent launches the agent's TUI in a new terminal and returns the
-// terminal — equivalent to CreateTerminal with an agent reference.
-func (c *Client) LaunchAgent(ctx context.Context, id string, params AgentLaunchParams) (Terminal, error) {
-	var terminal Terminal
-	err := c.do(ctx, http.MethodPost, "/v1/agents/"+url.PathEscape(id)+"/launch", params, &terminal)
-	return terminal, err
+// AgentAdapters lists the adapters that produce threads, with their
+// availability or live connection.
+func (c *Client) AgentAdapters(ctx context.Context) ([]AgentAdapter, error) {
+	var list AgentAdapterList
+	err := c.do(ctx, http.MethodGet, "/v1/agents/adapters", nil, &list)
+	return list.Adapters, err
+}
+
+// AgentAdapter fetches one adapter by id.
+func (c *Client) AgentAdapter(ctx context.Context, id string) (AgentAdapter, error) {
+	var adapter AgentAdapter
+	err := c.do(ctx, http.MethodGet, "/v1/agents/adapters/"+url.PathEscape(id), nil, &adapter)
+	return adapter, err
 }
 
 // Threads lists threads, newest-created last. Non-empty projectID and

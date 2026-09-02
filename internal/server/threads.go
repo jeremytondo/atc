@@ -77,7 +77,7 @@ func registerThreads(humaAPI huma.API, service *threads.Service, agentService *a
 		Method:      http.MethodPatch,
 		Path:        "/v1/threads/{id}",
 		Summary:     "Update a thread",
-		Description: "Title and archived are the only mutable fields. A title set here is never overwritten by observation. Archiving a thread a terminal has open is refused, naming the terminal.",
+		Description: "Title and archived are the only mutable fields. A title set here is never overwritten by observation. Archiving an active thread — one a terminal has open, or one its external program still reports — is refused, naming the holder.",
 	}, func(ctx context.Context, input *struct {
 		ID   string `path:"id" doc:"Thread identifier."`
 		Body api.ThreadUpdateParams
@@ -94,7 +94,7 @@ func registerThreads(humaAPI huma.API, service *threads.Service, agentService *a
 		Method:      http.MethodPost,
 		Path:        "/v1/threads/{id}/open",
 		Summary:     "Open a thread in a terminal",
-		Description: "Resolves the thread to exactly one terminal under one server-side decision: a running terminal showing it is reused; else its last terminal, if still running with unknown contents, is reused rather than risk a second writer; else a new terminal runs the provider's exact resume and is recorded as the thread's terminal. Concurrent opens converge on one terminal. An archived thread is unarchived. The server never attaches.",
+		Description: "Resolves the thread to exactly one terminal under one server-side decision: a running terminal showing it is reused; else its last terminal, if still running with unknown contents, is reused rather than risk a second writer; else a new terminal runs the provider's exact resume and is recorded as the thread's terminal. Concurrent opens converge on one terminal. An archived thread is unarchived. A thread an external program owns is refused: it opens through its links. The server never attaches.",
 	}, func(ctx context.Context, input *threadIDInput) (*threadOpenOutput, error) {
 		terminal, created, err := service.Open(ctx, input.ID, resume)
 		if err != nil {
@@ -109,7 +109,7 @@ func registerThreads(humaAPI huma.API, service *threads.Service, agentService *a
 		Method:        http.MethodDelete,
 		Path:          "/v1/threads/{id}",
 		Summary:       "Delete a thread",
-		Description:   "Removes ATC's record and its private identity mapping only; the provider-side conversation is never touched. A thread a terminal has open is refused, naming the terminal.",
+		Description:   "Removes ATC's record and its private identity mapping only; the provider-side conversation is never touched. An active thread — one a terminal has open, or one its external program still reports — is refused, naming the holder.",
 		DefaultStatus: http.StatusNoContent,
 	}, func(ctx context.Context, input *threadIDInput) (*struct{}, error) {
 		if err := service.Delete(ctx, input.ID); err != nil {

@@ -54,7 +54,7 @@ binary is refused with its install hint before anything is created.`,
 				if err != nil {
 					return api.Terminal{}, err
 				}
-				return client.LaunchAgent(ctx, args[0], api.AgentLaunchParams{ProjectID: projectID, Name: name})
+				return client.CreateTerminal(ctx, api.TerminalCreateParams{ProjectID: projectID, Name: name, Agent: args[0]})
 			})
 		}),
 	}
@@ -71,9 +71,11 @@ terminal: the running terminal showing the thread, else its last terminal
 if that is still running, else a new terminal resuming the exact
 conversation in the agent's own TUI. Concurrent opens of one thread land
 in the same terminal, so a conversation never has two writers. An
-archived thread is unarchived. Pass --detach to print the terminal
-instead of attaching; where attaching is impossible (no TTY, or the
-server is on another machine) the terminal is still printed.`,
+archived thread is unarchived. A thread an external program owns (T3
+Code) is refused: open it through the links ` + "`atc thread get`" + ` shows.
+Pass --detach to print the terminal instead of attaching; where attaching
+is impossible (no TTY, or the server is on another machine) the terminal
+is still printed.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, baseURL string) error {
 			return runAndMaybeAttach(cmd, baseURL, func(ctx context.Context) (api.Terminal, error) {
@@ -123,10 +125,10 @@ are hidden unless --archived.`,
 				return activityTime(threads[i]).After(activityTime(threads[j]))
 			})
 			w := tabwriter.NewWriter(out, 2, 8, 2, ' ', 0)
-			_, _ = fmt.Fprintln(w, "ID\tSTATUS\tAGENT\tTERMINAL\tTITLE")
+			_, _ = fmt.Fprintln(w, "ID\tSTATUS\tADAPTER\tAGENT\tTERMINAL\tTITLE")
 			for _, thread := range threads {
-				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-					thread.ID, threadStatusLabel(thread), thread.Agent, thread.TerminalID, thread.Title)
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+					thread.ID, threadStatusLabel(thread), thread.Adapter, thread.Agent, thread.TerminalID, thread.Title)
 			}
 			return w.Flush()
 		}),
@@ -246,7 +248,10 @@ func activityTime(thread api.Thread) time.Time {
 func printThread(out io.Writer, thread api.Thread) {
 	w := tabwriter.NewWriter(out, 2, 8, 2, ' ', 0)
 	_, _ = fmt.Fprintf(w, "id\t%s\n", thread.ID)
-	_, _ = fmt.Fprintf(w, "agent\t%s\n", thread.Agent)
+	_, _ = fmt.Fprintf(w, "adapter\t%s\n", thread.Adapter)
+	if thread.Agent != "" {
+		_, _ = fmt.Fprintf(w, "agent\t%s\n", thread.Agent)
+	}
 	_, _ = fmt.Fprintf(w, "status\t%s\n", threadStatusLabel(thread))
 	if thread.Title != "" {
 		_, _ = fmt.Fprintf(w, "title\t%s\n", thread.Title)
@@ -272,6 +277,10 @@ func printThread(out io.Writer, thread api.Thread) {
 	}
 	if thread.LastEvidenceAt != nil {
 		_, _ = fmt.Fprintf(w, "last evidence\t%s\n", thread.LastEvidenceAt.Format("2006-01-02 15:04:05 MST"))
+	}
+	if thread.Links != nil {
+		_, _ = fmt.Fprintf(w, "web\t%s\n", thread.Links.Web)
+		_, _ = fmt.Fprintf(w, "app\t%s\n", thread.Links.App)
 	}
 	_, _ = fmt.Fprintf(w, "created\t%s\n", thread.CreatedAt.Format("2006-01-02 15:04:05 MST"))
 	_ = w.Flush()

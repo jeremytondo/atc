@@ -45,7 +45,7 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, agentServic
 		Method:        http.MethodPost,
 		Path:          "/v1/terminals",
 		Summary:       "Create a terminal",
-		Description:   "Persists the record, starts the session, and waits a short verification window; a fast-failing command returns exited with its evidence. An agent reference resolves the command through the agent catalog instead — equivalent to POST /v1/agents/{id}/launch.",
+		Description:   "Persists the record, starts the session, and waits a short verification window; a fast-failing command returns exited with its evidence. An agent reference resolves the command through the adapter that launches the agent instead — the one launch path.",
 		DefaultStatus: http.StatusCreated,
 	}, func(ctx context.Context, input *struct {
 		Body api.TerminalCreateParams
@@ -57,10 +57,7 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, agentServic
 			if agentService == nil {
 				return nil, huma.Error422UnprocessableEntity("this server has no agent catalog")
 			}
-			// The same composition the alias route runs, so both routes
-			// surface identical errors and terminals.
-			terminal, err := agentService.Launch(ctx, input.Body.Agent,
-				api.AgentLaunchParams{ProjectID: input.Body.ProjectID, Name: input.Body.Name})
+			terminal, err := agentService.Launch(ctx, input.Body.Agent, input.Body.ProjectID, input.Body.Name)
 			if err != nil {
 				return nil, mapAgentError(err)
 			}

@@ -53,10 +53,10 @@ UPDATE projects SET name = ?, updated_at = ? WHERE id = ? RETURNING *;
 DELETE FROM projects WHERE id = ?;
 
 -- name: InsertThread :execrows
-INSERT INTO threads (id, agent, project_id, terminal_id, title, title_user_set, model, effort,
+INSERT INTO threads (id, adapter, agent, project_id, terminal_id, title, title_user_set, model, effort,
     cwd, permission_mode, status, last_error, last_evidence_at, archived, archived_at,
     created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING;
 
 -- name: ListThreads :many
@@ -66,7 +66,7 @@ SELECT * FROM threads ORDER BY created_at, id;
 -- mutations, so every mutable column is written from the record as one
 -- statement instead of a query per verb.
 -- name: UpdateThread :execrows
-UPDATE threads SET terminal_id = ?, title = ?, title_user_set = ?, model = ?, effort = ?,
+UPDATE threads SET agent = ?, terminal_id = ?, title = ?, title_user_set = ?, model = ?, effort = ?,
     cwd = ?, permission_mode = ?, status = ?, last_error = ?, last_evidence_at = ?,
     archived = ?, archived_at = ?, updated_at = ?
 WHERE id = ?;
@@ -75,9 +75,9 @@ WHERE id = ?;
 DELETE FROM threads WHERE id = ?;
 
 -- name: InsertThreadIdentity :execrows
-INSERT INTO thread_identities (agent, provider_conversation_id, thread_id)
+INSERT INTO thread_identities (adapter, provider_conversation_id, thread_id)
 VALUES (?, ?, ?)
-ON CONFLICT (agent, provider_conversation_id) DO NOTHING;
+ON CONFLICT (adapter, provider_conversation_id) DO NOTHING;
 
 -- name: ListThreadIdentities :many
 SELECT * FROM thread_identities;

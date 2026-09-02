@@ -14,14 +14,17 @@ import (
 	"github.com/jeremytondo/atc/internal/agents"
 )
 
-// Entry is Claude Code's catalog registration. hooks wires thread
-// observation into every launch and is required — a Claude launch
-// without evidence wiring would silently produce a thread-less TUI.
-func Entry(hooks *Hooks) agents.Entry {
+// Adapter is Claude Code's catalog registration: one adapter producing
+// threads for the one agent it launches. hooks wires thread observation
+// into every launch and is required — a Claude launch without evidence
+// wiring would silently produce a thread-less TUI.
+func Adapter(hooks *Hooks) agents.Adapter {
 	if hooks == nil {
-		panic("claude.Entry: hooks must not be nil")
+		panic("claude.Adapter: hooks must not be nil")
 	}
-	return agents.Entry{ID: "claude", Name: "Claude Code", TUI: tui{hooks: hooks}}
+	return agents.Adapter{ID: "claude", Name: "Claude Code", Agents: []agents.AgentSpec{
+		{ID: "claude", Name: "Claude Code", TUI: tui{hooks: hooks}},
+	}}
 }
 
 type tui struct{ hooks *Hooks }

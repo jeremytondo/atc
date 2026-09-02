@@ -20,6 +20,7 @@ import (
 func (f *fixture) observeThread(t *testing.T, terminalID, providerID string, status api.ThreadStatus) string {
 	t.Helper()
 	id, err := f.threads.ObserveSession(context.Background(), threads.SessionObservation{
+		Adapter:    "claude",
 		Agent:      "claude",
 		ProviderID: providerID,
 		TerminalID: terminalID,
@@ -296,7 +297,7 @@ func resourceID(t *testing.T, data string) string {
 // every other terminal response.
 func TestThreadOpenOverTheWire(t *testing.T) {
 	f := newFixture(t)
-	launched := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/agents/claude/launch", `{"projectId":"`+f.projectID+`"}`))
+	launched := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Agent: "claude"})))
 	id := f.observeThread(t, launched.ID, "sess-1", api.ThreadIdle)
 
 	rec := f.request(t, http.MethodPost, "/v1/threads/"+id+"/open", "")
@@ -358,7 +359,7 @@ func TestThreadOpenOverTheWire(t *testing.T) {
 // launch, with the install hint, and nothing is created or linked.
 func TestThreadOpenUnavailableAgent(t *testing.T) {
 	f := newFixture(t)
-	launched := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/agents/claude/launch", `{"projectId":"`+f.projectID+`"}`))
+	launched := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Agent: "claude"})))
 	id := f.observeThread(t, launched.ID, "sess-1", api.ThreadIdle)
 	if rec := f.request(t, http.MethodDelete, "/v1/terminals/"+launched.ID, ""); rec.Code != http.StatusNoContent {
 		t.Fatalf("delete terminal: got %d", rec.Code)

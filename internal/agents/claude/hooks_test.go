@@ -259,7 +259,7 @@ func TestSessionLifecycleObservations(t *testing.T) {
 		t.Fatalf("sessions = %+v", f.observer.sessions)
 	}
 	session := f.observer.sessions[0]
-	if session.Agent != "claude" || session.ProviderID != "s1" || session.TerminalID != "term-aaaaa" ||
+	if session.Adapter != "claude" || session.Agent != "claude" || session.ProviderID != "s1" || session.TerminalID != "term-aaaaa" ||
 		session.ProjectID != "proj-aaaaa" || session.Status != "" {
 		t.Errorf("session observation = %+v", session)
 	}
@@ -568,8 +568,12 @@ func TestLoadRegistrationsCleansStaleFiles(t *testing.T) {
 
 func TestCommandComposition(t *testing.T) {
 	f := newHookFixture(t)
-	entry := Entry(f.hooks)
-	command, err := entry.TUI.Command(context.Background(), agents.LaunchContext{TerminalID: "term-aaaaa"})
+	adapter := Adapter(f.hooks)
+	if len(adapter.Agents) != 1 || adapter.Agents[0].ID != "claude" || adapter.Agents[0].TUI == nil {
+		t.Fatalf("registration = %+v; want one launchable claude agent", adapter)
+	}
+	launcher := adapter.Agents[0].TUI
+	command, err := launcher.Command(context.Background(), agents.LaunchContext{TerminalID: "term-aaaaa"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -582,7 +586,7 @@ func TestCommandComposition(t *testing.T) {
 
 	// The resume form reopens the exact session, quoted, with the same
 	// hook wiring.
-	command, err = entry.TUI.Command(context.Background(), agents.LaunchContext{TerminalID: "term-bbbbb", ResumeConversationID: "sess-1"})
+	command, err = launcher.Command(context.Background(), agents.LaunchContext{TerminalID: "term-bbbbb", ResumeConversationID: "sess-1"})
 	if err != nil {
 		t.Fatal(err)
 	}

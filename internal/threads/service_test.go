@@ -129,6 +129,7 @@ func (f *fixture) drain() []string {
 
 func observation(terminal, providerID string) SessionObservation {
 	return SessionObservation{
+		Adapter:    "claude",
 		Agent:      "claude",
 		ProviderID: providerID,
 		TerminalID: terminal,
@@ -143,7 +144,7 @@ func TestObserveSessionCreatesOnce(t *testing.T) {
 	ctx := context.Background()
 
 	id, err := f.service.ObserveSession(ctx, SessionObservation{
-		Agent: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
+		Adapter: "claude", Agent: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
 		Status:   api.ThreadWorking,
 		Metadata: Metadata{Title: "fix the build", Model: "claude-opus-5", Cwd: "/proj-aaaaa", PermissionMode: "default"},
 	})
@@ -194,7 +195,7 @@ func TestSwitchingConversationsMovesActive(t *testing.T) {
 	ctx := context.Background()
 
 	first, err := f.service.ObserveSession(ctx, SessionObservation{
-		Agent: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
+		Adapter: "claude", Agent: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
 		Status: api.ThreadWorking,
 	})
 	if err != nil {
@@ -287,7 +288,7 @@ func TestObserveStatusTransitionsAndSilence(t *testing.T) {
 	f.drain()
 
 	if err := f.service.ObserveStatus(ctx, StatusObservation{
-		Agent: "claude", ProviderID: "sess-1", Status: api.ThreadWorking,
+		Adapter: "claude", ProviderID: "sess-1", Status: api.ThreadWorking,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +307,7 @@ func TestObserveStatusTransitionsAndSilence(t *testing.T) {
 	// no updatedAt bump — it rides along on the next fetch.
 	before := thread
 	if err := f.service.ObserveStatus(ctx, StatusObservation{
-		Agent: "claude", ProviderID: "sess-1", Status: api.ThreadWorking,
+		Adapter: "claude", ProviderID: "sess-1", Status: api.ThreadWorking,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +328,7 @@ func TestObserveStatusTransitionsAndSilence(t *testing.T) {
 	// A failed turn: idle with the detail in lastError.
 	detail := "provider rejected the request"
 	if err := f.service.ObserveStatus(ctx, StatusObservation{
-		Agent: "claude", ProviderID: "sess-1", Status: api.ThreadIdle, LastError: &detail,
+		Adapter: "claude", ProviderID: "sess-1", Status: api.ThreadIdle, LastError: &detail,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +342,7 @@ func TestObserveStatusTransitionsAndSilence(t *testing.T) {
 
 	// Evidence for an unmapped conversation is dropped, never minted.
 	if err := f.service.ObserveStatus(ctx, StatusObservation{
-		Agent: "claude", ProviderID: "sess-unknown", Status: api.ThreadWorking,
+		Adapter: "claude", ProviderID: "sess-unknown", Status: api.ThreadWorking,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +357,7 @@ func TestUserTitleWinsOverObservation(t *testing.T) {
 	ctx := context.Background()
 
 	id, err := f.service.ObserveSession(ctx, SessionObservation{
-		Agent: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
+		Adapter: "claude", Agent: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
 		Metadata: Metadata{Title: "observed default"},
 	})
 	if err != nil {
@@ -368,7 +369,7 @@ func TestUserTitleWinsOverObservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := f.service.ObserveStatus(ctx, StatusObservation{
-		Agent: "claude", ProviderID: "sess-1", Metadata: Metadata{Title: "later observation"},
+		Adapter: "claude", ProviderID: "sess-1", Metadata: Metadata{Title: "later observation"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -527,7 +528,7 @@ func TestSweepDeactivatesWhenTerminalLeaves(t *testing.T) {
 	ctx := context.Background()
 
 	id, err := f.service.ObserveSession(ctx, SessionObservation{
-		Agent: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
+		Adapter: "claude", Agent: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
 		Status: api.ThreadWaitingForInput,
 	})
 	if err != nil {
@@ -572,7 +573,7 @@ func TestSweepLeavesUnreachableAlone(t *testing.T) {
 	ctx := context.Background()
 
 	id, err := f.service.ObserveSession(ctx, SessionObservation{
-		Agent: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
+		Adapter: "claude", Agent: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
 		Status: api.ThreadWorking,
 	})
 	if err != nil {
@@ -605,7 +606,7 @@ func TestLiveStatusIgnoredWhileInactive(t *testing.T) {
 	}
 	f.service.Deactivate(ctx, "term-aaaaa")
 	if err := f.service.ObserveStatus(ctx, StatusObservation{
-		Agent: "claude", ProviderID: "sess-1", Status: api.ThreadWorking,
+		Adapter: "claude", ProviderID: "sess-1", Status: api.ThreadWorking,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -630,7 +631,7 @@ func TestEvidenceSurvivesReload(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := f.service.ObserveStatus(ctx, StatusObservation{
-		Agent: "claude", ProviderID: "sess-1", Status: api.ThreadIdle,
+		Adapter: "claude", ProviderID: "sess-1", Status: api.ThreadIdle,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -688,7 +689,7 @@ func TestTerminalRemovedClearsLinkage(t *testing.T) {
 	ctx := context.Background()
 
 	id, err := f.service.ObserveSession(ctx, SessionObservation{
-		Agent: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
+		Adapter: "claude", Agent: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
 		Status: api.ThreadWorking,
 	})
 	if err != nil {
@@ -765,7 +766,7 @@ func TestListFilters(t *testing.T) {
 		t.Fatal(err)
 	}
 	second, err := f.service.ObserveSession(ctx, SessionObservation{
-		Agent: "claude", ProviderID: "sess-2", TerminalID: "term-bbbbb", ProjectID: "proj-bbbbb",
+		Adapter: "claude", Agent: "claude", ProviderID: "sess-2", TerminalID: "term-bbbbb", ProjectID: "proj-bbbbb",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -802,7 +803,7 @@ func TestLoadCoercesLiveStatuses(t *testing.T) {
 		t.Fatal(err)
 	}
 	working, err := f.service.ObserveSession(ctx, SessionObservation{
-		Agent: "claude", ProviderID: "sess-2", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
+		Adapter: "claude", Agent: "claude", ProviderID: "sess-2", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
 		Status: api.ThreadWaitingForPermission,
 	})
 	if err != nil {
@@ -855,7 +856,7 @@ func TestReattachUpdatesMetadataAndTerminalOnly(t *testing.T) {
 	ctx := context.Background()
 
 	id, err := f.service.ObserveSession(ctx, SessionObservation{
-		Agent: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
+		Adapter: "claude", Agent: "claude", ProviderID: "sess-1", TerminalID: "term-aaaaa", ProjectID: "proj-aaaaa",
 		Metadata: Metadata{Cwd: "/proj-aaaaa"},
 	})
 	if err != nil {
@@ -865,7 +866,7 @@ func TestReattachUpdatesMetadataAndTerminalOnly(t *testing.T) {
 	// Resumed from a terminal in another project: the terminal linkage and
 	// provider-reported cwd move, the project deliberately does not.
 	if _, err := f.service.ObserveSession(ctx, SessionObservation{
-		Agent: "claude", ProviderID: "sess-1", TerminalID: "term-bbbbb", ProjectID: "proj-bbbbb",
+		Adapter: "claude", Agent: "claude", ProviderID: "sess-1", TerminalID: "term-bbbbb", ProjectID: "proj-bbbbb",
 		Metadata: Metadata{Cwd: "/proj-bbbbb"},
 	}); err != nil {
 		t.Fatal(err)
@@ -1041,7 +1042,7 @@ func TestOpenDecision(t *testing.T) {
 			}
 			// The resume carries the identity, project, and recorded cwd,
 			// and the linkage publishes.
-			want := ResumeRequest{Agent: "claude", ProviderID: "s1", ProjectID: "proj-aaaaa", Directory: "/proj-aaaaa/sub"}
+			want := ResumeRequest{Adapter: "claude", Agent: "claude", ProviderID: "s1", ProjectID: "proj-aaaaa", Directory: "/proj-aaaaa/sub"}
 			if diff := cmp.Diff([]ResumeRequest{want}, resumer.requests); diff != "" {
 				t.Errorf("resume requests (-want +got):\n%s", diff)
 			}
@@ -1122,7 +1123,7 @@ func TestConcurrentOpensConverge(t *testing.T) {
 	// With the launch in flight, other evidence still commits...
 	f.plant(t, "proj-bbbbb", "term-bbbbb")
 	if _, err := f.service.ObserveSession(ctx, SessionObservation{
-		Agent: "claude", ProviderID: "s9", TerminalID: "term-bbbbb", ProjectID: "proj-bbbbb",
+		Adapter: "claude", Agent: "claude", ProviderID: "s9", TerminalID: "term-bbbbb", ProjectID: "proj-bbbbb",
 	}); err != nil {
 		t.Errorf("evidence during a resume launch: %v", err)
 	}

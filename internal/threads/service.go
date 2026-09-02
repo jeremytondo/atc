@@ -18,10 +18,14 @@ import (
 var ErrNotFound = errors.New("thread not found")
 
 // ErrActive refuses archiving or deleting a thread some terminal has open
-// (deleting an active thread would silently re-mint a fresh record on the
-// next evidence). The message names the holding terminal; the API layer
-// maps it to 409.
+// or some adapter's program still reports (deleting an active thread
+// would silently re-mint a fresh record on the next evidence). The
+// message names the holder; the API layer maps it to 409.
 var ErrActive = errors.New("thread is active")
+
+// ErrProjectRequired refuses an adapter observation of an unknown
+// conversation that names no project to record it under.
+var ErrProjectRequired = errors.New("a first observation needs a project")
 
 // ErrResumeUnavailable refuses opening a dormant thread when the caller
 // supplies no Resumer (a server without an agent catalog).
@@ -62,7 +66,7 @@ type Options struct {
 //
 //	ops serializes each mutation's commit — database write, view change,
 //	    and event publish move as one unit — and guards opening.
-//	mu  guards the view, identity, and active maps only.
+//	mu  guards the view, identity, hold, and active maps only.
 type Service struct {
 	repository *store.Threads
 	terminals  TerminalReader
@@ -78,18 +82,29 @@ type Service struct {
 	// here instead of racing it.
 	opening map[string]chan struct{}
 
+	// linkers derive deep links per adapter id at read time; set at
+	// composition, before serving, and read without mu.
+	linkers map[string]Linker
+
 	mu   sync.Mutex
 	view map[string]*store.ThreadRecord
-	// identities is the in-memory copy of the private identity mapping.
+	// identities is the in-memory copy of the private identity mapping;
+	// keys is its inverse, so reads can find a thread's provider id
+	// without scanning.
 	identities map[identityKey]string
+	keys       map[string]identityKey
 	// active maps terminal id → the thread whose conversation that
 	// terminal has open. Derived from evidence, never stored: it starts
 	// empty at boot and is re-established by observation.
 	active map[string]string
+	// held maps thread id → the adapter whose connection holds it: the
+	// external program still reports the conversation. Like active, it
+	// is evidence, re-established by observation after a boot.
+	held map[string]string
 }
 
 type identityKey struct {
-	agent      string
+	adapter    string
 	providerID string
 }
 
@@ -112,11 +127,22 @@ func NewService(opts Options) *Service {
 		hub:        opts.Hub,
 		logger:     opts.Logger,
 		now:        opts.Now,
+		linkers:    make(map[string]Linker),
 		opening:    make(map[string]chan struct{}),
 		view:       make(map[string]*store.ThreadRecord),
 		identities: make(map[identityKey]string),
+		keys:       make(map[string]identityKey),
 		active:     make(map[string]string),
+		held:       make(map[string]string),
 	}
+}
+
+// SetLinker registers the read-time link derivation for one adapter's
+// threads. Composition-time wiring: the adapter depends on this service
+// for observation, so its linker is attached after both exist and before
+// the server serves reads.
+func (s *Service) SetLinker(adapter string, linker Linker) {
+	s.linkers[adapter] = linker
 }
 
 // Load rebuilds the view and identity mapping from the database at boot.
@@ -151,7 +177,9 @@ func (s *Service) Load(ctx context.Context) error {
 		s.view[entry.ID] = &entry
 	}
 	for _, identity := range identities {
-		s.identities[identityKey{identity.Agent, identity.ProviderConversationID}] = identity.ThreadID
+		key := identityKey{identity.Adapter, identity.ProviderConversationID}
+		s.identities[key] = identity.ThreadID
+		s.keys[identity.ThreadID] = key
 	}
 	return nil
 }
@@ -210,7 +238,7 @@ func (s *Service) ObserveSession(ctx context.Context, o SessionObservation) (str
 	if at.IsZero() {
 		at = s.now()
 	}
-	key := identityKey{o.Agent, o.ProviderID}
+	key := identityKey{o.Adapter, o.ProviderID}
 
 	s.mu.Lock()
 	threadID, known := s.identities[key]
@@ -282,6 +310,7 @@ func (s *Service) createObserved(ctx context.Context, o SessionObservation, at t
 	}
 	terminalID := o.TerminalID
 	record := store.ThreadRecord{
+		Adapter:        o.Adapter,
 		Agent:          o.Agent,
 		ProjectID:      o.ProjectID,
 		TerminalID:     &terminalID,
@@ -291,30 +320,41 @@ func (s *Service) createObserved(ctx context.Context, o SessionObservation, at t
 		UpdatedAt:      at,
 	}
 	applyMetadata(&record, o.Metadata)
+	if err := s.insert(ctx, &record, identityKey{o.Adapter, o.ProviderID}); err != nil {
+		return "", err
+	}
+	s.hub.Publish(api.EventThreadCreated, resource, record.ID)
+	s.commit(ctx, record, record.ID, o.TerminalID, false)
+	return record.ID, nil
+}
+
+// insert mints the id and persists a new record with its identity
+// mapping (one transaction — a thread must never exist unmapped), then
+// installs both in the view. Caller holds ops.
+func (s *Service) insert(ctx context.Context, record *store.ThreadRecord, key identityKey) error {
 	// Insertion is the collision check: a taken ID inserts nothing and
 	// re-rolls. A vanished project or terminal surfaces as a foreign-key
 	// error — the observation is refused rather than recorded against
 	// nothing.
 	for {
 		record.ID = randomID()
-		inserted, err := s.repository.InsertObserved(ctx, record, store.ThreadIdentity{
-			Agent: o.Agent, ProviderConversationID: o.ProviderID, ThreadID: record.ID,
+		inserted, err := s.repository.InsertObserved(ctx, *record, store.ThreadIdentity{
+			Adapter: key.adapter, ProviderConversationID: key.providerID, ThreadID: record.ID,
 		})
 		if err != nil {
-			return "", err
+			return err
 		}
 		if inserted {
 			break
 		}
 	}
 	s.mu.Lock()
-	entry := record
+	entry := *record
 	s.view[record.ID] = &entry
-	s.identities[identityKey{o.Agent, o.ProviderID}] = record.ID
+	s.identities[key] = record.ID
+	s.keys[record.ID] = key
 	s.mu.Unlock()
-	s.hub.Publish(api.EventThreadCreated, resource, record.ID)
-	s.commit(ctx, record, record.ID, o.TerminalID, false)
-	return record.ID, nil
+	return nil
 }
 
 // commit applies a session observation's record to the view and moves the
@@ -373,7 +413,7 @@ func (s *Service) ObserveStatus(ctx context.Context, o StatusObservation) error 
 	}
 
 	s.mu.Lock()
-	threadID, known := s.identities[identityKey{o.Agent, o.ProviderID}]
+	threadID, known := s.identities[identityKey{o.Adapter, o.ProviderID}]
 	var record store.ThreadRecord
 	active := false
 	if known {
@@ -382,11 +422,11 @@ func (s *Service) ObserveStatus(ctx context.Context, o StatusObservation) error 
 		if ok {
 			record = *entry
 		}
-		active = s.activeHolder(threadID) != ""
+		active = s.holder(threadID) != ""
 	}
 	s.mu.Unlock()
 	if !known {
-		s.logger.Debug("status evidence for unmapped conversation dropped", "agent", o.Agent)
+		s.logger.Debug("status evidence for unmapped conversation dropped", "adapter", o.Adapter)
 		return nil
 	}
 
@@ -555,6 +595,215 @@ func (s *Service) TerminalRemoved(ctx context.Context, terminalID string) {
 	}
 }
 
+// ObserveAdapter applies an observing adapter's current view of one
+// conversation its program owns (ATC-285): a known identity is brought
+// into line with the program, an unknown one is minted under ProjectID.
+// The adapter connection holds the thread from here — live statuses are
+// accepted, and archive or delete are refused — until the adapter
+// releases it. A conversation the program reports again after ATC
+// archived it comes back unarchived. Returns the thread id.
+func (s *Service) ObserveAdapter(ctx context.Context, o AdapterObservation) (string, error) {
+	s.ops.Lock()
+	defer s.ops.Unlock()
+	at := o.At
+	if at.IsZero() {
+		at = s.now()
+	}
+	status := o.Status
+	if status == "" {
+		status = api.ThreadUnknown
+	}
+	key := identityKey{o.Adapter, o.ProviderID}
+
+	s.mu.Lock()
+	threadID, known := s.identities[key]
+	var record store.ThreadRecord
+	if known {
+		entry, ok := s.view[threadID]
+		if !ok {
+			s.mu.Unlock()
+			return "", fmt.Errorf("identity for thread %s has no record", threadID)
+		}
+		record = *entry
+	}
+	s.mu.Unlock()
+
+	if !known {
+		if o.ProjectID == "" {
+			return "", ErrProjectRequired
+		}
+		record = store.ThreadRecord{
+			Adapter:        o.Adapter,
+			Agent:          o.Agent,
+			ProjectID:      o.ProjectID,
+			Title:          o.Title,
+			Status:         string(status),
+			LastError:      o.LastError,
+			LastEvidenceAt: &at,
+			CreatedAt:      at,
+			UpdatedAt:      at,
+		}
+		applyMetadata(&record, o.Metadata)
+		if err := s.insert(ctx, &record, key); err != nil {
+			return "", err
+		}
+		s.mu.Lock()
+		s.held[record.ID] = o.Adapter
+		s.mu.Unlock()
+		s.hub.Publish(api.EventThreadCreated, resource, record.ID)
+		return record.ID, nil
+	}
+
+	// The program is the source of truth: every reported field applies
+	// as-is, except a title the user set through ATC.
+	changed := false
+	set := func(field *string, value string) {
+		if *field != value {
+			*field = value
+			changed = true
+		}
+	}
+	set(&record.Agent, o.Agent)
+	set(&record.Status, string(status))
+	set(&record.LastError, o.LastError)
+	if !record.TitleUserSet && o.Title != "" {
+		set(&record.Title, o.Title)
+	}
+	changed = applyMetadata(&record, o.Metadata) || changed
+	if record.Archived {
+		record.Archived = false
+		record.ArchivedAt = nil
+		changed = true
+	}
+	record.LastEvidenceAt = &at
+	if changed {
+		record.UpdatedAt = at
+	}
+	updated, err := s.repository.Update(ctx, record)
+	if err != nil {
+		return "", err
+	}
+	if !updated {
+		s.logger.Debug("observation for a deleted thread dropped", "thread", threadID)
+		return "", nil
+	}
+	s.mu.Lock()
+	if entry, ok := s.view[threadID]; ok {
+		*entry = record
+	}
+	s.held[threadID] = o.Adapter
+	s.mu.Unlock()
+	if changed {
+		s.hub.Publish(api.EventThreadUpdated, resource, threadID)
+	}
+	return threadID, nil
+}
+
+// UnarchivedProviderIDs lists the provider conversation ids of an
+// adapter's unarchived threads — what ATC currently believes the program
+// reports. An adapter diffs a fresh snapshot against it, so a
+// conversation the program dropped while ATC was not listening still
+// archives.
+func (s *Service) UnarchivedProviderIDs(adapter string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var ids []string
+	for id, entry := range s.view {
+		if entry.Adapter != adapter || entry.Archived {
+			continue
+		}
+		if key, ok := s.keys[id]; ok {
+			ids = append(ids, key.providerID)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// ReleaseAdapter drops every hold the adapter has — its connection went
+// away — coercing the live statuses it vouched for to unknown, exactly
+// as a terminal leaving does; idle, error, and unknown persist. A failed
+// persist still releases: the hold is about the program reporting the
+// thread, and the boot-time coercion is the backstop.
+func (s *Service) ReleaseAdapter(ctx context.Context, adapter string) {
+	s.ops.Lock()
+	defer s.ops.Unlock()
+	s.mu.Lock()
+	var ids []string
+	for id, holder := range s.held {
+		if holder == adapter {
+			ids = append(ids, id)
+		}
+	}
+	s.mu.Unlock()
+	sort.Strings(ids)
+	for _, id := range ids {
+		coerced := s.coerceInactive(ctx, id)
+		s.mu.Lock()
+		delete(s.held, id)
+		s.mu.Unlock()
+		if coerced {
+			s.hub.Publish(api.EventThreadUpdated, resource, id)
+		}
+	}
+}
+
+// ArchiveAdapterThread reacts to the program dropping a conversation
+// from what it reports: the hold releases and the thread archives, with
+// a live status coerced to unknown. Archiving is the lossless mirror —
+// the program hides archived and deleted conversations alike, and a
+// later report of the same identity unarchives the same record. An
+// unknown identity is ignored.
+func (s *Service) ArchiveAdapterThread(ctx context.Context, adapter, providerID string) error {
+	s.ops.Lock()
+	defer s.ops.Unlock()
+	s.mu.Lock()
+	threadID, known := s.identities[identityKey{adapter, providerID}]
+	var record store.ThreadRecord
+	if known {
+		entry, ok := s.view[threadID]
+		known = ok
+		if ok {
+			record = *entry
+		}
+	}
+	s.mu.Unlock()
+	if !known {
+		return nil
+	}
+	changed := false
+	if isLive(api.ThreadStatus(record.Status)) {
+		record.Status = string(api.ThreadUnknown)
+		changed = true
+	}
+	if !record.Archived {
+		at := s.now()
+		record.Archived = true
+		record.ArchivedAt = &at
+		changed = true
+	}
+	if changed {
+		record.UpdatedAt = s.now()
+		updated, err := s.repository.Update(ctx, record)
+		if err != nil {
+			return err
+		}
+		if !updated {
+			changed = false
+		}
+	}
+	s.mu.Lock()
+	if entry, ok := s.view[threadID]; ok && changed {
+		*entry = record
+	}
+	delete(s.held, threadID)
+	s.mu.Unlock()
+	if changed {
+		s.hub.Publish(api.EventThreadUpdated, resource, threadID)
+	}
+	return nil
+}
+
 // ProjectRemoved reacts to a project deletion: the database cascade has
 // already removed the project's thread rows and identity mappings, so
 // only the in-memory state and the deletion events remain. Wired by the
@@ -568,11 +817,7 @@ func (s *Service) ProjectRemoved(projectID string) {
 		if entry.ProjectID == projectID {
 			removed[id] = true
 			delete(s.view, id)
-		}
-	}
-	for key, threadID := range s.identities {
-		if removed[threadID] {
-			delete(s.identities, key)
+			s.forgetIdentity(id)
 		}
 	}
 	for terminalID, threadID := range s.active {
@@ -589,12 +834,16 @@ func (s *Service) ProjectRemoved(projectID string) {
 // Get serves one thread from the in-memory view.
 func (s *Service) Get(id string) (api.Thread, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	entry, ok := s.view[id]
+	var record store.ThreadRecord
+	if ok {
+		record = *entry
+	}
+	s.mu.Unlock()
 	if !ok {
 		return api.Thread{}, ErrNotFound
 	}
-	return threadFrom(*entry), nil
+	return s.thread(record), nil
 }
 
 // List serves threads from the in-memory view in creation order.
@@ -602,8 +851,7 @@ func (s *Service) Get(id string) (api.Thread, error) {
 // unless includeArchived (the opt-in the spec requires).
 func (s *Service) List(projectID, terminalID string, includeArchived bool) []api.Thread {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	threads := make([]api.Thread, 0, len(s.view))
+	records := make([]store.ThreadRecord, 0, len(s.view))
 	for _, entry := range s.view {
 		if entry.Archived && !includeArchived {
 			continue
@@ -614,7 +862,12 @@ func (s *Service) List(projectID, terminalID string, includeArchived bool) []api
 		if terminalID != "" && (entry.TerminalID == nil || *entry.TerminalID != terminalID) {
 			continue
 		}
-		threads = append(threads, threadFrom(*entry))
+		records = append(records, *entry)
+	}
+	s.mu.Unlock()
+	threads := make([]api.Thread, 0, len(records))
+	for _, record := range records {
+		threads = append(threads, s.thread(record))
 	}
 	sort.Slice(threads, func(i, j int) bool {
 		if !threads[i].CreatedAt.Equal(threads[j].CreatedAt) {
@@ -630,10 +883,10 @@ func (s *Service) List(projectID, terminalID string, includeArchived bool) []api
 // check after a server restart: evidence for an already-mapped
 // conversation still held by the same terminal may be accepted before a
 // fresh identity transition arrives.
-func (s *Service) LookupIdentity(agent, providerID string) (threadID, terminalID string, ok bool) {
+func (s *Service) LookupIdentity(adapter, providerID string) (threadID, terminalID string, ok bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	id, known := s.identities[identityKey{agent, providerID}]
+	id, known := s.identities[identityKey{adapter, providerID}]
 	if !known {
 		return "", "", false
 	}
@@ -658,7 +911,7 @@ func (s *Service) ActiveThreadID(terminalID string) string {
 
 // Update mutates the two writable fields. A user-set title is protected
 // from observation from then on. Archiving an active thread is refused
-// with the holding terminal; unarchiving clears the timestamp.
+// naming the holder; unarchiving clears the timestamp.
 func (s *Service) Update(ctx context.Context, id string, params api.ThreadUpdateParams) (api.Thread, error) {
 	s.ops.Lock()
 	defer s.ops.Unlock()
@@ -668,7 +921,7 @@ func (s *Service) Update(ctx context.Context, id string, params api.ThreadUpdate
 	if ok {
 		record = *entry
 	}
-	holder := s.activeHolder(id)
+	holder := s.holder(id)
 	s.mu.Unlock()
 	if !ok {
 		return api.Thread{}, ErrNotFound
@@ -693,7 +946,7 @@ func (s *Service) Update(ctx context.Context, id string, params api.ThreadUpdate
 	if params.Archived != nil && *params.Archived != record.Archived {
 		if *params.Archived {
 			if holder != "" {
-				return api.Thread{}, fmt.Errorf("%w in terminal %s", ErrActive, holder)
+				return api.Thread{}, fmt.Errorf("%w: %s", ErrActive, holder)
 			}
 			at := s.now()
 			record.Archived = true
@@ -722,7 +975,7 @@ func (s *Service) Update(ctx context.Context, id string, params api.ThreadUpdate
 	if changed {
 		s.hub.Publish(api.EventThreadUpdated, resource, id)
 	}
-	return threadFrom(record), nil
+	return s.thread(record), nil
 }
 
 // Delete removes the record and its identity mapping only — the
@@ -734,13 +987,13 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	defer s.ops.Unlock()
 	s.mu.Lock()
 	_, ok := s.view[id]
-	holder := s.activeHolder(id)
+	holder := s.holder(id)
 	s.mu.Unlock()
 	if !ok {
 		return ErrNotFound
 	}
 	if holder != "" {
-		return fmt.Errorf("%w in terminal %s", ErrActive, holder)
+		return fmt.Errorf("%w: %s", ErrActive, holder)
 	}
 	if _, opening := s.opening[id]; opening {
 		// A resume in flight would land against a deleted record and
@@ -756,14 +1009,20 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	}
 	s.mu.Lock()
 	delete(s.view, id)
-	for key, threadID := range s.identities {
-		if threadID == id {
-			delete(s.identities, key)
-		}
-	}
+	s.forgetIdentity(id)
 	s.mu.Unlock()
 	s.hub.Publish(api.EventThreadDeleted, resource, id)
 	return nil
+}
+
+// forgetIdentity drops a thread's identity mapping and any adapter hold.
+// Caller holds mu.
+func (s *Service) forgetIdentity(id string) {
+	if key, ok := s.keys[id]; ok {
+		delete(s.identities, key)
+		delete(s.keys, id)
+	}
+	delete(s.held, id)
 }
 
 // Open resolves the thread to exactly one terminal (ATC-282), reporting
@@ -816,13 +1075,7 @@ func (s *Service) Open(ctx context.Context, id string, resume Resumer) (api.Term
 	}
 	s.mu.Lock()
 	record := *s.view[id]
-	var providerID string
-	for key, threadID := range s.identities {
-		if threadID == id {
-			providerID = key.providerID
-			break
-		}
-	}
+	key := s.keys[id]
 	s.mu.Unlock()
 	done := make(chan struct{})
 	s.opening[id] = done
@@ -830,7 +1083,7 @@ func (s *Service) Open(ctx context.Context, id string, resume Resumer) (api.Term
 
 	detached := context.WithoutCancel(ctx)
 	terminal, err := resume(detached, ResumeRequest{
-		Agent: record.Agent, ProviderID: providerID,
+		Adapter: record.Adapter, Agent: record.Agent, ProviderID: key.providerID,
 		ProjectID: record.ProjectID, Directory: record.Cwd,
 	})
 
@@ -948,6 +1201,19 @@ func (s *Service) activeHolder(threadID string) string {
 	return ""
 }
 
+// holder describes whatever holds the thread — the terminal with its
+// conversation open, else the adapter whose program still reports it —
+// for refusal messages; empty when nothing does. Callers hold mu.
+func (s *Service) holder(threadID string) string {
+	if terminalID := s.activeHolder(threadID); terminalID != "" {
+		return "open in terminal " + terminalID
+	}
+	if adapter, ok := s.held[threadID]; ok {
+		return "still reported by adapter " + adapter
+	}
+	return ""
+}
+
 // applyMetadata folds non-empty observed metadata into the record,
 // reporting whether anything changed. An observed title is a default: it
 // fills an untitled thread once and never replaces an existing title —
@@ -979,9 +1245,24 @@ func isLive(status api.ThreadStatus) bool {
 	return false
 }
 
+// thread converts a record to its wire shape, deriving links from the
+// producing adapter's live state. Callers must not hold mu: the linker is
+// the adapter's, and it takes locks of its own.
+func (s *Service) thread(record store.ThreadRecord) api.Thread {
+	thread := threadFrom(record)
+	if linker, ok := s.linkers[record.Adapter]; ok {
+		s.mu.Lock()
+		key := s.keys[record.ID]
+		s.mu.Unlock()
+		thread.Links = linker(key.providerID)
+	}
+	return thread
+}
+
 func threadFrom(record store.ThreadRecord) api.Thread {
 	thread := api.Thread{
 		ID:             record.ID,
+		Adapter:        record.Adapter,
 		Agent:          record.Agent,
 		ProjectID:      record.ProjectID,
 		Title:          record.Title,
