@@ -1,0 +1,149 @@
+[
+  {
+    "snapshotSequence": 1,
+    "projects": [
+      {
+        "id": "project-1",
+        "title": "atc",
+        "workspaceRoot": "/work/atc"
+      }
+    ],
+    "threads": [],
+    "updatedAt": "2026-09-01T20:00:00Z"
+  },
+  {
+    "snapshotSequence": 2,
+    "projects": [
+      {
+        "id": "project-1",
+        "title": "atc",
+        "workspaceRoot": "/work/atc"
+      }
+    ],
+    "threads": [
+      {
+        "id": "t3-thread-1",
+        "projectId": "project-1",
+        "title": "New T3 thread",
+        "worktreePath": null,
+        "session": {
+          "status": "running",
+          "lastError": null
+        },
+        "hasPendingApprovals": false,
+        "hasPendingUserInput": false,
+        "backgroundLiveness": null,
+        "updatedAt": "2026-09-01T20:00:01Z"
+      }
+    ],
+    "updatedAt": "2026-09-01T20:00:01Z"
+  },
+  {
+    "snapshotSequence": 3,
+    "projects": [
+      {
+        "id": "project-1",
+        "title": "atc",
+        "workspaceRoot": "/work/atc"
+      }
+    ],
+    "threads": [
+      {
+        "id": "t3-thread-1",
+        "projectId": "project-1",
+        "title": "New T3 thread",
+        "worktreePath": null,
+        "session": {
+          "status": "running",
+          "lastError": null
+        },
+        "hasPendingApprovals": true,
+        "hasPendingUserInput": false,
+        "backgroundLiveness": null,
+        "updatedAt": "2026-09-01T20:00:02Z"
+      }
+    ],
+    "updatedAt": "2026-09-01T20:00:02Z"
+  },
+  {
+    "snapshotSequence": 4,
+    "projects": [
+      {
+        "id": "project-1",
+        "title": "atc",
+        "workspaceRoot": "/work/atc"
+      }
+    ],
+    "threads": [
+      {
+        "id": "t3-thread-1",
+        "projectId": "project-1",
+        "title": "New T3 thread",
+        "worktreePath": null,
+        "session": {
+          "status": "running",
+          "lastError": null
+        },
+        "hasPendingApprovals": false,
+        "hasPendingUserInput": true,
+        "backgroundLiveness": null,
+        "updatedAt": "2026-09-01T20:00:03Z"
+      }
+    ],
+    "updatedAt": "2026-09-01T20:00:03Z"
+  },
+  {
+    "snapshotSequence": 5,
+    "projects": [
+      {
+        "id": "project-1",
+        "title": "atc",
+        "workspaceRoot": "/work/atc"
+      }
+    ],
+    "threads": [
+      {
+        "id": "t3-thread-1",
+        "projectId": "project-1",
+        "title": "New T3 thread",
+        "worktreePath": null,
+        "session": {
+          "status": "error",
+          "lastError": "provider failed"
+        },
+        "hasPendingApprovals": false,
+        "hasPendingUserInput": false,
+        "backgroundLiveness": null,
+        "updatedAt": "2026-09-01T20:00:04Z"
+      }
+    ],
+    "updatedAt": "2026-09-01T20:00:04Z"
+  },
+  {
+    "snapshotSequence": 6,
+    "projects": [
+      {
+        "id": "project-1",
+        "title": "atc",
+        "workspaceRoot": "/work/atc"
+      }
+    ],
+    "threads": [
+      {
+        "id": "t3-thread-1",
+        "projectId": "project-1",
+        "title": "New T3 thread",
+        "worktreePath": null,
+        "session": {
+          "status": "ready",
+          "lastError": null
+        },
+        "hasPendingApprovals": false,
+        "hasPendingUserInput": false,
+        "backgroundLiveness": null,
+        "updatedAt": "2026-09-01T20:00:05Z"
+      }
+    ],
+    "updatedAt": "2026-09-01T20:00:05Z"
+  }
+]

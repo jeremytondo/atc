@@ -370,7 +370,7 @@ func (o *Observer) teardown(ctx context.Context, conn *rpcConn, reason error) {
 			continue
 		}
 		if err := o.threads.ObserveStatus(ctx, threads.StatusObservation{
-			Agent: "codex", ProviderID: p.threadID, At: o.now(), Status: api.ThreadUnknown,
+			Adapter: "codex", ProviderID: p.threadID, At: o.now(), Status: api.ThreadUnknown,
 		}); err != nil {
 			o.logger.Warn("coercing codex thread on disconnect", "error", err)
 			continue
@@ -651,7 +651,7 @@ func (o *Observer) applyEvidence(ctx context.Context, threadID string, e evidenc
 	}
 	if !p.established {
 		if _, err := o.threads.ObserveSession(ctx, threads.SessionObservation{
-			Agent: "codex", ProviderID: threadID, TerminalID: p.terminalID, ProjectID: terminal.ProjectID,
+			Adapter: "codex", Agent: "codex", ProviderID: threadID, TerminalID: p.terminalID, ProjectID: terminal.ProjectID,
 			At: o.now(), Status: e.status, Metadata: metadata,
 		}); err != nil {
 			// A transient failure leaves the pairing unestablished; the
@@ -660,7 +660,7 @@ func (o *Observer) applyEvidence(ctx context.Context, threadID string, e evidenc
 			return
 		}
 	} else if err := o.threads.ObserveStatus(ctx, threads.StatusObservation{
-		Agent: "codex", ProviderID: threadID, At: o.now(), Status: e.status, Metadata: metadata,
+		Adapter: "codex", ProviderID: threadID, At: o.now(), Status: e.status, Metadata: metadata,
 	}); err != nil {
 		o.logger.Warn("recording codex status observation", "error", err)
 		return

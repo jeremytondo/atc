@@ -373,18 +373,16 @@ func TestProblemErrorFallbacks(t *testing.T) {
 // escaped so a user-typed id with reserved characters stays one unknown
 // segment instead of changing the route.
 func TestAgentMethods(t *testing.T) {
-	type call struct {
-		Method, Path, Body string
-	}
-	var got call
+	var got struct{ Method, Path string }
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		got = call{Method: r.Method, Path: r.URL.EscapedPath(), Body: strings.TrimSpace(string(body))}
+		got.Method, got.Path = r.Method, r.URL.EscapedPath()
 		switch {
 		case r.URL.Path == "/v1/agents":
 			_ = json.NewEncoder(w).Encode(AgentList{Agents: []Agent{{ID: "claude"}}})
-		case strings.HasSuffix(r.URL.Path, "/launch"):
-			_ = json.NewEncoder(w).Encode(Terminal{ID: "term-x7k2f", Agent: "claude"})
+		case r.URL.Path == "/v1/agents/adapters":
+			_ = json.NewEncoder(w).Encode(AgentAdapterList{Adapters: []AgentAdapter{{ID: "claude"}, {ID: "t3code"}}})
+		case strings.HasPrefix(r.URL.Path, "/v1/agents/adapters/"):
+			_ = json.NewEncoder(w).Encode(AgentAdapter{ID: "t3code"})
 		default:
 			_ = json.NewEncoder(w).Encode(Agent{ID: "claude"})
 		}
@@ -408,19 +406,24 @@ func TestAgentMethods(t *testing.T) {
 		t.Errorf("get path = %q", got.Path)
 	}
 
-	terminal, err := client.LaunchAgent(ctx, "claude", AgentLaunchParams{ProjectID: "proj-x7k2f"})
-	if err != nil || terminal.Agent != "claude" {
-		t.Fatalf("LaunchAgent = %+v, %v", terminal, err)
+	adapters, err := client.AgentAdapters(ctx)
+	if err != nil || len(adapters) != 2 {
+		t.Fatalf("AgentAdapters = %+v, %v", adapters, err)
 	}
-	want := call{http.MethodPost, "/v1/agents/claude/launch", `{"projectId":"proj-x7k2f"}`}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("launch request (-want +got):\n%s", diff)
+	if got.Path != "/v1/agents/adapters" {
+		t.Errorf("adapters list path = %q", got.Path)
+	}
+	if adapter, err := client.AgentAdapter(ctx, "t3code"); err != nil || adapter.ID != "t3code" {
+		t.Fatalf("AgentAdapter = %+v, %v", adapter, err)
+	}
+	if got.Path != "/v1/agents/adapters/t3code" {
+		t.Errorf("adapter get path = %q", got.Path)
 	}
 
-	if _, err := client.Agent(ctx, "claude/launch?x"); err != nil {
+	if _, err := client.Agent(ctx, "adapters/x?y"); err != nil {
 		t.Fatal(err)
 	}
-	if got.Path != "/v1/agents/claude%2Flaunch%3Fx" {
+	if got.Path != "/v1/agents/adapters%2Fx%3Fy" {
 		t.Errorf("escaped get path = %q", got.Path)
 	}
 }

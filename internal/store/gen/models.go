@@ -32,7 +32,8 @@ type Terminal struct {
 
 type Thread struct {
 	ID             string
-	Agent          string
+	Adapter        string
+	Agent          sql.NullString
 	ProjectID      string
 	TerminalID     sql.NullString
 	Title          sql.NullString
@@ -51,7 +52,7 @@ type Thread struct {
 }
 
 type ThreadIdentity struct {
-	Agent                  string
+	Adapter                string
 	ProviderConversationID string
 	ThreadID               string
 }

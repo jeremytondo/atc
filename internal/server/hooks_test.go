@@ -55,7 +55,7 @@ func (f *fixture) postHook(t *testing.T, secret, body string) *httptest.Response
 func TestClaudeHooksDriveThreads(t *testing.T) {
 	f := newFixture(t)
 
-	rec := f.request(t, http.MethodPost, "/v1/agents/claude/launch", `{"projectId":"`+f.projectID+`"}`)
+	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Agent: "claude"}))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("launch: got %d; body %s", rec.Code, rec.Body)
 	}
@@ -133,7 +133,7 @@ func TestClaudeHooksDriveThreads(t *testing.T) {
 func TestTerminalDeleteRevokesHookSecret(t *testing.T) {
 	f := newFixture(t)
 
-	rec := f.request(t, http.MethodPost, "/v1/agents/claude/launch", `{"projectId":"`+f.projectID+`"}`)
+	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Agent: "claude"}))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("launch: got %d; body %s", rec.Code, rec.Body)
 	}

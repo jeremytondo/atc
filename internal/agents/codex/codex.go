@@ -19,14 +19,17 @@ import (
 	"github.com/jeremytondo/atc/internal/agents"
 )
 
-// Entry is Codex's catalog registration. observer wires thread
-// observation into every launch and is required — a Codex launch without
-// it would silently produce a thread-less TUI.
-func Entry(observer *Observer) agents.Entry {
+// Adapter is Codex's catalog registration: one adapter producing threads
+// for the one agent it launches. observer wires thread observation into
+// every launch and is required — a Codex launch without it would silently
+// produce a thread-less TUI.
+func Adapter(observer *Observer) agents.Adapter {
 	if observer == nil {
-		panic("codex.Entry: observer must not be nil")
+		panic("codex.Adapter: observer must not be nil")
 	}
-	return agents.Entry{ID: "codex", Name: "Codex", TUI: tui{observer: observer}}
+	return agents.Adapter{ID: "codex", Name: "Codex", Agents: []agents.AgentSpec{
+		{ID: "codex", Name: "Codex", TUI: tui{observer: observer}},
+	}}
 }
 
 type tui struct{ observer *Observer }

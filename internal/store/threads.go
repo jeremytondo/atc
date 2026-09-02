@@ -16,10 +16,13 @@ import (
 // states.
 type ThreadRecord struct {
 	ID string
-	// Agent is the agent catalog id that owns the conversation; immutable.
+	// Adapter is the adapter that produced the thread; immutable.
+	Adapter string
+	// Agent is the agent label as the adapter reports it; empty (stored
+	// NULL) when not reported, and free to change.
 	Agent string
-	// ProjectID is set from the observing terminal at first observation;
-	// immutable. Project deletion cascade-deletes the row.
+	// ProjectID is set at first observation; immutable. Project deletion
+	// cascade-deletes the row.
 	ProjectID string
 	// TerminalID is the last terminal observed holding the conversation;
 	// nil once that terminal is deleted (ON DELETE SET NULL). A pointer
@@ -44,11 +47,11 @@ type ThreadRecord struct {
 	UpdatedAt      time.Time
 }
 
-// ThreadIdentity is one row of the private identity mapping: (agent,
+// ThreadIdentity is one row of the private identity mapping: (adapter,
 // provider conversation id) → thread. Provider conversation ids never
-// leave the server.
+// leave the server except through an adapter's own deep links.
 type ThreadIdentity struct {
-	Agent                  string
+	Adapter                string
 	ProviderConversationID string
 	ThreadID               string
 }
@@ -70,7 +73,8 @@ func (s *Store) Threads() *Threads {
 func insertThreadParams(record ThreadRecord) gen.InsertThreadParams {
 	return gen.InsertThreadParams{
 		ID:             record.ID,
-		Agent:          record.Agent,
+		Adapter:        record.Adapter,
+		Agent:          nullString(record.Agent),
 		ProjectID:      record.ProjectID,
 		TerminalID:     nullStringPtr(record.TerminalID),
 		Title:          nullString(record.Title),
@@ -110,7 +114,7 @@ func (t *Threads) InsertObserved(ctx context.Context, record ThreadRecord, ident
 		return false, nil
 	}
 	n, err = queries.InsertThreadIdentity(ctx, gen.InsertThreadIdentityParams{
-		Agent:                  identity.Agent,
+		Adapter:                identity.Adapter,
 		ProviderConversationID: identity.ProviderConversationID,
 		ThreadID:               identity.ThreadID,
 	})
@@ -128,6 +132,7 @@ func (t *Threads) InsertObserved(ctx context.Context, record ThreadRecord, ident
 // ErrForeignKeyViolation.
 func (t *Threads) Update(ctx context.Context, record ThreadRecord) (bool, error) {
 	n, err := t.writes.UpdateThread(ctx, gen.UpdateThreadParams{
+		Agent:          nullString(record.Agent),
 		TerminalID:     nullStringPtr(record.TerminalID),
 		Title:          nullString(record.Title),
 		TitleUserSet:   boolInt(record.TitleUserSet),
@@ -179,7 +184,7 @@ func (t *Threads) ListIdentities(ctx context.Context) ([]ThreadIdentity, error) 
 	identities := make([]ThreadIdentity, 0, len(rows))
 	for _, row := range rows {
 		identities = append(identities, ThreadIdentity{
-			Agent:                  row.Agent,
+			Adapter:                row.Adapter,
 			ProviderConversationID: row.ProviderConversationID,
 			ThreadID:               row.ThreadID,
 		})
@@ -190,7 +195,8 @@ func (t *Threads) ListIdentities(ctx context.Context) ([]ThreadIdentity, error) 
 func threadFrom(row gen.Thread) (ThreadRecord, error) {
 	record := ThreadRecord{
 		ID:             row.ID,
-		Agent:          row.Agent,
+		Adapter:        row.Adapter,
+		Agent:          row.Agent.String,
 		ProjectID:      row.ProjectID,
 		TerminalID:     stringPtr(row.TerminalID),
 		Title:          row.Title.String,

@@ -22,6 +22,7 @@ import (
 	"github.com/jeremytondo/atc/internal/agents"
 	"github.com/jeremytondo/atc/internal/agents/claude"
 	"github.com/jeremytondo/atc/internal/agents/codex"
+	"github.com/jeremytondo/atc/internal/agents/t3code"
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/projects"
@@ -165,9 +166,20 @@ func newFixture(t *testing.T) *fixture {
 		Terminals: service,
 		Now:       now,
 	})
+	// The T3 Code observer over an empty T3 home: registered for its
+	// catalog entry and links, never run — it reports unavailable.
+	t3Observer := t3code.New(t3code.Options{
+		Home:        t.TempDir(),
+		SessionPath: filepath.Join(t.TempDir(), "t3code-session.json"),
+		Threads:     threadService,
+		Projects:    projectService,
+		Hub:         hub,
+		Now:         now,
+	})
+	threadService.SetLinker(t3code.ID, t3Observer.Links)
 	binaries := map[string]bool{"claude": true}
 	agentService, err := agents.NewService(agents.Options{
-		Entries:   []agents.Entry{claude.Entry(claudeHooks), codex.Entry(codexObserver)},
+		Adapters:  []agents.Adapter{claude.Adapter(claudeHooks), codex.Adapter(codexObserver), t3code.Adapter(t3Observer)},
 		Terminals: service,
 		LookPath: func(name string) (string, error) {
 			if binaries[name] {

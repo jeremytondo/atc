@@ -20,6 +20,7 @@ import (
 func (f *fixture) observeThread(t *testing.T, terminalID, providerID string, status api.ThreadStatus) string {
 	t.Helper()
 	id, err := f.threads.ObserveSession(context.Background(), threads.SessionObservation{
+		Adapter:    "claude",
 		Agent:      "claude",
 		ProviderID: providerID,
 		TerminalID: terminalID,
@@ -296,7 +297,7 @@ func resourceID(t *testing.T, data string) string {
 // every other terminal response.
 func TestThreadOpenOverTheWire(t *testing.T) {
 	f := newFixture(t)
-	launched := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/agents/claude/launch", `{"projectId":"`+f.projectID+`"}`))
+	launched := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Agent: "claude"})))
 	id := f.observeThread(t, launched.ID, "sess-1", api.ThreadIdle)
 
 	rec := f.request(t, http.MethodPost, "/v1/threads/"+id+"/open", "")
@@ -358,7 +359,7 @@ func TestThreadOpenOverTheWire(t *testing.T) {
 // launch, with the install hint, and nothing is created or linked.
 func TestThreadOpenUnavailableAgent(t *testing.T) {
 	f := newFixture(t)
-	launched := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/agents/claude/launch", `{"projectId":"`+f.projectID+`"}`))
+	launched := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Agent: "claude"})))
 	id := f.observeThread(t, launched.ID, "sess-1", api.ThreadIdle)
 	if rec := f.request(t, http.MethodDelete, "/v1/terminals/"+launched.ID, ""); rec.Code != http.StatusNoContent {
 		t.Fatalf("delete terminal: got %d", rec.Code)
@@ -382,4 +383,87 @@ func decodeTerminalList(t *testing.T, rec *httptest.ResponseRecorder) []api.Term
 	var list api.TerminalList
 	decodeInto(t, rec, &list)
 	return list.Terminals
+}
+
+// A thread an external program owns (ATC-285): adapter and links on the
+// wire, open refused with a clear error, archive and delete refused
+// while the program still reports it and allowed once it does not, a
+// title change always allowed.
+func TestExternalThreadVerbsOverTheWire(t *testing.T) {
+	f := newFixture(t)
+	f.threads.SetLinker("t3code", func(providerID string) *api.ThreadLinks {
+		return &api.ThreadLinks{Web: "http://127.0.0.1:3773/env/" + providerID, App: "t3code://threads/env/" + providerID}
+	})
+	id, err := f.threads.ObserveAdapter(context.Background(), threads.AdapterObservation{
+		Adapter: "t3code", ProviderID: "t1", ProjectID: f.projectID, Status: api.ThreadWorking, Agent: "codex", Title: "T3 thread",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	thread := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+id, ""))
+	if thread.Adapter != "t3code" || thread.Agent != "codex" || thread.TerminalID != "" || thread.Links == nil ||
+		thread.Links.Web != "http://127.0.0.1:3773/env/t1" || thread.Links.App != "t3code://threads/env/t1" {
+		t.Errorf("thread = %+v", thread)
+	}
+	if body := f.request(t, http.MethodGet, "/v1/threads/"+id, "").Body.String(); !strings.Contains(body, `"adapter":"t3code"`) || !strings.Contains(body, `"links":{"web":`) {
+		t.Errorf("wire body = %s", body)
+	}
+
+	rec := f.request(t, http.MethodPost, "/v1/threads/"+id+"/open", "")
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "open in T3 Code") {
+		t.Errorf("open: got %d; body %s", rec.Code, rec.Body)
+	}
+	if terminals := decodeTerminalList(t, f.request(t, http.MethodGet, "/v1/terminals", "")); len(terminals) != 0 {
+		t.Errorf("refused open created %+v", terminals)
+	}
+	rec = f.request(t, http.MethodPatch, "/v1/threads/"+id, `{"archived":true}`)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "t3code") {
+		t.Errorf("archive while reported: got %d; body %s", rec.Code, rec.Body)
+	}
+	if rec := f.request(t, http.MethodDelete, "/v1/threads/"+id, ""); rec.Code != http.StatusConflict {
+		t.Errorf("delete while reported: got %d", rec.Code)
+	}
+	rec = f.request(t, http.MethodPatch, "/v1/threads/"+id, `{"title":"my title"}`)
+	if rec.Code != http.StatusOK || decodeThread(t, rec).Title != "my title" {
+		t.Errorf("title while reported: got %d; body %s", rec.Code, rec.Body)
+	}
+
+	// T3 stops reporting it: ATC archived it, and the user may now
+	// unarchive, re-archive, or delete.
+	if err := f.threads.ArchiveAdapterThread(context.Background(), "t3code", "t1"); err != nil {
+		t.Fatal(err)
+	}
+	if thread := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+id, "")); !thread.Archived || thread.Status != api.ThreadUnknown {
+		t.Errorf("after removal = %+v", thread)
+	}
+	if rec := f.request(t, http.MethodPatch, "/v1/threads/"+id, `{"archived":false}`); rec.Code != http.StatusOK {
+		t.Errorf("unarchive after removal: got %d; body %s", rec.Code, rec.Body)
+	}
+	if rec := f.request(t, http.MethodDelete, "/v1/threads/"+id, ""); rec.Code != http.StatusNoContent {
+		t.Errorf("delete after removal: got %d; body %s", rec.Code, rec.Body)
+	}
+
+	// Every thread carries its adapter; terminal threads carry no links.
+	terminal := f.createRunningTerminal(t)
+	local := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+f.observeThread(t, terminal.ID, "sess-1", api.ThreadIdle), ""))
+	if local.Adapter != "claude" || local.Links != nil {
+		t.Errorf("terminal thread = %+v", local)
+	}
+}
+
+// The adapter connection change rides the same feed with its own name.
+func TestAgentAdapterEventOnTheFeed(t *testing.T) {
+	f := newFixture(t)
+	srv := httptest.NewServer(f.handler)
+	t.Cleanup(srv.Close)
+	client := dialSSE(t, srv.URL, "")
+	if opening := client.next(t); opening.Comment != "connected" {
+		t.Fatalf("opening message = %+v", opening)
+	}
+	f.hub.Publish(api.EventAgentAdapterUpdated, "agent_adapter", "t3code")
+	event := client.next(t)
+	if event.Event != api.EventAgentAdapterUpdated || resourceID(t, event.Data) != "t3code" {
+		t.Errorf("feed event = %+v", event)
+	}
 }

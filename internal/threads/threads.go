@@ -1,22 +1,27 @@
 // Package threads is the Threads domain (ATC-255): the resource behind
 // /v1/threads. A thread is one exact provider conversation, observed into
-// existence inside an ATC-launched agent TUI at its first prompt — there
-// is no create verb. Open (ATC-282) is the one intent the domain acts on:
-// it resolves a thread to the terminal holding it, resuming the
+// existence — inside an ATC-launched agent TUI at its first prompt, or
+// mirrored from an external program by an observing adapter (ATC-285) —
+// there is no create verb. Open (ATC-282) is the one intent the domain
+// acts on: it resolves a thread to the terminal holding it, resuming the
 // conversation in a new terminal when nothing does.
-// Records persist in the ATC-262 store as the durable index of resumable
-// conversations; the private identity mapping (agent, provider
+// Records persist in the ATC-262 store as the durable index of
+// conversations; the private identity mapping (adapter, provider
 // conversation id) → thread never leaves the server.
 //
 // The package owns policy: capture and reattach, the six-status model and
 // its inactive coercion, archive/delete with their active refusals (and
-// the unarchive a reattach implies — active means unarchived), and
-// the activeThreadId projection onto terminals. Provider observation —
-// the Claude hooks, the Codex app-server observer — lives with the
-// agents side and feeds this service only neutral observations; no
-// provider vocabulary enters here. Statuses come from evidence, never guesses:
-// unknown means no evidence, and a thread that stops being observed keeps
-// idle but coerces the unverifiable live states back to unknown.
+// the unarchive a reattach implies — active means unarchived), and the
+// activeThreadId projection onto terminals. A thread is held either by a
+// terminal (its TUI has the conversation open) or by an adapter
+// connection (the external program still reports it); both holds accept
+// live statuses and both release into the same coercion. Provider
+// observation — the Claude hooks, the Codex app-server observer, the T3
+// Code adapter — lives with the agents side and feeds this service only
+// neutral observations; no provider vocabulary enters here. Statuses come
+// from evidence, never guesses: unknown means no evidence, and a thread
+// that stops being observed keeps idle but coerces the unverifiable live
+// states back to unknown.
 package threads
 
 import (
@@ -56,8 +61,10 @@ type Metadata struct {
 // session observations move a terminal's active thread — delayed status
 // evidence never selects a stale conversation.
 type SessionObservation struct {
-	// Agent is the catalog id; with ProviderID it forms the private
-	// identity key.
+	// Adapter is the observing adapter's id; with ProviderID it forms the
+	// private identity key.
+	Adapter string
+	// Agent is the label the thread runs under, recorded at creation.
 	Agent string
 	// ProviderID is the provider's own conversation id. It never appears
 	// in the public API.
@@ -79,7 +86,7 @@ type SessionObservation struct {
 // dropped: without a session observation there is no terminal context to
 // create an honest record from.
 type StatusObservation struct {
-	Agent      string
+	Adapter    string
 	ProviderID string
 	// At is when the evidence arrived; zero means now.
 	At     time.Time
@@ -91,13 +98,42 @@ type StatusObservation struct {
 	Metadata  Metadata
 }
 
+// AdapterObservation reports what an observing adapter currently knows
+// about a conversation the external program owns (ATC-285): the whole
+// shape at once, since the program is the source of truth and ATC mirrors
+// it. The adapter connection holds the thread from this observation
+// until the adapter releases it (the program stopped reporting the
+// thread, or the connection dropped).
+type AdapterObservation struct {
+	// Adapter and ProviderID form the private identity key.
+	Adapter    string
+	ProviderID string
+	// ProjectID is the project a first observation records the thread
+	// under; ignored for a known conversation. Empty refuses to mint.
+	ProjectID string
+	// At is when the evidence arrived; zero means now.
+	At time.Time
+	// Status is the projected status; empty means unknown.
+	Status api.ThreadStatus
+	// Agent is the label the program reports; applied as-is, empty
+	// included.
+	Agent string
+	// Title is the program's title; it tracks the program unless the user
+	// set one in ATC.
+	Title string
+	// LastError is applied as-is; empty clears.
+	LastError string
+	Metadata  Metadata
+}
+
 // ResumeRequest asks the agents side to launch a terminal running the
 // provider's exact resume of a dormant conversation (ATC-282). It carries
 // the private identity out of this domain to the adapter that composes
 // the command — never onto the wire.
 type ResumeRequest struct {
-	// Agent is the catalog id; ProviderID the provider's own conversation
-	// id, together the private identity key.
+	// Adapter and ProviderID form the private identity key; Agent is the
+	// label the conversation runs under, which the adapter launches.
+	Adapter    string
 	Agent      string
 	ProviderID string
 	// ProjectID is the thread's project, which the terminal joins.
@@ -112,3 +148,8 @@ type ResumeRequest struct {
 // (agents.Service.Resume in production). Open invokes it for at most one
 // in-flight resume per thread.
 type Resumer func(ctx context.Context, req ResumeRequest) (api.Terminal, error)
+
+// Linker derives the deep links of one adapter's threads at read time
+// from the adapter's live state, given the provider conversation id; nil
+// means none right now. Registered per adapter with Service.SetLinker.
+type Linker func(providerID string) *api.ThreadLinks

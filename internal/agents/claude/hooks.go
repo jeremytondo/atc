@@ -36,7 +36,7 @@ type ThreadObserver interface {
 	ObserveSession(ctx context.Context, o threads.SessionObservation) (string, error)
 	ObserveStatus(ctx context.Context, o threads.StatusObservation) error
 	Deactivate(ctx context.Context, terminalID string)
-	LookupIdentity(agent, providerID string) (threadID, terminalID string, ok bool)
+	LookupIdentity(adapter, providerID string) (threadID, terminalID string, ok bool)
 }
 
 // TerminalReader resolves a terminal's record — the observing terminal's
@@ -363,6 +363,7 @@ func (h *Hooks) observe(ctx context.Context, terminalID string, st *session, p p
 	metadata := metadataFrom(p)
 	metadata.Title = st.title
 	threadID, err := h.threads.ObserveSession(ctx, threads.SessionObservation{
+		Adapter:    "claude",
 		Agent:      "claude",
 		ProviderID: p.SessionID,
 		TerminalID: terminalID,
@@ -391,7 +392,7 @@ func (h *Hooks) sessionEnd(ctx context.Context, terminalID string, st *session, 
 	st.tracker = nil
 	st.ended = true
 	if err := h.threads.ObserveStatus(ctx, threads.StatusObservation{
-		Agent: "claude", ProviderID: p.SessionID, At: h.now(),
+		Adapter: "claude", ProviderID: p.SessionID, At: h.now(),
 		Metadata: metadataFrom(p),
 	}); err != nil {
 		h.logger.Warn("recording session end", "terminal", terminalID, "error", err)
@@ -418,7 +419,7 @@ func (h *Hooks) reduce(ctx context.Context, st *session, p payload) {
 		metadata.Title = st.title
 	}
 	if err := h.threads.ObserveStatus(ctx, threads.StatusObservation{
-		Agent: "claude", ProviderID: p.SessionID, At: h.now(),
+		Adapter: "claude", ProviderID: p.SessionID, At: h.now(),
 		Status: status, LastError: lastError, Metadata: metadata,
 	}); err != nil {
 		h.logger.Warn("recording status observation", "error", err)
