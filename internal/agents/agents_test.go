@@ -154,6 +154,24 @@ func TestNewServiceRejectsDuplicates(t *testing.T) {
 	}
 }
 
+// The catalog is the service's own: mutating the registration slices
+// after construction changes nothing.
+func TestCatalogIsCopiedFromRegistrations(t *testing.T) {
+	adapters := testAdapters(api.AgentAdapterConnection{State: api.AdapterConnected})
+	service, err := NewService(Options{Adapters: adapters, Terminals: &fakeCreator{}, LookPath: func(string) (string, error) { return "", errors.New("no") }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapters[0].Agents[0].ID = "mutated"
+	adapters[0].ID = "mutated"
+	if got := service.List()[0].ID; got != "alpha" {
+		t.Errorf("first agent = %q after mutating the registration; want alpha", got)
+	}
+	if got := service.Adapters()[0].ID; got != "alpha" {
+		t.Errorf("first adapter = %q after mutating the registration; want alpha", got)
+	}
+}
+
 // The agent catalog is derived: first declaration names the agent, every
 // declarer lists as a provider, and availability means some declarer
 // can launch it right now.

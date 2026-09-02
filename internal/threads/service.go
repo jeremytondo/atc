@@ -1210,7 +1210,9 @@ func (s *Service) holder(threadID string) string {
 		return "open in terminal " + terminalID
 	}
 	if _, ok := s.held[threadID]; ok {
-		return "still reported by adapter " + s.view[threadID].Adapter
+		if entry, exists := s.view[threadID]; exists {
+			return "still reported by adapter " + entry.Adapter
+		}
 	}
 	return ""
 }

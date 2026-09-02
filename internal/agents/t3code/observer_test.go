@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -42,7 +43,7 @@ type fixture struct {
 	hub         *events.Hub
 	sub         *events.Subscription
 	observer    *Observer
-	alive       bool
+	alive       atomic.Bool
 	authRetry   time.Duration
 	cancel      context.CancelFunc
 	done        chan struct{}
@@ -65,9 +66,10 @@ func newFixture(t *testing.T) *fixture {
 	f := &fixture{
 		t: t, server: server, cli: &fakeCLI{server: server},
 		home: t.TempDir(), sessionPath: filepath.Join(t.TempDir(), "t3code-session.json"),
-		threads: threadService, projects: projectService, hub: hub, alive: true,
+		threads: threadService, projects: projectService, hub: hub,
 		authRetry: 300 * time.Millisecond,
 	}
+	f.alive.Store(true)
 	f.sub = hub.Subscribe(0, false)
 	t.Cleanup(f.sub.Close)
 	return f
@@ -93,7 +95,7 @@ func (f *fixture) start() {
 		Home: f.home, SessionPath: f.sessionPath,
 		Threads: f.threads, Projects: f.projects, Hub: f.hub,
 		RunCLI:       f.cli.run,
-		ProcessAlive: func(int) bool { return f.alive },
+		ProcessAlive: func(int) bool { return f.alive.Load() },
 	})
 	f.observer.pollInterval = 20 * time.Millisecond
 	f.observer.backoffMin = 20 * time.Millisecond
@@ -780,7 +782,7 @@ func TestNotRunning(t *testing.T) {
 	f.waitStatus("t1", api.ThreadWorking)
 
 	// The recorded process dies: unavailable, statuses coerced.
-	f.alive = false
+	f.alive.Store(false)
 	f.server.dropConns()
 	connection = f.waitState(api.AdapterUnavailable)
 	if !strings.Contains(connection.Detail, "is gone") {

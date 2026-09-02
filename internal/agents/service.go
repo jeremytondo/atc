@@ -76,14 +76,15 @@ func NewService(opts Options) (*Service, error) {
 		opts.LookPath = exec.LookPath
 	}
 	service := &Service{
-		// Cloned so no caller-held slice can mutate the catalog after the
-		// duplicate check.
+		// Cloned, agents included, so no caller-held slice can mutate the
+		// catalog after the duplicate check.
 		adapters:  slices.Clone(opts.Adapters),
 		index:     make(map[string]int, len(opts.Adapters)),
 		terminals: opts.Terminals,
 		lookPath:  opts.LookPath,
 	}
 	for i, adapter := range service.adapters {
+		service.adapters[i].Agents = slices.Clone(adapter.Agents)
 		if _, taken := service.index[adapter.ID]; taken {
 			return nil, fmt.Errorf("duplicate adapter id %q", adapter.ID)
 		}
