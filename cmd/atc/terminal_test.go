@@ -14,11 +14,12 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jeremytondo/atc/internal/agents"
 	"github.com/jeremytondo/atc/internal/events"
+	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/integrations/claude"
 	"github.com/jeremytondo/atc/internal/integrations/codex"
 	"github.com/jeremytondo/atc/internal/integrations/t3code"
+	"github.com/jeremytondo/atc/internal/integrations/zmx"
 	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/server"
 	"github.com/jeremytondo/atc/internal/store"
@@ -27,9 +28,12 @@ import (
 )
 
 // cliDriver is the fake session backend behind the CLI tests' server.
+// commands records what each session was created with — the private App
+// command the CLI must never print.
 type cliDriver struct {
 	mu       sync.Mutex
 	sessions map[string]bool
+	commands map[string]string
 }
 
 func (a *cliDriver) Inventory(context.Context) ([]terminals.Session, error) {
@@ -42,10 +46,14 @@ func (a *cliDriver) Inventory(context.Context) ([]terminals.Session, error) {
 	return sessions, nil
 }
 
-func (a *cliDriver) Create(_ context.Context, id string, _ terminals.CreateSpec) error {
+func (a *cliDriver) Create(_ context.Context, id string, spec terminals.CreateSpec) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.sessions[id] = true
+	if a.commands == nil {
+		a.commands = map[string]string{}
+	}
+	a.commands[id] = spec.Command
 	return nil
 }
 
@@ -122,14 +130,16 @@ func startTestServerWithThreads(t *testing.T) (*cliDriver, *threads.Service) {
 		Hub:         hub,
 	})
 	threadService.SetLinker(t3code.ID, t3Observer.Links)
-	agentService, err := agents.NewService(agents.Options{
-		Adapters:  []agents.Adapter{claude.Adapter(claudeHooks), codex.Adapter(codexObserver), t3code.Adapter(t3Observer)},
+	catalog, err := integrations.NewService(integrations.Options{
+		Integrations: []integrations.Integration{
+			claude.Integration(claudeHooks), codex.Integration(codexObserver), t3code.Integration(t3Observer), zmx.Integration(),
+		},
 		Terminals: service,
-		// The probe never consults this machine's PATH: claude "exists",
-		// codex does not.
+		// The probe never consults this machine's PATH: claude and zmx
+		// "exist", codex does not.
 		LookPath: func(name string) (string, error) {
-			if name == "claude" {
-				return "/bin/claude", nil
+			if name == "claude" || name == "zmx" {
+				return "/bin/" + name, nil
 			}
 			return "", errors.New("executable file not found in $PATH")
 		},
@@ -138,13 +148,13 @@ func startTestServerWithThreads(t *testing.T) (*cliDriver, *threads.Service) {
 		t.Fatal(err)
 	}
 	handler := server.NewHandler(server.Options{
-		Verify:    func(authorization string) bool { return authorization == "Bearer "+cliTestToken },
-		Version:   "v0.0.0-test",
-		Terminals: service,
-		Projects:  projectService,
-		Agents:    agentService,
-		Threads:   threadService,
-		Events:    hub,
+		Verify:       func(authorization string) bool { return authorization == "Bearer "+cliTestToken },
+		Version:      "v0.0.0-test",
+		Terminals:    service,
+		Projects:     projectService,
+		Integrations: catalog,
+		Threads:      threadService,
+		Events:       hub,
 	})
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)

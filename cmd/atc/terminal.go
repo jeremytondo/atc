@@ -56,10 +56,19 @@ server is on another machine) the terminal is still created and printed.
 The session survives disconnects and ATC server restarts; return to it
 with ` + "`atc terminal attach <id>`" + `.
 With --command it runs through your login shell (profile and rc files
-loaded); without it you get a plain interactive shell.`,
+loaded); with --app <integration/app> it launches that app (see
+` + "`atc integration list`" + `) — a conversation started there becomes a
+thread at its first prompt; without either you get a plain interactive
+shell. A missing app executable is refused with its install hint before
+anything is created.`,
 		Args: cobra.NoArgs,
 		RunE: runWithClient(func(cmd *cobra.Command, _ []string, client *api.Client, baseURL string) error {
-			command, err := cmd.Flags().GetString("command")
+			flags := cmd.Flags()
+			command, err := flags.GetString("command")
+			if err != nil {
+				return err
+			}
+			app, err := flags.GetString("app")
 			if err != nil {
 				return err
 			}
@@ -68,21 +77,17 @@ loaded); without it you get a plain interactive shell.`,
 				if err != nil {
 					return api.Terminal{}, err
 				}
-				return client.CreateTerminal(ctx, api.TerminalCreateParams{ProjectID: projectID, Name: name, Command: command})
+				return client.CreateTerminal(ctx, api.TerminalCreateParams{ProjectID: projectID, Name: name, Command: command, AppID: app})
 			})
 		}),
 	}
-	addCreateFlags(cmd, "display name (defaults from --command, else \"Shell\")")
-	cmd.Flags().String("command", "", "command to run through your shell; omit for a plain shell")
-	return cmd
-}
-
-// addCreateFlags declares the flags every launching command shares:
-// naming and project placement, and --detach.
-func addCreateFlags(cmd *cobra.Command, nameUsage string) {
-	cmd.Flags().String("name", "", nameUsage)
+	cmd.Flags().String("name", "", "display name (defaults from --command or the app's name, else \"Shell\")")
 	cmd.Flags().String("project", "", "project the terminal belongs to (defaults to the project owning the current directory)")
 	cmd.Flags().Bool("detach", false, "print the terminal instead of attaching to it")
+	cmd.Flags().String("command", "", "command to run through your shell; omit for a plain shell")
+	cmd.Flags().String("app", "", "app to launch, as integration/app (e.g. codex/tui)")
+	cmd.MarkFlagsMutuallyExclusive("command", "app")
+	return cmd
 }
 
 // resolveCreateFlags reads the name and project flags, defaulting the
@@ -277,8 +282,8 @@ func printTerminal(out io.Writer, terminal api.Terminal) {
 	if terminal.Command != "" {
 		_, _ = fmt.Fprintf(w, "command\t%s\n", terminal.Command)
 	}
-	if terminal.Agent != "" {
-		_, _ = fmt.Fprintf(w, "agent\t%s\n", terminal.Agent)
+	if terminal.AppID != "" {
+		_, _ = fmt.Fprintf(w, "app\t%s\n", terminal.AppID)
 	}
 	_, _ = fmt.Fprintf(w, "created\t%s\n", terminal.CreatedAt.Format("2006-01-02 15:04:05 MST"))
 	_ = w.Flush()

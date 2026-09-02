@@ -22,10 +22,12 @@ type TerminalRecord struct {
 	// Command is the free-form command the terminal was created with;
 	// empty means a plain interactive shell.
 	Command string
-	// Agent is the agent catalog id the terminal was launched for, set only
-	// when the server resolved the launch (ATC-254); empty means a plain
-	// terminal. Immutable launch intent, no liveness meaning.
-	Agent     string
+	// AppID is the qualified App id the terminal was launched with, set
+	// only when the server resolved the launch through the Integration
+	// catalog (ATC-294); empty means a plain terminal. Immutable launch
+	// intent, no liveness meaning. When set, Command is the App's private
+	// composed command and never leaves the server.
+	AppID     string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	// StopRequestedAt is the persisted stop intent (set before the kill is
@@ -55,7 +57,7 @@ func (t *Terminals) Insert(ctx context.Context, record TerminalRecord) (bool, er
 		Name:      record.Name,
 		Directory: record.Directory,
 		Command:   nullString(record.Command),
-		Agent:     nullString(record.Agent),
+		AppID:     nullString(record.AppID),
 		CreatedAt: formatTime(record.CreatedAt),
 		UpdatedAt: formatTime(record.UpdatedAt),
 	})
@@ -130,7 +132,7 @@ func recordFrom(row gen.Terminal) (TerminalRecord, error) {
 		Name:      row.Name,
 		Directory: row.Directory,
 		Command:   row.Command.String,
-		Agent:     row.Agent.String,
+		AppID:     row.AppID.String,
 	}
 	var err error
 	if record.CreatedAt, err = parseTime(row.CreatedAt); err != nil {

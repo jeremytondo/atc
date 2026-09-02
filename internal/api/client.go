@@ -98,36 +98,22 @@ func (c *Client) DeleteTerminal(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/terminals/"+id, nil, nil)
 }
 
-// Agents lists the launchable agents, availability probed against the
-// server's machine at request time.
-func (c *Client) Agents(ctx context.Context) ([]Agent, error) {
-	var list AgentList
-	err := c.do(ctx, http.MethodGet, "/v1/agents", nil, &list)
-	return list.Agents, err
+// Integrations lists the compiled-in Integrations with their Apps, agents,
+// and evidence-based health, probed against the server's machine at
+// request time.
+func (c *Client) Integrations(ctx context.Context) ([]Integration, error) {
+	var list IntegrationList
+	err := c.do(ctx, http.MethodGet, "/v1/integrations", nil, &list)
+	return list.Integrations, err
 }
 
-// Agent fetches one agent by id. The id is user-typed on the CLI, so it
-// is escaped: reserved characters make an unknown id, not a different
-// route.
-func (c *Client) Agent(ctx context.Context, id string) (Agent, error) {
-	var agent Agent
-	err := c.do(ctx, http.MethodGet, "/v1/agents/"+url.PathEscape(id), nil, &agent)
-	return agent, err
-}
-
-// AgentAdapters lists the adapters that produce threads, with their
-// availability or live connection.
-func (c *Client) AgentAdapters(ctx context.Context) ([]AgentAdapter, error) {
-	var list AgentAdapterList
-	err := c.do(ctx, http.MethodGet, "/v1/agents/adapters", nil, &list)
-	return list.Adapters, err
-}
-
-// AgentAdapter fetches one adapter by id.
-func (c *Client) AgentAdapter(ctx context.Context, id string) (AgentAdapter, error) {
-	var adapter AgentAdapter
-	err := c.do(ctx, http.MethodGet, "/v1/agents/adapters/"+url.PathEscape(id), nil, &adapter)
-	return adapter, err
+// Integration fetches one Integration by id. The id is user-typed on the
+// CLI, so it is escaped: reserved characters make an unknown id, not a
+// different route.
+func (c *Client) Integration(ctx context.Context, id string) (Integration, error) {
+	var integration Integration
+	err := c.do(ctx, http.MethodGet, "/v1/integrations/"+url.PathEscape(id), nil, &integration)
+	return integration, err
 }
 
 // Threads lists threads, newest-created last. Non-empty projectID and

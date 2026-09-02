@@ -7,8 +7,8 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 
-	"github.com/jeremytondo/atc/internal/agents"
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/terminals"
 	"github.com/jeremytondo/atc/internal/threads"
 )
@@ -29,9 +29,9 @@ type terminalIDInput struct {
 	ID string `path:"id" doc:"Terminal identifier."`
 }
 
-func registerTerminals(humaAPI huma.API, service *terminals.Service, agentService *agents.Service,
+func registerTerminals(humaAPI huma.API, service *terminals.Service, catalog *integrations.Service,
 	threadService *threads.Service, cleanups []func(terminalID string)) {
-	// The terminals domain is agent-agnostic, so the activeThreadId
+	// The terminals domain knows nothing of threads, so the activeThreadId
 	// projection is grafted onto its wire shape here, from the threads
 	// service that owns it (ATC-255).
 	decorate := func(terminal api.Terminal) api.Terminal {
@@ -45,21 +45,21 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, agentServic
 		Method:        http.MethodPost,
 		Path:          "/v1/terminals",
 		Summary:       "Create a terminal",
-		Description:   "Persists the record, starts the session, and waits a short verification window; a fast-failing command returns exited with its evidence. An agent reference resolves the command through the adapter that launches the agent instead — the one launch path.",
+		Description:   "Persists the record, starts the session, and waits a short verification window; a fast-failing command returns exited with its evidence. An appId launches that Integration-owned App instead: the Integration composes the command privately, the terminal records the App, and a thread appears once the Integration observes a conversation — the one launch path. appId and command are mutually exclusive.",
 		DefaultStatus: http.StatusCreated,
 	}, func(ctx context.Context, input *struct {
 		Body api.TerminalCreateParams
 	}) (*terminalOutput, error) {
-		if input.Body.Agent != "" {
+		if input.Body.AppID != "" {
 			if input.Body.Command != "" {
-				return nil, huma.Error422UnprocessableEntity("agent and command are mutually exclusive")
+				return nil, problem(http.StatusUnprocessableEntity, api.CodeLaunchModeConflict, "appId and command are mutually exclusive")
 			}
-			if agentService == nil {
-				return nil, huma.Error422UnprocessableEntity("this server has no agent catalog")
+			if catalog == nil {
+				return nil, problem(http.StatusUnprocessableEntity, api.CodeAppNotFound, "this server has no integration catalog")
 			}
-			terminal, err := agentService.Launch(ctx, input.Body.Agent, input.Body.ProjectID, input.Body.Name)
+			terminal, err := catalog.Launch(ctx, input.Body.AppID, input.Body.ProjectID, input.Body.Name)
 			if err != nil {
-				return nil, mapAgentError(err)
+				return nil, mapIntegrationError(err)
 			}
 			return &terminalOutput{Body: decorate(terminal)}, nil
 		}
@@ -150,11 +150,11 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, agentServic
 func mapError(err error) error {
 	switch {
 	case errors.Is(err, terminals.ErrNotFound):
-		return huma.Error404NotFound("terminal not found")
+		return problem(http.StatusNotFound, api.CodeTerminalNotFound, "terminal not found")
 	case errors.Is(err, terminals.ErrProjectUnknown):
-		return huma.Error422UnprocessableEntity(err.Error())
+		return problem(http.StatusUnprocessableEntity, api.CodeProjectNotFound, err.Error())
 	case errors.Is(err, terminals.ErrProjectDirectoryMissing):
-		return huma.Error409Conflict(err.Error())
+		return problem(http.StatusConflict, api.CodeProjectDirectoryMissing, err.Error())
 	}
 	return err
 }

@@ -1,14 +1,15 @@
-// Package codex is the built-in catalog registration for Codex (ATC-254)
-// and its thread-evidence wiring (ATC-284): the TUI runs plain — `codex`
-// or `codex resume <id>`, no profile, no override, no hook environment —
-// so it joins the user's shared app-server, the same runtime Codex
-// Desktop and the iOS app use, and ATC keeps one read-only connection to
-// that server to observe thread announcements and status changes. A new
-// terminal is tied to its thread by the announcement that appears in the
-// launch directory right after launch; the thread record is minted at
-// the first prompt (the thread's first live status), through the same
-// neutral observations Claude feeds the threads domain. The id is persisted by terminals and threads —
-// never rename it.
+// Package codex is Codex's Integration (ATC-294): its catalog
+// registration — one terminal App, codex/tui — and its thread-evidence
+// wiring (ATC-284): the TUI runs plain — `codex` or `codex resume <id>`,
+// no profile, no override, no hook environment — so it joins the user's
+// shared app-server, the same runtime Codex Desktop and the iOS app use,
+// and ATC keeps one read-only connection to that server to observe
+// thread announcements and status changes. A new terminal is tied to its
+// thread by the announcement that appears in the launch directory right
+// after launch; the thread record is minted at the first prompt (the
+// thread's first live status), through the same neutral observations
+// Claude feeds the threads domain. The ids are persisted by terminals
+// and threads — never rename them.
 package codex
 
 import (
@@ -16,20 +17,38 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jeremytondo/atc/internal/agents"
+	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/integrations"
 )
 
-// Adapter is Codex's catalog registration: one adapter producing threads
-// for the one agent it launches. observer wires thread observation into
-// every launch and is required — a Codex launch without it would silently
-// produce a thread-less TUI.
-func Adapter(observer *Observer) agents.Adapter {
+// ID is the Integration id and the identity namespace of every Codex
+// thread; AppID is the qualified id of its one App, recorded on every
+// terminal it launches and every thread started there; AgentID is its
+// one agent, recorded on every thread.
+const (
+	ID      = "codex"
+	AppID   = ID + "/tui"
+	AgentID = "codex"
+)
+
+// Integration is Codex's catalog registration: one agent descriptor and
+// one terminal App. observer wires thread observation into every launch
+// and is required — a Codex launch without it would silently produce a
+// thread-less TUI.
+func Integration(observer *Observer) integrations.Integration {
 	if observer == nil {
-		panic("codex.Adapter: observer must not be nil")
+		panic("codex.Integration: observer must not be nil")
 	}
-	return agents.Adapter{ID: "codex", Name: "Codex", Agents: []agents.AgentSpec{
-		{ID: "codex", Name: "Codex", TUI: tui{observer: observer}},
-	}}
+	return integrations.Integration{
+		ID:           ID,
+		Name:         "Codex",
+		Capabilities: []api.IntegrationCapability{api.CapabilityThreadObservation},
+		Agents:       []api.IntegrationAgent{{ID: AgentID, Name: "Codex"}},
+		Apps: []integrations.App{
+			{ID: "tui", Name: "Codex", Agents: []string{AgentID}, Terminal: tui{observer: observer}},
+		},
+		Executable: &integrations.Executable{Binary: "codex", InstallHint: "npm install -g @openai/codex"},
+	}
 }
 
 type tui struct{ observer *Observer }
@@ -38,7 +57,7 @@ type tui struct{ observer *Observer }
 // terminals commit lock: the shared server must be answering (started
 // here when it is not), and a fresh launch reserves its directory so
 // same-directory launches take turns at the binding window.
-func (t tui) PrepareLaunch(ctx context.Context, launch agents.LaunchContext) (func(), error) {
+func (t tui) PrepareLaunch(ctx context.Context, launch integrations.LaunchContext) (func(), error) {
 	return t.observer.prepareLaunch(ctx, launch.Directory, launch.ResumeConversationID)
 }
 
@@ -48,19 +67,16 @@ func (t tui) PrepareLaunch(ctx context.Context, launch agents.LaunchContext) (fu
 // (Codex 0.146+), the very split ATC-284 removes. A fresh launch arms the
 // pending launch for its directory; a resume holds the pairing directly,
 // since `codex resume` announces no thread.
-func (t tui) Command(_ context.Context, launch agents.LaunchContext) (string, error) {
+func (t tui) Command(_ context.Context, launch integrations.LaunchContext) (string, error) {
 	if launch.ResumeConversationID != "" {
 		t.observer.holdResume(launch.TerminalID, launch.ResumeConversationID)
-		return "codex resume " + agents.Quote(launch.ResumeConversationID), nil
+		return "codex resume " + integrations.Quote(launch.ResumeConversationID), nil
 	}
 	if err := t.observer.arm(launch.TerminalID, launch.Directory); err != nil {
 		return "", err
 	}
 	return "codex", nil
 }
-
-func (tui) Binary() string      { return "codex" }
-func (tui) InstallHint() string { return "npm install -g @openai/codex" }
 
 // CodexHome resolves the CODEX_HOME every codex process on this machine
 // uses: codex's own variable, never an ATC setting. Always absolute — the

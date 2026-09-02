@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jeremytondo/atc/internal/agents"
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/threads"
 )
 
@@ -370,7 +370,7 @@ func (o *Observer) teardown(ctx context.Context, conn *rpcConn, reason error) {
 			continue
 		}
 		if err := o.threads.ObserveStatus(ctx, threads.StatusObservation{
-			Adapter: "codex", ProviderID: p.threadID, At: o.now(), Status: api.ThreadUnknown,
+			IntegrationID: ID, ProviderID: p.threadID, At: o.now(), Status: api.ThreadUnknown,
 		}); err != nil {
 			o.logger.Warn("coercing codex thread on disconnect", "error", err)
 			continue
@@ -455,7 +455,7 @@ func titleFrom(name, preview string) string {
 	if name != "" {
 		return name
 	}
-	return agents.CondenseTitle(preview)
+	return integrations.CondenseTitle(preview)
 }
 
 // handleAnnouncement runs on the read loop: thread/started is stamped and
@@ -651,7 +651,7 @@ func (o *Observer) applyEvidence(ctx context.Context, threadID string, e evidenc
 	}
 	if !p.established {
 		if _, err := o.threads.ObserveSession(ctx, threads.SessionObservation{
-			Adapter: "codex", Agent: "codex", ProviderID: threadID, TerminalID: p.terminalID, ProjectID: terminal.ProjectID,
+			IntegrationID: ID, AppID: AppID, AgentID: AgentID, ProviderID: threadID, TerminalID: p.terminalID, ProjectID: terminal.ProjectID,
 			At: o.now(), Status: e.status, Metadata: metadata,
 		}); err != nil {
 			// A transient failure leaves the pairing unestablished; the
@@ -660,7 +660,7 @@ func (o *Observer) applyEvidence(ctx context.Context, threadID string, e evidenc
 			return
 		}
 	} else if err := o.threads.ObserveStatus(ctx, threads.StatusObservation{
-		Adapter: "codex", ProviderID: threadID, At: o.now(), Status: e.status, Metadata: metadata,
+		IntegrationID: ID, ProviderID: threadID, At: o.now(), Status: e.status, Metadata: metadata,
 	}); err != nil {
 		o.logger.Warn("recording codex status observation", "error", err)
 		return

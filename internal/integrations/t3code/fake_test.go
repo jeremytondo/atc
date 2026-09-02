@@ -14,9 +14,9 @@ import (
 )
 
 // fakeT3 is an in-process T3 environment server speaking exactly what the
-// adapter uses: the well-known descriptor, the OAuth token exchange, the
+// Integration uses: the well-known descriptor, the OAuth token exchange, the
 // WebSocket ticket, and the Effect RPC shell subscription over /ws. It
-// records what the adapter asked for and lets a test push stream items,
+// records what the Integration asked for and lets a test push stream items,
 // drop connections, or go away entirely.
 type fakeT3 struct {
 	t   *testing.T
@@ -32,7 +32,7 @@ type fakeT3 struct {
 	sessions []fakeSession
 	issued   int
 	// grantScope is what the exchange answers; a test widens it to prove
-	// the adapter checks.
+	// the Integration checks.
 	grantScope string
 	// scopeDenied makes the ticket route answer 403; streamDenied makes
 	// the subscription itself exit with T3's authorization error, as the
@@ -220,7 +220,7 @@ func (f *fakeT3) raw(frame string) {
 }
 
 // dropConns closes every subscription while the server keeps serving —
-// a dropped socket from the adapter's point of view.
+// a dropped socket from the Integration's point of view.
 func (f *fakeT3) dropConns() {
 	f.mu.Lock()
 	conns := f.conns

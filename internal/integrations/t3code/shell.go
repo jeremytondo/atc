@@ -11,7 +11,7 @@ import (
 // The shell projection is T3's lightweight read model of projects and
 // threads (no transcripts). Only the fields ATC uses are decoded; unknown
 // fields are ignored, and a required field that is missing is a schema
-// failure for the whole payload — the adapter reports it rather than
+// failure for the whole payload — the Integration reports it rather than
 // guess.
 
 // schemaError marks a payload ATC cannot read: permanent for that

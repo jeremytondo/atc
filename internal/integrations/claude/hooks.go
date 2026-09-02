@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jeremytondo/atc/internal/agents"
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/integrations/hookauth"
 	"github.com/jeremytondo/atc/internal/threads"
 )
@@ -36,7 +36,7 @@ type ThreadObserver interface {
 	ObserveSession(ctx context.Context, o threads.SessionObservation) (string, error)
 	ObserveStatus(ctx context.Context, o threads.StatusObservation) error
 	Deactivate(ctx context.Context, terminalID string)
-	LookupIdentity(adapter, providerID string) (threadID, terminalID string, ok bool)
+	LookupIdentity(integrationID, providerID string) (threadID, terminalID string, ok bool)
 }
 
 // TerminalReader resolves a terminal's record — the observing terminal's
@@ -151,7 +151,7 @@ func (h *Hooks) Prepare(terminalID string) (string, error) {
 // URL. Paths are shell-quoted; Claude runs the command through a shell.
 func (h *Hooks) command(headerPath string) string {
 	return "curl -fsS -m 5 -X POST -H 'Content-Type: application/json' -H @" +
-		agents.Quote(headerPath) + " --data-binary @- " + agents.Quote(h.baseURL+HooksPath)
+		integrations.Quote(headerPath) + " --data-binary @- " + integrations.Quote(h.baseURL+HooksPath)
 }
 
 // hookSettings is the --settings document: every lifecycle event wired to
@@ -184,7 +184,7 @@ func (h *Hooks) Deregister(terminalID string) {
 func (h *Hooks) LoadRegistrations() error {
 	return h.registry.Load(func(terminalID string) bool {
 		terminal, err := h.terminals.Get(terminalID)
-		return err == nil && terminal.Agent == "claude"
+		return err == nil && terminal.AppID == AppID
 	}, func(terminalID string) {
 		_ = os.Remove(h.settingsPath(terminalID))
 	})
@@ -258,7 +258,7 @@ func (h *Hooks) apply(ctx context.Context, terminalID string, st *session, p pay
 			if !rootPrompt(p) {
 				return http.StatusBadRequest
 			}
-			if _, mapped, known := h.threads.LookupIdentity("claude", p.SessionID); known && mapped != terminalID {
+			if _, mapped, known := h.threads.LookupIdentity(ID, p.SessionID); known && mapped != terminalID {
 				return http.StatusBadRequest
 			}
 			st.sessionID = p.SessionID
@@ -308,7 +308,7 @@ func (h *Hooks) apply(ctx context.Context, terminalID string, st *session, p pay
 		h.sessionEnd(ctx, terminalID, st, p)
 	default:
 		if rootPrompt(p) {
-			st.title = agents.CondenseTitle(p.Prompt)
+			st.title = integrations.CondenseTitle(p.Prompt)
 		}
 		if !st.established {
 			// (Re-)establish the session before its evidence: the threads
@@ -342,7 +342,7 @@ func rootPrompt(p payload) bool {
 // mapped reports whether the identity mapping already knows the
 // conversation, in any terminal.
 func (h *Hooks) mapped(sessionID string) bool {
-	_, _, known := h.threads.LookupIdentity("claude", sessionID)
+	_, _, known := h.threads.LookupIdentity(ID, sessionID)
 	return known
 }
 
@@ -363,14 +363,15 @@ func (h *Hooks) observe(ctx context.Context, terminalID string, st *session, p p
 	metadata := metadataFrom(p)
 	metadata.Title = st.title
 	threadID, err := h.threads.ObserveSession(ctx, threads.SessionObservation{
-		Adapter:    "claude",
-		Agent:      "claude",
-		ProviderID: p.SessionID,
-		TerminalID: terminalID,
-		ProjectID:  terminal.ProjectID,
-		At:         h.now(),
-		Status:     status,
-		Metadata:   metadata,
+		IntegrationID: ID,
+		AppID:         AppID,
+		AgentID:       AgentID,
+		ProviderID:    p.SessionID,
+		TerminalID:    terminalID,
+		ProjectID:     terminal.ProjectID,
+		At:            h.now(),
+		Status:        status,
+		Metadata:      metadata,
 	})
 	if err != nil || threadID == "" {
 		h.logger.Warn("recording session observation", "terminal", terminalID, "error", err)
@@ -392,7 +393,7 @@ func (h *Hooks) sessionEnd(ctx context.Context, terminalID string, st *session, 
 	st.tracker = nil
 	st.ended = true
 	if err := h.threads.ObserveStatus(ctx, threads.StatusObservation{
-		Adapter: "claude", ProviderID: p.SessionID, At: h.now(),
+		IntegrationID: ID, ProviderID: p.SessionID, At: h.now(),
 		Metadata: metadataFrom(p),
 	}); err != nil {
 		h.logger.Warn("recording session end", "terminal", terminalID, "error", err)
@@ -419,7 +420,7 @@ func (h *Hooks) reduce(ctx context.Context, st *session, p payload) {
 		metadata.Title = st.title
 	}
 	if err := h.threads.ObserveStatus(ctx, threads.StatusObservation{
-		Adapter: "claude", ProviderID: p.SessionID, At: h.now(),
+		IntegrationID: ID, ProviderID: p.SessionID, At: h.now(),
 		Status: status, LastError: lastError, Metadata: metadata,
 	}); err != nil {
 		h.logger.Warn("recording status observation", "error", err)

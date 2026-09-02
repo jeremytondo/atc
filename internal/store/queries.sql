@@ -6,7 +6,7 @@
 -- inserts zero rows and the caller re-rolls, with no check-then-insert
 -- window.
 -- name: InsertTerminal :execrows
-INSERT INTO terminals (id, project_id, name, directory, command, agent, created_at, updated_at)
+INSERT INTO terminals (id, project_id, name, directory, command, app_id, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING;
 
@@ -53,10 +53,10 @@ UPDATE projects SET name = ?, updated_at = ? WHERE id = ? RETURNING *;
 DELETE FROM projects WHERE id = ?;
 
 -- name: InsertThread :execrows
-INSERT INTO threads (id, adapter, agent, project_id, terminal_id, title, title_user_set, model, effort,
-    cwd, permission_mode, status, last_error, last_evidence_at, archived, archived_at,
+INSERT INTO threads (id, integration_id, app_id, agent_id, project_id, terminal_id, title, title_user_set,
+    model, effort, cwd, permission_mode, status, last_error, last_evidence_at, archived, archived_at,
     created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING;
 
 -- name: ListThreads :many
@@ -66,7 +66,7 @@ SELECT * FROM threads ORDER BY created_at, id;
 -- mutations, so every mutable column is written from the record as one
 -- statement instead of a query per verb.
 -- name: UpdateThread :execrows
-UPDATE threads SET agent = ?, terminal_id = ?, title = ?, title_user_set = ?, model = ?, effort = ?,
+UPDATE threads SET agent_id = ?, terminal_id = ?, title = ?, title_user_set = ?, model = ?, effort = ?,
     cwd = ?, permission_mode = ?, status = ?, last_error = ?, last_evidence_at = ?,
     archived = ?, archived_at = ?, updated_at = ?
 WHERE id = ?;
@@ -75,9 +75,9 @@ WHERE id = ?;
 DELETE FROM threads WHERE id = ?;
 
 -- name: InsertThreadIdentity :execrows
-INSERT INTO thread_identities (adapter, provider_conversation_id, thread_id)
+INSERT INTO thread_identities (integration_id, provider_conversation_id, thread_id)
 VALUES (?, ?, ?)
-ON CONFLICT (adapter, provider_conversation_id) DO NOTHING;
+ON CONFLICT (integration_id, provider_conversation_id) DO NOTHING;
 
 -- name: ListThreadIdentities :many
 SELECT * FROM thread_identities;

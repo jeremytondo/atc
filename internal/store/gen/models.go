@@ -27,13 +27,14 @@ type Terminal struct {
 	StopRequestedAt sql.NullString
 	ExitedAt        sql.NullString
 	ExitCode        sql.NullInt64
-	Agent           sql.NullString
+	AppID           sql.NullString
 }
 
 type Thread struct {
 	ID             string
-	Adapter        string
-	Agent          sql.NullString
+	IntegrationID  string
+	AppID          sql.NullString
+	AgentID        sql.NullString
 	ProjectID      string
 	TerminalID     sql.NullString
 	Title          sql.NullString
@@ -52,7 +53,7 @@ type Thread struct {
 }
 
 type ThreadIdentity struct {
-	Adapter                string
+	IntegrationID          string
 	ProviderConversationID string
 	ThreadID               string
 }

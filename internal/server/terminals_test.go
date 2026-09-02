@@ -19,12 +19,13 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	"github.com/jeremytondo/atc/internal/agents"
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/events"
+	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/integrations/claude"
 	"github.com/jeremytondo/atc/internal/integrations/codex"
 	"github.com/jeremytondo/atc/internal/integrations/t3code"
+	"github.com/jeremytondo/atc/internal/integrations/zmx"
 	"github.com/jeremytondo/atc/internal/projects"
 	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/terminals"
@@ -38,6 +39,9 @@ import (
 type fakeDriver struct {
 	mu       sync.Mutex
 	sessions map[string]bool
+	// commands records the command each session was created with — the
+	// private App command the wire must never show.
+	commands map[string]string
 	invErr   error
 	killErr  error
 	onCreate func(id string, spec terminals.CreateSpec) error
@@ -67,6 +71,10 @@ func (a *fakeDriver) Create(_ context.Context, id string, spec terminals.CreateS
 	}
 	a.mu.Lock()
 	a.sessions[id] = true
+	if a.commands == nil {
+		a.commands = map[string]string{}
+	}
+	a.commands[id] = spec.Command
 	a.mu.Unlock()
 	return nil
 }
@@ -84,9 +92,9 @@ func (a *fakeDriver) Kill(_ context.Context, id string) error {
 // fixture is a full chassis over fakes: real store in a temp dir, real
 // hub, fake driver, fake clock — the server's existing test seam. One
 // project rooted at a real temp directory exists for terminals to belong
-// to; the agent catalog is the shipped one (claude, codex), probing
-// binaries against the fixture map (claude available by default), never
-// the developer machine's PATH.
+// to; the Integration catalog is the shipped one (claude, codex, t3code,
+// zmx), probing binaries against the fixture map (claude and zmx
+// available by default), never the developer machine's PATH.
 type fixture struct {
 	handler    http.Handler
 	driver     *fakeDriver
@@ -177,9 +185,11 @@ func newFixture(t *testing.T) *fixture {
 		Now:         now,
 	})
 	threadService.SetLinker(t3code.ID, t3Observer.Links)
-	binaries := map[string]bool{"claude": true}
-	agentService, err := agents.NewService(agents.Options{
-		Adapters:  []agents.Adapter{claude.Adapter(claudeHooks), codex.Adapter(codexObserver), t3code.Adapter(t3Observer)},
+	binaries := map[string]bool{"claude": true, "zmx": true}
+	catalog, err := integrations.NewService(integrations.Options{
+		Integrations: []integrations.Integration{
+			claude.Integration(claudeHooks), codex.Integration(codexObserver), t3code.Integration(t3Observer), zmx.Integration(),
+		},
 		Terminals: service,
 		LookPath: func(name string) (string, error) {
 			if binaries[name] {
@@ -197,7 +207,7 @@ func newFixture(t *testing.T) *fixture {
 		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Terminals:         service,
 		Projects:          projectService,
-		Agents:            agentService,
+		Integrations:      catalog,
 		Threads:           threadService,
 		Events:            hub,
 		InternalRoutes:    map[string]http.Handler{"POST " + claude.HooksPath: claudeHooks.Handler()},
@@ -217,6 +227,13 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatalf("planting fixture project = %v, %v", ok, err)
 	}
 	return f
+}
+
+// driverCommand is the command the fake driver started the session with.
+func (f *fixture) driverCommand(id string) string {
+	f.driver.mu.Lock()
+	defer f.driver.mu.Unlock()
+	return f.driver.commands[id]
 }
 
 // createProject registers a project over the wire and returns it.

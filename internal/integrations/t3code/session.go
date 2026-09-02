@@ -40,7 +40,7 @@ type session struct {
 }
 
 // authError marks a pairing or exchange that failed for a reason a retry
-// will not fix by itself: the adapter reports auth_failed and waits
+// will not fix by itself: the Integration reports auth_failed and waits
 // before trying again.
 type authError struct{ err error }
 

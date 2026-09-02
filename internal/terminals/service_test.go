@@ -33,6 +33,14 @@ type fakeDriver struct {
 	// onCreate observes the create, e.g. to assert the record already
 	// exists or to plant a fast-failure marker instead of a session.
 	onCreate func(id string, spec CreateSpec)
+	// commands records what each session was created with.
+	commands map[string]string
+}
+
+func (a *fakeDriver) createdCommand(id string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.commands[id]
 }
 
 func newFakeDriver() *fakeDriver {
@@ -64,6 +72,10 @@ func (a *fakeDriver) Create(_ context.Context, id string, spec CreateSpec) error
 	}
 	a.mu.Lock()
 	a.sessions[id] = true
+	if a.commands == nil {
+		a.commands = map[string]string{}
+	}
+	a.commands[id] = spec.Command
 	a.mu.Unlock()
 	return nil
 }
@@ -663,17 +675,18 @@ func TestListFiltersByProject(t *testing.T) {
 	}
 }
 
-// An agent launch's Prepare runs with the resolved directory before any
+// An App launch's Prepare runs with the resolved directory before any
 // record exists and outside the commit lock; a refusal there creates
 // nothing, and a create that fails after it aborts the preparation.
-// Compose then sees the minted id and the same directory.
-func TestCreateForAgentPreparesBeforeTheRecord(t *testing.T) {
+// Compose then sees the minted id and the same directory, and the
+// composed command stays off the wire.
+func TestCreateForAppPreparesBeforeTheRecord(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	var prepared, composedDir, composedID string
 	aborted, prepares := false, 0
-	launch := AgentLaunch{
-		Agent: "alpha",
+	launch := AppLaunch{
+		AppID: "alpha/tui",
 		Prepare: func(_ context.Context, directory string) (func(), error) {
 			prepared = directory
 			prepares++
@@ -691,18 +704,21 @@ func TestCreateForAgentPreparesBeforeTheRecord(t *testing.T) {
 			return "alpha --for " + terminalID, nil
 		},
 	}
-	terminal, err := f.service.CreateForAgent(ctx, api.TerminalCreateParams{ProjectID: f.projectID}, launch)
+	terminal, err := f.service.CreateForApp(ctx, api.TerminalCreateParams{ProjectID: f.projectID}, launch)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if prepared != f.projectDir || composedDir != f.projectDir || composedID != terminal.ID ||
-		terminal.Command != "alpha --for "+terminal.ID || terminal.Agent != "alpha" || aborted {
+		terminal.Command != "" || terminal.AppID != "alpha/tui" || aborted {
 		t.Errorf("prepared %q, composed (%q, %q), terminal %+v, aborted %v", prepared, composedID, composedDir, terminal, aborted)
+	}
+	if got := f.driver.createdCommand(terminal.ID); got != "alpha --for "+terminal.ID {
+		t.Errorf("driver ran %q, want the composed command", got)
 	}
 
 	refused := launch
 	refused.Prepare = func(context.Context, string) (func(), error) { return nil, errors.New("not now") }
-	if _, err := f.service.CreateForAgent(ctx, api.TerminalCreateParams{ProjectID: f.projectID}, refused); err == nil || err.Error() != "not now" {
+	if _, err := f.service.CreateForApp(ctx, api.TerminalCreateParams{ProjectID: f.projectID}, refused); err == nil || err.Error() != "not now" {
 		t.Fatalf("refused prepare: err = %v", err)
 	}
 	if records, _ := f.service.repository.List(ctx); len(records) != 1 {
@@ -711,7 +727,7 @@ func TestCreateForAgentPreparesBeforeTheRecord(t *testing.T) {
 
 	failing := launch
 	failing.Compose = func(string, string) (string, error) { return "", errors.New("cannot compose") }
-	if _, err := f.service.CreateForAgent(ctx, api.TerminalCreateParams{ProjectID: f.projectID}, failing); err == nil {
+	if _, err := f.service.CreateForApp(ctx, api.TerminalCreateParams{ProjectID: f.projectID}, failing); err == nil {
 		t.Fatal("create succeeded though compose failed")
 	}
 	if !aborted {

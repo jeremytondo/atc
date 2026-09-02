@@ -32,6 +32,8 @@ import (
 
 	"github.com/creack/pty"
 
+	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/terminals"
 	"github.com/jeremytondo/atc/internal/terminals/exitmarker"
 )
@@ -466,4 +468,20 @@ func printableTail(s string) string {
 		tail = tail[len(tail)-300:]
 	}
 	return strings.ReplaceAll(tail, "\n", " · ")
+}
+
+// ID is the Integration id: the catalog entry for the terminal backend.
+const ID = "zmx"
+
+// Integration is zmx's catalog registration (ATC-294): an infrastructure
+// Integration with no Apps and no agents, whose one capability is the
+// Terminals Driver and whose availability is its binary on the server's
+// PATH.
+func Integration() integrations.Integration {
+	return integrations.Integration{
+		ID:           ID,
+		Name:         "zmx",
+		Capabilities: []api.IntegrationCapability{api.CapabilityTerminalDriver},
+		Executable:   &integrations.Executable{Binary: "zmx", InstallHint: "install zmx from https://github.com/neurosnap/zmx"},
+	}
 }

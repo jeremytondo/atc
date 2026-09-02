@@ -86,17 +86,17 @@ func registerEvents(humaAPI huma.API, hub *events.Hub, heartbeat time.Duration) 
 		Summary:     "Change-event stream",
 		Description: "Numbered change events saying what changed, never the state itself; clients refetch the changed resource. Comment lines are heartbeats.",
 	}, map[string]any{
-		api.EventTerminalCreated:     api.TerminalCreatedEvent{},
-		api.EventTerminalUpdated:     api.TerminalUpdatedEvent{},
-		api.EventTerminalDeleted:     api.TerminalDeletedEvent{},
-		api.EventProjectCreated:      api.ProjectCreatedEvent{},
-		api.EventProjectUpdated:      api.ProjectUpdatedEvent{},
-		api.EventProjectDeleted:      api.ProjectDeletedEvent{},
-		api.EventThreadCreated:       api.ThreadCreatedEvent{},
-		api.EventThreadUpdated:       api.ThreadUpdatedEvent{},
-		api.EventThreadDeleted:       api.ThreadDeletedEvent{},
-		api.EventAgentAdapterUpdated: api.AgentAdapterUpdatedEvent{},
-		api.EventResync:              api.ResyncEvent{},
+		api.EventTerminalCreated:    api.TerminalCreatedEvent{},
+		api.EventTerminalUpdated:    api.TerminalUpdatedEvent{},
+		api.EventTerminalDeleted:    api.TerminalDeletedEvent{},
+		api.EventProjectCreated:     api.ProjectCreatedEvent{},
+		api.EventProjectUpdated:     api.ProjectUpdatedEvent{},
+		api.EventProjectDeleted:     api.ProjectDeletedEvent{},
+		api.EventThreadCreated:      api.ThreadCreatedEvent{},
+		api.EventThreadUpdated:      api.ThreadUpdatedEvent{},
+		api.EventThreadDeleted:      api.ThreadDeletedEvent{},
+		api.EventIntegrationUpdated: api.IntegrationUpdatedEvent{},
+		api.EventResync:             api.ResyncEvent{},
 	}, func(ctx context.Context, input *eventsInput, send sse.Sender) {
 		after, hasCursor := uint64(0), false
 		if input.LastEventID != "" {
@@ -176,8 +176,8 @@ func sendChange(send sse.Sender, change events.Change) error {
 		data = api.ThreadUpdatedEvent{ChangeEvent: body}
 	case api.EventThreadDeleted:
 		data = api.ThreadDeletedEvent{ChangeEvent: body}
-	case api.EventAgentAdapterUpdated:
-		data = api.AgentAdapterUpdatedEvent{ChangeEvent: body}
+	case api.EventIntegrationUpdated:
+		data = api.IntegrationUpdatedEvent{ChangeEvent: body}
 	default:
 		// An unmapped type would panic Huma's type lookup; drop it loudly
 		// in tests via the OpenAPI event map instead.

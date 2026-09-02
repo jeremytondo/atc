@@ -34,16 +34,16 @@ const (
 	// handshake; the subscription itself is unbounded.
 	httpTimeout = 10 * time.Second
 
-	resource = "agent_adapter"
+	resource = "integration"
 )
 
 // ThreadObserver is the seam into the threads domain: neutral
 // observations in, no T3 vocabulary out.
 type ThreadObserver interface {
-	ObserveAdapter(ctx context.Context, o threads.AdapterObservation) (string, error)
-	ArchiveAdapterThread(ctx context.Context, adapter, providerID string) error
-	ReleaseAdapter(ctx context.Context, adapter string)
-	UnarchivedProviderIDs(adapter string) []string
+	ObserveExternal(ctx context.Context, o threads.ExternalObservation) (string, error)
+	ArchiveExternalThread(ctx context.Context, integrationID, providerID string) error
+	ReleaseIntegration(ctx context.Context, integrationID string)
+	UnarchivedProviderIDs(integrationID string) []string
 }
 
 // ProjectResolver is the seam into the projects domain (projects.Service
@@ -74,8 +74,8 @@ type Options struct {
 	ProcessAlive func(pid int) bool
 }
 
-// Observer is the adapter's one long-lived connection to the local T3
-// environment and everything it mirrors from it. Run owns discovery,
+// Observer is the Integration's one long-lived connection to the local
+// T3 environment and everything it mirrors from it. Run owns discovery,
 // pairing, the subscription, and every application of shell state; the
 // only state read from other goroutines — the connection report and the
 // link inputs — sits under mu.
@@ -108,7 +108,7 @@ type Observer struct {
 	settled map[string]bool
 
 	mu                    sync.Mutex
-	connection            api.AgentAdapterConnection
+	connection            api.IntegrationConnection
 	origin, environmentID string
 }
 
@@ -162,31 +162,31 @@ func New(opts Options) *Observer {
 	// The report is honest before Run starts: one discovery decides
 	// between "not running" and "about to connect".
 	if _, err := discover(o.home, o.alive); err != nil {
-		o.connection = api.AgentAdapterConnection{State: api.AdapterUnavailable, Since: o.now(), Detail: err.Error()}
+		o.connection = api.IntegrationConnection{State: api.IntegrationUnavailable, Since: o.now(), Detail: err.Error()}
 	} else {
-		o.connection = api.AgentAdapterConnection{State: api.AdapterConnecting, Since: o.now(), Detail: "T3 Code is running; connecting"}
+		o.connection = api.IntegrationConnection{State: api.IntegrationConnecting, Since: o.now(), Detail: "T3 Code is running; connecting"}
 	}
 	return o
 }
 
-// Connection reports the adapter's live state.
-func (o *Observer) Connection() api.AgentAdapterConnection {
+// Connection reports the Integration's live state.
+func (o *Observer) Connection() api.IntegrationConnection {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.connection
 }
 
 // Links derives a T3 thread's deep links from the last connection's
-// origin and environment; nil until the adapter has connected once.
+// origin and environment; nil until the Integration has connected once.
 func (o *Observer) Links(providerID string) *api.ThreadLinks {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return links(o.origin, o.environmentID, providerID)
 }
 
-// setState records the connection state, publishing agent_adapter.updated
+// setState records the connection state, publishing integration.updated
 // on a transition only; a detail change within one state is silent.
-func (o *Observer) setState(state api.AgentAdapterConnectionState, detail string) {
+func (o *Observer) setState(state api.IntegrationConnectionState, detail string) {
 	o.mu.Lock()
 	changed := o.connection.State != state
 	if changed {
@@ -199,14 +199,14 @@ func (o *Observer) setState(state api.AgentAdapterConnectionState, detail string
 		return
 	}
 	switch state {
-	case api.AdapterConnected:
+	case api.IntegrationConnected:
 		o.logger.Info("t3code connected", "detail", detail)
-	case api.AdapterAuthFailed:
+	case api.IntegrationAuthFailed:
 		o.logger.Warn("t3code pairing failed", "detail", detail)
 	default:
 		o.logger.Debug("t3code state", "state", state, "detail", detail)
 	}
-	o.hub.Publish(api.EventAgentAdapterUpdated, resource, ID)
+	o.hub.Publish(api.EventIntegrationUpdated, resource, ID)
 }
 
 // Run keeps the mirror for the life of the ATC server: discover T3, pair
@@ -218,7 +218,7 @@ func (o *Observer) Run(ctx context.Context) {
 	for {
 		state, err := discover(o.home, o.alive)
 		if err != nil {
-			o.setState(api.AdapterUnavailable, err.Error())
+			o.setState(api.IntegrationUnavailable, err.Error())
 			o.release(ctx)
 			if !wait(ctx, o.pollInterval) {
 				return
@@ -246,16 +246,16 @@ func (o *Observer) Run(ctx context.Context) {
 		var protocol *protocolError
 		switch {
 		case errors.As(err, &auth):
-			o.setState(api.AdapterAuthFailed, err.Error())
+			o.setState(api.IntegrationAuthFailed, err.Error())
 			o.retryAt = o.now().Add(o.authRetry)
 			continue
 		case errors.As(err, &schema), errors.As(err, &protocol):
 			// The local copy may be inconsistent with what T3 sent; the
 			// next connection takes a fresh snapshot.
 			o.shell = shellState{}
-			o.setState(api.AdapterUnavailable, err.Error())
+			o.setState(api.IntegrationUnavailable, err.Error())
 		default:
-			o.setState(api.AdapterConnecting, "reconnecting: "+err.Error())
+			o.setState(api.IntegrationConnecting, "reconnecting: "+err.Error())
 		}
 		if o.now().Sub(started) >= o.backoffMin {
 			// The subscription did real work; retry promptly and start the
@@ -269,11 +269,11 @@ func (o *Observer) Run(ctx context.Context) {
 	}
 }
 
-// release ends this connection's holds: every live status the adapter
-// vouched for coerces to unknown until the next subscription re-observes
-// it.
+// release ends this connection's holds: every live status the
+// Integration vouched for coerces to unknown until the next subscription
+// re-observes it.
 func (o *Observer) release(ctx context.Context) {
-	o.threads.ReleaseAdapter(context.WithoutCancel(ctx), ID)
+	o.threads.ReleaseIntegration(context.WithoutCancel(ctx), ID)
 }
 
 // serve runs one connection: the environment descriptor, a session
@@ -351,8 +351,8 @@ func (o *Observer) serve(ctx context.Context, state runtime) error {
 	}
 	// After a replay (no snapshot in this subscription) every hold has to
 	// be re-established from the local copy once the marker arrives; the
-	// adapter is connected — statuses current, holds in place — only from
-	// then, or from a snapshot.
+	// Integration is connected — statuses current, holds in place — only
+	// from then, or from a snapshot.
 	replaying := after != nil
 	established := false
 	err = subscribeShell(ctx, o.httpClient, socketURL, after, func(item json.RawMessage) error {
@@ -381,7 +381,7 @@ func (o *Observer) serve(ctx context.Context, state runtime) error {
 			}
 		}
 		if established {
-			o.setState(api.AdapterConnected, o.detail(origin))
+			o.setState(api.IntegrationConnected, o.detail(origin))
 		}
 		return nil
 	})
@@ -490,7 +490,7 @@ func (o *Observer) applyEvent(ctx context.Context, event shellEvent) error {
 	return nil
 }
 
-// observe feeds one T3 thread to the threads domain as an adapter
+// observe feeds one T3 thread to the threads domain as an external
 // observation. A thread T3 has settled (ATC-292) is treated as archived:
 // a known record archives, an unknown one is never minted, and the same
 // record returns when T3 unsettles it. Otherwise a known conversation
@@ -508,29 +508,31 @@ func (o *Observer) observe(ctx context.Context, thread threadShell, project proj
 	if cwd == "" {
 		cwd = project.WorkspaceRoot
 	}
-	observation := threads.AdapterObservation{
-		Adapter:    ID,
-		ProviderID: thread.ID,
-		At:         o.now(),
-		Status:     projectStatus(thread),
-		Title:      thread.Title,
-		Metadata:   threads.Metadata{Model: thread.ModelSelection.Model, Cwd: cwd},
+	observation := threads.ExternalObservation{
+		IntegrationID: ID,
+		ProviderID:    thread.ID,
+		At:            o.now(),
+		Status:        projectStatus(thread),
+		Title:         thread.Title,
+		Metadata:      threads.Metadata{Model: thread.ModelSelection.Model, Cwd: cwd},
 	}
 	if thread.Session != nil {
 		if thread.Session.ProviderName != nil {
-			observation.Agent = agentLabel(*thread.Session.ProviderName)
+			// T3's provider kind is the agent id, as reported: opaque and
+			// scoped to this Integration.
+			observation.AgentID = *thread.Session.ProviderName
 		}
 		if thread.Session.LastError != nil {
 			observation.LastError = *thread.Session.LastError
 		}
 	}
-	_, err := o.threads.ObserveAdapter(ctx, observation)
+	_, err := o.threads.ObserveExternal(ctx, observation)
 	if errors.Is(err, threads.ErrProjectRequired) {
 		if observation.ProjectID, err = o.resolveProject(ctx, project); err != nil {
 			o.skipped[thread.ID] = err.Error()
 			return
 		}
-		_, err = o.threads.ObserveAdapter(ctx, observation)
+		_, err = o.threads.ObserveExternal(ctx, observation)
 	}
 	if err != nil {
 		o.logger.Warn("t3code: recording thread observation", "thread", thread.ID, "error", err)
@@ -543,7 +545,7 @@ func (o *Observer) observe(ctx context.Context, thread threadShell, project proj
 // settled: archived, never deleted.
 func (o *Observer) forget(ctx context.Context, threadID string) {
 	delete(o.skipped, threadID)
-	if err := o.threads.ArchiveAdapterThread(ctx, ID, threadID); err != nil {
+	if err := o.threads.ArchiveExternalThread(ctx, ID, threadID); err != nil {
 		o.logger.Warn("t3code: archiving a removed thread", "thread", threadID, "error", err)
 	}
 }

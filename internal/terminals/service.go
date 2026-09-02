@@ -321,17 +321,17 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 // real evidence. Failures after the record exists surface through the
 // normal status machinery — there is no separate launch-error path.
 func (s *Service) Create(ctx context.Context, params api.TerminalCreateParams) (api.Terminal, error) {
-	return s.create(ctx, params, AgentLaunch{})
+	return s.create(ctx, params, AppLaunch{})
 }
 
-// AgentLaunch is a create the agent catalog resolved (ATC-254): the
-// catalog id recorded on the terminal, and the adapter's two hooks into
-// the create — both opaque here, so the domain never learns agent
+// AppLaunch is a create the Integration catalog resolved (ATC-294): the
+// qualified App id recorded on the terminal, and the App's two hooks into
+// the create — both opaque here, so the domain never learns App
 // vocabulary.
-type AgentLaunch struct {
-	// Agent is the catalog id recorded on the terminal — this is the only
-	// writer of the immutable agent field.
-	Agent string
+type AppLaunch struct {
+	// AppID is the qualified App id recorded on the terminal — this is the
+	// only writer of the immutable appId field.
+	AppID string
 	// Directory overrides the project's as the session's working directory
 	// (a resumed conversation's recorded cwd, ATC-282); the caller vouches
 	// that it exists, and the project's directory is still required to.
@@ -344,21 +344,23 @@ type AgentLaunch struct {
 	// abort is called if the create fails afterwards, so the preparation
 	// can be undone; a successful create never calls it.
 	Prepare func(ctx context.Context, directory string) (abort func(), err error)
-	// Compose supplies the adapter-composed command once the terminal id
-	// is minted, so per-launch context (ATC-255 hook settings, a pending
+	// Compose supplies the App-composed command once the terminal id is
+	// minted, so per-launch context (ATC-255 hook settings, a pending
 	// launch keyed by directory) can reference the identity before the
-	// session starts. It runs under the commit lock and must be quick.
+	// session starts. It runs under the commit lock and must be quick. The
+	// composed command is Integration-private: it is stored and run but
+	// never exposed on the wire.
 	Compose func(terminalID, directory string) (string, error)
 }
 
-// CreateForAgent is Create for a launch the API layer resolved through the
-// agent catalog: Prepare runs outside the commit lock, and everything past
-// Compose is the normal create path.
-func (s *Service) CreateForAgent(ctx context.Context, params api.TerminalCreateParams, launch AgentLaunch) (api.Terminal, error) {
+// CreateForApp is Create for a launch the API layer resolved through the
+// Integration catalog: Prepare runs outside the commit lock, and
+// everything past Compose is the normal create path.
+func (s *Service) CreateForApp(ctx context.Context, params api.TerminalCreateParams, launch AppLaunch) (api.Terminal, error) {
 	return s.create(ctx, params, launch)
 }
 
-func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, launch AgentLaunch) (api.Terminal, error) {
+func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, launch AppLaunch) (api.Terminal, error) {
 	project, ok, err := s.projects.Get(ctx, params.ProjectID)
 	if err != nil {
 		return api.Terminal{}, err
@@ -404,11 +406,11 @@ func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, l
 // commitCreate is the create from the record on: mint the id under the
 // commit lock, compose, persist, start the session, and settle.
 func (s *Service) commitCreate(ctx context.Context, params api.TerminalCreateParams, projectID, name, directory string,
-	launch AgentLaunch) (api.Terminal, error) {
+	launch AppLaunch) (api.Terminal, error) {
 	now := s.now()
 	record := store.TerminalRecord{
 		ProjectID: projectID, Name: name, Directory: directory, Command: params.Command,
-		Agent:     launch.Agent,
+		AppID:     launch.AppID,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	s.ops.Lock()
@@ -627,18 +629,22 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// terminal converts the entry to its wire shape. Callers hold s.mu.
+// terminal converts the entry to its wire shape. Callers hold s.mu. An
+// App-launched terminal exposes its App, never the command the
+// Integration composed for it.
 func (e *entry) terminal() api.Terminal {
 	terminal := api.Terminal{
 		ID:        e.record.ID,
 		Name:      e.record.Name,
 		ProjectID: e.record.ProjectID,
 		Directory: e.record.Directory,
-		Command:   e.record.Command,
-		Agent:     e.record.Agent,
+		AppID:     e.record.AppID,
 		Status:    e.status,
 		CreatedAt: e.record.CreatedAt,
 		UpdatedAt: e.record.UpdatedAt,
+	}
+	if e.record.AppID == "" {
+		terminal.Command = e.record.Command
 	}
 	if e.status == api.TerminalExited && e.record.ExitCode != nil {
 		code := *e.record.ExitCode

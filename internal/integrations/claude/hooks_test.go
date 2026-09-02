@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/jeremytondo/atc/internal/agents"
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/integrations/hookauth"
 	"github.com/jeremytondo/atc/internal/threads"
 )
@@ -95,7 +95,7 @@ func newHookFixture(t *testing.T) *hookFixture {
 	t.Helper()
 	observer := &fakeObserver{identity: map[string]string{}}
 	terminals := &fakeTerminals{terminals: map[string]api.Terminal{
-		"term-aaaaa": {ID: "term-aaaaa", ProjectID: "proj-aaaaa", Agent: "claude", Status: api.TerminalRunning},
+		"term-aaaaa": {ID: "term-aaaaa", ProjectID: "proj-aaaaa", AppID: AppID, Status: api.TerminalRunning},
 	}}
 	dir := t.TempDir()
 	hooks, err := NewHooks(HooksOptions{
@@ -259,7 +259,7 @@ func TestSessionLifecycleObservations(t *testing.T) {
 		t.Fatalf("sessions = %+v", f.observer.sessions)
 	}
 	session := f.observer.sessions[0]
-	if session.Adapter != "claude" || session.Agent != "claude" || session.ProviderID != "s1" || session.TerminalID != "term-aaaaa" ||
+	if session.IntegrationID != "claude" || session.AppID != "claude/tui" || session.AgentID != "claude" || session.ProviderID != "s1" || session.TerminalID != "term-aaaaa" ||
 		session.ProjectID != "proj-aaaaa" || session.Status != "" {
 		t.Errorf("session observation = %+v", session)
 	}
@@ -568,16 +568,17 @@ func TestLoadRegistrationsCleansStaleFiles(t *testing.T) {
 
 func TestCommandComposition(t *testing.T) {
 	f := newHookFixture(t)
-	adapter := Adapter(f.hooks)
-	if len(adapter.Agents) != 1 || adapter.Agents[0].ID != "claude" || adapter.Agents[0].TUI == nil {
-		t.Fatalf("registration = %+v; want one launchable claude agent", adapter)
+	integration := Integration(f.hooks)
+	if integration.ID != ID || len(integration.Apps) != 1 || integration.Apps[0].ID != "tui" || integration.Apps[0].Terminal == nil ||
+		integrations.QualifiedAppID(integration.ID, integration.Apps[0].ID) != AppID {
+		t.Fatalf("registration = %+v; want one terminal App claude/tui", integration)
 	}
-	launcher := adapter.Agents[0].TUI
-	command, err := launcher.Command(context.Background(), agents.LaunchContext{TerminalID: "term-aaaaa"})
+	launcher := integration.Apps[0].Terminal
+	command, err := launcher.Command(context.Background(), integrations.LaunchContext{TerminalID: "term-aaaaa"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if command != "claude --settings "+agents.Quote(f.hooks.settingsPath("term-aaaaa")) {
+	if command != "claude --settings "+integrations.Quote(f.hooks.settingsPath("term-aaaaa")) {
 		t.Errorf("command = %q", command)
 	}
 	if _, err := os.Stat(f.hooks.settingsPath("term-aaaaa")); err != nil {
@@ -586,11 +587,11 @@ func TestCommandComposition(t *testing.T) {
 
 	// The resume form reopens the exact session, quoted, with the same
 	// hook wiring.
-	command, err = launcher.Command(context.Background(), agents.LaunchContext{TerminalID: "term-bbbbb", ResumeConversationID: "sess-1"})
+	command, err = launcher.Command(context.Background(), integrations.LaunchContext{TerminalID: "term-bbbbb", ResumeConversationID: "sess-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if command != "claude --settings "+agents.Quote(f.hooks.settingsPath("term-bbbbb"))+" --resume 'sess-1'" {
+	if command != "claude --settings "+integrations.Quote(f.hooks.settingsPath("term-bbbbb"))+" --resume 'sess-1'" {
 		t.Errorf("resume command = %q", command)
 	}
 }

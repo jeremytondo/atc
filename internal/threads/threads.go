@@ -1,27 +1,29 @@
 // Package threads is the Threads domain (ATC-255): the resource behind
 // /v1/threads. A thread is one exact provider conversation, observed into
-// existence — inside an ATC-launched agent TUI at its first prompt, or
-// mirrored from an external program by an observing adapter (ATC-285) —
+// existence — inside an ATC-launched terminal App at its first prompt, or
+// mirrored from an external program its Integration observes (ATC-285) —
 // there is no create verb. Open (ATC-282) is the one intent the domain
 // acts on: it resolves a thread to the terminal holding it, resuming the
 // conversation in a new terminal when nothing does.
 // Records persist in the ATC-262 store as the durable index of
-// conversations; the private identity mapping (adapter, provider
+// conversations; the private identity mapping (integration, provider
 // conversation id) → thread never leaves the server.
 //
 // The package owns policy: capture and reattach, the six-status model and
 // its inactive coercion, archive/delete with their active refusals (and
 // the unarchive a reattach implies — active means unarchived), and the
 // activeThreadId projection onto terminals. A thread is held either by a
-// terminal (its TUI has the conversation open) or by an adapter
+// terminal (its App has the conversation open) or by an Integration
 // connection (the external program still reports it); both holds accept
 // live statuses and both release into the same coercion. Provider
 // observation — the Claude hooks, the Codex app-server observer, the T3
-// Code adapter — lives under internal/integrations and feeds this service only
-// neutral observations; no provider vocabulary enters here. Statuses come
-// from evidence, never guesses: unknown means no evidence, and a thread
-// that stops being observed keeps idle but coerces the unverifiable live
-// states back to unknown.
+// Code mirror — lives under internal/integrations and feeds this service
+// only neutral observations; no provider vocabulary enters here.
+// Provenance is recorded as the Integration reports it: an agent id is
+// opaque metadata, and an App is recorded only when the Integration knows
+// it reliably at creation. Statuses come from evidence, never guesses:
+// unknown means no evidence, and a thread that stops being observed keeps
+// idle but coerces the unverifiable live states back to unknown.
 package threads
 
 import (
@@ -61,11 +63,17 @@ type Metadata struct {
 // session observations move a terminal's active thread — delayed status
 // evidence never selects a stale conversation.
 type SessionObservation struct {
-	// Adapter is the observing adapter's id; with ProviderID it forms the
-	// private identity key.
-	Adapter string
-	// Agent is the label the thread runs under, recorded at creation.
-	Agent string
+	// IntegrationID is the observing Integration's id; with ProviderID it
+	// forms the private identity key.
+	IntegrationID string
+	// AppID is the qualified App the conversation was started in, recorded
+	// at creation only and only when the Integration knows it reliably;
+	// ignored for a known conversation. Empty records nothing, permanently.
+	AppID string
+	// AgentID is the Integration-scoped agent id the thread runs under, as
+	// reported; empty means not reported this time and leaves the last
+	// report standing.
+	AgentID string
 	// ProviderID is the provider's own conversation id. It never appears
 	// in the public API.
 	ProviderID string
@@ -86,8 +94,8 @@ type SessionObservation struct {
 // dropped: without a session observation there is no terminal context to
 // create an honest record from.
 type StatusObservation struct {
-	Adapter    string
-	ProviderID string
+	IntegrationID string
+	ProviderID    string
 	// At is when the evidence arrived; zero means now.
 	At     time.Time
 	Status api.ThreadStatus
@@ -98,16 +106,17 @@ type StatusObservation struct {
 	Metadata  Metadata
 }
 
-// AdapterObservation reports what an observing adapter currently knows
-// about a conversation the external program owns (ATC-285): the whole
-// shape at once, since the program is the source of truth and ATC mirrors
-// it. The adapter connection holds the thread from this observation
-// until the adapter releases it (the program stopped reporting the
-// thread, or the connection dropped).
-type AdapterObservation struct {
-	// Adapter and ProviderID form the private identity key.
-	Adapter    string
-	ProviderID string
+// ExternalObservation reports what an Integration currently knows about a
+// conversation its external program owns (ATC-285): the whole shape at
+// once, since the program is the source of truth and ATC mirrors it. The
+// Integration's connection holds the thread from this observation until
+// the Integration releases it (the program stopped reporting the thread,
+// or the connection dropped). No App is recorded: which of the program's
+// surfaces started the conversation is not reliably known.
+type ExternalObservation struct {
+	// IntegrationID and ProviderID form the private identity key.
+	IntegrationID string
+	ProviderID    string
 	// ProjectID is the project a first observation records the thread
 	// under; ignored for a known conversation. Empty refuses to mint.
 	ProjectID string
@@ -115,9 +124,9 @@ type AdapterObservation struct {
 	At time.Time
 	// Status is the projected status; empty means unknown.
 	Status api.ThreadStatus
-	// Agent is the label the program reports; applied as-is, empty
-	// included.
-	Agent string
+	// AgentID is the Integration-scoped agent id the program reports;
+	// applied as-is, empty included.
+	AgentID string
 	// Title is the program's title; it tracks the program unless the user
 	// set one in ATC.
 	Title string
@@ -126,16 +135,17 @@ type AdapterObservation struct {
 	Metadata  Metadata
 }
 
-// ResumeRequest asks the agents side to launch a terminal running the
-// provider's exact resume of a dormant conversation (ATC-282). It carries
-// the private identity out of this domain to the adapter that composes
-// the command — never onto the wire.
+// ResumeRequest asks the Integration catalog to launch a terminal running
+// the provider's exact resume of a dormant conversation (ATC-282). It
+// carries the private identity out of this domain to the App that
+// composes the command — never onto the wire.
 type ResumeRequest struct {
-	// Adapter and ProviderID form the private identity key; Agent is the
-	// label the conversation runs under, which the adapter launches.
-	Adapter    string
-	Agent      string
-	ProviderID string
+	// IntegrationID and ProviderID form the private identity key; AppID is
+	// the thread's immutable App provenance, empty when the conversation
+	// was not started in an ATC terminal App (the resumer refuses).
+	IntegrationID string
+	AppID         string
+	ProviderID    string
 	// ProjectID is the thread's project, which the terminal joins.
 	ProjectID string
 	// Directory is the conversation's last recorded working directory,
@@ -145,11 +155,12 @@ type ResumeRequest struct {
 }
 
 // Resumer launches the resume terminal for an open decision
-// (agents.Service.Resume in production). Open invokes it for at most one
-// in-flight resume per thread.
+// (integrations.Service.Resume in production). Open invokes it for at
+// most one in-flight resume per thread.
 type Resumer func(ctx context.Context, req ResumeRequest) (api.Terminal, error)
 
-// Linker derives the deep links of one adapter's threads at read time
-// from the adapter's live state, given the provider conversation id; nil
-// means none right now. Registered per adapter with Service.SetLinker.
+// Linker derives the deep links of one Integration's threads at read
+// time from the Integration's live state, given the provider conversation
+// id; nil means none right now. Registered per Integration with
+// Service.SetLinker.
 type Linker func(providerID string) *api.ThreadLinks

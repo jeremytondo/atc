@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,18 +19,23 @@ import (
 var ErrNotFound = errors.New("thread not found")
 
 // ErrActive refuses archiving or deleting a thread some terminal has open
-// or some adapter's program still reports (deleting an active thread
+// or some Integration's program still reports (deleting an active thread
 // would silently re-mint a fresh record on the next evidence). The
 // message names the holder; the API layer maps it to 409.
 var ErrActive = errors.New("thread is active")
 
-// ErrProjectRequired refuses an adapter observation of an unknown
+// ErrProjectRequired refuses an external observation of an unknown
 // conversation that names no project to record it under.
 var ErrProjectRequired = errors.New("a first observation needs a project")
 
 // ErrResumeUnavailable refuses opening a dormant thread when the caller
-// supplies no Resumer (a server without an agent catalog).
+// supplies no Resumer (a server without an Integration catalog).
 var ErrResumeUnavailable = errors.New("this server cannot resume conversations")
+
+// ErrAppForeign refuses minting a thread whose App is not the observing
+// Integration's: provenance is Integration-scoped, so an App outside the
+// origin Integration cannot have started the conversation.
+var ErrAppForeign = errors.New("app does not belong to the observing integration")
 
 // Event-payload resource kinds. The service publishes terminal.updated
 // when a terminal's activeThreadId projection changes — the terminals
@@ -82,7 +88,7 @@ type Service struct {
 	// here instead of racing it.
 	opening map[string]chan struct{}
 
-	// linkers derive deep links per adapter id at read time; set at
+	// linkers derive deep links per Integration id at read time; set at
 	// composition, before serving, and read without mu.
 	linkers map[string]Linker
 
@@ -97,7 +103,7 @@ type Service struct {
 	// terminal has open. Derived from evidence, never stored: it starts
 	// empty at boot and is re-established by observation.
 	active map[string]string
-	// held is the set of threads whose producing adapter's connection
+	// held is the set of threads whose producing Integration's connection
 	// holds them: the external program still reports the conversation.
 	// Like active, it is evidence, re-established by observation after a
 	// boot.
@@ -105,8 +111,8 @@ type Service struct {
 }
 
 type identityKey struct {
-	adapter    string
-	providerID string
+	integrationID string
+	providerID    string
 }
 
 func NewService(opts Options) *Service {
@@ -138,12 +144,12 @@ func NewService(opts Options) *Service {
 	}
 }
 
-// SetLinker registers the read-time link derivation for one adapter's
-// threads. Composition-time wiring: the adapter depends on this service
-// for observation, so its linker is attached after both exist and before
-// the server serves reads.
-func (s *Service) SetLinker(adapter string, linker Linker) {
-	s.linkers[adapter] = linker
+// SetLinker registers the read-time link derivation for one
+// Integration's threads. Composition-time wiring: the Integration depends
+// on this service for observation, so its linker is attached after both
+// exist and before the server serves reads.
+func (s *Service) SetLinker(integrationID string, linker Linker) {
+	s.linkers[integrationID] = linker
 }
 
 // Load rebuilds the view and identity mapping from the database at boot.
@@ -178,7 +184,7 @@ func (s *Service) Load(ctx context.Context) error {
 		s.view[entry.ID] = &entry
 	}
 	for _, identity := range identities {
-		key := identityKey{identity.Adapter, identity.ProviderConversationID}
+		key := identityKey{identity.IntegrationID, identity.ProviderConversationID}
 		s.identities[key] = identity.ThreadID
 		s.keys[identity.ThreadID] = key
 	}
@@ -239,7 +245,7 @@ func (s *Service) ObserveSession(ctx context.Context, o SessionObservation) (str
 	if at.IsZero() {
 		at = s.now()
 	}
-	key := identityKey{o.Adapter, o.ProviderID}
+	key := identityKey{o.IntegrationID, o.ProviderID}
 
 	s.mu.Lock()
 	threadID, known := s.identities[key]
@@ -263,6 +269,12 @@ func (s *Service) ObserveSession(ctx context.Context, o SessionObservation) (str
 	if record.TerminalID == nil || *record.TerminalID != o.TerminalID {
 		terminalID := o.TerminalID
 		record.TerminalID = &terminalID
+		changed = true
+	}
+	if o.AgentID != "" && record.AgentID != o.AgentID {
+		// The agent is mutable reported metadata; an observation that
+		// names none leaves the last report standing.
+		record.AgentID = o.AgentID
 		changed = true
 	}
 	if record.Archived {
@@ -305,14 +317,18 @@ func (s *Service) ObserveSession(ctx context.Context, o SessionObservation) (str
 // mapping (one transaction — a thread must never exist unmapped). Caller
 // holds ops.
 func (s *Service) createObserved(ctx context.Context, o SessionObservation, at time.Time) (string, error) {
+	if o.AppID != "" && !strings.HasPrefix(o.AppID, o.IntegrationID+"/") {
+		return "", fmt.Errorf("%w: %s under %s", ErrAppForeign, o.AppID, o.IntegrationID)
+	}
 	status := o.Status
 	if status == "" {
 		status = api.ThreadUnknown
 	}
 	terminalID := o.TerminalID
 	record := store.ThreadRecord{
-		Adapter:        o.Adapter,
-		Agent:          o.Agent,
+		IntegrationID:  o.IntegrationID,
+		AppID:          o.AppID,
+		AgentID:        o.AgentID,
 		ProjectID:      o.ProjectID,
 		TerminalID:     &terminalID,
 		Status:         string(status),
@@ -321,7 +337,7 @@ func (s *Service) createObserved(ctx context.Context, o SessionObservation, at t
 		UpdatedAt:      at,
 	}
 	applyMetadata(&record, o.Metadata)
-	if err := s.insert(ctx, &record, identityKey{o.Adapter, o.ProviderID}); err != nil {
+	if err := s.insert(ctx, &record, identityKey{o.IntegrationID, o.ProviderID}); err != nil {
 		return "", err
 	}
 	s.hub.Publish(api.EventThreadCreated, resource, record.ID)
@@ -340,7 +356,7 @@ func (s *Service) insert(ctx context.Context, record *store.ThreadRecord, key id
 	for {
 		record.ID = randomID()
 		inserted, err := s.repository.InsertObserved(ctx, *record, store.ThreadIdentity{
-			Adapter: key.adapter, ProviderConversationID: key.providerID, ThreadID: record.ID,
+			IntegrationID: key.integrationID, ProviderConversationID: key.providerID, ThreadID: record.ID,
 		})
 		if err != nil {
 			return err
@@ -414,7 +430,7 @@ func (s *Service) ObserveStatus(ctx context.Context, o StatusObservation) error 
 	}
 
 	s.mu.Lock()
-	threadID, known := s.identities[identityKey{o.Adapter, o.ProviderID}]
+	threadID, known := s.identities[identityKey{o.IntegrationID, o.ProviderID}]
 	var record store.ThreadRecord
 	active := false
 	if known {
@@ -427,7 +443,7 @@ func (s *Service) ObserveStatus(ctx context.Context, o StatusObservation) error 
 	}
 	s.mu.Unlock()
 	if !known {
-		s.logger.Debug("status evidence for unmapped conversation dropped", "adapter", o.Adapter)
+		s.logger.Debug("status evidence for unmapped conversation dropped", "integration", o.IntegrationID)
 		return nil
 	}
 
@@ -596,14 +612,14 @@ func (s *Service) TerminalRemoved(ctx context.Context, terminalID string) {
 	}
 }
 
-// ObserveAdapter applies an observing adapter's current view of one
-// conversation its program owns (ATC-285): a known identity is brought
-// into line with the program, an unknown one is minted under ProjectID.
-// The adapter connection holds the thread from here — live statuses are
-// accepted, and archive or delete are refused — until the adapter
-// releases it. A conversation the program reports again after ATC
-// archived it comes back unarchived. Returns the thread id.
-func (s *Service) ObserveAdapter(ctx context.Context, o AdapterObservation) (string, error) {
+// ObserveExternal applies an Integration's current view of one
+// conversation its external program owns (ATC-285): a known identity is
+// brought into line with the program, an unknown one is minted under
+// ProjectID. The Integration's connection holds the thread from here —
+// live statuses are accepted, and archive or delete are refused — until
+// the Integration releases it. A conversation the program reports again
+// after ATC archived it comes back unarchived. Returns the thread id.
+func (s *Service) ObserveExternal(ctx context.Context, o ExternalObservation) (string, error) {
 	s.ops.Lock()
 	defer s.ops.Unlock()
 	at := o.At
@@ -614,7 +630,7 @@ func (s *Service) ObserveAdapter(ctx context.Context, o AdapterObservation) (str
 	if status == "" {
 		status = api.ThreadUnknown
 	}
-	key := identityKey{o.Adapter, o.ProviderID}
+	key := identityKey{o.IntegrationID, o.ProviderID}
 
 	s.mu.Lock()
 	threadID, known := s.identities[key]
@@ -634,8 +650,8 @@ func (s *Service) ObserveAdapter(ctx context.Context, o AdapterObservation) (str
 			return "", ErrProjectRequired
 		}
 		record = store.ThreadRecord{
-			Adapter:        o.Adapter,
-			Agent:          o.Agent,
+			IntegrationID:  o.IntegrationID,
+			AgentID:        o.AgentID,
 			ProjectID:      o.ProjectID,
 			Title:          o.Title,
 			Status:         string(status),
@@ -664,7 +680,7 @@ func (s *Service) ObserveAdapter(ctx context.Context, o AdapterObservation) (str
 			changed = true
 		}
 	}
-	set(&record.Agent, o.Agent)
+	set(&record.AgentID, o.AgentID)
 	set(&record.Status, string(status))
 	set(&record.LastError, o.LastError)
 	if !record.TitleUserSet && o.Title != "" {
@@ -701,16 +717,16 @@ func (s *Service) ObserveAdapter(ctx context.Context, o AdapterObservation) (str
 }
 
 // UnarchivedProviderIDs lists the provider conversation ids of an
-// adapter's unarchived threads — what ATC currently believes the program
-// reports. An adapter diffs a fresh snapshot against it, so a
-// conversation the program dropped while ATC was not listening still
+// Integration's unarchived threads — what ATC currently believes the
+// program reports. An Integration diffs a fresh snapshot against it, so
+// a conversation the program dropped while ATC was not listening still
 // archives.
-func (s *Service) UnarchivedProviderIDs(adapter string) []string {
+func (s *Service) UnarchivedProviderIDs(integrationID string) []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var ids []string
 	for id, entry := range s.view {
-		if entry.Adapter != adapter || entry.Archived {
+		if entry.IntegrationID != integrationID || entry.Archived {
 			continue
 		}
 		if key, ok := s.keys[id]; ok {
@@ -721,18 +737,18 @@ func (s *Service) UnarchivedProviderIDs(adapter string) []string {
 	return ids
 }
 
-// ReleaseAdapter drops every hold the adapter has — its connection went
-// away — coercing the live statuses it vouched for to unknown, exactly
-// as a terminal leaving does; idle, error, and unknown persist. A failed
-// persist still releases: the hold is about the program reporting the
-// thread, and the boot-time coercion is the backstop.
-func (s *Service) ReleaseAdapter(ctx context.Context, adapter string) {
+// ReleaseIntegration drops every hold the Integration has — its
+// connection went away — coercing the live statuses it vouched for to
+// unknown, exactly as a terminal leaving does; idle, error, and unknown
+// persist. A failed persist still releases: the hold is about the program
+// reporting the thread, and the boot-time coercion is the backstop.
+func (s *Service) ReleaseIntegration(ctx context.Context, integrationID string) {
 	s.ops.Lock()
 	defer s.ops.Unlock()
 	s.mu.Lock()
 	var ids []string
 	for id := range s.held {
-		if entry, ok := s.view[id]; ok && entry.Adapter == adapter {
+		if entry, ok := s.view[id]; ok && entry.IntegrationID == integrationID {
 			ids = append(ids, id)
 		}
 	}
@@ -749,17 +765,17 @@ func (s *Service) ReleaseAdapter(ctx context.Context, adapter string) {
 	}
 }
 
-// ArchiveAdapterThread reacts to the program dropping a conversation
+// ArchiveExternalThread reacts to the program dropping a conversation
 // from what it reports: the hold releases and the thread archives, with
 // a live status coerced to unknown. Archiving is the lossless mirror —
 // the program hides archived and deleted conversations alike, and a
 // later report of the same identity unarchives the same record. An
 // unknown identity is ignored.
-func (s *Service) ArchiveAdapterThread(ctx context.Context, adapter, providerID string) error {
+func (s *Service) ArchiveExternalThread(ctx context.Context, integrationID, providerID string) error {
 	s.ops.Lock()
 	defer s.ops.Unlock()
 	s.mu.Lock()
-	threadID, known := s.identities[identityKey{adapter, providerID}]
+	threadID, known := s.identities[identityKey{integrationID, providerID}]
 	var record store.ThreadRecord
 	if known {
 		entry, ok := s.view[threadID]
@@ -884,10 +900,10 @@ func (s *Service) List(projectID, terminalID string, includeArchived bool) []api
 // check after a server restart: evidence for an already-mapped
 // conversation still held by the same terminal may be accepted before a
 // fresh identity transition arrives.
-func (s *Service) LookupIdentity(adapter, providerID string) (threadID, terminalID string, ok bool) {
+func (s *Service) LookupIdentity(integrationID, providerID string) (threadID, terminalID string, ok bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	id, known := s.identities[identityKey{adapter, providerID}]
+	id, known := s.identities[identityKey{integrationID, providerID}]
 	if !known {
 		return "", "", false
 	}
@@ -1016,7 +1032,7 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// forgetIdentity drops a thread's identity mapping and any adapter hold.
+// forgetIdentity drops a thread's identity mapping and any Integration hold.
 // Caller holds mu.
 func (s *Service) forgetIdentity(id string) {
 	if key, ok := s.keys[id]; ok {
@@ -1084,7 +1100,7 @@ func (s *Service) Open(ctx context.Context, id string, resume Resumer) (api.Term
 
 	detached := context.WithoutCancel(ctx)
 	terminal, err := resume(detached, ResumeRequest{
-		Adapter: record.Adapter, Agent: record.Agent, ProviderID: key.providerID,
+		IntegrationID: record.IntegrationID, AppID: record.AppID, ProviderID: key.providerID,
 		ProjectID: record.ProjectID, Directory: record.Cwd,
 	})
 
@@ -1203,15 +1219,15 @@ func (s *Service) activeHolder(threadID string) string {
 }
 
 // holder describes whatever holds the thread — the terminal with its
-// conversation open, else the adapter whose program still reports it —
-// for refusal messages; empty when nothing does. Callers hold mu.
+// conversation open, else the Integration whose program still reports it
+// — for refusal messages; empty when nothing does. Callers hold mu.
 func (s *Service) holder(threadID string) string {
 	if terminalID := s.activeHolder(threadID); terminalID != "" {
 		return "open in terminal " + terminalID
 	}
 	if _, ok := s.held[threadID]; ok {
 		if entry, exists := s.view[threadID]; exists {
-			return "still reported by adapter " + entry.Adapter
+			return "still reported by " + entry.IntegrationID
 		}
 	}
 	return ""
@@ -1249,11 +1265,11 @@ func isLive(status api.ThreadStatus) bool {
 }
 
 // thread converts a record to its wire shape, deriving links from the
-// producing adapter's live state. Callers must not hold mu: the linker is
-// the adapter's, and it takes locks of its own.
+// producing Integration's live state. Callers must not hold mu: the
+// linker is the Integration's, and it takes locks of its own.
 func (s *Service) thread(record store.ThreadRecord) api.Thread {
 	thread := threadFrom(record)
-	if linker, ok := s.linkers[record.Adapter]; ok {
+	if linker, ok := s.linkers[record.IntegrationID]; ok {
 		s.mu.Lock()
 		key := s.keys[record.ID]
 		s.mu.Unlock()
@@ -1265,8 +1281,9 @@ func (s *Service) thread(record store.ThreadRecord) api.Thread {
 func threadFrom(record store.ThreadRecord) api.Thread {
 	thread := api.Thread{
 		ID:             record.ID,
-		Adapter:        record.Adapter,
-		Agent:          record.Agent,
+		IntegrationID:  record.IntegrationID,
+		AppID:          record.AppID,
+		AgentID:        record.AgentID,
 		ProjectID:      record.ProjectID,
 		Title:          record.Title,
 		Model:          record.Model,

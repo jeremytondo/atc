@@ -71,7 +71,7 @@ func DatabaseFile() (string, error) {
 	return resolve("XDG_DATA_HOME", []string{".local", "share"}, "atc.db")
 }
 
-// T3CodeSessionFile is the T3 Code adapter's paired session (ATC-285), a
+// T3CodeSessionFile is the T3 Code Integration's paired session (ATC-285), a
 // 0600 credential beside auth-token: the one place it is stored — never
 // config.toml, never the environment.
 func T3CodeSessionFile() (string, error) {

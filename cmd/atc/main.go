@@ -20,12 +20,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/jeremytondo/atc/internal/agents"
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/authtoken"
 	"github.com/jeremytondo/atc/internal/cli"
 	"github.com/jeremytondo/atc/internal/config"
 	"github.com/jeremytondo/atc/internal/events"
+	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/integrations/claude"
 	"github.com/jeremytondo/atc/internal/integrations/codex"
 	"github.com/jeremytondo/atc/internal/integrations/t3code"
@@ -91,7 +91,7 @@ expose on the tailnet without the flag.`,
 			return cmd.Help()
 		},
 	}
-	root.AddCommand(newAgentCmd(), newThreadCmd(), newTerminalCmd(), newProjectCmd(), newAPICmd(), newVersionCmd(),
+	root.AddCommand(newThreadCmd(), newTerminalCmd(), newProjectCmd(), newIntegrationCmd(), newAPICmd(), newVersionCmd(),
 		newUpgradeCmd(), newServerCmd(), newChildCmd())
 	return root
 }
@@ -647,10 +647,13 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	})
 	threadService.SetLinker(t3code.ID, t3Observer.Links)
 
-	// One registration line per built-in adapter; a duplicate id fails
-	// the boot.
-	agentService, err := agents.NewService(agents.Options{
-		Adapters:  []agents.Adapter{claude.Adapter(claudeHooks), codex.Adapter(codexObserver), t3code.Adapter(t3Observer)},
+	// One registration line per built-in Integration; a duplicate id fails
+	// the boot. The typed seams each implements are wired above — the
+	// catalog only describes them.
+	catalog, err := integrations.NewService(integrations.Options{
+		Integrations: []integrations.Integration{
+			claude.Integration(claudeHooks), codex.Integration(codexObserver), t3code.Integration(t3Observer), zmx.Integration(),
+		},
 		Terminals: terminalService,
 	})
 	if err != nil {
@@ -658,14 +661,14 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	}
 
 	handler := server.NewHandler(server.Options{
-		Verify:    tokens.Verify,
-		Version:   versionValue,
-		Logger:    logger,
-		Terminals: terminalService,
-		Projects:  projectService,
-		Agents:    agentService,
-		Threads:   threadService,
-		Events:    hub,
+		Verify:       tokens.Verify,
+		Version:      versionValue,
+		Logger:       logger,
+		Terminals:    terminalService,
+		Projects:     projectService,
+		Integrations: catalog,
+		Threads:      threadService,
+		Events:       hub,
 		InternalRoutes: map[string]http.Handler{
 			"POST " + claude.HooksPath: claudeHooks.Handler(),
 		},

@@ -20,12 +20,13 @@ import (
 func (f *fixture) observeThread(t *testing.T, terminalID, providerID string, status api.ThreadStatus) string {
 	t.Helper()
 	id, err := f.threads.ObserveSession(context.Background(), threads.SessionObservation{
-		Adapter:    "claude",
-		Agent:      "claude",
-		ProviderID: providerID,
-		TerminalID: terminalID,
-		ProjectID:  f.projectID,
-		Status:     status,
+		IntegrationID: "claude",
+		AppID:         "claude/tui",
+		AgentID:       "claude",
+		ProviderID:    providerID,
+		TerminalID:    terminalID,
+		ProjectID:     f.projectID,
+		Status:        status,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +76,7 @@ func TestThreadReadsOverTheWire(t *testing.T) {
 		t.Fatalf("get: got %d; body %s", rec.Code, rec.Body)
 	}
 	thread := decodeThread(t, rec)
-	if thread.ID != id || thread.Agent != "claude" || thread.Status != api.ThreadWorking || thread.TerminalID != terminal.ID {
+	if thread.ID != id || thread.AgentID != "claude" || thread.AppID != "claude/tui" || thread.Status != api.ThreadWorking || thread.TerminalID != terminal.ID {
 		t.Errorf("thread = %+v", thread)
 	}
 
@@ -297,7 +298,7 @@ func resourceID(t *testing.T, data string) string {
 // every other terminal response.
 func TestThreadOpenOverTheWire(t *testing.T) {
 	f := newFixture(t)
-	launched := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Agent: "claude"})))
+	launched := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{AppID: "claude/tui"})))
 	id := f.observeThread(t, launched.ID, "sess-1", api.ThreadIdle)
 
 	rec := f.request(t, http.MethodPost, "/v1/threads/"+id+"/open", "")
@@ -325,11 +326,16 @@ func TestThreadOpenOverTheWire(t *testing.T) {
 	}
 	decodeInto(t, rec, &opened)
 	resumed := opened.Terminal
-	if !opened.Created || resumed.ID == launched.ID || resumed.Agent != "claude" || resumed.Status != api.TerminalRunning {
+	if !opened.Created || resumed.ID == launched.ID || resumed.AppID != "claude/tui" || resumed.Status != api.TerminalRunning {
 		t.Errorf("open dormant = %+v", opened)
 	}
-	if !strings.HasPrefix(resumed.Command, "claude --settings '") || !strings.HasSuffix(resumed.Command, " --resume 'sess-1'") {
-		t.Errorf("resume command = %q", resumed.Command)
+	// The exact resume is composed privately: the driver ran it, the wire
+	// shows only the App.
+	if command := f.driverCommand(resumed.ID); !strings.HasPrefix(command, "claude --settings '") || !strings.HasSuffix(command, " --resume 'sess-1'") {
+		t.Errorf("resume command = %q", command)
+	}
+	if resumed.Command != "" {
+		t.Errorf("resume command leaked onto the wire: %q", resumed.Command)
 	}
 	if resumed.Directory != f.projectDir {
 		t.Errorf("resume directory = %q, want the project's %q (no cwd recorded)", resumed.Directory, f.projectDir)
@@ -355,11 +361,11 @@ func TestThreadOpenOverTheWire(t *testing.T) {
 	}
 }
 
-// A dormant thread whose agent binary is missing is refused like a
+// A dormant thread whose App executable is missing is refused like a
 // launch, with the install hint, and nothing is created or linked.
-func TestThreadOpenUnavailableAgent(t *testing.T) {
+func TestThreadOpenUnavailableApp(t *testing.T) {
 	f := newFixture(t)
-	launched := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{Agent: "claude"})))
+	launched := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{AppID: "claude/tui"})))
 	id := f.observeThread(t, launched.ID, "sess-1", api.ThreadIdle)
 	if rec := f.request(t, http.MethodDelete, "/v1/terminals/"+launched.ID, ""); rec.Code != http.StatusNoContent {
 		t.Fatalf("delete terminal: got %d", rec.Code)
@@ -367,7 +373,8 @@ func TestThreadOpenUnavailableAgent(t *testing.T) {
 	f.binaries["claude"] = false
 
 	rec := f.request(t, http.MethodPost, "/v1/threads/"+id+"/open", "")
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "npm install -g @anthropic-ai/claude-code") {
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "npm install -g @anthropic-ai/claude-code") ||
+		!strings.Contains(rec.Body.String(), `"code":"app_unavailable"`) {
 		t.Errorf("open unavailable: got %d; body %s", rec.Code, rec.Body)
 	}
 	if thread := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+id, "")); thread.TerminalID != "" {
@@ -385,7 +392,7 @@ func decodeTerminalList(t *testing.T, rec *httptest.ResponseRecorder) []api.Term
 	return list.Terminals
 }
 
-// A thread an external program owns (ATC-285): adapter and links on the
+// A thread an external program owns (ATC-285): integration and links on the
 // wire, open refused with a clear error, archive and delete refused
 // while the program still reports it and allowed once it does not, a
 // title change always allowed.
@@ -394,24 +401,25 @@ func TestExternalThreadVerbsOverTheWire(t *testing.T) {
 	f.threads.SetLinker("t3code", func(providerID string) *api.ThreadLinks {
 		return &api.ThreadLinks{Web: "http://127.0.0.1:3773/env/" + providerID, App: "t3code://threads/env/" + providerID}
 	})
-	id, err := f.threads.ObserveAdapter(context.Background(), threads.AdapterObservation{
-		Adapter: "t3code", ProviderID: "t1", ProjectID: f.projectID, Status: api.ThreadWorking, Agent: "codex", Title: "T3 thread",
+	id, err := f.threads.ObserveExternal(context.Background(), threads.ExternalObservation{
+		IntegrationID: "t3code", ProviderID: "t1", ProjectID: f.projectID, Status: api.ThreadWorking, AgentID: "codex", Title: "T3 thread",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	thread := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+id, ""))
-	if thread.Adapter != "t3code" || thread.Agent != "codex" || thread.TerminalID != "" || thread.Links == nil ||
+	if thread.IntegrationID != "t3code" || thread.AppID != "" || thread.AgentID != "codex" || thread.TerminalID != "" || thread.Links == nil ||
 		thread.Links.Web != "http://127.0.0.1:3773/env/t1" || thread.Links.App != "t3code://threads/env/t1" {
 		t.Errorf("thread = %+v", thread)
 	}
-	if body := f.request(t, http.MethodGet, "/v1/threads/"+id, "").Body.String(); !strings.Contains(body, `"adapter":"t3code"`) || !strings.Contains(body, `"links":{"web":`) {
+	if body := f.request(t, http.MethodGet, "/v1/threads/"+id, "").Body.String(); !strings.Contains(body, `"integrationId":"t3code"`) || strings.Contains(body, `"appId"`) || !strings.Contains(body, `"links":{"web":`) {
 		t.Errorf("wire body = %s", body)
 	}
 
 	rec := f.request(t, http.MethodPost, "/v1/threads/"+id+"/open", "")
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "open in T3 Code") {
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"code":"thread_not_terminal_resumable"`) ||
+		!strings.Contains(rec.Body.String(), "not started in an ATC terminal") {
 		t.Errorf("open: got %d; body %s", rec.Code, rec.Body)
 	}
 	if terminals := decodeTerminalList(t, f.request(t, http.MethodGet, "/v1/terminals", "")); len(terminals) != 0 {
@@ -431,7 +439,7 @@ func TestExternalThreadVerbsOverTheWire(t *testing.T) {
 
 	// T3 stops reporting it: ATC archived it, and the user may now
 	// unarchive, re-archive, or delete.
-	if err := f.threads.ArchiveAdapterThread(context.Background(), "t3code", "t1"); err != nil {
+	if err := f.threads.ArchiveExternalThread(context.Background(), "t3code", "t1"); err != nil {
 		t.Fatal(err)
 	}
 	if thread := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+id, "")); !thread.Archived || thread.Status != api.ThreadUnknown {
@@ -444,16 +452,16 @@ func TestExternalThreadVerbsOverTheWire(t *testing.T) {
 		t.Errorf("delete after removal: got %d; body %s", rec.Code, rec.Body)
 	}
 
-	// Every thread carries its adapter; terminal threads carry no links.
+	// Every thread carries its integration; terminal threads carry no links.
 	terminal := f.createRunningTerminal(t)
 	local := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+f.observeThread(t, terminal.ID, "sess-1", api.ThreadIdle), ""))
-	if local.Adapter != "claude" || local.Links != nil {
+	if local.IntegrationID != "claude" || local.Links != nil {
 		t.Errorf("terminal thread = %+v", local)
 	}
 }
 
-// The adapter connection change rides the same feed with its own name.
-func TestAgentAdapterEventOnTheFeed(t *testing.T) {
+// The Integration connection change rides the same feed with its own name.
+func TestIntegrationEventOnTheFeed(t *testing.T) {
 	f := newFixture(t)
 	srv := httptest.NewServer(f.handler)
 	t.Cleanup(srv.Close)
@@ -461,9 +469,9 @@ func TestAgentAdapterEventOnTheFeed(t *testing.T) {
 	if opening := client.next(t); opening.Comment != "connected" {
 		t.Fatalf("opening message = %+v", opening)
 	}
-	f.hub.Publish(api.EventAgentAdapterUpdated, "agent_adapter", "t3code")
+	f.hub.Publish(api.EventIntegrationUpdated, "integration", "t3code")
 	event := client.next(t)
-	if event.Event != api.EventAgentAdapterUpdated || resourceID(t, event.Data) != "t3code" {
+	if event.Event != api.EventIntegrationUpdated || resourceID(t, event.Data) != "t3code" {
 		t.Errorf("feed event = %+v", event)
 	}
 }

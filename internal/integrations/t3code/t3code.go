@@ -1,11 +1,13 @@
-// Package t3code is ATC's first observing adapter (ATC-285): a read-only
-// mirror of the threads a local T3 Code environment owns. T3 stays the
-// source of truth — ATC never starts, prompts, approves, archives, or
-// otherwise mutates a T3 thread — and its threads appear in ATC's normal
-// thread list as ordinary records with near-real-time status and deep
-// links back into T3.
+// Package t3code is T3 Code's Integration (ATC-294, ATC-285): a
+// read-only mirror of the threads a local T3 Code environment owns. T3
+// stays the source of truth — ATC never starts, prompts, approves,
+// archives, or otherwise mutates a T3 thread — and its threads appear in
+// ATC's normal thread list as ordinary records with near-real-time status
+// and deep links back into T3's Apps (its web UI and desktop app), which
+// are handoff Apps: the server never launches them, and no thread records
+// which one started it.
 //
-// The adapter is always on and self-discovering: it finds the local
+// The Integration is always on and self-discovering: it finds the local
 // server through T3's runtime state file, pairs with it zero-touch (a
 // pairing grant minted by T3's own CLI, exchanged for a session scoped to
 // exactly orchestration:read, persisted 0600 under ATC's data dir), and
@@ -24,44 +26,46 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/jeremytondo/atc/internal/agents"
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/integrations"
 )
 
-// ID is the adapter id and the identity namespace of every T3 thread.
+// ID is the Integration id and the identity namespace of every T3 thread.
 const ID = "t3code"
 
-// Adapter is T3 Code's catalog registration: an observer producing
-// threads for every provider T3 drives, launching none of them — a T3
-// conversation opens in T3, through the thread's links. The agent ids
-// are ATC's labels for T3's provider driver kinds (agentLabel).
-func Adapter(observer *Observer) agents.Adapter {
+// agents are T3's provider driver kinds as T3 names them — the agent ids
+// its threads report, opaque to ATC — with display names. A kind T3 adds
+// later is recorded on threads as reported whether or not it is listed.
+var agents = []api.IntegrationAgent{
+	{ID: "claudeAgent", Name: "Claude Code"},
+	{ID: "codex", Name: "Codex"},
+	{ID: "cursor", Name: "Cursor"},
+	{ID: "grok", Name: "Grok"},
+	{ID: "opencode", Name: "OpenCode"},
+}
+
+// Integration is T3 Code's catalog registration: the agents T3 drives,
+// its two handoff Apps, and its live connection. It launches nothing —
+// a T3 conversation opens in T3, through the thread's links.
+func Integration(observer *Observer) integrations.Integration {
 	if observer == nil {
-		panic("t3code.Adapter: observer must not be nil")
+		panic("t3code.Integration: observer must not be nil")
 	}
-	return agents.Adapter{
-		ID:   ID,
-		Name: "T3 Code",
-		Agents: []agents.AgentSpec{
-			{ID: "claude", Name: "Claude Code"},
-			{ID: "codex", Name: "Codex"},
-			{ID: "cursor", Name: "Cursor"},
-			{ID: "grok", Name: "Grok"},
-			{ID: "opencode", Name: "OpenCode"},
+	agentIDs := make([]string, 0, len(agents))
+	for _, agent := range agents {
+		agentIDs = append(agentIDs, agent.ID)
+	}
+	return integrations.Integration{
+		ID:           ID,
+		Name:         "T3 Code",
+		Capabilities: []api.IntegrationCapability{api.CapabilityThreadObservation},
+		Agents:       agents,
+		Apps: []integrations.App{
+			{ID: "web", Name: "T3 Code (web)", Agents: agentIDs, Handoff: true},
+			{ID: "desktop", Name: "T3 Code (desktop)", Agents: agentIDs, Handoff: true},
 		},
 		Connection: observer.Connection,
 	}
-}
-
-// agentLabel maps a T3 provider driver kind to ATC's agent label. T3's
-// kinds are ATC's ids except for Claude Code, which T3 calls claudeAgent:
-// a Claude conversation carries the same label whichever adapter produced
-// it. Unknown kinds pass through — the label is plain, not a catalog id.
-func agentLabel(providerName string) string {
-	if providerName == "claudeAgent" {
-		return "claude"
-	}
-	return providerName
 }
 
 // Home resolves the T3 home every T3 process on this machine uses: T3's
@@ -144,8 +148,9 @@ func cliPath(home string) (string, error) {
 	return bin, nil
 }
 
-// links are the deep links into T3 for one thread: the web UI served by
-// the environment, and the desktop app's URL scheme.
+// links are the deep links into T3 for one thread — its handoff Apps:
+// the web UI served by the environment (t3code/web), and the desktop
+// app's URL scheme (t3code/desktop).
 func links(origin, environmentID, threadID string) *api.ThreadLinks {
 	if origin == "" || environmentID == "" {
 		return nil

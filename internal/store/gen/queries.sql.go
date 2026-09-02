@@ -93,7 +93,7 @@ func (q *Queries) InsertProject(ctx context.Context, arg InsertProjectParams) (i
 
 const insertTerminal = `-- name: InsertTerminal :execrows
 
-INSERT INTO terminals (id, project_id, name, directory, command, agent, created_at, updated_at)
+INSERT INTO terminals (id, project_id, name, directory, command, app_id, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING
 `
@@ -104,7 +104,7 @@ type InsertTerminalParams struct {
 	Name      string
 	Directory string
 	Command   sql.NullString
-	Agent     sql.NullString
+	AppID     sql.NullString
 	CreatedAt string
 	UpdatedAt string
 }
@@ -122,7 +122,7 @@ func (q *Queries) InsertTerminal(ctx context.Context, arg InsertTerminalParams) 
 		arg.Name,
 		arg.Directory,
 		arg.Command,
-		arg.Agent,
+		arg.AppID,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
@@ -133,17 +133,18 @@ func (q *Queries) InsertTerminal(ctx context.Context, arg InsertTerminalParams) 
 }
 
 const insertThread = `-- name: InsertThread :execrows
-INSERT INTO threads (id, adapter, agent, project_id, terminal_id, title, title_user_set, model, effort,
-    cwd, permission_mode, status, last_error, last_evidence_at, archived, archived_at,
+INSERT INTO threads (id, integration_id, app_id, agent_id, project_id, terminal_id, title, title_user_set,
+    model, effort, cwd, permission_mode, status, last_error, last_evidence_at, archived, archived_at,
     created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING
 `
 
 type InsertThreadParams struct {
 	ID             string
-	Adapter        string
-	Agent          sql.NullString
+	IntegrationID  string
+	AppID          sql.NullString
+	AgentID        sql.NullString
 	ProjectID      string
 	TerminalID     sql.NullString
 	Title          sql.NullString
@@ -164,8 +165,9 @@ type InsertThreadParams struct {
 func (q *Queries) InsertThread(ctx context.Context, arg InsertThreadParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, insertThread,
 		arg.ID,
-		arg.Adapter,
-		arg.Agent,
+		arg.IntegrationID,
+		arg.AppID,
+		arg.AgentID,
 		arg.ProjectID,
 		arg.TerminalID,
 		arg.Title,
@@ -189,19 +191,19 @@ func (q *Queries) InsertThread(ctx context.Context, arg InsertThreadParams) (int
 }
 
 const insertThreadIdentity = `-- name: InsertThreadIdentity :execrows
-INSERT INTO thread_identities (adapter, provider_conversation_id, thread_id)
+INSERT INTO thread_identities (integration_id, provider_conversation_id, thread_id)
 VALUES (?, ?, ?)
-ON CONFLICT (adapter, provider_conversation_id) DO NOTHING
+ON CONFLICT (integration_id, provider_conversation_id) DO NOTHING
 `
 
 type InsertThreadIdentityParams struct {
-	Adapter                string
+	IntegrationID          string
 	ProviderConversationID string
 	ThreadID               string
 }
 
 func (q *Queries) InsertThreadIdentity(ctx context.Context, arg InsertThreadIdentityParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, insertThreadIdentity, arg.Adapter, arg.ProviderConversationID, arg.ThreadID)
+	result, err := q.db.ExecContext(ctx, insertThreadIdentity, arg.IntegrationID, arg.ProviderConversationID, arg.ThreadID)
 	if err != nil {
 		return 0, err
 	}
@@ -270,7 +272,7 @@ func (q *Queries) ListTerminalIDsByProject(ctx context.Context, projectID string
 }
 
 const listTerminals = `-- name: ListTerminals :many
-SELECT id, project_id, name, directory, command, created_at, updated_at, stop_requested_at, exited_at, exit_code, agent FROM terminals ORDER BY created_at, id
+SELECT id, project_id, name, directory, command, created_at, updated_at, stop_requested_at, exited_at, exit_code, app_id FROM terminals ORDER BY created_at, id
 `
 
 func (q *Queries) ListTerminals(ctx context.Context) ([]Terminal, error) {
@@ -293,7 +295,7 @@ func (q *Queries) ListTerminals(ctx context.Context) ([]Terminal, error) {
 			&i.StopRequestedAt,
 			&i.ExitedAt,
 			&i.ExitCode,
-			&i.Agent,
+			&i.AppID,
 		); err != nil {
 			return nil, err
 		}
@@ -309,7 +311,7 @@ func (q *Queries) ListTerminals(ctx context.Context) ([]Terminal, error) {
 }
 
 const listThreadIdentities = `-- name: ListThreadIdentities :many
-SELECT adapter, provider_conversation_id, thread_id FROM thread_identities
+SELECT integration_id, provider_conversation_id, thread_id FROM thread_identities
 `
 
 func (q *Queries) ListThreadIdentities(ctx context.Context) ([]ThreadIdentity, error) {
@@ -321,7 +323,7 @@ func (q *Queries) ListThreadIdentities(ctx context.Context) ([]ThreadIdentity, e
 	var items []ThreadIdentity
 	for rows.Next() {
 		var i ThreadIdentity
-		if err := rows.Scan(&i.Adapter, &i.ProviderConversationID, &i.ThreadID); err != nil {
+		if err := rows.Scan(&i.IntegrationID, &i.ProviderConversationID, &i.ThreadID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -336,7 +338,7 @@ func (q *Queries) ListThreadIdentities(ctx context.Context) ([]ThreadIdentity, e
 }
 
 const listThreads = `-- name: ListThreads :many
-SELECT id, adapter, agent, project_id, terminal_id, title, title_user_set, model, effort, cwd, permission_mode, status, last_error, last_evidence_at, archived, archived_at, created_at, updated_at FROM threads ORDER BY created_at, id
+SELECT id, integration_id, app_id, agent_id, project_id, terminal_id, title, title_user_set, model, effort, cwd, permission_mode, status, last_error, last_evidence_at, archived, archived_at, created_at, updated_at FROM threads ORDER BY created_at, id
 `
 
 func (q *Queries) ListThreads(ctx context.Context) ([]Thread, error) {
@@ -350,8 +352,9 @@ func (q *Queries) ListThreads(ctx context.Context) ([]Thread, error) {
 		var i Thread
 		if err := rows.Scan(
 			&i.ID,
-			&i.Adapter,
-			&i.Agent,
+			&i.IntegrationID,
+			&i.AppID,
+			&i.AgentID,
 			&i.ProjectID,
 			&i.TerminalID,
 			&i.Title,
@@ -471,14 +474,14 @@ func (q *Queries) UpdateTerminalName(ctx context.Context, arg UpdateTerminalName
 }
 
 const updateThread = `-- name: UpdateThread :execrows
-UPDATE threads SET agent = ?, terminal_id = ?, title = ?, title_user_set = ?, model = ?, effort = ?,
+UPDATE threads SET agent_id = ?, terminal_id = ?, title = ?, title_user_set = ?, model = ?, effort = ?,
     cwd = ?, permission_mode = ?, status = ?, last_error = ?, last_evidence_at = ?,
     archived = ?, archived_at = ?, updated_at = ?
 WHERE id = ?
 `
 
 type UpdateThreadParams struct {
-	Agent          sql.NullString
+	AgentID        sql.NullString
 	TerminalID     sql.NullString
 	Title          sql.NullString
 	TitleUserSet   int64
@@ -500,7 +503,7 @@ type UpdateThreadParams struct {
 // statement instead of a query per verb.
 func (q *Queries) UpdateThread(ctx context.Context, arg UpdateThreadParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, updateThread,
-		arg.Agent,
+		arg.AgentID,
 		arg.TerminalID,
 		arg.Title,
 		arg.TitleUserSet,

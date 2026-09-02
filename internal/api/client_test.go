@@ -369,61 +369,41 @@ func TestProblemErrorFallbacks(t *testing.T) {
 	}
 }
 
-// The agent methods are thin typed wrappers; the id path segment is
-// escaped so a user-typed id with reserved characters stays one unknown
-// segment instead of changing the route.
-func TestAgentMethods(t *testing.T) {
+// The integration methods are thin typed wrappers; the id path segment
+// is escaped so a user-typed id with reserved characters stays one
+// unknown segment instead of changing the route.
+func TestIntegrationMethods(t *testing.T) {
 	var got struct{ Method, Path string }
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got.Method, got.Path = r.Method, r.URL.EscapedPath()
-		switch {
-		case r.URL.Path == "/v1/agents":
-			_ = json.NewEncoder(w).Encode(AgentList{Agents: []Agent{{ID: "claude"}}})
-		case r.URL.Path == "/v1/agents/adapters":
-			_ = json.NewEncoder(w).Encode(AgentAdapterList{Adapters: []AgentAdapter{{ID: "claude"}, {ID: "t3code"}}})
-		case strings.HasPrefix(r.URL.Path, "/v1/agents/adapters/"):
-			_ = json.NewEncoder(w).Encode(AgentAdapter{ID: "t3code"})
-		default:
-			_ = json.NewEncoder(w).Encode(Agent{ID: "claude"})
+		if r.URL.Path == "/v1/integrations" {
+			_ = json.NewEncoder(w).Encode(IntegrationList{Integrations: []Integration{{ID: "claude"}, {ID: "t3code"}}})
+			return
 		}
+		_ = json.NewEncoder(w).Encode(Integration{ID: "t3code"})
 	}))
 	defer srv.Close()
 	client := NewClient(srv.URL, testToken, testClientVersion, nil, nil)
 	ctx := context.Background()
 
-	agents, err := client.Agents(ctx)
-	if err != nil || len(agents) != 1 {
-		t.Fatalf("Agents = %+v, %v", agents, err)
+	integrations, err := client.Integrations(ctx)
+	if err != nil || len(integrations) != 2 {
+		t.Fatalf("Integrations = %+v, %v", integrations, err)
 	}
-	if got.Method != http.MethodGet || got.Path != "/v1/agents" {
+	if got.Method != http.MethodGet || got.Path != "/v1/integrations" {
 		t.Errorf("list request = %+v", got)
 	}
-
-	if _, err := client.Agent(ctx, "claude"); err != nil {
-		t.Fatal(err)
+	if integration, err := client.Integration(ctx, "t3code"); err != nil || integration.ID != "t3code" {
+		t.Fatalf("Integration = %+v, %v", integration, err)
 	}
-	if got.Path != "/v1/agents/claude" {
+	if got.Path != "/v1/integrations/t3code" {
 		t.Errorf("get path = %q", got.Path)
 	}
 
-	adapters, err := client.AgentAdapters(ctx)
-	if err != nil || len(adapters) != 2 {
-		t.Fatalf("AgentAdapters = %+v, %v", adapters, err)
-	}
-	if got.Path != "/v1/agents/adapters" {
-		t.Errorf("adapters list path = %q", got.Path)
-	}
-	if adapter, err := client.AgentAdapter(ctx, "t3code"); err != nil || adapter.ID != "t3code" {
-		t.Fatalf("AgentAdapter = %+v, %v", adapter, err)
-	}
-	if got.Path != "/v1/agents/adapters/t3code" {
-		t.Errorf("adapter get path = %q", got.Path)
-	}
-
-	if _, err := client.Agent(ctx, "adapters/x?y"); err != nil {
+	if _, err := client.Integration(ctx, "x/y?z"); err != nil {
 		t.Fatal(err)
 	}
-	if got.Path != "/v1/agents/adapters%2Fx%3Fy" {
+	if got.Path != "/v1/integrations/x%2Fy%3Fz" {
 		t.Errorf("escaped get path = %q", got.Path)
 	}
 }

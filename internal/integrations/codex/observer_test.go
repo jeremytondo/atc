@@ -16,8 +16,8 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/jeremytondo/atc/internal/agents"
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/threads"
 )
 
@@ -306,7 +306,7 @@ func (f *fakeTerminals) Get(id string) (api.Terminal, error) {
 func (f *fakeTerminals) set(id string, status api.TerminalStatus) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.terminals[id] = api.Terminal{ID: id, ProjectID: "proj-aaaaa", Agent: "codex", Status: status}
+	f.terminals[id] = api.Terminal{ID: id, ProjectID: "proj-aaaaa", AppID: AppID, Status: status}
 }
 
 func (f *fakeTerminals) remove(id string) {
@@ -317,7 +317,7 @@ func (f *fakeTerminals) remove(id string) {
 
 type fixture struct {
 	observer  *Observer
-	adapter   tui
+	app       tui
 	server    *fakeAppServer
 	threads   *fakeThreads
 	terminals *fakeTerminals
@@ -394,7 +394,7 @@ func newFixture(t *testing.T, withoutServer bool) *fixture {
 	f.observer.startWait = 2 * time.Second
 	f.observer.startPoll = 20 * time.Millisecond
 	f.observer.callTimeout = 2 * time.Second
-	f.adapter = tui{observer: f.observer}
+	f.app = tui{observer: f.observer}
 	ctx, cancel := context.WithCancel(context.Background())
 	f.ctx = ctx
 	done := make(chan struct{})
@@ -414,14 +414,14 @@ func newFixture(t *testing.T, withoutServer bool) *fixture {
 	return f
 }
 
-// launch runs the adapter's launch composition for a fresh TUI: prepare
+// launch runs the App's launch composition for a fresh TUI: prepare
 // (outside the commit lock), then command (under it).
 func (f *fixture) launch(t *testing.T, terminalID, dir string) string {
 	t.Helper()
-	if _, err := f.adapter.PrepareLaunch(f.ctx, agents.LaunchContext{Directory: dir}); err != nil {
+	if _, err := f.app.PrepareLaunch(f.ctx, integrations.LaunchContext{Directory: dir}); err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
-	command, err := f.adapter.Command(f.ctx, agents.LaunchContext{TerminalID: terminalID, Directory: dir})
+	command, err := f.app.Command(f.ctx, integrations.LaunchContext{TerminalID: terminalID, Directory: dir})
 	if err != nil {
 		t.Fatalf("command: %v", err)
 	}
@@ -530,7 +530,7 @@ func TestLaunchBindsAndMintsAtFirstPrompt(t *testing.T) {
 	f.server.broadcast("thread/status/changed", changed("t1", status("active")))
 	waitFor(t, func() bool { return f.threads.sessionCount() == 1 })
 	session := f.threads.lastSession(t)
-	if session.Adapter != "codex" || session.Agent != "codex" || session.ProviderID != "t1" || session.TerminalID != "term-aaaaa" ||
+	if session.IntegrationID != "codex" || session.AppID != "codex/tui" || session.AgentID != "codex" || session.ProviderID != "t1" || session.TerminalID != "term-aaaaa" ||
 		session.ProjectID != "proj-aaaaa" || session.Status != api.ThreadWorking ||
 		session.Metadata.Cwd != f.dir || session.Metadata.Title != "fix the build please" ||
 		session.Metadata.Model != "" {
@@ -837,11 +837,11 @@ func TestSameDirectoryLaunchesSerialize(t *testing.T) {
 		// Fatalf may only run on the test goroutine; the error is asserted
 		// after the receive.
 		defer close(second)
-		if _, err := f.adapter.PrepareLaunch(f.ctx, agents.LaunchContext{Directory: f.dir}); err != nil {
+		if _, err := f.app.PrepareLaunch(f.ctx, integrations.LaunchContext{Directory: f.dir}); err != nil {
 			secondErr = err
 			return
 		}
-		_, secondErr = f.adapter.Command(f.ctx, agents.LaunchContext{TerminalID: "term-bbbbb", Directory: f.dir})
+		_, secondErr = f.app.Command(f.ctx, integrations.LaunchContext{TerminalID: "term-bbbbb", Directory: f.dir})
 	}()
 	other := shortTempDir(t)
 	f.terminals.set("term-ccccc", api.TerminalRunning)
@@ -870,11 +870,11 @@ func TestSameDirectoryLaunchesSerialize(t *testing.T) {
 // Command already armed it, closes the window without binding.
 func TestAbortFreesTheDirectory(t *testing.T) {
 	f := newFixture(t, false)
-	abort, err := f.adapter.PrepareLaunch(f.ctx, agents.LaunchContext{Directory: f.dir})
+	abort, err := f.app.PrepareLaunch(f.ctx, integrations.LaunchContext{Directory: f.dir})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.adapter.Command(f.ctx, agents.LaunchContext{TerminalID: "term-aaaaa", Directory: f.dir}); err != nil {
+	if _, err := f.app.Command(f.ctx, integrations.LaunchContext{TerminalID: "term-aaaaa", Directory: f.dir}); err != nil {
 		t.Fatal(err)
 	}
 	abort()
@@ -884,7 +884,7 @@ func TestAbortFreesTheDirectory(t *testing.T) {
 	// The directory is free: the next launch prepares without waiting.
 	ctx, cancel := context.WithTimeout(f.ctx, time.Second)
 	defer cancel()
-	if _, err := f.adapter.PrepareLaunch(ctx, agents.LaunchContext{Directory: f.dir}); err != nil {
+	if _, err := f.app.PrepareLaunch(ctx, integrations.LaunchContext{Directory: f.dir}); err != nil {
 		t.Fatalf("directory still reserved after abort: %v", err)
 	}
 }
@@ -1025,10 +1025,10 @@ func TestMintRetriesAfterSeamFailure(t *testing.T) {
 // no binding window, and establishes on its first evidence of any kind.
 func TestResumePairsWithoutAWindow(t *testing.T) {
 	f := newFixture(t, false)
-	if _, err := f.adapter.PrepareLaunch(f.ctx, agents.LaunchContext{Directory: f.dir, ResumeConversationID: "t9"}); err != nil {
+	if _, err := f.app.PrepareLaunch(f.ctx, integrations.LaunchContext{Directory: f.dir, ResumeConversationID: "t9"}); err != nil {
 		t.Fatal(err)
 	}
-	command, err := f.adapter.Command(f.ctx, agents.LaunchContext{
+	command, err := f.app.Command(f.ctx, integrations.LaunchContext{
 		TerminalID: "term-aaaaa", Directory: f.dir, ResumeConversationID: "t9",
 	})
 	if err != nil {
@@ -1077,7 +1077,7 @@ func TestLaunchFailsWithoutAServer(t *testing.T) {
 	f.observer.start = func(context.Context) error { return nil } // starts nothing
 	f.observer.startWait = 200 * time.Millisecond
 	begin := time.Now()
-	_, err := f.adapter.PrepareLaunch(f.ctx, agents.LaunchContext{Directory: f.dir})
+	_, err := f.app.PrepareLaunch(f.ctx, integrations.LaunchContext{Directory: f.dir})
 	if err == nil {
 		t.Fatal("launch prepared with no server")
 	}
@@ -1085,7 +1085,7 @@ func TestLaunchFailsWithoutAServer(t *testing.T) {
 		t.Errorf("failure took %s; want inside the start wait", time.Since(begin))
 	}
 	f.observer.start = func(context.Context) error { return errors.New("no codex on PATH") }
-	if _, err := f.adapter.PrepareLaunch(f.ctx, agents.LaunchContext{Directory: f.dir}); err == nil {
+	if _, err := f.app.PrepareLaunch(f.ctx, integrations.LaunchContext{Directory: f.dir}); err == nil {
 		t.Fatal("launch prepared with a failed start")
 	}
 }
@@ -1136,7 +1136,7 @@ func TestHandshakeRefusalDoesNotColdStart(t *testing.T) {
 	f.server.rejectInitialize()
 	f.server.closeConns()
 	waitFor(t, func() bool { return f.server.count("initialize") >= 2 })
-	_, err := f.adapter.PrepareLaunch(f.ctx, agents.LaunchContext{Directory: f.dir})
+	_, err := f.app.PrepareLaunch(f.ctx, integrations.LaunchContext{Directory: f.dir})
 	if err == nil || f.starts != 0 {
 		t.Fatalf("err = %v, starts = %d; want a refusal and no start", err, f.starts)
 	}
@@ -1145,7 +1145,7 @@ func TestHandshakeRefusalDoesNotColdStart(t *testing.T) {
 // Command without its PrepareLaunch is an invariant violation, refused.
 func TestCommandRequiresPreparation(t *testing.T) {
 	f := newFixture(t, false)
-	if _, err := f.adapter.Command(f.ctx, agents.LaunchContext{TerminalID: "term-aaaaa", Directory: f.dir}); !errors.Is(err, errUnprepared) {
+	if _, err := f.app.Command(f.ctx, integrations.LaunchContext{TerminalID: "term-aaaaa", Directory: f.dir}); !errors.Is(err, errUnprepared) {
 		t.Fatalf("err = %v, want errUnprepared", err)
 	}
 }
@@ -1154,10 +1154,10 @@ func TestCommandRequiresPreparation(t *testing.T) {
 // before the insert) drops the evidence but keeps the pairing.
 func TestResumeSurvivesEvidenceBeforeTheRecord(t *testing.T) {
 	f := newFixture(t, false)
-	if _, err := f.adapter.PrepareLaunch(f.ctx, agents.LaunchContext{Directory: f.dir, ResumeConversationID: "t9"}); err != nil {
+	if _, err := f.app.PrepareLaunch(f.ctx, integrations.LaunchContext{Directory: f.dir, ResumeConversationID: "t9"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.adapter.Command(f.ctx, agents.LaunchContext{TerminalID: "term-new", Directory: f.dir, ResumeConversationID: "t9"}); err != nil {
+	if _, err := f.app.Command(f.ctx, integrations.LaunchContext{TerminalID: "term-new", Directory: f.dir, ResumeConversationID: "t9"}); err != nil {
 		t.Fatal(err)
 	}
 	f.server.broadcast("thread/status/changed", changed("t9", status("active")))

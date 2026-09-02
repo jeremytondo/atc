@@ -114,13 +114,13 @@ func registerProjects(humaAPI huma.API, service *projects.Service, threadService
 func mapProjectError(err error) error {
 	switch {
 	case errors.Is(err, projects.ErrNotFound):
-		return huma.Error404NotFound("project not found")
+		return problem(http.StatusNotFound, api.CodeProjectNotFound, "project not found")
 	case errors.Is(err, projects.ErrDirectoryInvalid):
-		return huma.Error422UnprocessableEntity(err.Error())
+		return problem(http.StatusUnprocessableEntity, api.CodeProjectDirectoryInvalid, err.Error())
 	case errors.Is(err, projects.ErrDirectoryTaken):
-		return huma.Error409Conflict(err.Error())
+		return problem(http.StatusConflict, api.CodeProjectDirectoryTaken, err.Error())
 	case errors.Is(err, projects.ErrNotEmpty):
-		return huma.Error409Conflict(err.Error())
+		return problem(http.StatusConflict, api.CodeProjectNotEmpty, err.Error())
 	}
 	return err
 }

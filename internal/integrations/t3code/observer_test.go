@@ -29,7 +29,7 @@ func (noTerminals) Get(string) (api.Terminal, error) {
 	return api.Terminal{}, errors.New("no terminals")
 }
 
-// fixture is the adapter over the real threads and projects domains (a
+// fixture is the Integration over the real threads and projects domains (a
 // store in a temp dir, the real event hub), a fake T3 server, and a fake
 // CLI — so every assertion reads what the API would serve.
 type fixture struct {
@@ -126,9 +126,9 @@ func waitFor(t *testing.T, what string, condition func() bool) {
 	}
 }
 
-func (f *fixture) waitState(state api.AgentAdapterConnectionState) api.AgentAdapterConnection {
+func (f *fixture) waitState(state api.IntegrationConnectionState) api.IntegrationConnection {
 	f.t.Helper()
-	waitFor(f.t, "adapter state "+string(state), func() bool { return f.observer.Connection().State == state })
+	waitFor(f.t, "integration state "+string(state), func() bool { return f.observer.Connection().State == state })
 	return f.observer.Connection()
 }
 
@@ -203,7 +203,7 @@ func (f *fixture) readSession() session {
 
 // The acceptance path: T3 running, never paired, one thread in a
 // directory that is an ATC project. ATC pairs by itself, the thread
-// appears with every mapped field, and the adapter reports connected —
+// appears with every mapped field, and the Integration reports connected —
 // once.
 func TestSnapshotMirrorsThreads(t *testing.T) {
 	f := newFixture(t)
@@ -218,13 +218,13 @@ func TestSnapshotMirrorsThreads(t *testing.T) {
 	f.events()
 	f.start()
 
-	connection := f.waitState(api.AdapterConnected)
+	connection := f.waitState(api.IntegrationConnected)
 	if !strings.Contains(connection.Detail, "1 threads mirrored") || connection.Since.IsZero() {
 		t.Errorf("connected = %+v", connection)
 	}
 	thread := f.waitStatus("t1", api.ThreadWorking)
 	want := api.Thread{
-		ID: thread.ID, Adapter: "t3code", Agent: "codex", ProjectID: project.ID,
+		ID: thread.ID, IntegrationID: "t3code", AgentID: "codex", ProjectID: project.ID,
 		Title: "Fix the build", Model: "gpt-5", Cwd: workspace, Status: api.ThreadWorking,
 		LastEvidenceAt: thread.LastEvidenceAt, CreatedAt: thread.CreatedAt, UpdatedAt: thread.UpdatedAt,
 		Links: &api.ThreadLinks{Web: f.server.origin() + "/env-1/t1", App: "t3code://threads/env-1/t1"},
@@ -250,8 +250,8 @@ func TestSnapshotMirrorsThreads(t *testing.T) {
 	}
 
 	got := f.events()
-	if n := count(got, "agent_adapter.updated t3code"); n != 1 {
-		t.Errorf("agent_adapter.updated published %d times: %v", n, got)
+	if n := count(got, "integration.updated t3code"); n != 1 {
+		t.Errorf("integration.updated published %d times: %v", n, got)
 	}
 	if n := count(got, "thread.created "+thread.ID); n != 1 {
 		t.Errorf("thread.created published %d times: %v", n, got)
@@ -298,8 +298,8 @@ func TestUpsertsDriveStatus(t *testing.T) {
 			t.Errorf("lastError = %q; want cleared once the session reports none", thread.LastError)
 		}
 	}
-	if thread := f.thread("t1"); thread.Agent != "" {
-		t.Errorf("agent = %q; want empty with no session", thread.Agent)
+	if thread := f.thread("t1"); thread.AgentID != "" {
+		t.Errorf("agent = %q; want empty with no session", thread.AgentID)
 	}
 
 	// A stale sequence is ignored: the status stays where sequence 10
@@ -308,8 +308,8 @@ func TestUpsertsDriveStatus(t *testing.T) {
 	f.server.push(upserted(11, threadItem("t1", "p1", "Renamed", withSession("idle", "claudeAgent"))))
 	thread := f.thread("t1")
 	waitFor(t, "sequence 11", func() bool { thread = f.thread("t1"); return thread.Title == "Renamed" })
-	if thread.Status != api.ThreadIdle || thread.Agent != "claude" {
-		t.Errorf("after replay = %+v; want idle from sequence 10, agent claude (T3's claudeAgent) from 11", thread)
+	if thread.Status != api.ThreadIdle || thread.AgentID != "claudeAgent" {
+		t.Errorf("after replay = %+v; want idle from sequence 10, agent claudeAgent (as T3 names it) from 11", thread)
 	}
 }
 
@@ -332,7 +332,7 @@ func TestRemovedArchivesAndVerbs(t *testing.T) {
 
 	archived := true
 	if _, err := f.threads.Update(ctx, thread.ID, api.ThreadUpdateParams{Archived: &archived}); !errors.Is(err, threads.ErrActive) || !strings.Contains(err.Error(), "t3code") {
-		t.Errorf("archive while reported = %v; want ErrActive naming the adapter", err)
+		t.Errorf("archive while reported = %v; want ErrActive naming the integration", err)
 	}
 	if err := f.threads.Delete(ctx, thread.ID); !errors.Is(err, threads.ErrActive) {
 		t.Errorf("delete while reported = %v; want ErrActive", err)
@@ -393,7 +393,7 @@ func TestSettledThreadsAreArchived(t *testing.T) {
 	})
 	f.start()
 	live := f.waitStatus("t-live", api.ThreadWorking)
-	connection := f.waitState(api.AdapterConnected)
+	connection := f.waitState(api.IntegrationConnected)
 	if !strings.Contains(connection.Detail, "1 threads mirrored, 1 settled") {
 		t.Errorf("detail = %q", connection.Detail)
 	}
@@ -434,12 +434,12 @@ func TestSettledThreadsAreArchived(t *testing.T) {
 	// A reconnect snapshot that reports it settled archives it again.
 	f.server.dropConns()
 	waitFor(t, "archive on reconnect snapshot", func() bool { return f.thread("t-live").Archived })
-	if connection := f.waitState(api.AdapterConnected); !strings.Contains(connection.Detail, "0 threads mirrored, 2 settled") {
+	if connection := f.waitState(api.IntegrationConnected); !strings.Contains(connection.Detail, "0 threads mirrored, 2 settled") {
 		t.Errorf("detail after reconnect = %q", connection.Detail)
 	}
 }
 
-// A dropped socket: live statuses coerce to unknown and the adapter
+// A dropped socket: live statuses coerce to unknown and the Integration
 // reports connecting once; the reconnect buys a new ticket, resumes after
 // the last applied sequence, ignores the replayed one, applies the new
 // one, re-establishes every hold — and mints no duplicate.
@@ -468,13 +468,13 @@ func TestReconnectResumes(t *testing.T) {
 	f.events()
 
 	f.server.dropConns()
-	f.waitState(api.AdapterConnecting)
+	f.waitState(api.IntegrationConnecting)
 	f.waitStatus("t1", api.ThreadUnknown)
 	if got := f.thread("t2"); got.Status != api.ThreadIdle {
 		t.Errorf("idle thread after drop = %s; idle persists", got.Status)
 	}
 
-	f.waitState(api.AdapterConnected)
+	f.waitState(api.IntegrationConnected)
 	f.waitStatus("t1", api.ThreadWorking)
 	f.waitStatus("t2", api.ThreadWorking)
 	subscriptions := f.server.subscriptions()
@@ -485,8 +485,8 @@ func TestReconnectResumes(t *testing.T) {
 		t.Errorf("tickets = %d, exchanges = %d; want a ticket per connection and one pairing", tickets, exchanges)
 	}
 	got := f.events()
-	if count(got, "agent_adapter.updated t3code") != 2 {
-		t.Errorf("adapter events over a drop and reconnect = %v; want connecting then connected", got)
+	if count(got, "integration.updated t3code") != 2 {
+		t.Errorf("integration events over a drop and reconnect = %v; want connecting then connected", got)
 	}
 	if count(got, "thread.created "+one.ID)+count(got, "thread.created "+two.ID) != 0 {
 		t.Errorf("reconnect minted a duplicate: %v", got)
@@ -496,7 +496,7 @@ func TestReconnectResumes(t *testing.T) {
 	}
 }
 
-// During a replay the adapter is still connecting: holds are only back
+// During a replay the Integration is still connecting: holds are only back
 // once the marker arrives, so connected is reported then.
 func TestReplayConnectsAtTheMarker(t *testing.T) {
 	f := newFixture(t)
@@ -516,13 +516,13 @@ func TestReplayConnectsAtTheMarker(t *testing.T) {
 	f.start()
 	f.waitStatus("t1", api.ThreadWorking)
 	f.server.dropConns()
-	f.waitState(api.AdapterConnecting)
+	f.waitState(api.IntegrationConnecting)
 	f.waitStatus("t1", api.ThreadIdle)
-	if state := f.observer.Connection().State; state != api.AdapterConnecting {
+	if state := f.observer.Connection().State; state != api.IntegrationConnecting {
 		t.Errorf("state after a replayed event = %s; want connecting until synchronized", state)
 	}
 	f.server.push(synchronizedItem())
-	f.waitState(api.AdapterConnected)
+	f.waitState(api.IntegrationConnected)
 	archived := true
 	if _, err := f.threads.Update(context.Background(), f.thread("t1").ID, api.ThreadUpdateParams{Archived: &archived}); !errors.Is(err, threads.ErrActive) {
 		t.Errorf("archive after the marker = %v; want ErrActive (hold restored)", err)
@@ -603,7 +603,7 @@ func TestProjectAssociation(t *testing.T) {
 		}), synchronizedItem()}
 	})
 	f.start()
-	connection := f.waitState(api.AdapterConnected)
+	connection := f.waitState(api.IntegrationConnected)
 
 	if got := f.thread("t-exact"); got.ProjectID != exactProject.ID || got.Cwd != exact {
 		t.Errorf("exact = %+v; want project %s", got, exactProject.ID)
@@ -661,7 +661,7 @@ func TestRejectedSessionRepairsOnce(t *testing.T) {
 		return []any{snapshotItem(1, []any{projectItem("p1", "T3", workspace)}, []any{threadItem("t1", "p1", "One")}), synchronizedItem()}
 	})
 	f.start()
-	f.waitState(api.AdapterConnected)
+	f.waitState(api.IntegrationConnected)
 	f.thread("t1")
 
 	if f.cli.count("auth session revoke sess-stale") != 1 || f.cli.count("auth pairing create") != 1 {
@@ -686,7 +686,7 @@ func TestAuthFailures(t *testing.T) {
 		f.server.scopeDenied = true
 		f.server.mu.Unlock()
 		f.start()
-		connection := f.waitState(api.AdapterAuthFailed)
+		connection := f.waitState(api.IntegrationAuthFailed)
 		if !strings.Contains(connection.Detail, "refused the orchestration:read scope") {
 			t.Errorf("detail = %q", connection.Detail)
 		}
@@ -706,7 +706,7 @@ func TestAuthFailures(t *testing.T) {
 		f.server.streamDenied = true
 		f.server.mu.Unlock()
 		f.start()
-		connection := f.waitState(api.AdapterAuthFailed)
+		connection := f.waitState(api.IntegrationAuthFailed)
 		if !strings.Contains(connection.Detail, "refused the orchestration:read scope") || !strings.Contains(connection.Detail, "subscription refused") {
 			t.Errorf("detail = %q", connection.Detail)
 		}
@@ -726,13 +726,13 @@ func TestAuthFailures(t *testing.T) {
 		f.start()
 		waitFor(t, "a reported exchange failure", func() bool {
 			connection := f.observer.Connection()
-			return connection.State == api.AdapterConnecting && strings.Contains(connection.Detail, "pairing exchange")
+			return connection.State == api.IntegrationConnecting && strings.Contains(connection.Detail, "pairing exchange")
 		})
 		waitFor(t, "retries", func() bool { _, exchanges := f.server.counts(); return exchanges >= 3 })
 		f.server.mu.Lock()
 		f.server.exchangeStatus = 0
 		f.server.mu.Unlock()
-		f.waitState(api.AdapterConnected)
+		f.waitState(api.IntegrationConnected)
 	})
 	t.Run("session not persisted", func(t *testing.T) {
 		// A session that cannot be stored would be paired over at every
@@ -741,7 +741,7 @@ func TestAuthFailures(t *testing.T) {
 		f.writeRuntime(f.server.origin())
 		f.sessionPath = filepath.Join(f.home, "userdata", "server-runtime.json", "session.json")
 		f.start()
-		if connection := f.waitState(api.AdapterAuthFailed); !strings.Contains(connection.Detail, "persisting the T3 Code session") {
+		if connection := f.waitState(api.IntegrationAuthFailed); !strings.Contains(connection.Detail, "persisting the T3 Code session") {
 			t.Errorf("detail = %q", connection.Detail)
 		}
 		if f.cli.count("auth session revoke sess-1") != 1 {
@@ -755,7 +755,7 @@ func TestAuthFailures(t *testing.T) {
 		f.server.grantScope = "orchestration:read orchestration:write"
 		f.server.mu.Unlock()
 		f.start()
-		if connection := f.waitState(api.AdapterAuthFailed); !strings.Contains(connection.Detail, "granted scope") {
+		if connection := f.waitState(api.IntegrationAuthFailed); !strings.Contains(connection.Detail, "granted scope") {
 			t.Errorf("detail = %q", connection.Detail)
 		}
 	})
@@ -768,7 +768,7 @@ func TestAuthFailures(t *testing.T) {
 			t.Fatalf("real runner over an empty home = %v; want an auth error naming the CLI", f.cli.fail)
 		}
 		f.start()
-		if connection := f.waitState(api.AdapterAuthFailed); !strings.Contains(connection.Detail, "T3 Code CLI not found") {
+		if connection := f.waitState(api.IntegrationAuthFailed); !strings.Contains(connection.Detail, "T3 Code CLI not found") {
 			t.Errorf("detail = %q", connection.Detail)
 		}
 	})
@@ -795,7 +795,7 @@ func TestAuthFailures(t *testing.T) {
 			t.Fatalf("real runner without node = %v", f.cli.fail)
 		}
 		f.start()
-		if connection := f.waitState(api.AdapterAuthFailed); !strings.Contains(connection.Detail, "node not found") {
+		if connection := f.waitState(api.IntegrationAuthFailed); !strings.Contains(connection.Detail, "node not found") {
 			t.Errorf("detail = %q", connection.Detail)
 		}
 	})
@@ -812,7 +812,7 @@ func TestAuthRetryGateClearsOnRestart(t *testing.T) {
 	f.server.mu.Unlock()
 	f.authRetry = time.Hour
 	f.start()
-	f.waitState(api.AdapterAuthFailed)
+	f.waitState(api.IntegrationAuthFailed)
 	f.server.mu.Lock()
 	f.server.scopeDenied = false
 	f.server.mu.Unlock()
@@ -821,7 +821,7 @@ func TestAuthRetryGateClearsOnRestart(t *testing.T) {
 	if err := os.WriteFile(runtimeFile(f.home), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	f.waitState(api.AdapterConnected)
+	f.waitState(api.IntegrationConnected)
 }
 
 // No runtime file is the quiet unavailable state, polled slowly; the
@@ -834,12 +834,12 @@ func TestNotRunning(t *testing.T) {
 		return []any{snapshotItem(1, []any{projectItem("p1", "T3", workspace)}, []any{threadItem("t1", "p1", "One", withSession("running", "codex"))}), synchronizedItem()}
 	})
 	f.start()
-	connection := f.waitState(api.AdapterUnavailable)
+	connection := f.waitState(api.IntegrationUnavailable)
 	if !strings.Contains(connection.Detail, "not running") || !strings.Contains(connection.Detail, runtimeFile(f.home)) {
 		t.Errorf("detail = %q", connection.Detail)
 	}
 	time.Sleep(60 * time.Millisecond)
-	if got := f.events(); count(got, "agent_adapter.updated t3code") != 0 {
+	if got := f.events(); count(got, "integration.updated t3code") != 0 {
 		t.Errorf("polling for a runtime file published %v", got)
 	}
 	if _, exchanges := f.server.counts(); exchanges != 0 {
@@ -847,13 +847,13 @@ func TestNotRunning(t *testing.T) {
 	}
 
 	f.writeRuntime(f.server.origin())
-	f.waitState(api.AdapterConnected)
+	f.waitState(api.IntegrationConnected)
 	f.waitStatus("t1", api.ThreadWorking)
 
 	// The recorded process dies: unavailable, statuses coerced.
 	f.alive.Store(false)
 	f.server.dropConns()
-	connection = f.waitState(api.AdapterUnavailable)
+	connection = f.waitState(api.IntegrationUnavailable)
 	if !strings.Contains(connection.Detail, "is gone") {
 		t.Errorf("detail after death = %q", connection.Detail)
 	}
@@ -878,7 +878,7 @@ func TestSchemaFailure(t *testing.T) {
 	broken := threadItem("t1", "p1", "Broken", withSession("running", "codex"))
 	delete(broken, "hasPendingApprovals")
 	f.server.push(upserted(2, broken))
-	connection := f.waitState(api.AdapterUnavailable)
+	connection := f.waitState(api.IntegrationUnavailable)
 	if !strings.Contains(connection.Detail, "shell schema") || !strings.Contains(connection.Detail, "pending-action flags") {
 		t.Errorf("detail = %q", connection.Detail)
 	}
@@ -886,7 +886,7 @@ func TestSchemaFailure(t *testing.T) {
 		t.Errorf("broken payload applied: %+v", got)
 	}
 	// Recovery takes a fresh snapshot, not a resume.
-	f.waitState(api.AdapterConnected)
+	f.waitState(api.IntegrationConnected)
 	subscriptions := f.server.subscriptions()
 	if len(subscriptions) < 2 || subscriptions[len(subscriptions)-1] != nil {
 		t.Errorf("subscriptions after a schema failure = %v; want a fresh one last", subscriptions)
@@ -894,10 +894,10 @@ func TestSchemaFailure(t *testing.T) {
 
 	// A protocol defect likewise.
 	f.server.raw(`{"_tag":"Defect","requestId":"1","defect":"boom"}`)
-	if connection := f.waitState(api.AdapterUnavailable); !strings.Contains(connection.Detail, "protocol") {
+	if connection := f.waitState(api.IntegrationUnavailable); !strings.Contains(connection.Detail, "protocol") {
 		t.Errorf("detail = %q", connection.Detail)
 	}
-	f.waitState(api.AdapterConnected)
+	f.waitState(api.IntegrationConnected)
 }
 
 // T3 forgetting a project touches nothing in ATC.
@@ -939,7 +939,7 @@ func TestLinksFollowTheEnvironment(t *testing.T) {
 	if links := f.observer.Links("t1"); links != nil {
 		t.Errorf("links before connecting = %+v", links)
 	}
-	f.waitState(api.AdapterConnected)
+	f.waitState(api.IntegrationConnected)
 	want := &api.ThreadLinks{Web: f.server.origin() + "/env-xyz/t1", App: "t3code://threads/env-xyz/t1"}
 	if diff := cmp.Diff(want, f.observer.Links("t1")); diff != "" {
 		t.Errorf("links (-want +got):\n%s", diff)
@@ -1004,24 +1004,36 @@ func TestDiscover(t *testing.T) {
 	}
 }
 
-func TestAdapterRegistration(t *testing.T) {
+func TestIntegrationRegistration(t *testing.T) {
 	f := newFixture(t)
 	f.observer = New(Options{Home: f.home, SessionPath: f.sessionPath, Threads: f.threads, Projects: f.projects, Hub: f.hub, RunCLI: f.cli.run})
-	adapter := Adapter(f.observer)
-	if adapter.ID != ID || adapter.Name != "T3 Code" || adapter.Connection == nil {
-		t.Errorf("registration = %+v", adapter)
+	integration := Integration(f.observer)
+	if integration.ID != ID || integration.Name != "T3 Code" || integration.Connection == nil || integration.Executable != nil {
+		t.Errorf("registration = %+v", integration)
 	}
-	var agents []string
-	for _, spec := range adapter.Agents {
-		if spec.TUI != nil {
-			t.Errorf("%s is launchable through T3 Code", spec.ID)
-		}
-		agents = append(agents, spec.ID)
+	var agentIDs []string
+	for _, agent := range integration.Agents {
+		agentIDs = append(agentIDs, agent.ID)
 	}
-	if diff := cmp.Diff([]string{"claude", "codex", "cursor", "grok", "opencode"}, agents); diff != "" {
+	if diff := cmp.Diff([]string{"claudeAgent", "codex", "cursor", "grok", "opencode"}, agentIDs); diff != "" {
 		t.Errorf("agents (-want +got):\n%s", diff)
 	}
-	if connection := adapter.Connection(); connection.State != api.AdapterUnavailable {
+	// Both Apps are handoffs — nothing T3 owns runs in an ATC terminal —
+	// and each supports every agent T3 drives.
+	var appIDs []string
+	for _, app := range integration.Apps {
+		if app.Terminal != nil || !app.Handoff {
+			t.Errorf("%s = %+v; want a handoff App", app.ID, app)
+		}
+		if diff := cmp.Diff(agentIDs, app.Agents); diff != "" {
+			t.Errorf("%s agents (-want +got):\n%s", app.ID, diff)
+		}
+		appIDs = append(appIDs, app.ID)
+	}
+	if diff := cmp.Diff([]string{"web", "desktop"}, appIDs); diff != "" {
+		t.Errorf("apps (-want +got):\n%s", diff)
+	}
+	if connection := integration.Connection(); connection.State != api.IntegrationUnavailable {
 		t.Errorf("connection before running = %+v; want unavailable (no T3 home)", connection)
 	}
 }
@@ -1034,7 +1046,7 @@ func TestUnreadableSessionFileIsRepaired(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.start()
-	f.waitState(api.AdapterConnected)
+	f.waitState(api.IntegrationConnected)
 	if stored := f.readSession(); stored.Token != "token-1" {
 		t.Errorf("session after pairing over garbage = %+v", stored)
 	}

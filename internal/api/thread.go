@@ -32,17 +32,18 @@ const (
 )
 
 // Thread is the /v1/threads resource: one exact provider conversation,
-// observed inside an ATC-launched agent TUI or mirrored from an external
-// program through an observing adapter (ATC-285). Threads are observed
-// into existence — there is no create verb — and persist as the durable
-// index of conversations until deleted. The provider's own conversation
-// id never appears here; the ATC thread id is the public identity.
+// observed inside an ATC-launched App or mirrored from an external
+// program its Integration observes (ATC-285). Threads are observed into
+// existence — there is no create verb — and persist as the durable index
+// of conversations until deleted. The provider's own conversation id
+// never appears here; the ATC thread id is the public identity.
 type Thread struct {
-	ID      string `json:"id" doc:"Server-minted identifier; the public identity of the conversation."`
-	Adapter string `json:"adapter" enum:"claude,codex,t3code" doc:"Adapter that produced the thread. Immutable."`
-	Agent   string `json:"agent,omitempty" doc:"Agent label the conversation runs under (claude, codex, ...), as the adapter reports it; may be empty and may change."`
-	// ProjectID comes from the terminal or adapter that first observed the
-	// conversation and never changes afterwards.
+	ID            string `json:"id" doc:"Server-minted identifier; the public identity of the conversation."`
+	IntegrationID string `json:"integrationId" doc:"Integration that produced the thread; the namespace of its private provider identity. Immutable."`
+	AppID         string `json:"appId,omitempty" doc:"Integration-qualified App (integration/app) the conversation was started in, when reliably known at creation; omitted permanently otherwise. Immutable."`
+	AgentID       string `json:"agentId,omitempty" doc:"Integration-scoped agent id the conversation runs under, as the Integration reports it; may be empty and may change."`
+	// ProjectID comes from the terminal or Integration that first observed
+	// the conversation and never changes afterwards.
 	ProjectID  string `json:"projectId" doc:"Project the thread belongs to, set at first observation. Immutable."`
 	TerminalID string `json:"terminalId,omitempty" doc:"Last terminal observed holding the conversation; omitted once that terminal is deleted, and always for threads an external program owns. Whether the conversation is open right now is the terminal's activeThreadId, not this field."`
 	Title      string `json:"title,omitempty" doc:"Display title: user-editable, with an observed default. Once set through ATC, observation never overwrites it."`
@@ -63,7 +64,8 @@ type Thread struct {
 }
 
 // ThreadLinks are the deep links into the external program that owns a
-// thread, derived from the adapter's live connection at read time.
+// thread — its handoff Apps — derived from the Integration's live
+// connection at read time.
 type ThreadLinks struct {
 	Web string `json:"web" doc:"URL that opens the conversation in the program's web UI."`
 	App string `json:"app" doc:"URL that opens the conversation in the program's desktop app."`
