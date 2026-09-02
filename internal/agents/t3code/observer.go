@@ -318,6 +318,10 @@ func (o *Observer) serve(ctx context.Context, state runtime) error {
 			o.session = nil
 			o.revoke(ctx, old)
 		case http.StatusForbidden:
+			// The session lacks the scope: retire it, so the slow retry
+			// pairs afresh instead of presenting the same credential.
+			o.revoke(ctx, o.session)
+			o.session = nil
 			return authErrorf("T3 Code refused the %s scope: %w", scope, err)
 		default:
 			return fmt.Errorf("websocket ticket: %w", err)
