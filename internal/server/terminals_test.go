@@ -20,6 +20,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/application"
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/integrations/claude"
@@ -42,6 +43,8 @@ type fakeDriver struct {
 	// commands records the command each session was created with — the
 	// private App command the wire must never show.
 	commands map[string]string
+	// kills records every id Kill was asked to end.
+	kills    map[string]bool
 	invErr   error
 	killErr  error
 	onCreate func(id string, spec terminals.CreateSpec) error
@@ -82,6 +85,10 @@ func (a *fakeDriver) Create(_ context.Context, id string, spec terminals.CreateS
 func (a *fakeDriver) Kill(_ context.Context, id string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.kills == nil {
+		a.kills = map[string]bool{}
+	}
+	a.kills[id] = true
 	if a.killErr != nil {
 		return a.killErr
 	}
@@ -90,11 +97,13 @@ func (a *fakeDriver) Kill(_ context.Context, id string) error {
 }
 
 // fixture is a full chassis over fakes: real store in a temp dir, real
-// hub, fake driver, fake clock — the server's existing test seam. One
-// project rooted at a real temp directory exists for terminals to belong
-// to; the Integration catalog is the shipped one (claude, codex, t3code,
-// zmx), probing binaries against the fixture map (claude and zmx
-// available by default), never the developer machine's PATH.
+// hub, fake driver, fake clock — the server's existing test seam. The
+// Default space is rooted at a real temp directory that one planted
+// project also claims, so terminals land there and the threads they host
+// classify into the project; the Integration catalog is the shipped one
+// (claude, codex, t3code, zmx), probing binaries against the fixture map
+// (claude and zmx available by default), never the developer machine's
+// PATH.
 type fixture struct {
 	handler    http.Handler
 	driver     *fakeDriver
@@ -131,18 +140,22 @@ func newFixture(t *testing.T) *fixture {
 		clock.now = clock.now.Add(time.Millisecond)
 		return clock.now
 	}
+	projectDir := canonicalDir(t, t.TempDir())
 	service := terminals.NewService(terminals.Options{
 		Repository: db.Terminals(),
 		Driver:     driver,
-		Projects:   db.Projects(),
+		Spaces:     db.Spaces(),
+		HomeDir:    projectDir,
 		MarkerDir:  markers,
 		Hub:        hub,
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Now:        now,
 	})
+	if err := service.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	projectService := projects.NewService(projects.Options{
 		Repository: db.Projects(),
-		Terminals:  db.Terminals(),
 		Hub:        hub,
 		Now:        now,
 	})
@@ -202,23 +215,25 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	handler := NewHandler(Options{
-		Verify:            testVerify,
-		Version:           testVersion,
-		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Terminals:         service,
-		Projects:          projectService,
-		Integrations:      catalog,
-		Threads:           threadService,
-		Events:            hub,
-		InternalRoutes:    map[string]http.Handler{"POST " + claude.HooksPath: claudeHooks.Handler()},
-		TerminalCleanups:  []func(string){claudeHooks.Deregister, codexObserver.Forget},
+		Verify:         testVerify,
+		Version:        testVersion,
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Terminals:      service,
+		Projects:       projectService,
+		Integrations:   catalog,
+		Threads:        threadService,
+		Events:         hub,
+		InternalRoutes: map[string]http.Handler{"POST " + claude.HooksPath: claudeHooks.Handler()},
+		Coordinator: application.New(application.Options{
+			Terminals: service, Threads: threadService, Projects: projectService,
+			Cleanups: []func(string){claudeHooks.Deregister, codexObserver.Forget},
+		}),
 		HeartbeatInterval: 50 * time.Millisecond,
 	})
 	f := &fixture{handler: handler, driver: driver, hub: hub, service: service, threads: threadService,
-		binaries: binaries, markers: markers}
+		binaries: binaries, markers: markers, projectDir: projectDir}
 	// Planted through the repository, not the API: the fixture project must
 	// not consume an event sequence number the SSE assertions rely on.
-	f.projectDir = canonicalDir(t, t.TempDir())
 	f.projectID = "proj-fixtr"
 	if ok, err := db.Projects().Insert(context.Background(), store.ProjectRecord{
 		ID: f.projectID, Name: "fixture", Directory: f.projectDir,
@@ -227,6 +242,13 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatalf("planting fixture project = %v, %v", ok, err)
 	}
 	return f
+}
+
+// killed reports whether the fake driver was asked to end the session.
+func (a *fakeDriver) killed(id string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.kills[id]
 }
 
 // driverCommand is the command the fake driver started the session with.
@@ -254,12 +276,10 @@ func (f *fixture) createProject(t *testing.T, dir string) api.Project {
 	return project
 }
 
-// createTerminalBody is a create request body against the fixture project.
+// createTerminalBody is a create request body; unnamed placement lands in
+// the Default space, rooted at the fixture project's directory.
 func (f *fixture) createTerminalBody(t *testing.T, params api.TerminalCreateParams) string {
 	t.Helper()
-	if params.ProjectID == "" {
-		params.ProjectID = f.projectID
-	}
 	body, err := json.Marshal(params)
 	if err != nil {
 		t.Fatal(err)
@@ -301,8 +321,8 @@ func TestTerminalCRUDOverTheWire(t *testing.T) {
 		t.Fatalf("create: got %d, want 201; body %s", rec.Code, rec.Body)
 	}
 	created := decodeTerminal(t, rec)
-	if created.Status != api.TerminalRunning || created.Name != "hx" ||
-		created.ProjectID != f.projectID || created.Directory != f.projectDir {
+	if created.Status != api.TerminalRunning || created.Name != filepath.Base(f.projectDir) ||
+		created.SpaceID != f.defaultSpace(t).ID || created.Directory != f.projectDir {
 		t.Fatalf("created = %+v", created)
 	}
 
@@ -594,4 +614,16 @@ func TestEventsEndpointRequiresToken(t *testing.T) {
 	if unauth.Code != http.StatusUnauthorized {
 		t.Errorf("events without token: got %d, want 401", unauth.Code)
 	}
+}
+
+// defaultSpace is the fixture's Default space.
+func (f *fixture) defaultSpace(t *testing.T) api.Space {
+	t.Helper()
+	for _, space := range f.service.ListSpaces() {
+		if space.IsDefault {
+			return space
+		}
+	}
+	t.Fatal("no Default space")
+	return api.Space{}
 }

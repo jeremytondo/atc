@@ -53,8 +53,8 @@ func registerIntegrations(humaAPI huma.API, service *integrations.Service) {
 }
 
 // mapIntegrationError adds the catalog and launch mappings ahead of the
-// terminal ones, which a launch can also surface (unknown project,
-// missing project directory).
+// terminal ones, which a launch can also surface (unknown space, missing
+// directory).
 func mapIntegrationError(err error) error {
 	switch {
 	case errors.Is(err, integrations.ErrNotFound):

@@ -1,24 +1,21 @@
 -- Repository queries (sqlc input). Nothing outside a repository speaks
--- SQL; internal/store/terminals.go and internal/store/projects.go are the
--- only consumers.
+-- SQL; the repositories in internal/store (terminals, spaces, projects,
+-- threads) are the only consumers.
 
 -- Insertion doubles as the mint-time ID collision check: a conflicting id
 -- inserts zero rows and the caller re-rolls, with no check-then-insert
 -- window.
 -- name: InsertTerminal :execrows
-INSERT INTO terminals (id, project_id, name, directory, command, app_id, created_at, updated_at)
+INSERT INTO terminals (id, space_id, name, directory, command, app_id, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING;
 
 -- name: ListTerminals :many
 SELECT * FROM terminals ORDER BY created_at, id;
 
--- The project-empty check behind project delete's refusal.
--- name: ListTerminalIDsByProject :many
-SELECT id FROM terminals WHERE project_id = ? ORDER BY created_at, id;
-
--- name: UpdateTerminalName :execrows
-UPDATE terminals SET name = ?, updated_at = ? WHERE id = ?;
+-- The two mutable terminal columns move together (a merge patch).
+-- name: UpdateTerminal :execrows
+UPDATE terminals SET name = ?, space_id = ?, updated_at = ? WHERE id = ?;
 
 -- name: RecordTerminalStopIntent :execrows
 UPDATE terminals SET stop_requested_at = ?, updated_at = ? WHERE id = ?;
@@ -31,6 +28,20 @@ WHERE id = ? AND exited_at IS NULL;
 
 -- name: DeleteTerminal :execrows
 DELETE FROM terminals WHERE id = ?;
+
+-- name: InsertSpace :execrows
+INSERT INTO spaces (id, name, directory, is_default, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (id) DO NOTHING;
+
+-- name: ListSpaces :many
+SELECT * FROM spaces ORDER BY created_at, id;
+
+-- name: UpdateSpace :one
+UPDATE spaces SET name = ?, directory = ?, updated_at = ? WHERE id = ? RETURNING *;
+
+-- name: DeleteSpace :execrows
+DELETE FROM spaces WHERE id = ?;
 
 -- name: InsertProject :execrows
 INSERT INTO projects (id, name, directory, created_at, updated_at)

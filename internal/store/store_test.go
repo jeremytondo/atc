@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -33,12 +34,12 @@ func TestTerminalsRoundTrip(t *testing.T) {
 	s, _ := openStore(t)
 	ctx := context.Background()
 	terminals := s.Terminals()
-	insertProject(t, s, "proj-aaaaa", "/home/x")
+	insertSpace(t, s, "spce-aaaaa", "/home/x")
 
 	records := []TerminalRecord{
-		{ID: "term-aaaaa", ProjectID: "proj-aaaaa", Name: "Shell", Directory: "/home/x", CreatedAt: at(0), UpdatedAt: at(0)},
-		{ID: "term-bbbbb", ProjectID: "proj-aaaaa", Name: "hx", Directory: "/home/x/proj", Command: "hx .", CreatedAt: at(1), UpdatedAt: at(1)},
-		{ID: "term-ccccc", ProjectID: "proj-aaaaa", Name: "Claude Code", Directory: "/home/x", Command: "claude", AppID: "claude/tui", CreatedAt: at(2), UpdatedAt: at(2)},
+		{ID: "term-aaaaa", SpaceID: "spce-aaaaa", Name: "Shell", Directory: "/home/x", CreatedAt: at(0), UpdatedAt: at(0)},
+		{ID: "term-bbbbb", SpaceID: "spce-aaaaa", Name: "hx", Directory: "/home/x/proj", Command: "hx .", CreatedAt: at(1), UpdatedAt: at(1)},
+		{ID: "term-ccccc", SpaceID: "spce-aaaaa", Name: "Claude Code", Directory: "/home/x", Command: "claude", AppID: "claude/tui", CreatedAt: at(2), UpdatedAt: at(2)},
 	}
 	for _, record := range records {
 		if ok, err := terminals.Insert(ctx, record); err != nil || !ok {
@@ -57,7 +58,7 @@ func TestTerminalsRoundTrip(t *testing.T) {
 	// Insertion is the ID collision check: a conflicting id inserts
 	// nothing and reports false, leaving the existing record untouched.
 	ok, err := terminals.Insert(ctx, TerminalRecord{
-		ID: "term-aaaaa", ProjectID: "proj-aaaaa", Name: "impostor", Directory: "/", CreatedAt: at(9), UpdatedAt: at(9),
+		ID: "term-aaaaa", SpaceID: "spce-aaaaa", Name: "impostor", Directory: "/", CreatedAt: at(9), UpdatedAt: at(9),
 	})
 	if err != nil || ok {
 		t.Fatalf("Insert(collision) = %v, %v; want false", ok, err)
@@ -75,18 +76,22 @@ func TestTerminalsMutations(t *testing.T) {
 	s, _ := openStore(t)
 	ctx := context.Background()
 	terminals := s.Terminals()
-	insertProject(t, s, "proj-aaaaa", "/")
+	insertSpace(t, s, "spce-aaaaa", "/")
+	insertSpace(t, s, "spce-bbbbb", "/b")
 
-	record := TerminalRecord{ID: "term-aaaaa", ProjectID: "proj-aaaaa", Name: "Shell", Directory: "/", CreatedAt: at(0), UpdatedAt: at(0)}
+	record := TerminalRecord{ID: "term-aaaaa", SpaceID: "spce-aaaaa", Name: "Shell", Directory: "/", CreatedAt: at(0), UpdatedAt: at(0)}
 	if ok, err := terminals.Insert(ctx, record); err != nil || !ok {
 		t.Fatalf("Insert = %v, %v; want true", ok, err)
 	}
 
-	if ok, err := terminals.UpdateName(ctx, "term-aaaaa", "build watcher", at(1)); err != nil || !ok {
-		t.Fatalf("UpdateName = %v, %v; want true", ok, err)
+	if ok, err := terminals.Update(ctx, "term-aaaaa", "build watcher", "spce-bbbbb", at(1)); err != nil || !ok {
+		t.Fatalf("Update = %v, %v; want true", ok, err)
 	}
-	if ok, err := terminals.UpdateName(ctx, "term-zzzzz", "x", at(1)); err != nil || ok {
-		t.Fatalf("UpdateName(absent) = %v, %v; want false", ok, err)
+	if ok, err := terminals.Update(ctx, "term-zzzzz", "x", "spce-aaaaa", at(1)); err != nil || ok {
+		t.Fatalf("Update(absent) = %v, %v; want false", ok, err)
+	}
+	if _, err := terminals.Update(ctx, "term-aaaaa", "x", "spce-zzzzz", at(1)); !errors.Is(err, ErrForeignKeyViolation) {
+		t.Fatalf("Update(unknown space) = %v, want ErrForeignKeyViolation", err)
 	}
 	if ok, err := terminals.RecordStopIntent(ctx, "term-aaaaa", at(2)); err != nil || !ok {
 		t.Fatalf("RecordStopIntent = %v, %v; want true", ok, err)
@@ -99,7 +104,7 @@ func TestTerminalsMutations(t *testing.T) {
 	// updated_at carries the observation time, not the exit time.
 	stopAt, exitAt := at(2), at(3)
 	want := []TerminalRecord{{
-		ID: "term-aaaaa", ProjectID: "proj-aaaaa", Name: "build watcher", Directory: "/",
+		ID: "term-aaaaa", SpaceID: "spce-bbbbb", Name: "build watcher", Directory: "/",
 		CreatedAt: at(0), UpdatedAt: at(4),
 		StopRequestedAt: &stopAt, ExitedAt: &exitAt, ExitCode: &code,
 	}}
@@ -169,19 +174,29 @@ func TestOpenIsIdempotentAndBacksUpBeforeMigration(t *testing.T) {
 }
 
 func terminalsInsertOne(ctx context.Context, s *Store) error {
-	if _, err := s.Projects().Insert(ctx, ProjectRecord{
-		ID: "proj-aaaaa", Name: "root", Directory: "/", CreatedAt: at(0), UpdatedAt: at(0),
+	if _, err := s.Spaces().Insert(ctx, SpaceRecord{
+		ID: "spce-aaaaa", Name: "root", Directory: "/", CreatedAt: at(0), UpdatedAt: at(0),
 	}); err != nil {
 		return err
 	}
 	_, err := s.Terminals().Insert(ctx, TerminalRecord{
-		ID: "term-aaaaa", ProjectID: "proj-aaaaa", Name: "Shell", Directory: "/", CreatedAt: at(0), UpdatedAt: at(0),
+		ID: "term-aaaaa", SpaceID: "spce-aaaaa", Name: "Shell", Directory: "/", CreatedAt: at(0), UpdatedAt: at(0),
 	})
 	return err
 }
 
-// insertProject plants an owning project — the schema requires every
+// insertSpace plants an owning space — the schema requires every
 // terminal to reference one.
+func insertSpace(t *testing.T, s *Store, id, directory string) {
+	t.Helper()
+	ok, err := s.Spaces().Insert(context.Background(), SpaceRecord{
+		ID: id, Name: "s", Directory: directory, CreatedAt: at(0), UpdatedAt: at(0),
+	})
+	if err != nil || !ok {
+		t.Fatalf("insertSpace = %v, %v", ok, err)
+	}
+}
+
 func insertProject(t *testing.T, s *Store, id, directory string) {
 	t.Helper()
 	ok, err := s.Projects().Insert(context.Background(), ProjectRecord{

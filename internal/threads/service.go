@@ -1241,8 +1241,7 @@ func (s *Service) Open(ctx context.Context, id string, resume Resumer) (api.Term
 
 	detached := context.WithoutCancel(ctx)
 	terminal, err := resume(detached, ResumeRequest{
-		IntegrationID: record.IntegrationID, AppID: record.AppID, ProviderID: key.providerID,
-		ProjectID: record.ProjectID, Directory: record.Cwd,
+		IntegrationID: record.IntegrationID, AppID: record.AppID, ProviderID: key.providerID, Directory: record.Cwd,
 	})
 
 	s.ops.Lock()

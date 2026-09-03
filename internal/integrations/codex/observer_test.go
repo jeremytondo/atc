@@ -306,7 +306,7 @@ func (f *fakeTerminals) Get(id string) (api.Terminal, error) {
 func (f *fakeTerminals) set(id string, status api.TerminalStatus) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.terminals[id] = api.Terminal{ID: id, ProjectID: "proj-aaaaa", AppID: AppID, Status: status}
+	f.terminals[id] = api.Terminal{ID: id, SpaceID: "spce-aaaaa", AppID: AppID, Status: status}
 }
 
 func (f *fakeTerminals) remove(id string) {

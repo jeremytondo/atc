@@ -21,11 +21,13 @@ const (
 
 // Terminal is the /v1/terminals resource. The id doubles as the zmx
 // session name; records stay listed after exit until explicitly deleted.
+// A terminal belongs to exactly one space (ATC-296) and never to a
+// project.
 type Terminal struct {
 	ID        string `json:"id" doc:"Server-minted identifier; also the zmx session name."`
-	Name      string `json:"name" doc:"Display name; the only mutable field."`
-	ProjectID string `json:"projectId" doc:"Project the terminal belongs to. Immutable; terminals never move between projects."`
-	Directory string `json:"directory" doc:"Working directory the session started in: the project's directory, or for a terminal resuming a conversation that conversation's recorded one. Immutable."`
+	Name      string `json:"name" doc:"Display name; mutable."`
+	SpaceID   string `json:"spaceId" doc:"Space the terminal belongs to; mutable — moving a terminal changes nothing but this."`
+	Directory string `json:"directory" doc:"Working directory the session started in: the one supplied at creation, else the space's directory at that moment (or a resumed conversation's recorded one). Immutable."`
 	Command   string `json:"command,omitempty" doc:"User-supplied command launched in the session; empty means a plain shell or an App launch (an App's resolved command is Integration-private and never exposed). Immutable."`
 	AppID     string `json:"appId,omitempty" doc:"Integration-qualified App id (integration/app) the terminal was launched with; omitted for plain terminals. Server-set launch intent only, immutable, no liveness meaning."`
 	// ActiveThreadID is a projection from the threads domain (ATC-255),
@@ -37,21 +39,23 @@ type Terminal struct {
 	UpdatedAt      time.Time      `json:"updatedAt"`
 }
 
-// TerminalCreateParams is the POST /v1/terminals request body. The project
-// is required (ATC-256) and supplies the working directory; everything
-// else is optional.
+// TerminalCreateParams is the POST /v1/terminals request body. Everything
+// is optional: the space defaults to the Default space, the directory to
+// the space's, the name to the directory's basename.
 type TerminalCreateParams struct {
-	ProjectID string `json:"projectId" minLength:"1" doc:"Project the terminal belongs to; its directory becomes the terminal's working directory."`
-	Name      string `json:"name,omitempty" doc:"Display name; defaults from command, else \"Shell\"."`
+	SpaceID   string `json:"spaceId,omitempty" doc:"Space the terminal belongs to; defaults to the Default space."`
+	Directory string `json:"directory,omitempty" doc:"Working directory the session starts in; defaults to the space's directory. Must exist on the server's machine."`
+	Name      string `json:"name,omitempty" doc:"Display name; defaults to the basename of the resolved directory."`
 	Command   string `json:"command,omitempty" doc:"Free-form command run through the user's shell; empty starts a plain interactive shell. Mutually exclusive with appId."`
 	AppID     string `json:"appId,omitempty" doc:"Integration-qualified App id (integration/app) to launch; the Integration privately composes the command and the id is recorded on the terminal. Mutually exclusive with command."`
 }
 
 // TerminalUpdateParams is the PATCH /v1/terminals/{id} request body, a
-// JSON Merge Patch: an omitted field is unchanged. Name is the only
-// mutable field; it does not accept null.
+// JSON Merge Patch: an omitted field is unchanged; neither field accepts
+// null.
 type TerminalUpdateParams struct {
-	Name Optional[string] `json:"name,omitzero" minLength:"1" nullable:"false" doc:"New display name."`
+	Name    Optional[string] `json:"name,omitzero" minLength:"1" nullable:"false" doc:"New display name."`
+	SpaceID Optional[string] `json:"spaceId,omitzero" minLength:"1" nullable:"false" doc:"Space to move the terminal to. The session, directory, app, and thread are untouched."`
 }
 
 // TerminalList is the GET /v1/terminals response body.

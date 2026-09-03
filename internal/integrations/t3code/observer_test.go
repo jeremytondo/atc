@@ -57,7 +57,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	hub := events.NewHubAt(256, 1)
-	projectService := projects.NewService(projects.Options{Repository: db.Projects(), Terminals: db.Terminals(), Hub: hub})
+	projectService := projects.NewService(projects.Options{Repository: db.Projects(), Hub: hub})
 	threadService := threads.NewService(threads.Options{Repository: db.Threads(), Terminals: noTerminals{}, Projects: db.Projects(), Hub: hub})
 	if err := threadService.Load(context.Background()); err != nil {
 		t.Fatal(err)

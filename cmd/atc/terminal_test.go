@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jeremytondo/atc/internal/application"
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/integrations/claude"
@@ -80,6 +81,9 @@ func startTestServer(t *testing.T) *cliDriver {
 // in production; there is no create verb on the wire.
 func startTestServerWithThreads(t *testing.T) (*cliDriver, *threads.Service) {
 	t.Helper()
+	// The server is local, so an unplaced create opens in this process's
+	// cwd: a scratch directory, never the repository the tests run from.
+	t.Chdir(t.TempDir())
 	db, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "atc.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -90,14 +94,17 @@ func startTestServerWithThreads(t *testing.T) (*cliDriver, *threads.Service) {
 	service := terminals.NewService(terminals.Options{
 		Repository: db.Terminals(),
 		Driver:     driver,
-		Projects:   db.Projects(),
+		Spaces:     db.Spaces(),
+		HomeDir:    t.TempDir(),
 		MarkerDir:  t.TempDir(),
 		Hub:        hub,
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
+	if err := service.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	projectService := projects.NewService(projects.Options{
 		Repository: db.Projects(),
-		Terminals:  db.Terminals(),
 		Hub:        hub,
 	})
 	threadService := threads.NewService(threads.Options{
@@ -148,6 +155,7 @@ func startTestServerWithThreads(t *testing.T) (*cliDriver, *threads.Service) {
 		t.Fatal(err)
 	}
 	handler := server.NewHandler(server.Options{
+		Coordinator:  application.New(application.Options{Terminals: service, Threads: threadService, Projects: projectService}),
 		Verify:       func(authorization string) bool { return authorization == "Bearer "+cliTestToken },
 		Version:      "v0.0.0-test",
 		Terminals:    service,
@@ -211,11 +219,12 @@ func installFakeZmx(t *testing.T) {
 
 func TestTerminalCLILifecycle(t *testing.T) {
 	driver := startTestServer(t)
-	// --project skips cwd resolution entirely; the cwd (this repo) owns no
-	// project on the test server.
-	projectID := createProjectCLI(t, t.TempDir())
+	// The server is local, so the terminal opens in this process's cwd —
+	// a temp directory here, so the test never touches the repo.
+	dir := canonical(t, t.TempDir())
+	t.Chdir(dir)
 
-	stdout, _, err := runCLI(t, "terminal", "create", "--command", "hx", "--project", projectID)
+	stdout, _, err := runCLI(t, "terminal", "create", "--command", "hx", "--name", "hx")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -223,17 +232,17 @@ func TestTerminalCLILifecycle(t *testing.T) {
 	if id == "" {
 		t.Fatalf("create output has no terminal id:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "running") {
-		t.Errorf("create output missing status:\n%s", stdout)
+	if !strings.Contains(stdout, "running") || !regexp.MustCompile(`(?m)^directory\s+`+regexp.QuoteMeta(dir)+`$`).MatchString(stdout) {
+		t.Errorf("create output missing status or the cwd as directory:\n%s", stdout)
 	}
 
 	stdout, _, err = runCLI(t, "terminal", "list")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// IDs beside names, statuses, and projects — the list contract.
+	// IDs beside names, statuses, and spaces — the list contract.
 	if !strings.Contains(stdout, id) || !strings.Contains(stdout, "hx") ||
-		!strings.Contains(stdout, "running") || !strings.Contains(stdout, projectID) {
+		!strings.Contains(stdout, "running") || !strings.Contains(stdout, "spce-") {
 		t.Errorf("list output:\n%s", stdout)
 	}
 
@@ -280,8 +289,7 @@ func TestTerminalGetUnknownIsError(t *testing.T) {
 // says why nothing was attached.
 func TestTerminalCreateWithoutTTYStillCreates(t *testing.T) {
 	startTestServer(t)
-	projectID := createProjectCLI(t, t.TempDir())
-	stdout, stderr, err := runCLI(t, "terminal", "create", "--project", projectID)
+	stdout, stderr, err := runCLI(t, "terminal", "create")
 	if err != nil {
 		t.Fatalf("create without TTY = %v", err)
 	}
@@ -293,7 +301,7 @@ func TestTerminalCreateWithoutTTYStillCreates(t *testing.T) {
 		t.Errorf("stderr = %q; want the skipped-attach note", stderr)
 	}
 	// --detach is silent about attaching: nothing was asked for.
-	if _, stderr, err := runCLI(t, "terminal", "create", "--project", projectID, "--detach"); err != nil || strings.Contains(stderr, "attach") {
+	if _, stderr, err := runCLI(t, "terminal", "create", "--detach"); err != nil || strings.Contains(stderr, "attach") {
 		t.Errorf("create --detach = %q, %v", stderr, err)
 	}
 }
@@ -305,8 +313,7 @@ func TestTerminalCreateMissingZmxCreatesNothing(t *testing.T) {
 	startTestServer(t)
 	t.Setenv("PATH", "")
 
-	projectID := createProjectCLI(t, t.TempDir())
-	_, _, err := runCLI(t, "terminal", "create", "--project", projectID)
+	_, _, err := runCLI(t, "terminal", "create")
 	if err == nil || err.Error() != "zmx executable not found on PATH; install zmx to attach" {
 		t.Errorf("create without zmx = %v", err)
 	}
@@ -314,7 +321,7 @@ func TestTerminalCreateMissingZmxCreatesNothing(t *testing.T) {
 	if listErr != nil || !strings.Contains(stdout, "no terminals") {
 		t.Errorf("list after zmx refusal = %q, %v", stdout, listErr)
 	}
-	if _, _, err := runCLI(t, "terminal", "create", "--project", projectID, "--detach"); err != nil {
+	if _, _, err := runCLI(t, "terminal", "create", "--detach"); err != nil {
 		t.Errorf("create --detach without zmx = %v", err)
 	}
 }
@@ -325,8 +332,7 @@ func TestTerminalCreateAttachMissingSocketKeepsTerminal(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	startTestServer(t)
 
-	projectID := createProjectCLI(t, t.TempDir())
-	stdout, _, err := runCLI(t, "terminal", "create", "--project", projectID)
+	stdout, _, err := runCLI(t, "terminal", "create")
 	id := regexp.MustCompile(`term-[a-z2-9]{5}`).FindString(stdout)
 	if id == "" || !strings.Contains(stdout, "running") {
 		t.Fatalf("create attach output does not show the created terminal:\n%s", stdout)
@@ -374,8 +380,7 @@ func TestAttachRefusesNonRunning(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	driver := startTestServer(t)
-	projectID := createProjectCLI(t, t.TempDir())
-	stdout, _, err := runCLI(t, "terminal", "create", "--project", projectID, "--detach")
+	stdout, _, err := runCLI(t, "terminal", "create", "--detach")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +390,7 @@ func TestAttachRefusesNonRunning(t *testing.T) {
 	driver.mu.Lock()
 	delete(driver.sessions, id)
 	driver.mu.Unlock()
-	if _, _, err := runCLI(t, "terminal", "create", "--name", "other", "--project", projectID, "--detach"); err != nil {
+	if _, _, err := runCLI(t, "terminal", "create", "--name", "other", "--detach"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -409,8 +414,7 @@ func TestAPICommand(t *testing.T) {
 	}
 
 	// POST with a body creates a terminal through the raw gateway.
-	projectID := createProjectCLI(t, t.TempDir())
-	stdout, _, err = runCLI(t, "api", "-d", `{"command":"hx","projectId":"`+projectID+`"}`, "/v1/terminals")
+	stdout, _, err = runCLI(t, "api", "-d", `{"command":"hx"}`, "/v1/terminals")
 	if err != nil {
 		t.Fatal(err)
 	}

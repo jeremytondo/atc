@@ -14,9 +14,9 @@ import (
 // never leaves this package.
 type TerminalRecord struct {
 	ID string
-	// ProjectID is the owning project; required, immutable, and enforced
-	// by the schema's foreign key.
-	ProjectID string
+	// SpaceID is the owning space; required, enforced by the schema's
+	// foreign key, and mutable (a move).
+	SpaceID   string
 	Name      string
 	Directory string
 	// Command is the free-form command the terminal was created with;
@@ -47,13 +47,13 @@ type Terminals struct {
 }
 
 // Insert persists a new record; false reports an ID collision (the caller
-// re-rolls), and a vanished project surfaces as ErrForeignKeyViolation.
+// re-rolls), and a vanished space surfaces as ErrForeignKeyViolation.
 // Create persists before starting the session, so a record exists for
 // every session ATC ever starts.
 func (t *Terminals) Insert(ctx context.Context, record TerminalRecord) (bool, error) {
 	n, err := t.writes.InsertTerminal(ctx, gen.InsertTerminalParams{
 		ID:        record.ID,
-		ProjectID: record.ProjectID,
+		SpaceID:   record.SpaceID,
 		Name:      record.Name,
 		Directory: record.Directory,
 		Command:   nullString(record.Command),
@@ -62,12 +62,6 @@ func (t *Terminals) Insert(ctx context.Context, record TerminalRecord) (bool, er
 		UpdatedAt: formatTime(record.UpdatedAt),
 	})
 	return n > 0, foreignKeyError(err)
-}
-
-// ListIDsByProject returns the IDs of the project's terminals in creation
-// order — the project-empty check behind project delete's refusal.
-func (t *Terminals) ListIDsByProject(ctx context.Context, projectID string) ([]string, error) {
-	return t.reads.ListTerminalIDsByProject(ctx, projectID)
 }
 
 // List returns every record in creation order.
@@ -87,12 +81,14 @@ func (t *Terminals) List(ctx context.Context) ([]TerminalRecord, error) {
 	return records, nil
 }
 
-// UpdateName renames the terminal; false means no such record.
-func (t *Terminals) UpdateName(ctx context.Context, id, name string, at time.Time) (bool, error) {
-	n, err := t.writes.UpdateTerminalName(ctx, gen.UpdateTerminalNameParams{
-		Name: name, UpdatedAt: formatTime(at), ID: id,
+// Update writes the two mutable columns; false means no such record. A
+// space deleted since the caller chose it surfaces as
+// ErrForeignKeyViolation.
+func (t *Terminals) Update(ctx context.Context, id, name, spaceID string, at time.Time) (bool, error) {
+	n, err := t.writes.UpdateTerminal(ctx, gen.UpdateTerminalParams{
+		Name: name, SpaceID: spaceID, UpdatedAt: formatTime(at), ID: id,
 	})
-	return n > 0, err
+	return n > 0, foreignKeyError(err)
 }
 
 // RecordStopIntent persists the delete verb's stop intent; false means no
@@ -128,7 +124,7 @@ func (t *Terminals) Delete(ctx context.Context, id string) (bool, error) {
 func recordFrom(row gen.Terminal) (TerminalRecord, error) {
 	record := TerminalRecord{
 		ID:        row.ID,
-		ProjectID: row.ProjectID,
+		SpaceID:   row.SpaceID,
 		Name:      row.Name,
 		Directory: row.Directory,
 		Command:   row.Command.String,

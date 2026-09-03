@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -32,10 +33,11 @@ func observeThreadCLI(t *testing.T, service *threads.Service, terminalID, direct
 	return id
 }
 
-// createTerminalCLI creates a terminal over the wire and returns its id.
-func createTerminalCLI(t *testing.T, projectID string) string {
+// createTerminalCLI creates a terminal in directory over the wire and
+// returns its id.
+func createTerminalCLI(t *testing.T, directory string) string {
 	t.Helper()
-	stdout, _, err := runCLI(t, "terminal", "create", "--command", "claude", "--project", projectID)
+	stdout, _, err := runCLI(t, "terminal", "create", "--command", "claude", "--directory", directory)
 	if err != nil {
 		t.Fatalf("terminal create: %v", err)
 	}
@@ -50,10 +52,10 @@ func TestThreadCLILifecycle(t *testing.T) {
 	_, threadService := startTestServerWithThreads(t)
 	projectDir := t.TempDir()
 	projectID := createProjectCLI(t, projectDir)
-	terminalID := createTerminalCLI(t, projectID)
+	terminalID := createTerminalCLI(t, projectDir)
 	id := observeThreadCLI(t, threadService, terminalID, projectDir, "sess-1")
 
-	stdout, _, err := runCLI(t, "thread", "list", "--project", projectID)
+	stdout, _, err := runCLI(t, "thread", "list")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -97,7 +99,7 @@ func TestThreadCLILifecycle(t *testing.T) {
 	}
 
 	// Hidden by default, shown with --archived, restored by unarchive.
-	if stdout, _, err = runCLI(t, "thread", "list", "--project", projectID); err != nil {
+	if stdout, _, err = runCLI(t, "thread", "list"); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(stdout, id) {
@@ -122,7 +124,7 @@ func TestThreadCLILifecycle(t *testing.T) {
 	if !strings.Contains(stdout, "deleted "+id) {
 		t.Errorf("delete output:\n%s", stdout)
 	}
-	if stdout, _, err = runCLI(t, "thread", "list", "--project", projectID); err != nil {
+	if stdout, _, err = runCLI(t, "thread", "list"); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(stdout, id) {
@@ -133,8 +135,8 @@ func TestThreadCLILifecycle(t *testing.T) {
 func TestThreadListUnfiltered(t *testing.T) {
 	_, threadService := startTestServerWithThreads(t)
 	projectDir := t.TempDir()
-	projectID := createProjectCLI(t, projectDir)
-	terminalID := createTerminalCLI(t, projectID)
+	createProjectCLI(t, projectDir)
+	terminalID := createTerminalCLI(t, projectDir)
 	id := observeThreadCLI(t, threadService, terminalID, projectDir, "sess-1")
 
 	// Like terminal list: unfiltered means everything, no project
@@ -156,14 +158,15 @@ func TestThreadGetUnknownIsError(t *testing.T) {
 }
 
 // An App launch is `terminal create --app` (ATC-294): the terminal shows
-// the app and the app's name, never the composed command, and no thread
-// exists before the first prompt. `thread new` is gone.
+// the app and its directory's basename as the name, never the composed
+// command, and no thread exists before the first prompt. `thread new` is
+// gone.
 func TestTerminalCreateAppCLI(t *testing.T) {
 	_, threadService := startTestServerWithThreads(t)
 	projectDir := t.TempDir()
-	projectID := createProjectCLI(t, projectDir)
+	createProjectCLI(t, projectDir)
 
-	stdout, _, err := runCLI(t, "terminal", "create", "--app", "claude/tui", "--project", projectID, "--detach")
+	stdout, _, err := runCLI(t, "terminal", "create", "--app", "claude/tui", "--directory", projectDir, "--detach")
 	if err != nil {
 		t.Fatalf("create --app: %v", err)
 	}
@@ -171,16 +174,16 @@ func TestTerminalCreateAppCLI(t *testing.T) {
 	if id == "" || !strings.Contains(stdout, "running") {
 		t.Fatalf("create output has no running terminal:\n%s", stdout)
 	}
-	if !regexp.MustCompile(`(?m)^app\s+claude/tui$`).MatchString(stdout) || !strings.Contains(stdout, "Claude Code") {
-		t.Errorf("create output missing the app or default name:\n%s", stdout)
+	if !regexp.MustCompile(`(?m)^app\s+claude/tui$`).MatchString(stdout) || !regexp.MustCompile(`(?m)^name\s+`+filepath.Base(projectDir)+`$`).MatchString(stdout) {
+		t.Errorf("create output missing the app or the directory-basename name:\n%s", stdout)
 	}
 	if strings.Contains(stdout, "thrd-") || strings.Contains(stdout, "--settings") {
 		t.Errorf("create printed a thread id or the private command:\n%s", stdout)
 	}
-	if _, _, err := runCLI(t, "thread", "new", "claude", "--project", projectID); err == nil {
+	if _, _, err := runCLI(t, "thread", "new", "claude"); err == nil {
 		t.Error("thread new still exists")
 	}
-	if _, _, err := runCLI(t, "terminal", "create", "--app", "claude/tui", "--command", "hx", "--project", projectID); err == nil || !strings.Contains(err.Error(), "none of the others can be") {
+	if _, _, err := runCLI(t, "terminal", "create", "--app", "claude/tui", "--command", "hx"); err == nil || !strings.Contains(err.Error(), "none of the others can be") {
 		t.Errorf("--app with --command = %v, want cobra's mutual-exclusion refusal", err)
 	}
 
@@ -208,9 +211,9 @@ func TestTerminalCreateAppCLI(t *testing.T) {
 func TestTerminalCreateAppWithoutTTYAndRefusals(t *testing.T) {
 	startTestServer(t)
 	projectDir := t.TempDir()
-	projectID := createProjectCLI(t, projectDir)
+	createProjectCLI(t, projectDir)
 
-	stdout, stderr, err := runCLI(t, "terminal", "create", "--app", "claude/tui", "--project", projectID)
+	stdout, stderr, err := runCLI(t, "terminal", "create", "--app", "claude/tui")
 	if err != nil {
 		t.Fatalf("create --app without TTY = %v", err)
 	}
@@ -221,15 +224,15 @@ func TestTerminalCreateAppWithoutTTYAndRefusals(t *testing.T) {
 		t.Errorf("stderr = %q; want the skipped-attach note", stderr)
 	}
 
-	_, _, err = runCLI(t, "terminal", "create", "--app", "codex/tui", "--project", projectID)
+	_, _, err = runCLI(t, "terminal", "create", "--app", "codex/tui")
 	if err == nil || !strings.Contains(err.Error(), `"codex"`) ||
 		!strings.Contains(err.Error(), "npm install -g @openai/codex") {
 		t.Errorf("create unavailable app = %v, want the command and its install hint", err)
 	}
-	if _, _, err = runCLI(t, "terminal", "create", "--app", "t3code/web", "--project", projectID); err == nil || !strings.Contains(err.Error(), "does not run in a terminal") {
+	if _, _, err = runCLI(t, "terminal", "create", "--app", "t3code/web"); err == nil || !strings.Contains(err.Error(), "does not run in a terminal") {
 		t.Errorf("create handoff app = %v, want the not-terminal refusal", err)
 	}
-	if _, _, err = runCLI(t, "terminal", "create", "--app", "nonexistent/tui", "--project", projectID); err == nil || !strings.Contains(err.Error(), "404") {
+	if _, _, err = runCLI(t, "terminal", "create", "--app", "nonexistent/tui"); err == nil || !strings.Contains(err.Error(), "404") {
 		t.Errorf("create unknown app = %v, want a 404 problem", err)
 	}
 	stdout, _, listErr := runCLI(t, "terminal", "list")
@@ -243,8 +246,8 @@ func TestTerminalCreateAppWithoutTTYAndRefusals(t *testing.T) {
 func TestThreadOpenCLI(t *testing.T) {
 	driver, threadService := startTestServerWithThreads(t)
 	projectDir := t.TempDir()
-	projectID := createProjectCLI(t, projectDir)
-	stdout, _, err := runCLI(t, "terminal", "create", "--app", "claude/tui", "--project", projectID, "--detach")
+	createProjectCLI(t, projectDir)
+	stdout, _, err := runCLI(t, "terminal", "create", "--app", "claude/tui", "--detach")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +308,7 @@ func TestThreadUpdateProjectCLI(t *testing.T) {
 	}
 	projectID := createProjectCLI(t, projectDir)
 	otherID := createProjectCLI(t, t.TempDir())
-	terminalID := createTerminalCLI(t, projectID)
+	terminalID := createTerminalCLI(t, projectDir)
 	id := observeThreadCLI(t, threadService, terminalID, projectDir, "sess-1")
 
 	stdout, _, err := runCLI(t, "thread", "get", id)

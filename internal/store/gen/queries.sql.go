@@ -42,6 +42,18 @@ func (q *Queries) DeleteProject(ctx context.Context, id string) (int64, error) {
 	return result.RowsAffected()
 }
 
+const deleteSpace = `-- name: DeleteSpace :execrows
+DELETE FROM spaces WHERE id = ?
+`
+
+func (q *Queries) DeleteSpace(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteSpace, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const deleteTerminal = `-- name: DeleteTerminal :execrows
 DELETE FROM terminals WHERE id = ?
 `
@@ -111,16 +123,46 @@ func (q *Queries) InsertProject(ctx context.Context, arg InsertProjectParams) (i
 	return result.RowsAffected()
 }
 
+const insertSpace = `-- name: InsertSpace :execrows
+INSERT INTO spaces (id, name, directory, is_default, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (id) DO NOTHING
+`
+
+type InsertSpaceParams struct {
+	ID        string
+	Name      string
+	Directory string
+	IsDefault int64
+	CreatedAt string
+	UpdatedAt string
+}
+
+func (q *Queries) InsertSpace(ctx context.Context, arg InsertSpaceParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, insertSpace,
+		arg.ID,
+		arg.Name,
+		arg.Directory,
+		arg.IsDefault,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const insertTerminal = `-- name: InsertTerminal :execrows
 
-INSERT INTO terminals (id, project_id, name, directory, command, app_id, created_at, updated_at)
+INSERT INTO terminals (id, space_id, name, directory, command, app_id, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO NOTHING
 `
 
 type InsertTerminalParams struct {
 	ID        string
-	ProjectID string
+	SpaceID   string
 	Name      string
 	Directory string
 	Command   sql.NullString
@@ -130,15 +172,15 @@ type InsertTerminalParams struct {
 }
 
 // Repository queries (sqlc input). Nothing outside a repository speaks
-// SQL; internal/store/terminals.go and internal/store/projects.go are the
-// only consumers.
+// SQL; the repositories in internal/store (terminals, spaces, projects,
+// threads) are the only consumers.
 // Insertion doubles as the mint-time ID collision check: a conflicting id
 // inserts zero rows and the caller re-rolls, with no check-then-insert
 // window.
 func (q *Queries) InsertTerminal(ctx context.Context, arg InsertTerminalParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, insertTerminal,
 		arg.ID,
-		arg.ProjectID,
+		arg.SpaceID,
 		arg.Name,
 		arg.Directory,
 		arg.Command,
@@ -265,24 +307,30 @@ func (q *Queries) ListProjects(ctx context.Context) ([]Project, error) {
 	return items, nil
 }
 
-const listTerminalIDsByProject = `-- name: ListTerminalIDsByProject :many
-SELECT id FROM terminals WHERE project_id = ? ORDER BY created_at, id
+const listSpaces = `-- name: ListSpaces :many
+SELECT id, name, directory, is_default, created_at, updated_at FROM spaces ORDER BY created_at, id
 `
 
-// The project-empty check behind project delete's refusal.
-func (q *Queries) ListTerminalIDsByProject(ctx context.Context, projectID string) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, listTerminalIDsByProject, projectID)
+func (q *Queries) ListSpaces(ctx context.Context) ([]Space, error) {
+	rows, err := q.db.QueryContext(ctx, listSpaces)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []string
+	var items []Space
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var i Space
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Directory,
+			&i.IsDefault,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
 			return nil, err
 		}
-		items = append(items, id)
+		items = append(items, i)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -294,7 +342,7 @@ func (q *Queries) ListTerminalIDsByProject(ctx context.Context, projectID string
 }
 
 const listTerminals = `-- name: ListTerminals :many
-SELECT id, project_id, name, directory, command, created_at, updated_at, stop_requested_at, exited_at, exit_code, app_id FROM terminals ORDER BY created_at, id
+SELECT id, space_id, name, directory, command, app_id, created_at, updated_at, stop_requested_at, exited_at, exit_code FROM terminals ORDER BY created_at, id
 `
 
 func (q *Queries) ListTerminals(ctx context.Context) ([]Terminal, error) {
@@ -308,16 +356,16 @@ func (q *Queries) ListTerminals(ctx context.Context) ([]Terminal, error) {
 		var i Terminal
 		if err := rows.Scan(
 			&i.ID,
-			&i.ProjectID,
+			&i.SpaceID,
 			&i.Name,
 			&i.Directory,
 			&i.Command,
+			&i.AppID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.StopRequestedAt,
 			&i.ExitedAt,
 			&i.ExitCode,
-			&i.AppID,
 		); err != nil {
 			return nil, err
 		}
@@ -484,18 +532,55 @@ func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (P
 	return i, err
 }
 
-const updateTerminalName = `-- name: UpdateTerminalName :execrows
-UPDATE terminals SET name = ?, updated_at = ? WHERE id = ?
+const updateSpace = `-- name: UpdateSpace :one
+UPDATE spaces SET name = ?, directory = ?, updated_at = ? WHERE id = ? RETURNING id, name, directory, is_default, created_at, updated_at
 `
 
-type UpdateTerminalNameParams struct {
+type UpdateSpaceParams struct {
 	Name      string
+	Directory string
 	UpdatedAt string
 	ID        string
 }
 
-func (q *Queries) UpdateTerminalName(ctx context.Context, arg UpdateTerminalNameParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, updateTerminalName, arg.Name, arg.UpdatedAt, arg.ID)
+func (q *Queries) UpdateSpace(ctx context.Context, arg UpdateSpaceParams) (Space, error) {
+	row := q.db.QueryRowContext(ctx, updateSpace,
+		arg.Name,
+		arg.Directory,
+		arg.UpdatedAt,
+		arg.ID,
+	)
+	var i Space
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Directory,
+		&i.IsDefault,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateTerminal = `-- name: UpdateTerminal :execrows
+UPDATE terminals SET name = ?, space_id = ?, updated_at = ? WHERE id = ?
+`
+
+type UpdateTerminalParams struct {
+	Name      string
+	SpaceID   string
+	UpdatedAt string
+	ID        string
+}
+
+// The two mutable terminal columns move together (a merge patch).
+func (q *Queries) UpdateTerminal(ctx context.Context, arg UpdateTerminalParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateTerminal,
+		arg.Name,
+		arg.SpaceID,
+		arg.UpdatedAt,
+		arg.ID,
+	)
 	if err != nil {
 		return 0, err
 	}

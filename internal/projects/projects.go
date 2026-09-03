@@ -43,10 +43,6 @@ var (
 	// ErrInvalidUpdate refuses a PATCH that nulls a field that cannot be
 	// cleared (name, directory).
 	ErrInvalidUpdate = errors.New("invalid update")
-	// ErrNotEmpty refuses a delete while terminals still belong to the
-	// project; the wrapped message reports what remains. There is no
-	// cascade and no --force.
-	ErrNotEmpty = errors.New("project is not empty")
 )
 
 // resource is the event-payload resource kind.
@@ -57,20 +53,15 @@ const idPrefix = "proj-"
 // Options wires a Service. Now defaults to time.Now.
 type Options struct {
 	Repository *store.Projects
-	// Terminals is read for the delete-refusal check: a project with
-	// terminals is never deleted.
-	Terminals *store.Terminals
-	Hub       *events.Hub
-	Now       func() time.Time
+	Hub        *events.Hub
+	Now        func() time.Time
 }
 
-// Service owns project policy: canonical-directory uniqueness, name
-// defaulting, and the refuse-when-terminals-remain delete. ops serializes
-// each mutation's commit so check-then-write sequences (directory
-// uniqueness, the empty check) cannot interleave.
+// Service owns project policy: canonical-directory uniqueness and name
+// defaulting. ops serializes each mutation's commit so the
+// check-then-write directory uniqueness sequence cannot interleave.
 type Service struct {
 	repository *store.Projects
-	terminals  *store.Terminals
 	hub        *events.Hub
 	now        func() time.Time
 
@@ -83,7 +74,6 @@ func NewService(opts Options) *Service {
 	}
 	return &Service{
 		repository: opts.Repository,
-		terminals:  opts.Terminals,
 		hub:        opts.Hub,
 		now:        opts.Now,
 	}
@@ -238,27 +228,13 @@ func (s *Service) Update(ctx context.Context, id string, params api.ProjectUpdat
 	return project(record), directory != current.Directory, nil
 }
 
-// Delete removes a project. While any terminal still belongs to it the
-// delete is refused with what remains; the schema's foreign key backstops
-// the race against a concurrent terminal create. Threads are never a
-// reason to refuse: the schema unassigns them and they survive.
+// Delete removes a project, whatever references it: threads are
+// unassigned by the schema and survive, and nothing else refers to a
+// project.
 func (s *Service) Delete(ctx context.Context, id string) error {
 	s.ops.Lock()
 	defer s.ops.Unlock()
-	terminalIDs, err := s.terminals.ListIDsByProject(ctx, id)
-	if err != nil {
-		return err
-	}
-	if len(terminalIDs) > 0 {
-		return fmt.Errorf("%w: %d terminal(s) remain: %s",
-			ErrNotEmpty, len(terminalIDs), strings.Join(terminalIDs, ", "))
-	}
 	deleted, err := s.repository.Delete(ctx, id)
-	if errors.Is(err, store.ErrForeignKeyViolation) {
-		// A terminal create slipped in after the empty check; the foreign
-		// key kept the state consistent, so answer with the refusal.
-		return fmt.Errorf("%w: a terminal was just created in it", ErrNotEmpty)
-	}
 	if err != nil {
 		return err
 	}

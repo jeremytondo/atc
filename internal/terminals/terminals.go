@@ -1,8 +1,9 @@
 // Package terminals is the Terminals domain (ATC-251): the resource
-// behind /v1/terminals, its honest four-state status model, and the
+// behind /v1/terminals, its honest four-state status model, the
 // background reconciliation that keeps an in-memory view fresh against
-// zmx. The package owns policy; the session backend stays behind the
-// small Driver interface (internal/integrations/zmx in production), and durable facts
+// zmx, and the spaces terminals belong to (ATC-296, /v1/spaces). The
+// package owns policy; the session backend stays behind the small Driver
+// interface (internal/integrations/zmx in production), and durable facts
 // live in the ATC-262 store.
 //
 // Reads are served from the in-memory view and never touch zmx or the

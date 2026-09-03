@@ -5,13 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/events"
+	"github.com/jeremytondo/atc/internal/paths"
 	"github.com/jeremytondo/atc/internal/store"
 	"github.com/jeremytondo/atc/internal/terminals/exitmarker"
 )
@@ -19,15 +21,16 @@ import (
 // ErrNotFound reports an id with no record; the API layer maps it to 404.
 var ErrNotFound = errors.New("terminal not found")
 
-// ErrProjectUnknown rejects a create naming a project with no record.
-var ErrProjectUnknown = errors.New("unknown project")
+// ErrDirectoryInvalid refuses a create whose working directory — the one
+// supplied, or the space's — does not exist at that moment. The
+// existence check is deliberate (ATC-256 reversed the earlier
+// skip-it choice); the launch-failure path remains as the backstop for
+// races.
+var ErrDirectoryInvalid = errors.New("terminal directory does not exist")
 
-// ErrProjectDirectoryMissing refuses a create whose project directory does
-// not exist at that moment (the project folder was deleted after project
-// creation). This deliberately reverses the domain's previous skip-the-
-// existence-check choice (ATC-256); the launch-failure path remains as the
-// backstop for races.
-var ErrProjectDirectoryMissing = errors.New("project directory does not exist")
+// ErrInvalidUpdate refuses a PATCH that nulls a field that cannot be
+// cleared.
+var ErrInvalidUpdate = errors.New("invalid update")
 
 // resource is the event-payload resource kind.
 const resource = "terminal"
@@ -36,9 +39,11 @@ const resource = "terminal"
 type Options struct {
 	Repository *store.Terminals
 	Driver     Driver
-	// Projects is read on create: the required project reference is
-	// validated and its directory copied (ATC-256).
-	Projects *store.Projects
+	// Spaces is the repository behind the space view (ATC-296).
+	Spaces *store.Spaces
+	// HomeDir is the server user's home directory: the Default space's
+	// directory, and the default for a space created without one.
+	HomeDir string
 	// MarkerDir is where wrappers record exit evidence.
 	MarkerDir string
 	Hub       *events.Hub
@@ -60,11 +65,12 @@ type Options struct {
 //	reconcileMu serializes whole reconciliation passes (inventory +
 //	            apply), so an older inventory can never overwrite a newer
 //	            pass's conclusions.
-//	mu          guards the view and settling set only.
+//	mu          guards the view, settling set, and the space view only.
 type Service struct {
 	repository *store.Terminals
 	driver     Driver
-	projects   *store.Projects
+	spaces     *store.Spaces
+	homeDir    string
 	markerDir  string
 	hub        *events.Hub
 	logger     *slog.Logger
@@ -81,6 +87,12 @@ type Service struct {
 	// is owned by that create, and reconciliation passes leave them alone
 	// (they would otherwise flap to missing before the session appears).
 	settling map[string]struct{}
+	// spaceView is the in-memory copy of the space records; defaultSpace
+	// the Default space's id; deletingSpaces the spaces whose deletion is
+	// in progress, which no create or move may target.
+	spaceView      map[string]store.SpaceRecord
+	defaultSpace   string
+	deletingSpaces map[string]struct{}
 }
 
 type entry struct {
@@ -89,11 +101,11 @@ type entry struct {
 }
 
 func NewService(opts Options) *Service {
-	if opts.Projects == nil {
-		// A nil projects repository would panic on the first create request
-		// rather than at boot; fail at construction instead (the
-		// server.NewHandler Verify precedent).
-		panic("terminals.NewService: Projects must not be nil")
+	if opts.Spaces == nil || opts.HomeDir == "" {
+		// A nil repository or an empty home would panic or mint a broken
+		// Default space at the first request rather than at boot; fail at
+		// construction instead (the server.NewHandler Verify precedent).
+		panic("terminals.NewService: Spaces and HomeDir must be set")
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -104,7 +116,8 @@ func NewService(opts Options) *Service {
 	return &Service{
 		repository:     opts.Repository,
 		driver:         opts.Driver,
-		projects:       opts.Projects,
+		spaces:         opts.Spaces,
+		homeDir:        opts.HomeDir,
 		markerDir:      opts.MarkerDir,
 		hub:            opts.Hub,
 		logger:         opts.Logger,
@@ -112,14 +125,20 @@ func NewService(opts Options) *Service {
 		verifyInterval: VerifyInterval,
 		view:           make(map[string]*entry),
 		settling:       make(map[string]struct{}),
+		spaceView:      make(map[string]store.SpaceRecord),
+		deletingSpaces: make(map[string]struct{}),
 	}
 }
 
-// Load rebuilds the view from the database at boot. Statuses start from
+// Load rebuilds the space and terminal views from the database at boot,
+// minting the Default space when none exists. Statuses start from
 // durable evidence alone (exited where recorded, unreachable otherwise)
 // and settle in the startup Reconcile that must follow before reads are
 // served.
 func (s *Service) Load(ctx context.Context) error {
+	if err := s.loadSpaces(ctx); err != nil {
+		return err
+	}
 	records, err := s.repository.List(ctx)
 	if err != nil {
 		return err
@@ -314,12 +333,13 @@ func (s *Service) reconcile(ctx context.Context, reap bool) {
 	}
 }
 
-// Create validates the required project reference, copies its directory,
-// mints the ID, persists the record before starting the session (no
-// orphan window), starts it, and waits a short verification window so the
-// common case returns running and a fast-failing command returns exited with
-// real evidence. Failures after the record exists surface through the
-// normal status machinery — there is no separate launch-error path.
+// Create resolves the space (Default when unnamed) and the working
+// directory (the space's when unnamed; it must exist), mints the ID,
+// persists the record before starting the session (no orphan window),
+// starts it, and waits a short verification window so the common case
+// returns running and a fast-failing command returns exited with real
+// evidence. Failures after the record exists surface through the normal
+// status machinery — there is no separate launch-error path.
 func (s *Service) Create(ctx context.Context, params api.TerminalCreateParams) (api.Terminal, error) {
 	return s.create(ctx, params, AppLaunch{})
 }
@@ -332,10 +352,10 @@ type AppLaunch struct {
 	// AppID is the qualified App id recorded on the terminal — this is the
 	// only writer of the immutable appId field.
 	AppID string
-	// Directory overrides the project's as the session's working directory
-	// (a resumed conversation's recorded cwd, ATC-282); the caller vouches
-	// that it exists, and the project's directory is still required to.
-	// Empty means the project's.
+	// Directory overrides the request's and the space's as the session's
+	// working directory (a resumed conversation's recorded cwd, ATC-282);
+	// the caller vouches that it exists. Empty means the request's, else
+	// the space's.
 	Directory string
 	// Prepare, when set, runs once the working directory is resolved and
 	// before the commit lock: launch-time work that may block — waiting
@@ -361,30 +381,40 @@ func (s *Service) CreateForApp(ctx context.Context, params api.TerminalCreatePar
 }
 
 func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, launch AppLaunch) (api.Terminal, error) {
-	project, ok, err := s.projects.Get(ctx, params.ProjectID)
+	// The space (Default when unnamed) is read here for its directory and
+	// re-checked live under the commit lock; a space deleted in between
+	// refuses the commit.
+	spaceID := params.SpaceID
+	if spaceID == "" {
+		s.mu.Lock()
+		spaceID = s.defaultSpace
+		s.mu.Unlock()
+	}
+	s.ops.Lock()
+	space, err := s.liveSpace(spaceID)
+	s.ops.Unlock()
 	if err != nil {
 		return api.Terminal{}, err
 	}
-	if !ok {
-		return api.Terminal{}, fmt.Errorf("%w %q", ErrProjectUnknown, params.ProjectID)
-	}
-	// The project's directory must exist right now; a vanished folder
-	// refuses the create before any record is written.
-	if info, err := os.Stat(project.Directory); err != nil || !info.IsDir() {
-		return api.Terminal{}, fmt.Errorf("%w: %s", ErrProjectDirectoryMissing, project.Directory)
-	}
-
-	name := params.Name
-	if name == "" {
-		name = params.Command
-	}
-	if name == "" {
-		name = "Shell"
-	}
-
 	directory := launch.Directory
 	if directory == "" {
-		directory = project.Directory
+		directory = params.Directory
+	}
+	if directory == "" {
+		directory = space.Directory
+	}
+	// The directory must exist right now; a vanished folder refuses the
+	// create before any record is written.
+	if canonical, err := paths.CanonicalDir(directory); err != nil {
+		return api.Terminal{}, fmt.Errorf("%w: %s", ErrDirectoryInvalid, directory)
+	} else if launch.Directory == "" {
+		// A resumed conversation's recorded cwd is kept as recorded; a
+		// request's or space's directory is stored canonical.
+		directory = canonical
+	}
+	name := strings.TrimSpace(params.Name)
+	if name == "" {
+		name = filepath.Base(directory)
 	}
 	abort := func() {}
 	if launch.Prepare != nil {
@@ -396,7 +426,7 @@ func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, l
 			abort = prepared
 		}
 	}
-	terminal, err := s.commitCreate(ctx, params, project.ID, name, directory, launch)
+	terminal, err := s.commitCreate(ctx, params, space.ID, name, directory, launch)
 	if err != nil {
 		abort()
 	}
@@ -405,15 +435,21 @@ func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, l
 
 // commitCreate is the create from the record on: mint the id under the
 // commit lock, compose, persist, start the session, and settle.
-func (s *Service) commitCreate(ctx context.Context, params api.TerminalCreateParams, projectID, name, directory string,
+func (s *Service) commitCreate(ctx context.Context, params api.TerminalCreateParams, spaceID, name, directory string,
 	launch AppLaunch) (api.Terminal, error) {
 	now := s.now()
 	record := store.TerminalRecord{
-		ProjectID: projectID, Name: name, Directory: directory, Command: params.Command,
+		SpaceID: spaceID, Name: name, Directory: directory, Command: params.Command,
 		AppID:     launch.AppID,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	s.ops.Lock()
+	// The space must still be live at commit: a deletion that began
+	// while the preparation ran must not gain a terminal.
+	if _, err := s.liveSpace(spaceID); err != nil {
+		s.ops.Unlock()
+		return api.Terminal{}, err
+	}
 	// Insertion is the collision check: a taken ID inserts nothing and
 	// re-rolls, with no check-then-insert window. Compose runs inside the
 	// loop so the composed command always references the id that actually
@@ -440,11 +476,10 @@ func (s *Service) commitCreate(ctx context.Context, params api.TerminalCreatePar
 		}
 		inserted, err := s.repository.Insert(ctx, record)
 		if errors.Is(err, store.ErrForeignKeyViolation) {
-			// The project was deleted between the lookup above and this
-			// insert; the foreign key kept the state consistent, so answer
-			// as if the lookup had missed.
+			// Impossible while the deleting mark holds creates off a space
+			// being deleted; the backstop still answers honestly.
 			s.ops.Unlock()
-			return api.Terminal{}, fmt.Errorf("%w %q", ErrProjectUnknown, params.ProjectID)
+			return api.Terminal{}, fmt.Errorf("%w: %q", ErrSpaceNotFound, spaceID)
 		}
 		if err != nil {
 			s.ops.Unlock()
@@ -523,14 +558,14 @@ func (s *Service) Get(id string) (api.Terminal, error) {
 }
 
 // List serves terminals from the in-memory view in creation order. A
-// non-empty projectID filters to that project's terminals; empty returns
+// non-empty spaceID filters to that space's terminals; empty returns
 // everything (the API imposes no scoping — presentation belongs to UIs).
-func (s *Service) List(projectID string) []api.Terminal {
+func (s *Service) List(spaceID string) []api.Terminal {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	terminals := make([]api.Terminal, 0, len(s.view))
 	for _, e := range s.view {
-		if projectID != "" && e.record.ProjectID != projectID {
+		if spaceID != "" && e.record.SpaceID != spaceID {
 			continue
 		}
 		terminals = append(terminals, e.terminal())
@@ -544,26 +579,56 @@ func (s *Service) List(projectID string) []api.Terminal {
 	return terminals
 }
 
-// ErrInvalidUpdate refuses a PATCH that nulls the name.
-var ErrInvalidUpdate = errors.New("invalid update")
-
-// Update applies a merge patch: name is the only mutable field, and it
-// cannot be null. An empty patch returns the terminal unchanged.
+// Update applies a merge patch to the two mutable fields: the name, and
+// the space (a move, which changes nothing else — not the session, the
+// directory, the App, or any thread). Neither accepts null; a move into
+// a space being deleted is refused. An empty patch returns the terminal
+// unchanged.
 func (s *Service) Update(ctx context.Context, id string, params api.TerminalUpdateParams) (api.Terminal, error) {
-	if params.Name.Null() {
-		return api.Terminal{}, fmt.Errorf("%w: name cannot be null", ErrInvalidUpdate)
+	if params.Name.Null() || params.SpaceID.Null() {
+		return api.Terminal{}, fmt.Errorf("%w: name and spaceId cannot be null", ErrInvalidUpdate)
 	}
-	if !params.Name.Set {
+	if !params.Name.Set && !params.SpaceID.Set {
 		return s.Get(id)
 	}
-	return s.updateName(ctx, id, *params.Name.Value)
-}
-
-func (s *Service) updateName(ctx context.Context, id, name string) (api.Terminal, error) {
 	s.ops.Lock()
 	defer s.ops.Unlock()
+	s.mu.Lock()
+	e, exists := s.view[id]
+	var current store.TerminalRecord
+	if exists {
+		current = e.record
+	}
+	s.mu.Unlock()
+	if !exists {
+		return api.Terminal{}, ErrNotFound
+	}
+	name, spaceID := current.Name, current.SpaceID
+	if params.Name.Set {
+		if name = strings.TrimSpace(*params.Name.Value); name == "" {
+			return api.Terminal{}, fmt.Errorf("%w: name cannot be empty", ErrInvalidUpdate)
+		}
+	}
+	if params.SpaceID.Set && *params.SpaceID.Value != current.SpaceID {
+		// Both ends must be live: a terminal must not leave a space whose
+		// deletion has already counted it, nor join one being deleted.
+		if _, err := s.liveSpace(current.SpaceID); err != nil {
+			return api.Terminal{}, err
+		}
+		space, err := s.liveSpace(*params.SpaceID.Value)
+		if err != nil {
+			return api.Terminal{}, err
+		}
+		spaceID = space.ID
+	}
+	if name == current.Name && spaceID == current.SpaceID {
+		return s.Get(id)
+	}
 	now := s.now()
-	ok, err := s.repository.UpdateName(ctx, id, name, now)
+	ok, err := s.repository.Update(ctx, id, name, spaceID, now)
+	if errors.Is(err, store.ErrForeignKeyViolation) {
+		return api.Terminal{}, fmt.Errorf("%w: %q", ErrSpaceNotFound, spaceID)
+	}
 	if err != nil {
 		return api.Terminal{}, err
 	}
@@ -574,6 +639,7 @@ func (s *Service) updateName(ctx context.Context, id, name string) (api.Terminal
 	s.mu.Lock()
 	if e, exists := s.view[id]; exists {
 		e.record.Name = name
+		e.record.SpaceID = spaceID
 		e.record.UpdatedAt = now
 		terminal = e.terminal()
 	}
@@ -650,7 +716,7 @@ func (e *entry) terminal() api.Terminal {
 	terminal := api.Terminal{
 		ID:        e.record.ID,
 		Name:      e.record.Name,
-		ProjectID: e.record.ProjectID,
+		SpaceID:   e.record.SpaceID,
 		Directory: e.record.Directory,
 		AppID:     e.record.AppID,
 		Status:    e.status,

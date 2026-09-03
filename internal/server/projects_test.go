@@ -147,82 +147,17 @@ func TestProjectCreateValidation(t *testing.T) {
 	}
 }
 
-func TestProjectDeleteRefusedWhileTerminalsRemain(t *testing.T) {
+// Projects own no terminals (ATC-296): a project deletes with terminals
+// running in its directory, which stay put.
+func TestProjectDeleteLeavesTerminals(t *testing.T) {
 	f := newFixture(t)
 	created := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals",
 		f.createTerminalBody(t, api.TerminalCreateParams{})))
-
-	rec := f.request(t, http.MethodDelete, "/v1/projects/"+f.projectID, "")
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("delete non-empty: got %d, want 409; body %s", rec.Code, rec.Body)
-	}
-	// The refusal reports what remains.
-	if !strings.Contains(rec.Body.String(), created.ID) {
-		t.Errorf("refusal does not name the terminal: %s", rec.Body)
-	}
-
-	if rec := f.request(t, http.MethodDelete, "/v1/terminals/"+created.ID, ""); rec.Code != http.StatusNoContent {
-		t.Fatalf("delete terminal: got %d", rec.Code)
-	}
 	if rec := f.request(t, http.MethodDelete, "/v1/projects/"+f.projectID, ""); rec.Code != http.StatusNoContent {
-		t.Errorf("delete emptied project: got %d; body %s", rec.Code, rec.Body)
+		t.Fatalf("delete project: got %d; body %s", rec.Code, rec.Body)
 	}
-}
-
-// The ATC-256 terminal-create contract: projectId is required, must name a
-// known project, and the project's directory must exist at that moment.
-func TestTerminalCreateProjectContract(t *testing.T) {
-	f := newFixture(t)
-
-	if rec := f.request(t, http.MethodPost, "/v1/terminals", `{}`); rec.Code != http.StatusUnprocessableEntity {
-		t.Errorf("missing projectId: got %d, want 422; body %s", rec.Code, rec.Body)
-	}
-	if rec := f.request(t, http.MethodPost, "/v1/terminals", `{"projectId":"proj-zzzzz"}`); rec.Code != http.StatusUnprocessableEntity {
-		t.Errorf("unknown project: got %d, want 422; body %s", rec.Code, rec.Body)
-	}
-	// The directory parameter is gone from create.
-	if rec := f.request(t, http.MethodPost, "/v1/terminals",
-		`{"projectId":"`+f.projectID+`","directory":"/elsewhere"}`); rec.Code != http.StatusUnprocessableEntity {
-		t.Errorf("directory param: got %d, want 422; body %s", rec.Code, rec.Body)
-	}
-
-	// The project's folder vanishing after project creation refuses the
-	// create, and no terminal row is written.
-	if err := os.RemoveAll(f.projectDir); err != nil {
-		t.Fatal(err)
-	}
-	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{}))
-	if rec.Code != http.StatusConflict {
-		t.Errorf("vanished directory: got %d, want 409; body %s", rec.Code, rec.Body)
-	}
-	if rec := f.request(t, http.MethodGet, "/v1/terminals", ""); !strings.Contains(rec.Body.String(), `"terminals":[]`) {
-		t.Errorf("refused create left a terminal: %s", rec.Body)
-	}
-}
-
-func TestTerminalListProjectFilter(t *testing.T) {
-	f := newFixture(t)
-	other := f.createProject(t, t.TempDir())
-
-	mine := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals",
-		f.createTerminalBody(t, api.TerminalCreateParams{})))
-	theirs := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals",
-		f.createTerminalBody(t, api.TerminalCreateParams{ProjectID: other.ID})))
-
-	var list api.TerminalList
-	rec := f.request(t, http.MethodGet, "/v1/terminals?project="+other.ID, "")
-	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
-		t.Fatal(err)
-	}
-	if len(list.Terminals) != 1 || list.Terminals[0].ID != theirs.ID {
-		t.Errorf("filtered list = %+v, want only %s", list, theirs.ID)
-	}
-	rec = f.request(t, http.MethodGet, "/v1/terminals", "")
-	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
-		t.Fatal(err)
-	}
-	if len(list.Terminals) != 2 {
-		t.Errorf("unfiltered list = %+v, want both %s and %s", list, mine.ID, theirs.ID)
+	if got := decodeTerminal(t, f.request(t, http.MethodGet, "/v1/terminals/"+created.ID, "")); got.Status != api.TerminalRunning {
+		t.Errorf("terminal after project delete = %+v; want untouched", got)
 	}
 }
 

@@ -92,12 +92,10 @@ func (p *Projects) Update(ctx context.Context, id, name, directory string, at ti
 }
 
 // Delete removes the record; false means no such record. Threads that
-// referenced it are unassigned by the schema (ON DELETE SET NULL). A
-// project that still owns terminals fails with ErrForeignKeyViolation —
-// the domain refuses first and this is the backstop.
+// referenced it are unassigned by the schema (ON DELETE SET NULL).
 func (p *Projects) Delete(ctx context.Context, id string) (bool, error) {
 	n, err := p.writes.DeleteProject(ctx, id)
-	return n > 0, foreignKeyError(err)
+	return n > 0, err
 }
 
 func projectFrom(row gen.Project) (ProjectRecord, error) {

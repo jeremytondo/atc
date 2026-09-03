@@ -247,12 +247,12 @@ func (s *Service) app(qualified string) (Integration, App, error) {
 }
 
 // Launch creates the terminal that runs the App: the App composes the
-// command, its display name is the default terminal name, and everything
-// from the record on is the normal terminal create path — persistence,
-// wrapper, verification window, status, and events all belong to the
-// terminals domain. Every refusal lands before a record exists, and no
-// thread exists until the Integration observes one.
-func (s *Service) Launch(ctx context.Context, appID, projectID, name string) (api.Terminal, error) {
+// command, and everything from the record on is the normal terminal
+// create path — placement in a space, the working directory, the name
+// default, persistence, wrapper, verification window, status, and events
+// all belong to the terminals domain. Every refusal lands before a record
+// exists, and no thread exists until the Integration observes one.
+func (s *Service) Launch(ctx context.Context, appID string, params api.TerminalCreateParams) (api.Terminal, error) {
 	integration, app, err := s.app(appID)
 	if err != nil {
 		return api.Terminal{}, err
@@ -260,19 +260,19 @@ func (s *Service) Launch(ctx context.Context, appID, projectID, name string) (ap
 	if app.Terminal == nil {
 		return api.Terminal{}, fmt.Errorf("%w: %s", ErrAppNotTerminal, appID)
 	}
-	return s.launch(ctx, integration, app, projectID, name, "", "")
+	return s.launch(ctx, integration, app, params, "", "")
 }
 
 // Resume is the launch's second form (ATC-282): the terminal runs the
 // provider's exact resume of a dormant conversation, composed through the
 // App that produced the thread with the thread's private identity. A
 // thread with no App provenance, or whose App does not run in a
-// terminal, is refused: it opens only in its own program. The session
-// starts in the conversation's recorded working directory when it still
-// exists, otherwise the project directory — a resumed conversation can
-// have run from a subdirectory the user since removed. The threads
-// domain calls this inside its open decision; everything else is the
-// normal launch.
+// terminal, is refused: it opens only in its own program. The terminal
+// lands in the Default space and starts in the conversation's recorded
+// working directory when it still exists, otherwise the space's — a
+// resumed conversation can have run from a subdirectory the user since
+// removed. The threads domain calls this inside its open decision;
+// everything else is the normal launch.
 func (s *Service) Resume(ctx context.Context, req threads.ResumeRequest) (api.Terminal, error) {
 	if req.AppID == "" {
 		return api.Terminal{}, fmt.Errorf("%w: the thread was not started in an ATC terminal", ErrNotResumable)
@@ -295,19 +295,16 @@ func (s *Service) Resume(ctx context.Context, req threads.ResumeRequest) (api.Te
 			directory = ""
 		}
 	}
-	return s.launch(ctx, integration, app, req.ProjectID, "", directory, req.ProviderID)
+	return s.launch(ctx, integration, app, api.TerminalCreateParams{}, directory, req.ProviderID)
 }
 
 // launch hands the terminals domain a create whose command the App
 // composes once the id is minted — under the commit lock, so it must be
 // quick — with the App's optional preparation run before it.
-func (s *Service) launch(ctx context.Context, integration Integration, app App, projectID, name, directory, resumeID string) (api.Terminal, error) {
+func (s *Service) launch(ctx context.Context, integration Integration, app App, params api.TerminalCreateParams, directory, resumeID string) (api.Terminal, error) {
 	if integration.Executable != nil && !s.resolves(integration.Executable) {
 		return api.Terminal{}, fmt.Errorf("%w: command %q not found on the server's PATH; install with: %s",
 			ErrUnavailable, integration.Executable.Binary, integration.Executable.InstallHint)
-	}
-	if name == "" {
-		name = app.Name
 	}
 	launch := terminals.AppLaunch{
 		AppID:     QualifiedAppID(integration.ID, app.ID),
@@ -329,8 +326,8 @@ func (s *Service) launch(ctx context.Context, integration Integration, app App, 
 			return abort, nil
 		}
 	}
-	return s.terminals.CreateForApp(ctx, api.TerminalCreateParams{
-		ProjectID: projectID,
-		Name:      name,
-	}, launch)
+	// The App's selectors are the catalog's business; placement is the
+	// request's, passed through untouched.
+	params.AppID, params.Command = "", ""
+	return s.terminals.CreateForApp(ctx, params, launch)
 }

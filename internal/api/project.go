@@ -5,7 +5,8 @@ import "time"
 // Project is the /v1/projects resource (ATC-256, ATC-295): durable
 // codebase context. A project is rooted at a canonical directory;
 // threads whose initial directory lies under it are classified into it,
-// the most specific project winning when projects nest.
+// the most specific project winning when projects nest. Projects own no
+// terminals — runtime organization is the space's (ATC-296).
 type Project struct {
 	ID string `json:"id" doc:"Server-minted identifier."`
 	// Name is editable and deliberately not unique; the canonical

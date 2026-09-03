@@ -24,6 +24,7 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/application"
 	"github.com/jeremytondo/atc/internal/events"
 	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/projects"
@@ -57,14 +58,11 @@ type Options struct {
 	// token is deliberately never used for hook delivery. Keys are
 	// http.ServeMux patterns, e.g. "POST /internal/claude/hooks".
 	InternalRoutes map[string]http.Handler
-	// TerminalCleanups run after a terminal delete commits: each clears
-	// per-terminal state owned outside the terminals domain — an
-	// Integration's hook secret registrations and their files. Each must be a barrier
-	// (hookauth Deregister's contract): it returns only once no delivery
-	// can mutate state on the launch's behalf, so the delete route can
-	// converge the threads view afterwards without racing late evidence.
-	// Wired by the composition root so the domains stay decoupled.
-	TerminalCleanups []func(terminalID string)
+	// Coordinator runs the cross-domain workflows (terminal and space
+	// deletion, project mutations); required with Terminals or Projects.
+	// Wired by the composition root so the domains stay decoupled and
+	// every entry point runs one workflow.
+	Coordinator *application.Coordinator
 	// HeartbeatInterval paces SSE heartbeats; zero means the default.
 	HeartbeatInterval time.Duration
 }
@@ -110,11 +108,15 @@ func NewHandler(opts Options) http.Handler {
 		return &HealthOutput{Body: api.Health{Status: "ok", Version: opts.Version}}, nil
 	})
 
+	if (opts.Terminals != nil || opts.Projects != nil) && opts.Coordinator == nil {
+		panic("server.NewHandler: Coordinator must accompany Terminals and Projects")
+	}
 	if opts.Terminals != nil {
-		registerTerminals(humaAPI, opts.Terminals, opts.Integrations, opts.Threads, opts.TerminalCleanups)
+		registerTerminals(humaAPI, opts.Terminals, opts.Integrations, opts.Threads, opts.Coordinator)
+		registerSpaces(humaAPI, opts.Terminals, opts.Coordinator)
 	}
 	if opts.Projects != nil {
-		registerProjects(humaAPI, opts.Projects, opts.Threads, opts.Logger)
+		registerProjects(humaAPI, opts.Projects, opts.Coordinator)
 	}
 	if opts.Integrations != nil {
 		registerIntegrations(humaAPI, opts.Integrations)

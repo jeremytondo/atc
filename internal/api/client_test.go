@@ -222,11 +222,11 @@ func TestTerminalMethods(t *testing.T) {
 	client := NewClient(srv.URL, testToken, testClientVersion, nil, nil)
 	ctx := context.Background()
 
-	terminal, err := client.CreateTerminal(ctx, TerminalCreateParams{ProjectID: "proj-x7k2f", Command: "hx"})
+	terminal, err := client.CreateTerminal(ctx, TerminalCreateParams{SpaceID: "spce-x7k2f", Command: "hx"})
 	if err != nil || terminal.ID != "term-x7k2f" {
 		t.Fatalf("CreateTerminal = %+v, %v", terminal, err)
 	}
-	want := call{http.MethodPost, "/v1/terminals", "", `{"projectId":"proj-x7k2f","command":"hx"}`}
+	want := call{http.MethodPost, "/v1/terminals", "", `{"spaceId":"spce-x7k2f","command":"hx"}`}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("create request (-want +got):\n%s", diff)
 	}
@@ -238,10 +238,10 @@ func TestTerminalMethods(t *testing.T) {
 		t.Errorf("list request = %+v", got)
 	}
 
-	if _, err := client.Terminals(ctx, "proj-x7k2f"); err != nil {
+	if _, err := client.Terminals(ctx, "spce-x7k2f"); err != nil {
 		t.Fatal(err)
 	}
-	if got.Query != "project=proj-x7k2f" {
+	if got.Query != "space=spce-x7k2f" {
 		t.Errorf("filtered list query = %q", got.Query)
 	}
 
@@ -424,5 +424,53 @@ func TestOpenThread(t *testing.T) {
 	}
 	if got.Method != http.MethodPost || got.Path != "/v1/threads/thrd-x7k2f/open" {
 		t.Errorf("request = %+v", got)
+	}
+}
+
+// The space methods are thin typed wrappers over the flat /v1/spaces
+// surface.
+func TestSpaceMethods(t *testing.T) {
+	type call struct {
+		Method, Path, Query, Body string
+	}
+	var got call
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		got = call{r.Method, r.URL.Path, r.URL.RawQuery, strings.TrimSpace(string(body))}
+		if r.URL.Path == "/v1/spaces" && r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(SpaceList{Spaces: []Space{{ID: "spce-x7k2f", IsDefault: true}}})
+			return
+		}
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(Space{ID: "spce-x7k2f"})
+	}))
+	defer srv.Close()
+	client := NewClient(srv.URL, testToken, testClientVersion, nil, nil)
+	ctx := context.Background()
+
+	if _, err := client.CreateSpace(ctx, SpaceCreateParams{Directory: "/work", Name: "work"}); err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(call{http.MethodPost, "/v1/spaces", "", `{"directory":"/work","name":"work"}`}, got); diff != "" {
+		t.Errorf("create request (-want +got):\n%s", diff)
+	}
+	spaces, err := client.Spaces(ctx)
+	if err != nil || len(spaces) != 1 || !spaces[0].IsDefault {
+		t.Fatalf("Spaces = %+v, %v", spaces, err)
+	}
+	if _, err := client.Space(ctx, "spce-x7k2f"); err != nil || got.Path != "/v1/spaces/spce-x7k2f" {
+		t.Errorf("get = %+v, %v", got, err)
+	}
+	if _, err := client.UpdateSpace(ctx, "spce-x7k2f", SpaceUpdateParams{Name: Some("renamed")}); err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(call{http.MethodPatch, "/v1/spaces/spce-x7k2f", "", `{"name":"renamed"}`}, got); diff != "" {
+		t.Errorf("update request (-want +got):\n%s", diff)
+	}
+	if err := client.DeleteSpace(ctx, "spce-x7k2f"); err != nil || got.Method != http.MethodDelete {
+		t.Errorf("delete = %+v, %v", got, err)
 	}
 }

@@ -95,7 +95,7 @@ func newHookFixture(t *testing.T) *hookFixture {
 	t.Helper()
 	observer := &fakeObserver{identity: map[string]string{}}
 	terminals := &fakeTerminals{terminals: map[string]api.Terminal{
-		"term-aaaaa": {ID: "term-aaaaa", ProjectID: "proj-aaaaa", Directory: "/launch", AppID: AppID, Status: api.TerminalRunning},
+		"term-aaaaa": {ID: "term-aaaaa", SpaceID: "spce-aaaaa", Directory: "/launch", AppID: AppID, Status: api.TerminalRunning},
 	}}
 	dir := t.TempDir()
 	hooks, err := NewHooks(HooksOptions{

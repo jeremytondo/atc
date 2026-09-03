@@ -154,10 +154,8 @@ type ResumeRequest struct {
 	IntegrationID string
 	AppID         string
 	ProviderID    string
-	// ProjectID is the thread's project, which the terminal joins.
-	ProjectID string
 	// Directory is the conversation's last recorded working directory,
-	// empty when never observed; the resumer falls back to the project's
+	// empty when never observed; the resumer falls back to the space's
 	// directory when it no longer exists.
 	Directory string
 }

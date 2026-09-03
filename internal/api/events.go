@@ -17,6 +17,9 @@ const (
 	EventThreadCreated   = "thread.created"
 	EventThreadUpdated   = "thread.updated"
 	EventThreadDeleted   = "thread.deleted"
+	EventSpaceCreated    = "space.created"
+	EventSpaceUpdated    = "space.updated"
+	EventSpaceDeleted    = "space.deleted"
 	// EventIntegrationUpdated fires when an Integration's connection state
 	// changes (ATC-285) — on transitions only, never per reconnect attempt.
 	// Executable availability is probed at read time and emits nothing.
@@ -61,6 +64,16 @@ type ThreadUpdatedEvent struct{ ChangeEvent }
 
 // ThreadDeletedEvent is the thread.deleted payload.
 type ThreadDeletedEvent struct{ ChangeEvent }
+
+// SpaceCreatedEvent is the space.created payload.
+type SpaceCreatedEvent struct{ ChangeEvent }
+
+// SpaceUpdatedEvent is the space.updated payload.
+type SpaceUpdatedEvent struct{ ChangeEvent }
+
+// SpaceDeletedEvent is the space.deleted payload; its terminals' own
+// terminal.deleted events precede it.
+type SpaceDeletedEvent struct{ ChangeEvent }
 
 // IntegrationUpdatedEvent is the integration.updated payload; the id is
 // the Integration's.

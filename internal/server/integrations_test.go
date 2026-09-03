@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -129,7 +130,7 @@ func TestAppLaunchThroughTerminalCreate(t *testing.T) {
 		t.Fatalf("create with app: got %d; body %s", rec.Code, rec.Body)
 	}
 	launched := decodeTerminal(t, rec)
-	if launched.AppID != "claude/tui" || launched.Name != "Claude Code" || launched.Status != api.TerminalRunning || launched.Command != "" {
+	if launched.AppID != "claude/tui" || launched.Name != filepath.Base(f.projectDir) || launched.Status != api.TerminalRunning || launched.Command != "" {
 		t.Errorf("launched = %+v", launched)
 	}
 	if body := rec.Body.String(); strings.Contains(body, "--settings") || strings.Contains(body, `"command"`) {

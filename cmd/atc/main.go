@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/application"
 	"github.com/jeremytondo/atc/internal/authtoken"
 	"github.com/jeremytondo/atc/internal/cli"
 	"github.com/jeremytondo/atc/internal/config"
@@ -91,7 +92,7 @@ expose on the tailnet without the flag.`,
 			return cmd.Help()
 		},
 	}
-	root.AddCommand(newThreadCmd(), newTerminalCmd(), newProjectCmd(), newIntegrationCmd(), newAPICmd(), newVersionCmd(),
+	root.AddCommand(newThreadCmd(), newTerminalCmd(), newSpaceCmd(), newProjectCmd(), newIntegrationCmd(), newAPICmd(), newVersionCmd(),
 		newUpgradeCmd(), newServerCmd(), newChildCmd())
 	return root
 }
@@ -551,13 +552,18 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 	hub := events.NewHub(events.DefaultBacklog)
 	projectService := projects.NewService(projects.Options{
 		Repository: database.Projects(),
-		Terminals:  database.Terminals(),
 		Hub:        hub,
 	})
+	// The Default space is rooted at the server user's home (ATC-296).
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
 	terminalService := terminals.NewService(terminals.Options{
 		Repository: database.Terminals(),
 		Driver:     driver,
-		Projects:   database.Projects(),
+		Spaces:     database.Spaces(),
+		HomeDir:    homeDir,
 		MarkerDir:  markerDir,
 		Hub:        hub,
 		Logger:     logger,
@@ -661,6 +667,18 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// The application coordinator runs the cross-domain workflows: the
+	// deletion of terminals and spaces (the terminals domain's delete, then
+	// the Integrations' per-terminal cleanups, then the threads view) and
+	// the project mutations threads classify against.
+	coordinator := application.New(application.Options{
+		Terminals: terminalService,
+		Threads:   threadService,
+		Projects:  projectService,
+		Cleanups:  []func(string){claudeHooks.Deregister, codexObserver.Forget},
+		Logger:    logger,
+	})
+
 	handler := server.NewHandler(server.Options{
 		Verify:       tokens.Verify,
 		Version:      versionValue,
@@ -673,7 +691,7 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		InternalRoutes: map[string]http.Handler{
 			"POST " + claude.HooksPath: claudeHooks.Handler(),
 		},
-		TerminalCleanups: []func(string){claudeHooks.Deregister, codexObserver.Forget},
+		Coordinator: coordinator,
 	})
 	// The reconcile loop is waited on before the deferred database close,
 	// so shutdown never races an in-flight pass against it. The wait is

@@ -177,9 +177,9 @@ func (s *Store) Projects() *Projects {
 
 // ErrForeignKeyViolation marks a write the schema's foreign keys refused —
 // the database-level backstop behind the domains' own referential checks
-// (terminal create racing a project delete, and vice versa). Domain
-// services translate it to their typed errors instead of surfacing a raw
-// constraint failure.
+// (terminal create racing a space delete, a thread assignment racing a
+// project delete). Domain services translate it to their typed errors
+// instead of surfacing a raw constraint failure.
 var ErrForeignKeyViolation = errors.New("foreign key constraint violated")
 
 // foreignKeyError wraps a driver error in ErrForeignKeyViolation when it

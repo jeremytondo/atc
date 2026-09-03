@@ -75,18 +75,18 @@ func (c *Client) Terminal(ctx context.Context, id string) (Terminal, error) {
 }
 
 // Terminals lists every terminal, exited and missing ones included. A
-// non-empty projectID filters to that project's terminals.
-func (c *Client) Terminals(ctx context.Context, projectID string) ([]Terminal, error) {
+// non-empty spaceID filters to that space's terminals.
+func (c *Client) Terminals(ctx context.Context, spaceID string) ([]Terminal, error) {
 	path := "/v1/terminals"
-	if projectID != "" {
-		path += "?project=" + url.QueryEscape(projectID)
+	if spaceID != "" {
+		path += "?space=" + url.QueryEscape(spaceID)
 	}
 	var list TerminalList
 	err := c.do(ctx, http.MethodGet, path, nil, &list)
 	return list.Terminals, err
 }
 
-// UpdateTerminal renames a terminal; name is the only mutable field.
+// UpdateTerminal applies a merge patch: rename, move to another space.
 func (c *Client) UpdateTerminal(ctx context.Context, id string, params TerminalUpdateParams) (Terminal, error) {
 	var terminal Terminal
 	err := c.do(ctx, http.MethodPatch, "/v1/terminals/"+id, params, &terminal)
@@ -96,6 +96,40 @@ func (c *Client) UpdateTerminal(ctx context.Context, id string, params TerminalU
 // DeleteTerminal stops the session best-effort and removes the record.
 func (c *Client) DeleteTerminal(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/terminals/"+id, nil, nil)
+}
+
+// CreateSpace registers a space for terminals to belong to.
+func (c *Client) CreateSpace(ctx context.Context, params SpaceCreateParams) (Space, error) {
+	var space Space
+	err := c.do(ctx, http.MethodPost, "/v1/spaces", params, &space)
+	return space, err
+}
+
+// Space fetches one space by ID.
+func (c *Client) Space(ctx context.Context, id string) (Space, error) {
+	var space Space
+	err := c.do(ctx, http.MethodGet, "/v1/spaces/"+id, nil, &space)
+	return space, err
+}
+
+// Spaces lists every space, the Default one included.
+func (c *Client) Spaces(ctx context.Context) ([]Space, error) {
+	var list SpaceList
+	err := c.do(ctx, http.MethodGet, "/v1/spaces", nil, &list)
+	return list.Spaces, err
+}
+
+// UpdateSpace applies a merge patch to a space's name and directory.
+func (c *Client) UpdateSpace(ctx context.Context, id string, params SpaceUpdateParams) (Space, error) {
+	var space Space
+	err := c.do(ctx, http.MethodPatch, "/v1/spaces/"+id, params, &space)
+	return space, err
+}
+
+// DeleteSpace deletes a space and every terminal in it; the Default
+// space is refused.
+func (c *Client) DeleteSpace(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/spaces/"+id, nil, nil)
 }
 
 // Integrations lists the compiled-in Integrations with their Apps, agents,
@@ -189,15 +223,14 @@ func (c *Client) Projects(ctx context.Context) ([]Project, error) {
 	return list.Projects, err
 }
 
-// UpdateProject renames a project; name is the only mutable field.
+// UpdateProject applies a merge patch to a project's name and directory.
 func (c *Client) UpdateProject(ctx context.Context, id string, params ProjectUpdateParams) (Project, error) {
 	var project Project
 	err := c.do(ctx, http.MethodPatch, "/v1/projects/"+id, params, &project)
 	return project, err
 }
 
-// DeleteProject removes an empty project; a project that still holds
-// terminals is refused.
+// DeleteProject removes a project; its threads survive unassigned.
 func (c *Client) DeleteProject(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/projects/"+id, nil, nil)
 }

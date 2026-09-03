@@ -157,8 +157,8 @@ func newProjectDeleteCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "delete <id>",
 		Short: "Delete a project",
-		Long: `Delete a project. Refused while any terminal still belongs to it — delete
-those first. Its threads survive, unassigned.`,
+		Long: `Delete a project. Its threads survive, unassigned; terminals and spaces are
+untouched — a project owns neither.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, _ string) error {
 			if err := client.DeleteProject(cmd.Context(), args[0]); err != nil {

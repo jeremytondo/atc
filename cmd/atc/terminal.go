@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 
@@ -46,15 +48,16 @@ func newTerminalCreateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create a terminal, start its session, and attach",
-		Long: `Create a terminal and start its session immediately. The terminal lands in
-the project owning the current directory (found by walking up, the way git
-finds a repository) and starts in that project's directory; pass --project
-to pick one explicitly. Your shell then takes over the session (detach
-with ctrl-\); pass --detach to print the terminal and leave it running in
-the background instead. Where attaching is impossible (no TTY, or the
-server is on another machine) the terminal is still created and printed.
-The session survives disconnects and ATC server restarts; return to it
-with ` + "`atc terminal attach <id>`" + `.
+		Long: `Create a terminal and start its session immediately. The terminal belongs
+to a space (--space; the Default space otherwise) and starts in --directory
+when given. Without --directory or --space, a server on this machine gets
+your current directory; a remote server uses the space's directory, since
+your directory means nothing there. Your shell then takes over the session
+(detach with ctrl-\); pass --detach to print the terminal and leave it
+running in the background instead. Where attaching is impossible (no TTY,
+or the server is on another machine) the terminal is still created and
+printed. The session survives disconnects and ATC server restarts; return
+to it with ` + "`atc terminal attach <id>`" + `.
 With --command it runs through your login shell (profile and rc files
 loaded); with --app <integration/app> it launches that app (see
 ` + "`atc integration list`" + `) — a conversation started there becomes a
@@ -63,26 +66,18 @@ shell. A missing app executable is refused with its install hint before
 anything is created.`,
 		Args: cobra.NoArgs,
 		RunE: runWithClient(func(cmd *cobra.Command, _ []string, client *api.Client, baseURL string) error {
-			flags := cmd.Flags()
-			command, err := flags.GetString("command")
-			if err != nil {
-				return err
-			}
-			app, err := flags.GetString("app")
+			params, err := createParams(cmd, baseURL)
 			if err != nil {
 				return err
 			}
 			return runAndMaybeAttach(cmd, baseURL, func(ctx context.Context) (api.Terminal, error) {
-				projectID, name, err := resolveCreateFlags(cmd, client)
-				if err != nil {
-					return api.Terminal{}, err
-				}
-				return client.CreateTerminal(ctx, api.TerminalCreateParams{ProjectID: projectID, Name: name, Command: command, AppID: app})
+				return client.CreateTerminal(ctx, params)
 			})
 		}),
 	}
-	cmd.Flags().String("name", "", "display name (defaults from --command or the app's name, else \"Shell\")")
-	cmd.Flags().String("project", "", "project the terminal belongs to (defaults to the project owning the current directory)")
+	cmd.Flags().String("name", "", "display name (defaults to the directory's basename)")
+	cmd.Flags().String("space", "", "space the terminal belongs to (defaults to the Default space)")
+	cmd.Flags().String("directory", "", "working directory (defaults to your current directory against a local server, else the space's)")
 	cmd.Flags().Bool("detach", false, "print the terminal instead of attaching to it")
 	cmd.Flags().String("command", "", "command to run through your shell; omit for a plain shell")
 	cmd.Flags().String("app", "", "app to launch, as integration/app (e.g. codex/tui)")
@@ -90,20 +85,41 @@ anything is created.`,
 	return cmd
 }
 
-// resolveCreateFlags reads the name and project flags, defaulting the
-// project from the current directory (which may ask to create one).
-func resolveCreateFlags(cmd *cobra.Command, client *api.Client) (projectID, name string, err error) {
+// createParams reads the create flags. With neither --directory nor
+// --space, a local server gets this process's working directory as the
+// explicit directory: the natural "open a terminal here", meaningful only
+// when the server shares this machine. A relative --directory is resolved
+// against this process; existence is the server's to check.
+func createParams(cmd *cobra.Command, baseURL string) (api.TerminalCreateParams, error) {
 	flags := cmd.Flags()
-	if name, err = flags.GetString("name"); err != nil {
-		return "", "", err
+	var params api.TerminalCreateParams
+	var err error
+	if params.Name, err = flags.GetString("name"); err != nil {
+		return params, err
 	}
-	if projectID, err = flags.GetString("project"); err != nil {
-		return "", "", err
+	if params.SpaceID, err = flags.GetString("space"); err != nil {
+		return params, err
 	}
-	if projectID == "" {
-		projectID, err = cli.ResolveProjectID(cmd.Context(), client, cmd.InOrStdin(), cmd.ErrOrStderr(), stdinIsTTY())
+	if params.Directory, err = flags.GetString("directory"); err != nil {
+		return params, err
 	}
-	return projectID, name, err
+	if params.Command, err = flags.GetString("command"); err != nil {
+		return params, err
+	}
+	if params.AppID, err = flags.GetString("app"); err != nil {
+		return params, err
+	}
+	switch {
+	case params.Directory != "":
+		if params.Directory, err = filepath.Abs(params.Directory); err != nil {
+			return params, err
+		}
+	case params.SpaceID == "" && cli.IsLocalServer(baseURL):
+		if params.Directory, err = os.Getwd(); err != nil {
+			return params, err
+		}
+	}
+	return params, nil
 }
 
 // runAndMaybeAttach runs act — the API call yielding a terminal — then
@@ -167,16 +183,16 @@ func newTerminalListCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List terminals with their statuses",
-		Long: `List every terminal (pass --project to scope to one project). Exited and
-missing terminals stay listed — an exit you never saw is information, not
-garbage — until you delete them.`,
+		Long: `List every terminal in every space (pass --space to scope to one). Exited
+and missing terminals stay listed — an exit you never saw is information,
+not garbage — until you delete them.`,
 		Args: cobra.NoArgs,
 		RunE: runWithClient(func(cmd *cobra.Command, _ []string, client *api.Client, _ string) error {
-			project, err := cmd.Flags().GetString("project")
+			space, err := cmd.Flags().GetString("space")
 			if err != nil {
 				return err
 			}
-			terminals, err := client.Terminals(cmd.Context(), project)
+			terminals, err := client.Terminals(cmd.Context(), space)
 			if err != nil {
 				return err
 			}
@@ -186,28 +202,43 @@ garbage — until you delete them.`,
 				return err
 			}
 			w := tabwriter.NewWriter(out, 2, 8, 2, ' ', 0)
-			_, _ = fmt.Fprintln(w, "ID\tSTATUS\tNAME\tPROJECT\tDIRECTORY")
+			_, _ = fmt.Fprintln(w, "ID\tSTATUS\tNAME\tSPACE\tDIRECTORY")
 			for _, terminal := range terminals {
-				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", terminal.ID, statusLabel(terminal), terminal.Name, terminal.ProjectID, terminal.Directory)
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", terminal.ID, statusLabel(terminal), terminal.Name, terminal.SpaceID, terminal.Directory)
 			}
 			return w.Flush()
 		}),
 	}
-	cmd.Flags().String("project", "", "only terminals belonging to this project")
+	cmd.Flags().String("space", "", "only terminals belonging to this space")
 	return cmd
 }
 
 func newTerminalUpdateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "update <id>",
-		Short: "Update a terminal (name is the only mutable field)",
-		Args:  cobra.ExactArgs(1),
+		Short: "Rename a terminal or move it to another space",
+		Long: `Rename a terminal, or move it to another space with --space. A move changes
+nothing else: the session keeps running in its directory, with its app and
+its thread.`,
+		Args: cobra.ExactArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, _ string) error {
-			name, err := cmd.Flags().GetString("name")
-			if err != nil {
-				return err
+			flags := cmd.Flags()
+			var params api.TerminalUpdateParams
+			if flags.Changed("name") {
+				name, err := flags.GetString("name")
+				if err != nil {
+					return err
+				}
+				params.Name = api.Some(name)
 			}
-			terminal, err := client.UpdateTerminal(cmd.Context(), args[0], api.TerminalUpdateParams{Name: api.Some(name)})
+			if flags.Changed("space") {
+				space, err := flags.GetString("space")
+				if err != nil {
+					return err
+				}
+				params.SpaceID = api.Some(space)
+			}
+			terminal, err := client.UpdateTerminal(cmd.Context(), args[0], params)
 			if err != nil {
 				return err
 			}
@@ -216,7 +247,8 @@ func newTerminalUpdateCmd() *cobra.Command {
 		}),
 	}
 	cmd.Flags().String("name", "", "new display name")
-	_ = cmd.MarkFlagRequired("name")
+	cmd.Flags().String("space", "", "space to move the terminal to")
+	cmd.MarkFlagsOneRequired("name", "space")
 	return cmd
 }
 
@@ -277,7 +309,7 @@ func printTerminal(out io.Writer, terminal api.Terminal) {
 	_, _ = fmt.Fprintf(w, "id\t%s\n", terminal.ID)
 	_, _ = fmt.Fprintf(w, "name\t%s\n", terminal.Name)
 	_, _ = fmt.Fprintf(w, "status\t%s\n", statusLabel(terminal))
-	_, _ = fmt.Fprintf(w, "project\t%s\n", terminal.ProjectID)
+	_, _ = fmt.Fprintf(w, "space\t%s\n", terminal.SpaceID)
 	_, _ = fmt.Fprintf(w, "directory\t%s\n", terminal.Directory)
 	if terminal.Command != "" {
 		_, _ = fmt.Fprintf(w, "command\t%s\n", terminal.Command)
@@ -300,7 +332,7 @@ error status.
 
 Examples:
   atc api /v1/terminals
-  atc api -X POST -d '{"projectId":"proj-x7k2f","command":"hx"}' /v1/terminals
+  atc api -X POST -d '{"command":"hx"}' /v1/terminals
   atc api /v1/events`,
 		Args: cobra.ExactArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, _ string) error {

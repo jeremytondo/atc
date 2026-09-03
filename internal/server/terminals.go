@@ -8,6 +8,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 
 	"github.com/jeremytondo/atc/internal/api"
+	"github.com/jeremytondo/atc/internal/application"
 	"github.com/jeremytondo/atc/internal/integrations"
 	"github.com/jeremytondo/atc/internal/terminals"
 	"github.com/jeremytondo/atc/internal/threads"
@@ -30,7 +31,7 @@ type terminalIDInput struct {
 }
 
 func registerTerminals(humaAPI huma.API, service *terminals.Service, catalog *integrations.Service,
-	threadService *threads.Service, cleanups []func(terminalID string)) {
+	threadService *threads.Service, coordinator *application.Coordinator) {
 	// The terminals domain knows nothing of threads, so the activeThreadId
 	// projection is grafted onto its wire shape here, from the threads
 	// service that owns it (ATC-255).
@@ -45,7 +46,7 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, catalog *in
 		Method:        http.MethodPost,
 		Path:          "/v1/terminals",
 		Summary:       "Create a terminal",
-		Description:   "Persists the record, starts the session, and waits a short verification window; a fast-failing command returns exited with its evidence. An appId launches that Integration-owned App instead: the Integration composes the command privately, the terminal records the App, and a thread appears once the Integration observes a conversation — the one launch path. appId and command are mutually exclusive.",
+		Description:   "Creates the terminal in the named space (the Default space when omitted), starting in the given directory (the space's when omitted; it must exist), persists the record, starts the session, and waits a short verification window; a fast-failing command returns exited with its evidence. An appId launches that Integration-owned App instead: the Integration composes the command privately, the terminal records the App, and a thread appears once the Integration observes a conversation — the one launch path. appId and command are mutually exclusive.",
 		DefaultStatus: http.StatusCreated,
 	}, func(ctx context.Context, input *struct {
 		Body api.TerminalCreateParams
@@ -57,7 +58,7 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, catalog *in
 			if catalog == nil {
 				return nil, problem(http.StatusUnprocessableEntity, api.CodeAppNotFound, "this server has no integration catalog")
 			}
-			terminal, err := catalog.Launch(ctx, input.Body.AppID, input.Body.ProjectID, input.Body.Name)
+			terminal, err := catalog.Launch(ctx, input.Body.AppID, input.Body)
 			if err != nil {
 				return nil, mapIntegrationError(err)
 			}
@@ -75,11 +76,11 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, catalog *in
 		Method:      http.MethodGet,
 		Path:        "/v1/terminals",
 		Summary:     "List terminals",
-		Description: "Served from the reconciled in-memory view; exited and missing terminals stay listed until deleted. Unfiltered, returns every terminal.",
+		Description: "Served from the reconciled in-memory view; exited and missing terminals stay listed until deleted. Unfiltered, returns every terminal in every space.",
 	}, func(ctx context.Context, input *struct {
-		Project string `query:"project" doc:"Only terminals belonging to this project."`
+		Space string `query:"space" doc:"Only terminals belonging to this space."`
 	}) (*terminalListOutput, error) {
-		terminals := service.List(input.Project)
+		terminals := service.List(input.Space)
 		for i, terminal := range terminals {
 			terminals[i] = decorate(terminal)
 		}
@@ -104,7 +105,7 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, catalog *in
 		Method:      http.MethodPatch,
 		Path:        "/v1/terminals/{id}",
 		Summary:     "Update a terminal",
-		Description: "A merge patch: an omitted field is unchanged. Name is the only mutable field and cannot be null.",
+		Description: "A merge patch of name and spaceId: an omitted field is unchanged, neither accepts null. Moving a terminal to another space changes nothing else — not the session, the directory, the app, or any thread. A space being deleted refuses the move.",
 	}, func(ctx context.Context, input *struct {
 		ID   string `path:"id" doc:"Terminal identifier."`
 		Body api.TerminalUpdateParams
@@ -121,27 +122,11 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, catalog *in
 		Method:        http.MethodDelete,
 		Path:          "/v1/terminals/{id}",
 		Summary:       "Delete a terminal",
-		Description:   "Best-effort: stop intent is persisted, the kill attempted, and the record removed even when the kill cannot be verified.",
+		Description:   "Best-effort: stop intent is persisted, the kill attempted, and the record removed even when the kill cannot be verified. Threads the terminal hosted survive, unlinked.",
 		DefaultStatus: http.StatusNoContent,
 	}, func(ctx context.Context, input *terminalIDInput) (*struct{}, error) {
-		if err := service.Delete(ctx, input.ID); err != nil {
+		if err := coordinator.DeleteTerminal(ctx, input.ID); err != nil {
 			return nil, mapError(err)
-		}
-		// Revoke the deleted terminal's hook secrets before converging the
-		// threads view: each cleanup is a barrier (it returns only after
-		// any in-flight delivery drains), so no late delivery can land
-		// evidence over the convergence below.
-		for _, cleanup := range cleanups {
-			cleanup(input.ID)
-		}
-		if threadService != nil {
-			// The schema's ON DELETE SET NULL already cleared the rows;
-			// this converges the threads view and publishes the linkage
-			// change. Wired here because the terminals domain must not
-			// know threads exist. Detached like the delete itself: a
-			// client disconnect after the commit must not leave the view
-			// linked to a deleted terminal.
-			threadService.TerminalRemoved(context.WithoutCancel(ctx), input.ID)
 		}
 		return nil, nil
 	})
@@ -151,10 +136,12 @@ func mapError(err error) error {
 	switch {
 	case errors.Is(err, terminals.ErrNotFound):
 		return problem(http.StatusNotFound, api.CodeTerminalNotFound, "terminal not found")
-	case errors.Is(err, terminals.ErrProjectUnknown):
-		return problem(http.StatusUnprocessableEntity, api.CodeProjectNotFound, err.Error())
-	case errors.Is(err, terminals.ErrProjectDirectoryMissing):
-		return problem(http.StatusConflict, api.CodeProjectDirectoryMissing, err.Error())
+	case errors.Is(err, terminals.ErrDirectoryInvalid):
+		return problem(http.StatusUnprocessableEntity, api.CodeTerminalDirectoryInvalid, err.Error())
+	case errors.Is(err, terminals.ErrSpaceNotFound):
+		return problem(http.StatusUnprocessableEntity, api.CodeSpaceNotFound, err.Error())
+	case errors.Is(err, terminals.ErrSpaceDeleting):
+		return problem(http.StatusConflict, api.CodeSpaceDeleting, err.Error())
 	case errors.Is(err, terminals.ErrInvalidUpdate):
 		return problem(http.StatusUnprocessableEntity, api.CodeValidationFailed, err.Error())
 	}

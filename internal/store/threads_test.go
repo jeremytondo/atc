@@ -15,8 +15,9 @@ func TestThreadsRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	threads := s.Threads()
 	insertProject(t, s, "proj-aaaaa", "/home/x")
+	insertSpace(t, s, "spce-aaaaa", "/home/x")
 	if ok, err := s.Terminals().Insert(ctx, TerminalRecord{
-		ID: "term-aaaaa", ProjectID: "proj-aaaaa", Name: "Claude Code", Directory: "/home/x",
+		ID: "term-aaaaa", SpaceID: "spce-aaaaa", Name: "Claude Code", Directory: "/home/x",
 		AppID: "claude/tui", CreatedAt: at(0), UpdatedAt: at(0),
 	}); err != nil || !ok {
 		t.Fatalf("planting terminal = %v, %v", ok, err)
@@ -203,8 +204,9 @@ func TestThreadReferentialLifecycle(t *testing.T) {
 	ctx := context.Background()
 	threads := s.Threads()
 	insertProject(t, s, "proj-aaaaa", "/")
+	insertSpace(t, s, "spce-aaaaa", "/")
 	if ok, err := s.Terminals().Insert(ctx, TerminalRecord{
-		ID: "term-aaaaa", ProjectID: "proj-aaaaa", Name: "Claude Code", Directory: "/",
+		ID: "term-aaaaa", SpaceID: "spce-aaaaa", Name: "Claude Code", Directory: "/",
 		CreatedAt: at(0), UpdatedAt: at(0),
 	}); err != nil || !ok {
 		t.Fatalf("planting terminal = %v, %v", ok, err)

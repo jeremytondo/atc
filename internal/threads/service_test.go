@@ -51,6 +51,7 @@ func (f *fakeTerminals) remove(id string) {
 
 type fixture struct {
 	root      string
+	space     string
 	service   *Service
 	store     *store.Store
 	terminals *fakeTerminals
@@ -91,7 +92,11 @@ func newFixture(t *testing.T) *fixture {
 	if err := service.Load(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	f := &fixture{service: service, store: s, terminals: terminals, hub: hub, clock: clock, root: canonicalTempDir(t)}
+	f := &fixture{service: service, store: s, terminals: terminals, hub: hub, clock: clock, root: canonicalTempDir(t), space: "spce-aaaaa"}
+	// One space for planted terminals to belong to.
+	if ok, err := s.Spaces().Insert(context.Background(), store.SpaceRecord{ID: f.space, Name: "s", Directory: f.root, CreatedAt: clock.Now(), UpdatedAt: clock.Now()}); err != nil || !ok {
+		t.Fatalf("planting space = %v, %v", ok, err)
+	}
 	f.sub = hub.Subscribe(0, false)
 	t.Cleanup(f.sub.Close)
 	return f
@@ -131,7 +136,7 @@ func (f *fixture) plant(t *testing.T, projectID string, terminalIDs ...string) {
 	}
 	for _, id := range terminalIDs {
 		if ok, err := f.store.Terminals().Insert(ctx, store.TerminalRecord{
-			ID: id, ProjectID: projectID, Name: "tui", Directory: f.dir(projectID),
+			ID: id, SpaceID: f.space, Name: "tui", Directory: f.dir(projectID),
 			AppID: "claude/tui", CreatedAt: now, UpdatedAt: now,
 		}); err != nil || !ok {
 			t.Fatalf("planting terminal = %v, %v", ok, err)
@@ -1016,13 +1021,13 @@ func (r *fakeResumer) Resume(_ context.Context, req ResumeRequest) (api.Terminal
 	id := fmt.Sprintf("term-resm%d", n)
 	now := r.f.clock.Now()
 	if ok, err := r.f.store.Terminals().Insert(context.Background(), store.TerminalRecord{
-		ID: id, ProjectID: req.ProjectID, Name: "resume", Directory: "/" + req.ProjectID,
+		ID: id, SpaceID: r.f.space, Name: "resume", Directory: r.f.root,
 		AppID: req.AppID, CreatedAt: now, UpdatedAt: now,
 	}); err != nil || !ok {
 		return api.Terminal{}, fmt.Errorf("planting resume terminal = %v: %w", ok, err)
 	}
 	r.f.terminals.set(id, api.TerminalRunning)
-	return api.Terminal{ID: id, ProjectID: req.ProjectID, AppID: req.AppID, Status: api.TerminalRunning}, nil
+	return api.Terminal{ID: id, SpaceID: r.f.space, AppID: req.AppID, Status: api.TerminalRunning}, nil
 }
 
 // observed plants a project with a running terminal showing conversation
@@ -1143,7 +1148,7 @@ func TestOpenDecision(t *testing.T) {
 			}
 			// The resume carries the identity, project, and recorded cwd,
 			// and the linkage publishes.
-			want := ResumeRequest{IntegrationID: "claude", AppID: "claude/tui", ProviderID: "s1", ProjectID: "proj-aaaaa", Directory: "/proj-aaaaa/sub"}
+			want := ResumeRequest{IntegrationID: "claude", AppID: "claude/tui", ProviderID: "s1", Directory: "/proj-aaaaa/sub"}
 			if diff := cmp.Diff([]ResumeRequest{want}, resumer.requests); diff != "" {
 				t.Errorf("resume requests (-want +got):\n%s", diff)
 			}

@@ -13,8 +13,10 @@
 //	state   $XDG_STATE_HOME/atc/hooks         (~/.local/state/atc/hooks)
 //
 // It also owns CanonicalDir, the one rule for canonicalizing user-supplied
-// directories (ATC-256) — project identity and CLI project resolution must
-// agree on it exactly.
+// directories (ATC-256): project and space directories, terminal working
+// directories, and thread initial directories all store its result, and
+// thread classification by containment depends on every one of them
+// agreeing on it exactly.
 package paths
 
 import (

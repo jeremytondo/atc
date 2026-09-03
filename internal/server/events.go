@@ -85,19 +85,7 @@ func registerEvents(humaAPI huma.API, hub *events.Hub, heartbeat time.Duration) 
 		Path:        "/v1/events",
 		Summary:     "Change-event stream",
 		Description: "Numbered change events saying what changed, never the state itself; clients refetch the changed resource. Comment lines are heartbeats.",
-	}, map[string]any{
-		api.EventTerminalCreated:    api.TerminalCreatedEvent{},
-		api.EventTerminalUpdated:    api.TerminalUpdatedEvent{},
-		api.EventTerminalDeleted:    api.TerminalDeletedEvent{},
-		api.EventProjectCreated:     api.ProjectCreatedEvent{},
-		api.EventProjectUpdated:     api.ProjectUpdatedEvent{},
-		api.EventProjectDeleted:     api.ProjectDeletedEvent{},
-		api.EventThreadCreated:      api.ThreadCreatedEvent{},
-		api.EventThreadUpdated:      api.ThreadUpdatedEvent{},
-		api.EventThreadDeleted:      api.ThreadDeletedEvent{},
-		api.EventIntegrationUpdated: api.IntegrationUpdatedEvent{},
-		api.EventResync:             api.ResyncEvent{},
-	}, func(ctx context.Context, input *eventsInput, send sse.Sender) {
+	}, eventSchemas(), func(ctx context.Context, input *eventsInput, send sse.Sender) {
 		after, hasCursor := uint64(0), false
 		if input.LastEventID != "" {
 			parsed, err := strconv.ParseUint(input.LastEventID, 10, 64)
@@ -154,34 +142,42 @@ func registerEvents(humaAPI huma.API, hub *events.Hub, heartbeat time.Duration) 
 	})
 }
 
+// changeEvents is the one registry of change-event names to their
+// payload constructors: it feeds both the SSE schema map (the document)
+// and the encoder (the wire), so a name cannot be documented without
+// being sent or sent without being documented.
+var changeEvents = map[string]func(api.ChangeEvent) any{
+	api.EventTerminalCreated:    func(c api.ChangeEvent) any { return api.TerminalCreatedEvent{ChangeEvent: c} },
+	api.EventTerminalUpdated:    func(c api.ChangeEvent) any { return api.TerminalUpdatedEvent{ChangeEvent: c} },
+	api.EventTerminalDeleted:    func(c api.ChangeEvent) any { return api.TerminalDeletedEvent{ChangeEvent: c} },
+	api.EventSpaceCreated:       func(c api.ChangeEvent) any { return api.SpaceCreatedEvent{ChangeEvent: c} },
+	api.EventSpaceUpdated:       func(c api.ChangeEvent) any { return api.SpaceUpdatedEvent{ChangeEvent: c} },
+	api.EventSpaceDeleted:       func(c api.ChangeEvent) any { return api.SpaceDeletedEvent{ChangeEvent: c} },
+	api.EventProjectCreated:     func(c api.ChangeEvent) any { return api.ProjectCreatedEvent{ChangeEvent: c} },
+	api.EventProjectUpdated:     func(c api.ChangeEvent) any { return api.ProjectUpdatedEvent{ChangeEvent: c} },
+	api.EventProjectDeleted:     func(c api.ChangeEvent) any { return api.ProjectDeletedEvent{ChangeEvent: c} },
+	api.EventThreadCreated:      func(c api.ChangeEvent) any { return api.ThreadCreatedEvent{ChangeEvent: c} },
+	api.EventThreadUpdated:      func(c api.ChangeEvent) any { return api.ThreadUpdatedEvent{ChangeEvent: c} },
+	api.EventThreadDeleted:      func(c api.ChangeEvent) any { return api.ThreadDeletedEvent{ChangeEvent: c} },
+	api.EventIntegrationUpdated: func(c api.ChangeEvent) any { return api.IntegrationUpdatedEvent{ChangeEvent: c} },
+}
+
+// eventSchemas is the SSE registration map: every change event's payload
+// type, plus resync.
+func eventSchemas() map[string]any {
+	schemas := map[string]any{api.EventResync: api.ResyncEvent{}}
+	for name, payload := range changeEvents {
+		schemas[name] = payload(api.ChangeEvent{})
+	}
+	return schemas
+}
+
 func sendChange(send sse.Sender, change events.Change) error {
-	body := api.ChangeEvent{Seq: change.Seq, Resource: change.Resource, ID: change.ID}
-	var data any
-	switch change.Type {
-	case api.EventTerminalCreated:
-		data = api.TerminalCreatedEvent{ChangeEvent: body}
-	case api.EventTerminalUpdated:
-		data = api.TerminalUpdatedEvent{ChangeEvent: body}
-	case api.EventTerminalDeleted:
-		data = api.TerminalDeletedEvent{ChangeEvent: body}
-	case api.EventProjectCreated:
-		data = api.ProjectCreatedEvent{ChangeEvent: body}
-	case api.EventProjectUpdated:
-		data = api.ProjectUpdatedEvent{ChangeEvent: body}
-	case api.EventProjectDeleted:
-		data = api.ProjectDeletedEvent{ChangeEvent: body}
-	case api.EventThreadCreated:
-		data = api.ThreadCreatedEvent{ChangeEvent: body}
-	case api.EventThreadUpdated:
-		data = api.ThreadUpdatedEvent{ChangeEvent: body}
-	case api.EventThreadDeleted:
-		data = api.ThreadDeletedEvent{ChangeEvent: body}
-	case api.EventIntegrationUpdated:
-		data = api.IntegrationUpdatedEvent{ChangeEvent: body}
-	default:
-		// An unmapped type would panic Huma's type lookup; drop it loudly
-		// in tests via the OpenAPI event map instead.
+	payload, ok := changeEvents[change.Type]
+	if !ok {
+		// A type outside the registry would panic Huma's type lookup; the
+		// hub only carries names the domains publish, all registered.
 		return nil
 	}
-	return send(sse.Message{ID: int(change.Seq), Data: data})
+	return send(sse.Message{ID: int(change.Seq), Data: payload(api.ChangeEvent{Seq: change.Seq, Resource: change.Resource, ID: change.ID})})
 }

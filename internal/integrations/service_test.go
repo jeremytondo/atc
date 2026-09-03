@@ -46,7 +46,7 @@ func (c *fakeCreator) CreateForApp(ctx context.Context, params api.TerminalCreat
 	c.params, c.appID, c.directory = params, launch.AppID, launch.Directory
 	directory := launch.Directory
 	if directory == "" {
-		directory = "/projects/alpha"
+		directory = "/spaces/default"
 	}
 	abort := func() {}
 	if launch.Prepare != nil {
@@ -237,15 +237,17 @@ func TestListAndGetReportAvailability(t *testing.T) {
 	}
 }
 
-// Launch composes the create: the App's command, the App's display name
-// as the default, and the qualified App id as the recorded intent.
+// Launch composes the create: the App's command, the request's placement,
+// and the qualified App id as the recorded intent.
 func TestLaunchComposesTheTerminalCreate(t *testing.T) {
 	service, creator := newTestService(t, "alpha")
-	terminal, err := service.Launch(context.Background(), "alpha/tui", "proj-aaaaa", "")
+	terminal, err := service.Launch(context.Background(), "alpha/tui", api.TerminalCreateParams{AppID: "alpha/tui", SpaceID: "spce-aaaaa"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantParams := api.TerminalCreateParams{ProjectID: "proj-aaaaa", Name: "Alpha"}
+	// Placement passes through untouched; the App selectors stay the
+	// catalog's — the terminals domain sees neither.
+	wantParams := api.TerminalCreateParams{SpaceID: "spce-aaaaa"}
 	if diff := cmp.Diff(wantParams, creator.params); diff != "" {
 		t.Errorf("create params (-want +got):\n%s", diff)
 	}
@@ -258,12 +260,11 @@ func TestLaunchComposesTheTerminalCreate(t *testing.T) {
 		t.Errorf("app = %q on create, %q on terminal; want alpha/tui", creator.appID, terminal.AppID)
 	}
 
-	// A caller-supplied name wins over the display-name default.
-	if _, err := service.Launch(context.Background(), "alpha/tui", "proj-aaaaa", "pair session"); err != nil {
+	if _, err := service.Launch(context.Background(), "alpha/tui", api.TerminalCreateParams{Name: "pair session", Directory: "/work"}); err != nil {
 		t.Fatal(err)
 	}
-	if creator.params.Name != "pair session" {
-		t.Errorf("name = %q, want the caller's", creator.params.Name)
+	if creator.params.Name != "pair session" || creator.params.Directory != "/work" {
+		t.Errorf("params = %+v, want the caller's name and directory", creator.params)
 	}
 }
 
@@ -272,14 +273,14 @@ func TestLaunchRefusals(t *testing.T) {
 	ctx := context.Background()
 
 	for _, appID := range []string{"nonexistent/tui", "alpha/desktop", "alpha", "", "alpha/tui/extra"} {
-		if _, err := service.Launch(ctx, appID, "proj-aaaaa", ""); !errors.Is(err, ErrAppNotFound) {
+		if _, err := service.Launch(ctx, appID, api.TerminalCreateParams{}); !errors.Is(err, ErrAppNotFound) {
 			t.Errorf("Launch(%q) = %v, want ErrAppNotFound", appID, err)
 		}
 	}
 
 	// A missing binary refuses before any terminal exists, naming the
 	// command and its install hint.
-	_, err := service.Launch(ctx, "beta/tui", "proj-aaaaa", "")
+	_, err := service.Launch(ctx, "beta/tui", api.TerminalCreateParams{})
 	if !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("Launch(missing binary) = %v, want ErrUnavailable", err)
 	}
@@ -288,24 +289,24 @@ func TestLaunchRefusals(t *testing.T) {
 	}
 
 	// A handoff App does not run in a terminal.
-	if _, err := service.Launch(ctx, "watcher/web", "proj-aaaaa", ""); !errors.Is(err, ErrAppNotTerminal) {
+	if _, err := service.Launch(ctx, "watcher/web", api.TerminalCreateParams{}); !errors.Is(err, ErrAppNotTerminal) {
 		t.Errorf("Launch(handoff app) = %v, want ErrAppNotTerminal", err)
 	}
 
-	if creator.appID != "" || creator.params.ProjectID != "" {
+	if creator.appID != "" {
 		t.Errorf("a refused launch reached the terminals domain: %+v", creator)
 	}
 }
 
 // Resume is the launch's second form: the thread's App composes the
 // provider's exact resume from the thread's private identity, the
-// terminal joins the thread's project, and the working directory is the
-// conversation's recorded one — or the project's when that directory is
+// terminal lands in the Default space, and the working directory is the
+// conversation's recorded one — or the space's when that directory is
 // gone.
 func TestResumeComposesTheExactResume(t *testing.T) {
 	service, creator := newTestService(t, "alpha")
 	cwd := t.TempDir()
-	request := threads.ResumeRequest{IntegrationID: "alpha", AppID: "alpha/tui", ProviderID: "sess-1", ProjectID: "proj-aaaaa", Directory: cwd}
+	request := threads.ResumeRequest{IntegrationID: "alpha", AppID: "alpha/tui", ProviderID: "sess-1", Directory: cwd}
 	terminal, err := service.Resume(context.Background(), request)
 	if err != nil {
 		t.Fatal(err)
@@ -313,8 +314,7 @@ func TestResumeComposesTheExactResume(t *testing.T) {
 	if creator.command != "alpha --tui --for term-aaaaa --resume sess-1" {
 		t.Errorf("composed command = %q", creator.command)
 	}
-	wantParams := api.TerminalCreateParams{ProjectID: "proj-aaaaa", Name: "Alpha"}
-	if diff := cmp.Diff(wantParams, creator.params); diff != "" {
+	if diff := cmp.Diff(api.TerminalCreateParams{}, creator.params); diff != "" {
 		t.Errorf("create params (-want +got):\n%s", diff)
 	}
 	if creator.directory != cwd || creator.appID != "alpha/tui" || terminal.AppID != "alpha/tui" {
@@ -322,7 +322,7 @@ func TestResumeComposesTheExactResume(t *testing.T) {
 	}
 
 	// A recorded directory that no longer exists (or never was observed)
-	// falls back to the project directory: the terminals domain decides
+	// falls back to the space's directory: the terminals domain decides
 	// that when the override is empty.
 	for _, directory := range []string{filepath.Join(cwd, "gone"), ""} {
 		request.Directory = directory
@@ -330,7 +330,7 @@ func TestResumeComposesTheExactResume(t *testing.T) {
 			t.Fatal(err)
 		}
 		if creator.directory != "" {
-			t.Errorf("directory for %q = %q, want the project fallback", directory, creator.directory)
+			t.Errorf("directory for %q = %q, want the space fallback", directory, creator.directory)
 		}
 	}
 }
@@ -342,15 +342,15 @@ func TestResumeComposesTheExactResume(t *testing.T) {
 func TestResumeRefusals(t *testing.T) {
 	service, creator := newTestService(t, "alpha")
 	ctx := context.Background()
-	if _, err := service.Resume(ctx, threads.ResumeRequest{IntegrationID: "beta", AppID: "beta/tui", ProjectID: "proj-aaaaa"}); !errors.Is(err, ErrUnavailable) {
+	if _, err := service.Resume(ctx, threads.ResumeRequest{IntegrationID: "beta", AppID: "beta/tui"}); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("Resume(missing binary) = %v, want ErrUnavailable", err)
 	}
 	cases := map[string]threads.ResumeRequest{
-		"no app":              {IntegrationID: "watcher", ProviderID: "t1", ProjectID: "proj-aaaaa"},
-		"foreign app":         {IntegrationID: "watcher", AppID: "alpha/tui", ProjectID: "proj-aaaaa"},
-		"unknown app":         {IntegrationID: "alpha", AppID: "alpha/gone", ProjectID: "proj-aaaaa"},
-		"unknown integration": {IntegrationID: "nonexistent", AppID: "nonexistent/tui", ProjectID: "proj-aaaaa"},
-		"handoff app":         {IntegrationID: "watcher", AppID: "watcher/web", ProjectID: "proj-aaaaa"},
+		"no app":              {IntegrationID: "watcher", ProviderID: "t1"},
+		"foreign app":         {IntegrationID: "watcher", AppID: "alpha/tui"},
+		"unknown app":         {IntegrationID: "alpha", AppID: "alpha/gone"},
+		"unknown integration": {IntegrationID: "nonexistent", AppID: "nonexistent/tui"},
+		"handoff app":         {IntegrationID: "watcher", AppID: "watcher/web"},
 	}
 	for name, request := range cases {
 		if _, err := service.Resume(ctx, request); !errors.Is(err, ErrNotResumable) {
@@ -382,15 +382,15 @@ func TestLaunchPreparesBeforeTheCreate(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := service.Launch(ctx, "delta/tui", "proj-aaaaa", ""); err != nil {
+	if _, err := service.Launch(ctx, "delta/tui", api.TerminalCreateParams{}); err != nil {
 		t.Fatal(err)
 	}
-	if app.prepared != "/projects/alpha" || !creator.prepared || app.aborted {
+	if app.prepared != "/spaces/default" || !creator.prepared || app.aborted {
 		t.Errorf("prepared = %q (creator saw %v), aborted = %v", app.prepared, creator.prepared, app.aborted)
 	}
 
 	creator.failCreate = true
-	if _, err := service.Launch(ctx, "delta/tui", "proj-aaaaa", ""); err == nil {
+	if _, err := service.Launch(ctx, "delta/tui", api.TerminalCreateParams{}); err == nil {
 		t.Fatal("launch succeeded though the create failed")
 	}
 	if !app.aborted {
@@ -400,7 +400,7 @@ func TestLaunchPreparesBeforeTheCreate(t *testing.T) {
 	app.prepareErr = errors.New("no server answering")
 	creator.failCreate = false
 	creator.command = ""
-	_, err = service.Launch(ctx, "delta/tui", "proj-aaaaa", "")
+	_, err = service.Launch(ctx, "delta/tui", api.TerminalCreateParams{})
 	if !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "no server answering") {
 		t.Fatalf("launch with a failed preparation = %v, want ErrUnavailable carrying the cause", err)
 	}

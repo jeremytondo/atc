@@ -66,6 +66,11 @@ func AttachSession(terminal api.Terminal, attacher SessionAttacher) error {
 	return syscall.Exec(executable, argv, env)
 }
 
+// IsLocalServer reports whether the client targets a server on this
+// machine (a loopback URL): only then is this process's working
+// directory meaningful to the server, and only then can attach work.
+func IsLocalServer(baseURL string) bool { return isLoopback(baseURL) }
+
 func isLoopback(baseURL string) bool {
 	parsed, err := url.Parse(baseURL)
 	if err != nil {
