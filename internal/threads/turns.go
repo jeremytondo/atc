@@ -79,7 +79,10 @@ type TurnObservation struct {
 // pendingTurn is a submitted turn not yet bound to a provider turn: the
 // ATC id the submission returned, and the provider turn the thread held
 // before it, so the provider re-reporting that older turn is not
-// mistaken for the submitted one starting. Guarded by ops.
+// mistaken for the submitted one starting. Whether a submission is still
+// pending is read off the record (pendingSubmission), never off this
+// map alone, so a persist that fails leaves nothing to undo. Guarded by
+// ops.
 type pendingTurn struct {
 	turnID          string
 	priorProviderID string
@@ -152,24 +155,23 @@ func (s *Service) pendingSubmission(record store.ThreadRecord) (pendingTurn, boo
 // conversation nothing displays. Caller holds ops.
 func (s *Service) applyStatus(record *store.ThreadRecord, status api.ThreadStatus, detail string, turn *TurnObservation, at time.Time, active bool) bool {
 	changed := false
-	if status != "" && record.Status != string(status) {
-		if isLive(status) && !active {
-			s.logger.Debug("live status for an inactive thread ignored", "thread", record.ID, "status", status)
-		} else {
-			record.Status = string(status)
+	set := func(field *string, value string) {
+		if *field != value {
+			*field = value
 			changed = true
 		}
 	}
-	// statusDetail rides an error status and nothing else; an observation
-	// that claims no status leaves it alone.
-	if record.Status != string(api.ThreadError) {
-		detail = ""
-	} else if status == "" {
-		detail = record.StatusDetail
-	}
-	if record.StatusDetail != detail {
-		record.StatusDetail = detail
-		changed = true
+	switch {
+	case status == "":
+	case isLive(status) && !active:
+		s.logger.Debug("live status for an inactive thread ignored", "thread", record.ID, "status", status)
+	default:
+		// statusDetail rides an error status and nothing else.
+		set(&record.Status, string(status))
+		if status != api.ThreadError {
+			detail = ""
+		}
+		set(&record.StatusDetail, detail)
 	}
 	if turn != nil {
 		if turn.State == api.TurnRunning && !active {
@@ -178,30 +180,33 @@ func (s *Service) applyStatus(record *store.ThreadRecord, status api.ThreadStatu
 			changed = s.applyTurn(record, *turn, at) || changed
 		}
 	}
-	return settleTurn(record, turn, at) || changed
+	// A submitted turn the provider has not started yet is not ended by
+	// the provider's resting status: that status describes the thread
+	// before the submission. Only a fault or a loss of observation ends it.
+	_, pending := s.pendingSubmission(*record)
+	return settleTurn(record, turn, at, pending) || changed
 }
 
 // applyTurn matches a reported turn to the record's latest turn and
 // applies it: the same provider turn updates in place (the ATC id is
-// kept across a reconnect); the first turn reported after a submission
-// binds to the submitted id; otherwise a different turn replaces the
-// held one, which ends unobserved. Without provider ids, a turn end can
-// only belong to the running turn. Reports whether anything changed.
+// kept across a reconnect) unless it already ended — an ended turn is
+// final, whoever ended it; the first provider turn reported after a
+// submission binds to the submitted id; otherwise a different turn
+// replaces the held one, which ends unobserved. Without provider ids, a
+// turn end can only belong to the running turn. Reports whether anything
+// changed.
 func (s *Service) applyTurn(record *store.ThreadRecord, o TurnObservation, at time.Time) bool {
 	state := o.State
 	if state == "" {
 		state = api.TurnUnknown
 	}
 	current := ownTurn(record)
-	if pending, ok := s.pendingSubmission(*record); ok {
-		starting := o.ProviderID != "" && o.ProviderID != pending.priorProviderID ||
-			o.ProviderID == "" && state == api.TurnRunning
-		if !starting {
+	if pending, ok := s.pendingSubmission(*record); ok && o.ProviderID != "" {
+		if o.ProviderID == pending.priorProviderID {
 			// The provider re-reporting the turn that preceded the
 			// submission says nothing about the submitted one.
 			return false
 		}
-		delete(s.pending, record.ID)
 		current.ProviderID = o.ProviderID
 		updateTurn(current, o, state, at)
 		return true
@@ -210,10 +215,12 @@ func (s *Service) applyTurn(record *store.ThreadRecord, o TurnObservation, at ti
 		same := o.ProviderID != "" && o.ProviderID == current.ProviderID ||
 			o.ProviderID == "" && current.ProviderID == "" && current.State == string(api.TurnRunning) && state != api.TurnRunning
 		if same {
+			if ended(current.State) {
+				return false
+			}
 			return updateTurn(current, o, state, at)
 		}
 	}
-	delete(s.pending, record.ID)
 	record.Turn = &store.TurnRecord{ID: ids.NewLong(turnPrefix), ProviderID: o.ProviderID}
 	updateTurn(record.Turn, o, state, at)
 	return true
@@ -255,8 +262,9 @@ func updateTurn(turn *store.TurnRecord, o TurnObservation, state api.TurnState, 
 // settleTurn ties a running turn to the thread's status: a faulted
 // session fails it with the fault text, and a thread at rest or
 // unobserved cannot have a turn running — it ended unobserved. A turn the
-// observation itself reports running stands. Reports whether it changed.
-func settleTurn(record *store.ThreadRecord, reported *TurnObservation, at time.Time) bool {
+// observation itself reports running stands, as does a submitted turn
+// the provider has not started yet. Reports whether it changed.
+func settleTurn(record *store.ThreadRecord, reported *TurnObservation, at time.Time, pending bool) bool {
 	if record.Turn == nil || record.Turn.State != string(api.TurnRunning) {
 		return false
 	}
@@ -271,7 +279,7 @@ func settleTurn(record *store.ThreadRecord, reported *TurnObservation, at time.T
 		}
 		return true
 	case api.ThreadIdle, api.ThreadUnknown:
-		if reported != nil && reported.State == api.TurnRunning {
+		if pending || reported != nil && reported.State == api.TurnRunning {
 			return false
 		}
 		turn.State = string(api.TurnUnknown)
@@ -314,6 +322,15 @@ func ownTurn(record *store.ThreadRecord) *store.TurnRecord {
 	}
 	record.Turn = &turn
 	return record.Turn
+}
+
+// ended reports a terminal turn state: completed, failed, or interrupted.
+func ended(state string) bool {
+	switch api.TurnState(state) {
+	case api.TurnCompleted, api.TurnFailed, api.TurnInterrupted:
+		return true
+	}
+	return false
 }
 
 func turnEqual(a, b store.TurnRecord) bool {

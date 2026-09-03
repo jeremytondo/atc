@@ -1,8 +1,6 @@
 package claude
 
 import (
-	"encoding/json"
-
 	"github.com/jeremytondo/atc/internal/api"
 	"github.com/jeremytondo/atc/internal/threads"
 )
@@ -91,15 +89,14 @@ func (t *tracker) apply(p payload) (status api.ThreadStatus, signal bool, turn *
 			t.background[p.AgentID] = status
 		}
 	}
-	// A generic permission prompt never downgrades a pending question on
-	// the same member — the specific evidence stands until the turn moves.
+	// A generic permission prompt coexists with whatever the member
+	// already shows — a pending question outranks it — and the threads
+	// domain's ranking decides, not this reducer.
 	setPermission := func() {
 		if root {
-			if t.root != api.ThreadWaitingForInput {
-				t.root = api.ThreadWaitingForPermission
-			}
-		} else if t.background[p.AgentID] != api.ThreadWaitingForInput {
-			t.background[p.AgentID] = api.ThreadWaitingForPermission
+			t.root = threads.Rank(t.root, api.ThreadWaitingForPermission)
+		} else {
+			t.background[p.AgentID] = threads.Rank(t.background[p.AgentID], api.ThreadWaitingForPermission)
 		}
 	}
 
@@ -178,24 +175,11 @@ func (t *tracker) apply(p payload) (status api.ThreadStatus, signal bool, turn *
 }
 
 // failureDetail is what a StopFailure payload says went wrong: its
-// error_details when present, else its error kind — read leniently,
-// since the shape is Claude's to change; empty when it says nothing.
+// error_details when present, else its error kind; empty when it says
+// nothing.
 func failureDetail(p payload) string {
-	if detail := stringOf(p.ErrorDetails); detail != "" {
-		return detail
+	if p.ErrorDetails != "" {
+		return p.ErrorDetails
 	}
-	return stringOf(p.Error)
-}
-
-// stringOf reads a JSON string, and renders any other non-null value as
-// its JSON text.
-func stringOf(raw json.RawMessage) string {
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return s
-	}
-	if len(raw) == 0 || string(raw) == "null" {
-		return ""
-	}
-	return string(raw)
+	return p.Error
 }

@@ -207,10 +207,10 @@ type payload struct {
 	Reason           string  `json:"reason"`
 	// Error and ErrorDetails ride StopFailure: the failure kind and, when
 	// Claude supplies one, the detail.
-	Error          json.RawMessage `json:"error"`
-	ErrorDetails   json.RawMessage `json:"error_details"`
-	Cwd            string          `json:"cwd"`
-	PermissionMode string          `json:"permission_mode"`
+	Error          string `json:"error"`
+	ErrorDetails   string `json:"error_details"`
+	Cwd            string `json:"cwd"`
+	PermissionMode string `json:"permission_mode"`
 	Effort         struct {
 		Level string `json:"level"`
 	} `json:"effort"`

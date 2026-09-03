@@ -263,11 +263,12 @@ func TestSubmitTurnBinding(t *testing.T) {
 		t.Errorf("refused submission touched the turn: %+v", got)
 	}
 
-	// T3 re-reports the shape it had: the old turn, now working. Not the
-	// submitted turn starting.
-	observe(&TurnObservation{ProviderID: "pt-1", State: api.TurnCompleted, StartedAt: prior, CompletedAt: prior.Add(time.Minute)}, api.ThreadWorking)
+	// T3 re-reports the shape it had — the old turn, the session idle —
+	// which describes the thread before the submission: not the submitted
+	// turn starting, and not the submitted turn ending.
+	observe(&TurnObservation{ProviderID: "pt-1", State: api.TurnCompleted, StartedAt: prior, CompletedAt: prior.Add(time.Minute)}, api.ThreadIdle)
 	if got := f.turn(t, id); got.ID != submitted || got.State != api.TurnRunning {
-		t.Errorf("re-report of the prior turn rebound: %+v", got)
+		t.Errorf("re-report of the prior turn touched the submitted turn: %+v", got)
 	}
 	if _, err := f.service.SubmitTurn(ctx, id); !errors.Is(err, ErrTurnPending) {
 		t.Errorf("still unbound = %v; want ErrTurnPending", err)
@@ -289,12 +290,20 @@ func TestSubmitTurnBinding(t *testing.T) {
 		t.Fatalf("submission after binding = %q, %v", next, err)
 	}
 
-	// Without provider ids, the first running turn after acceptance binds.
+	// Binding needs a provider turn id: a turn reported without one is
+	// the provider's own, a fresh id, and the submission stays pending.
 	observe(&TurnObservation{State: api.TurnRunning}, api.ThreadWorking)
-	if got := f.turn(t, id); got.ID != next || got.State != api.TurnRunning {
-		t.Errorf("bind without provider id = %+v; want %s running", got, next)
+	if got := f.turn(t, id); got.ID == next || got.State != api.TurnRunning {
+		t.Errorf("turn without provider id while pending = %+v; want a fresh id", got)
 	}
-	// A turn the provider starts on its own is a fresh id.
+	if _, err := f.service.SubmitTurn(ctx, id); err != nil {
+		t.Errorf("submission after the pending turn was replaced = %v", err)
+	}
+	// A fault ends a pending turn like any running one.
+	observe(nil, api.ThreadError)
+	if got := f.turn(t, id); got.State != api.TurnFailed {
+		t.Errorf("pending turn on a fault = %+v; want failed", got)
+	}
 	observe(&TurnObservation{ProviderID: "pt-3", State: api.TurnRunning}, api.ThreadWorking)
 	if got := f.turn(t, id); got.ID == next || got.State != api.TurnRunning {
 		t.Errorf("provider-started turn = %+v; want a fresh id", got)

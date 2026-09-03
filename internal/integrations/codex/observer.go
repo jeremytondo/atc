@@ -491,7 +491,14 @@ func (o *Observer) handleNotification(ctx context.Context, n notification) {
 		if err := json.Unmarshal(n.params, &p); err != nil || p.ThreadID == "" || p.Turn.ID == "" {
 			return
 		}
-		o.applyEvidence(ctx, p.ThreadID, evidence{kind: evidenceTurn, turn: turnFrom(p.Turn), seq: n.seq})
+		e := evidence{kind: evidenceTurn, turn: turnFrom(p.Turn), seq: n.seq}
+		if n.method == "turn/started" {
+			// A turn starting is foreground work; a turn ending says
+			// nothing about the thread's rest (background work may
+			// continue), so only the status stream claims idle.
+			e.status = api.ThreadWorking
+		}
+		o.applyEvidence(ctx, p.ThreadID, e)
 	case "thread/status/changed":
 		var p struct {
 			ThreadID string          `json:"threadId"`
@@ -548,7 +555,7 @@ const (
 	// evidenceNotLoaded is a reconcile finding the thread not loaded.
 	evidenceNotLoaded
 	// evidenceTurn is turn/started or turn/completed: the thread's latest
-	// turn, by Codex's own id.
+	// turn, by Codex's own id, with a working claim on the start.
 	evidenceTurn
 )
 
@@ -730,7 +737,7 @@ func (o *Observer) applyEvidence(ctx context.Context, threadID string, e evidenc
 	}
 	o.mu.Lock()
 	p.established = true
-	if e.kind == evidenceStatus {
+	if e.status != "" {
 		p.last = e.status
 	}
 	p.titled = p.titled || metadata.Title != ""

@@ -101,9 +101,6 @@ func TestTrackerTurnEvidence(t *testing.T) {
 	if turn := turnOf(`{` + sess + `"hook_event_name":"StopFailure","error":"rate_limit"}`); turn == nil || turn.Error != "rate_limit" {
 		t.Errorf("StopFailure without details = %+v; want the error kind", turn)
 	}
-	if turn := turnOf(`{` + sess + `"hook_event_name":"StopFailure","error":{"kind":"odd"}}`); turn == nil || turn.Error != `{"kind":"odd"}` {
-		t.Errorf("StopFailure with an unexpected error shape = %+v; want its JSON text", turn)
-	}
 	if turn := turnOf(`{` + sess + `"hook_event_name":"StopFailure"}`); turn == nil || turn.Error != "" {
 		t.Errorf("StopFailure with nothing = %+v; want no invented detail", turn)
 	}

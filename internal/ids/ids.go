@@ -11,7 +11,8 @@ package ids
 import "crypto/rand"
 
 const (
-	// SuffixLength is the fixed random-suffix length of every public ID.
+	// SuffixLength is the fixed random-suffix length of every ID a person
+	// types.
 	SuffixLength = 5
 	// longSuffixLength is the suffix length of an ID that is never
 	// collision-checked because no history of its kind is kept (a thread's

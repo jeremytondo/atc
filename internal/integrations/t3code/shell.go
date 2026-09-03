@@ -71,29 +71,29 @@ type sessionShell struct {
 
 // latestTurnShell is T3's latest turn: its id is the private provider
 // turn id, and startedAt is null until the provider picks the turn up,
-// so requestedAt stands in for when it began.
+// so requestedAt stands in for when it began. An unreadable timestamp
+// fails the payload's decoding, like any other schema failure.
 type latestTurnShell struct {
-	TurnID      string  `json:"turnId"`
-	State       string  `json:"state"`
-	RequestedAt string  `json:"requestedAt"`
-	StartedAt   *string `json:"startedAt"`
-	CompletedAt *string `json:"completedAt"`
+	TurnID      string     `json:"turnId"`
+	State       string     `json:"state"`
+	RequestedAt time.Time  `json:"requestedAt"`
+	StartedAt   *time.Time `json:"startedAt"`
+	CompletedAt *time.Time `json:"completedAt"`
 }
 
 // turnObservation maps T3's latest turn to the thread vocabulary:
 // running, completed, and interrupted directly; error is a failed turn
 // carrying the session's error text; anything unrecognized is unknown.
-// Timestamps were validated with the payload.
 func turnObservation(turn *latestTurnShell, sessionError string) *threads.TurnObservation {
 	if turn == nil {
 		return nil
 	}
-	o := &threads.TurnObservation{ProviderID: turn.TurnID, StartedAt: isoTime(turn.RequestedAt)}
+	o := &threads.TurnObservation{ProviderID: turn.TurnID, StartedAt: turn.RequestedAt}
 	if turn.StartedAt != nil {
-		o.StartedAt = isoTime(*turn.StartedAt)
+		o.StartedAt = *turn.StartedAt
 	}
 	if turn.CompletedAt != nil {
-		o.CompletedAt = isoTime(*turn.CompletedAt)
+		o.CompletedAt = *turn.CompletedAt
 	}
 	switch turn.State {
 	case "running":
@@ -109,19 +109,6 @@ func turnObservation(turn *latestTurnShell, sessionError string) *threads.TurnOb
 		o.State = api.TurnUnknown
 	}
 	return o
-}
-
-func isoTime(value string) time.Time {
-	t, _ := time.Parse(time.RFC3339Nano, value)
-	return t
-}
-
-func validISO(value *string) bool {
-	if value == nil {
-		return true
-	}
-	_, err := time.Parse(time.RFC3339Nano, *value)
-	return err == nil
 }
 
 // nullableString distinguishes a required JSON null from an omitted
@@ -245,10 +232,8 @@ func validateThread(thread threadShell) error {
 		return schemaErrorf("thread %s omitted its pending-action flags", thread.ID)
 	case thread.Session != nil && thread.Session.Status == "":
 		return schemaErrorf("thread %s session omitted status", thread.ID)
-	case thread.LatestTurn != nil && (thread.LatestTurn.TurnID == "" || thread.LatestTurn.State == "" || thread.LatestTurn.RequestedAt == ""):
+	case thread.LatestTurn != nil && (thread.LatestTurn.TurnID == "" || thread.LatestTurn.State == "" || thread.LatestTurn.RequestedAt.IsZero()):
 		return schemaErrorf("thread %s latestTurn omitted turnId, state, or requestedAt", thread.ID)
-	case thread.LatestTurn != nil && (!validISO(&thread.LatestTurn.RequestedAt) || !validISO(thread.LatestTurn.StartedAt) || !validISO(thread.LatestTurn.CompletedAt)):
-		return schemaErrorf("thread %s latestTurn carries an unreadable timestamp", thread.ID)
 	}
 	return nil
 }

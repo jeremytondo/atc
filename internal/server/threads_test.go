@@ -618,8 +618,8 @@ func TestThreadTurnOverTheWire(t *testing.T) {
 			t.Errorf("thread before any turn carries %s: %s", absent, body)
 		}
 	}
-	if rec := get(f.handler, "/openapi.json", true); strings.Contains(rec.Body.String(), "lastError") {
-		t.Error("lastError is still in the schema")
+	if rec := get(f.handler, "/openapi.json", true); rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "lastError") || !strings.Contains(rec.Body.String(), "latestTurn") {
+		t.Errorf("schema: got %d; lastError present %v, latestTurn present %v", rec.Code, strings.Contains(rec.Body.String(), "lastError"), strings.Contains(rec.Body.String(), "latestTurn"))
 	}
 
 	observe := func(status api.ThreadStatus, detail string, turn *threads.TurnObservation) {

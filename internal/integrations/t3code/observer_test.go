@@ -1070,7 +1070,7 @@ func TestLatestTurnMirrors(t *testing.T) {
 		case 1:
 			// The turn that was running finished while ATC was away.
 			return []any{upserted(10, threadItem("t1", "p1", "One", withSession("idle", "codex"),
-				latestTurn("tu-3", "completed", "2026-09-01T00:00:03Z", "2026-09-01T00:00:04Z"))), synchronizedItem()}
+				latestTurn("tu-3b", "completed", "2026-09-01T00:00:03Z", "2026-09-01T00:00:04Z"))), synchronizedItem()}
 		default:
 			// A different turn altogether.
 			return []any{upserted(20, threadItem("t1", "p1", "One", withSession("idle", "codex"),
@@ -1136,16 +1136,14 @@ func TestLatestTurnMirrors(t *testing.T) {
 	if thread := f.thread("t1"); thread.StatusDetail != "session died" || faulted.Error != "session died" || faulted.ID == failed.ID {
 		t.Errorf("faulted session = detail %q turn %+v", thread.StatusDetail, faulted)
 	}
-	// The session recovers and T3 still reports that turn running: T3 is
-	// the authority on its own turn, so the same ATC id runs again.
+	// The session recovers on a new turn: the detail clears, and the
+	// turn ATC failed stays failed — an ended turn is final.
 	f.server.push(upserted(6, threadItem("t1", "p1", "One", withSession("running", "codex"), latestTurn("tu-3", "running", "2026-09-01T00:00:03Z", nil))))
+	if thread := f.waitStatus("t1", api.ThreadWorking); thread.StatusDetail != "" || thread.LatestTurn.ID != faulted.ID || thread.LatestTurn.State != api.TurnFailed {
+		t.Errorf("recovered session = detail %q turn %+v; want the failed turn kept", thread.StatusDetail, thread.LatestTurn)
+	}
+	f.server.push(upserted(7, threadItem("t1", "p1", "One", withSession("running", "codex"), latestTurn("tu-3b", "running", "2026-09-01T00:00:03Z", nil))))
 	running := waitTurn(api.TurnRunning)
-	if running.ID != faulted.ID || running.Error != "" || running.CompletedAt != nil {
-		t.Errorf("recovered turn = %+v; want %s running again", running, faulted.ID)
-	}
-	if f.waitStatus("t1", api.ThreadWorking).StatusDetail != "" {
-		t.Error("statusDetail survived recovery")
-	}
 
 	// Subscription drops: the running turn ends unknown; on reconnect
 	// T3 reports the same turn finished — same ATC id, reported outcome.
@@ -1171,8 +1169,7 @@ func TestLatestTurnMirrors(t *testing.T) {
 		t.Errorf("a different turn kept the id %s", fourth.ID)
 	}
 
-	// Unrecognized turn states are unknown, never guessed; a malformed
-	// turn is a schema failure.
+	// A malformed turn is a schema failure like any other.
 	f.server.push(upserted(21, threadItem("t1", "p1", "One", withSession("idle", "codex"), latestTurn("tu-6", "paused", nil, nil))))
 	if got := waitTurn(api.TurnUnknown); got.ID == fifth.ID {
 		t.Errorf("unrecognized state reused the id: %+v", got)
@@ -1180,7 +1177,40 @@ func TestLatestTurnMirrors(t *testing.T) {
 	f.server.push(upserted(22, threadItem("t1", "p1", "One", func(m map[string]any) {
 		m["latestTurn"] = map[string]any{"turnId": "tu-7", "state": "running", "requestedAt": "yesterday", "startedAt": nil, "completedAt": nil}
 	})))
-	if connection := f.waitState(api.IntegrationUnavailable); !strings.Contains(connection.Detail, "unreadable timestamp") {
+	if connection := f.waitState(api.IntegrationUnavailable); !strings.Contains(connection.Detail, "schema") {
 		t.Errorf("malformed turn = %+v", connection)
+	}
+}
+
+// The turn decode, state by state: T3's timestamps carry over, requestedAt
+// stands in for a null startedAt, error is failed with the session's
+// text, and anything unrecognized is unknown.
+func TestTurnObservationTable(t *testing.T) {
+	requested := time.Date(2026, 9, 1, 0, 0, 1, 0, time.UTC)
+	started := requested.Add(time.Second)
+	completed := started.Add(time.Second)
+	cases := []struct {
+		name string
+		turn *latestTurnShell
+		want *threads.TurnObservation
+	}{
+		{"none", nil, nil},
+		{"running before pickup", &latestTurnShell{TurnID: "tu", State: "running", RequestedAt: requested},
+			&threads.TurnObservation{ProviderID: "tu", State: api.TurnRunning, StartedAt: requested}},
+		{"running", &latestTurnShell{TurnID: "tu", State: "running", RequestedAt: requested, StartedAt: &started},
+			&threads.TurnObservation{ProviderID: "tu", State: api.TurnRunning, StartedAt: started}},
+		{"completed", &latestTurnShell{TurnID: "tu", State: "completed", RequestedAt: requested, StartedAt: &started, CompletedAt: &completed},
+			&threads.TurnObservation{ProviderID: "tu", State: api.TurnCompleted, StartedAt: started, CompletedAt: completed}},
+		{"interrupted", &latestTurnShell{TurnID: "tu", State: "interrupted", RequestedAt: requested, CompletedAt: &completed},
+			&threads.TurnObservation{ProviderID: "tu", State: api.TurnInterrupted, StartedAt: requested, CompletedAt: completed}},
+		{"error", &latestTurnShell{TurnID: "tu", State: "error", RequestedAt: requested, CompletedAt: &completed},
+			&threads.TurnObservation{ProviderID: "tu", State: api.TurnFailed, StartedAt: requested, CompletedAt: completed, Error: "boom"}},
+		{"unrecognized", &latestTurnShell{TurnID: "tu", State: "paused", RequestedAt: requested},
+			&threads.TurnObservation{ProviderID: "tu", State: api.TurnUnknown, StartedAt: requested}},
+	}
+	for _, c := range cases {
+		if diff := cmp.Diff(c.want, turnObservation(c.turn, "boom")); diff != "" {
+			t.Errorf("%s (-want +got):\n%s", c.name, diff)
+		}
 	}
 }
