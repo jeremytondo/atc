@@ -183,8 +183,8 @@ func TestTerminalCreateAppCLI(t *testing.T) {
 	if _, _, err := runCLI(t, "thread", "new", "claude"); err == nil {
 		t.Error("thread new still exists")
 	}
-	if _, _, err := runCLI(t, "terminal", "create", "--app", "claude/tui", "--command", "hx"); err == nil || !strings.Contains(err.Error(), "none of the others can be") {
-		t.Errorf("--app with --command = %v, want cobra's mutual-exclusion refusal", err)
+	if _, _, err := runCLI(t, "terminal", "create", "--app", "claude/tui", "--command", "hx"); err == nil {
+		t.Error("--app with --command was accepted")
 	}
 
 	// The terminal is a normal terminal from here, and --terminal leads
@@ -232,8 +232,8 @@ func TestTerminalCreateAppWithoutTTYAndRefusals(t *testing.T) {
 	if _, _, err = runCLI(t, "terminal", "create", "--app", "t3code/web"); err == nil || !strings.Contains(err.Error(), "does not run in a terminal") {
 		t.Errorf("create handoff app = %v, want the not-terminal refusal", err)
 	}
-	if _, _, err = runCLI(t, "terminal", "create", "--app", "nonexistent/tui"); err == nil || !strings.Contains(err.Error(), "404") {
-		t.Errorf("create unknown app = %v, want a 404 problem", err)
+	if _, _, err = runCLI(t, "terminal", "create", "--app", "nonexistent/tui"); err == nil || !strings.Contains(err.Error(), "422") {
+		t.Errorf("create unknown app = %v, want a 422 problem", err)
 	}
 	stdout, _, listErr := runCLI(t, "terminal", "list")
 	if listErr != nil || strings.Count(stdout, "term-") != 1 {
@@ -289,12 +289,28 @@ func TestThreadOpenCLI(t *testing.T) {
 	if !strings.Contains(stderr, "not attaching") {
 		t.Errorf("stderr = %q; want the skipped-attach note", stderr)
 	}
+	// open is sugar: the resumed terminal sits in this process's cwd (a
+	// local server), never in the thread's own directory, and
+	// `terminal create --thread` lands on the same terminal.
+	cwd, err := paths.CanonicalDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`(?m)^directory\s+` + regexp.QuoteMeta(cwd) + `$`).MatchString(stdout) {
+		t.Errorf("resumed terminal directory:\n%s", stdout)
+	}
 	if stdout, _, err = runCLI(t, "thread", "get", id); err != nil || !strings.Contains(stdout, resumed) {
 		t.Errorf("thread after open = %q, %v; want linked to %s", stdout, err, resumed)
 	}
+	if stdout, _, err = runCLI(t, "terminal", "create", "--thread", id, "--detach"); err != nil || !regexp.MustCompile(`(?m)^id\s+`+resumed+`$`).MatchString(stdout) {
+		t.Errorf("terminal create --thread = %q, %v; want the same terminal %s", stdout, err, resumed)
+	}
+	if _, _, err := runCLI(t, "terminal", "create", "--thread", id, "--app", "claude/tui"); err == nil {
+		t.Error("--thread with --app was accepted")
+	}
 
-	if _, _, err := runCLI(t, "thread", "open", "thrd-zzzzz"); err == nil || !strings.Contains(err.Error(), "404") {
-		t.Errorf("open unknown = %v, want a 404 problem", err)
+	if _, _, err := runCLI(t, "thread", "open", "thrd-zzzzz"); err == nil || !strings.Contains(err.Error(), "422") {
+		t.Errorf("open unknown = %v, want a 422 problem", err)
 	}
 }
 

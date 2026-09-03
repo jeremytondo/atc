@@ -141,7 +141,6 @@ func startTestServerWithThreads(t *testing.T) (*cliDriver, *threads.Service) {
 		Integrations: []integrations.Integration{
 			claude.Integration(claudeHooks), codex.Integration(codexObserver), t3code.Integration(t3Observer), zmx.Integration(),
 		},
-		Terminals: service,
 		// The probe never consults this machine's PATH: claude and zmx
 		// "exist", codex does not.
 		LookPath: func(name string) (string, error) {
@@ -155,7 +154,7 @@ func startTestServerWithThreads(t *testing.T) (*cliDriver, *threads.Service) {
 		t.Fatal(err)
 	}
 	handler := server.NewHandler(server.Options{
-		Coordinator:  application.New(application.Options{Terminals: service, Threads: threadService, Projects: projectService}),
+		Coordinator:  application.New(application.Options{Terminals: service, Threads: threadService, Projects: projectService, Integrations: catalog}),
 		Verify:       func(authorization string) bool { return authorization == "Bearer "+cliTestToken },
 		Version:      "v0.0.0-test",
 		Terminals:    service,

@@ -661,22 +661,23 @@ func serverRunUntilCancelled(cmd *cobra.Command, _ []string) error {
 		Integrations: []integrations.Integration{
 			claude.Integration(claudeHooks), codex.Integration(codexObserver), t3code.Integration(t3Observer), zmx.Integration(),
 		},
-		Terminals: terminalService,
 	})
 	if err != nil {
 		return err
 	}
 
-	// The application coordinator runs the cross-domain workflows: the
-	// deletion of terminals and spaces (the terminals domain's delete, then
-	// the Integrations' per-terminal cleanups, then the threads view) and
-	// the project mutations threads classify against.
+	// The application coordinator runs the cross-domain workflows: every
+	// terminal create (shell, command, App, thread resume), the deletion of
+	// terminals and spaces (the terminals domain's delete, then the
+	// Integrations' per-terminal cleanups, then the threads view), and the
+	// project mutations threads classify against.
 	coordinator := application.New(application.Options{
-		Terminals: terminalService,
-		Threads:   threadService,
-		Projects:  projectService,
-		Cleanups:  []func(string){claudeHooks.Deregister, codexObserver.Forget},
-		Logger:    logger,
+		Terminals:    terminalService,
+		Threads:      threadService,
+		Projects:     projectService,
+		Integrations: catalog,
+		Cleanups:     []func(string){claudeHooks.Deregister, codexObserver.Forget},
+		Logger:       logger,
 	})
 
 	handler := server.NewHandler(server.Options{

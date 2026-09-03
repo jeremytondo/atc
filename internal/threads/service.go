@@ -40,9 +40,14 @@ var ErrProjectUnknown = errors.New("unknown project")
 // cleared (title, archived).
 var ErrInvalidUpdate = errors.New("invalid update")
 
-// ErrResumeUnavailable refuses opening a dormant thread when the caller
-// supplies no Resumer (a server without an Integration catalog).
-var ErrResumeUnavailable = errors.New("this server cannot resume conversations")
+// ErrLinkFailed reports a resume whose terminal was created but whose
+// association could not be persisted; the terminal was discarded.
+var ErrLinkFailed = errors.New("persisting the resumed terminal's association failed")
+
+// ErrCompensationFailed reports a resume whose terminal was created, could
+// not be linked, and could not be discarded either: a live terminal ATC
+// does not associate with the thread. The message names it.
+var ErrCompensationFailed = errors.New("discarding the unlinked resumed terminal failed")
 
 // ErrAppForeign refuses minting a thread whose App is not the observing
 // Integration's: provenance is Integration-scoped, so an App outside the
@@ -1183,11 +1188,11 @@ func (s *Service) forgetIdentity(id string) {
 	delete(s.held, id)
 }
 
-// Open resolves the thread to exactly one terminal (ATC-282), reporting
-// whether it was created. resume launches the terminal for a dormant
-// thread; nil refuses such opens. Concurrent opens of the same thread
-// converge — one decides, the rest wait for its outcome and re-decide —
-// so at most one creates:
+// Open resolves the thread to exactly one terminal (ATC-282, ATC-297),
+// reporting whether it was created. resume launches the terminal for a
+// dormant thread. Concurrent opens of the same
+// thread converge — one decides, the rest wait for its outcome and
+// re-decide — so at most one creates:
 //
 //  1. a running terminal actively shows the thread   → reuse it
 //  2. the thread's last terminal is still up and no
@@ -1204,7 +1209,10 @@ func (s *Service) forgetIdentity(id string) {
 // records is intent, not evidence — it is what makes the next open fall
 // into rule 2 before any hook fires — and it persists on a detached
 // context: a client that gives up mid-launch must not leave a live
-// resume unlinked for the next open to duplicate. Opening unarchives.
+// resume unlinked for the next open to duplicate. A linkage that cannot
+// persist discards the terminal through the resumer while the thread is
+// still marked opening, so no waiter resumes beside a live orphan.
+// Opening unarchives.
 func (s *Service) Open(ctx context.Context, id string, resume Resumer) (api.Terminal, bool, error) {
 	for {
 		s.ops.Lock()
@@ -1227,10 +1235,6 @@ func (s *Service) Open(ctx context.Context, id string, resume Resumer) (api.Term
 	}
 	// Dormant, and this open owns the resume. ops is released for the
 	// launch and retaken to link.
-	if resume == nil {
-		s.ops.Unlock()
-		return api.Terminal{}, false, ErrResumeUnavailable
-	}
 	s.mu.Lock()
 	record := *s.view[id]
 	key := s.keys[id]
@@ -1240,22 +1244,35 @@ func (s *Service) Open(ctx context.Context, id string, resume Resumer) (api.Term
 	s.ops.Unlock()
 
 	detached := context.WithoutCancel(ctx)
-	terminal, err := resume(detached, ResumeRequest{
-		IntegrationID: record.IntegrationID, AppID: record.AppID, ProviderID: key.providerID, Directory: record.Cwd,
+	terminal, err := resume.Resume(detached, ResumeRequest{
+		IntegrationID: record.IntegrationID, AppID: record.AppID, ProviderID: key.providerID,
 	})
-
-	s.ops.Lock()
-	defer s.ops.Unlock()
-	delete(s.opening, id)
-	close(done)
+	finish := func() {
+		s.ops.Lock()
+		delete(s.opening, id)
+		close(done)
+		s.ops.Unlock()
+	}
 	if err != nil {
+		finish()
 		return api.Terminal{}, false, err
 	}
-	if err := s.link(detached, id, terminal.ID); err != nil {
-		s.logger.Error("linking resumed terminal", "thread", id, "terminal", terminal.ID, "error", err)
-		return api.Terminal{}, false, err
+	s.ops.Lock()
+	linkErr := s.link(detached, id, terminal.ID)
+	s.ops.Unlock()
+	if linkErr == nil {
+		finish()
+		return terminal, true, nil
 	}
-	return terminal, true, nil
+	// Compensation runs outside ops (the discard converges this view
+	// through its own lock) but before the opening mark clears.
+	s.logger.Error("linking resumed terminal", "thread", id, "terminal", terminal.ID, "error", linkErr)
+	discardErr := resume.Discard(detached, terminal.ID)
+	finish()
+	if discardErr != nil {
+		return api.Terminal{}, false, fmt.Errorf("%w: terminal %s: %w (after: %w)", ErrCompensationFailed, terminal.ID, discardErr, linkErr)
+	}
+	return api.Terminal{}, false, fmt.Errorf("%w: %w", ErrLinkFailed, linkErr)
 }
 
 // decideOpen applies the reuse rules under ops. It returns the reused

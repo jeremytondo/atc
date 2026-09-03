@@ -158,7 +158,7 @@ func TestAppLaunchThroughTerminalCreate(t *testing.T) {
 
 // Every launch refusal is typed and creates nothing: a missing executable
 // names the command and hint; a handoff App does not run in a terminal;
-// an unknown App is 404.
+// an unknown App is an unprocessable reference.
 func TestAppLaunchRefusalsCreateNothing(t *testing.T) {
 	f := newFixture(t)
 	cases := []struct {
@@ -169,9 +169,9 @@ func TestAppLaunchRefusalsCreateNothing(t *testing.T) {
 	}{
 		{"codex/tui", http.StatusConflict, api.CodeAppUnavailable, "npm install -g @openai/codex"},
 		{"t3code/web", http.StatusUnprocessableEntity, api.CodeAppNotTerminalCapable, "t3code/web"},
-		{"claude/desktop", http.StatusNotFound, api.CodeAppNotFound, "claude/desktop"},
-		{"nonexistent/tui", http.StatusNotFound, api.CodeAppNotFound, "nonexistent/tui"},
-		{"claude", http.StatusNotFound, api.CodeAppNotFound, "integration/app"},
+		{"claude/desktop", http.StatusUnprocessableEntity, api.CodeAppNotFound, "claude/desktop"},
+		{"nonexistent/tui", http.StatusUnprocessableEntity, api.CodeAppNotFound, "nonexistent/tui"},
+		{"claude", http.StatusUnprocessableEntity, api.CodeAppNotFound, "integration/app"},
 	}
 	for _, tc := range cases {
 		rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{AppID: tc.app}))

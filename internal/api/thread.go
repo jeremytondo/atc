@@ -88,11 +88,3 @@ type ThreadUpdateParams struct {
 type ThreadList struct {
 	Threads []Thread `json:"threads"`
 }
-
-// ThreadOpen is the POST /v1/threads/{id}/open response body (ATC-282):
-// the one terminal the server chose to put the caller in front of the
-// conversation. The server never attaches; that stays a client concern.
-type ThreadOpen struct {
-	Terminal Terminal `json:"terminal" doc:"The terminal holding the conversation: an existing one reused, or a new one running the provider's exact resume."`
-	Created  bool     `json:"created" doc:"true when open launched a new terminal resuming the conversation; false when a running terminal was reused."`
-}

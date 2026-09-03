@@ -2,9 +2,10 @@
 // /v1/threads. A thread is one exact provider conversation, observed into
 // existence — inside an ATC-launched terminal App at its first prompt, or
 // mirrored from an external program its Integration observes (ATC-285) —
-// there is no create verb. Open (ATC-282) is the one intent the domain
-// acts on: it resolves a thread to the terminal holding it, resuming the
-// conversation in a new terminal when nothing does.
+// there is no create verb. Open (ATC-282, ATC-297) is the one decision
+// the domain makes for the application coordinator's terminal create: it
+// resolves a thread to the terminal holding it, resuming the conversation
+// in a new terminal when nothing does.
 // Records persist in the ATC-262 store as the durable index of
 // conversations; the private identity mapping (integration, provider
 // conversation id) → thread never leaves the server.
@@ -143,10 +144,11 @@ type ExternalObservation struct {
 	Metadata  Metadata
 }
 
-// ResumeRequest asks the Integration catalog to launch a terminal running
-// the provider's exact resume of a dormant conversation (ATC-282). It
-// carries the private identity out of this domain to the App that
-// composes the command — never onto the wire.
+// ResumeRequest asks the application coordinator to launch a terminal
+// running the provider's exact resume of a dormant conversation
+// (ATC-282). It carries the private identity out of this domain to the
+// App that composes the command — never onto the wire. Placement is the
+// caller's: a thread's recorded directory is never origin for a resume.
 type ResumeRequest struct {
 	// IntegrationID and ProviderID form the private identity key; AppID is
 	// the thread's immutable App provenance, empty when the conversation
@@ -154,16 +156,17 @@ type ResumeRequest struct {
 	IntegrationID string
 	AppID         string
 	ProviderID    string
-	// Directory is the conversation's last recorded working directory,
-	// empty when never observed; the resumer falls back to the space's
-	// directory when it no longer exists.
-	Directory string
 }
 
-// Resumer launches the resume terminal for an open decision
-// (integrations.Service.Resume in production). Open invokes it for at
-// most one in-flight resume per thread.
-type Resumer func(ctx context.Context, req ResumeRequest) (api.Terminal, error)
+// Resumer launches the resume terminal for an open decision (the
+// application coordinator in production). Open invokes Resume for at
+// most one in-flight resume per thread, and Discard when the terminal it
+// created could not be linked — the terminal is deleted so it never
+// becomes a second writer the next open knows nothing about.
+type Resumer interface {
+	Resume(ctx context.Context, req ResumeRequest) (api.Terminal, error)
+	Discard(ctx context.Context, terminalID string) error
+}
 
 // Linker derives the deep links of one Integration's threads at read
 // time from the Integration's live state, given the provider conversation

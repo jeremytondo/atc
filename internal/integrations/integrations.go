@@ -98,8 +98,8 @@ type LaunchContext struct {
 	// TerminalID is the terminal being created for this launch. Empty in
 	// PrepareLaunch, which runs before the identity is minted.
 	TerminalID string
-	// Directory is the session's working directory: the request's or the space's, or a
-	// resumed conversation's recorded one.
+	// Directory is the session's working directory: the request's, else
+	// the space's — for a resume as much as for a fresh start.
 	Directory string
 	// ResumeConversationID is the provider's own conversation id to resume
 	// exactly; empty launches a fresh conversation. It is the private

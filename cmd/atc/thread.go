@@ -38,26 +38,32 @@ func newThreadOpenCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "open <id>",
 		Short: "Open a conversation, live or dormant, and attach",
-		Long: `Put your shell in front of the conversation. The server picks exactly one
+		Long: `Put your shell in front of the conversation — sugar for
+` + "`atc terminal create --thread <id>`" + `. The server picks exactly one
 terminal: the running terminal showing the thread, else its last terminal
 if that is still running, else a new terminal resuming the exact
-conversation in the app that started it. Concurrent opens of one thread
-land in the same terminal, so a conversation never has two writers. An
-archived thread is unarchived. A thread that was not started in an ATC
-terminal app (one T3 Code owns) is refused: open it through the links
-` + "`atc thread get`" + ` shows.
-Pass --detach to print the terminal instead of attaching; where attaching
-is impossible (no TTY, or the server is on another machine) the terminal
-is still printed.`,
+conversation in the app that started it, placed like any new terminal
+(--space, --directory; your current directory against a local server).
+Concurrent opens of one thread land in the same terminal, so a
+conversation never has two writers through ATC. An archived thread is
+unarchived. A thread that was not started in an ATC terminal app (one T3
+Code owns) is refused: open it through the links ` + "`atc thread get`" + `
+shows. Pass --detach to print the terminal instead of attaching; where
+attaching is impossible (no TTY, or the server is on another machine) the
+terminal is still printed.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, baseURL string) error {
+			params, err := placementParams(cmd, baseURL)
+			if err != nil {
+				return err
+			}
+			params.ThreadID = args[0]
 			return runAndMaybeAttach(cmd, baseURL, func(ctx context.Context) (api.Terminal, error) {
-				opened, err := client.OpenThread(ctx, args[0])
-				return opened.Terminal, err
+				return client.CreateTerminal(ctx, params)
 			})
 		}),
 	}
-	cmd.Flags().Bool("detach", false, "print the terminal instead of attaching to it")
+	addPlacementFlags(cmd)
 	return cmd
 }
 

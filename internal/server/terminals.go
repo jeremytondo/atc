@@ -22,6 +22,13 @@ type terminalOutput struct {
 	Body api.Terminal
 }
 
+// createOutput carries the create's status: 201 for a terminal created,
+// 200 for one reused by a thread resume.
+type createOutput struct {
+	Status int
+	Body   api.Terminal
+}
+
 type terminalListOutput struct {
 	Body api.TerminalList
 }
@@ -30,8 +37,7 @@ type terminalIDInput struct {
 	ID string `path:"id" doc:"Terminal identifier."`
 }
 
-func registerTerminals(humaAPI huma.API, service *terminals.Service, catalog *integrations.Service,
-	threadService *threads.Service, coordinator *application.Coordinator) {
+func registerTerminals(humaAPI huma.API, service *terminals.Service, threadService *threads.Service, coordinator *application.Coordinator) {
 	// The terminals domain knows nothing of threads, so the activeThreadId
 	// projection is grafted onto its wire shape here, from the threads
 	// service that owns it (ATC-255).
@@ -41,35 +47,39 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, catalog *in
 		}
 		return terminal
 	}
-	huma.Register(humaAPI, huma.Operation{
-		OperationID:   "create-terminal",
-		Method:        http.MethodPost,
-		Path:          "/v1/terminals",
-		Summary:       "Create a terminal",
-		Description:   "Creates the terminal in the named space (the Default space when omitted), starting in the given directory (the space's when omitted; it must exist), persists the record, starts the session, and waits a short verification window; a fast-failing command returns exited with its evidence. An appId launches that Integration-owned App instead: the Integration composes the command privately, the terminal records the App, and a thread appears once the Integration observes a conversation — the one launch path. appId and command are mutually exclusive.",
+	// The reused-terminal 200 carries the same body as the 201, and the
+	// operation's refusals are Problems: both declared on the document
+	// explicitly, because Huma attaches the body schema only to the default
+	// status and drops its catch-all error response once a second success
+	// status is declared.
+	create := huma.Operation{
+		OperationID: "create-terminal",
+		Method:      http.MethodPost,
+		Path:        "/v1/terminals",
+		Summary:     "Create a terminal",
+		Description: "The one launch surface: a plain shell, a command, an App, or a thread's resume (command, appId, and threadId are mutually exclusive). The terminal lands in the named space (the Default space when omitted) and starts in the given directory (the space's when omitted; it must exist) — never in a thread's recorded directory; the record persists, the session starts, and a short verification window settles the status (a fast-failing command returns exited with its evidence). An App launch composes its command privately, records the App, and creates no thread until the Integration observes one. A thread resume reuses the terminal already running (or unreachable) for the thread, answering 200 with it unchanged, else runs the exact resume through the thread's App in a new terminal, linked and unarchived, answering 201; concurrent resumes converge on one terminal. A thread without terminal-capable App provenance is refused with thread_not_terminal_resumable. The private command and provider identity never appear.",
+		Responses: map[string]*huma.Response{
+			"200": {Description: "An existing terminal reused for the thread."},
+		},
+		Errors:        []int{http.StatusConflict, http.StatusUnprocessableEntity, http.StatusInternalServerError},
 		DefaultStatus: http.StatusCreated,
-	}, func(ctx context.Context, input *struct {
+	}
+	huma.Register(humaAPI, create, func(ctx context.Context, input *struct {
 		Body api.TerminalCreateParams
-	}) (*terminalOutput, error) {
-		if input.Body.AppID != "" {
-			if input.Body.Command != "" {
-				return nil, problem(http.StatusUnprocessableEntity, api.CodeLaunchModeConflict, "appId and command are mutually exclusive")
-			}
-			if catalog == nil {
-				return nil, problem(http.StatusUnprocessableEntity, api.CodeAppNotFound, "this server has no integration catalog")
-			}
-			terminal, err := catalog.Launch(ctx, input.Body.AppID, input.Body)
-			if err != nil {
-				return nil, mapIntegrationError(err)
-			}
-			return &terminalOutput{Body: decorate(terminal)}, nil
-		}
-		terminal, err := service.Create(ctx, input.Body)
+	}) (*createOutput, error) {
+		terminal, created, err := coordinator.CreateTerminal(ctx, input.Body)
 		if err != nil {
-			return nil, mapError(err)
+			return nil, mapCreateError(err)
 		}
-		return &terminalOutput{Body: decorate(terminal)}, nil
+		status := http.StatusCreated
+		if !created {
+			status = http.StatusOK
+		}
+		return &createOutput{Status: status, Body: decorate(terminal)}, nil
 	})
+	// Register fills the default status's response in place; the reuse
+	// status shares it.
+	create.Responses["200"].Content = create.Responses["201"].Content
 
 	huma.Register(humaAPI, huma.Operation{
 		OperationID: "list-terminals",
@@ -130,6 +140,37 @@ func registerTerminals(humaAPI huma.API, service *terminals.Service, catalog *in
 		}
 		return nil, nil
 	})
+}
+
+// mapCreateError is the one mapping for everything a create can refuse
+// across its four modes: a body naming an unknown App or thread is an
+// unprocessable reference (422), not a missing route; an App or origin
+// that cannot act now conflicts (409); a resume whose association could
+// not persist is a server failure. The failures wrap the error that
+// caused them — a thread gone at link time wraps ErrNotFound — so they
+// are matched first.
+func mapCreateError(err error) error {
+	switch {
+	case errors.Is(err, threads.ErrCompensationFailed):
+		return problem(http.StatusInternalServerError, api.CodeCompensationFailed, err.Error())
+	case errors.Is(err, threads.ErrLinkFailed):
+		return problem(http.StatusInternalServerError, api.CodePersistenceFailed, err.Error())
+	case errors.Is(err, application.ErrLaunchModeConflict):
+		return problem(http.StatusUnprocessableEntity, api.CodeLaunchModeConflict, err.Error())
+	case errors.Is(err, integrations.ErrAppNotFound):
+		return problem(http.StatusUnprocessableEntity, api.CodeAppNotFound, err.Error())
+	case errors.Is(err, integrations.ErrAppNotTerminal):
+		return problem(http.StatusUnprocessableEntity, api.CodeAppNotTerminalCapable, err.Error())
+	case errors.Is(err, integrations.ErrUnavailable):
+		return problem(http.StatusConflict, api.CodeAppUnavailable, err.Error())
+	case errors.Is(err, threads.ErrNotFound):
+		return problem(http.StatusUnprocessableEntity, api.CodeThreadNotFound, "thread not found")
+	case errors.Is(err, integrations.ErrNotResumable):
+		return problem(http.StatusConflict, api.CodeThreadNotResumable, err.Error())
+	case errors.Is(err, integrations.ErrOriginUnavailable):
+		return problem(http.StatusConflict, api.CodeThreadAppUnavailable, err.Error())
+	}
+	return mapError(err)
 }
 
 func mapError(err error) error {

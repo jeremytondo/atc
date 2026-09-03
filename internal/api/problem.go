@@ -57,12 +57,14 @@ const (
 	CodeThreadNotFound           = "thread_not_found"
 	CodeThreadActive             = "thread_active"
 	CodeThreadNotResumable       = "thread_not_terminal_resumable"
+	CodeThreadAppUnavailable     = "thread_app_unavailable"
+	CodePersistenceFailed        = "persistence_failed"
+	CodeCompensationFailed       = "compensation_failed"
 	CodeIntegrationNotFound      = "integration_not_found"
 	CodeAppNotFound              = "app_not_found"
 	CodeAppNotTerminalCapable    = "app_not_terminal_capable"
 	CodeAppUnavailable           = "app_unavailable"
 	CodeLaunchModeConflict       = "launch_mode_conflict"
-	CodeResumeUnavailable        = "resume_unavailable"
 )
 
 func (p *Problem) Error() string {

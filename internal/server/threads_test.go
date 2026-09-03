@@ -299,79 +299,115 @@ func resourceID(t *testing.T, data string) string {
 	return change.ID
 }
 
-// Open over the wire: a running terminal holding the thread is reused; a
-// dormant thread gets a new terminal running the exact resume, linked to
-// it; an unknown id is 404 and creates nothing; an archived thread comes
-// back unarchived. The response terminal carries the projection like
-// every other terminal response.
-func TestThreadOpenOverTheWire(t *testing.T) {
+// Thread mode over the wire (ATC-297): POST /v1/terminals with threadId
+// answers 200 with the running terminal holding the thread, unchanged;
+// once the thread is dormant it answers 201 with a new terminal running
+// the exact resume, linked to it and placed as the request asks — never
+// in the thread's own directory; an unknown thread is refused and
+// creates nothing; an archived thread comes back unarchived. The
+// response terminal carries the projection like every other terminal
+// response.
+func TestThreadResumeThroughTerminalCreate(t *testing.T) {
 	f := newFixture(t)
 	launched := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{AppID: "claude/tui"})))
 	id := f.observeThread(t, launched.ID, "sess-1", api.ThreadIdle)
+	elsewhere := canonicalDir(t, t.TempDir())
 
-	rec := f.request(t, http.MethodPost, "/v1/threads/"+id+"/open", "")
+	// Reuse: 200, the same terminal, placement ignored.
+	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{ThreadID: id, Directory: elsewhere, Name: "ignored"}))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("open active: got %d; body %s", rec.Code, rec.Body)
+		t.Fatalf("resume active: got %d; body %s", rec.Code, rec.Body)
 	}
-	var opened api.ThreadOpen
-	decodeInto(t, rec, &opened)
-	if opened.Created || opened.Terminal.ID != launched.ID || opened.Terminal.ActiveThreadID != id {
-		t.Errorf("open active = %+v", opened)
+	reused := decodeTerminal(t, rec)
+	if reused.ID != launched.ID || reused.ActiveThreadID != id || reused.Name != launched.Name || reused.Directory != launched.Directory {
+		t.Errorf("resume active = %+v; want %s untouched", reused, launched.ID)
 	}
 
-	// The terminal goes away: the thread is dormant.
+	// The terminal goes away: the thread is dormant, and archived.
 	if rec := f.request(t, http.MethodDelete, "/v1/terminals/"+launched.ID, ""); rec.Code != http.StatusNoContent {
 		t.Fatalf("delete terminal: got %d", rec.Code)
 	}
-	archived := `{"archived":true}`
-	if rec := f.request(t, http.MethodPatch, "/v1/threads/"+id, archived); rec.Code != http.StatusOK {
+	if rec := f.request(t, http.MethodPatch, "/v1/threads/"+id, `{"archived":true}`); rec.Code != http.StatusOK {
 		t.Fatalf("archive: got %d; body %s", rec.Code, rec.Body)
 	}
 
-	rec = f.request(t, http.MethodPost, "/v1/threads/"+id+"/open", "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("open dormant: got %d; body %s", rec.Code, rec.Body)
+	// Resume: 201, a new terminal in the requested directory running the
+	// exact resume, composed privately.
+	rec = f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{ThreadID: id, Directory: elsewhere, Name: "again"}))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("resume dormant: got %d; body %s", rec.Code, rec.Body)
 	}
-	decodeInto(t, rec, &opened)
-	resumed := opened.Terminal
-	if !opened.Created || resumed.ID == launched.ID || resumed.AppID != "claude/tui" || resumed.Status != api.TerminalRunning {
-		t.Errorf("open dormant = %+v", opened)
+	resumed := decodeTerminal(t, rec)
+	if resumed.ID == launched.ID || resumed.AppID != "claude/tui" || resumed.Status != api.TerminalRunning || resumed.ActiveThreadID != "" {
+		t.Errorf("resume dormant = %+v", resumed)
 	}
-	// The exact resume is composed privately: the driver ran it, the wire
-	// shows only the App.
 	if command := f.driverCommand(resumed.ID); !strings.HasPrefix(command, "claude --settings '") || !strings.HasSuffix(command, " --resume 'sess-1'") {
 		t.Errorf("resume command = %q", command)
 	}
-	if resumed.Command != "" {
-		t.Errorf("resume command leaked onto the wire: %q", resumed.Command)
+	if resumed.Command != "" || strings.Contains(rec.Body.String(), "sess-1") {
+		t.Errorf("private data leaked onto the wire: %s", rec.Body)
 	}
-	if resumed.Directory != f.projectDir {
-		t.Errorf("resume directory = %q, want the project's %q (no cwd recorded)", resumed.Directory, f.projectDir)
+	if resumed.Directory != elsewhere || resumed.Name != "again" || resumed.SpaceID != f.defaultSpace(t).ID {
+		t.Errorf("resume placement = %+v; want %q named again in the Default space", resumed, elsewhere)
 	}
 	thread := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+id, ""))
-	if thread.TerminalID != resumed.ID || thread.Archived {
-		t.Errorf("thread after open = %+v; want linked to %s and unarchived", thread, resumed.ID)
+	if thread.TerminalID != resumed.ID || thread.Archived || thread.InitialDirectory != f.projectDir {
+		t.Errorf("thread after resume = %+v; want linked to %s, unarchived, origin kept", thread, resumed.ID)
 	}
 
-	// Opening again reuses the resumed terminal — no evidence has arrived,
-	// but the linkage the decision recorded counts.
-	decodeInto(t, f.request(t, http.MethodPost, "/v1/threads/"+id+"/open", ""), &opened)
-	if opened.Created || opened.Terminal.ID != resumed.ID {
-		t.Errorf("second open = %+v; want reuse of %s", opened, resumed.ID)
+	// Resuming again reuses the resumed terminal — no evidence has
+	// arrived, but the linkage the decision recorded counts.
+	rec = f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{ThreadID: id}))
+	if rec.Code != http.StatusOK || decodeTerminal(t, rec).ID != resumed.ID {
+		t.Errorf("second resume: got %d; body %s; want 200 with %s", rec.Code, rec.Body, resumed.ID)
 	}
 
 	before := len(decodeTerminalList(t, f.request(t, http.MethodGet, "/v1/terminals", "")))
-	if rec := f.request(t, http.MethodPost, "/v1/threads/thrd-zzzzz/open", ""); rec.Code != http.StatusNotFound {
-		t.Errorf("open unknown: got %d, want 404", rec.Code)
+	rec = f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{ThreadID: "thrd-zzzzz"}))
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), `"code":"thread_not_found"`) {
+		t.Errorf("resume unknown: got %d; body %s", rec.Code, rec.Body)
 	}
 	if after := len(decodeTerminalList(t, f.request(t, http.MethodGet, "/v1/terminals", ""))); after != before {
-		t.Errorf("open unknown created a terminal: %d → %d", before, after)
+		t.Errorf("resume unknown created a terminal: %d → %d", before, after)
+	}
+	// The selectors are exclusive.
+	for name, body := range map[string]api.TerminalCreateParams{
+		"thread+app":     {ThreadID: id, AppID: "claude/tui"},
+		"thread+command": {ThreadID: id, Command: "hx"},
+		"all three":      {ThreadID: id, AppID: "claude/tui", Command: "hx"},
+	} {
+		rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, body))
+		if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), `"code":"launch_mode_conflict"`) {
+			t.Errorf("%s: got %d; body %s", name, rec.Code, rec.Body)
+		}
+	}
+	// The old action route is gone.
+	if rec := f.request(t, http.MethodPost, "/v1/threads/"+id+"/open", ""); rec.Code != http.StatusNotFound {
+		t.Errorf("POST /v1/threads/{id}/open: got %d, want 404", rec.Code)
+	}
+
+	// A thread whose recorded App the catalog no longer has cannot be
+	// resumed: unavailable origin, distinct from missing provenance.
+	stale, err := f.threads.ObserveSession(context.Background(), threads.SessionObservation{
+		IntegrationID: "claude", AppID: "claude/desktop", AgentID: "claude", ProviderID: "sess-stale", TerminalID: resumed.ID,
+		InitialDirectory: f.projectDir, Status: api.ThreadIdle,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.threads.Deactivate(context.Background(), resumed.ID)
+	if rec := f.request(t, http.MethodDelete, "/v1/terminals/"+resumed.ID, ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete terminal: got %d", rec.Code)
+	}
+	rec = f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{ThreadID: stale}))
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"code":"thread_app_unavailable"`) {
+		t.Errorf("resume with a vanished app: got %d; body %s", rec.Code, rec.Body)
 	}
 }
 
 // A dormant thread whose App executable is missing is refused like a
 // launch, with the install hint, and nothing is created or linked.
-func TestThreadOpenUnavailableApp(t *testing.T) {
+func TestThreadResumeUnavailableApp(t *testing.T) {
 	f := newFixture(t)
 	launched := decodeTerminal(t, f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{AppID: "claude/tui"})))
 	id := f.observeThread(t, launched.ID, "sess-1", api.ThreadIdle)
@@ -380,16 +416,16 @@ func TestThreadOpenUnavailableApp(t *testing.T) {
 	}
 	f.binaries["claude"] = false
 
-	rec := f.request(t, http.MethodPost, "/v1/threads/"+id+"/open", "")
+	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{ThreadID: id}))
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "npm install -g @anthropic-ai/claude-code") ||
 		!strings.Contains(rec.Body.String(), `"code":"app_unavailable"`) {
-		t.Errorf("open unavailable: got %d; body %s", rec.Code, rec.Body)
+		t.Errorf("resume unavailable: got %d; body %s", rec.Code, rec.Body)
 	}
 	if thread := decodeThread(t, f.request(t, http.MethodGet, "/v1/threads/"+id, "")); thread.TerminalID != "" {
-		t.Errorf("refused open linked %q", thread.TerminalID)
+		t.Errorf("refused resume linked %q", thread.TerminalID)
 	}
 	if terminals := decodeTerminalList(t, f.request(t, http.MethodGet, "/v1/terminals", "")); len(terminals) != 0 {
-		t.Errorf("refused open created %+v", terminals)
+		t.Errorf("refused resume created %+v", terminals)
 	}
 }
 
@@ -425,10 +461,10 @@ func TestExternalThreadVerbsOverTheWire(t *testing.T) {
 		t.Errorf("wire body = %s", body)
 	}
 
-	rec := f.request(t, http.MethodPost, "/v1/threads/"+id+"/open", "")
+	rec := f.request(t, http.MethodPost, "/v1/terminals", f.createTerminalBody(t, api.TerminalCreateParams{ThreadID: id}))
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"code":"thread_not_terminal_resumable"`) ||
 		!strings.Contains(rec.Body.String(), "not started in an ATC terminal") {
-		t.Errorf("open: got %d; body %s", rec.Code, rec.Body)
+		t.Errorf("resume: got %d; body %s", rec.Code, rec.Body)
 	}
 	if terminals := decodeTerminalList(t, f.request(t, http.MethodGet, "/v1/terminals", "")); len(terminals) != 0 {
 		t.Errorf("refused open created %+v", terminals)

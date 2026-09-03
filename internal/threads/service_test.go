@@ -990,24 +990,40 @@ func TestReattachUpdatesMetadataAndTerminalOnly(t *testing.T) {
 }
 
 // fakeResumer is the hand-written launch seam behind open: it plants a
-// running terminal record the way the agents side would create one and
-// records every request. gate, when set, holds the resume until released
+// running terminal record the way the application coordinator's resume
+// would create one and records every request. gate, when set, holds the resume until released
 // so a concurrent open can be caught behind the decision; onResume runs
 // inside the launch (a client cancelling mid-launch).
 type fakeResumer struct {
-	mu       sync.Mutex
-	f        *fixture
-	requests []ResumeRequest
-	gate     chan struct{}
-	fail     error
-	onResume func()
+	mu        sync.Mutex
+	f         *fixture
+	requests  []ResumeRequest
+	discarded []string
+	gate      chan struct{}
+	fail      error
+	failLink  bool
+	onResume  func()
+}
+
+// Discard records the terminal the domain gave up on and removes it the
+// way the coordinator's deletion would.
+func (r *fakeResumer) Discard(ctx context.Context, terminalID string) error {
+	r.mu.Lock()
+	r.discarded = append(r.discarded, terminalID)
+	r.mu.Unlock()
+	if _, err := r.f.store.Terminals().Delete(ctx, terminalID); err != nil {
+		return err
+	}
+	r.f.terminals.remove(terminalID)
+	r.f.service.TerminalRemoved(ctx, terminalID)
+	return nil
 }
 
 func (r *fakeResumer) Resume(_ context.Context, req ResumeRequest) (api.Terminal, error) {
 	r.mu.Lock()
 	r.requests = append(r.requests, req)
 	n := len(r.requests)
-	gate, fail, onResume := r.gate, r.fail, r.onResume
+	gate, fail, onResume, failLink := r.gate, r.fail, r.onResume, r.failLink
 	r.mu.Unlock()
 	if gate != nil {
 		<-gate
@@ -1027,6 +1043,13 @@ func (r *fakeResumer) Resume(_ context.Context, req ResumeRequest) (api.Terminal
 		return api.Terminal{}, fmt.Errorf("planting resume terminal = %v: %w", ok, err)
 	}
 	r.f.terminals.set(id, api.TerminalRunning)
+	if failLink {
+		// Deleting the row behind the domain's back makes its link fail:
+		// the terminal it holds no longer exists to reference.
+		if ok, err := r.f.store.Terminals().Delete(context.Background(), id); err != nil || !ok {
+			return api.Terminal{}, fmt.Errorf("sabotaging resume terminal = %v: %w", ok, err)
+		}
+	}
 	return api.Terminal{ID: id, SpaceID: r.f.space, AppID: req.AppID, Status: api.TerminalRunning}, nil
 }
 
@@ -1122,7 +1145,7 @@ func TestOpenDecision(t *testing.T) {
 			tc.arrange(t, f, id)
 			f.drain()
 
-			terminal, created, err := f.service.Open(ctx, id, resumer.Resume)
+			terminal, created, err := f.service.Open(ctx, id, resumer)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1146,9 +1169,9 @@ func TestOpenDecision(t *testing.T) {
 				}
 				return
 			}
-			// The resume carries the identity, project, and recorded cwd,
-			// and the linkage publishes.
-			want := ResumeRequest{IntegrationID: "claude", AppID: "claude/tui", ProviderID: "s1", Directory: "/proj-aaaaa/sub"}
+			// The resume carries the identity and provenance, nothing about
+			// placement, and the linkage publishes.
+			want := ResumeRequest{IntegrationID: "claude", AppID: "claude/tui", ProviderID: "s1"}
 			if diff := cmp.Diff([]ResumeRequest{want}, resumer.requests); diff != "" {
 				t.Errorf("resume requests (-want +got):\n%s", diff)
 			}
@@ -1165,15 +1188,15 @@ func TestOpenRefusals(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
 	resumer := &fakeResumer{f: f}
-	if _, _, err := f.service.Open(ctx, "thrd-zzzzz", resumer.Resume); !errors.Is(err, ErrNotFound) || len(resumer.requests) != 0 {
+	if _, _, err := f.service.Open(ctx, "thrd-zzzzz", resumer); !errors.Is(err, ErrNotFound) || len(resumer.requests) != 0 {
 		t.Errorf("Open(unknown) = %v, requests %+v; want ErrNotFound and no resume", err, resumer.requests)
 	}
 
 	id := f.observed(t)
 	f.dormant(t)
 	f.drain()
-	resumer.fail = errors.New("agent unavailable")
-	if _, _, err := f.service.Open(ctx, id, resumer.Resume); err == nil || err.Error() != "agent unavailable" {
+	resumer.fail = errors.New("app unavailable")
+	if _, _, err := f.service.Open(ctx, id, resumer); err == nil || err.Error() != "app unavailable" {
 		t.Errorf("Open(failed resume) = %v", err)
 	}
 	if thread, _ := f.service.Get(id); thread.TerminalID != "term-aaaaa" {
@@ -1181,10 +1204,6 @@ func TestOpenRefusals(t *testing.T) {
 	}
 	if got := f.drain(); len(got) != 0 {
 		t.Errorf("failed resume published %v", got)
-	}
-
-	if _, _, err := f.service.Open(ctx, id, nil); !errors.Is(err, ErrResumeUnavailable) {
-		t.Errorf("Open(dormant, no resumer) = %v, want ErrResumeUnavailable", err)
 	}
 }
 
@@ -1208,7 +1227,7 @@ func TestConcurrentOpensConverge(t *testing.T) {
 	results := make(chan result, 2)
 	for range 2 {
 		go func() {
-			terminal, created, err := f.service.Open(ctx, id, resumer.Resume)
+			terminal, created, err := f.service.Open(ctx, id, resumer)
 			results <- result{terminal, created, err}
 		}()
 	}
@@ -1273,7 +1292,7 @@ func TestOpenLinksDespiteCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	resumer := &fakeResumer{f: f, onResume: cancel}
 
-	terminal, created, err := f.service.Open(ctx, id, resumer.Resume)
+	terminal, created, err := f.service.Open(ctx, id, resumer)
 	if err != nil || !created || terminal.ID != "term-resm1" {
 		t.Fatalf("Open under cancel = %+v, %v, %v", terminal, created, err)
 	}
@@ -1647,5 +1666,81 @@ func TestBackfillAndExplicitAssignment(t *testing.T) {
 	// Nulling title or archived is refused.
 	if _, err := f.service.Update(ctx, plain, api.ThreadUpdateParams{Title: api.Clear[string]()}); !errors.Is(err, ErrInvalidUpdate) {
 		t.Errorf("null title = %v, want ErrInvalidUpdate", err)
+	}
+}
+
+// A resume whose association cannot persist is compensated: the created
+// terminal is discarded through the resumer while the thread is still
+// opening, so a concurrent open waits and then resumes afresh instead of
+// landing beside a live orphan; the thread's linkage is untouched and
+// the failure is typed.
+func TestOpenDiscardsAnUnlinkableResume(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	id := f.observed(t)
+	f.dormant(t)
+	f.drain()
+	resumer := &fakeResumer{f: f, failLink: true, gate: make(chan struct{})}
+
+	type result struct {
+		terminal api.Terminal
+		created  bool
+		err      error
+	}
+	first := make(chan result, 1)
+	go func() {
+		terminal, created, err := f.service.Open(ctx, id, resumer)
+		first <- result{terminal, created, err}
+	}()
+	// The second open queues behind the first's resume.
+	waitFor(t, "first resume in flight", func() bool {
+		resumer.mu.Lock()
+		defer resumer.mu.Unlock()
+		return len(resumer.requests) == 1
+	})
+	second := make(chan result, 1)
+	go func() {
+		terminal, created, err := f.service.Open(ctx, id, resumer)
+		second <- result{terminal, created, err}
+	}()
+	waitFor(t, "second open waiting", func() bool {
+		f.service.ops.Lock()
+		defer f.service.ops.Unlock()
+		_, opening := f.service.opening[id]
+		return opening && len(second) == 0
+	})
+	// Only the first resume is sabotaged.
+	resumer.mu.Lock()
+	resumer.failLink = false
+	resumer.mu.Unlock()
+	close(resumer.gate)
+
+	got := <-first
+	if !errors.Is(got.err, ErrLinkFailed) || got.created || got.terminal.ID != "" {
+		t.Errorf("first open = %+v; want ErrLinkFailed and no terminal", got)
+	}
+	if len(resumer.discarded) != 1 || resumer.discarded[0] != "term-resm1" {
+		t.Errorf("discarded = %v; want the unlinkable terminal", resumer.discarded)
+	}
+	// The waiter re-decided after the compensation: dormant still, so it
+	// resumed on its own and linked.
+	got = <-second
+	if got.err != nil || !got.created || got.terminal.ID != "term-resm2" {
+		t.Errorf("second open = %+v; want a fresh resume", got)
+	}
+	if thread, _ := f.service.Get(id); thread.TerminalID != "term-resm2" {
+		t.Errorf("thread after = %+v; want linked to the second resume", thread)
+	}
+}
+
+// waitFor polls until condition holds, failing the test after a bound.
+func waitFor(t *testing.T, what string, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !condition() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

@@ -61,13 +61,25 @@ to it with ` + "`atc terminal attach <id>`" + `.
 With --command it runs through your login shell (profile and rc files
 loaded); with --app <integration/app> it launches that app (see
 ` + "`atc integration list`" + `) — a conversation started there becomes a
-thread at its first prompt; without either you get a plain interactive
-shell. A missing app executable is refused with its install hint before
-anything is created.`,
+thread at its first prompt; with --thread <id> it resumes that
+conversation through the app that started it, reusing the terminal
+already showing it when one is running; with none of the three you get a
+plain interactive shell. A missing app executable is refused with its
+install hint before anything is created.`,
 		Args: cobra.NoArgs,
 		RunE: runWithClient(func(cmd *cobra.Command, _ []string, client *api.Client, baseURL string) error {
-			params, err := createParams(cmd, baseURL)
+			params, err := placementParams(cmd, baseURL)
 			if err != nil {
+				return err
+			}
+			flags := cmd.Flags()
+			if params.Command, err = flags.GetString("command"); err != nil {
+				return err
+			}
+			if params.AppID, err = flags.GetString("app"); err != nil {
+				return err
+			}
+			if params.ThreadID, err = flags.GetString("thread"); err != nil {
 				return err
 			}
 			return runAndMaybeAttach(cmd, baseURL, func(ctx context.Context) (api.Terminal, error) {
@@ -75,22 +87,29 @@ anything is created.`,
 			})
 		}),
 	}
+	addPlacementFlags(cmd)
+	cmd.Flags().String("command", "", "command to run through your shell; omit for a plain shell")
+	cmd.Flags().String("app", "", "app to launch, as integration/app (e.g. codex/tui)")
+	cmd.Flags().String("thread", "", "thread to resume through the app that started it")
+	cmd.MarkFlagsMutuallyExclusive("command", "app", "thread")
+	return cmd
+}
+
+// addPlacementFlags declares the flags every launching command shares:
+// where the terminal goes, what it is called, and --detach.
+func addPlacementFlags(cmd *cobra.Command) {
 	cmd.Flags().String("name", "", "display name (defaults to the directory's basename)")
 	cmd.Flags().String("space", "", "space the terminal belongs to (defaults to the Default space)")
 	cmd.Flags().String("directory", "", "working directory (defaults to your current directory against a local server, else the space's)")
 	cmd.Flags().Bool("detach", false, "print the terminal instead of attaching to it")
-	cmd.Flags().String("command", "", "command to run through your shell; omit for a plain shell")
-	cmd.Flags().String("app", "", "app to launch, as integration/app (e.g. codex/tui)")
-	cmd.MarkFlagsMutuallyExclusive("command", "app")
-	return cmd
 }
 
-// createParams reads the create flags. With neither --directory nor
-// --space, a local server gets this process's working directory as the
-// explicit directory: the natural "open a terminal here", meaningful only
-// when the server shares this machine. A relative --directory is resolved
-// against this process; existence is the server's to check.
-func createParams(cmd *cobra.Command, baseURL string) (api.TerminalCreateParams, error) {
+// placementParams reads the placement flags. With neither --directory
+// nor --space, a local server gets this process's working directory as
+// the explicit directory: the natural "open a terminal here", meaningful
+// only when the server shares this machine. A relative --directory is
+// resolved against this process; existence is the server's to check.
+func placementParams(cmd *cobra.Command, baseURL string) (api.TerminalCreateParams, error) {
 	flags := cmd.Flags()
 	var params api.TerminalCreateParams
 	var err error
@@ -101,12 +120,6 @@ func createParams(cmd *cobra.Command, baseURL string) (api.TerminalCreateParams,
 		return params, err
 	}
 	if params.Directory, err = flags.GetString("directory"); err != nil {
-		return params, err
-	}
-	if params.Command, err = flags.GetString("command"); err != nil {
-		return params, err
-	}
-	if params.AppID, err = flags.GetString("app"); err != nil {
 		return params, err
 	}
 	switch {

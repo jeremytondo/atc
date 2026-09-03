@@ -52,21 +52,9 @@ func registerIntegrations(humaAPI huma.API, service *integrations.Service) {
 	})
 }
 
-// mapIntegrationError adds the catalog and launch mappings ahead of the
-// terminal ones, which a launch can also surface (unknown space, missing
-// directory).
 func mapIntegrationError(err error) error {
-	switch {
-	case errors.Is(err, integrations.ErrNotFound):
+	if errors.Is(err, integrations.ErrNotFound) {
 		return problem(http.StatusNotFound, api.CodeIntegrationNotFound, "integration not found")
-	case errors.Is(err, integrations.ErrAppNotFound):
-		return problem(http.StatusNotFound, api.CodeAppNotFound, err.Error())
-	case errors.Is(err, integrations.ErrAppNotTerminal):
-		return problem(http.StatusUnprocessableEntity, api.CodeAppNotTerminalCapable, err.Error())
-	case errors.Is(err, integrations.ErrUnavailable):
-		return problem(http.StatusConflict, api.CodeAppUnavailable, err.Error())
-	case errors.Is(err, integrations.ErrNotResumable):
-		return problem(http.StatusConflict, api.CodeThreadNotResumable, err.Error())
 	}
-	return mapError(err)
+	return err
 }

@@ -112,7 +112,7 @@ func NewHandler(opts Options) http.Handler {
 		panic("server.NewHandler: Coordinator must accompany Terminals and Projects")
 	}
 	if opts.Terminals != nil {
-		registerTerminals(humaAPI, opts.Terminals, opts.Integrations, opts.Threads, opts.Coordinator)
+		registerTerminals(humaAPI, opts.Terminals, opts.Threads, opts.Coordinator)
 		registerSpaces(humaAPI, opts.Terminals, opts.Coordinator)
 	}
 	if opts.Projects != nil {
@@ -122,7 +122,7 @@ func NewHandler(opts Options) http.Handler {
 		registerIntegrations(humaAPI, opts.Integrations)
 	}
 	if opts.Threads != nil {
-		registerThreads(humaAPI, opts.Threads, opts.Integrations)
+		registerThreads(humaAPI, opts.Threads)
 	}
 	if opts.Events != nil {
 		registerEvents(humaAPI, opts.Events, opts.HeartbeatInterval)

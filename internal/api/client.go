@@ -59,8 +59,10 @@ func (c *Client) Health(ctx context.Context) (Health, error) {
 	return health, err
 }
 
-// CreateTerminal creates a terminal and starts its session, returning the
-// resource once its status has settled.
+// CreateTerminal creates a terminal and starts its session — a shell, a
+// command, an App, or a thread's resume — returning the resource once
+// its status has settled; a thread resume returns the terminal already
+// holding the thread when one is running.
 func (c *Client) CreateTerminal(ctx context.Context, params TerminalCreateParams) (Terminal, error) {
 	var terminal Terminal
 	err := c.do(ctx, http.MethodPost, "/v1/terminals", params, &terminal)
@@ -186,14 +188,6 @@ func (c *Client) UpdateThread(ctx context.Context, id string, params ThreadUpdat
 	var thread Thread
 	err := c.do(ctx, http.MethodPatch, "/v1/threads/"+id, params, &thread)
 	return thread, err
-}
-
-// OpenThread resolves the thread to one terminal — a running terminal
-// that holds it, or a new one resuming it — for the caller to attach to.
-func (c *Client) OpenThread(ctx context.Context, id string) (ThreadOpen, error) {
-	var open ThreadOpen
-	err := c.do(ctx, http.MethodPost, "/v1/threads/"+id+"/open", nil, &open)
-	return open, err
 }
 
 // DeleteThread removes ATC's record of the conversation; the

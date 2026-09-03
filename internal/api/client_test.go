@@ -408,25 +408,6 @@ func TestIntegrationMethods(t *testing.T) {
 	}
 }
 
-// OpenThread is a POST action on the thread; the response carries the
-// chosen terminal and whether it was created.
-func TestOpenThread(t *testing.T) {
-	var got struct{ Method, Path string }
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got.Method, got.Path = r.Method, r.URL.Path
-		_ = json.NewEncoder(w).Encode(ThreadOpen{Terminal: Terminal{ID: "term-x7k2f"}, Created: true})
-	}))
-	defer srv.Close()
-	client := NewClient(srv.URL, testToken, testClientVersion, nil, nil)
-	opened, err := client.OpenThread(context.Background(), "thrd-x7k2f")
-	if err != nil || opened.Terminal.ID != "term-x7k2f" || !opened.Created {
-		t.Fatalf("OpenThread = %+v, %v", opened, err)
-	}
-	if got.Method != http.MethodPost || got.Path != "/v1/threads/thrd-x7k2f/open" {
-		t.Errorf("request = %+v", got)
-	}
-}
-
 // The space methods are thin typed wrappers over the flat /v1/spaces
 // surface.
 func TestSpaceMethods(t *testing.T) {

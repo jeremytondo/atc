@@ -352,11 +352,6 @@ type AppLaunch struct {
 	// AppID is the qualified App id recorded on the terminal — this is the
 	// only writer of the immutable appId field.
 	AppID string
-	// Directory overrides the request's and the space's as the session's
-	// working directory (a resumed conversation's recorded cwd, ATC-282);
-	// the caller vouches that it exists. Empty means the request's, else
-	// the space's.
-	Directory string
 	// Prepare, when set, runs once the working directory is resolved and
 	// before the commit lock: launch-time work that may block — waiting
 	// on another launch in the same directory, starting a provider's
@@ -396,22 +391,17 @@ func (s *Service) create(ctx context.Context, params api.TerminalCreateParams, l
 	if err != nil {
 		return api.Terminal{}, err
 	}
-	directory := launch.Directory
-	if directory == "" {
-		directory = params.Directory
-	}
+	directory := params.Directory
 	if directory == "" {
 		directory = space.Directory
 	}
 	// The directory must exist right now; a vanished folder refuses the
-	// create before any record is written.
-	if canonical, err := paths.CanonicalDir(directory); err != nil {
+	// create before any record is written. Stored canonical.
+	canonical, err := paths.CanonicalDir(directory)
+	if err != nil {
 		return api.Terminal{}, fmt.Errorf("%w: %s", ErrDirectoryInvalid, directory)
-	} else if launch.Directory == "" {
-		// A resumed conversation's recorded cwd is kept as recorded; a
-		// request's or space's directory is stored canonical.
-		directory = canonical
 	}
+	directory = canonical
 	name := strings.TrimSpace(params.Name)
 	if name == "" {
 		name = filepath.Base(directory)

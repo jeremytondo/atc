@@ -203,7 +203,6 @@ func newFixture(t *testing.T) *fixture {
 		Integrations: []integrations.Integration{
 			claude.Integration(claudeHooks), codex.Integration(codexObserver), t3code.Integration(t3Observer), zmx.Integration(),
 		},
-		Terminals: service,
 		LookPath: func(name string) (string, error) {
 			if binaries[name] {
 				return "/bin/" + name, nil
@@ -225,7 +224,7 @@ func newFixture(t *testing.T) *fixture {
 		Events:         hub,
 		InternalRoutes: map[string]http.Handler{"POST " + claude.HooksPath: claudeHooks.Handler()},
 		Coordinator: application.New(application.Options{
-			Terminals: service, Threads: threadService, Projects: projectService,
+			Terminals: service, Threads: threadService, Projects: projectService, Integrations: catalog,
 			Cleanups: []func(string){claudeHooks.Deregister, codexObserver.Forget},
 		}),
 		HeartbeatInterval: 50 * time.Millisecond,
@@ -626,4 +625,34 @@ func (f *fixture) defaultSpace(t *testing.T) api.Space {
 	}
 	t.Fatal("no Default space")
 	return api.Space{}
+}
+
+// The generated document is the contract external clients build from: the
+// create's reuse status carries the Terminal schema like its default, and
+// its refusals are described as Problems.
+func TestTerminalCreateDocumentsBothStatuses(t *testing.T) {
+	f := newFixture(t)
+	var doc struct {
+		Paths map[string]map[string]struct {
+			Responses map[string]struct {
+				Content map[string]struct {
+					Schema map[string]any `json:"schema"`
+				} `json:"content"`
+			} `json:"responses"`
+		} `json:"paths"`
+	}
+	if err := json.Unmarshal(f.request(t, http.MethodGet, "/openapi.json", "").Body.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	responses := doc.Paths["/v1/terminals"]["post"].Responses
+	for _, status := range []string{"200", "201"} {
+		if ref := responses[status].Content["application/json"].Schema["$ref"]; ref != "#/components/schemas/Terminal" {
+			t.Errorf("create %s schema = %v, want Terminal", status, ref)
+		}
+	}
+	for _, status := range []string{"409", "422", "500"} {
+		if ref := responses[status].Content["application/problem+json"].Schema["$ref"]; ref != "#/components/schemas/Problem" {
+			t.Errorf("create %s schema = %v, want Problem", status, ref)
+		}
+	}
 }

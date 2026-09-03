@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -33,42 +32,33 @@ var (
 	// terminal status machinery, never a separate error path.
 	ErrUnavailable = errors.New("app unavailable")
 	// ErrNotResumable refuses resuming a thread with no terminal-capable
-	// App provenance: it was not started in an ATC terminal App, so it
-	// opens only through its links.
+	// App provenance: it was not started in an ATC terminal App, or its
+	// App is a handoff, so it opens only through its links.
 	ErrNotResumable = errors.New("thread cannot be resumed in a terminal")
+	// ErrOriginUnavailable refuses resuming a thread whose recorded App
+	// the catalog no longer has, or that lies outside the thread's own
+	// Integration — provenance ATC cannot act on.
+	ErrOriginUnavailable = errors.New("thread's app is no longer available")
 )
-
-// TerminalCreator is the seam into the terminals domain: CreateForApp
-// with the qualified App id, an optional working-directory override, and
-// the App's hooks (terminals.Service in production). Prepare runs once
-// the directory is resolved and before the commit lock; Compose runs
-// once the terminal identity is minted — per-launch context like hook
-// settings needs the id before the session starts. Both stay opaque
-// functions there, so the terminals domain never learns App vocabulary.
-type TerminalCreator interface {
-	CreateForApp(ctx context.Context, params api.TerminalCreateParams, launch terminals.AppLaunch) (api.Terminal, error)
-}
 
 // Options wires a Service.
 type Options struct {
 	// Integrations is the compiled-in catalog, one registration per
 	// built-in Integration, listed in registration order.
 	Integrations []Integration
-	Terminals    TerminalCreator
 	// LookPath resolves a binary name on the server's PATH — the
 	// availability probe's injectable seam, so tests control which binaries
 	// exist. Nil defaults to exec.LookPath.
 	LookPath func(name string) (string, error)
 }
 
-// Service is the read-only catalog plus the launch composition: resolve
-// the App, probe its Integration's executable, compose the command, and
-// hand the terminals domain a normal create. Reads re-probe availability
-// on every call — no cache, no version probing.
+// Service is the read-only catalog plus the launch resolution: turn an
+// App reference, or a thread's provenance, into the opaque launch input
+// the terminals domain takes. Reads re-probe availability on every call
+// — no cache, no version probing.
 type Service struct {
 	integrations []Integration
 	index        map[string]int
-	terminals    TerminalCreator
 	lookPath     func(name string) (string, error)
 }
 
@@ -77,19 +67,12 @@ type Service struct {
 // that is empty or contains the qualifier separator is an error — the
 // composition root fails the boot.
 func NewService(opts Options) (*Service, error) {
-	if opts.Terminals == nil {
-		// A nil terminals service would panic on the first launch request;
-		// fail at construction instead (the server.NewHandler Verify
-		// precedent).
-		panic("integrations.NewService: Terminals must not be nil")
-	}
 	if opts.LookPath == nil {
 		opts.LookPath = exec.LookPath
 	}
 	service := &Service{
 		integrations: make([]Integration, 0, len(opts.Integrations)),
 		index:        make(map[string]int, len(opts.Integrations)),
-		terminals:    opts.Terminals,
 		lookPath:     opts.LookPath,
 	}
 	for _, integration := range opts.Integrations {
@@ -163,11 +146,31 @@ func (s *Service) Get(id string) (api.Integration, error) {
 	return s.integration(s.integrations[i]), nil
 }
 
-// integration converts a registration to its wire shape. A
-// connection-backed Integration is available when connected; an
-// executable-backed one when its binary resolves, and it carries the
-// install hint either way. Terminal Apps inherit the executable's
-// availability; handoff Apps make no claim.
+// availability is the one rule for whether an Integration can act right
+// now, for the catalog and for launches alike: a connection-backed
+// Integration when connected, an executable-backed one when its binary
+// resolves on the server's PATH, and one with neither always. It returns
+// the connection it consulted, if any, and the refusal a launch would
+// carry.
+func (s *Service) availability(integration Integration) (available bool, connection *api.IntegrationConnection, reason error) {
+	if integration.Connection != nil {
+		c := integration.Connection()
+		if c.State != api.IntegrationConnected {
+			return false, &c, fmt.Errorf("%w: %s is %s: %s", ErrUnavailable, integration.Name, c.State, c.Detail)
+		}
+		return true, &c, nil
+	}
+	if integration.Executable != nil && !s.resolves(integration.Executable) {
+		return false, nil, fmt.Errorf("%w: command %q not found on the server's PATH; install with: %s",
+			ErrUnavailable, integration.Executable.Binary, integration.Executable.InstallHint)
+	}
+	return true, nil, nil
+}
+
+// integration converts a registration to its wire shape. It carries the
+// install hint whenever an executable backs it. Terminal Apps inherit an
+// executable-backed Integration's availability; handoff Apps make no
+// claim.
 func (s *Service) integration(integration Integration) api.Integration {
 	out := api.Integration{
 		ID:           integration.ID,
@@ -175,7 +178,6 @@ func (s *Service) integration(integration Integration) api.Integration {
 		Capabilities: slices.Clone(integration.Capabilities),
 		Agents:       slices.Clone(integration.Agents),
 		Apps:         make([]api.App, 0, len(integration.Apps)),
-		Available:    true,
 	}
 	if out.Capabilities == nil {
 		out.Capabilities = []api.IntegrationCapability{}
@@ -183,17 +185,14 @@ func (s *Service) integration(integration Integration) api.Integration {
 	if out.Agents == nil {
 		out.Agents = []api.IntegrationAgent{}
 	}
-	var executableResolves *bool
 	if integration.Executable != nil {
 		out.InstallHint = integration.Executable.InstallHint
+	}
+	out.Available, out.Connection, _ = s.availability(integration)
+	var executableResolves *bool
+	if integration.Executable != nil {
 		resolves := s.resolves(integration.Executable)
 		executableResolves = &resolves
-		out.Available = resolves
-	}
-	if integration.Connection != nil {
-		connection := integration.Connection()
-		out.Connection = &connection
-		out.Available = connection.State == api.IntegrationConnected
 	}
 	for _, app := range integration.Apps {
 		wire := api.App{
@@ -246,69 +245,58 @@ func (s *Service) app(qualified string) (Integration, App, error) {
 	return Integration{}, App{}, fmt.Errorf("%w: %q", ErrAppNotFound, qualified)
 }
 
-// Launch creates the terminal that runs the App: the App composes the
-// command, and everything from the record on is the normal terminal
-// create path — placement in a space, the working directory, the name
-// default, persistence, wrapper, verification window, status, and events
-// all belong to the terminals domain. Every refusal lands before a record
-// exists, and no thread exists until the Integration observes one.
-func (s *Service) Launch(ctx context.Context, appID string, params api.TerminalCreateParams) (api.Terminal, error) {
+// ResolveLaunch turns a qualified App id into the launch input a
+// terminal create takes: the App must run in a terminal and its
+// Integration must be available now. Every refusal lands before a record
+// exists; no thread exists until the Integration observes one.
+func (s *Service) ResolveLaunch(ctx context.Context, appID string) (terminals.AppLaunch, error) {
 	integration, app, err := s.app(appID)
 	if err != nil {
-		return api.Terminal{}, err
+		return terminals.AppLaunch{}, err
 	}
 	if app.Terminal == nil {
-		return api.Terminal{}, fmt.Errorf("%w: %s", ErrAppNotTerminal, appID)
+		return terminals.AppLaunch{}, fmt.Errorf("%w: %s", ErrAppNotTerminal, appID)
 	}
-	return s.launch(ctx, integration, app, params, "", "")
+	return s.launch(ctx, integration, app, "")
 }
 
-// Resume is the launch's second form (ATC-282): the terminal runs the
-// provider's exact resume of a dormant conversation, composed through the
-// App that produced the thread with the thread's private identity. A
-// thread with no App provenance, or whose App does not run in a
-// terminal, is refused: it opens only in its own program. The terminal
-// lands in the Default space and starts in the conversation's recorded
-// working directory when it still exists, otherwise the space's — a
-// resumed conversation can have run from a subdirectory the user since
-// removed. The threads domain calls this inside its open decision;
-// everything else is the normal launch.
-func (s *Service) Resume(ctx context.Context, req threads.ResumeRequest) (api.Terminal, error) {
+// ResolveResume turns a thread's provenance into the launch input for the
+// provider's exact resume (ATC-282), composed through the App that
+// produced the thread with its private identity. A thread with no App
+// provenance, or whose App is a handoff, is refused as not resumable: it
+// opens only in its own program. An App the catalog no longer has, or one
+// outside the thread's own Integration, is refused as unavailable origin.
+func (s *Service) ResolveResume(ctx context.Context, req threads.ResumeRequest) (terminals.AppLaunch, error) {
 	if req.AppID == "" {
-		return api.Terminal{}, fmt.Errorf("%w: the thread was not started in an ATC terminal", ErrNotResumable)
+		return terminals.AppLaunch{}, fmt.Errorf("%w: the thread was not started in an ATC terminal", ErrNotResumable)
 	}
 	integration, app, err := s.app(req.AppID)
 	if err != nil {
-		return api.Terminal{}, fmt.Errorf("%w: %w", ErrNotResumable, err)
+		// Not wrapped: the outcome is the origin's absence, one category,
+		// whatever the lookup's own reason.
+		return terminals.AppLaunch{}, fmt.Errorf("%w: %s", ErrOriginUnavailable, req.AppID)
 	}
 	if integration.ID != req.IntegrationID {
 		// Provenance is Integration-scoped: an App outside the thread's
 		// origin Integration cannot have produced it.
-		return api.Terminal{}, fmt.Errorf("%w: app %s does not belong to integration %s", ErrNotResumable, req.AppID, req.IntegrationID)
+		return terminals.AppLaunch{}, fmt.Errorf("%w: app %s does not belong to integration %s", ErrOriginUnavailable, req.AppID, req.IntegrationID)
 	}
 	if app.Terminal == nil {
-		return api.Terminal{}, fmt.Errorf("%w: %s conversations open in %s, not in an ATC terminal", ErrNotResumable, integration.Name, integration.Name)
+		return terminals.AppLaunch{}, fmt.Errorf("%w: %s conversations open in %s, not in an ATC terminal", ErrNotResumable, integration.Name, integration.Name)
 	}
-	directory := req.Directory
-	if directory != "" {
-		if info, err := os.Stat(directory); err != nil || !info.IsDir() {
-			directory = ""
-		}
-	}
-	return s.launch(ctx, integration, app, api.TerminalCreateParams{}, directory, req.ProviderID)
+	return s.launch(ctx, integration, app, req.ProviderID)
 }
 
-// launch hands the terminals domain a create whose command the App
-// composes once the id is minted — under the commit lock, so it must be
-// quick — with the App's optional preparation run before it.
-func (s *Service) launch(ctx context.Context, integration Integration, app App, params api.TerminalCreateParams, directory, resumeID string) (api.Terminal, error) {
-	if integration.Executable != nil && !s.resolves(integration.Executable) {
-		return api.Terminal{}, fmt.Errorf("%w: command %q not found on the server's PATH; install with: %s",
-			ErrUnavailable, integration.Executable.Binary, integration.Executable.InstallHint)
+// launch composes the launch input: the App's command once the id is
+// minted — under the terminals commit lock, so it must be quick — and the
+// App's optional preparation before it. The context is the request's;
+// the closures run within it.
+func (s *Service) launch(ctx context.Context, integration Integration, app App, resumeID string) (terminals.AppLaunch, error) {
+	if _, _, err := s.availability(integration); err != nil {
+		return terminals.AppLaunch{}, err
 	}
 	launch := terminals.AppLaunch{
-		AppID:     QualifiedAppID(integration.ID, app.ID),
-		Directory: directory,
+		AppID: QualifiedAppID(integration.ID, app.ID),
 		Compose: func(terminalID, directory string) (string, error) {
 			return app.Terminal.Command(ctx, LaunchContext{
 				TerminalID: terminalID, Directory: directory, ResumeConversationID: resumeID,
@@ -326,8 +314,5 @@ func (s *Service) launch(ctx context.Context, integration Integration, app App, 
 			return abort, nil
 		}
 	}
-	// The App's selectors are the catalog's business; placement is the
-	// request's, passed through untouched.
-	params.AppID, params.Command = "", ""
-	return s.terminals.CreateForApp(ctx, params, launch)
+	return launch, nil
 }
