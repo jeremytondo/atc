@@ -82,9 +82,11 @@ func newRootCmd() *cobra.Command {
 		Short: "The ATC terminal client and server",
 		Long: `atc is the ATC terminal client and server.
 
-Configuration precedence: flags > ATC_<KEY> environment > ~/.config/atc/config.toml > defaults.
-Keys: port, bind, tailscale, tailscale_executable. Set tailscale = true to
-expose on the tailnet without the flag.`,
+Configuration precedence:
+  flags > ATC_<KEY> environment > ~/.config/atc/config.toml > defaults
+
+Keys: port, bind, tailscale, tailscale_executable. Set tailscale = true to expose
+on the tailnet by default.`,
 		// Errors surface once, prefixed "atc:" in main.
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -134,15 +136,13 @@ func newUpgradeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "upgrade",
 		Short: "Replace this binary with the latest release",
-		Long: `Download the latest production release, verify its checksum, and atomically
-replace this binary. A machine running a dev build is moved to the latest
-production release even when that is semver-backwards; with --dev, the
-current rolling dev build is installed unconditionally instead.
+		Long: `Download and verify the latest release, then atomically replace this binary.
+Use --dev to install the current rolling dev build instead. Without it, a dev
+build switches to the latest production release even if its version is lower.
 
-A server left running the old version is never restarted silently:
-interactive runs are asked (terminals persist; in-flight agent turns are
-interrupted), headless runs print a reminder unless --restart or
---no-restart pre-answers.`,
+If the server is still running the old version, interactive runs ask before
+restarting it. Headless runs print a reminder unless --restart or --no-restart
+chooses the behavior. A restart preserves terminals but interrupts active turns.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			flags := cmd.Flags()
@@ -261,15 +261,15 @@ func lifecycleCmd(use, short, long string, options func(*cobra.Command) (service
 // return to config.toml rather than a force-off.
 const tailscaleFlagHelp = `
 
---tailscale renders tailnet exposure into the registered unit, so the setting
-survives restarts, reboots, and upgrades. Omitting the flag preserves the
-unit's current setting; --tailscale=false removes it so config.toml decides
-again (with tailscale = true configured there, exposure stays on).`
+--tailscale settings:
+  omitted             preserves the installed unit setting
+  --tailscale         enables exposure; survives restarts, reboots, and upgrades
+  --tailscale=false   removes the unit override; config.toml decides`
 
 // addTailscaleFlag registers the lifecycle --tailscale flag; the tri-state
 // semantics live in tailscaleLifecycleOptions.
 func addTailscaleFlag(cmd *cobra.Command) *cobra.Command {
-	cmd.Flags().Bool("tailscale", false, "persist tailnet exposure in the service unit (omitted: keep the installed setting; false: follow config.toml)")
+	cmd.Flags().Bool("tailscale", false, "persist tailnet exposure (omitted: preserve; false: use config.toml)")
 	return cmd
 }
 
@@ -294,12 +294,12 @@ func tailscaleLifecycleOptions(cmd *cobra.Command) (service.Options, error) {
 func newServerStartCmd() *cobra.Command {
 	return addTailscaleFlag(lifecycleCmd("start",
 		"Register and start the supervised server",
-		`Register the server with the user supervisor (launchd on macOS, systemd user
-units on Linux) and start it. Registration happens on every start: the unit is
-re-rendered from the current binary, so upgrades only need `+"`atc server restart`"+`.
-A healthy server running the current unit is left untouched; a changed unit
-bounces it. The first start prints what was registered and how to undo it
-(atc server uninstall).`+tailscaleFlagHelp,
+		`Register and start ATC with launchd on macOS or the systemd user supervisor on
+Linux. Each start refreshes the unit from the current binary; run
+`+"`atc server restart`"+` after an upgrade. A changed unit restarts the server;
+an unchanged healthy server keeps running.
+
+The first start prints what was registered and how to remove it.`+tailscaleFlagHelp,
 		tailscaleLifecycleOptions, service.Start))
 }
 
@@ -307,7 +307,8 @@ func newServerStopCmd() *cobra.Command {
 	return lifecycleCmd("stop",
 		"Stop the supervised server without uninstalling it",
 		`Stop the supervised server process. The unit stays installed, so the server
-returns at next boot on Linux or next login on macOS; use `+"`atc server uninstall`"+` to remove it entirely.`,
+returns at next boot on Linux or next login on macOS. Use
+`+"`atc server uninstall`"+` to remove it entirely.`,
 		recoveryOptions, service.Stop)
 }
 
@@ -376,7 +377,7 @@ stderr. This is the primitive the supervised unit execs; most users want
 	}
 	cmd.Flags().Int("port", 0, "listen port (overrides ATC_PORT and config.toml)")
 	cmd.Flags().String("bind", "", "bind address (overrides ATC_BIND and config.toml)")
-	cmd.Flags().Bool("tailscale", false, "expose the server on the tailnet via a supervised `tailscale serve` (overrides ATC_TAILSCALE and config.toml)")
+	cmd.Flags().Bool("tailscale", false, "expose on the tailnet (overrides ATC_TAILSCALE and config.toml)")
 	return cmd
 }
 

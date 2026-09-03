@@ -276,6 +276,94 @@ func TestTerminalCLILifecycle(t *testing.T) {
 	}
 }
 
+func TestTerminalListShowsApp(t *testing.T) {
+	startTestServer(t)
+
+	plainOut, _, err := runCLI(t, "terminal", "create", "--command", "hx", "--name", "plain", "--detach")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainID := regexp.MustCompile(`term-[a-z2-9]{5}`).FindString(plainOut)
+	if plainID == "" {
+		t.Fatalf("plain create output has no terminal id:\n%s", plainOut)
+	}
+	appOut, _, err := runCLI(t, "terminal", "create", "--app", "claude/tui", "--name", "agent", "--detach")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appID := regexp.MustCompile(`term-[a-z2-9]{5}`).FindString(appOut)
+	if appID == "" {
+		t.Fatalf("app create output has no terminal id:\n%s", appOut)
+	}
+
+	stdout, _, err := runCLI(t, "terminal", "list")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsRow(stdout, "ID\tSTATUS\tNAME\tAPP\tSPACE\tDIRECTORY") {
+		t.Fatalf("list output missing APP header:\n%s", stdout)
+	}
+	if got := tableColumn(t, stdout, plainID, "APP", "SPACE"); got != "" {
+		t.Errorf("plain terminal APP = %q, want blank\n%s", got, stdout)
+	}
+	if got := tableColumn(t, stdout, appID, "APP", "SPACE"); got != "claude/tui" {
+		t.Errorf("app terminal APP = %q, want claude/tui\n%s", got, stdout)
+	}
+}
+
+func tableColumn(t *testing.T, table, rowID, column, nextColumn string) string {
+	t.Helper()
+	lines := strings.Split(table, "\n")
+	if len(lines) == 0 {
+		t.Fatal("empty table")
+	}
+	start := strings.Index(lines[0], column)
+	end := strings.Index(lines[0], nextColumn)
+	if start < 0 || end <= start {
+		t.Fatalf("table header has no %s column before %s:\n%s", column, nextColumn, table)
+	}
+	for _, line := range lines[1:] {
+		if strings.HasPrefix(line, rowID) {
+			if len(line) < end {
+				return ""
+			}
+			return strings.TrimSpace(line[start:end])
+		}
+	}
+	t.Fatalf("table has no row %s:\n%s", rowID, table)
+	return ""
+}
+
+func TestTerminalCreateHelpIsScannable(t *testing.T) {
+	help, _, err := runCLI(t, "terminal", "create", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Join(strings.Fields(help), " ")
+	for _, want := range []string{
+		"Session mode (choose one):",
+		"(none) start a plain interactive shell",
+		"--command CMD run CMD through your login shell",
+		"--app ID launch an app listed by `atc integration list`",
+		"--thread ID resume a conversation in its original app",
+		"App conversations become threads at their first prompt",
+		"Unavailable apps are rejected before creating a terminal",
+		"a local server uses your current directory; a remote server uses the space's directory",
+		"attaches by default",
+		"Use --detach to leave the session running in the background",
+		"reattach with `atc terminal attach <id>`",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("terminal create help missing %q:\n%s", want, help)
+		}
+	}
+	for _, section := range []string{"\n\nSession mode", "\n\nApp conversations", "\n\nUse --space", "\n\nThe command attaches"} {
+		if !strings.Contains(help, section) {
+			t.Errorf("terminal create help missing section break before %q:\n%s", strings.TrimSpace(section), help)
+		}
+	}
+}
+
 func TestTerminalGetUnknownIsError(t *testing.T) {
 	startTestServer(t)
 	if _, _, err := runCLI(t, "terminal", "get", "term-zzzzz"); err == nil || !strings.Contains(err.Error(), "404") {

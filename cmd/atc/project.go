@@ -30,13 +30,12 @@ func newProjectCreateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create [path]",
 		Short: "Create a project rooted at a directory",
-		Long: `Create a project rooted at path. Without a path, the project is rooted at
-the git toplevel when inside a repository, at the current directory
-otherwise. The server canonicalizes the directory (symlinks resolved): one
-project per real folder, movable later with update --directory. Threads
-that originated under the directory and belong to no project join it. A
-relative path is resolved against this shell's directory; the directory
-itself must exist on the server's machine.`,
+		Long: `Create a project rooted at path. Without a path, use the current Git
+repository's root, or the current directory outside a repository.
+
+Relative paths are resolved by this shell and must exist on the server. Symlinks
+are resolved, and only one project may use a real directory. Unassigned threads
+that originated below the directory join the project.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, _ string) error {
 			name, err := cmd.Flags().GetString("name")

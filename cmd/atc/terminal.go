@@ -48,24 +48,25 @@ func newTerminalCreateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create a terminal, start its session, and attach",
-		Long: `Create a terminal and start its session immediately. The terminal belongs
-to a space (--space; the Default space otherwise) and starts in --directory
-when given. Without --directory or --space, a server on this machine gets
-your current directory; a remote server uses the space's directory, since
-your directory means nothing there. Your shell then takes over the session
-(detach with ctrl-\); pass --detach to print the terminal and leave it
-running in the background instead. Where attaching is impossible (no TTY,
-or the server is on another machine) the terminal is still created and
-printed. The session survives disconnects and ATC server restarts; return
-to it with ` + "`atc terminal attach <id>`" + `.
-With --command it runs through your login shell (profile and rc files
-loaded); with --app <integration/app> it launches that app (see
-` + "`atc integration list`" + `) — a conversation started there becomes a
-thread at its first prompt; with --thread <id> it resumes that
-conversation through the app that started it, reusing the terminal
-already showing it when one is running; with none of the three you get a
-plain interactive shell. A missing app executable is refused with its
-install hint before anything is created.`,
+		Long: `Create a persistent terminal session.
+
+Session mode (choose one):
+  (none)          start a plain interactive shell
+  --command CMD   run CMD through your login shell
+  --app ID        launch an app listed by ` + "`atc integration list`" + `
+  --thread ID     resume a conversation in its original app
+
+App conversations become threads at their first prompt. Thread mode reuses a
+terminal already showing the conversation. Unavailable apps are rejected before
+creating a terminal.
+
+Use --space and --directory to control placement. With neither flag, a local
+server uses your current directory; a remote server uses the space's directory.
+
+The command attaches by default (detach with ctrl-\). Use --detach to leave the
+session running in the background. If attaching is unavailable, the created
+terminal is printed instead. Sessions survive disconnects and server restarts;
+reattach with ` + "`atc terminal attach <id>`" + `.`,
 		Args: cobra.NoArgs,
 		RunE: runWithClient(func(cmd *cobra.Command, _ []string, client *api.Client, baseURL string) error {
 			params, err := placementParams(cmd, baseURL)
@@ -100,7 +101,7 @@ install hint before anything is created.`,
 func addPlacementFlags(cmd *cobra.Command) {
 	cmd.Flags().String("name", "", "display name (defaults to the directory's basename)")
 	cmd.Flags().String("space", "", "space the terminal belongs to (defaults to the Default space)")
-	cmd.Flags().String("directory", "", "working directory (defaults to your current directory against a local server, else the space's)")
+	cmd.Flags().String("directory", "", "working directory (local default: current directory; remote: space directory)")
 	cmd.Flags().Bool("detach", false, "print the terminal instead of attaching to it")
 }
 
@@ -196,9 +197,8 @@ func newTerminalListCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List terminals with their statuses",
-		Long: `List every terminal in every space (pass --space to scope to one). Exited
-and missing terminals stay listed — an exit you never saw is information,
-not garbage — until you delete them.`,
+		Long: `List terminals in every space, including exited and missing terminals.
+Use --space to scope the list. Records remain until deleted.`,
 		Args: cobra.NoArgs,
 		RunE: runWithClient(func(cmd *cobra.Command, _ []string, client *api.Client, _ string) error {
 			space, err := cmd.Flags().GetString("space")
@@ -215,9 +215,9 @@ not garbage — until you delete them.`,
 				return err
 			}
 			w := tabwriter.NewWriter(out, 2, 8, 2, ' ', 0)
-			_, _ = fmt.Fprintln(w, "ID\tSTATUS\tNAME\tSPACE\tDIRECTORY")
+			_, _ = fmt.Fprintln(w, "ID\tSTATUS\tNAME\tAPP\tSPACE\tDIRECTORY")
 			for _, terminal := range terminals {
-				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", terminal.ID, statusLabel(terminal), terminal.Name, terminal.SpaceID, terminal.Directory)
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", terminal.ID, statusLabel(terminal), terminal.Name, terminal.AppID, terminal.SpaceID, terminal.Directory)
 			}
 			return w.Flush()
 		}),
@@ -269,8 +269,8 @@ func newTerminalDeleteCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "delete <id>",
 		Short: "Stop a terminal's session and remove it",
-		Long: `Stop the session (best-effort — the record is removed even when zmx is
-unhealthy) and delete the terminal.`,
+		Long: `Stop the session and delete the terminal. The record is still removed if
+the session cannot be stopped.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, _ string) error {
 			if err := client.DeleteTerminal(cmd.Context(), args[0]); err != nil {

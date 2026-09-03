@@ -157,6 +157,32 @@ func TestThreadGetUnknownIsError(t *testing.T) {
 	}
 }
 
+func TestThreadOpenHelpIsConciseAndComplete(t *testing.T) {
+	help, _, err := runCLI(t, "thread", "open", "--help")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Join(strings.Fields(help), " ")
+	for _, want := range []string{
+		"Open a conversation in its running terminal, or resume it in a new one.",
+		"`atc terminal create --thread <id>`",
+		"Placement and attachment follow `atc terminal create`.",
+		"Use --detach",
+		"Archived threads are unarchived automatically.",
+		"Conversations not started by an ATC terminal app cannot be opened here",
+		"`atc thread get <id>`",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("thread open help missing %q:\n%s", want, help)
+		}
+	}
+	for _, section := range []string{"\n\nPlacement and attachment", "\n\nConversations not started"} {
+		if !strings.Contains(help, section) {
+			t.Errorf("thread open help missing section break before %q:\n%s", strings.TrimSpace(section), help)
+		}
+	}
+}
+
 // An App launch is `terminal create --app` (ATC-294): the terminal shows
 // the app and its directory's basename as the name, never the composed
 // command, and no thread exists before the first prompt. `thread new` is

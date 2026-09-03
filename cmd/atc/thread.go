@@ -38,19 +38,15 @@ func newThreadOpenCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "open <id>",
 		Short: "Open a conversation, live or dormant, and attach",
-		Long: `Put your shell in front of the conversation — sugar for
-` + "`atc terminal create --thread <id>`" + `. The server picks exactly one
-terminal: the running terminal showing the thread, else its last terminal
-if that is still running, else a new terminal resuming the exact
-conversation in the app that started it, placed like any new terminal
-(--space, --directory; your current directory against a local server).
-Concurrent opens of one thread land in the same terminal, so a
-conversation never has two writers through ATC. An archived thread is
-unarchived. A thread that was not started in an ATC terminal app (one T3
-Code owns) is refused: open it through the links ` + "`atc thread get`" + `
-shows. Pass --detach to print the terminal instead of attaching; where
-attaching is impossible (no TTY, or the server is on another machine) the
-terminal is still printed.`,
+		Long: `Open a conversation in its running terminal, or resume it in a new one.
+This is shorthand for ` + "`atc terminal create --thread <id>`" + `.
+
+Placement and attachment follow ` + "`atc terminal create`" + `. Use --detach to
+leave the terminal running in the background. Archived threads are unarchived
+automatically.
+
+Conversations not started by an ATC terminal app cannot be opened here; use the
+links shown by ` + "`atc thread get <id>`" + `.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, baseURL string) error {
 			params, err := placementParams(cmd, baseURL)
@@ -138,11 +134,8 @@ func newThreadUpdateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "update <id>",
 		Short: "Update a thread's title or project",
-		Long: `Set a thread's title, or move it between projects. A title set here is
-yours: observation never overwrites it afterwards. --project assigns any
-project, whatever directory the thread originated in; --remove-project
-leaves it unassigned until a project is created or moved to contain its
-initial directory.`,
+		Long: `Set a thread's title or project. Titles set here are not overwritten by
+later observation. Use --remove-project to leave the thread unassigned.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, _ string) error {
 			flags := cmd.Flags()
@@ -192,9 +185,8 @@ func newThreadArchiveCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "archive <id>",
 		Short: "Archive a thread (reversible; hides it from lists)",
-		Long: `Archive a thread — sugar over PATCH of archived. Archived threads are
-hidden from lists unless requested and restored with unarchive. A thread
-a terminal currently has open is refused.`,
+		Long: `Archive a thread so it is hidden from lists unless requested. Restore it
+with unarchive. A thread currently open in a terminal cannot be archived.`,
 		Args: cobra.ExactArgs(1),
 		RunE: setThreadArchived(true),
 	}
@@ -224,10 +216,9 @@ func newThreadDeleteCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "delete <id>",
 		Short: "Delete ATC's record of a conversation",
-		Long: `Delete the thread record and its identity mapping. The provider-side
-conversation is never touched — it stays resumable inside the agent's own
-tooling, and resuming it later creates a fresh record. A thread a terminal
-currently has open is refused.`,
+		Long: `Delete ATC's thread record without deleting the provider's conversation.
+The conversation remains resumable in the provider's tooling. A thread currently
+open in a terminal cannot be deleted.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runWithClient(func(cmd *cobra.Command, args []string, client *api.Client, _ string) error {
 			if err := client.DeleteThread(cmd.Context(), args[0]); err != nil {
