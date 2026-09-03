@@ -352,6 +352,7 @@ func TestTerminalCreateHelpIsScannable(t *testing.T) {
 		"attaches by default",
 		"Use --detach to leave the session running in the background",
 		"reattach with `atc terminal attach <id>`",
+		"working directory (default: --space directory; otherwise local cwd or remote Default space)",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("terminal create help missing %q:\n%s", want, help)

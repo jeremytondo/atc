@@ -101,7 +101,7 @@ reattach with ` + "`atc terminal attach <id>`" + `.`,
 func addPlacementFlags(cmd *cobra.Command) {
 	cmd.Flags().String("name", "", "display name (defaults to the directory's basename)")
 	cmd.Flags().String("space", "", "space the terminal belongs to (defaults to the Default space)")
-	cmd.Flags().String("directory", "", "working directory (local default: current directory; remote: space directory)")
+	cmd.Flags().String("directory", "", "working directory (default: --space directory; otherwise local cwd or remote Default space)")
 	cmd.Flags().Bool("detach", false, "print the terminal instead of attaching to it")
 }
 

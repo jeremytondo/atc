@@ -82,11 +82,12 @@ func newRootCmd() *cobra.Command {
 		Short: "The ATC terminal client and server",
 		Long: `atc is the ATC terminal client and server.
 
-Configuration precedence:
+For ` + "`atc server run`" + `, configuration precedence is:
   flags > ATC_<KEY> environment > ~/.config/atc/config.toml > defaults
 
 Keys: port, bind, tailscale, tailscale_executable. Set tailscale = true to expose
-on the tailnet by default.`,
+on the tailnet by default. Supervised server commands read config.toml and
+defaults; their lifecycle flags control unit overrides.`,
 		// Errors surface once, prefixed "atc:" in main.
 		SilenceUsage:  true,
 		SilenceErrors: true,
